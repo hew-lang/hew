@@ -118,6 +118,7 @@ fn base_pipeline(
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     }
 }
 
@@ -572,6 +573,7 @@ fn hash_thunk_dedup_one_per_record_per_module() {
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     };
     let ll = emit_ll(pipeline, "hash_dedup");
 
@@ -712,6 +714,7 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     };
     let ll = emit_ll(pipeline, "shared_eq_dedup");
     let eq_defs = ll
@@ -1106,6 +1109,7 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     };
     let ll = emit_ll(pipeline, "cross_shape_dedup");
     let hash_defs = ll

@@ -1,0 +1,20 @@
+// Vertical-slice: the original record remains live and independently-valued
+// after a clone. Both can be passed to a function without aliasing issues.
+
+type Score {
+    value: i64,
+}
+
+fn double(s: Score) -> i64 {
+    s.value * 2
+}
+
+fn main() -> i64 {
+    let original = Score { value: 42 };
+    let copy = original.clone();
+    let d = double(copy);
+    println(d);
+    // original is still usable after clone
+    println(original.value);
+    0
+}

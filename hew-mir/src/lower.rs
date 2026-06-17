@@ -2287,6 +2287,9 @@ pub fn lower_hir_module_with_facts(
         // codegen branch consult the flat map without re-walking the MIR.
         actor_send_aliasing: actor_send_aliasing.clone(),
         polymorphic_mir,
+        // Populated by `attach_lowering_facts` from `TypeCheckOutput`; empty
+        // here so the lowerer does not depend on `TypeCheckOutput` directly.
+        user_clone_record_seeds: Vec::new(),
     }
 }
 
@@ -4429,7 +4432,8 @@ fn collect_unknown_self_fields_in_expr(
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. } => {
+        | HirExprKind::MachineStateName { receiver, .. }
+        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
             collect_unknown_self_fields_in_expr(receiver, state_fields, seen, unknown);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -9821,6 +9825,21 @@ impl Builder {
             } => Some(self.lower_gen_block(expr, body, yield_ty, return_ty, captures)),
             HirExprKind::Yield { value, yield_ty: _ } => {
                 self.lower_yield_expr(expr, value.as_deref())
+            }
+            // Deep-clone a user record via the synthesised thunk pair.
+            // See `Instr::RecordCloneInplace` for the full protocol.
+            HirExprKind::RecordCloneCall {
+                src, record_name, ..
+            } => {
+                let src_place = self.lower_value(src)?;
+                let record_ty = self.subst_ty(&expr.ty);
+                let dest = self.alloc_local(record_ty);
+                self.instructions.push(Instr::RecordCloneInplace {
+                    dest,
+                    src: src_place,
+                    record_name: record_name.clone(),
+                });
+                Some(dest)
             }
             HirExprKind::Unsupported(reason) => {
                 // Defense-in-depth: HIR lowering should have emitted
@@ -23268,6 +23287,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         Instr::CancellationTokenIsCancelled { dest, token } => vec![*dest, *token],
         Instr::GeneratorNext { dest, ctx, .. } => vec![*dest, *ctx],
         Instr::WireCodec { dest, operand, .. } => vec![*dest, *operand],
+        Instr::RecordCloneInplace { dest, src, .. } => vec![*dest, *src],
         Instr::IntArithChecked {
             dest,
             lhs,
@@ -23576,6 +23596,9 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         // and its scope-exit drop is preserved (mirrors `GeneratorNext`'s
         // borrowed `ctx`).
         Instr::WireCodec { .. } => vec![],
+        // `RecordCloneInplace` reads `src` (borrows it; does not consume).
+        // The original `src` binding stays live after the clone.
+        Instr::RecordCloneInplace { src, .. } => vec![*src],
         Instr::BoolNot { operand, .. }
         | Instr::FloatNeg { operand, .. }
         | Instr::IntBitNot { operand, .. }
@@ -23939,7 +23962,10 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::FloatCmp { .. }
         | Instr::MachineEmitPlaceholder { .. }
         | Instr::EnumTagLoad { .. }
-        | Instr::MachineStateName { .. } => false,
+        | Instr::MachineStateName { .. }
+        // RecordCloneInplace borrows src (non-consuming read); it does not
+        // transfer ownership of any local out of the frame.
+        | Instr::RecordCloneInplace { .. } => false,
     }
 }
 
@@ -24135,7 +24161,11 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::CallTraitMethod { .. }
         | Instr::MachineEmitPlaceholder { .. }
         | Instr::EnumTagLoad { .. }
-        | Instr::MachineStateName { .. } => None,
+        | Instr::MachineStateName { .. }
+        // RecordCloneInplace allocates a fresh clone — its dest does NOT alias
+        // the src or any parent aggregate field (the thunk overwrites heap
+        // pointer fields in dst with independently-owned clones).
+        | Instr::RecordCloneInplace { .. } => None,
     }
 }
 

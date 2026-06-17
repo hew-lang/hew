@@ -212,6 +212,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             }
         }
         HirExprKind::Loop { body, .. } => visit_block(body, out),
+        HirExprKind::RecordCloneCall { src, .. } => visit_expr(src, out),
         HirExprKind::MachineFieldAccess { .. }
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Select(_)

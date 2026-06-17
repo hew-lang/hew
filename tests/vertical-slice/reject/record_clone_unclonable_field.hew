@@ -1,0 +1,31 @@
+// Reject fixture: record_clone_unclonable_field — a record containing an
+// `#[opaque]` runtime handle must fail closed when `.clone()` is called.
+//
+// Opaque handles are pointer-width values managed by the runtime. A shallow
+// copy would alias the original handle, making both the original and the
+// clone point to the same runtime resource. When one is freed, the other
+// becomes a dangling pointer. The checker must refuse `.clone()` on any
+// record whose fields (or their transitive fields) include an opaque handle.
+//
+// Harness verb: hew check
+// Expected: rejected with an `UndefinedMethod` error mentioning the opaque
+// field name.
+
+#[opaque]
+type Handle {}
+
+extern "C" {
+    fn hew_handle_create() -> Handle;
+    fn hew_handle_free(h: Handle);
+}
+
+type Wrapper {
+    inner: Handle,
+}
+
+fn main() -> i64 {
+    let w = Wrapper { inner: unsafe { hew_handle_create() } };
+    let _ = w.clone();
+    unsafe { hew_handle_free(w.inner) };
+    0
+}

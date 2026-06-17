@@ -105,6 +105,7 @@ fn pipeline_with_task_abi_call(
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     }
 }
 
@@ -204,6 +205,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     }
 }
 
@@ -294,6 +296,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     }
 }
 
@@ -407,6 +410,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     }
 }
 
@@ -601,6 +605,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     };
 
     let tmp = std::env::temp_dir().join("hew-task-abi-task-scope-spawn-paired");

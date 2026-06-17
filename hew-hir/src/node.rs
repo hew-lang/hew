@@ -1706,6 +1706,29 @@ pub enum HirExprKind {
         operand: Box<HirExpr>,
         value_ty: ResolvedTy,
     },
+    /// User-code `clone p` or `p.clone()` on a user-defined record type.
+    ///
+    /// `src` is the non-consuming (Read) receiver. MIR lowers this to a
+    /// memcpy-then-call pattern: alloca a destination on the stack, memcpy `src`
+    /// bitwise into `dst`, then call `clone_fn_sym` with `(src_ptr, dst_ptr)`.
+    /// The thunk overwrites owned fields in `dst` with deep clones in-place.
+    /// Return value `0` = success; non-zero traps.
+    ///
+    /// `record_name` is the canonical unqualified record name (matches the
+    /// `__hew_record_clone_inplace_<record_name>` symbol emitted by codegen).
+    ///
+    /// The parent [`HirExpr::ty`] is the record type — the cloned value has the
+    /// same type as the source.
+    ///
+    /// WASM-TODO: record clone is not yet lowered in the sandbox-wasm emitter;
+    /// the sandbox falls through to its fail-closed `emit_unsupported` marker
+    /// (see `hew-sandbox-wasm/src/emit.rs` `lower_method_call` default arm), so
+    /// a playground record `.clone()` traps rather than silently aliasing.
+    RecordCloneCall {
+        src: Box<HirExpr>,
+        clone_fn_sym: String,
+        record_name: String,
+    },
     /// `emit EventName { field: value, ... }` inside a machine transition body,
     /// entry block, or exit block.
     ///

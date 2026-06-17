@@ -1,19 +1,20 @@
-//! Contract test for the `CloneNotYetSupported` diagnostic path.
+//! Contract tests for the `.clone()` lowering paths and the residual
+//! `CloneNotYetSupported` backstop.
 //!
-//! M-COW P0 introduces a fail-closed guard for `.clone()` method calls:
-//! rather than silently returning an aliased handle, the HIR lowerer must:
+//! `.clone()` is now wired through the checker → HIR → MIR → codegen
+//! pipeline for the types the checker admits:
 //!
-//!   1. Emit `HirDiagnosticKind::CloneNotYetSupported { receiver_ty }` with
-//!      the receiver's resolved type in the diagnostic note.
-//!   2. `into_result()` must return `Err` so the build never succeeds when
-//!      `.clone()` is present in source.
+//!   - Copy/scalar receivers (`i32`, `bool`, `char`, …) emit a redundancy
+//!     warning and lower as a plain read via `MethodCallRewrite::CopyCloneNoop`
+//!     — the build SUCCEEDS (exit 0).
+//!   - User record/struct receivers lower via
+//!     `MethodCallRewrite::RecordCloneInplace`.
+//!   - Builtin collections + `string`/`Bytes` have their own runtime copy paths.
 //!
-//! The runtime deep-copy path (e.g. `hew_bytes_clone_ref` for `Bytes`) is
-//! wired in P2.  Until then every `.clone()` is a hard compile error.
-//!
-//! This test pins the fail-closed contract across the parser → checker →
-//! HIR pipeline so a future refactor cannot accidentally re-introduce
-//! silent aliasing.
+//! The HIR `CloneNotYetSupported` backstop remains the fail-closed guard for
+//! any `.clone()` the checker admits but supplies no rewrite for — it must
+//! never silently return an aliased handle. These tests pin both the new
+//! Copy-clone contract and the backstop's continued existence.
 
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx};
 use hew_types::{module_registry::ModuleRegistry, Checker};
@@ -36,12 +37,12 @@ fn run_pipeline(source: &str) -> (hew_types::TypeCheckOutput, hew_hir::LowerOutp
     (tc_output, lower_output)
 }
 
-/// `.clone()` on an `i32` value must emit `CloneNotYetSupported` and cause
-/// the build to fail.  We use a primitive type (`i32`) to avoid needing
-/// stdlib fixtures — the intercept fires before any side-table lookup, so
-/// the type does not matter.
+/// `.clone()` on a Copy scalar (`i32`) now lowers as a plain read via
+/// `CopyCloneNoop`: the checker emits a redundancy warning, HIR produces NO
+/// `CloneNotYetSupported` diagnostic, and the build succeeds.  This pins the
+/// Copy-clone contract — a redundant clone is a style nit, not a hard error.
 #[test]
-fn clone_call_emits_not_yet_supported_diagnostic() {
+fn clone_call_on_copy_type_lowers_without_error() {
     let source = r"
         fn main() -> i64 {
             let x: i32 = 42;
@@ -57,26 +58,25 @@ fn clone_call_emits_not_yet_supported_diagnostic() {
         .iter()
         .find(|d| matches!(&d.kind, HirDiagnosticKind::CloneNotYetSupported { .. }));
     assert!(
-        clone_diag.is_some(),
-        "expected CloneNotYetSupported diagnostic for `.clone()` call; \
+        clone_diag.is_none(),
+        "Copy-type `.clone()` must NOT emit CloneNotYetSupported; \
          got diagnostics: {:#?}",
         lower.diagnostics
     );
 
-    // `into_result()` must propagate Err — the build must not succeed.
+    // The build must succeed: a redundant Copy clone is a warning, not an error.
     assert!(
-        lower.into_result().is_err(),
-        "pipeline must fail when source contains `.clone()`"
+        lower.into_result().is_ok(),
+        "pipeline must succeed for a Copy-type `.clone()`"
     );
 }
 
 /// The `clone <expr>` prefix lowers through the *same* `lower_method_call`
-/// path as `x.clone()`, so on an unresolved (no-stdlib) type it must emit the
-/// identical `CloneNotYetSupported` diagnostic and fail the build.  This pins
-/// the symmetry between the prefix surface and the method form at the HIR
-/// boundary: the prefix is not a second, weaker code path.
+/// path as `x.clone()`.  On a Copy scalar it behaves identically: no
+/// `CloneNotYetSupported`, build succeeds.  This pins the symmetry between the
+/// prefix surface and the method form at the HIR boundary.
 #[test]
-fn clone_prefix_emits_not_yet_supported_diagnostic() {
+fn clone_prefix_on_copy_type_lowers_without_error() {
     let source = r"
         fn main() -> i64 {
             let x: i32 = 42;
@@ -92,15 +92,15 @@ fn clone_prefix_emits_not_yet_supported_diagnostic() {
         .iter()
         .find(|d| matches!(&d.kind, HirDiagnosticKind::CloneNotYetSupported { .. }));
     assert!(
-        clone_diag.is_some(),
-        "expected CloneNotYetSupported diagnostic for `clone x`; \
+        clone_diag.is_none(),
+        "Copy-type `clone x` prefix must NOT emit CloneNotYetSupported; \
          got diagnostics: {:#?}",
         lower.diagnostics
     );
 
     assert!(
-        lower.into_result().is_err(),
-        "pipeline must fail when source contains an unsupported `clone x`"
+        lower.into_result().is_ok(),
+        "pipeline must succeed for a Copy-type `clone x` prefix"
     );
 }
 
@@ -131,5 +131,62 @@ fn clone_with_args_is_not_intercepted() {
     assert!(
         !clone_not_supported,
         "CloneNotYetSupported must not fire for `.clone(n)` (non-zero args)"
+    );
+}
+
+/// The HIR `CloneNotYetSupported` backstop must still fire fail-closed when a
+/// zero-arg `.clone()` reaches HIR with NO rewrite, resolved-call, dyn, or
+/// numeric entry for its span.  The checker now provides a rewrite for every
+/// clone it admits (Copy → `CopyCloneNoop`, record → `RecordCloneInplace`,
+/// collections/string → their own paths), so this state is unreachable through
+/// the normal checker flow.  We simulate a checker that admits the call but
+/// fails to supply a rewrite by clearing the rewrite table before lowering —
+/// the backstop must catch it rather than silently emit an aliasing copy.
+#[test]
+fn backstop_fires_when_clone_reaches_hir_without_rewrite() {
+    let source = r"
+        fn main() -> i64 {
+            let x: i32 = 42;
+            let y = x.clone();
+            return 0;
+        }
+    ";
+
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut tc_output = checker.check_program(&parsed.program);
+
+    // Drop every side-table entry the clone intercept could have produced,
+    // forcing the HIR lowerer onto its fail-closed backstop path.
+    tc_output.method_call_rewrites.clear();
+    tc_output.numeric_method_lowerings.clear();
+    tc_output.dyn_trait_method_calls.clear();
+    tc_output.resolved_calls.clear();
+
+    let lower = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+
+    let clone_diag = lower
+        .diagnostics
+        .iter()
+        .find(|d| matches!(&d.kind, HirDiagnosticKind::CloneNotYetSupported { .. }));
+    assert!(
+        clone_diag.is_some(),
+        "backstop must emit CloneNotYetSupported when no rewrite exists; \
+         got diagnostics: {:#?}",
+        lower.diagnostics
+    );
+    assert!(
+        lower.into_result().is_err(),
+        "pipeline must fail closed when a `.clone()` has no lowering"
     );
 }

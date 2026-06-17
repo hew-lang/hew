@@ -991,6 +991,15 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 .expect("write to string");
             dump_expr(out, operand, indent + 4);
         }
+        HirExprKind::RecordCloneCall {
+            src,
+            clone_fn_sym,
+            record_name,
+        } => {
+            writeln!(out, "{pad}  record-clone {record_name} fn={clone_fn_sym}")
+                .expect("write to string");
+            dump_expr(out, src, indent + 4);
+        }
         HirExprKind::MachineEmit { event_idx, fields } => {
             writeln!(out, "{pad}  machine-emit event_idx={event_idx}").expect("write to string");
             for (field_name, field_val) in fields {

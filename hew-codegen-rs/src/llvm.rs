@@ -12477,6 +12477,13 @@ fn lower_instruction(
         } => {
             lower_wire_codec_instr(fn_ctx, *dest, *operand, *direction, value_ty)?;
         }
+        Instr::RecordCloneInplace {
+            dest,
+            src,
+            record_name,
+        } => {
+            lower_record_clone_inplace_instr(fn_ctx, *dest, *src, record_name)?;
+        }
         Instr::ContextField { dest, offset } => {
             lower_context_field(fn_ctx, *dest, *offset)?;
         }
@@ -15595,6 +15602,106 @@ fn emit_state_field_old_value_release(
 }
 
 /// Byte size of the heap env box's leading free-thunk slot. The thunk
+/// Lower `Instr::RecordCloneInplace { dest, src, record_name }` to:
+///   1. `memcpy(dest_ptr, src_ptr, abi_sizeof(Record))` — replicates BitCopy
+///      fields and byte-aliases owned-heap pointer fields in `dest`.
+///   2. `i32 rc = __hew_record_clone_inplace_<R>(src_ptr, dest_ptr)` — the
+///      synthesised thunk overwrites each owned-heap field in `dest` with an
+///      independent deep clone; on partial failure it rolls back and returns
+///      non-zero.
+///   3. Trap (`llvm.trap`) on `rc != 0` — fail-closed; no partial clone
+///      survives.
+///
+/// `src` is the already-lowered source Place; `dest` is a freshly-alloc'd
+/// Place of the same record type. Both are stack pointers in the current
+/// function frame.
+fn lower_record_clone_inplace_instr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: Place,
+    src: Place,
+    record_name: &str,
+) -> CodegenResult<()> {
+    let ctx = fn_ctx.ctx;
+    let builder = &fn_ctx.builder;
+    let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+    let (dest_ptr, _) = place_pointer(fn_ctx, dest)?;
+
+    // Step 1: wholesale bitwise copy into dest.
+    // The ABI size gives the exact byte count including struct padding.
+    let size_bytes = match src_ty {
+        BasicTypeEnum::StructType(st) => fn_ctx.target_data.get_abi_size(&st),
+        _ => {
+            return Err(CodegenError::FailClosed(format!(
+                "RecordCloneInplace: src place for record `{record_name}` has non-struct LLVM \
+                 type {src_ty:?}; expected StructType"
+            )));
+        }
+    };
+    let align = match src_ty {
+        BasicTypeEnum::StructType(st) => fn_ctx.target_data.get_abi_alignment(&st),
+        _ => unreachable!("checked above"),
+    };
+    let size_i64 = ctx.i64_type().const_int(size_bytes, false);
+    builder
+        .build_memcpy(dest_ptr, align, src_ptr, align, size_i64)
+        .llvm_ctx_with(|| format!("record_clone_inplace memcpy {record_name}"))?;
+
+    // Step 2: call the synthesised in-place clone thunk.
+    let clone_fn = get_or_declare_record_clone_inplace(ctx, fn_ctx.llvm_mod, record_name);
+    let call_site = builder
+        .build_call(
+            clone_fn,
+            &[src_ptr.into(), dest_ptr.into()],
+            &format!("record_clone_{record_name}"),
+        )
+        .llvm_ctx_with(|| format!("record_clone_inplace call {record_name}"))?;
+    let rc = call_site
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "RecordCloneInplace: clone thunk for `{record_name}` returned void"
+            ))
+        })?
+        .into_int_value();
+
+    // Step 3: trap on non-zero return (fail-closed; the thunk already rolled back).
+    let i32_ty = ctx.i32_type();
+    let zero = i32_ty.const_int(0, false);
+    let failed = builder
+        .build_int_compare(
+            inkwell::IntPredicate::NE,
+            rc,
+            zero,
+            &format!("record_clone_{record_name}_failed"),
+        )
+        .llvm_ctx_with(|| format!("record_clone_inplace NE cmp {record_name}"))?;
+    let ok_bb = ctx.append_basic_block(
+        builder.get_insert_block().unwrap().get_parent().unwrap(),
+        "clone_ok",
+    );
+    let trap_bb = ctx.append_basic_block(
+        builder.get_insert_block().unwrap().get_parent().unwrap(),
+        "clone_trap",
+    );
+    builder
+        .build_conditional_branch(failed, trap_bb, ok_bb)
+        .llvm_ctx_with(|| format!("record_clone_inplace branch {record_name}"))?;
+    builder.position_at_end(trap_bb);
+    let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
+        .get_declaration(fn_ctx.llvm_mod, &[])
+        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
+    builder
+        .build_call(trap_fn, &[], "trap")
+        .llvm_ctx_with(|| format!("record_clone_inplace trap {record_name}"))?;
+    builder
+        .build_unreachable()
+        .llvm_ctx_with(|| format!("record_clone_inplace unreachable {record_name}"))?;
+    builder.position_at_end(ok_bb);
+    Ok(())
+}
+
 /// pointer sits immediately BEFORE the address stored in the closure pair
 /// (`env_ptr - 8`), so `ClosureEnvFieldLoad` capture offsets are identical
 /// for stack and heap envs, and any drop site can recover the per-closure
@@ -39100,6 +39207,15 @@ fn build_module_for_target<'ctx>(
             vec_owned_record_seeds.push(seed);
         }
     }
+    // User-authored `.clone()` calls on record types: seed their thunk pairs
+    // so every record cloned by user code gets a synthesised
+    // `__hew_record_clone_inplace_<R>` / `__hew_record_drop_inplace_<R>` body,
+    // regardless of actor-state or Vec<R> reachability.
+    for seed in &pipeline.user_clone_record_seeds {
+        if !vec_owned_record_seeds.contains(seed) {
+            vec_owned_record_seeds.push(seed.clone());
+        }
+    }
     emit_state_clone_drop_synthesis(
         ctx,
         &llvm_mod,
@@ -41945,6 +42061,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         }
     }
 
@@ -42370,6 +42487,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
 
         let ctx = Context::create();
@@ -42451,6 +42569,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         }
     }
 
@@ -42570,6 +42689,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         }
     }
 
@@ -42675,6 +42795,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         }
     }
 
@@ -42800,6 +42921,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         }
     }
 
@@ -42925,6 +43047,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -43002,6 +43125,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -43073,6 +43197,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         let ctx = Context::create();
         let m =
@@ -43347,6 +43472,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         }
     }
 
@@ -43553,6 +43679,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         }
     }
 
@@ -44255,6 +44382,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
 
         let ctx = Context::create();
@@ -44338,6 +44466,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "gen_yield_codegen_test")
@@ -44477,6 +44606,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "make_generator_codegen_test")
@@ -44547,6 +44677,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "cancel_token_is_cancelled_codegen_test")
@@ -44646,6 +44777,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "gen_state_field_codegen_test").expect(
@@ -44922,6 +45054,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         let syms = empty_fn_symbols();
         let err = verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -44991,6 +45124,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         let syms = empty_fn_symbols();
         verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -45046,6 +45180,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         let found = uses_wasm_excluded_symbol(&pipeline)
             .expect("Duplex::close ElabDrop must be flagged as WASM-excluded");
@@ -45127,6 +45262,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         let found = uses_wasm_excluded_symbol(&pipeline)
             .expect("Terminator::Yield must be flagged as WASM-excluded");
@@ -45161,6 +45297,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         }
     }
 
@@ -45504,6 +45641,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         assert!(
             uses_wasm_excluded_symbol(&pipeline).is_none(),
@@ -47300,6 +47438,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-dyn-coerce-ok-")
@@ -47439,6 +47578,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-dyn-coerce-miss-")
@@ -47816,6 +47956,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-frame-owned-drop-fail-")
@@ -48008,6 +48149,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         }
     }
 
@@ -48226,6 +48368,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         }
     }
 
@@ -48412,6 +48555,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         }
     }
 
@@ -48591,6 +48735,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         };
 
         let ctx = Context::create();
@@ -48776,6 +48921,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
+            user_clone_record_seeds: vec![],
         }
     }
 

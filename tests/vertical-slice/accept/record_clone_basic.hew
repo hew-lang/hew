@@ -1,0 +1,15 @@
+// Vertical-slice: `clone` on a BitCopy-field record produces an independent copy.
+// Both the original and the clone are live after the call.
+
+type Point {
+    x: i64,
+    y: i64,
+}
+
+fn main() -> i64 {
+    let p = Point { x: 10, y: 20 };
+    let q = p.clone();
+    println(q.x);
+    println(q.y);
+    0
+}

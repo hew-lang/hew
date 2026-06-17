@@ -1,0 +1,14 @@
+// Vertical-slice: `.clone()` on a Copy type (i64, bool) emits a
+// StyleSuggestion warning but compiles and runs to 0. The clone is semantically
+// equivalent to a plain copy — the value is used unchanged.
+
+fn main() -> i64 {
+    let x: i64 = 5;
+    let y = x.clone();   // warn: cloning a Copy type is redundant
+    let b: bool = true;
+    let c = b.clone();   // warn: same
+    if c {
+        println(y);
+    }
+    0
+}

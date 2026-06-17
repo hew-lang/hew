@@ -38,8 +38,10 @@ run_fixture_path_expect_status() {
   local label="$2"
   local expected_status="$3"
   "${HEW}" compile "${fixture_path}" >"${accept_output}" 2>&1
-  local bin="${ROOT}/.tmp/compile-out/$(basename "${fixture_path}" .hew)"
+  local bin
+  bin="${ROOT}/.tmp/compile-out/$(basename "${fixture_path}" .hew)"
   local status=0
+  # shellcheck disable=SC2016  # $1/$2/$3 are positional args to inner bash -c; single quotes deliberate.
   if "${TIMEOUT}" --kill-after=5s 30s bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
     status=0
   else
@@ -279,6 +281,7 @@ if "${HEW}" check \
   echo "expected builtin_payload_enum_equality to fail closed under hew check" >&2
   exit 1
 fi
+# shellcheck disable=SC2016  # backtick-containing diagnostic string; not shell expansion.
 grep -qF '`==` on enum `Option<i64>` with payload variants is not supported' "${reject_output}"
 grep -qF 'let _ = a == b;' "${reject_output}"
 if grep -qF 'E_CODEGEN_FRONT' "${reject_output}" || \
@@ -293,6 +296,7 @@ if "${HEW}" check \
   echo "expected builtin_payload_enum_inequality_result to fail closed under hew check" >&2
   exit 1
 fi
+# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 grep -qF '`!=` on enum `Result<i64, i64>` with payload variants is not supported' "${reject_output}"
 grep -qF 'let _ = ok != err;' "${reject_output}"
 if grep -qF 'E_CODEGEN_FRONT' "${reject_output}" || \
@@ -725,7 +729,9 @@ expect_check_fail_error_count \
   "${ROOT}/tests/vertical-slice/reject/cascade_error_binary_operand.hew" \
   1 \
   "cascade_error_binary_operand"
+# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 grep -qF 'undefined variable `undefined_var`' "${reject_output}"
+# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 if grep -qF '<error>' "${reject_output}" || grep -qF 'cannot apply `+`' "${reject_output}"; then
   echo "cascade_error_binary_operand emitted a downstream binary-op diagnostic" >&2
   cat "${reject_output}" >&2
@@ -736,7 +742,9 @@ expect_check_fail_error_count \
   "${ROOT}/tests/vertical-slice/reject/cascade_error_index_object.hew" \
   1 \
   "cascade_error_index_object"
+# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 grep -qF 'undefined variable `undefined_var`' "${reject_output}"
+# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 if grep -qF '<error>' "${reject_output}" || grep -qF 'cannot index into `<error>`' "${reject_output}"; then
   echo "cascade_error_index_object emitted a downstream index diagnostic" >&2
   cat "${reject_output}" >&2
@@ -747,12 +755,14 @@ expect_check_fail_error_count \
   "${ROOT}/tests/vertical-slice/reject/real_binary_type_error_preserved.hew" \
   1 \
   "real_binary_type_error_preserved"
+# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 grep -qF 'cannot apply `+` to `string` and `i64`' "${reject_output}"
 
 expect_check_fail_error_count \
   "${ROOT}/tests/vertical-slice/reject/real_index_type_error_preserved.hew" \
   1 \
   "real_index_type_error_preserved"
+# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 grep -qF 'cannot index into `i64`' "${reject_output}"
 
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/use_after_consume.hew" >"${reject_output}" 2>&1; then
@@ -2502,3 +2512,25 @@ grep -q 'guarded record/tuple match destructure' "${reject_output}"
 # verification to fail with "Global is external, but doesn't have external
 # or weak linkage!".
 run_check_run_expect_stdout file_import_trait_impl
+
+# `.clone()` on a Copy type (i64, bool): emits a StyleSuggestion warning but
+# compiles and runs correctly — the value is duplicated as-if by plain copy.
+run_accept_expect_stdout copy_clone_warn
+
+# User-defined record `.clone()`: BitCopy-field record produces an independent copy.
+run_accept_expect_stdout record_clone_basic
+
+# User-defined record `.clone()`: record with an owned string field deep-clones the string.
+run_accept_expect_stdout record_clone_string_field
+
+# User-defined record `.clone()`: original stays live and usable after the clone.
+run_accept_expect_stdout record_clone_independence
+
+# User-defined record `.clone()` on a record containing an opaque handle must be rejected.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/record_clone_unclonable_field.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected record_clone_unclonable_field fixture to fail" >&2
+  exit 1
+fi
+grep -q 'contains an opaque field' "${reject_output}"

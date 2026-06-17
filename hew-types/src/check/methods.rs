@@ -66,6 +66,20 @@ impl CollectionKind {
     }
 }
 
+/// Outcome of [`Checker::record_clone_admissibility`].
+#[derive(Debug)]
+pub(super) enum RecordCloneAdmissibility {
+    /// The record can be cloned end-to-end via
+    /// `__hew_record_clone_inplace_<R>`.
+    Admissible,
+    /// The record (or a transitive field) contains an opaque handle; fail closed.
+    OpaqueField { opaque_name: String },
+    /// The record has un-substituted generic type parameters; not yet supported.
+    GenericRecord,
+    /// The named type is not a clone-eligible record kind (actor, machine, enum).
+    NotARecord,
+}
+
 /// Pure-data shape of a single collection-method argument slot.
 ///
 /// Templates name the *type shape* an argument is checked against, instantiated
@@ -2273,6 +2287,10 @@ impl Checker {
         all_serializable
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "handles all named-type method dispatch; splitting would scatter related intercepts"
+    )]
     pub(super) fn check_named_method_fallback(
         &mut self,
         receiver_ty: &Ty,
@@ -2348,6 +2366,65 @@ impl Checker {
         // the gate keeps rejecting what it claims to.
         if let Some(ret_ty) = self.try_record_fn_field_call(receiver_ty, method_name, args, span) {
             return ret_ty;
+        }
+
+        // `clone` on a user-defined record type: intercept before `UndefinedMethod`
+        // and record a `RecordCloneInplace` rewrite when the record is admissible
+        // (no opaque fields, not a generic record, not an enum/actor/machine).
+        // Fail closed with a named diagnostic for unclonable shapes (opaque fields,
+        // generic params). LESSONS: `checker-authority`, `admit-only-what-you-lower`,
+        // `unclonable-leaf-fails-closed-transitively`.
+        if method_name == "clone" && args.is_empty() {
+            if let Ty::Named {
+                name,
+                args: type_args,
+                builtin: None,
+            } = receiver_ty
+            {
+                match self.record_clone_admissibility(name, type_args, span) {
+                    RecordCloneAdmissibility::Admissible => {
+                        let record_ty = receiver_ty.clone();
+                        self.record_method_call_rewrite(
+                            span,
+                            MethodCallRewrite::RecordCloneInplace {
+                                record_name: name.clone(),
+                            },
+                        );
+                        // Seed for codegen's `emit_state_clone_drop_synthesis`.
+                        if !self.user_clone_record_seeds.contains(name) {
+                            self.user_clone_record_seeds.push(name.clone());
+                        }
+                        return record_ty;
+                    }
+                    RecordCloneAdmissibility::OpaqueField { opaque_name } => {
+                        // Synthesize args (none here) for error-recovery symmetry.
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!(
+                                "record `{name}` contains an opaque field `{opaque_name}` \
+                                 and cannot be cloned"
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                    RecordCloneAdmissibility::GenericRecord => {
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!(
+                                "cloning generic record `{name}` is not yet supported; \
+                                 only monomorphic (non-generic) records can be cloned"
+                            ),
+                        );
+                        return Ty::Error;
+                    }
+                    RecordCloneAdmissibility::NotARecord => {
+                        // Fall through to `UndefinedMethod` below for non-record Named types
+                        // (actors, machines, enums, etc.).
+                    }
+                }
+            }
         }
 
         // Synthesize args for error recovery so independent arg diagnostics are not suppressed.
@@ -2450,6 +2527,113 @@ impl Checker {
                 .iter()
                 .map(|(name, _)| name.as_str()),
         )
+    }
+
+    /// Decide whether a user-defined `Ty::Named` record type is admissible for
+    /// `clone`. Returns one of four outcomes:
+    ///
+    /// - `Admissible`: the record can be cloned end-to-end via the synthesised
+    ///   `__hew_record_clone_inplace_<R>` thunk.
+    /// - `OpaqueField { opaque_name }`: the record (or a transitively reachable
+    ///   field) contains an opaque handle — fail closed with a named diagnostic.
+    /// - `GenericRecord`: the record has un-substituted generic type parameters
+    ///   — not yet supported; fail closed with an NYI diagnostic.
+    /// - `NotARecord`: not a clone-eligible named type (actor, machine, enum,
+    ///   etc.) — fall through to `UndefinedMethod`.
+    ///
+    /// LESSONS: `checker-authority` (sole authority for clone admissibility),
+    /// `unclonable-leaf-fails-closed-transitively`, `admit-only-what-you-lower`.
+    pub(super) fn record_clone_admissibility(
+        &self,
+        name: &str,
+        type_args: &[Ty],
+        _span: &Span,
+    ) -> RecordCloneAdmissibility {
+        use TypeDefKind::{Record, Struct};
+        let Some(type_def) = self.type_defs.get(name) else {
+            return RecordCloneAdmissibility::NotARecord;
+        };
+        // Only Record and Struct (value-type) kinds are clone-eligible.
+        if !matches!(type_def.kind, Record | Struct) {
+            return RecordCloneAdmissibility::NotARecord;
+        }
+        // Generic records (un-substituted type params) are not yet supported.
+        // The caller passes the `type_args` from the `Ty::Named`; if the type has
+        // declared params but the call-site args are still unresolved vars, reject.
+        if !type_def.type_params.is_empty() && type_args.iter().any(|a| matches!(a, Ty::Var(_))) {
+            return RecordCloneAdmissibility::GenericRecord;
+        }
+        // Check each field transitively for opaque handles.
+        // Re-derives the checker-side `ty_contains_owned_handle` walk inline to
+        // avoid importing hew-mir (wrong dependency direction). The authoritative
+        // MIR-side `ty_contains_unclonable_opaque` is mirrored here at the checker
+        // boundary; the two must agree but are structurally independent.
+        if let Some(opaque_name) =
+            self.record_field_contains_opaque(name, &mut std::collections::HashSet::new())
+        {
+            return RecordCloneAdmissibility::OpaqueField { opaque_name };
+        }
+        RecordCloneAdmissibility::Admissible
+    }
+
+    /// Transitive walk of a record's fields looking for an opaque handle type.
+    /// Returns the first opaque field-type name found, or `None` if clean.
+    /// Uses `canonical_owned_handle_type_name` as the single opaque-detection
+    /// authority (mirrors `ty_contains_owned_handle` in `registration.rs`).
+    fn record_field_contains_opaque(
+        &self,
+        name: &str,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> Option<String> {
+        if !visiting.insert(name.to_string()) {
+            return None; // cycle protection
+        }
+        let type_def = self.type_defs.get(name)?;
+        for field_ty in type_def.fields.values() {
+            if let Some(opaque) = self.ty_field_contains_opaque(field_ty, visiting) {
+                visiting.remove(name);
+                return Some(opaque);
+            }
+        }
+        visiting.remove(name);
+        None
+    }
+
+    fn ty_field_contains_opaque(
+        &self,
+        ty: &Ty,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> Option<String> {
+        match ty {
+            Ty::Named { name, args, .. } => {
+                // Direct opaque handle (imported via module registry OR user-declared #[opaque])?
+                if self.canonical_owned_handle_type_name(name).is_some()
+                    || self.user_opaque_type_names.contains(name.as_str())
+                {
+                    return Some(name.clone());
+                }
+                // Recurse into type args.
+                for arg in args {
+                    if let Some(n) = self.ty_field_contains_opaque(arg, visiting) {
+                        return Some(n);
+                    }
+                }
+                // Recurse into the type def's fields.
+                if let Some(n) = self.record_field_contains_opaque(name, visiting) {
+                    return Some(n);
+                }
+                None
+            }
+            Ty::Tuple(items) => {
+                for item in items {
+                    if let Some(n) = self.ty_field_contains_opaque(item, visiting) {
+                        return Some(n);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
     }
 
     #[expect(
@@ -4235,7 +4419,7 @@ impl Checker {
                     } else if matches!(eligibility, crate::eq_eligibility::EqEligibility::Eligible)
                     {
                         // Eligible but not Copy: layout-managed semantics
-                        // (clone/drop) are out of scope for this lane.  The
+                        // (clone/drop) are not yet supported here.  The
                         // historical `_layout` fail-closed diagnostic is the
                         // closest substitute and names the would-be symbol.
                         self.report_error(
@@ -6721,6 +6905,58 @@ impl Checker {
                 if let Some(ret_ty) = self.try_record_fn_field_call(&resolved, method, args, span) {
                     return ret_ty;
                 }
+                // `clone` on a user-defined named type: intercept before
+                // `UndefinedMethod` for admissible records.
+                // This arm handles the (Ty::Named { builtin: None, .. }, "clone")
+                // case where `try_resolve_named_method` found no `clone` in fn_sigs.
+                if method == "clone" && args.is_empty() {
+                    if let Ty::Named {
+                        name,
+                        args: type_args,
+                        builtin: None,
+                    } = &resolved
+                    {
+                        match self.record_clone_admissibility(name, type_args, span) {
+                            RecordCloneAdmissibility::Admissible => {
+                                self.record_method_call_rewrite(
+                                    span,
+                                    MethodCallRewrite::RecordCloneInplace {
+                                        record_name: name.clone(),
+                                    },
+                                );
+                                if !self.user_clone_record_seeds.contains(name) {
+                                    self.user_clone_record_seeds.push(name.clone());
+                                }
+                                return resolved;
+                            }
+                            RecordCloneAdmissibility::OpaqueField { opaque_name } => {
+                                self.report_error(
+                                    TypeErrorKind::UndefinedMethod,
+                                    span,
+                                    format!(
+                                        "record `{name}` contains an opaque field \
+                                         `{opaque_name}` and cannot be cloned"
+                                    ),
+                                );
+                                return Ty::Error;
+                            }
+                            RecordCloneAdmissibility::GenericRecord => {
+                                self.report_error(
+                                    TypeErrorKind::UndefinedMethod,
+                                    span,
+                                    format!(
+                                        "cloning generic record `{name}` is not yet \
+                                         supported; only monomorphic records can be cloned"
+                                    ),
+                                );
+                                return Ty::Error;
+                            }
+                            RecordCloneAdmissibility::NotARecord => {
+                                // Fall through to UndefinedMethod below.
+                            }
+                        }
+                    }
+                }
                 // Synthesize args even if method unknown (for error recovery)
                 for arg in args {
                     let (expr, sp) = arg.expr();
@@ -6896,6 +7132,49 @@ impl Checker {
                     self.try_dispatch_primitive_trait_method(&resolved, method, args, span)
                 {
                     return ret_ty;
+                }
+                // `clone` on a Copy/BitCopy type: warn (non-fatal) and return
+                // the operand type. The value is already a copy — no extra work
+                // needed. HIR lowers this as a plain read via `CopyCloneNoop`.
+                // LESSONS: `fail-closed-never-fail-open` (exit 0, not Ty::Error).
+                if method == "clone" && args.is_empty() {
+                    let is_copy_ty = matches!(
+                        &resolved,
+                        Ty::I8
+                            | Ty::I16
+                            | Ty::I32
+                            | Ty::I64
+                            | Ty::U8
+                            | Ty::U16
+                            | Ty::U32
+                            | Ty::U64
+                            | Ty::Isize
+                            | Ty::Usize
+                            | Ty::F32
+                            | Ty::F64
+                            | Ty::Bool
+                            | Ty::Char
+                    );
+                    if is_copy_ty {
+                        self.warnings.push(crate::error::TypeError {
+                            severity: crate::error::Severity::Warning,
+                            kind: TypeErrorKind::StyleSuggestion,
+                            span: span.clone(),
+                            message: format!(
+                                "cloning a Copy type `{}` is redundant; \
+                                 this is equivalent to a plain copy",
+                                resolved.user_facing()
+                            ),
+                            notes: vec![],
+                            suggestions: vec![
+                                "remove the `clone` — Copy types are duplicated automatically"
+                                    .to_string(),
+                            ],
+                            source_module: self.current_module.clone(),
+                        });
+                        self.record_method_call_rewrite(span, MethodCallRewrite::CopyCloneNoop);
+                        return resolved;
+                    }
                 }
                 for arg in args {
                     let (expr, sp) = arg.expr();

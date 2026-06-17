@@ -105,6 +105,7 @@ fn base_pipeline(
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     }
 }
 
@@ -688,6 +689,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     };
     let ll = emit_ll(pipeline, "contains_thunk_dedup");
 

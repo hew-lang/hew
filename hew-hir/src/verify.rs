@@ -602,7 +602,8 @@ impl Verifier {
             }
             HirExprKind::CancellationTokenIsCancelled { receiver }
             | HirExprKind::GeneratorNext { receiver, .. }
-            | HirExprKind::MachineStateName { receiver, .. } => {
+            | HirExprKind::MachineStateName { receiver, .. }
+            | HirExprKind::RecordCloneCall { src: receiver, .. } => {
                 self.expr(receiver);
             }
             HirExprKind::MachineVariantCtor { payload, .. } => {

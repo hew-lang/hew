@@ -392,6 +392,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: vec![],
+        user_clone_record_seeds: vec![],
     };
 
     let tmp = std::env::temp_dir().join(format!("hew-d10-failclosed-{}", std::process::id()));

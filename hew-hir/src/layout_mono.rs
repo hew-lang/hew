@@ -616,7 +616,8 @@ fn walk_expr(
         }
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. } => {
+        | HirExprKind::MachineStateName { receiver, .. }
+        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
             walk_expr(receiver, subst, residual_domain, disc);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {

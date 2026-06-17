@@ -122,6 +122,7 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     }
 }
 
@@ -200,6 +201,7 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     }
 }
 
@@ -280,6 +282,7 @@ fn pipeline_no_duplex() -> IrPipeline {
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     }
 }
 

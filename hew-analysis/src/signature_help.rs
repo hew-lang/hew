@@ -228,6 +228,7 @@ mod tests {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            user_clone_record_seeds: vec![],
         }
     }
 
@@ -465,6 +466,7 @@ fn probe(mat: Matcher, s: string) {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            user_clone_record_seeds: vec![],
         };
 
         let result = build_signature_help(source, &tc, source.len());
@@ -564,6 +566,7 @@ fn probe(mat: Matcher, s: string) {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            user_clone_record_seeds: vec![],
         };
 
         let result = build_signature_help(source, &tc, source.len());

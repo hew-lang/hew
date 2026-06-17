@@ -143,6 +143,7 @@ fn pipeline_with_extern(
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: vec![],
+        user_clone_record_seeds: vec![],
     }
 }
 

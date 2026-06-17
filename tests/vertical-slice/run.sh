@@ -716,6 +716,11 @@ run_accept_expect_stdout "lambda_callable_tell"
 # payload free. Stdout pins `Ok(10)` materialisation through the match.
 run_accept_expect_stdout "lambda_callable_ask"
 
+# Accept: ask-shaped lambda actor replying a record wider than one machine word.
+# Pins the reply ABI at the record's exact byte width instead of the historical
+# hard-coded i64 path that silently truncated `Pair { a, b }` to one field.
+run_accept_expect_stdout "lambda_callable_ask_record_reply"
+
 # Accept + run: block-wrapped actor-ask await (`await { actor.method() }`) must
 # type-check as `Result<T, AskError>` and produce the correct reply value. Pre-
 # fix the checker saw `Expr::Block` instead of `Expr::MethodCall` and fell

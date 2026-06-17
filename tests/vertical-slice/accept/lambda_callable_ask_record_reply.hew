@@ -1,0 +1,17 @@
+type Pair { a: i64, b: i64 }
+
+fn main() {
+    let f = actor |n: i64| -> Pair { Pair { a: n, b: n + 1 } };
+    let a = f(41);
+    match a {
+        Ok(v) => {
+            if v.b == 42 {
+                println("ok")
+            } else {
+                println("bad");
+                println(v.b)
+            }
+        },
+        Err(_) => println("err"),
+    }
+}

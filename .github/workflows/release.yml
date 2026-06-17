@@ -264,6 +264,14 @@ jobs:
           ./target/${{ matrix.rust_target }}/release/hew-lsp.exe --version
           ./target/${{ matrix.rust_target }}/release/hew-observe.exe --version
 
+      # ── Third-party license attribution ─────────────────────────────────
+
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --features cli --version 0.9.0
+
+      - name: Generate THIRD-PARTY-LICENSES
+        run: cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
+
       # ── Package archive ─────────────────────────────────────────────────
 
       - name: Package archive (Unix)
@@ -301,7 +309,7 @@ jobs:
           done
 
           # Licenses and docs
-          cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
+          cp LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md "${ARCHIVE_NAME}/"
 
           # macOS release binaries embed static LLVM support and rely on
           # Mach-O weak/coalesced definitions that `strip` can break. Keep the
@@ -358,10 +366,11 @@ jobs:
             & "${ArchiveName}/bin/adze.exe" completions $shell | Out-File -Encoding utf8NoBOM "${ArchiveName}/completions/adze.${shell}"
           }
 
-          # Licenses
+          # Licenses and docs
           Copy-Item "LICENSE-MIT" "${ArchiveName}/"
           Copy-Item "LICENSE-APACHE" "${ArchiveName}/"
           Copy-Item "NOTICE" "${ArchiveName}/"
+          Copy-Item "THIRD-PARTY-LICENSES" "${ArchiveName}/"
           Copy-Item "README.md" "${ArchiveName}/"
 
           echo "ARCHIVE_NAME=${ArchiveName}" >> $env:GITHUB_ENV
@@ -632,6 +641,12 @@ jobs:
       - name: Build libhew.a (runtime + stdlib)
         run: cargo build -p hew-lib --release --target ${{ matrix.rust_target }}
 
+      - name: Install cargo-about
+        run: cargo install cargo-about --locked --features cli --version 0.9.0
+
+      - name: Generate THIRD-PARTY-LICENSES
+        run: cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
+
       - name: Verify Linux binaries
         run: |
           ldd --version 2>&1 | sed -n "1p"
@@ -672,7 +687,7 @@ jobs:
             "${ARCHIVE_NAME}/bin/adze" completions "${shell}" > "${ARCHIVE_NAME}/completions/adze.${shell}"
           done
 
-          cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
+          cp LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md "${ARCHIVE_NAME}/"
 
           for b in hew adze hew-lsp hew-observe; do
             strip "${ARCHIVE_NAME}/bin/${b}"
@@ -769,6 +784,10 @@ jobs:
             cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --release
 
+            # ── Third-party license attribution ────────────────────────────
+            cargo install cargo-about --locked --features cli --version 0.9.0
+            cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
+
             # ── Package archive ────────────────────────────────────────────
             ARCHIVE_NAME="${{ steps.archive.outputs.name }}"
 
@@ -795,7 +814,7 @@ jobs:
             done
 
             # Licenses and docs
-            cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
+            cp LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md "${ARCHIVE_NAME}/"
 
             # Strip packaged binaries when present; missing artifacts are expected
             # for targets that do not build every binary, but strip failures on
@@ -886,6 +905,10 @@ jobs:
             cargo build -p hew-cli -p adze-cli -p hew-lsp -p hew-observe --release
             cargo build -p hew-lib --release
 
+            # ── Third-party license attribution ────────────────────────────
+            cargo install cargo-about --locked --features cli --version 0.9.0
+            cargo about generate --workspace about.hbs -o THIRD-PARTY-LICENSES
+
             # ── Package archive ────────────────────────────────────────────
             ARCHIVE_NAME="${{ steps.archive.outputs.name }}"
 
@@ -912,7 +935,7 @@ jobs:
             done
 
             # Licenses and docs
-            cp LICENSE-MIT LICENSE-APACHE NOTICE README.md "${ARCHIVE_NAME}/"
+            cp LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md "${ARCHIVE_NAME}/"
 
             # Strip packaged binaries when present; missing artifacts are expected
             # for targets that do not build every binary, but strip failures on

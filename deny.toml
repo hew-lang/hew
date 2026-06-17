@@ -1,0 +1,72 @@
+# cargo-deny license and dependency policy for Hew.
+#
+# Enforced in CI via `cargo deny check licenses bans advisories sources`.
+# Run locally with `cargo deny check` from the workspace root.
+#
+# Policy: only licenses on the allow list below may appear in the shipping
+# dependency graph. Any new dep with an unlisted license will fail CI
+# immediately, preventing silent copyleft introduction.
+#
+# License allow-list derived from:
+#   cargo about generate --workspace --format json (2026-06-17 audit).
+# See also NOTICE and THIRD-PARTY-LICENSES for attribution details.
+
+[licenses]
+# Allow these SPDX identifiers. Everything else is an error.
+allow = [
+  # Core permissive
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception", # LLVM/inkwell ecosystem — static link
+  "ISC",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "0BSD",
+  "Zlib",
+
+  # Unicode data files — unicode-ident, unicode-normalization, etc.
+  "Unicode-3.0",
+
+  # Public domain / permissive data
+  "CC0-1.0",             # notify crate (ships in hew-cli)
+  "CDLA-Permissive-2.0", # webpki-roots / webpki-root-certs cert bundle
+  "Unlicense",
+
+  # Weak file-level copyleft — binary distribution is allowed; MPL-2.0 only
+  # requires MPL-2.0 files to remain MPL-2.0 if redistributed as source
+  # (Hew does not redistribute option-ext's source). Pulled by dirs-sys → dirs.
+  "MPL-2.0",
+
+  # BSL-1.0 — confirmed NOT in any shipping binary (clipboard-win, error-code
+  # are Windows clipboard helpers reachable only from dev/test code paths).
+  # Included so the gate does not fire on their Cargo.lock presence.
+  "BSL-1.0",
+]
+
+# Confidence threshold for matching license text to SPDX identifier.
+confidence-threshold = 0.8
+
+# Ignore license fields of workspace crates marked publish = false.
+[licenses.private]
+ignore = true
+
+# ─── Bans ────────────────────────────────────────────────────────────────────
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+# ─── Advisories ──────────────────────────────────────────────────────────────
+[advisories]
+version = 2
+# Report unmaintained crates in the workspace rather than making them errors,
+# to avoid blocking on upstream churn.
+unmaintained = "workspace"
+# Yanked crates warrant a warning so they show up in CI output.
+yanked = "warn"
+ignore = []
+
+# ─── Sources ─────────────────────────────────────────────────────────────────
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

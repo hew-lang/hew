@@ -1,0 +1,24 @@
+Hew Third-Party Licenses
+========================
+
+This file contains the license texts for all third-party packages distributed
+with the Hew compiler, runtime, and tools. Hew itself is dual-licensed under
+MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE in this archive).
+
+License summary by SPDX identifier:
+{{#each overview}}
+  {{{name}}} ({{count}} package{{#if (gt count 1)}}s{{/if}})
+{{/each}}
+
+================================================================================
+
+{{#each licenses}}
+{{{name}}}
+{{#each used_by}}
+  * {{crate.name}} {{crate.version}}{{#if crate.repository}} — {{{crate.repository}}}{{/if}}
+{{/each}}
+
+{{{text}}}
+
+================================================================================
+{{/each}}

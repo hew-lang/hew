@@ -146,6 +146,30 @@ jobs:
         run: make runtime-poison-safe-lint
 
   # ─────────────────────────────────────────────────────────────────────────
+  # License gate — enforce the deny.toml allow-list so no copyleft or unknown
+  # dep silently enters the shipping graph. Runs on every push/PR; fast (~5 s).
+  # ─────────────────────────────────────────────────────────────────────────
+  license-check:
+    name: License policy (cargo deny)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          cache-shared-key: deny
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked --version 0.19.6
+
+      - name: Check license policy
+        run: cargo deny check licenses
+
+      - name: Check bans and sources
+        run: cargo deny check bans sources
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Browser/playground smoke — repo-local browser tooling coverage only.
   # Runs full hew-wasm suite (lib + fixture-coverage integration), checks
   # manifest freshness, and builds the browser WASM artifact.

@@ -1,0 +1,33 @@
+// Reject fixture: a process-local `LocalPid` payload must never cross a
+// RemotePid (cross-node) boundary. `LocalPid<T>` is process-local — a bare
+// `*mut HewActor` pointer with no on-wire representation — and is therefore NOT
+// Serializable (it carries neither Encode nor Decode). Sending it through
+// `RemotePid::tell` must fail closed at the checker's Serializable boundary
+// rather than ship a local pointer to another node.
+//
+// This is the guard half of the process-local-pid-payload gate. Its companion
+// accept fixture (accept/actor_single_arg_pid_payload.hew) proves the SAME pid
+// payload runs on a same-node send, where the mailbox transfers it by value and
+// no codec is involved. Broadening the cross-node codec seeder's skip to cover
+// the actor-pid/handle family removed dead codec weight only — the impossible
+// cross-node case stays fail-closed here, at the type boundary.
+actor Holder {
+    receive fn take(p: LocalPid<Holder>) {
+        println("took");
+    }
+}
+
+impl ActorMsg for Holder {
+    type Msg = LocalPid<Holder>;
+    type Reply = ();
+}
+
+fn main() {
+    let local: LocalPid<Holder> = spawn Holder();
+    let peer: RemotePid<Holder> = RemotePid::from_raw<Holder>(1, 0);
+    let sent: Result<(), SendError> = peer.tell(local);
+    match sent {
+        Ok(_) => println("sent"),
+        Err(_) => println("send failed"),
+    }
+}

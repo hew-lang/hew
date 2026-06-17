@@ -4234,6 +4234,54 @@ fn resolved_ty_contains_channel_handle(ty: &ResolvedTy) -> bool {
     }
 }
 
+/// True when `ty` is — or transitively carries through generic args, tuples,
+/// arrays, or slices — a process-local actor-pid / actor-handle builtin
+/// (`Pid` / `LocalPid` / `RemotePid` / `ActorRef` / `Actor`).
+///
+/// These are the actor-identity siblings of the channel handles above. A
+/// `LocalPid`/`ActorRef`/`Actor` lowers to a process-local `*mut HewActor`
+/// pointer word and `RemotePid` to a bare packed `i64` — none has a cross-node
+/// wire layout, and none implements `Serializable` (see `hew-types`
+/// `implements_marker`), so the checker already refuses every one of them at
+/// the `RemotePid` boundary with a named diagnostic. A same-node send transfers
+/// the pid by value (the mailbox deep-copies the pointer/word), so the
+/// cross-node codec is never exercised; seeding one would fail the WHOLE
+/// compile for a purely local program. Dispatched on the typed builtin
+/// discriminant with a short-name fallback (import-use sites can carry
+/// module-qualified spellings), exactly like the channel-handle predicate.
+/// Record/enum FIELD recursion is deliberately absent for the same reason: an
+/// aggregate hiding a handle still reaches the serializer walk and fails closed
+/// there at compile time — never a miscompile.
+fn resolved_ty_contains_actor_handle(ty: &ResolvedTy) -> bool {
+    match ty {
+        ResolvedTy::Named {
+            name,
+            args,
+            builtin,
+            ..
+        } => {
+            matches!(
+                builtin,
+                Some(
+                    hew_types::BuiltinType::Pid
+                        | hew_types::BuiltinType::LocalPid
+                        | hew_types::BuiltinType::RemotePid
+                        | hew_types::BuiltinType::ActorRef
+                        | hew_types::BuiltinType::Actor
+                )
+            ) || matches!(
+                short_name(name),
+                "Pid" | "LocalPid" | "RemotePid" | "ActorRef" | "Actor"
+            ) || args.iter().any(resolved_ty_contains_actor_handle)
+        }
+        ResolvedTy::Tuple(elems) => elems.iter().any(resolved_ty_contains_actor_handle),
+        ResolvedTy::Array(inner, _) | ResolvedTy::Slice(inner) => {
+            resolved_ty_contains_actor_handle(inner)
+        }
+        _ => false,
+    }
+}
+
 /// Recursively replace every `Named { name, .. }` anywhere in `ty` with its
 /// short (unqualified) name, stripping any leading `"module."` prefix.
 ///
@@ -41441,17 +41489,22 @@ fn emit_xnode_codec_module_init<'ctx>(
             let [msg_ty] = h.param_tys.as_slice() else {
                 continue;
             };
-            // Channel handles (`Sender<T>`/`Receiver<T>`) are process-local
-            // runtime resources: the local mailbox transfers the retained
-            // handle pointer (ownership moves; the checker consumes the
-            // caller binding), and the checker's Serializable enforcement
-            // already refuses them at every RemotePid boundary with a named
-            // diagnostic. Emitting a codec here would fail the WHOLE compile
-            // for a purely local program. Skip the msg_type instead — the
-            // cross-node receive direction stays on the runtime's no-codec
-            // fail-closed drop path, exactly like the packed-args skip above.
+            // Channel handles (`Sender<T>`/`Receiver<T>`) and actor-identity
+            // handles (`LocalPid`/`RemotePid`/`ActorRef`/`Actor`/`Pid`) are
+            // process-local runtime resources: the local mailbox transfers the
+            // retained handle pointer or packed pid by value (ownership moves;
+            // the checker consumes the caller binding for resources), and the
+            // checker's Serializable enforcement already refuses every one of
+            // them at every RemotePid boundary with a named diagnostic. None
+            // has a cross-node wire layout, so emitting a codec here would fail
+            // the WHOLE compile for a purely local program. Skip the msg_type
+            // instead — the cross-node receive direction stays on the runtime's
+            // no-codec fail-closed drop path, exactly like the packed-args skip
+            // above.
             if resolved_ty_contains_channel_handle(msg_ty)
                 || resolved_ty_contains_channel_handle(&h.return_ty)
+                || resolved_ty_contains_actor_handle(msg_ty)
+                || resolved_ty_contains_actor_handle(&h.return_ty)
             {
                 continue;
             }

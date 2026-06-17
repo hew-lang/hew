@@ -1,0 +1,44 @@
+// Accept: a single-argument actor receive handler whose ONLY parameter is a
+// process-local pid payload (`LocalPid<T>`). The caller passes `this` — its own
+// pid — as the sole message argument; the handler then uses the received pid to
+// route a reply back, proving the pid arrives live and routable.
+//
+// This is the positive half of the process-local-pid-payload gate. A same-node
+// actor send never touches the cross-node serializer: the mailbox deep-copies
+// the pid's pointer-shaped word by value. The cross-node codec seeder must
+// therefore SKIP a `LocalPid` message-param type (it has no wire layout and is
+// not Serializable), mirroring the channel-handle skip — rather than eagerly
+// build a wire serializer for it and fail the WHOLE compile for this purely
+// local program. The identical multi-arg form already compiled and ran; the
+// single-arg form must too.
+
+actor Echo {
+    // Sole parameter is the sender's pid. Print on receipt, then use the pid
+    // to send an `ack` back — a dead or garbled pid would not route.
+    receive fn hear(p: LocalPid<Pinger>) {
+        println("echo: heard pinger");
+        p.ack();
+    }
+}
+
+actor Pinger {
+    var echo: LocalPid<Echo>;
+
+    receive fn ping() {
+        // `this` is the Pinger's own `LocalPid<Pinger>` — the single message arg.
+        echo.hear(this);
+    }
+
+    receive fn ack() {
+        println("pinger: got ack");
+    }
+}
+
+fn main() {
+    let e = spawn Echo();
+    let p = spawn Pinger(echo: e);
+    p.ping();
+    // Let the ping -> hear -> ack chain drain before main prints and exits.
+    sleep_ms(200);
+    println("done");
+}

@@ -3447,22 +3447,27 @@ impl Checker {
         }
 
         let unsupported = [left_resolved, right_resolved].into_iter().find_map(|ty| {
-            let Ty::Named { name, .. } = ty else {
+            let Ty::Named { name, builtin, .. } = ty else {
                 return None;
             };
+            let type_name = ty.user_facing().to_string();
+            if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
+                return Some(UnsupportedComparison::PayloadEnum(type_name));
+            }
             let type_def = self.type_defs.get(name)?;
             match type_def.kind {
                 TypeDefKind::Struct | TypeDefKind::Record => {
-                    Some(UnsupportedComparison::Record(ty.user_facing().to_string()))
+                    Some(UnsupportedComparison::Record(type_name))
                 }
                 TypeDefKind::Enum => {
-                    let type_name = ty.user_facing().to_string();
                     let has_payload_variant = type_def
                         .variants
                         .values()
                         .any(|variant| !matches!(variant, VariantDef::Unit));
-                    if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                        has_payload_variant.then_some(UnsupportedComparison::PayloadEnum(type_name))
+                    if has_payload_variant {
+                        Some(UnsupportedComparison::PayloadEnum(type_name))
+                    } else if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+                        None
                     } else {
                         Some(UnsupportedComparison::EnumOrdering(type_name))
                     }

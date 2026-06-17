@@ -3205,6 +3205,41 @@ fn payload_enum_equality_reports_checker_diagnostic() {
     );
 }
 
+#[test]
+fn builtin_payload_enum_comparison_reports_checker_diagnostic() {
+    let source = "fn main() {\n    let a: Option<i64> = Some(1);\n    let b: Option<i64> = Some(2);\n    let _ = a == b;\n    let ok: Result<i64, i64> = Ok(1);\n    let err: Result<i64, i64> = Err(2);\n    let _ = ok != err;\n}";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message
+                    .contains("`==` on enum `Option<i64>` with payload variants is not supported")),
+        "expected checker refusal for builtin Option `==`: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains(
+                    "`!=` on enum `Result<i64, i64>` with payload variants is not supported"
+                )),
+        "expected checker refusal for builtin Result `!=`: {:#?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("IntCmp lhs is not an integer")),
+        "checker diagnostic must not leak codegen NYI text: {:#?}",
+        output.errors
+    );
+}
+
 /// When the operand types disagree, the plain mismatch diagnostic wins;
 /// the record gate must not double-report.
 #[test]

@@ -1,9 +1,13 @@
 //! Tests for std::process argument handling.
 
 import std::fs;
+
 import std::process;
+
 import std::string;
+
 import std::testing;
+
 import std::time::datetime;
 
 fn cleanup_file(file_path: string) {
@@ -32,6 +36,13 @@ fn read_pid_with_retry(pid_path: string) -> string {
     ""
 }
 
+fn spawn_child_for_implicit_drop(pid_path: string) -> string {
+    let child = process.start(f"echo $$ > {pid_path}; sleep 60");
+    let pid = read_pid_with_retry(pid_path);
+    testing.assert_true(kill_zero_exit_code(pid) == 0);
+    pid
+}
+
 #[test]
 fn test_try_run_argv_preserves_spaced_and_empty_arguments() {
     let args: Vec<string> = Vec::new();
@@ -39,7 +50,6 @@ fn test_try_run_argv_preserves_spaced_and_empty_arguments() {
     args.push("hello world");
     args.push("");
     args.push("tail");
-
     match process.try_run_argv("printf", args) {
         Ok(output) => {
             testing.assert_true(output.exit_code == 0);
@@ -70,7 +80,6 @@ fn test_run_argv_replaces_legacy_run_args_usage() {
     args.push("<%s>|<%s>");
     args.push("alpha");
     args.push("beta");
-
     let output = process.run_argv("printf", args);
     testing.assert_true(output.exit_code == 0);
     testing.assert_eq_str(output.stdout, "<alpha>|<beta>");
@@ -80,7 +89,6 @@ fn test_run_argv_replaces_legacy_run_args_usage() {
 #[test]
 fn test_try_run_argv_missing_command_returns_launch_failed() {
     let args: Vec<string> = Vec::new();
-
     match process.try_run_argv("hew-process-command-that-does-not-exist", args) {
         Ok(_) => panic("expected missing command error"),
         Err(err) => match err {
@@ -92,21 +100,9 @@ fn test_try_run_argv_missing_command_returns_launch_failed() {
 
 #[test]
 fn test_child_drop_reaps_running_process() {
-    // RAII-DROP-GAP: LLVM IR emits Child::drop but scope-exit injection is not
-    // yet wired in v0.5 codegen — explicit kill+wait is required until the gap
-    // closes (tracked v0.5.1).  The test still exercises the runtime kill+reap
-    // path; only the implicit-drop trigger is deferred.
     let pid_path = f"tests/hew/_process_drop_{datetime.now_nanos()}.pid";
     cleanup_file(pid_path);
-
-    let child = process.start(f"echo $$ > {pid_path}; sleep 60");
-    let pid = read_pid_with_retry(pid_path);
-    testing.assert_true(kill_zero_exit_code(pid) == 0);
-
-    // Explicit kill+wait in place of RAII drop.
-    child.kill();
-    child.wait();
-
+    let pid = spawn_child_for_implicit_drop(clone pid_path);
     var attempts = 0;
     var reaped = false;
     while attempts < 50 {
@@ -117,7 +113,6 @@ fn test_child_drop_reaps_running_process() {
         sleep_ms(100);
         attempts = attempts + 1;
     }
-
     cleanup_file(pid_path);
     testing.assert_true(reaped);
 }

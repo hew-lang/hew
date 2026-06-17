@@ -9,8 +9,6 @@
 //! `hew_actor_monitor`), but the user-source surface fails closed today. See
 //! commit `1698840f` for the explicit deferral.
 
-import std::io::closable::{Closable, CloseError};
-
 // WASM-TODO(#1451): `MonitorRef` and `LinkError` depend on the native actor
 // monitor / link runtime. The checker rejects `monitor()` and `link()` on
 // wasm32 via the existing Link/monitor gate.
@@ -25,26 +23,17 @@ pub enum LinkError {
 }
 
 /// A handle to an active monitor registration.
+#[resource]
 pub type MonitorRef {
     ref_id: i64;
 }
 
-impl Closable for MonitorRef {
-    /// Explicitly remove the monitor registration.
+impl MonitorRef {
+    /// Remove the monitor registration.
     ///
     /// `hew_actor_demonitor` is idempotent for stale or already-swept ref_ids,
-    /// so actor-free close paths also resolve to `Ok(())`.
-    fn close(monitor_ref: MonitorRef) -> Result<(), CloseError> {
-        unsafe {
-            hew_actor_demonitor(monitor_ref.ref_id)
-        };
-        Ok(())
-    }
-}
-
-impl Drop for MonitorRef {
-    /// Silently remove the monitor registration when the value leaves scope.
-    fn drop(monitor_ref: MonitorRef) {
+    /// so actor-free close paths are safe at scope exit.
+    fn close(monitor_ref: MonitorRef) {
         unsafe {
             hew_actor_demonitor(monitor_ref.ref_id)
         };

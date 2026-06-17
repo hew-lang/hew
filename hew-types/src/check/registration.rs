@@ -108,10 +108,11 @@ const LAMBDA_ACTOR_HEW: &str = include_str!("../../../std/concurrency/lambda_act
 
 /// Embedded source for the built-in actor monitor handle wrapper.
 ///
-/// This copy intentionally omits the `import std::io::closable;` line used by
-/// the on-disk stdlib module because inline checker tests register the
-/// `Closable` / `CloseError` surface directly before parsing this snippet.
+/// This copy intentionally mirrors the on-disk stdlib module without imports:
+/// inline checker tests do not flow through the stdlib resolver before this
+/// prelude surface is registered.
 const MONITOR_REF_HEW: &str = r#"
+#[resource]
 pub type MonitorRef {
     ref_id: i64;
 }
@@ -126,17 +127,8 @@ pub enum LinkError {
     TargetDead;
 }
 
-impl Closable for MonitorRef {
-    fn close(monitor_ref: MonitorRef) -> Result<(), CloseError> {
-        unsafe {
-            hew_actor_demonitor(monitor_ref.ref_id)
-        };
-        Ok(())
-    }
-}
-
-impl Drop for MonitorRef {
-    fn drop(monitor_ref: MonitorRef) {
+impl MonitorRef {
+    fn close(monitor_ref: MonitorRef) {
         unsafe {
             hew_actor_demonitor(monitor_ref.ref_id)
         };
@@ -1154,7 +1146,7 @@ impl Checker {
     }
 
     /// Register the built-in `MonitorRef` surface so `monitor()` can return a
-    /// Hew value type with `close()` / `Drop` behaviour in inline tests that
+    /// Hew value type with `#[resource]` / `close()` behaviour in inline tests that
     /// do not have a stdlib search path.
     fn register_builtin_monitor_ref_surface(&mut self) {
         let identity = "module:std::link_monitor";
@@ -1172,8 +1164,16 @@ impl Checker {
         if parsed.errors.is_empty() {
             let items: Vec<_> = parsed.program.items.into_iter().collect();
             self.register_stdlib_hew_items("link_monitor", &items, StdlibBarePublication::Prelude);
-            self.consume_receiver_methods
-                .insert("MonitorRef::close".to_string());
+            // The on-disk stdlib path derives this from the `#[resource]` marker
+            // in `stdlib_loader` (resource types are pushed into `drop_types`),
+            // which makes the trait registry treat `MonitorRef` as move-only so
+            // its inherent `close(self)` actually consumes the receiver. The
+            // inline surface bypasses `stdlib_loader`, so mirror that derivation
+            // here. A `#[resource]` record whose fields are all `Copy` would
+            // otherwise derive `Copy` structurally and the consume-on-close move
+            // would silently no-op. The consume *detection* is supplied by the
+            // `#[resource]` inherent-close path, so no `consume_receiver_methods`
+            // entry is needed.
             self.registry.register_drop_type("MonitorRef".to_string());
         }
     }
@@ -4142,6 +4142,10 @@ impl Checker {
                 }
             }
             Item::Impl(id) => {
+                if Self::impl_decl_is_drop_impl(id) {
+                    self.report_unsupported_impl_drop(span);
+                    return;
+                }
                 // Register impl methods with Type::method naming
                 if let TypeExpr::Named {
                     name: type_name,
@@ -4402,6 +4406,22 @@ impl Checker {
                 // them via a `register_record_methods` pass here.
             }
         }
+    }
+
+    pub(super) fn impl_decl_is_drop_impl(id: &ImplDecl) -> bool {
+        id.trait_bound
+            .as_ref()
+            .is_some_and(|trait_bound| trait_bound.name == "Drop")
+    }
+
+    pub(super) fn report_unsupported_impl_drop(&mut self, span: &Span) {
+        self.errors.push(TypeError::new(
+            TypeErrorKind::InvalidOperation,
+            span.clone(),
+            "`impl Drop` is not supported (its `drop` method would not run); use \
+             `#[resource]` with a `close()` method for deterministic cleanup, or \
+             rely on automatic field-wise drop",
+        ));
     }
 
     pub(super) fn register_fn_sig(&mut self, fd: &FnDecl) {
@@ -7065,6 +7085,10 @@ impl Checker {
         // Pass 2: Register impl methods (after types exist)
         for (item, span) in items {
             if let Item::Impl(id) = item {
+                if Self::impl_decl_is_drop_impl(id) {
+                    self.report_unsupported_impl_drop(span);
+                    continue;
+                }
                 if let TypeExpr::Named {
                     name: type_name,
                     type_args,

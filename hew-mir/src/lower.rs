@@ -5204,12 +5204,16 @@ fn collect_codegen_relevant_components(
 }
 
 fn is_codegen_ready_user_name(name: &str, readiness: &LayoutReadiness) -> bool {
-    // `#[opaque]` runtime handles are registered `BitCopy` in `type_classes`
-    // (W3.020) but carry no record-field-order entry — they lower to `ptr`.
-    // A fielded `BitCopy` type (e.g. a crash-info payload record) already has a
-    // `record_field_orders` entry and is accepted by the check below; this arm
-    // covers the fieldless opaque handle that would otherwise be `UnknownType`.
-    if hew_hir::lookup_type_marker(name, readiness.type_classes) == Some(ResourceMarker::BitCopy) {
+    // `#[opaque]` runtime handles are registered in `type_classes` but carry no
+    // record-field-order entry — they lower to `ptr`. Fieldless handles may be
+    // `BitCopy` (borrowed/id handles) or `Resource` (owned handles with
+    // `close()` cleanup); both are codegen-ready without a structural record
+    // layout. Fielded marker types already have a `record_field_orders` entry and
+    // are accepted by the check below.
+    if matches!(
+        hew_hir::lookup_type_marker(name, readiness.type_classes),
+        Some(ResourceMarker::BitCopy | ResourceMarker::Resource)
+    ) {
         return true;
     }
     readiness.record_field_orders.contains_key(name)
@@ -27775,21 +27779,30 @@ fn resource_drop_fn(
         ResolvedTy::CancellationToken => Some(crate::model::DropFnSpec::Runtime(
             RuntimeDropDescriptor::CancellationTokenRelease,
         )),
-        ResolvedTy::Named { name, .. } => type_classes
-            .get(name)
-            .and_then(|(_, close)| close.as_ref())
-            .map(|m| {
-                // Classify the close ritual at production: the type-class
-                // table's `<Type>::<method>` spelling lifts onto the typed
-                // runtime drop descriptor for the closed builtin set; user
-                // `#[resource]` close methods stay on the open-set
-                // generated-symbol arm.
-                let qualified = format!("{name}::{m}");
-                RuntimeDropDescriptor::from_drop_fn_name(&qualified).map_or(
-                    crate::model::DropFnSpec::UserClose(qualified),
-                    crate::model::DropFnSpec::Runtime,
-                )
-            }),
+        ResolvedTy::Named { name, .. } => {
+            let short = short_name(name);
+            let class_entry = if short == name {
+                type_classes.get_key_value(name)
+            } else {
+                type_classes
+                    .get_key_value(short)
+                    .or_else(|| type_classes.get_key_value(name))
+            };
+            class_entry.and_then(|(class_name, (_, close))| {
+                close.as_ref().map(|m| {
+                    // Classify the close ritual at production: the type-class
+                    // table's `<Type>::<method>` spelling lifts onto the typed
+                    // runtime drop descriptor for the closed builtin set; user
+                    // `#[resource]` close methods stay on the open-set
+                    // generated-symbol arm.
+                    let qualified = format!("{class_name}::{m}");
+                    RuntimeDropDescriptor::from_drop_fn_name(&qualified).map_or(
+                        crate::model::DropFnSpec::UserClose(qualified),
+                        crate::model::DropFnSpec::Runtime,
+                    )
+                })
+            })
+        }
         // Task<T> and all other types have no user-visible close method.
         _ => None,
     }

@@ -7,7 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use hew_parser::ast::{
-    Block, Expr, ExternFnDecl, FnDecl, ImplDecl, Item, Stmt, TypeBodyItem, TypeDeclKind, TypeExpr,
+    Block, Expr, ExternFnDecl, FnDecl, ImplDecl, Item, ResourceMarker, Stmt, TypeBodyItem,
+    TypeDeclKind, TypeExpr,
 };
 use hew_parser::parse;
 
@@ -69,11 +70,13 @@ pub struct ModuleInfo {
     pub handle_methods: Vec<HandleMethod>,
     /// Wrapper `pub fn` signatures.
     pub wrapper_fns: Vec<WrapperFn>,
-    /// Types with `impl Drop` — move-only, not Copy.
+    /// Types with deterministic cleanup — move-only, not Copy.
     pub drop_types: Vec<String>,
-    /// Drop function for each type with `impl Drop`: (`qualified_type_name`, `c_func_name`).
+    /// Cleanup function for each deterministic cleanup type:
+    /// (`qualified_type_name`, `c_func_name`).
     ///
-    /// Extracted from the body of `fn drop` inside `impl Drop for T` blocks.
+    /// Extracted from `#[resource]` `fn close` bodies (and legacy stdlib
+    /// `impl Drop` bodies while old fixtures are being removed).
     /// Only populated when the drop body is a single direct C call.
     pub drop_funcs: Vec<(String, String)>,
     /// Public / extern signatures that used unsupported slice annotations.
@@ -232,6 +235,7 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
     // collapsing to the private helper's bare name yields an unresolvable callee
     // at the importer's call site.
     let extern_fn_names = collect_extern_fn_names(program);
+    let resource_type_names = collect_resource_type_names(program, module_short);
 
     for (item, _span) in &program.items {
         match item {
@@ -253,12 +257,15 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
             // Enums (including fieldless enums) are real value types and must
             // not be lowered as handles when imported from stdlib Hew modules.
             Item::TypeDecl(td) => {
+                let qualified = format!("{module_short}.{}", td.name);
+                if td.resource_marker == ResourceMarker::Resource {
+                    info.drop_types.push(qualified.clone());
+                }
                 let has_fields = td
                     .body
                     .iter()
                     .any(|b| matches!(b, TypeBodyItem::Field { .. }));
                 if td.kind == TypeDeclKind::Struct && !has_fields {
-                    let qualified = format!("{module_short}.{}", td.name);
                     info.handle_types.push(qualified);
                 }
             }
@@ -301,35 +308,93 @@ fn extract_module_info(program: &hew_parser::ast::Program, module_short: &str) -
                 info.clean_names.push((fn_decl.name.clone(), c_target));
             }
             Item::Impl(impl_decl) => {
-                // Detect `impl Drop for T` — collect as drop types and extract
-                // the C drop function name from the `fn drop` body.
-                if let Some(ref tb) = impl_decl.trait_bound {
-                    if tb.name == "Drop" {
-                        if let TypeExpr::Named { ref name, .. } = impl_decl.target_type.0 {
-                            let qualified = if name.contains('.') {
-                                name.clone()
-                            } else {
-                                format!("{module_short}.{name}")
-                            };
-                            info.drop_types.push(qualified.clone());
-                            // Extract the C drop function from `fn drop { ... }`.
-                            if let Some(drop_method) =
-                                impl_decl.methods.iter().find(|m| m.name == "drop")
-                            {
-                                if let Some((c_func, _)) = extract_call_target(&drop_method.body) {
-                                    info.drop_funcs.push((qualified, c_func));
-                                }
-                            }
-                        }
-                    }
-                }
-                extract_handle_methods(impl_decl, module_short, &mut info);
+                extract_impl_info(impl_decl, module_short, &mut info, &resource_type_names);
             }
             _ => {}
         }
     }
 
     info
+}
+
+/// Collect the fully-qualified names of every `#[resource]` type declared in
+/// the module (e.g. `process.Child`). Used to recognise inherent `close`
+/// methods on resource handles when scanning `impl` blocks.
+fn collect_resource_type_names(
+    program: &hew_parser::ast::Program,
+    module_short: &str,
+) -> HashSet<String> {
+    program
+        .items
+        .iter()
+        .filter_map(|(item, _)| {
+            if let Item::TypeDecl(td) = item {
+                (td.resource_marker == ResourceMarker::Resource)
+                    .then(|| format!("{module_short}.{}", td.name))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Resolve an `impl` block's target type to its fully-qualified name,
+/// prefixing the module short name when the target is unqualified.
+fn qualified_impl_type_name(impl_decl: &ImplDecl, module_short: &str) -> Option<String> {
+    match &impl_decl.target_type.0 {
+        TypeExpr::Named { name, .. } => {
+            if name.contains('.') {
+                Some(name.clone())
+            } else {
+                Some(format!("{module_short}.{name}"))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract resource/drop metadata from an `impl` block: inherent `close`
+/// methods on `#[resource]` handles and the legacy `impl Drop` fallback,
+/// then delegate handle-method extraction.
+fn extract_impl_info(
+    impl_decl: &ImplDecl,
+    module_short: &str,
+    info: &mut ModuleInfo,
+    resource_type_names: &HashSet<String>,
+) {
+    let impl_type_name = qualified_impl_type_name(impl_decl, module_short);
+    // Detect `#[resource] type T` + `impl T { fn close(...) { ... } }`:
+    // collect the C cleanup function for old registry consumers that
+    // still query the drop-func table for owned handles.
+    if impl_decl.trait_bound.is_none() {
+        if let Some(qualified) = impl_type_name.as_ref() {
+            if resource_type_names.contains(qualified) {
+                if let Some(close_method) = impl_decl.methods.iter().find(|m| m.name == "close") {
+                    if let Some((c_func, _)) = extract_call_target(&close_method.body) {
+                        info.drop_funcs.push((qualified.clone(), c_func));
+                    }
+                }
+            }
+        }
+    }
+    // Legacy stdlib fallback: detect `impl Drop for T` and extract
+    // the C drop function name from the `fn drop` body. User
+    // programs are rejected by the checker before codegen; this path
+    // only keeps older loader tests honest while stdlib migrates.
+    if let Some(ref tb) = impl_decl.trait_bound {
+        if tb.name == "Drop" {
+            if let Some(qualified) = impl_type_name.as_ref() {
+                info.drop_types.push(qualified.clone());
+                // Extract the C drop function from `fn drop { ... }`.
+                if let Some(drop_method) = impl_decl.methods.iter().find(|m| m.name == "drop") {
+                    if let Some((c_func, _)) = extract_call_target(&drop_method.body) {
+                        info.drop_funcs.push((qualified.clone(), c_func));
+                    }
+                }
+            }
+        }
+    }
+    extract_handle_methods(impl_decl, module_short, info, resource_type_names);
 }
 
 /// Convert an extern function declaration to type checker types.
@@ -657,7 +722,12 @@ fn is_pass_through_arg(expr: &Expr) -> bool {
 ///
 /// For `impl FooMethods for Foo { fn bar(self: Foo) { hew_foo_bar(self); } }`,
 /// produces `(("module.Foo", "bar"), "hew_foo_bar")`.
-fn extract_handle_methods(impl_decl: &ImplDecl, module_short: &str, info: &mut ModuleInfo) {
+fn extract_handle_methods(
+    impl_decl: &ImplDecl,
+    module_short: &str,
+    info: &mut ModuleInfo,
+    resource_type_names: &HashSet<String>,
+) {
     // Get the target type name
     let type_name = match &impl_decl.target_type.0 {
         TypeExpr::Named { name, .. } => {
@@ -671,6 +741,9 @@ fn extract_handle_methods(impl_decl: &ImplDecl, module_short: &str, info: &mut M
     };
 
     for method in &impl_decl.methods {
+        if method.name == "close" && resource_type_names.contains(&type_name) {
+            continue;
+        }
         // Skip the `self` parameter when matching — it's not part of the call
         if let Some((c_symbol, _arg_count)) = extract_call_target(&method.body) {
             let params = method

@@ -363,6 +363,13 @@ if "${HEW}" compile \
 fi
 grep -q 'ResourceCloseMustReturnUnit' "${reject_output}"
 
+# shellcheck disable=SC2016  # backticks in the pattern are literal — they match
+# the diagnostic text, not a command substitution.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/user_impl_drop_unsupported.hew" \
+    '`impl Drop` is not supported (its `drop` method would not run)' \
+    "user impl Drop"
+
 # Actor body: increment(10) + increment(32) = 42.
 run_accept_expect_status "actor_counter" 42
 

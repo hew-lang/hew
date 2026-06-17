@@ -19,7 +19,7 @@
       ]
     }
   ],
-  "compiler_version": "hew-sandbox-wasm-0.5.0-pre",
+  "compiler_version": "hew-sandbox-wasm-0.5.6",
   "functions": [
     {
       "blocks": [
@@ -153,7 +153,7 @@
               "args": [],
               "dst": "local:main.9",
               "op": "const.unit",
-              "span": "span:26-0"
+              "span": "span:26-120"
             }
           ],
           "params": [],
@@ -166,7 +166,7 @@
               }
             ],
             "op": "return",
-            "span": "span:26-0"
+            "span": "span:26-120"
           }
         }
       ],
@@ -239,7 +239,7 @@
           "id": "local:main.9",
           "mutable": false,
           "name": null,
-          "span": "span:26-0",
+          "span": "span:26-120",
           "type": "type:unit"
         }
       ],
@@ -247,10 +247,10 @@
       "name": "main",
       "params": [],
       "result": "type:unit",
-      "span": "span:26-0"
+      "span": "span:26-120"
     }
   ],
-  "hew_version": "0.5.0-pre",
+  "hew_version": "0.5.6",
   "layouts": {
     "actors": [],
     "enums": [],
@@ -262,11 +262,6 @@
         "id": "type:AskError",
         "kind": "enum",
         "name": "AskError"
-      },
-      {
-        "id": "type:Instant",
-        "kind": "record",
-        "name": "Instant"
       },
       {
         "id": "type:LocalPid",
@@ -374,7 +369,7 @@
       }
     ]
   },
-  "package_id": "pkg:b26a6c66f6065954",
+  "package_id": "pkg:e84686e43ec2ce28",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {
@@ -388,11 +383,11 @@
     "spans": [
       {
         "end": {
-          "byte_offset": 0,
-          "column": 1,
-          "line": 1
+          "byte_offset": 120,
+          "column": 2,
+          "line": 7
         },
-        "id": "span:26-0",
+        "id": "span:26-120",
         "source_id": "src:main",
         "start": {
           "byte_offset": 26,

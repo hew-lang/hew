@@ -21210,8 +21210,8 @@ fn lower_call_runtime_abi(
                     .llvm_ctx("hew_lambda_actor_ask status cond br")?;
 
                 // ── Ok branch: load reply out-params, then GUARD on
-                //              (reply_ptr != null && reply_len >= 8) before
-                //              decoding. Pre-guard, the codegen blindly
+                //              the exact ABI byte width of Result::Ok<R>
+                //              before decoding. Pre-guard, the codegen blindly
                 //              loaded an i64 from `*reply_out` whenever
                 //              status was Ok — but the runtime can return
                 //              status=Ok with reply_ptr=null on reply-buffer
@@ -21234,50 +21234,74 @@ fn lower_call_runtime_abi(
                     .build_load(i64_ty, reply_len_out_ptr, "lambda_ask_reply_len_load")
                     .llvm_ctx("hew_lambda_actor_ask reply len load")?
                     .into_int_value();
-                // The MVP reply width is fixed at 8 bytes (i64). Broader
-                // / variable widths land alongside multi-vertebra reply
-                // support; the predicate below tightens with them.
-                const MVP_REPLY_WIDTH_BYTES: u64 = 8;
+                let dest_local = composite_dest_local(d, "hew_lambda_actor_ask")?;
+                let result_layout = machine_layout_for_local(fn_ctx, dest_local)?;
+                let ok_fields = result_layout.variant_field_tys.first().ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "hew_lambda_actor_ask dest local {dest_local} has no Ok variant in \
+                         its Result layout"
+                    ))
+                })?;
+                if ok_fields.len() > 1 {
+                    return Err(CodegenError::FailClosed(format!(
+                        "hew_lambda_actor_ask Result::Ok variant for dest local {dest_local} \
+                         has {} fields; expected unit or single reply payload",
+                        ok_fields.len()
+                    )));
+                }
+                let ok_payload = if ok_fields.is_empty() {
+                    None
+                } else {
+                    let (ok_field_ptr, ok_field_ty) = place_pointer(
+                        fn_ctx,
+                        Place::MachineVariant {
+                            local: dest_local,
+                            variant_idx: 0,
+                            field_idx: 0,
+                        },
+                    )?;
+                    let (reply_width, _reply_align) =
+                        abi_size_align(ok_field_ty, Some(fn_ctx.target_data))?;
+                    Some((ok_field_ptr, ok_field_ty, reply_width))
+                };
                 let null_ptr = ptr_ty.const_null();
-                let expected_len = i64_ty.const_int(MVP_REPLY_WIDTH_BYTES, false);
-                let is_ptr_nonnull = fn_ctx
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::NE,
-                        reply_ptr_val,
-                        null_ptr,
-                        "lambda_ask_reply_ptr_nonnull",
-                    )
-                    .llvm_ctx("hew_lambda_actor_ask reply_ptr null check")?;
+                let expected_reply_width = ok_payload.map_or(0, |(_, _, width)| width);
+                let expected_len = i64_ty.const_int(expected_reply_width, false);
                 let is_len_ok = fn_ctx
                     .builder
                     .build_int_compare(
-                        inkwell::IntPredicate::UGE,
+                        inkwell::IntPredicate::EQ,
                         reply_len_val,
                         expected_len,
                         "lambda_ask_reply_len_ok",
                     )
-                    .llvm_ctx("hew_lambda_actor_ask reply_len UGE check")?;
-                let is_payload_valid = fn_ctx
-                    .builder
-                    .build_and(is_ptr_nonnull, is_len_ok, "lambda_ask_payload_valid")
-                    .llvm_ctx("hew_lambda_actor_ask payload validity AND")?;
+                    .llvm_ctx("hew_lambda_actor_ask reply_len EQ check")?;
+                let is_payload_valid = if expected_reply_width == 0 {
+                    is_len_ok
+                } else {
+                    let is_ptr_nonnull = fn_ctx
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::NE,
+                            reply_ptr_val,
+                            null_ptr,
+                            "lambda_ask_reply_ptr_nonnull",
+                        )
+                        .llvm_ctx("hew_lambda_actor_ask reply_ptr null check")?;
+                    fn_ctx
+                        .builder
+                        .build_and(is_ptr_nonnull, is_len_ok, "lambda_ask_payload_valid")
+                        .llvm_ctx("hew_lambda_actor_ask payload validity AND")?
+                };
                 fn_ctx
                     .builder
                     .build_conditional_branch(is_payload_valid, payload_ok_bb, payload_invalid_bb)
                     .llvm_ctx("hew_lambda_actor_ask payload-valid cond br")?;
 
-                // ── payload_ok branch: decode the i64 reply, store
+                // ── payload_ok branch: copy the exact reply bytes into
                 //              Result::Ok, free the libc-allocated reply
                 //              buffer. ──
                 fn_ctx.builder.position_at_end(payload_ok_bb);
-                // Load the i64 reply value from the body-published buffer.
-                // The MVP fixes reply width to 8 bytes (i64); broader
-                // widths land alongside multi-vertebra reply support.
-                let reply_val = fn_ctx
-                    .builder
-                    .build_load(i64_ty, reply_ptr_val, "lambda_ask_reply_value_load")
-                    .llvm_ctx("hew_lambda_actor_ask reply value load")?;
                 // Materialise the reply into the user's `Result<T, AskError>`
                 // dest via the same tagged-union helpers ordinary `Result`
                 // producers use (`emit_result_ok` / `emit_node_lookup_call`
@@ -21287,20 +21311,19 @@ fn lower_call_runtime_abi(
                 // the raw i64 into the outer struct's start would clobber
                 // the discriminant byte and yield a Result whose tag is
                 // the low byte of the reply value — silent miscompile.
-                let dest_local = composite_dest_local(d, "hew_lambda_actor_ask")?;
                 store_composite_tag(fn_ctx, dest_local, 0, "hew_lambda_actor_ask")?;
-                let (ok_field_ptr, _ok_field_ty) = place_pointer(
-                    fn_ctx,
-                    Place::MachineVariant {
-                        local: dest_local,
-                        variant_idx: 0,
-                        field_idx: 0,
-                    },
-                )?;
-                fn_ctx
-                    .builder
-                    .build_store(ok_field_ptr, reply_val)
-                    .llvm_ctx("hew_lambda_actor_ask Result::Ok payload store")?;
+                if let Some((ok_field_ptr, _ok_field_ty, reply_width)) = ok_payload {
+                    fn_ctx
+                        .builder
+                        .build_memcpy(
+                            ok_field_ptr,
+                            1,
+                            reply_ptr_val,
+                            1,
+                            i64_ty.const_int(reply_width, false),
+                        )
+                        .llvm_ctx("hew_lambda_actor_ask Result::Ok payload memcpy")?;
+                }
                 // Free the libc-allocated reply buffer the runtime
                 // published (`hew_reply` copies the body's Box-allocated
                 // payload into a libc-allocated buffer before publish so
@@ -21327,7 +21350,7 @@ fn lower_call_runtime_abi(
                     .llvm_ctx("hew_lambda_actor_ask payload-ok branch to merge")?;
 
                 // ── payload_invalid branch: runtime returned status=Ok
-                //              but the reply payload is null or short.
+                //              but the reply payload is null, short, or wide.
                 //              Free the libc payload unconditionally
                 //              (no-op on null, valid for any length, so
                 //              even a short non-null buffer is reclaimed
@@ -32558,11 +32581,12 @@ fn lower_terminator<'ctx>(
                         return Ok(());
                     }
                     hew_mir::LambdaActorShape::Ask => {
-                        // MVP: 8-byte i64 reply width (matches the MVP
-                        // lambda_callable_ask fixture). A future
-                        // type-driven width selection will derive this
-                        // from `fn_ctx.return_resolved_ty`.
-                        let reply_width: u64 = 8;
+                        let (reply_width, _reply_align) =
+                            if matches!(fn_ctx.return_resolved_ty, ResolvedTy::Unit) {
+                                (0, 1)
+                            } else {
+                                abi_size_align(fn_ctx.return_ty, Some(fn_ctx.target_data))?
+                            };
                         let alloc_fn = intern_runtime_decl(
                             fn_ctx.ctx,
                             fn_ctx.llvm_mod,
@@ -32585,23 +32609,23 @@ fn lower_terminator<'ctx>(
                                 )
                             })?
                             .into_pointer_value();
-                        // Load the user reply value out of return_slot and
-                        // copy it into the freshly-allocated reply buffer.
-                        // The slot's type was sized to the user reply
-                        // (i64 today) by the LambdaActorBody arm of
-                        // `body_return_ty_llvm`.
-                        let reply_val = fn_ctx
-                            .builder
-                            .build_load(
-                                fn_ctx.return_ty,
-                                fn_ctx.return_slot,
-                                "lambda_body_reply_load",
-                            )
-                            .llvm_ctx("lambda body reply load")?;
-                        fn_ctx
-                            .builder
-                            .build_store(buf_ptr, reply_val)
-                            .llvm_ctx("lambda body reply store")?;
+                        // Copy the user reply value's exact ABI bytes from
+                        // the return slot into the freshly-allocated reply
+                        // buffer. This mirrors ordinary by-value function
+                        // returns at the storage boundary without assuming
+                        // the reply is an i64.
+                        if reply_width != 0 {
+                            fn_ctx
+                                .builder
+                                .build_memcpy(
+                                    buf_ptr,
+                                    1,
+                                    fn_ctx.return_slot,
+                                    1,
+                                    i64_ty.const_int(reply_width, false),
+                                )
+                                .llvm_ctx("lambda body reply memcpy")?;
+                        }
                         // Store buf_ptr into *reply_out (Local(3)) and
                         // width into *reply_len_out (Local(4)).
                         let (reply_out_slot, _) = *fn_ctx.locals.get(&3u32).ok_or_else(|| {

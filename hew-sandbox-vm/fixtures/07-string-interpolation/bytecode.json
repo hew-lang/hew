@@ -9,7 +9,7 @@
       ]
     }
   ],
-  "compiler_version": "hew-sandbox-wasm-0.5.0-pre",
+  "compiler_version": "hew-sandbox-wasm-0.5.6",
   "functions": [
     {
       "blocks": [
@@ -62,7 +62,7 @@
               ],
               "dst": "local:main.3",
               "op": "local.get",
-              "span": null
+              "span": "span:56-60"
             },
             {
               "args": [
@@ -130,7 +130,7 @@
               "args": [],
               "dst": "local:main.8",
               "op": "const.unit",
-              "span": null
+              "span": "span:0-74"
             }
           ],
           "params": [],
@@ -143,7 +143,7 @@
               }
             ],
             "op": "return",
-            "span": null
+            "span": "span:0-74"
           }
         }
       ],
@@ -174,7 +174,7 @@
           "id": "local:main.3",
           "mutable": false,
           "name": null,
-          "span": null,
+          "span": "span:56-60",
           "type": "type:string"
         },
         {
@@ -209,7 +209,7 @@
           "id": "local:main.8",
           "mutable": false,
           "name": null,
-          "span": null,
+          "span": "span:0-74",
           "type": "type:unit"
         }
       ],
@@ -217,10 +217,10 @@
       "name": "main",
       "params": [],
       "result": "type:unit",
-      "span": null
+      "span": "span:0-74"
     }
   ],
-  "hew_version": "0.5.0-pre",
+  "hew_version": "0.5.6",
   "layouts": {
     "actors": [],
     "enums": [],
@@ -232,11 +232,6 @@
         "id": "type:AskError",
         "kind": "enum",
         "name": "AskError"
-      },
-      {
-        "id": "type:Instant",
-        "kind": "record",
-        "name": "Instant"
       },
       {
         "id": "type:LocalPid",
@@ -329,7 +324,7 @@
       }
     ]
   },
-  "package_id": "pkg:330caa61e5e31f96",
+  "package_id": "pkg:2fe15c1105d086d7",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {
@@ -341,6 +336,20 @@
       }
     ],
     "spans": [
+      {
+        "end": {
+          "byte_offset": 74,
+          "column": 2,
+          "line": 4
+        },
+        "id": "span:0-74",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 0,
+          "column": 1,
+          "line": 1
+        }
+      },
       {
         "end": {
           "byte_offset": 38,
@@ -408,6 +417,20 @@
         "start": {
           "byte_offset": 46,
           "column": 13,
+          "line": 3
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 60,
+          "column": 27,
+          "line": 3
+        },
+        "id": "span:56-60",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 56,
+          "column": 23,
           "line": 3
         }
       }

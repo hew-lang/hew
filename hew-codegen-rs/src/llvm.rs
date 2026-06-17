@@ -33999,8 +33999,19 @@ fn lower_terminator<'ctx>(
                 .map_or_else(|| ptr_ty.const_null(), |(_, heap)| *heap);
             let mailbox_const = i64_ty.const_int(u64::from(*mailbox_capacity), false);
             // i32 shape — sign-extended widening matches the cabi i32 ABI.
-            let shape_const =
-                i32_ty.const_int(u64::from(u32::try_from(*shape).unwrap_or(0)), false);
+            // JUSTIFIED: MIR's lambda-actor producer emits only 0 (Tell) or 1 (Ask);
+            // fail closed here if that invariant drifts instead of defaulting to Tell.
+            let shape_u32 = u32::try_from(*shape).map_err(|_| {
+                CodegenError::FailClosed(format!(
+                    "Terminator::MakeLambdaActor: lambda-actor shape must be 0 or 1, got {shape}"
+                ))
+            })?;
+            if !matches!(shape_u32, 0 | 1) {
+                return Err(CodegenError::FailClosed(format!(
+                    "Terminator::MakeLambdaActor: lambda-actor shape must be 0 or 1, got {shape}"
+                )));
+            }
+            let shape_const = i32_ty.const_int(u64::from(shape_u32), false);
             let new_fn = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
@@ -37418,7 +37429,13 @@ fn lower_function<'ctx>(
         // Locate the outer struct type for the indirect enum.
         let outer_struct = match record_layouts.get(ty_name) {
             Some(st) => *st,
-            None => continue, // fail-safe: skip if not registered
+            None => {
+                // JUSTIFIED: layout registration must mirror every indirect enum local;
+                // failing closed prevents an uninitialised pointer local from reaching codegen.
+                return Err(CodegenError::FailClosed(format!(
+                    "indirect enum local `{ty_name}` has no registered layout"
+                )));
+            }
         };
         let idx_u32 = u32::try_from(idx).expect("local index fits u32");
         let (slot, _) = *locals.get(&idx_u32).expect("local slot allocated above");
@@ -41214,12 +41231,14 @@ fn emit_de_drop_owned<'ctx>(
             Ok(())
         }
 
-        // Tuples, arrays, slices, and other compound types are not admitted by the
-        // Serializable boundary checker (`is_serializable` rejects them), so the
-        // decode walk should never emit code for them.  If they somehow arrive here,
-        // emit no drop (the values contain no heap allocations the decode walk would
-        // have produced).
-        _ => Ok(()),
+        // JUSTIFIED: unsupported compound/runtime-only types should have failed in
+        // `emit_de_value` or at the Serializable boundary before cleanup emission.
+        // If one reaches cleanup, fail closed instead of silently skipping fields
+        // that may own heap allocations in a future lowering.
+        other => Err(CodegenError::FailClosed(format!(
+            "cross-node decode cleanup: unsupported value type {other:?} \
+             (outside the Serializable cleanup floor)"
+        ))),
     }
 }
 

@@ -542,6 +542,68 @@ impl Checker {
                         }
                     }
                 } else {
+                    // Refutability gate for `let` (not in `bind_pattern`, which
+                    // `match` arms share).  A `let` binding has no failure arm,
+                    // so only irrefutable patterns are admitted.  Poison-guard:
+                    // skip the gate when the value type is unresolved — the root
+                    // error has already fired and cascades would obscure it.
+                    let resolved_val_ty = self.subst.resolve(&val_ty);
+                    let maybe_refutable_kind = match &pattern.0 {
+                        // Irrefutable product types — admitted without a gate error.
+                        Pattern::Struct { name: pat_name, .. } => {
+                            let type_name = resolved_val_ty.type_name();
+                            match type_name {
+                                Some(tn) => {
+                                    let td = self.lookup_type_def(tn);
+                                    match td {
+                                        Some(td)
+                                            if matches!(
+                                                td.kind,
+                                                TypeDefKind::Record | TypeDefKind::Struct
+                                            ) =>
+                                        {
+                                            None
+                                        } // irrefutable product type
+                                        Some(_) => Some("enum variant"),
+                                        None => {
+                                            // Unknown type — checker already reported; allow
+                                            // bind_pattern to run for error recovery.
+                                            let _ = pat_name;
+                                            None
+                                        }
+                                    }
+                                }
+                                None => None, // Ty::Var/Ty::Error — skip gate
+                            }
+                        }
+                        // Enum-variant constructor (e.g. `Some(x)`) — always refutable.
+                        Pattern::Constructor { .. } => Some("enum variant"),
+                        // Literal patterns are always refutable.
+                        Pattern::Literal(_) => Some("literal"),
+                        // Or-patterns are always refutable.
+                        Pattern::Or(_, _) => Some("or-pattern"),
+                        // All other patterns (Tuple, Identifier, Wildcard, Regex, …)
+                        // — either already handled above or not relevant here.
+                        _ => None,
+                    };
+                    if let Some(kind_label) = maybe_refutable_kind {
+                        // Only emit the refutability error when the value type is
+                        // actually resolved (not Ty::Var / Ty::Error).
+                        if !matches!(resolved_val_ty, Ty::Var(_) | Ty::Error) {
+                            self.report_error(
+                                TypeErrorKind::RefutableLetPattern {
+                                    kind_label: kind_label.to_string(),
+                                },
+                                &pattern.1,
+                                format!(
+                                    "refutable {kind_label} pattern is not allowed in `let`; \
+                                     use `if let` or `match` instead"
+                                ),
+                            );
+                        }
+                    }
+                    // Always call bind_pattern for error-recovery so the binders exist
+                    // and subsequent uses don't cascade into UnresolvedSymbol.
                     self.bind_pattern(&pattern.0, &val_ty, false, &pattern.1);
                 }
             }

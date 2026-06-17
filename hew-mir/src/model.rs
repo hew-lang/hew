@@ -1377,7 +1377,29 @@ fn ty_contains_unclonable_opaque_inner(
             //    sharing a short name with an opaque handle is not mis-flagged.
             //    Empty for the discriminator-only `ty_contains_unclonable_opaque`
             //    entry point, so its behaviour is unchanged.
-            let resolved_to_user_layout = record_match.is_some() || enum_found.is_some();
+            //
+            //    QUALIFIED-NAME GUARD (security, UAF/double-free): the layout
+            //    lookups in steps 3/4 match by SHORT name, so a QUALIFIED opaque
+            //    handle whose discriminator was cleared (`json.Value`,
+            //    `is_opaque: false`) would otherwise be "resolved" by a clean
+            //    user record/enum that merely shares its short name (`Value`) —
+            //    suppressing this fallback and admitting the handle into a
+            //    flat-copied generator env (shallow-aliasing the caller's handle
+            //    → double-free / use-after-free at teardown). A bare-short-name
+            //    collision is NOT a resolution for a qualified name: require an
+            //    EXACT (qualified) layout-name match — or, for a generic enum,
+            //    the structural mangled-key match `find_enum_layout` already
+            //    validated (args non-empty) — before treating the type as
+            //    resolved to a user layout. An UNqualified name keeps the prior
+            //    exact-or-short behaviour, so the same-short value-record
+            //    negative control still admits.
+            let name_is_qualified = name.contains('.');
+            let resolved_to_user_layout = if name_is_qualified {
+                record_match.is_some_and(|r| r.name == *name)
+                    || enum_found.is_some_and(|e| e.name == *name || !args.is_empty())
+            } else {
+                record_match.is_some() || enum_found.is_some()
+            };
             if !resolved_to_user_layout
                 && opaque_handle_names
                     .iter()
@@ -5576,6 +5598,71 @@ mod heap_owning_tests {
         assert!(
             !ty_contains_unclonable_opaque_with_names(&user_record, &records, &[], &names),
             "a user record sharing a short name with an opaque decl is not mis-flagged"
+        );
+    }
+
+    #[test]
+    fn name_fallback_flags_qualified_opaque_shadowed_by_same_short_record() {
+        // Security regression (UAF / double-free): a QUALIFIED opaque handle
+        // whose `is_opaque` discriminator was cleared on the way to MIR
+        // (`json.Value`, `is_opaque: false`) must STILL fail closed even when a
+        // clean `#[copy]` user record shares its SHORT name (`Value`). The
+        // record-layout lookup matches by short name, so the bare-short record
+        // resolves first and — under the prior ordering — SUPPRESSED the opaque
+        // name-fallback, admitting the qualified handle into the flat-copied
+        // generator env (shallow-aliasing the caller's handle → double-free /
+        // use-after-free at generator teardown). The gate must distinguish a
+        // qualified opaque shadowed by a same-short layout (REJECT) from a plain
+        // same-short value record (ADMIT): a short-name-only layout match must
+        // NOT suppress the fallback for a qualified name; only an EXACT
+        // (qualified) layout-name match resolves the type to a user layout.
+        let records = vec![RecordLayout {
+            name: "Value".to_string(),
+            field_tys: vec![ResolvedTy::I64],
+        }];
+        // Qualified, discriminator-cleared opaque handle (`is_opaque: false`),
+        // exactly the shape a captured local's binding type reaches MIR with.
+        let qualified_opaque = ResolvedTy::named_user("json.Value", vec![]);
+
+        // Opaque decl-name set carries the QUALIFIED (use-site) form.
+        let qualified_names = vec!["json.Value".to_string()];
+        assert!(
+            ty_contains_unclonable_opaque_with_names(
+                &qualified_opaque,
+                &records,
+                &[],
+                &qualified_names
+            ),
+            "a qualified opaque handle must fail closed even when a clean user \
+             record shares its short name (the same-short collision must not \
+             suppress the opaque name-fallback)"
+        );
+
+        // ...and when the opaque decl-name set carries the SHORT (decl) form.
+        let short_names = vec!["Value".to_string()];
+        assert!(
+            ty_contains_unclonable_opaque_with_names(
+                &qualified_opaque,
+                &records,
+                &[],
+                &short_names
+            ),
+            "a qualified opaque handle must also fail closed when the opaque \
+             decl-name set carries the bare short name"
+        );
+
+        // Negative control preserved: the same-short value record itself,
+        // referenced UNqualified, stays admissible — the exact-name record
+        // resolves it, so the fallback never fires.
+        let user_record = ResolvedTy::named_user("Value", vec![]);
+        assert!(
+            !ty_contains_unclonable_opaque_with_names(
+                &user_record,
+                &records,
+                &[],
+                &qualified_names
+            ),
+            "an unqualified same-short value record must NOT be mis-flagged"
         );
     }
 

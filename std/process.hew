@@ -40,6 +40,7 @@ pub type ProcessResultHandle {
 /// the process exits, or `kill()` to terminate it. Dropping the
 /// handle reaps it automatically; a still-running child is killed
 /// and waited on at scope exit.
+#[resource]
 #[opaque]
 pub type Child {
 }
@@ -85,13 +86,13 @@ impl ChildMethods for Child {
     }
 }
 
-impl Drop for Child {
+impl Child {
     /// Reap the child handle at scope exit.
     ///
-    /// Drop performs a non-blocking check first. If the child is still
-    /// running, drop kills it and waits for it to exit so leaked `Child`
-    /// values do not leave OS processes or zombie handles behind.
-    fn drop(child: Child) {
+    /// Resource close performs a non-blocking check first. If the child is
+    /// still running, close kills it and waits for it to exit so leaked
+    /// `Child` values do not leave OS processes or zombie handles behind.
+    fn close(child: Child) {
         unsafe {
             hew_process_drop(child)
         };

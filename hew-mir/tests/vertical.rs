@@ -777,6 +777,57 @@ fn never_closed_resource_keeps_scope_exit_drop() {
     );
 }
 
+#[test]
+fn monitor_registration_resource_close_elaborates_scope_exit_drop() {
+    let p = lower_source(
+        r#"
+        #[resource]
+        type MonitorRegistration { ref_id: i64 }
+        impl MonitorRegistration {
+            fn close(monitor_ref: MonitorRegistration) {
+                unsafe {
+                    hew_actor_demonitor(monitor_ref.ref_id)
+                };
+            }
+        }
+        extern "C" {
+            fn hew_actor_demonitor(ref_id: i64);
+        }
+        fn serve() {
+            let monitor_ref = MonitorRegistration { ref_id: 7 };
+            let _ = monitor_ref.ref_id;
+        }
+    "#,
+    );
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    let serve = p
+        .elaborated_mir
+        .iter()
+        .find(|f| f.name == "serve")
+        .expect("serve function present");
+    let resource_drops: Vec<_> = serve
+        .drop_plans
+        .iter()
+        .flat_map(|(_, plan)| plan.drops.iter())
+        .filter(|d| d.kind == hew_mir::DropKind::Resource)
+        .collect();
+    assert!(
+        !resource_drops.is_empty(),
+        "monitor registration must keep its scope-exit resource close: {:?}",
+        serve.drop_plans
+    );
+    assert!(
+        resource_drops.iter().any(|d| {
+            d.drop_fn
+                == Some(hew_mir::DropFnSpec::UserClose(
+                    "MonitorRegistration::close".to_string(),
+                ))
+        }),
+        "monitor registration scope-exit drop must dispatch its close method: {:?}",
+        serve.drop_plans
+    );
+}
+
 /// #1933 — a `#[resource]` consumed on ONE branch of an `if` (live on the
 /// fall-through) reaches the function's single exit at dataflow state
 /// `MaybeConsumed`. The binding must STAY in the scope-exit drop set there

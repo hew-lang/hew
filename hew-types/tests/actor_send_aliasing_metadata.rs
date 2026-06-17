@@ -249,9 +249,12 @@ fn actor_send_aliasing_copy_typed_bare_identifier_stays_copy() {
     }
 }
 
-/// User `impl Drop` payload → `Copy`.
+/// User `impl Drop` is rejected fail-closed even when the type is only used
+/// as an actor-send payload: the rejection fires at registration, so the
+/// send-aliasing classifier never has to reason about an unsupported
+/// destructor type.
 #[test]
-fn actor_send_aliasing_impl_drop_payload_stays_copy() {
+fn actor_send_user_impl_drop_payload_rejected() {
     let output = typecheck_isolated(
         r#"
         type Resource {
@@ -275,19 +278,12 @@ fn actor_send_aliasing_impl_drop_payload_stays_copy() {
     "#,
     );
     assert!(
-        output.errors.is_empty(),
-        "fixture should type-check cleanly, got: {:#?}",
+        output.errors.iter().any(|e| {
+            e.message
+                .contains("`impl Drop` is not supported (its `drop` method would not run)")
+        }),
+        "user impl Drop must be rejected fail-closed, got: {:#?}",
         output.errors
-    );
-    let alias_count = output
-        .actor_send_aliasing
-        .values()
-        .filter(|d| **d == ActorSendAliasing::Alias)
-        .count();
-    assert_eq!(
-        alias_count, 0,
-        "impl-Drop payload must stay Copy; got {alias_count} Alias entries: {:#?}",
-        output.actor_send_aliasing,
     );
 }
 

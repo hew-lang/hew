@@ -1,6 +1,6 @@
 # hew-suite-expected-failures.txt
 #
-# Known failing tests in tests/hew/ as of the L27 gating lane.
+# Known failing tests in tests/hew/.
 # The ratchet (scripts/hew-suite-ratchet.sh) enforces:
 #   - Every test listed here MUST fail (unexpected pass = gate failure).
 #   - Every test NOT listed here MUST pass (unexpected failure = gate failure).
@@ -11,23 +11,4 @@
 #
 # Format: <test_function_name>  # <root_cause>; converging lane: <lane>
 #
-# Source files whose tests ALL fail (hew check exits 1):
-#   - tests/hew/base64_test.hew     (E_MIR/E_CODEGEN in base64 stdlib)
-#   - tests/hew/compress_test.hew   (E_MIR in compress stdlib)
-#   - tests/hew/csv_test.hew        (E_HIR in csv stdlib)
-#   - tests/hew/fs_stream_test.hew  (E_MIR in fs_stream stdlib)
-#   - tests/hew/hex_test.hew        (E_MIR in hex stdlib)
-#   - tests/hew/math_test.hew       (fn main() collision in test runner)
-#   - tests/hew/msgpack_test.hew    (E_MIR in msgpack stdlib)
-#   - tests/hew/net_try_api_test.hew (E_CODEGEN in net stdlib)
-#   - tests/hew/semver_test.hew     (E_MIR_CHECK use-after-consume in semver stdlib)
-#   - tests/hew/sign_test.hew       (E_MIR in sign stdlib)
-#   - tests/hew/sort_test.hew       (E_CODEGEN_FRONT IntCmp lhs not integer in sort stdlib)
-#   - tests/hew/toml_test.hew       (E_MIR in toml stdlib)
-#   - tests/hew/xml_test.hew        (E_MIR in xml stdlib)
-#
-# Individual runtime failures (file compiles; the test fails when run):
-#   - tests/hew/process_test.hew: test_child_drop_reaps_running_process
-#
-# Total: 187 unique failing test function names.
-
+# Total: 0 unique failing test function names.

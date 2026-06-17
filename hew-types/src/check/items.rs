@@ -1702,6 +1702,12 @@ impl Checker {
     }
 
     pub(super) fn check_impl(&mut self, id: &ImplDecl, span: &Span) {
+        if Self::impl_decl_is_drop_impl(id) {
+            // The registration pass already emitted the fail-closed diagnostic.
+            // Do not body-check an unsupported destructor and risk cascading
+            // errors after its method symbols were deliberately withheld.
+            return;
+        }
         if let TypeExpr::Named {
             name: type_name,
             type_args,

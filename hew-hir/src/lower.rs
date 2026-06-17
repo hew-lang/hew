@@ -683,19 +683,41 @@ struct ImportedImplLowering<'a> {
     skip_methods: &'a HashSet<String>,
 }
 
-/// Walk the root program's items collecting inherent-impl `close` method
-/// signatures, keyed by the self-type name. Trait impls (`impl T for U`)
-/// are deliberately skipped — the `close` ritual under the W3.030 contract
-/// is dispatched through `<T>::close` as an inherent method symbol; trait
-/// methods would land at `<T as Trait>::close` and are not the surface
-/// W3.030 owns. Multiple inherent impls declaring `close` on the same
-/// nominal would be a duplicate-symbol error caught downstream; this
-/// collector keeps the first occurrence and ignores any later ones.
-fn collect_inherent_impl_close_methods(
-    items: &[(Item, Span)],
-) -> HashMap<String, ImplCloseSignature> {
+/// Walk the program and its module graph collecting inherent-impl `close`
+/// method signatures, keyed by the self-type name. Trait impls (`impl T for U`)
+/// are deliberately skipped — the `close` ritual under the W3.030 contract is
+/// dispatched through `<T>::close` as an inherent method symbol; trait methods
+/// would land at `<T as Trait>::close` and are not the surface W3.030 owns.
+/// Multiple inherent impls declaring `close` on the same nominal would be a
+/// duplicate-symbol error caught downstream; this collector keeps the first
+/// occurrence and ignores any later ones.
+fn collect_inherent_impl_close_methods(program: &Program) -> HashMap<String, ImplCloseSignature> {
     let mut out: HashMap<String, ImplCloseSignature> = HashMap::new();
+    collect_inherent_impl_close_methods_from_items(&program.items, &mut out);
+    if let Some(module_graph) = &program.module_graph {
+        for module_id in &module_graph.topo_order {
+            if *module_id == module_graph.root {
+                continue;
+            }
+            if let Some(module) = module_graph.modules.get(module_id) {
+                collect_inherent_impl_close_methods_from_items(&module.items, &mut out);
+            }
+        }
+    }
+    out
+}
+
+fn collect_inherent_impl_close_methods_from_items(
+    items: &[(Item, Span)],
+    out: &mut HashMap<String, ImplCloseSignature>,
+) {
     for (item, _item_span) in items {
+        if let Item::Import(import_decl) = item {
+            if let Some(resolved_items) = &import_decl.resolved_items {
+                collect_inherent_impl_close_methods_from_items(resolved_items, out);
+            }
+            continue;
+        }
         let Item::Impl(impl_decl) = item else {
             continue;
         };
@@ -735,7 +757,6 @@ fn collect_inherent_impl_close_methods(
             break;
         }
     }
-    out
 }
 
 /// Collect trait default method bodies from all `Item::Trait` declarations
@@ -1297,12 +1318,12 @@ pub fn lower_program_with_mono_cap(
         .map(check_builtin_receiver_impl_program);
 
     // Pre-pre-pass: harvest inherent-impl `close` method signatures from
-    // the root program so the type-decl pre-pass below can broaden the
-    // `ResourceMissingClose` presence check to consider inherent-impl
-    // surface and enforce the close-must-return-unit discipline. See
-    // [`collect_inherent_impl_close_methods`] for the precise contract
+    // the root program and imported modules so the type-decl pre-pass below
+    // can broaden the `ResourceMissingClose` presence check to consider
+    // inherent-impl surface and enforce the close-must-return-unit discipline.
+    // See [`collect_inherent_impl_close_methods`] for the precise contract
     // (W3.030 Q-α-B + Q-β-C ratifications).
-    ctx.impl_close_methods = collect_inherent_impl_close_methods(&program.items);
+    ctx.impl_close_methods = collect_inherent_impl_close_methods(program);
 
     // Pre-pre-pass: harvest trait default method bodies so that impl-block
     // lowering can emit them for impls that do not override them.
@@ -2251,12 +2272,48 @@ pub fn lower_program_with_mono_cap(
                         {
                             let hir_decl =
                                 ctx.lower_imported_type_decl(decl, span.clone(), module_short);
-                            ctx.type_classes
+                            let close_method = if hir_decl.marker == ResourceMarker::Resource {
+                                crate::builtin_type_classes::builtin_type_registration(
+                                    &hir_decl.name,
+                                )
+                                .and_then(|registration| {
+                                    registration.close_method.map(str::to_string)
+                                })
+                                .or_else(|| {
+                                    hir_decl
+                                        .consuming_methods
+                                        .iter()
+                                        .find(|m| m.as_str() == "close")
+                                        .cloned()
+                                })
+                                .or_else(|| {
+                                    ctx.impl_close_methods
+                                        .get(&hir_decl.name)
+                                        .map(|_| "close".to_string())
+                                })
+                            } else {
+                                None
+                            };
+                            let bare_entry = ctx
+                                .type_classes
                                 .entry(hir_decl.name.clone())
-                                .or_insert((hir_decl.marker, None));
-                            ctx.type_classes
+                                .or_insert((hir_decl.marker, close_method.clone()));
+                            if hir_decl.marker == ResourceMarker::Resource
+                                && bare_entry.1.is_none()
+                                && close_method.is_some()
+                            {
+                                bare_entry.1.clone_from(&close_method);
+                            }
+                            let qualified_entry = ctx
+                                .type_classes
                                 .entry(format!("{module_short}.{}", hir_decl.name))
-                                .or_insert((hir_decl.marker, None));
+                                .or_insert((hir_decl.marker, close_method.clone()));
+                            if hir_decl.marker == ResourceMarker::Resource
+                                && qualified_entry.1.is_none()
+                                && close_method.is_some()
+                            {
+                                qualified_entry.1 = close_method;
+                            }
                             if !hir_decl.variants.is_empty() {
                                 ctx.enum_variants_by_name
                                     .insert(hir_decl.name.clone(), hir_decl.variants.clone());
@@ -7576,26 +7633,40 @@ impl LowerCtx {
         // dispatch surface beside the builtin enums' dedicated layouts).
         // Skip the block as already-consumed metadata.
         if decl.trait_bound.is_none() && hew_types::lookup_builtin_type(self_type_name).is_some() {
-            let all_methods_are_extern_symbol_ffi = !decl.methods.is_empty()
-                && decl
-                    .methods
-                    .iter()
-                    .all(|m| m.attributes.iter().any(|a| a.name == "extern_symbol"));
-            if all_methods_are_extern_symbol_ffi {
-                return;
-            }
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::ImplBlockShapeNotLowered {
-                    shape: format!("inherent impl on builtin nominal `{self_type_name}`"),
-                },
-                span,
-                "impl-block shape not yet lowered: inherent impls on builtin \
+            let declared_resource_close_impl = self
+                .type_classes
+                .get(self_type_name)
+                .is_some_and(|(marker, _)| *marker == ResourceMarker::Resource)
+                && decl.methods.iter().any(|m| m.name == "close");
+            if declared_resource_close_impl {
+                // `std/link_monitor.hew` is both the source declaration for the
+                // builtin `MonitorRef` nominal and the `#[resource]` close
+                // ritual that drop elaboration must call. It is an authored
+                // standard-library source file, not a user extension of a
+                // pre-existing builtin receiver surface, so lower the close
+                // method normally.
+            } else {
+                let all_methods_are_extern_symbol_ffi = !decl.methods.is_empty()
+                    && decl
+                        .methods
+                        .iter()
+                        .all(|m| m.attributes.iter().any(|a| a.name == "extern_symbol"));
+                if all_methods_are_extern_symbol_ffi {
+                    return;
+                }
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::ImplBlockShapeNotLowered {
+                        shape: format!("inherent impl on builtin nominal `{self_type_name}`"),
+                    },
+                    span,
+                    "impl-block shape not yet lowered: inherent impls on builtin \
                  nominal types (`Vec`, `HashMap`, `Option`, `Result`, etc.) are \
                  reserved for the standard library — user code may add trait \
                  impls (`impl MyTrait for Vec<T>`) but not bare \
                  `impl Vec<T> { ... }`",
-            ));
-            return;
+                ));
+                return;
+            }
         }
         // V0b uses `FnDecl` for impl-block methods (per parser ast), which
         // always carries a `Block` body — there is no body-less / default-method

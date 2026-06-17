@@ -1666,6 +1666,9 @@ fn rc_owned_struct_payload_rejected() {
     );
 }
 
+/// User `impl Drop` is rejected fail-closed; the rejection fires before the
+/// `Rc` payload check, so an `Rc<Token>` over a user-`Drop` payload still
+/// fails closed at the unsupported destructor.
 #[test]
 fn rc_user_drop_payload_rejected() {
     let output = typecheck_inline(
@@ -1688,9 +1691,10 @@ fn rc_user_drop_payload_rejected() {
     assert!(
         output.errors.iter().any(|e| {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`Rc<Token>` is not currently supported")
+                && e.message
+                    .contains("`impl Drop` is not supported (its `drop` method would not run)")
         }),
-        "Rc::new with an explicit Drop payload should fail closed, got: {:#?}",
+        "user impl Drop payload should fail closed, got: {:#?}",
         output.errors
     );
 }

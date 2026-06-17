@@ -1,0 +1,13 @@
+type Token {
+    id: i64;
+}
+
+impl Drop for Token {
+    fn drop(token: Token) {
+        println(token.id);
+    }
+}
+
+fn main() {
+    let _token = Token { id: 1 };
+}

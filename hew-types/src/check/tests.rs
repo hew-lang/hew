@@ -52,6 +52,33 @@ fn tuple_numeric_field_access_out_of_bounds_is_rejected() {
 }
 
 #[test]
+fn user_impl_drop_rejected_fail_closed() {
+    let output = check_source(
+        r"
+        type Token { id: i64 }
+        impl Drop for Token {
+            fn drop(token: Token) {
+                println(token.id);
+            }
+        }
+        fn main() {
+            let _token = Token { id: 1 };
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error
+                    .message
+                    .contains("`impl Drop` is not supported (its `drop` method would not run)")
+        }),
+        "expected fail-closed impl Drop diagnostic, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn freshen_inner_recurses_into_pointer_pointee_vars() {
     let checker = Checker::new(ModuleRegistry::new(vec![]));
     let original = TypeVar::fresh();

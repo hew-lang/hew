@@ -31,8 +31,8 @@ import std::fs;
 /// `close()`), the same release is performed silently, ignoring any error.
 ///
 /// Only IO and protocol-handle types implement this trait. Pure-memory types
-/// (parsed trees, collections, etc.) use `impl Drop` only and have no
-/// user-visible release surface.
+/// (parsed trees, collections, etc.) rely on automatic field-wise drop and have
+/// no user-visible release surface.
 pub trait Closable {
     /// Explicitly release the resource and observe any close error.
     ///

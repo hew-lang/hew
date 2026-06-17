@@ -5376,7 +5376,6 @@ impl Checker {
             //
             // Admitted for all integer-to-integer pairs (any width, any sign).
             // Truncates / sign-extends / zero-extends bits per LLVM trunc/sext/zext.
-            // MIR lowering is a follow-up slice; a NotYetImplemented stub is emitted.
             //
             // Guard: `wrapping_as_` must be checked BEFORE the arithmetic `wrapping_*`
             // arm so the suffix "as_<W>" does not fall through to the op-name matcher.
@@ -5396,6 +5395,14 @@ impl Checker {
                     _ => None,
                 };
                 if let Some(target) = target_opt {
+                    self.width_cast_lowerings.insert(
+                        SpanKey::in_module(span, self.current_module_idx),
+                        WidthCastLowering {
+                            from_ty: resolved.clone(),
+                            to_ty: target.clone(),
+                            kind: WidthCastKind::Wrapping,
+                        },
+                    );
                     target
                 } else {
                     for arg in args {
@@ -5417,8 +5424,7 @@ impl Checker {
             // Saturating-clamp width conversion: `.saturating_as_<W>() -> W`.
             //
             // Admitted for all integer-to-integer pairs (any width, any sign).
-            // Returns W::MAX / W::MIN on overflow.
-            // MIR lowering is a follow-up slice; a NotYetImplemented stub is emitted.
+            // Returns W::MAX on positive overflow, W::MIN on negative overflow.
             //
             // Guard: `saturating_as_` must be checked BEFORE the arithmetic `saturating_*`
             // arm so the suffix "as_<W>" does not fall through to the op-name matcher.
@@ -5438,6 +5444,14 @@ impl Checker {
                     _ => None,
                 };
                 if let Some(target) = target_opt {
+                    self.width_cast_lowerings.insert(
+                        SpanKey::in_module(span, self.current_module_idx),
+                        WidthCastLowering {
+                            from_ty: resolved.clone(),
+                            to_ty: target.clone(),
+                            kind: WidthCastKind::Saturating,
+                        },
+                    );
                     target
                 } else {
                     for arg in args {

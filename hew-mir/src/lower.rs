@@ -4269,7 +4269,9 @@ fn collect_unknown_self_fields_in_expr(
         HirExprKind::StreamRecvAwait { stream, .. } => {
             collect_unknown_self_fields_in_expr(stream, state_fields, seen, unknown);
         }
-        HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
+        HirExprKind::NumericCast { value, .. }
+        | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
         }
         HirExprKind::TupleLiteral { elements } => {
@@ -6945,7 +6947,8 @@ impl Builder {
             HirExprKind::Unary { operand, .. } => {
                 self.collect_vec_owned_element_keys_from_expr(operand);
             }
-            HirExprKind::NumericCast { value, .. } => {
+            HirExprKind::NumericCast { value, .. }
+            | HirExprKind::SaturatingWidthCast { value, .. } => {
                 self.collect_vec_owned_element_keys_from_expr(value);
             }
             HirExprKind::TupleLiteral { elements } => {
@@ -7950,6 +7953,37 @@ impl Builder {
                 }
                 let dest = self.alloc_local(to_ty.clone());
                 self.instructions.push(Instr::NumericCast {
+                    dest,
+                    src,
+                    from_ty,
+                    to_ty,
+                });
+                Some(dest)
+            }
+            HirExprKind::SaturatingWidthCast {
+                value,
+                from_ty,
+                to_ty,
+            } => {
+                let src = self.lower_value(value)?;
+                let from_ty = self.subst_ty(from_ty);
+                let to_ty = self.subst_ty(to_ty);
+                if !from_ty.is_integer() || !to_ty.is_integer() {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "saturating width cast from {} to {} requires both types to be integers",
+                                from_ty.user_facing(),
+                                to_ty.user_facing()
+                            ),
+                        },
+                        note: "HIR SaturatingWidthCast carried a non-integer type; the HIR verifier should have rejected it"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                let dest = self.alloc_local(to_ty.clone());
+                self.instructions.push(Instr::SaturatingWidthCast {
                     dest,
                     src,
                     from_ty,
@@ -23305,7 +23339,9 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             ..
         } => vec![*dest, *operand, *overflow_flag],
         Instr::Move { dest, src } => vec![*dest, *src],
-        Instr::NumericCast { dest, src, .. } => vec![*dest, *src],
+        Instr::NumericCast { dest, src, .. } | Instr::SaturatingWidthCast { dest, src, .. } => {
+            vec![*dest, *src]
+        }
         Instr::Drop { place, .. } => vec![*place],
         Instr::WitnessSizeOf { dest, .. } | Instr::WitnessAlignOf { dest, .. } => vec![*dest],
         Instr::WitnessDropGlue { place, .. } => vec![*place],
@@ -23605,7 +23641,7 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         | Instr::IntNegChecked { operand, .. } => vec![*operand],
         // The src is read into the dest; the dest is a write.
         Instr::Move { src, .. } => vec![*src],
-        Instr::NumericCast { src, .. } => vec![*src],
+        Instr::NumericCast { src, .. } | Instr::SaturatingWidthCast { src, .. } => vec![*src],
         // A Drop reads the place it releases.
         Instr::Drop { place, .. } => vec![*place],
         // Witness size/align read no operand (the type is static metadata,
@@ -23938,6 +23974,7 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::GeneratorNext { .. }
         | Instr::WireCodec { .. }
         | Instr::NumericCast { .. }
+        | Instr::SaturatingWidthCast { .. }
         | Instr::AutoLockAcquire { .. }
         | Instr::AutoLockRelease { .. }
         | Instr::WitnessSizeOf { .. }
@@ -24127,6 +24164,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::WireCodec { .. }
         | Instr::Move { .. }
         | Instr::NumericCast { .. }
+        | Instr::SaturatingWidthCast { .. }
         | Instr::CallRuntimeAbi(_)
         | Instr::AutoLockAcquire { .. }
         | Instr::AutoLockRelease { .. }

@@ -211,12 +211,21 @@ impl Verifier {
                 value,
                 from_ty,
                 to_ty,
+            }
+            | HirExprKind::SaturatingWidthCast {
+                value,
+                from_ty,
+                to_ty,
             } => {
+                let node_name = match &expr.kind {
+                    HirExprKind::SaturatingWidthCast { .. } => "saturating width cast",
+                    _ => "numeric cast",
+                };
                 self.expr(value);
                 if value.ty != *from_ty {
                     self.diagnostics.push(self.diagnostic(
                         HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "numeric cast".to_string(),
+                            name: node_name.to_string(),
                             reason: format!(
                                 "cast source metadata {} disagrees with value type {}",
                                 from_ty.user_facing(),
@@ -224,13 +233,13 @@ impl Verifier {
                             ),
                         },
                         expr.span.clone(),
-                        "numeric cast source type metadata must match the lowered operand",
+                        "cast source type metadata must match the lowered operand",
                     ));
                 }
                 if expr.ty != *to_ty {
                     self.diagnostics.push(self.diagnostic(
                         HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "numeric cast".to_string(),
+                            name: node_name.to_string(),
                             reason: format!(
                                 "cast target metadata {} disagrees with expression type {}",
                                 to_ty.user_facing(),
@@ -238,13 +247,13 @@ impl Verifier {
                             ),
                         },
                         expr.span.clone(),
-                        "numeric cast target type metadata must match the expression type",
+                        "cast target type metadata must match the expression type",
                     ));
                 }
                 if !from_ty.can_explicitly_numeric_cast_to(to_ty) {
                     self.diagnostics.push(self.diagnostic(
                         HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "numeric cast".to_string(),
+                            name: node_name.to_string(),
                             reason: format!(
                                 "cast from {} to {} is outside the checker-admitted numeric matrix",
                                 from_ty.user_facing(),
@@ -252,7 +261,7 @@ impl Verifier {
                             ),
                         },
                         expr.span.clone(),
-                        "numeric cast HIR node carries a non-numeric cast",
+                        "cast HIR node carries a non-numeric cast",
                     ));
                 }
             }

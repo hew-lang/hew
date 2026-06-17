@@ -1108,6 +1108,17 @@ pub enum HirExprKind {
         from_ty: ResolvedTy,
         to_ty: ResolvedTy,
     },
+    /// Integer-to-integer saturating width conversion: `.saturating_as_<W>()`.
+    ///
+    /// Produced from a method call site recorded in
+    /// `TypeCheckOutput::width_cast_lowerings` with `WidthCastKind::Saturating`.
+    /// The result is clamped to `[W::MIN, W::MAX]` before the narrowing cast.
+    /// Both from/to types are guaranteed integers (checker-admitted).
+    SaturatingWidthCast {
+        value: Box<HirExpr>,
+        from_ty: ResolvedTy,
+        to_ty: ResolvedTy,
+    },
     /// Tuple literal construction (`(1, 2)`, `(a, b, c)`).
     ///
     /// Produced from `Expr::Tuple(elems)` when the checker has populated

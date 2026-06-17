@@ -152,6 +152,14 @@ pub struct TypeCheckOutput {
     /// `.saturating_{add,sub,mul}`. HIR/MIR must consume this table instead of
     /// re-matching method-name strings downstream.
     pub numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
+    /// Checker-owned width-conversion method lowering decisions keyed by
+    /// method-call span.
+    ///
+    /// Populated for accepted `.wrapping_as_<W>()` and `.saturating_as_<W>()`
+    /// calls. HIR consumes this to emit `HirExprKind::NumericCast` (wrapping)
+    /// or `HirExprKind::SaturatingWidthCast` (saturating) without re-matching
+    /// method-name strings downstream.
+    pub width_cast_lowerings: HashMap<SpanKey, WidthCastLowering>,
     /// Checker-owned actor mailbox dispatch decisions keyed by the method call span.
     ///
     /// Populated only when a method call resolves to an actor `receive fn`.
@@ -944,6 +952,7 @@ impl Default for TypeCheckOutput {
             actor_handler_state_guards: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             numeric_method_lowerings: HashMap::new(),
+            width_cast_lowerings: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             errors: Vec::new(),
@@ -1477,6 +1486,32 @@ pub struct NumericMethodLowering {
     pub operand_ty: Ty,
     pub signedness: NumericSignedness,
     pub width: NumericWidth,
+}
+
+/// Discriminator for width-conversion method lowering.
+///
+/// `Wrapping` → bit-truncate/extend (semantics: modular wrap, same as `as`-cast).
+/// `Saturating` → clamp to `[W::MIN, W::MAX]` before narrowing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WidthCastKind {
+    Wrapping,
+    Saturating,
+}
+
+/// Checker-owned lowering record for `.wrapping_as_<W>()` and `.saturating_as_<W>()`.
+///
+/// Keyed by the method-call span in [`TypeCheckOutput::width_cast_lowerings`].
+/// HIR consumes this to emit `HirExprKind::NumericCast` (wrapping) or
+/// `HirExprKind::SaturatingWidthCast` (saturating) instead of falling
+/// through to `MethodCallNoRewrite`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WidthCastLowering {
+    /// The source integer type (receiver type at the call site).
+    pub from_ty: Ty,
+    /// The target integer type (parsed from the method-name suffix).
+    pub to_ty: Ty,
+    /// Whether this is a wrapping or saturating conversion.
+    pub kind: WidthCastKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2101,6 +2136,7 @@ pub struct Checker {
     /// `TypeCheckOutput::resolved_calls`.
     pub(super) resolved_calls: HashMap<SpanKey, crate::check::dispatch::ResolvedCall>,
     pub(super) numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
+    pub(super) width_cast_lowerings: HashMap<SpanKey, WidthCastLowering>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
     /// Machine method dispatch side-table. Mirrors [`TypeCheckOutput::machine_method_dispatch`].
     pub(super) machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
@@ -2712,6 +2748,7 @@ impl Checker {
             method_call_rewrites: HashMap::new(),
             resolved_calls: HashMap::new(),
             numeric_method_lowerings: HashMap::new(),
+            width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),

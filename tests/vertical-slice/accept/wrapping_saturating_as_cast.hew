@@ -1,0 +1,60 @@
+// Vertical-slice fixture: .wrapping_as_<W> and .saturating_as_<W> width conversion.
+//
+// wrapping_as_<W>: bit-truncate/extend, same semantics as `as`-cast.
+// saturating_as_<W>: clamp to [W::MIN, W::MAX] before narrowing.
+
+fn main() {
+    // --- wrapping_as ---
+
+    // Narrow: 300 mod 256 = 44
+    let a: i32 = 300;
+    let a_u8: u8 = a.wrapping_as_u8();
+    println(f"wrapping_as_u8(300) = {a_u8 as i64}");
+
+    // Negative narrow: -200 as i8: -200 + 256 = 56
+    let b: i32 = -200;
+    let b_i8: i8 = b.wrapping_as_i8();
+    println(f"wrapping_as_i8(-200) = {b_i8 as i64}");
+
+    // Widen: u8 -> i32 is identity (no wrap possible)
+    let c: u8 = 200;
+    let c_i32: i32 = c.wrapping_as_i32();
+    println(f"wrapping_as_i32(u8:200) = {c_i32 as i64}");
+
+    // Same-width sign change: i32 -> u32 wrap for negative
+    let d: i32 = -1;
+    let d_u32: u32 = d.wrapping_as_u32();
+    println(f"wrapping_as_u32(-1) = {d_u32 as i64}");
+
+    // --- saturating_as ---
+
+    // Overflow clamps to MAX: 300 -> u8 -> 255
+    let e: i32 = 300;
+    let e_u8: u8 = e.saturating_as_u8();
+    println(f"saturating_as_u8(300) = {e_u8 as i64}");
+
+    // Underflow clamps to MIN: -5 -> u8 -> 0
+    let f: i32 = -5;
+    let f_u8: u8 = f.saturating_as_u8();
+    println(f"saturating_as_u8(-5) = {f_u8 as i64}");
+
+    // In-range: passes through unchanged
+    let g: i32 = 100;
+    let g_u8: u8 = g.saturating_as_u8();
+    println(f"saturating_as_u8(100) = {g_u8 as i64}");
+
+    // Signed: 200 -> i8 -> 127 (MAX)
+    let h: i32 = 200;
+    let h_i8: i8 = h.saturating_as_i8();
+    println(f"saturating_as_i8(200) = {h_i8 as i64}");
+
+    // Signed: -200 -> i8 -> -128 (MIN)
+    let i2: i32 = -200;
+    let i2_i8: i8 = i2.saturating_as_i8();
+    println(f"saturating_as_i8(-200) = {i2_i8 as i64}");
+
+    // Widen: u8 -> i32 — no clamping possible, passes through
+    let j: u8 = 200;
+    let j_i32: i32 = j.saturating_as_i32();
+    println(f"saturating_as_i32(u8:200) = {j_i32 as i64}");
+}

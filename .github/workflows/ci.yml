@@ -196,6 +196,20 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         if: env.RUN_CODE_PATH == 'true'
 
+      - name: Free runner disk
+        # This job runs a release build (hew-runtime + hew-lsp), a wasm32 build,
+        # and the full debug workspace nextest run on one ubuntu-24.04 runner.
+        # That combination is the same shape release-gate documents as
+        # disk-marginal; the runner process itself died of ENOSPC twice (after
+        # all tests passed, and again mid-test-step — see PR #1994). Mirror the
+        # same preinstalled-toolchain purge release-gate already carries.
+        if: env.RUN_CODE_PATH == 'true'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          sudo docker system prune -af >/dev/null 2>&1 || true
+          df -h /
+
       - name: Install build tools
         if: env.RUN_CODE_PATH == 'true'
         run: |
@@ -254,6 +268,12 @@ jobs:
       # hew-runtime when both link into a test binary.
       - name: Run Rust workspace tests
         if: env.RUN_CODE_PATH == 'true'
+        # line-tables-only: the release build + wasm build + full debug
+        # workspace nextest run together leave the runner disk-marginal
+        # (ENOSPC twice on this exact job — see PR #1994). Full debug info
+        # is the dominant target/ cost and nothing in CI reads it.
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm
@@ -352,6 +372,15 @@ jobs:
         # instrumented run rather than duplicating that wasm setup here (which
         # would also hit the llvm-cov target-dir path issue). Their Rust-side
         # coverage is marginal — they drive a wasmtime subprocess.
+        #
+        # two_process_remote_ask / remote_ask_two_process tests are
+        # intentionally NOT excluded here (x86_64 coverage is preserved).
+        # These tests are already retried+serialised via profile.ci's
+        # real-timing group (nextest.toml) and that profile is active for
+        # this llvm-cov run. release-gate.yml excludes them only on aarch64
+        # (arm64-runner helper-exit-101 quirk specific to that runner family).
+        # Adding an x86_64 exclude would be a category error and would silently
+        # remove coverage of a real cross-process path.
         run: >
           cargo llvm-cov nextest
           --workspace --exclude hew-wasm

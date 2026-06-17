@@ -288,10 +288,13 @@ pub fn emit_coro_prologue<'a, 'ctx>(
     // Cannot select: intrinsic %llvm.coro.size). The enum kind ID 0 returned by
     // `get_named_enum_kind_id` for an unknown name — verify nonzero at runtime.
     let kind_id = Attribute::get_named_enum_kind_id("presplitcoroutine");
-    debug_assert!(
-        kind_id != 0,
-        "presplitcoroutine is not a known LLVM enum attribute in this build"
-    );
+    if kind_id == 0 {
+        // JUSTIFIED: LLVM must expose this enum attribute for CoroSplit to see
+        // Hew coroutine ramps; release builds must fail closed if that changes.
+        return Err(CodegenError::FailClosed(
+            "presplitcoroutine is not a known LLVM enum attribute in this build".into(),
+        ));
+    }
     let presplit = ctx.create_enum_attribute(kind_id, 0);
     function.add_attribute(inkwell::attributes::AttributeLoc::Function, presplit);
 

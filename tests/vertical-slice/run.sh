@@ -1198,6 +1198,13 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/regex_invalid_pattern.hew
 fi
 grep -qF 'invalid regex pattern' "${reject_output}"
 
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/string_embedded_nul.hew" >"${reject_output}" 2>&1; then
+  echo "expected string_embedded_nul fixture to fail" >&2
+  exit 1
+fi
+grep -qF 'embedded NUL (\0) in string literal is not supported by the null-terminated string ABI' "${reject_output}"
+grep -qF 'string_embedded_nul.hew:2:13' "${reject_output}"
+
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/unicode_rune_len_wrong_type.hew" >"${reject_output}" 2>&1; then
   echo "expected unicode_rune_len_wrong_type fixture to fail" >&2
   exit 1

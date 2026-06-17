@@ -13915,8 +13915,14 @@ fn lower_instruction(
             //      embedded NULs are silently truncated by every C-string runtime op.
             // WHEN: obsolete if Hew ever adopts a length-prefixed or fat-pointer
             //       string representation.
-            // WHAT: replace `build_global_string_ptr` with a manual `add_global` +
-            //       set_initializer using an i8 array to preserve bytes exactly.
+            // WHAT: parser rejects source string literals containing embedded NUL;
+            //       keep this backstop so synthetic/lowered MIR cannot fail open.
+            if bytes.contains(&0) {
+                return Err(CodegenError::FailClosed(
+                    "Instr::StringLit contains embedded NUL; null-terminated string ABI would truncate it"
+                        .to_string(),
+                ));
+            }
             let s = std::str::from_utf8(bytes).map_err(|e| {
                 CodegenError::FailClosed(format!("Instr::StringLit bytes are not valid UTF-8: {e}"))
             })?;
@@ -42959,6 +42965,30 @@ mod tests {
         assert!(
             ir.contains("hello"),
             "emitted IR must contain the literal bytes: {ir}"
+        );
+    }
+
+    #[test]
+    fn string_literal_with_embedded_nul_fails_closed_before_llvm_cstring() {
+        let ctx = Context::create();
+        let m = ctx.create_module("string_lit_embedded_nul");
+        let harness = build_harness(&ctx, &[], &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "string_lit_embedded_nul_fn");
+        alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+
+        let err = lower_instruction(
+            &fn_ctx,
+            &Instr::StringLit {
+                bytes: b"a\0b".to_vec(),
+                dest: Place::Local(0),
+            },
+            0,
+            &[],
+        )
+        .expect_err("embedded NUL StringLit must fail closed");
+        assert!(
+            format!("{err:?}").contains("embedded NUL"),
+            "diagnostic should name the embedded NUL hazard: {err:?}"
         );
     }
 

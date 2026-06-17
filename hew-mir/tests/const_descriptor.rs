@@ -61,6 +61,34 @@ fn folded_integer_arithmetic_builds_descriptor() {
 }
 
 #[test]
+fn const_ref_in_init_builds_correct_descriptor() {
+    let module = hir(r"const A: i64 = 10; const B: i64 = A + 1; fn main() -> i64 { B }");
+    let (consts, diags) = build_const_descriptors(&module);
+    assert!(diags.is_empty(), "diagnostics: {diags:?}");
+    assert_eq!(consts.len(), 2);
+    assert_eq!(consts[0].name, "A");
+    assert_eq!(consts[0].value, MirConstValue::Integer(10));
+    assert_eq!(consts[1].name, "B");
+    assert_eq!(consts[1].value, MirConstValue::Integer(11));
+}
+
+#[test]
+fn const_ref_chain_builds_correct_descriptors() {
+    let module = hir(r"
+        const BASE: i64 = 64;
+        const LIMIT: i64 = BASE * 1024;
+        fn main() -> i64 { LIMIT }
+        ");
+    let (consts, diags) = build_const_descriptors(&module);
+    assert!(diags.is_empty(), "diagnostics: {diags:?}");
+    assert_eq!(consts.len(), 2);
+    assert_eq!(consts[0].name, "BASE");
+    assert_eq!(consts[0].value, MirConstValue::Integer(64));
+    assert_eq!(consts[1].name, "LIMIT");
+    assert_eq!(consts[1].value, MirConstValue::Integer(65536));
+}
+
+#[test]
 fn signed_negative_integer_const_builds_descriptor() {
     let module = hir(r"const X: i64 = -13; fn main() -> i64 { 0 }");
     let (consts, diags) = build_const_descriptors(&module);

@@ -214,7 +214,12 @@ pub fn link_executable(
         let exe_dir = exe.parent().expect("exe should have a parent directory");
         let triple = target.normalized_triple();
         for archive in NATIVE_STDLIB_ARCHIVES {
-            if let Some(path) = find_optional_hew_lib(exe_dir, archive, triple) {
+            let path = if target.can_run_on_host() {
+                find_optional_hew_lib(exe_dir, archive, triple)
+            } else {
+                find_optional_target_hew_lib(exe_dir, archive, triple)
+            };
+            if let Some(path) = path {
                 cmd.arg(path);
             }
         }
@@ -603,6 +608,26 @@ fn find_optional_hew_lib(exe_dir: &std::path::Path, name: &str, triple: &str) ->
     None
 }
 
+fn find_optional_target_hew_lib(
+    exe_dir: &std::path::Path,
+    name: &str,
+    triple: &str,
+) -> Option<String> {
+    for candidate in hew_target_lib_candidates(exe_dir, name, triple) {
+        if candidate.exists() {
+            return Some(
+                candidate
+                    .canonicalize()
+                    .unwrap_or(candidate)
+                    .display()
+                    .to_string(),
+            );
+        }
+    }
+
+    None
+}
+
 fn wasm_runtime_target(target: &str) -> &str {
     if target == "wasm32-wasi" {
         "wasm32-wasip1"
@@ -780,6 +805,30 @@ fn hew_lib_candidates(
             .join(name),
         exe_dir.join("../../target/wasm32-wasip1/debug").join(name),
         exe_dir.join("../../hew-runtime/target/release").join(name),
+    ]
+}
+
+fn hew_target_lib_candidates(
+    exe_dir: &std::path::Path,
+    name: &str,
+    triple: &str,
+) -> Vec<std::path::PathBuf> {
+    vec![
+        // Installed target-aware layouts.
+        exe_dir.join("../lib").join(triple).join(name),
+        exe_dir.join("../lib/hew").join(triple).join(name), // /usr/lib/hew/<triple>/
+        exe_dir.join("../lib64/hew").join(triple).join(name), // /usr/lib64/hew/<triple>/
+        // Cargo target-dir outputs for cross-target dev/test builds.
+        exe_dir
+            .join("../../target")
+            .join(triple)
+            .join("release")
+            .join(name),
+        exe_dir
+            .join("../../target")
+            .join(triple)
+            .join("debug")
+            .join(name),
     ]
 }
 
@@ -1744,6 +1793,27 @@ mod tests {
             .expect("same-dir host fallback candidate");
         assert!(cross_release_index < host_same_dir_index);
         assert!(cross_debug_index < host_same_dir_index);
+    }
+
+    #[test]
+    fn hew_target_lib_candidates_exclude_host_fallbacks() {
+        let exe_dir = std::path::Path::new("/repo/target/debug");
+        let candidates =
+            hew_target_lib_candidates(exe_dir, "libhew_std.a", "aarch64-unknown-linux-gnu");
+
+        assert!(
+            !candidates.contains(&std::path::PathBuf::from("/repo/target/debug/libhew_std.a")),
+            "cross-target stdlib lookup must not accept a host archive"
+        );
+        assert!(
+            !candidates.contains(&std::path::PathBuf::from(
+                "/repo/target/debug/../../target/debug/libhew_std.a"
+            )),
+            "cross-target stdlib lookup must not accept a host target-dir archive"
+        );
+        assert!(candidates.contains(&std::path::PathBuf::from(
+            "/repo/target/debug/../../target/aarch64-unknown-linux-gnu/debug/libhew_std.a"
+        )));
     }
 
     #[test]

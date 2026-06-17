@@ -32,7 +32,7 @@ hew-runtime = { path = "../hew-runtime" }
 adze-cli = { path = "../adze-cli" }
 clap.workspace = true
 clap_complete.workspace = true
-pulldown-cmark = "0.13"
+pulldown-cmark = "0.13.4"
 rustyline = "18"
 tempfile.workspace = true
 toml.workspace = true
@@ -40,7 +40,7 @@ serde.workspace = true
 serde_json.workspace = true
 notify = "8"
 dirs.workspace = true
-wasmparser = "0.244"
+wasmparser = "0.252.0"
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

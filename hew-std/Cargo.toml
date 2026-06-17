@@ -33,27 +33,27 @@ toml.workspace = true
 # wasm build, where their crates do not compile.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 argon2 = { version = "0.5", features = ["std"] }
-chrono = { version = "0.4", default-features = false, features = [
+chrono = { version = "0.4.45", default-features = false, features = [
   "clock",
   "std",
 ] }
 cron = "0.16"
 flate2 = "1"
 ipnet = "2"
-jsonwebtoken = { version = "10", default-features = false, features = [
+jsonwebtoken = { version = "10.4.0", default-features = false, features = [
   "aws_lc_rs",
 ] }
-lettre = { version = "0.11", default-features = false, features = [
+lettre = { version = "0.11.22", default-features = false, features = [
   "builder",
   "smtp-transport",
   "rustls-tls",
 ] }
 parking_lot = "0.12"
-pulldown-cmark = "0.13"
-quick-xml = "0.39"
+pulldown-cmark = "0.13.4"
+quick-xml = "0.40.1"
 quinn = "0.11"
-rcgen = "0.14"
-regex = "1"
+rcgen = "0.14.8"
+regex = "1.12.4"
 ring = "0.17"
 rmp-serde.workspace = true
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
@@ -69,7 +69,7 @@ tokio = { version = "1", default-features = false, features = [
 tungstenite = "0.29"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 url = "2"
-uuid = { version = "1", features = ["v4", "v7"] }
+uuid = { version = "1.23.3", features = ["v4", "v7"] }
 webpki-roots = "1"
 
 [lints]

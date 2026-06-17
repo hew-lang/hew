@@ -20,7 +20,7 @@ stacker.workspace = true
 # `EnumIter` derive: makes `all_runtime_call_families()` compiler-complete.
 # A new `RuntimeCallFamily` variant is enumerated automatically, so a
 # pre-staged family can no longer be silently omitted from the catalog.
-strum = { version = "0.27", features = ["derive"] }
+strum = { version = "0.28.0", features = ["derive"] }
 # Used to validate regex literal patterns at compile time (same engine as
 # std/text/regex runtime). Checker rejects syntactically invalid patterns
 # before any code generation runs.

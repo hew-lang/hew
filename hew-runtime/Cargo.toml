@@ -57,19 +57,19 @@ serde.workspace = true
 hew-cabi = { path = "../hew-cabi" }
 libc.workspace = true
 tracing.workspace = true
-zeroize = { version = "1", features = ["zeroize_derive"] }
+zeroize = { version = "1.9.0", features = ["zeroize_derive"] }
 
 # Threading/networking deps — not available on wasm32
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 crossbeam-deque = "0.8"
 crossbeam-utils = "0.8"
 rand = "0.10.1"
-socket2 = "0.6"
+socket2 = "0.6.4"
 
 # Optional ecosystem dependencies
 snow = { version = "0.10", optional = true }
 flate2 = { version = "1", optional = true }
-hyper = { version = "1", optional = true, features = ["http1", "server"] }
+hyper = { version = "1.10.1", optional = true, features = ["http1", "server"] }
 hyper-util = { version = "0.1", optional = true, features = ["tokio", "http1"] }
 http-body-util = { version = "0.1", optional = true }
 # Sync HTTP client for the OTel OTLP/HTTP exporter (no async runtime needed).
@@ -91,7 +91,7 @@ rustls = { version = "0.23", optional = true, default-features = false, features
 # Explicit rustls-webpki pin to fix CRL parse panic (GHSA-82j2-j2ch-gfr8) and name constraint validation.
 # rustls v0.23 accepts ^0.103.5; we pin to 0.103.13 which includes both security fixes.
 rustls-webpki = { version = "0.103.13", optional = true }
-rcgen = { version = "0.14", optional = true }
+rcgen = { version = "0.14.8", optional = true }
 tokio = { version = "1", optional = true, default-features = false, features = [
   "rt-multi-thread",
   "net",
@@ -142,7 +142,7 @@ hew-runtime-testkit = { path = "../hew-runtime-testkit" }
 # signal for Stage C/D). Harness is disabled per bench; see benches/. Scoped to
 # non-wasm targets: criterion pulls Rayon, which refuses to compile for
 # wasm32-wasip1. The benches are native-only, so this costs no coverage.
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8.2", features = ["html_reports"] }
 
 [lints]
 workspace = true

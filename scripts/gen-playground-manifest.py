@@ -65,6 +65,7 @@ EXAMPLE_ORDER = {
         "string_slicing",
         "while_loop",
         "wildcard_match",
+        "match_guard",
     ),
     "machines": ("traffic_light",),
     "types": (
@@ -153,6 +154,7 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     "language/string_slicing": "runnable",
     "language/while_loop": "runnable",
     "language/wildcard_match": "runnable",
+    "language/match_guard": "runnable",
 }
 
 # Entries omitted from WASI_CAPABILITY default to "runnable".

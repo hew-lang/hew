@@ -1,0 +1,26 @@
+//! @name Match Guard
+//! @description Guarded enum match arms fall through when the guard is false
+
+enum Score {
+    High(i64);
+    Low(i64);
+    Zero;
+}
+
+fn classify(s: Score) -> string {
+    match s {
+        High(n) if n > 90 => "excellent",
+        High(_) => "good",
+        Low(n) if n < 10 => "very low",
+        Low(_) => "low",
+        Zero => "zero",
+    }
+}
+
+fn main() {
+    println(classify(High(95)));
+    println(classify(High(70)));
+    println(classify(Low(5)));
+    println(classify(Low(40)));
+    println(classify(Zero));
+}

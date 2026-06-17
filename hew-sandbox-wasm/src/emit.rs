@@ -23,6 +23,10 @@ const SCHEMA_VERSION: &str = "hew.sandbox.bytecode.v0";
 const ROOT_SOURCE_ID: &str = "src:main";
 const ROOT_MODULE_ID: &str = "mod:main";
 
+type MatchBlock = (usize, String);
+type MatchGuardBlock = Option<MatchBlock>;
+type MatchBlocks = (Vec<MatchBlock>, Vec<MatchGuardBlock>, Vec<MatchBlock>);
+
 pub fn emit_package(
     source: &str,
     profile: &str,
@@ -2526,14 +2530,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
 
         let exit_span = self.package.spans.span_ref(&span);
         let (exit_idx, exit_id) = self.new_block("match_exit", exit_span);
-        let mut check_blocks = Vec::new();
-        let mut arm_blocks = Vec::new();
-        for (index, arm) in arms.iter().enumerate() {
-            let check_span = self.package.spans.span_ref(&arm.pattern.1);
-            check_blocks.push(self.new_block(&format!("match_check_{index}"), check_span));
-            let arm_span = self.package.spans.span_ref(&arm.body.1);
-            arm_blocks.push(self.new_block(&format!("match_arm_{index}"), arm_span));
-        }
+        let (check_blocks, guard_blocks, arm_blocks) = self.new_match_blocks(arms);
 
         if let Some((first_idx, first_id)) = check_blocks.first() {
             let span_ref = self.package.spans.span_ref(&span);
@@ -2545,7 +2542,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             let (check_idx, _) = check_blocks[index].clone();
             self.switch_to(check_idx);
             let (_, arm_id) = &arm_blocks[index];
-            let tag = self.pattern_tag(&arm.pattern).unwrap_or(index);
+            let pattern_tag = self.pattern_tag(&arm.pattern);
+            let pattern_is_catch_all = pattern_tag.is_none()
+                && matches!(arm.pattern.0, Pattern::Wildcard | Pattern::Identifier(_));
+            let tag = pattern_tag.unwrap_or(index);
             let tag_const = self.lower_literal(
                 &Literal::Integer {
                     value: i64::try_from(tag).unwrap_or(0),
@@ -2561,17 +2561,38 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 Some(arm.pattern.1.clone()),
                 None,
             );
-            let else_id = check_blocks
-                .get(index + 1)
+            let matched_id = guard_blocks[index]
+                .as_ref()
                 .map_or_else(|| arm_id.clone(), |(_, id)| id.clone());
+            let else_id = Self::next_match_arm_id(
+                index,
+                arm.guard.is_some(),
+                pattern_is_catch_all,
+                &check_blocks,
+                &matched_id,
+                arm_id,
+                &exit_id,
+            );
             let pattern_span = self.package.spans.span_ref(&arm.pattern.1);
             self.terminate(Terminator::br_if(
                 Operand::local(cond),
-                arm_id.clone(),
-                else_id,
+                matched_id,
+                else_id.clone(),
                 Vec::new(),
                 pattern_span,
             ));
+
+            if let (Some(guard), Some((guard_idx, _))) = (&arm.guard, guard_blocks[index].clone()) {
+                let guard_else_id = Self::match_guard_failure_id(index, &check_blocks, &exit_id);
+                self.lower_match_guard_block(
+                    guard,
+                    guard_idx,
+                    &arm.pattern,
+                    &scrutinee_local,
+                    arm_id.clone(),
+                    guard_else_id,
+                )?;
+            }
 
             let (arm_idx, _) = arm_blocks[index].clone();
             self.switch_to(arm_idx);
@@ -2627,6 +2648,23 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         }
     }
 
+    fn new_match_blocks(&mut self, arms: &[MatchArm]) -> MatchBlocks {
+        let mut check_blocks = Vec::new();
+        let mut guard_blocks = Vec::new();
+        let mut arm_blocks = Vec::new();
+        for (index, arm) in arms.iter().enumerate() {
+            let check_span = self.package.spans.span_ref(&arm.pattern.1);
+            check_blocks.push(self.new_block(&format!("match_check_{index}"), check_span));
+            guard_blocks.push(arm.guard.as_ref().map(|guard| {
+                let guard_span = self.package.spans.span_ref(&guard.1);
+                self.new_block(&format!("match_guard_{index}"), guard_span)
+            }));
+            let arm_span = self.package.spans.span_ref(&arm.body.1);
+            arm_blocks.push(self.new_block(&format!("match_arm_{index}"), arm_span));
+        }
+        (check_blocks, guard_blocks, arm_blocks)
+    }
+
     fn pattern_tag(&self, pattern: &Spanned<Pattern>) -> Option<usize> {
         match &pattern.0 {
             Pattern::Constructor { name, .. } => self
@@ -2641,6 +2679,64 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 .map(|(_, tag, _)| *tag),
             _ => None,
         }
+    }
+
+    fn next_match_arm_id(
+        index: usize,
+        has_guard: bool,
+        pattern_is_catch_all: bool,
+        check_blocks: &[MatchBlock],
+        matched_id: &str,
+        arm_id: &str,
+        exit_id: &str,
+    ) -> String {
+        if pattern_is_catch_all {
+            return matched_id.to_string();
+        }
+        check_blocks.get(index + 1).map_or_else(
+            || {
+                if has_guard {
+                    exit_id.to_string()
+                } else {
+                    arm_id.to_string()
+                }
+            },
+            |(_, id)| id.clone(),
+        )
+    }
+
+    fn match_guard_failure_id(index: usize, check_blocks: &[MatchBlock], exit_id: &str) -> String {
+        check_blocks
+            .get(index + 1)
+            .map_or_else(|| exit_id.to_string(), |(_, id)| id.clone())
+    }
+
+    fn lower_match_guard_block(
+        &mut self,
+        guard: &Spanned<Expr>,
+        guard_idx: usize,
+        pattern: &Spanned<Pattern>,
+        scrutinee_local: &str,
+        arm_id: String,
+        else_id: String,
+    ) -> Result<(), CompileError> {
+        self.switch_to(guard_idx);
+        let saved_bindings = self.bindings.clone();
+        self.bind_pattern_payloads(pattern, scrutinee_local);
+        let guard_local = self.lower_expr(guard)?;
+        self.bindings = saved_bindings;
+        if self.current_is_terminated() {
+            return Ok(());
+        }
+        let guard_span = self.package.spans.span_ref(&guard.1);
+        self.terminate(Terminator::br_if(
+            Operand::local(guard_local),
+            arm_id,
+            else_id,
+            Vec::new(),
+            guard_span,
+        ));
+        Ok(())
     }
 
     /// If `name` is a `Machine::State` path naming a declared machine, return
@@ -2955,14 +3051,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
 
         let exit_span = self.package.spans.span_ref(&span);
         let (exit_idx, exit_id) = self.new_block("match_exit", exit_span);
-        let mut check_blocks = Vec::new();
-        let mut arm_blocks = Vec::new();
-        for (index, arm) in arms.iter().enumerate() {
-            let check_span = self.package.spans.span_ref(&arm.pattern.1);
-            check_blocks.push(self.new_block(&format!("match_check_{index}"), check_span));
-            let arm_span = self.package.spans.span_ref(&arm.body.1);
-            arm_blocks.push(self.new_block(&format!("match_arm_{index}"), arm_span));
-        }
+        let (check_blocks, guard_blocks, arm_blocks) = self.new_match_blocks(arms);
 
         if let Some((first_idx, first_id)) = check_blocks.first() {
             let span_ref = self.package.spans.span_ref(&span);
@@ -2974,7 +3063,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             let (check_idx, _) = check_blocks[index].clone();
             self.switch_to(check_idx);
             let (_, arm_id) = &arm_blocks[index];
-            let tag = self.pattern_tag(&arm.pattern).unwrap_or(index);
+            let pattern_tag = self.pattern_tag(&arm.pattern);
+            let pattern_is_catch_all = pattern_tag.is_none()
+                && matches!(arm.pattern.0, Pattern::Wildcard | Pattern::Identifier(_));
+            let tag = pattern_tag.unwrap_or(index);
             let tag_const = self.lower_literal(
                 &Literal::Integer {
                     value: i64::try_from(tag).unwrap_or(0),
@@ -2990,17 +3082,38 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 Some(arm.pattern.1.clone()),
                 None,
             );
-            let else_id = check_blocks
-                .get(index + 1)
+            let matched_id = guard_blocks[index]
+                .as_ref()
                 .map_or_else(|| arm_id.clone(), |(_, id)| id.clone());
+            let else_id = Self::next_match_arm_id(
+                index,
+                arm.guard.is_some(),
+                pattern_is_catch_all,
+                &check_blocks,
+                &matched_id,
+                arm_id,
+                &exit_id,
+            );
             let pattern_span = self.package.spans.span_ref(&arm.pattern.1);
             self.terminate(Terminator::br_if(
                 Operand::local(cond),
-                arm_id.clone(),
-                else_id,
+                matched_id,
+                else_id.clone(),
                 Vec::new(),
                 pattern_span,
             ));
+
+            if let (Some(guard), Some((guard_idx, _))) = (&arm.guard, guard_blocks[index].clone()) {
+                let guard_else_id = Self::match_guard_failure_id(index, &check_blocks, &exit_id);
+                self.lower_match_guard_block(
+                    guard,
+                    guard_idx,
+                    &arm.pattern,
+                    &scrutinee_local,
+                    arm_id.clone(),
+                    guard_else_id,
+                )?;
+            }
 
             let (arm_idx, _) = arm_blocks[index].clone();
             self.switch_to(arm_idx);

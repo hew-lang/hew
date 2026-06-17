@@ -152,6 +152,16 @@ const PARITY_CASES: &[ParityCase] = &[
         accepted_divergences: &[],
     },
     ParityCase {
+        test_name: "match_guard_parity",
+        source_rel: "examples/playground/language/match_guard.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "match_guard_catch_all_fallthrough",
+        source_rel: "examples/enums/match_guard_catch_all_fallthrough.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
         // Fieldless-enum `==`/`!=`: `BinaryOp::Equal`/`NotEqual` on a fieldless
         // enum emits `cmp.eq`/`cmp.ne`; the VM's `compare` handler uses
         // `canonicalComparable` which serialises `{ type, tag, payload: [] }` to

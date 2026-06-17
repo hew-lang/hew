@@ -286,6 +286,19 @@
     }
   },
   {
+    "id": "language/match_guard",
+    "category": "language",
+    "name": "Match Guard",
+    "description": "Guarded enum match arms fall through when the guard is false",
+    "source_path": "language/match_guard.hew",
+    "expected_path": "language/match_guard.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
     "id": "machines/traffic_light",
     "category": "machines",
     "name": "Traffic Light",

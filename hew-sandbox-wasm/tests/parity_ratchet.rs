@@ -253,6 +253,16 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("stmt_match"),
     },
     Construct {
+        id: "match arm guard (guarded enum arm)",
+        probe: "enum L { Hi(i64); Lo(i64); }\nfn f(l: L) -> i64 {\n    match l { Hi(n) if n > 50 => 2, Hi(_) => 1, Lo(_) => 0 }\n}\nfn main() { println(f(Hi(99))); }\n",
+        coverage: Coverage::Parity("match_guard_parity"),
+    },
+    Construct {
+        id: "match arm guard (non-last guarded catch-all)",
+        probe: "enum L { Hi(i64); Lo(i64); }\nfn never() -> bool { 1 == 2 }\nfn main() {\n    let l: L = Lo(7);\n    match l { Hi(n) if n > 50 => println(\"high\"), _ if never() => println(\"never\"), _ => println(\"fallback\") }\n    return;\n}\n",
+        coverage: Coverage::Parity("match_guard_catch_all_fallthrough"),
+    },
+    Construct {
         id: "statement-position `if let`",
         // Now lowered: lower_stmt_if_let runs the matched/else branch for its side
         // effects. The pattern is a constructor-with-binding (the runnable form
@@ -634,7 +644,7 @@ fn every_required_parity_case_backs_a_construct() {
 /// justifying a removed admission in the same commit.
 #[test]
 fn runnable_coverage_does_not_shrink() {
-    const RUNNABLE_BASELINE: usize = 32;
+    const RUNNABLE_BASELINE: usize = 34;
     let runnable = CONSTRUCTS
         .iter()
         .filter(|c| matches!(c.coverage, Coverage::Parity(_)))

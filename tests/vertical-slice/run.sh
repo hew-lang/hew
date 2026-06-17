@@ -780,6 +780,19 @@ run_accept_expect_stdout "actor_multi_arg_ask"
 # `rx.close()` in the caller compiled and double-closed the channel at runtime.
 run_accept_expect_stdout "actor_nested_handle_tuple_transfer"
 
+# Accept + run: a single-argument actor receive handler whose ONLY parameter is
+# a process-local pid payload (`LocalPid<T>`). `echo.hear(this)` passes the
+# pinger's own pid as the sole message arg; the handler routes an `ack` back
+# through it. Before the fix this single-arg form was incorrectly fail-closed at
+# codegen — the cross-node codec seeder eagerly tried to build a wire serializer
+# for the non-serializable `LocalPid` payload and failed the WHOLE compile —
+# even though the identical multi-arg form already worked and a same-node send
+# never serializes. Pins the broadened codec-seeder skip (actor-pid/handle
+# family), the sibling of the channel-handle skip. The companion reject fixture
+# (actor_local_pid_remote_nonserializable) proves the cross-node direction stays
+# forbidden at the checker.
+run_accept_expect_stdout "actor_single_arg_pid_payload"
+
 # Reject: an ask-shaped receive method called on a struct-field actor receiver
 # must be `await`ed. `actor B { let out: W; ... out.get() }` invokes W's
 # non-unit `get` without `await`; because the field receiver routes through the
@@ -922,6 +935,20 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/actor_multi_arg_remote_tell_unsupported.hew" \
   "E_REMOTE_PAYLOAD_UNSUPPORTED" \
   "actor_multi_arg_remote_tell_unsupported"
+
+# Reject: a process-local `LocalPid` payload must never cross a RemotePid
+# (cross-node) boundary. `LocalPid<T>` is process-local — a bare `*mut HewActor`
+# pointer with no on-wire representation — and carries neither Encode nor
+# Decode, so it is NOT Serializable. Sending it through `RemotePid::tell` must
+# fail closed at the checker's Serializable boundary, never ship a local pointer
+# to another node. This is the guard for the broadened codec-seeder skip: the
+# companion accept fixture (actor_single_arg_pid_payload) proves the SAME pid
+# payload runs on a same-node send; broadening the skip removed dead codec
+# weight only — the impossible cross-node case stays fail-closed here.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/actor_local_pid_remote_nonserializable.hew" \
+  "must implement Serializable before it can cross a RemotePid boundary" \
+  "actor_local_pid_remote_nonserializable"
 
 # Reject: removed spawn-lambda syntax (E_SPAWN_LAMBDA_SYNTAX_REMOVED).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/spawn_lambda_removed.hew" >"${reject_output}" 2>&1; then

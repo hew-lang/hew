@@ -1,0 +1,13 @@
+// Validation: an enum-variant pattern in a `let` binding must be rejected with
+// a single spanned error pointing to `if let` or `match`.  No secondary
+// "has no binding" or UndefinedVariable cascade must fire.
+enum Status {
+    Ok(i64);
+    Err;
+}
+
+fn main() -> i64 {
+    let s = Status::Ok(5);
+    let Status::Ok(x) = s;
+    x
+}

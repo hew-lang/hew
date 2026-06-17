@@ -2534,3 +2534,47 @@ if "${HEW}" check \
   exit 1
 fi
 grep -q 'contains an opaque field' "${reject_output}"
+
+# ---------------------------------------------------------------------------
+# let-destructure: record/struct product-type irrefutable patterns
+# ---------------------------------------------------------------------------
+
+# Accept: `let Point { x, y } = p` binds both fields; x=1 + y=2 = 3.
+run_accept_expect_status "let_record_destructure_sums_fields" 3
+
+# Accept: same desugar with 4 fields (Config-shaped record).
+# Arithmetic over all four fields: (8080+3) + (3*30) + (8080+30) = 16283;
+# 16283 mod 256 = 155.
+run_accept_expect_status "let_record_destructure_multi_fields" 155
+
+# Accept: record with an owned string field destructures without double-free.
+# tag=7 is returned; run under MallocScribble=1 to catch use-after-free.
+run_accept_expect_status "let_record_destructure_owned_field" 7
+
+# Accept: destructure inside a called function and again at the call site.
+# dot(Vec2{3,4}) = 25; norm_sq desugar + outer desugar both fire.
+run_accept_expect_status "let_record_destructure_in_fn" 25
+
+# Reject: enum-variant Constructor pattern in `let` binding must emit exactly
+# one spanned error pointing to `if let` or `match`; no cascade.
+expect_check_fail_error_count \
+    "${ROOT}/tests/vertical-slice/reject/let_refutable_pattern_rejected.hew" \
+    1 \
+    "let_refutable_pattern_rejected"
+# The error must reference `if let` or `match`.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/let_refutable_pattern_rejected.hew" \
+    "if let" \
+    "let_refutable_pattern_rejected_message"
+# No "has no binding" cascade must appear.
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/let_refutable_pattern_rejected.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected let_refutable_pattern_rejected to fail" >&2
+  exit 1
+fi
+if grep -q 'has no binding' "${reject_output}"; then
+  echo "let_refutable_pattern_rejected cascaded into 'has no binding'" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi

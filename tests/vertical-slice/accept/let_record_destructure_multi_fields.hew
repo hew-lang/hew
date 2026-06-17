@@ -1,0 +1,14 @@
+// Validation: record destructure with 4 fields computes the correct result.
+// Mirrors the c21_realistic_destructure cascade probe.
+// Expected exit: (8080+3 + 3*30 + 8080+30) mod 256 = 16283 mod 256 = 155
+type Config { host: string; port: i64; retries: i64; timeout: i64; }
+
+fn main() -> i64 {
+    let cfg = Config { host: "x", port: 8080, retries: 3, timeout: 30 };
+    let Config { host, port, retries, timeout } = cfg;
+    let a = port + retries;
+    let b = retries * timeout;
+    let c = port + timeout;
+    let _ = host;
+    a + b + c
+}

@@ -1,0 +1,16 @@
+// Validation: record destructure works inside a called function and at the
+// call site.  dot(3,4) = 9+16 = 25.  main destructures the result record.
+type Vec2 { a: i64; b: i64; }
+type Sum  { value: i64; }
+
+fn norm_sq(v: Vec2) -> Sum {
+    let Vec2 { a, b } = v;
+    Sum { value: a * a + b * b }
+}
+
+fn main() -> i64 {
+    let v = Vec2 { a: 3, b: 4 };
+    let s = norm_sq(v);
+    let Sum { value } = s;
+    value
+}

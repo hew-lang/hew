@@ -1379,24 +1379,32 @@ fn ty_contains_unclonable_opaque_inner(
             //    entry point, so its behaviour is unchanged.
             //
             //    QUALIFIED-NAME GUARD (security, UAF/double-free): the layout
-            //    lookups in steps 3/4 match by SHORT name, so a QUALIFIED opaque
-            //    handle whose discriminator was cleared (`json.Value`,
-            //    `is_opaque: false`) would otherwise be "resolved" by a clean
-            //    user record/enum that merely shares its short name (`Value`) —
-            //    suppressing this fallback and admitting the handle into a
-            //    flat-copied generator env (shallow-aliasing the caller's handle
-            //    → double-free / use-after-free at teardown). A bare-short-name
-            //    collision is NOT a resolution for a qualified name: require an
-            //    EXACT (qualified) layout-name match — or, for a generic enum,
-            //    the structural mangled-key match `find_enum_layout` already
-            //    validated (args non-empty) — before treating the type as
-            //    resolved to a user layout. An UNqualified name keeps the prior
-            //    exact-or-short behaviour, so the same-short value-record
-            //    negative control still admits.
+            //    lookups in steps 3/4 match by SHORT name — `record_match` accepts
+            //    a short-name hit, and `find_enum_layout` shortens the spine before
+            //    mangling — so a QUALIFIED opaque handle whose discriminator was
+            //    cleared (`json.Value` / `a.Wrapper<i64>`, `is_opaque: false`)
+            //    would otherwise be "resolved" by a clean user record OR generic
+            //    enum that merely shares its short name (`Value` / `Wrapper$$i64`,
+            //    a DIFFERENT module's type) — suppressing this fallback and
+            //    admitting the handle into a flat-copied generator env
+            //    (shallow-aliasing the caller's handle → double-free /
+            //    use-after-free at teardown).
+            //
+            //    A short-name-only match is NEVER a resolution for a qualified
+            //    name — record OR enum, generic OR not (closing the whole class,
+            //    not one instance). Only an EXACT (qualified) layout-name match
+            //    proves the type IS that user layout. Record/enum layouts are
+            //    keyed by short/mangled name, so the exact-match clauses below are
+            //    the genuine-identity test; everything else falls through to the
+            //    opaque-set check. A real qualified generic enum NOT in the opaque
+            //    set is still admitted (the fallback only flags names in the set);
+            //    a qualified opaque IN the set fails closed. An UNqualified name
+            //    keeps the prior exact-or-short behaviour, so the same-short
+            //    value-record negative control still admits.
             let name_is_qualified = name.contains('.');
             let resolved_to_user_layout = if name_is_qualified {
                 record_match.is_some_and(|r| r.name == *name)
-                    || enum_found.is_some_and(|e| e.name == *name || !args.is_empty())
+                    || enum_found.is_some_and(|e| e.name == *name)
             } else {
                 record_match.is_some() || enum_found.is_some()
             };
@@ -5663,6 +5671,74 @@ mod heap_owning_tests {
                 &qualified_names
             ),
             "an unqualified same-short value record must NOT be mis-flagged"
+        );
+    }
+
+    #[test]
+    fn name_fallback_flags_qualified_opaque_generic_shadowed_by_same_short_enum() {
+        // Security regression, GENERIC-ENUM variant (UAF / double-free): a
+        // QUALIFIED generic opaque handle whose `is_opaque` discriminator was
+        // cleared on the way to MIR (`a.Wrapper<i64>`, `is_opaque: false`) must
+        // STILL fail closed even when a clean same-short GENERIC ENUM layout
+        // (`Wrapper$$i64`, no opaque payload — a different module's type) exists.
+        //
+        // `find_enum_layout` resolves `a.Wrapper<i64>` to the bare-key
+        // `Wrapper$$i64` by SHORT name (it shortens the spine before mangling),
+        // so the prior gate — which treated ANY generic-enum structural match as
+        // a resolved user layout via `!args.is_empty()` — marked the type
+        // resolved, suppressed the opaque name-fallback, and admitted the
+        // qualified handle into the flat-copied generator env (shallow-aliasing
+        // the caller's handle → double-free / use-after-free at teardown).
+        //
+        // A short-name-only structural match is NOT a resolution for a qualified
+        // name: only an EXACT (qualified) layout-name match may suppress the
+        // fallback. The clean `i64` payload means neither the arg-recursion nor
+        // the variant-recursion rejects — proving it is the STEP-5 fallback that
+        // must fire, not an incidental nested-opaque hit.
+        let clean_same_short_enum = EnumLayout {
+            name: hew_hir::mangle("Wrapper", &[ResolvedTy::I64]),
+            tag_width: 1,
+            variants: vec![MachineVariantLayout {
+                name: "Full".to_string(),
+                field_tys: vec![ResolvedTy::I64],
+            }],
+            is_indirect: false,
+        };
+        let enums = vec![clean_same_short_enum];
+
+        // Qualified, discriminator-cleared generic opaque handle — the shape a
+        // captured local's binding type reaches MIR with.
+        let qualified_opaque = ResolvedTy::named_user("a.Wrapper", vec![ResolvedTy::I64]);
+
+        // Opaque decl-name set carries the QUALIFIED (use-site) form...
+        let qualified_names = vec!["a.Wrapper".to_string()];
+        assert!(
+            ty_contains_unclonable_opaque_with_names(
+                &qualified_opaque,
+                &[],
+                &enums,
+                &qualified_names
+            ),
+            "a qualified generic opaque handle must fail closed even when a clean \
+             same-short generic enum layout exists (the structural same-short \
+             match must not suppress the opaque name-fallback)"
+        );
+
+        // ...and when the opaque decl-name set carries the bare SHORT name.
+        let short_names = vec!["Wrapper".to_string()];
+        assert!(
+            ty_contains_unclonable_opaque_with_names(&qualified_opaque, &[], &enums, &short_names),
+            "a qualified generic opaque handle must also fail closed when the \
+             opaque decl-name set carries the bare short name"
+        );
+
+        // Negative control: the SAME generic-enum shape, but NOT in the opaque
+        // set, still ADMITS. The fallback only flags names IN the opaque set, so
+        // requiring an EXACT match (dropping the `!args.is_empty()` escape) does
+        // not over-reject a genuine generic enum capture.
+        assert!(
+            !ty_contains_unclonable_opaque_with_names(&qualified_opaque, &[], &enums, &[]),
+            "a genuine generic enum (not in the opaque set) must still be admitted"
         );
     }
 

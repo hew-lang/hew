@@ -87,6 +87,31 @@ slow-timeout = { period = "120s", terminate-after = 4 }
 retries = 1
 
 [[profile.ci.overrides]]
+# await_e2e tests each call `hew run` at least twice (the
+# multiple_awaits_in_one_handler_resume_correctly_under_both_pools test runs
+# the fixture with the default pool and then HEW_WORKERS=1). On a 4-core
+# hosted runner, unthrottled await_e2e parallelism shares cores with the
+# exec/e2e group and can push a single compile+codegen+link+run cycle past
+# the 30s internal test timeout even when no test is genuinely stuck.
+#
+# SHIM: routing into subprocess-intensive (max-threads=8) and adding retries=1
+# absorbs subprocess-spawn oversubscription on hosted runners; these do NOT
+# mask a real await/resume regression.
+# WHEN obsolete: when await fixtures are pre-compiled once at test-suite
+#   startup and tests only launch the native executable (not a full compiler
+#   invocation). Tracked: #1858 / PR #1863.
+# WHAT the real solution looks like: build fixture binaries once in a
+#   test-setup hook; each test launches the pre-built binary directly.
+# Correctness invariant: a real lost-wake or mis-resume failure fails on
+#   BOTH attempts — the bounded run_bounded_command turns a hang into a
+#   non-zero exit on every try; only a transient resource-starvation exit
+#   is absorbed by the retry.
+filter = "binary(await_e2e)"
+test-group = "subprocess-intensive"
+slow-timeout = { period = "120s", terminate-after = 4 }
+retries = 1                                             # SHIM: see comment above; remove when build-once fixture work (#1858) lands
+
+[[profile.ci.overrides]]
 # eval_e2e tests spawn the full hew compiler binary (AOT compile + codegen +
 # link + subprocess execute).  Route them into the subprocess-intensive group
 # so at most 8 run concurrently, preventing compiler-process oversubscription

@@ -845,6 +845,21 @@ impl Checker {
         true
     }
 
+    fn is_supported_hashmap_projection_element_type(ty: &Ty) -> bool {
+        matches!(
+            ty,
+            Ty::Bool
+                | Ty::Char
+                | Ty::I32
+                | Ty::U32
+                | Ty::I64
+                | Ty::U64
+                | Ty::F32
+                | Ty::F64
+                | Ty::String
+        )
+    }
+
     pub(super) fn validate_hashmap_key_value_types(
         &mut self,
         key_ty: &Ty,
@@ -959,6 +974,59 @@ impl Checker {
     ) -> bool {
         self.reject_unsafe_hashmap_element_types(key_ty, val_ty, span)
             && self.validate_hashmap_key_value_types(key_ty, val_ty, span)
+    }
+
+    pub(super) fn validate_hashmap_projection_element_types(
+        &mut self,
+        key_ty: &Ty,
+        val_ty: &Ty,
+        method: &str,
+        span: &Span,
+    ) -> bool {
+        if !self.validate_hashmap_owned_element_types(key_ty, val_ty, span) {
+            return false;
+        }
+
+        let resolved_key = self.subst.resolve(key_ty).materialize_literal_defaults();
+        let resolved_val = self.subst.resolve(val_ty).materialize_literal_defaults();
+
+        if matches!(resolved_key, Ty::Error) || matches!(resolved_val, Ty::Error) {
+            return false;
+        }
+
+        if matches!(resolved_key, Ty::Var(_)) || matches!(resolved_val, Ty::Var(_)) {
+            return true;
+        }
+
+        if !Self::is_supported_hashmap_projection_element_type(&resolved_val) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`HashMap<{}, {}>.{method}()` is not yet supported: projecting from a map with value type `{}` into an owned `Vec` is not lowered; supported projection value types are scalar primitives and `string`",
+                    resolved_key.user_facing(),
+                    resolved_val.user_facing(),
+                    resolved_val.user_facing()
+                ),
+            );
+            return false;
+        }
+
+        if method == "keys" && !Self::is_supported_hashmap_projection_element_type(&resolved_key) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`HashMap<{}, {}>.keys()` is not yet supported: projecting key type `{}` into an owned `Vec` is not lowered; supported projection key types are scalar primitives and `string`",
+                    resolved_key.user_facing(),
+                    resolved_val.user_facing(),
+                    resolved_key.user_facing()
+                ),
+            );
+            return false;
+        }
+
+        true
     }
 
     pub(super) fn validate_hashset_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
@@ -2655,6 +2723,43 @@ mod tests {
     fn primitive_copy_layout_string_returns_none() {
         // String is heap-managed; not a fixed-layout Copy type.
         assert_eq!(primitive_copy_layout(&Ty::String, &HashMap::new()), None);
+    }
+
+    #[test]
+    fn hashmap_projection_element_gate_accepts_lowered_scalars_and_string() {
+        for ty in [
+            Ty::Bool,
+            Ty::Char,
+            Ty::I32,
+            Ty::U32,
+            Ty::I64,
+            Ty::U64,
+            Ty::F32,
+            Ty::F64,
+            Ty::String,
+        ] {
+            assert!(
+                Checker::is_supported_hashmap_projection_element_type(&ty),
+                "expected `{}` to be admitted for HashMap projection",
+                ty.user_facing()
+            );
+        }
+    }
+
+    #[test]
+    fn hashmap_projection_element_gate_rejects_owned_aggregate_shapes() {
+        let record_ty = Ty::normalize_named("User".to_string(), vec![]);
+        let vec_ty = Ty::Named {
+            name: "Vec".to_string(),
+            args: vec![Ty::I64],
+            builtin: Some(BuiltinType::Vec),
+        };
+        assert!(!Checker::is_supported_hashmap_projection_element_type(
+            &record_ty
+        ));
+        assert!(!Checker::is_supported_hashmap_projection_element_type(
+            &vec_ty
+        ));
     }
 
     #[test]

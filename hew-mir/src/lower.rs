@@ -15304,7 +15304,8 @@ impl Builder {
             ResolvedTy::I64 | ResolvedTy::U64 => "hew_vec_slice_range_i64",
             ResolvedTy::F64 => "hew_vec_slice_range_f64",
             ResolvedTy::String => "hew_vec_slice_range_str",
-            // Pointer-shaped heap handles (Duplex/LambdaActor/Named types).
+            // HIR rejects range-slices for Named elements today; this arm stays
+            // as a fail-closed backstop for any future gate relaxation.
             ResolvedTy::Named { .. } => "hew_vec_slice_range_ptr",
             other => {
                 self.diagnostics.push(MirDiagnostic {

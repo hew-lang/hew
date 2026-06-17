@@ -14,10 +14,12 @@
 //! `hew_vec_get_layout` for `BitCopy` value records). Narrower scalars
 //! (i8/u8/i16/u16/f32/isize/usize) remain fail-closed pending width
 //! normalisation.
-//! Range-slice allowlist: i32, u32, i64, u64, f64, `String`, and
-//! `Named { .. }` (`hew_vec_slice_range_str` copies header-aware elements into
-//! the fresh vec). Note bool/char scalar indexing is supported but range
-//! slicing for them is still fail-closed pending width normalisation.
+//! Range-slice allowlist: i32, u32, i64, u64, f64, and `String`
+//! (`hew_vec_slice_range_str` copies header-aware elements into the fresh vec).
+//! Named elements stay fail-closed because `hew_vec_slice_range_ptr` shallow-copies
+//! element pointers into a layout-less owned Vec. Note bool/char scalar indexing
+//! is supported but range slicing for them is still fail-closed pending width
+//! normalisation.
 
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx, TargetArch};
 use hew_types::{module_registry::ModuleRegistry, Checker};
@@ -119,20 +121,24 @@ fn vec_index_unsupported_element_types_rejected() {
 
 #[test]
 fn vec_slice_unsupported_element_types_rejected() {
-    // Range-slice on Vec<bool>, Vec<char> — each must emit a
+    // Range-slice on Vec<bool>, Vec<char>, Vec<record>, and Vec<enum> each emit a
     // VecSliceElementTypeUnsupported diagnostic.
     let out = lower(
         r"
+        record UserRecord { x: i32 }
+        enum Colour { Red; Green; }
         fn pick_bools(xs: Vec<bool>) -> Vec<bool> { xs[0..2] }
         fn pick_chars(xs: Vec<char>) -> Vec<char> { xs[1..3] }
+        fn pick_named(xs: Vec<UserRecord>) -> Vec<UserRecord> { xs[0..1] }
+        fn pick_enum(xs: Vec<Colour>) -> Vec<Colour> { xs[0..1] }
         ",
     );
 
     let diags = slice_diagnostics(&out);
     assert_eq!(
         diags.len(),
-        2,
-        "expected exactly 2 VecSliceElementTypeUnsupported diagnostics, got: {:#?}",
+        4,
+        "expected exactly 4 VecSliceElementTypeUnsupported diagnostics, got: {:#?}",
         out.diagnostics
     );
     assert!(
@@ -142,6 +148,14 @@ fn vec_slice_unsupported_element_types_rejected() {
     assert!(
         diags.contains(&"char".to_string()),
         "missing char: {diags:?}"
+    );
+    assert!(
+        diags.contains(&"UserRecord".to_string()),
+        "missing UserRecord: {diags:?}"
+    );
+    assert!(
+        diags.contains(&"Colour".to_string()),
+        "missing Colour: {diags:?}"
     );
 
     for d in &out.diagnostics {
@@ -203,16 +217,12 @@ fn vec_index_supported_element_types_accepted() {
 
 #[test]
 fn vec_slice_supported_element_types_accepted() {
-    // Range-slice on i32 / f64 / String / user-defined Named type — gate
-    // must NOT fire (note: String is allowed here but not for scalar
-    // indexing).
+    // Range-slice on i32 / f64 / String must NOT fire.
     let out = lower(
         r"
-        record UserRecord { x: i32 }
         fn slice_i32(xs: Vec<i32>) -> Vec<i32> { xs[0..2] }
         fn slice_f64(xs: Vec<f64>) -> Vec<f64> { xs[1..3] }
         fn slice_string(xs: Vec<string>) -> Vec<string> { xs[2..4] }
-        fn slice_named(xs: Vec<UserRecord>) -> Vec<UserRecord> { xs[0..1] }
         ",
     );
 

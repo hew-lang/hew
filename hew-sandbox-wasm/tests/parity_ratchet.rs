@@ -401,6 +401,18 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("if_let_value"),
     },
     Construct {
+        id: "fieldless enum `==` / `!=`",
+        // `BinaryOp::Equal` / `NotEqual` on a fieldless-enum operand. The
+        // emitter routes these through `lower_binary` → `cmp.eq` / `cmp.ne`
+        // (no special enum path needed). The VM's `compare` handler uses
+        // `canonicalComparable` which serialises the enum value to
+        // `{ type, tag, payload: [] }` JSON; same-tag variants compare equal,
+        // different-tag variants compare unequal. Admitted by the checker in
+        // #1987 and pinned to the fieldless_enum_eq parity case.
+        probe: "enum Colour { Red; Green; Blue; }\nfn check(c: Colour) {\n    if c == Colour::Red { println(\"red\"); } else { println(\"other\"); }\n    if c != Colour::Blue { println(\"not-blue\"); } else { println(\"blue\"); }\n}\nfn main() {\n    check(Colour::Red);\n    check(Colour::Blue);\n}\n",
+        coverage: Coverage::Parity("fieldless_enum_eq"),
+    },
+    Construct {
         id: "numeric cast (`as`)",
         probe: "fn main() {\n    let x: i64 = 65;\n    let c = x as i32;\n    println(c);\n}\n",
         coverage: Coverage::NotYetRunnable {

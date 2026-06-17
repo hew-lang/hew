@@ -54,6 +54,11 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // local, so `let v = if let .. { x } else { y }` yields the matched value
     // (not unit). Backed by the if_let_value parity case.
     "if_let_value",
+    // Fieldless-enum `==`/`!=`: the emitter routes `BinaryOp::Equal`/`NotEqual`
+    // on enum operands through `cmp.eq`/`cmp.ne`; the VM's `compare` handler
+    // uses `canonicalComparable` which serialises the enum tag + empty payload
+    // to JSON for equality testing. Admitted by the checker in #1987.
+    "fieldless_enum_eq",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";

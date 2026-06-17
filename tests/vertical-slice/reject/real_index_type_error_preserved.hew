@@ -1,0 +1,4 @@
+fn main() {
+    let xs = 5;
+    let _z = xs[0];
+}

@@ -1516,11 +1516,13 @@ impl Checker {
             }
             other => {
                 self.check_against(&index.0, &index.1, &Ty::I64);
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    format!("cannot index into `{}`", other.user_facing()),
-                );
+                if *other != Ty::Error {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!("cannot index into `{}`", other.user_facing()),
+                    );
+                }
                 Ty::Error
             }
         }
@@ -3073,6 +3075,9 @@ impl Checker {
         // concrete types when available (bidirectional inference).
         let left_resolved = self.subst.resolve(&left_ty);
         let right_resolved = self.subst.resolve(&right_ty);
+        if matches!(left_resolved, Ty::Error) || matches!(right_resolved, Ty::Error) {
+            return Ty::Error;
+        }
 
         match op {
             // Wrapping arithmetic: integer-only. No string concat, no duration,

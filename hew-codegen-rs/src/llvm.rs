@@ -33605,8 +33605,9 @@ fn lower_terminator<'ctx>(
             // frees that copy when the body thread ends, so a stack pointer is
             // safe and NO malloc/memcpy is needed here — unlike the lambda-actor
             // path, which owns the whole heap-env protocol. Captures are
-            // BitCopy-only (the producer fail-closes owned captures), so there
-            // are no per-field clones or env-field drops.
+            // plain-copyable only — `BitCopy` AND transitively opaque-handle-free
+            // (`gen_env_capture_admissible` fail-closes owned and opaque
+            // captures) — so there are no per-field clones or env-field drops.
             let body_function = fn_ctx.llvm_mod.get_function(body_fn).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "Terminator::MakeGenerator: generator body fn `{body_fn}` was not \

@@ -5904,6 +5904,54 @@ impl Builder {
             .collect()
     }
 
+    /// True when `ty` may be admitted as a generator-env capture field: a
+    /// plain, recursively-copyable value — every leaf `BitCopy` AND the whole
+    /// transitively free of `#[opaque]` runtime handles.
+    ///
+    /// A generator body runs in its own runtime thread; its only window onto the
+    /// enclosing frame is the env `hew_gen_ctx_create` flat-`memcpy`s across the
+    /// thread boundary (freeing the copy when the body thread ends). An admitted
+    /// value must therefore be safe to bit-copy with no ownership consequence.
+    ///
+    /// Two gates compose here:
+    ///   1. `ValueClass::BitCopy` rejects owned / non-`BitCopy` values —
+    ///      `string`/`Bytes`/`Vec`/`HashMap`, owned records, `Generator` and
+    ///      `CancellationToken` handles, etc. (all `CowValue`/`AffineResource`/
+    ///      `Linear`). Flat-copying any of these would shallow-alias the
+    ///      caller's heap or handle.
+    ///   2. `!ty_contains_unclonable_opaque_with_names` closes the subtle leak
+    ///      the `BitCopy` gate alone misses: an `#[opaque]`-only type classifies
+    ///      as `ResourceMarker::BitCopy` (pointer-width, no implicit drop) even
+    ///      though it is a runtime handle, and a record/enum whose fields are
+    ///      transitively all-`BitCopy` inherits the marker — so an opaque handle
+    ///      can hide inside a "`BitCopy`" aggregate. This is the same transitive
+    ///      authority actor-state clone consults (`model::ty_contains_unclonable_
+    ///      opaque`), so the generator gate and the restart-safe-clone gate
+    ///      cannot disagree. The `_with_names` form additionally consults the
+    ///      module's `#[opaque]` decl-name set (`self.opaque_handle_names`): a
+    ///      captured local's binding type can reach MIR with `is_opaque: false`
+    ///      even when it names an opaque decl, so the discriminator alone would
+    ///      shallow-copy the handle. The name fallback is ordered after
+    ///      record/enum-layout resolution, so a `#[copy]` value record sharing a
+    ///      short name with an opaque handle is NOT mis-rejected.
+    ///
+    /// A scalar (`i64`/`f64`/`bool`/`char`/…), an actor pid (a non-owning
+    /// by-value reference), and a `#[copy]` record of such fields all answer
+    /// `true` (admissible). An `#[opaque]` handle — or any aggregate that
+    /// transitively contains one — answers `false` (fail closed).
+    fn gen_env_capture_admissible(&self, ty: &ResolvedTy) -> bool {
+        if ValueClass::of_ty(ty, &self.type_classes) != ValueClass::BitCopy {
+            return false;
+        }
+        let record_layouts = self.record_layouts_for_classification();
+        !crate::model::ty_contains_unclonable_opaque_with_names(
+            ty,
+            &record_layouts,
+            &self.enum_layouts,
+            &self.opaque_handle_names,
+        )
+    }
+
     fn owned_string_record_field_kinds_for_key(
         &self,
         key: &str,
@@ -20715,16 +20763,21 @@ impl Builder {
         // order. The body reads them back through `Local(0)` (the body-arg
         // copy) via `ClosureEnvFieldLoad` (registered below).
         //
-        // SCOPE / FAIL-CLOSED: only no-drop `BitCopy` field classes (scalars)
-        // are materialised. `hew_gen_ctx_create` copies `env_size` bytes flat
-        // and frees that copy when the body thread ends (`generator.rs`); an
-        // owned field (string/Vec/record) would be a shallow handle alias of
-        // the caller's heap, so freeing both the env copy AND the caller's
-        // binding would double-free / UAF. Until a per-field clone-into-env +
-        // env-field-drop-on-destroy protocol lands (mirroring the lambda
-        // `state_drop_fn`), owned captures fail closed at this construction
-        // site. This is strictly MORE permissive than before: every
-        // parameterised / capturing generator fails closed today.
+        // SCOPE / FAIL-CLOSED: only PLAIN, recursively-copyable values are
+        // materialised — `gen_env_capture_admissible` admits a capture iff it
+        // is `BitCopy` AND transitively free of `#[opaque]` runtime handles.
+        // `hew_gen_ctx_create` copies `env_size` bytes flat and frees that copy
+        // when the body thread ends (`generator.rs`). Two shapes fail closed:
+        //   * an owned field (string/Vec/record) is non-`BitCopy`; flat-copying
+        //     it would shallow-alias the caller's heap → double-free / UAF; and
+        //   * an `#[opaque]`-only handle classifies as `BitCopy` (pointer-width,
+        //     no implicit drop) yet is a runtime handle — bit-copying it across
+        //     the body thread aliases the caller's handle → the same UAF. The
+        //     `BitCopy` gate ALONE would wrongly admit it, so the opaque check
+        //     is the load-bearing addition.
+        // Until a per-field clone-into-env + env-field-drop-on-destroy protocol
+        // lands (mirroring the lambda `state_drop_fn`), owned/opaque captures
+        // fail closed at this construction site.
         let mut env_place: Option<Place> = None;
         let mut env_ty: Option<ResolvedTy> = None;
         let mut env_capture_field_tys: Vec<ResolvedTy> = Vec::new();
@@ -20743,31 +20796,50 @@ impl Builder {
                     .and_then(|local| self.locals.get(local as usize))
                     .cloned();
                 match (slot, capture_ty) {
-                    (Some(src), Some(ty))
-                        if ValueClass::of_ty(&ty, &self.type_classes) == ValueClass::BitCopy =>
-                    {
+                    (Some(src), Some(ty)) if self.gen_env_capture_admissible(&ty) => {
                         init_fields.push((offset, src));
                         field_tys.push(ty);
                     }
                     (Some(_), Some(ty)) => {
-                        // Owned / non-BitCopy capture: fail closed (see SCOPE).
+                        // Not admissible to the flat-`memcpy`'d generator env.
+                        // Two fail-closed shapes share this arm; name the reason
+                        // precisely so the gap is actionable:
+                        //   * owned / non-`BitCopy` (string/Vec/owned record) —
+                        //     no clone-into-env protocol exists yet; OR
+                        //   * `BitCopy`-but-opaque — an `#[opaque]` runtime
+                        //     handle (or an aggregate transitively containing
+                        //     one) classifies as `BitCopy` yet aliases a runtime
+                        //     resource.
+                        // `hew_gen_ctx_create` deep-copies the env's flat bytes
+                        // across the body thread, so shallow-copying either would
+                        // alias the caller's resource → double-free / UAF at
+                        // generator teardown.
+                        let reason =
+                            if ValueClass::of_ty(&ty, &self.type_classes) == ValueClass::BitCopy {
+                                "it transitively contains an `#[opaque]` runtime handle; an \
+                             opaque handle is a pointer-width value with no clone helper, \
+                             so flat-copying it across the generator's body thread would \
+                             alias the caller's handle and double-free / use-after-free at \
+                             teardown"
+                            } else {
+                                "it is an owned / non-BitCopy value; the thread-runtime env \
+                             channel deep-copies flat bytes and can carry only plain \
+                             copyable values"
+                            };
                         self.diagnostics.push(MirDiagnostic {
                             kind: MirDiagnosticKind::NotYetImplemented {
                                 construct: format!(
-                                    "generator capture of non-BitCopy `{}`",
+                                    "the capture of opaque/owned value `{}` into a generator",
                                     capture.name
                                 ),
                                 site: expr.site,
                             },
                             note: format!(
-                                "generator capture `{}` has type `{}`, which the \
-                                 thread-runtime env channel cannot carry yet: only \
-                                 BitCopy scalars are deep-copied safely across the body \
-                                 thread. An owned aggregate would alias its heap and \
-                                 risk a double-free at generator teardown — fail closed \
-                                 instead. DROP-TODO: clone-into-env + \
-                                 env-field-drop-on-destroy (mirror the lambda \
-                                 `state_drop_fn`).",
+                                "cannot capture `{}` (type `{}`) into a generator: {reason}. \
+                                 Only plain copyable values may cross the generator's thread \
+                                 boundary. DROP-TODO: a per-field clone-into-env + \
+                                 env-field-drop-on-destroy protocol (mirroring the lambda \
+                                 `state_drop_fn`) would admit owned/opaque captures safely.",
                                 capture.name,
                                 ty.user_facing()
                             ),

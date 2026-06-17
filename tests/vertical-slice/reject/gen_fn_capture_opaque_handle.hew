@@ -1,0 +1,41 @@
+// Reject fixture: gen_fn_capture_opaque_handle — a generator that captures an
+// `#[opaque]` runtime handle as a free variable must fail closed at MIR
+// lowering.
+//
+// An `#[opaque]`-only type classifies as `ValueClass::BitCopy` (pointer-width,
+// no implicit drop), so the generator-capture gate's `BitCopy` admission check
+// ALONE would let it through. But the generator runtime
+// (`hew_gen_ctx_create`) flat-`memcpy`s the capture env across the body-thread
+// boundary and frees the copy when that thread ends: shallow-copying an opaque
+// handle aliases the caller's handle, so releasing/using either side after the
+// other is freed is a use-after-free / double-free. The capture gate must
+// therefore reject any value transitively containing an opaque handle, not only
+// non-`BitCopy` heap owners.
+//
+// Harness verb: hew check
+// Expected: rejected, fail closed (capture of opaque/owned value into a
+// generator).
+
+#[opaque]
+type Dq {}
+
+extern "C" {
+    fn hew_deque_new() -> Dq;
+    fn hew_deque_len(dq: Dq) -> i64;
+    fn hew_deque_free(dq: Dq);
+}
+
+// `handle` is a free variable of the generator body (its only binding site is
+// the formal parameter), so it travels through the runtime env channel into the
+// body thread — the exact unsafe shallow-copy this gate must refuse.
+gen fn drain(handle: Dq) -> i64 {
+    yield unsafe { hew_deque_len(handle) };
+}
+
+fn main() {
+    let dq = unsafe { hew_deque_new() };
+    for n in drain(dq) {
+        println(n);
+    }
+    unsafe { hew_deque_free(dq) };
+}

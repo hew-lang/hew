@@ -14,7 +14,7 @@
 //! ships. This file is that gate for the generator MIR lane.
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{IrPipeline, RawMirFunction, Terminator};
+use hew_mir::{IrPipeline, MirDiagnosticKind, RawMirFunction, Terminator};
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
 fn lower_checked(source: &str) -> IrPipeline {
@@ -335,4 +335,83 @@ fn gen_block_body_cfg_is_connected() {
              source block of the second yield ({source_of_second})"
         );
     }
+}
+
+/// Security gate (UAF / FFI-ownership): a `gen { }` block that captures an
+/// `#[opaque]` runtime handle as a free variable must FAIL CLOSED at MIR
+/// lowering, not shallow-copy the handle across the body thread.
+///
+/// An `#[opaque]`-only type classifies as `ValueClass::BitCopy` (pointer-width,
+/// no implicit drop), so the capture gate's `BitCopy` admission check ALONE
+/// would admit it. But `hew_gen_ctx_create` flat-`memcpy`s the capture env
+/// across the body-thread boundary and frees the copy when that thread ends:
+/// shallow-copying an opaque handle aliases the caller's handle, a
+/// use-after-free / double-free at generator teardown. The gate additionally
+/// rejects any value transitively containing an opaque handle, surfacing a
+/// `NotYetImplemented` diagnostic instead of materialising an env field.
+#[test]
+fn gen_block_capturing_opaque_handle_fails_closed() {
+    let pipeline = lower_checked(
+        r#"
+        #[opaque]
+        type Dq {}
+
+        extern "C" {
+            fn hew_deque_new() -> Dq;
+            fn hew_deque_len(dq: Dq) -> i64;
+        }
+
+        fn main() {
+            let dq = unsafe { hew_deque_new() };
+            let g = gen { yield unsafe { hew_deque_len(dq) }; };
+        }
+        "#,
+    );
+
+    let opaque_capture_rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("opaque/owned value")
+        )
+    });
+    assert!(
+        opaque_capture_rejected,
+        "a generator capture of an `#[opaque]` handle must fail closed with a \
+         NotYetImplemented diagnostic (shallow-copying it across the body thread \
+         is a use-after-free); got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+/// Regression companion to the opaque-capture gate: a plain `BitCopy` scalar
+/// capture (`i64`) must STILL be admitted — the tightened predicate
+/// (`gen_env_capture_admissible`) must not over-reject the supported path. No
+/// `NotYetImplemented` capture diagnostic, and a gen body is produced.
+#[test]
+fn gen_block_capturing_scalar_is_admitted() {
+    let pipeline = lower_checked(
+        r"
+        fn main() {
+            let base = 10;
+            let g = gen { yield base; };
+        }
+        ",
+    );
+
+    let capture_rejected = pipeline.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("into a generator")
+        )
+    });
+    assert!(
+        !capture_rejected,
+        "a BitCopy scalar generator capture must be admitted, not fail closed; \
+         got: {:#?}",
+        pipeline.diagnostics
+    );
+    // The gen body must still be produced (capture admitted, env materialised).
+    let _body = find_gen_body(&pipeline, "main");
 }

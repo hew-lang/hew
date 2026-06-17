@@ -96,6 +96,7 @@ run_accept_expect_status_and_stdout() {
 
 run_check_run_expect_stdout() {
   local fixture="$1"
+  echo "RUN ${fixture}"
   "${HEW}" check "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" >"${accept_output}" 2>&1
   local status=0
   if "${TIMEOUT}" --kill-after=5s 30s "${HEW}" run \
@@ -113,6 +114,7 @@ run_check_run_expect_stdout() {
     exit 1
   fi
   diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"
+  echo "PASS ${fixture}"
 }
 
 expect_check_fail_contains() {
@@ -442,6 +444,10 @@ expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/user_impl_drop_unsupported.hew" \
     '`impl Drop` is not supported (its `drop` method would not run)' \
     "user impl Drop"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/const_ref_forward.hew" \
+    'undefined variable `A`' \
+    "const_ref_forward"
 
 # Actor body: increment(10) + increment(32) = 42.
 run_accept_expect_status "actor_counter" 42
@@ -663,6 +669,7 @@ grep -q 'LocalPid' "${reject_output}"
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
 run_accept_expect_stdout "print_f64"
+run_check_run_expect_stdout "const_ref_init"
 
 # W4.039 — bytes-to-string triple-ABI canonicalisation. Behavioural proof
 # that `bytes.to_string()` routes through the canonical

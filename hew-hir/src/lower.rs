@@ -2524,8 +2524,13 @@ pub fn lower_program_with_mono_cap(
     // items stay at index 0. See `file_import_item_module_indices`.
     let file_import_module_idx = file_import_item_module_indices(program);
     let mut items: Vec<HirItem> = Vec::new();
+    let mut const_fold_module_idx = 0;
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
         ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
+        if ctx.current_module_idx != const_fold_module_idx {
+            ctx.folded_integer_consts.clear();
+            const_fold_module_idx = ctx.current_module_idx;
+        }
         match item {
             Item::TypeDecl(decl) => {
                 // Retrieve the already-lowered decl so diagnostics are not
@@ -2824,6 +2829,7 @@ pub fn lower_program_with_mono_cap(
                     .collect();
                 let prev_module_consts = ctx.imported_module_consts.replace(module_consts_scope);
 
+                let previous_folded_integer_consts = std::mem::take(&mut ctx.folded_integer_consts);
                 for (item, span) in &module.items {
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
@@ -3187,6 +3193,7 @@ pub fn lower_program_with_mono_cap(
                 }
                 // Restore the const scope after lowering this module's bodies.
                 ctx.imported_module_consts = prev_module_consts;
+                ctx.folded_integer_consts = previous_folded_integer_consts;
                 ctx.tag_diagnostics_since(diag_start, &source_module);
                 record_source_modules_for_items(
                     &items[item_start..],
@@ -4553,6 +4560,11 @@ struct LowerCtx {
     /// Populated in the first pass so const references resolve to a stable id
     /// regardless of source order. See [`ConstEntry`].
     const_registry: HashMap<String, ConstEntry>,
+    /// Same-module integer const values folded earlier in source order.
+    /// Populates `ConstEnv` for subsequent const initializers; values are not
+    /// used for ordinary expression lowering, which continues to resolve const
+    /// references through `const_registry`.
+    folded_integer_consts: HashMap<String, i64>,
     /// Per-enum variant descriptors keyed by the enum's type name. Populated
     /// between the type-decl second pass and the source-order third pass so
     /// `Expr::Call` (tuple variant ctors like `Shape::Line(5)`) and
@@ -4731,6 +4743,7 @@ impl LowerCtx {
             current_machine_source_state: None,
             machine_ctor_registry: HashMap::new(),
             const_registry: HashMap::new(),
+            folded_integer_consts: HashMap::new(),
             enum_variants_by_name: HashMap::new(),
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
             lang_items: tc_output.lang_items.clone(),
@@ -6897,6 +6910,9 @@ impl LowerCtx {
         };
 
         let value = self.fold_const_expr(&decl.value.0, &ty, span.clone());
+        if let crate::node::HirConstValue::Integer(value) = &value {
+            self.folded_integer_consts.insert(decl.name.clone(), *value);
+        }
 
         crate::node::HirConst {
             id,
@@ -6918,8 +6934,8 @@ impl LowerCtx {
     /// is integer-only, so they legitimately stay HIR-local) and the
     /// `Result<u64, ConstEvalError>` → [`HirConstValue`] mapping with its
     /// fail-closed diagnostics. Const *references* in initializers resolve via
-    /// the `ConstEnv`; they are deferred to a later slice, so an empty env is
-    /// passed and `UnknownConst` is reported as a specific deferral diagnostic.
+    /// the `ConstEnv`, populated only with same-module integer consts already
+    /// folded earlier in source order.
     fn fold_const_expr(
         &mut self,
         expr: &Expr,
@@ -6995,10 +7011,10 @@ impl LowerCtx {
         // Delegate integer/arithmetic evaluation to the sanctioned engine.
         // `decl.value` is a `Spanned<Expr>`, but `fold_const_expr` is handed the
         // bare `Expr`; reconstruct the `Spanned` shape the engine expects. The
-        // env is empty because const references in initializers are deferred —
-        // `UnknownConst` is mapped to a specific deferral diagnostic below.
+        // `UnknownConst` is mapped to a fail-closed diagnostic below for
+        // forward references and unsupported const value shapes.
         let spanned: hew_parser::ast::Spanned<Expr> = (expr.clone(), span.clone());
-        let env = hew_types::check::const_eval::ConstEnv::new();
+        let env = self.const_eval_env_from_folded_integer_consts();
         match hew_types::check::const_eval::eval_const_expr(&spanned, &env) {
             Ok(u) => match i64::try_from(u) {
                 Ok(value) => return crate::node::HirConstValue::Integer(value),
@@ -7042,6 +7058,16 @@ impl LowerCtx {
         } else {
             crate::node::HirConstValue::Integer(0)
         }
+    }
+
+    fn const_eval_env_from_folded_integer_consts(&self) -> hew_types::check::const_eval::ConstEnv {
+        let mut env = hew_types::check::const_eval::ConstEnv::new();
+        for (name, value) in &self.folded_integer_consts {
+            if let Ok(value) = u64::try_from(*value) {
+                env.insert(name.clone(), value);
+            }
+        }
+        env
     }
 
     /// True for the string primitive in either of its resolved spellings:
@@ -25043,6 +25069,21 @@ mod tests {
         &function.body
     }
 
+    fn const_value_named<'a>(
+        output: &'a LowerOutput,
+        name: &str,
+    ) -> &'a crate::node::HirConstValue {
+        output
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Const(item) if item.name == name => Some(&item.value),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("expected lowered const `{name}`"))
+    }
+
     fn named_record_ty(name: &str) -> ResolvedTy {
         ResolvedTy::Named {
             name: name.to_string(),
@@ -25065,6 +25106,59 @@ mod tests {
             "expected exactly one checker fact named {name}"
         );
         first
+    }
+
+    #[test]
+    fn fold_const_expr_resolves_prior_const_ref() {
+        let (_program, _tco, lowered) = parse_typecheck_and_lower(
+            r"
+            const A: i64 = 10;
+            const B: i64 = A + 1;
+
+            fn main() -> i64 {
+                B
+            }
+            ",
+        );
+
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "lower diagnostics: {:#?}",
+            lowered.diagnostics
+        );
+        assert_eq!(
+            const_value_named(&lowered, "B"),
+            &crate::node::HirConstValue::Integer(11)
+        );
+    }
+
+    #[test]
+    fn fold_const_expr_forward_ref_fails_closed_at_checker() {
+        let parsed = hew_parser::parse(
+            r"
+            const B: i64 = A + 1;
+            const A: i64 = 10;
+
+            fn main() -> i64 {
+                B
+            }
+            ",
+        );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&parsed.program);
+        assert!(
+            tco.errors
+                .iter()
+                .any(|error| error.message == "undefined variable `A`"),
+            "forward const reference must fail closed before HIR lowering; type errors: {:#?}",
+            tco.errors
+        );
     }
 
     #[test]

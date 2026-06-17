@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Removed (breaking)
+
+- **User `impl Drop` is rejected.** Declaring `impl Drop for T` is now a
+  compile error: the checker emits a spanned diagnostic (`impl Drop` is not
+  supported — its `drop` method would not run). Migrate handle types that
+  require deterministic cleanup to `#[resource]` with a `fn close(self)` method;
+  plain data types continue to receive automatic field-wise drop with no changes
+  required. Stdlib `Child` (`std::process`) and `MonitorRef`
+  (`std::link_monitor`) have been migrated to the `#[resource]` close model.
+  (#1986)
+
 ## [0.5.1] — 2026-06-14
 
 v0.5.1 is a correctness and trust release. It ships no new user-language

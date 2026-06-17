@@ -1205,40 +1205,52 @@ fn process(data: Vec<u8>) {
 }
 ```
 
-#### 3.7.3 Deterministic Destruction (Drop)
+#### 3.7.3 Deterministic Cleanup
 
-The `Drop` trait enables RAII-style resource cleanup:
+User-defined `impl Drop` is **not supported** and is rejected at compile time.
+The checker emits a spanned error on any `impl Drop for T` block:
+
+```
+error: `impl Drop` is not supported (its `drop` method would not run);
+       use `#[resource]` with a `close()` method for deterministic cleanup,
+       or rely on automatic field-wise drop
+```
+
+Deterministic cleanup is provided by two mechanisms.
+
+**`#[resource]` + `close()`** — for types that own an external resource and
+require explicit release (file descriptors, network sockets, child processes,
+etc.):
 
 ```hew
-trait Drop {
-    fn drop(val: Self);
-}
-
+#[resource]
 type FileHandle {
     fd: i32;
 }
 
-impl Drop for FileHandle {
-    fn drop(fh: FileHandle) {
-        close(fh.fd);
+impl FileHandle {
+    fn close(fh: FileHandle) {
+        // release the file descriptor
     }
 }
 ```
 
-**Drop guarantees:**
+The `#[resource]` annotation marks the type as an owned handle. The compiler
+calls `close()` at scope exit as the single release path, guaranteeing that the
+resource is released exactly once.
 
-- `drop()` runs exactly once per value
-- `drop()` runs at a predictable point (scope exit or explicit drop)
-- Drop order: fields are dropped in declaration order
-- Nested drops: outer struct drops, then each field drops
+**Automatic field-wise drop** — for plain data types, the compiler emits a
+recursive drop that frees heap storage (strings, `Vec`, `HashMap`, nested
+structs) in field-declaration order. No annotation or `impl` is needed.
 
-**When drop runs:**
-| Situation | Drop behaviour |
-|-----------|---------------|
-| Variable goes out of scope | `drop()` called immediately |
-| Value is moved | No drop at original location |
-| `Rc<T>` refcount reaches zero | supported `Rc<T>` payloads drop their inner `T`; unsupported payloads are rejected during checking |
-| Actor terminates | All owned values dropped, then heap freed |
+**Cleanup guarantees:**
+
+- `close()` (resource types) or field-wise drop runs exactly once per value
+- Cleanup runs at a predictable point (scope exit)
+- Drop order: fields are released in declaration order
+- Nested structs are recursively dropped
+- `Rc<T>` payloads are released when the refcount reaches zero; unsupported `Rc<T>` payload types are rejected during checking
+- All owned values in an actor are cleaned up when the actor terminates; heap is freed after the last field
 
 #### 3.7.4 Indirect Enums (Recursive Data Types)
 
@@ -1980,8 +1992,8 @@ extern "C" fn my_callback(value: i32) -> i32 {
 
 #### 3.9.5 Safety Rules
 
-> **v0.6+.** The `unsafe` block, C string helper (`to_c_string`), safe-wrapper
-> pattern, and `Drop` integration shown below are the intended v0.6+ surface.
+> **v0.6+.** The `unsafe` block, C string helper (`to_c_string`), and
+> `#[resource]` close pattern shown below are the intended v0.6+ surface.
 > In v0.5, `unsafe {}` blocks are parsed but produce a cutover diagnostic
 > during HIR lowering; there is no user-accessible unsafe escape hatch.
 
@@ -2022,6 +2034,7 @@ extern "C" {
 }
 
 // Safe wrapper (public API)
+#[resource]
 pub type File {
     fd: i32;
 }
@@ -2036,10 +2049,8 @@ impl File {
             Ok(File { fd })
         }
     }
-}
 
-impl Drop for File {
-    fn drop(f: File) {
+    fn close(f: File) {
         unsafe { close(f.fd); }
     }
 }

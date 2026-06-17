@@ -266,9 +266,9 @@ fuzz-smoke: fuzz-corpus
 FUZZ_ORACLE_FULL ?=
 fuzz-oracle: hew runtime stdlib check-libhew-fresh
 	@if [ -n "$(FUZZ_ORACLE_FULL)" ]; then \
-		python3 scripts/fuzz/run-oracle.py --full; \
+		python3 scripts/fuzz/run-oracle.py --full --timeout 30; \
 	else \
-		python3 scripts/fuzz/run-oracle.py; \
+		python3 scripts/fuzz/run-oracle.py --timeout 30; \
 	fi
 
 # Oracle self-tests: three independently-failable checks that prove the

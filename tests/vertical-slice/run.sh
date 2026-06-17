@@ -1300,6 +1300,28 @@ grep -qF 'Encode + Decode' "${reject_output}"
 # matches Shape::Line(2); exit 2 proves the fallback binding arm handled it.
 run_accept_expect_status "enum_payload_literal_subpattern" 2
 
+# Reject: literal-only integer matches cover only selected values, never the
+# full integer domain. These must fail under `hew check` until a catch-all arm is
+# present, regardless of signedness or width.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/match_i32_literal_nonexhaustive.hew" \
+  "non-exhaustive match: missing _" \
+  "match_i32_literal_nonexhaustive"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/match_u8_literal_nonexhaustive.hew" \
+  "non-exhaustive match: missing _" \
+  "match_u8_literal_nonexhaustive"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/match_usize_literal_nonexhaustive.hew" \
+  "non-exhaustive match: missing _" \
+  "match_usize_literal_nonexhaustive"
+
+# Accept: integer matches with a catch-all arm and a complete bool match remain
+# exhaustive and run successfully end-to-end.
+run_accept_expect_status "match_i32_literal_catchall_zero" 0
+run_accept_expect_status "match_u8_literal_catchall" 0
+run_accept_expect_status "match_bool_true_false_exhaustive" 0
+
 # ---------------------------------------------------------------------------
 # Regex literal match-arm patterns
 # ---------------------------------------------------------------------------

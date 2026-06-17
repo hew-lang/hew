@@ -1,0 +1,9 @@
+// REJECT: literal-only u8 matches must include a catch-all arm.
+fn main() -> i64 {
+    let x: u8 = 2;
+    match x {
+        0 => 0,
+        1 => 1,
+    }
+    0
+}

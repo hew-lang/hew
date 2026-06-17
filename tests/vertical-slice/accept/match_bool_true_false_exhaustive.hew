@@ -1,0 +1,9 @@
+// Accept: bool has its own finite exhaustiveness path; true/false is complete
+// without a catch-all arm.
+fn main() -> i64 {
+    let x = true;
+    match x {
+        true => 0,
+        false => 1,
+    }
+}

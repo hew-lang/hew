@@ -265,6 +265,15 @@ impl<'a> PackageEmitter<'a> {
                                 };
                                 self.enum_variant_tags.insert(
                                     variant.name.clone(),
+                                    (type_id.clone(), tag, payload_tys.clone()),
+                                );
+                                // Also register the qualified form (`TypeName::VariantName`) so
+                                // that source code using `Colour::Red` in expression position
+                                // (parsed as `Expr::Identifier("Colour::Red")`) is recognised
+                                // alongside the bare `Red` form used in pattern arms and
+                                // same-namespace calls.
+                                self.enum_variant_tags.insert(
+                                    format!("{}::{}", type_decl.name, variant.name),
                                     (type_id.clone(), tag, payload_tys),
                                 );
                                 variants.push(VariantLayout {

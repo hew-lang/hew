@@ -151,6 +151,17 @@ const PARITY_CASES: &[ParityCase] = &[
         // Enum dispatch with a catch-all `_` arm.
         accepted_divergences: &[],
     },
+    ParityCase {
+        // Fieldless-enum `==`/`!=`: `BinaryOp::Equal`/`NotEqual` on a fieldless
+        // enum emits `cmp.eq`/`cmp.ne`; the VM's `compare` handler uses
+        // `canonicalComparable` which serialises `{ type, tag, payload: [] }` to
+        // JSON, making same-tag variants equal and different-tag variants unequal.
+        // Admitted by the checker in #1987. Source lives outside the curated
+        // playground set so the playground manifest is not affected.
+        test_name: "fieldless_enum_eq",
+        source_rel: "examples/enums/run_colour_eq.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

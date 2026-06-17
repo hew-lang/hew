@@ -1,0 +1,14 @@
+// Regression: Vec<record> range-slice panics at runtime with
+// "Vec owned operation requires an element layout descriptor".
+// The checker accepts this program; the runtime aborts because
+// hew_vec_slice_range_ptr builds a pointer-Vec without an owned
+// element layout descriptor.
+// Tracked: t1-vec-managed-projection
+// Expected behaviour once fixed: exits 1 (length of slice).
+record Person { name: string }
+
+fn main() {
+  let v: Vec<Person> = [Person { name: "a" }];
+  let s = v[0..1];
+  println(s.len());
+}

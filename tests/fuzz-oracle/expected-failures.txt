@@ -1,0 +1,20 @@
+# tests/fuzz-oracle/expected-failures.txt
+#
+# Regression corpus entries that are KNOWN to fail.
+# The oracle enforces (in regressions mode):
+#   - Every filename listed here MUST fail (unexpected pass = gate failure →
+#     forces updating this file to promote the gap to a positive guard).
+#   - Every regression file NOT listed here MUST pass (unexpected failure =
+#     gate failure).
+#
+# Format: <filename>  # <root-cause>; issue: #NNNN
+# Filenames are bare (no path prefix); they match files in regressions/.
+#
+# When a fix lands for an entry here, REMOVE the entry and add a positive
+# vertical-slice fixture (or update an existing one) so the behaviour is
+# continuously guarded.  Do NOT remove entries to make the gate green if the
+# regression still fails — fix the underlying compiler instead.
+#
+# Total: 1 known-failing regression.
+
+vec_record_slice.hew  # Vec<record> range-slice panics: hew_vec_slice_range_ptr missing owned element layout descriptor; issue: #TODO-vec-managed-projection

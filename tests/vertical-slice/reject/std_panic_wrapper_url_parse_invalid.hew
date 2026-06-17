@@ -1,0 +1,8 @@
+import std::net::url;
+
+fn main() -> i64 {
+    let parsed = url.parse("x");
+    let host = parsed.host();
+    parsed.free();
+    host.len()
+}

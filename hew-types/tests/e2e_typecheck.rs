@@ -392,7 +392,7 @@ fn module_qualified_call_rewrites_record_registry_c_symbol_metadata() {
 import std::fs;
 
 fn main() {
-    let _ = fs.read("test.txt");
+    let _ = fs.exists("test.txt");
 }
 "#,
     );
@@ -405,7 +405,7 @@ fn main() {
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
             hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }
-                if c_symbol == "hew_file_read"
+                if c_symbol == "hew_file_exists"
         )),
         "expected checker-owned module-qualified rewrite metadata, got: {:?}",
         output.method_call_rewrites

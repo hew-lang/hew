@@ -238,7 +238,17 @@ fn move_copy_error(source: string, target: string) -> IoError {
 /// ```
 pub fn read(path: string) -> string {
     unsafe {
-        hew_file_read(path)
+        let contents = hew_file_read(path);
+        let errno = hew_stream_last_errno();
+        if errno != 0 {
+            let detail = hew_stream_last_error();
+            if detail.len() == 0 {
+                panic(f"fs.read failed for `{path}`: {io_error_message(io_error_from_errno(errno as i64))}");
+            } else {
+                panic(f"fs.read failed for `{path}`: {detail}");
+            }
+        }
+        contents
     }
 }
 

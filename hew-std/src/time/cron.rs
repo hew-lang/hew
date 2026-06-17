@@ -44,6 +44,14 @@ fn ensure_cron_last_error(msg: impl Into<String>) {
     });
 }
 
+fn normalize_cron_expr(expr: &str) -> String {
+    if expr.split_whitespace().count() == 5 {
+        format!("0 {expr} *")
+    } else {
+        expr.to_owned()
+    }
+}
+
 /// Opaque handle wrapping a compiled [`cron::Schedule`].
 ///
 /// Created by [`hew_cron_parse`], freed by [`hew_cron_free`].
@@ -78,7 +86,8 @@ pub unsafe extern "C" fn hew_cron_parse(expr: *const c_char) -> *mut HewCronExpr
         set_cron_last_error("invalid cron expression: null pointer or invalid UTF-8");
         return std::ptr::null_mut();
     };
-    match Schedule::from_str(s) {
+    let normalized = normalize_cron_expr(s);
+    match Schedule::from_str(&normalized) {
         Ok(schedule) => {
             clear_cron_last_error();
             Box::into_raw(Box::new(HewCronExpr { inner: schedule }))
@@ -88,6 +97,12 @@ pub unsafe extern "C" fn hew_cron_parse(expr: *const c_char) -> *mut HewCronExpr
             std::ptr::null_mut()
         }
     }
+}
+
+/// Return true if `expr` is a non-null cron expression handle.
+#[no_mangle]
+pub extern "C" fn hew_cron_is_valid(expr: *const HewCronExpr) -> bool {
+    !expr.is_null()
 }
 
 /// Return the next occurrence after the given epoch timestamp (seconds).
@@ -321,6 +336,18 @@ mod tests {
         // SAFETY: expr_str is a valid NUL-terminated C string.
         let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
         assert!(!expr.is_null());
+        assert!(hew_cron_is_valid(expr));
+        // SAFETY: expr was returned by hew_cron_parse.
+        unsafe { hew_cron_free(expr) };
+    }
+
+    #[test]
+    fn parse_valid_five_field_expression() {
+        let expr_str = CString::new("* * * * *").unwrap();
+        // SAFETY: expr_str is a valid NUL-terminated C string.
+        let expr = unsafe { hew_cron_parse(expr_str.as_ptr()) };
+        assert!(!expr.is_null());
+        assert!(hew_cron_is_valid(expr));
         // SAFETY: expr was returned by hew_cron_parse.
         unsafe { hew_cron_free(expr) };
     }
@@ -331,6 +358,7 @@ mod tests {
         // SAFETY: bad is a valid NUL-terminated C string.
         let expr = unsafe { hew_cron_parse(bad.as_ptr()) };
         assert!(expr.is_null());
+        assert!(!hew_cron_is_valid(expr));
         // SAFETY: hew_cron_last_error returns either null or a malloc-allocated C string.
         let err = unsafe { read_and_free_optional(hew_cron_last_error()) };
         assert!(err.is_some());

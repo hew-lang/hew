@@ -1,0 +1,10 @@
+import std::text::regex;
+
+fn main() -> i64 {
+    let re = regex.new("[");
+    if re.is_match("anything") {
+        1
+    } else {
+        0
+    }
+}

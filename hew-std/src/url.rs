@@ -39,6 +39,12 @@ pub unsafe extern "C" fn hew_url_parse(s: *const c_char) -> *mut HewUrl {
     }
 }
 
+/// Return true if `url` is a non-null URL handle.
+#[no_mangle]
+pub extern "C" fn hew_url_is_valid(url: *const HewUrl) -> bool {
+    !url.is_null()
+}
+
 /// Get the scheme component (e.g. `"https"`) of a [`HewUrl`].
 ///
 /// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
@@ -309,6 +315,7 @@ mod tests {
         unsafe {
             assert!(hew_url_parse(std::ptr::null()).is_null());
         }
+        assert!(!hew_url_is_valid(std::ptr::null()));
 
         // Invalid URL returns null.
         let bad = parse("not a url");

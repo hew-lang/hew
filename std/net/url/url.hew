@@ -133,7 +133,11 @@ impl UrlMethods for Url {
 /// ```
 pub fn parse(s: string) -> Url {
     unsafe {
-        hew_url_parse(s)
+        let u = hew_url_parse(s);
+        if !hew_url_is_valid(u) {
+            panic(f"url.parse: invalid URL: {s}");
+        }
+        u
     }
 }
 
@@ -338,6 +342,7 @@ fn hex_nibble(b: u8) -> i32 { // INTERNAL-ABI: nibble values 0-15 and sentinel -
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
     fn hew_url_parse(s: string) -> Url;
+    fn hew_url_is_valid(url: Url) -> bool;
     fn hew_url_scheme(url: Url) -> string;
     fn hew_url_host(url: Url) -> string;
     fn hew_url_port(url: Url) -> i32;

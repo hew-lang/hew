@@ -33,6 +33,27 @@ compile_accept() {
   "${HEW}" compile "${ROOT}/tests/vertical-slice/accept/${fixture}.hew" >"${accept_output}" 2>&1
 }
 
+run_fixture_path_expect_status() {
+  local fixture_path="$1"
+  local label="$2"
+  local expected_status="$3"
+  "${HEW}" compile "${fixture_path}" >"${accept_output}" 2>&1
+  local bin="${ROOT}/.tmp/compile-out/$(basename "${fixture_path}" .hew)"
+  local status=0
+  if "${TIMEOUT}" --kill-after=5s 30s bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ "${status}" -ne "${expected_status}" ]]; then
+    echo "expected ${label} to exit ${expected_status}, got ${status}" >&2
+    cat "${accept_output}" >&2
+    cat "${stdout_output}" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+}
+
 run_accept_expect_status() {
   local fixture="$1"
   local expected_status="$2"
@@ -669,6 +690,18 @@ run_check_run_expect_stdout "unicode_error_oracle"
 
 run_accept_expect_status "panic" 101
 grep -q 'panic fixture' "${stderr_output}"
+
+run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_regex_new_invalid.hew" "std_panic_wrapper_regex_new_invalid" 101
+grep -q 'regex.new: invalid pattern' "${stderr_output}"
+run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_fs_read_missing.hew" "std_panic_wrapper_fs_read_missing" 101
+grep -q 'fs.read failed' "${stderr_output}"
+run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_os_args_oob.hew" "std_panic_wrapper_os_args_oob" 101
+grep -q 'os.args: index' "${stderr_output}"
+run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_url_parse_invalid.hew" "std_panic_wrapper_url_parse_invalid" 101
+grep -q 'url.parse: invalid URL' "${stderr_output}"
+run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wrapper_cron_parse_invalid.hew" "std_panic_wrapper_cron_parse_invalid" 101
+grep -q 'cron.parse: invalid expression' "${stderr_output}"
+run_accept_expect_status "std_panic_wrappers_success" 0
 
 run_accept_expect_status "directory_module_call" 7
 

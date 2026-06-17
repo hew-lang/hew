@@ -128,13 +128,23 @@ impl ExprMethods for Expr {
 /// ```
 pub fn parse(expr: string) -> Expr {
     unsafe {
-        hew_cron_parse(expr)
+        let parsed = hew_cron_parse(expr);
+        if !hew_cron_is_valid(parsed) {
+            let detail = cron_last_error_message();
+            if detail.len() == 0 {
+                panic(f"cron.parse: invalid expression: {expr}");
+            } else {
+                panic(f"cron.parse: invalid expression `{expr}`: {detail}");
+            }
+        }
+        parsed
     }
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
     fn hew_cron_parse(expr: string) -> Expr;
+    fn hew_cron_is_valid(expr: Expr) -> bool;
     fn hew_cron_next(expr: Expr, after_epoch_secs: i64, out_ts: *mut i64) -> i32;
     fn hew_cron_next_hew(expr: Expr, after_epoch_secs: i64) -> CronNextResult;
     fn hew_cron_last_error() -> string;

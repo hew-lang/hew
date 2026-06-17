@@ -18,6 +18,9 @@ use serde::Serialize;
 use std::cell::Cell;
 use std::rc::Rc;
 
+const EMBEDDED_NUL_STRING_MESSAGE: &str =
+    "embedded NUL (\\0) in string literal is not supported by the null-terminated string ABI";
+
 type ParsedTraitBoundArgs = (Option<Vec<Spanned<TypeExpr>>>, Vec<AssocTypeBinding>);
 type StructInitFields = (Vec<(String, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>);
 
@@ -322,6 +325,16 @@ fn unescape_string(s: &str) -> (String, Vec<(usize, &'static str)>) {
     (out, errors)
 }
 
+fn embedded_nul_string_error(span: Span) -> ParseError {
+    ParseError {
+        message: EMBEDDED_NUL_STRING_MESSAGE.to_string(),
+        span,
+        hint: None,
+        severity: Severity::Error,
+        kind: ParseDiagnosticKind::InvalidLiteral,
+    }
+}
+
 /// Split an interpolated string (f-string or template literal) into literal
 /// segments and parsed expression segments.
 ///
@@ -507,6 +520,15 @@ fn parse_string_parts(
 
     if !literal_buf.is_empty() {
         parts.push(StringPart::Literal(literal_buf));
+    }
+
+    if parts
+        .iter()
+        .any(|part| matches!(part, StringPart::Literal(text) if text.contains('\0')))
+    {
+        errors.push(embedded_nul_string_error(
+            span_start..span_start + raw.len(),
+        ));
     }
 
     parts
@@ -6648,6 +6670,10 @@ impl<'src> Parser<'src> {
                 let inner = unquote_str(s);
                 let tok_start = start;
                 let (unescaped, unescape_errs) = unescape_string(inner);
+                if unescaped.contains('\0') {
+                    self.errors
+                        .push(embedded_nul_string_error(start..self.peek_span().end));
+                }
                 for (off, msg) in unescape_errs {
                     let err_start = tok_start + 1 + off;
                     self.errors.push(ParseError {
@@ -6675,6 +6701,10 @@ impl<'src> Parser<'src> {
             }
             Token::RawString(s) => {
                 let s = unquote_str(s).to_string();
+                if s.contains('\0') {
+                    self.errors
+                        .push(embedded_nul_string_error(start..self.peek_span().end));
+                }
                 self.advance();
                 Expr::Literal(Literal::String(s))
             }
@@ -9453,7 +9483,7 @@ mod tests {
 
     #[test]
     fn parse_string_escape_sequences() {
-        let source = r#"fn main() -> i32 { let a = "hello\nworld"; let b = "tab\there"; let c = "quote\"end"; let d = "back\\slash"; let e = "null\0byte"; 0 }"#;
+        let source = r#"fn main() -> i32 { let a = "hello\nworld"; let b = "tab\there"; let c = "quote\"end"; let d = "back\\slash"; 0 }"#;
         let result = parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         let body = match &result.program.items[0].0 {
@@ -9478,7 +9508,71 @@ mod tests {
         assert_eq!(get_str(1), "tab\there");
         assert_eq!(get_str(2), "quote\"end");
         assert_eq!(get_str(3), "back\\slash");
-        assert_eq!(get_str(4), "null\0byte");
+    }
+
+    #[test]
+    fn parse_string_literal_rejects_embedded_nul_escape() {
+        let source = r#"fn main() { let s = "a\0b"; }"#;
+        let result = parse(source);
+        assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+        let diag = &result.errors[0];
+        assert_eq!(diag.message, EMBEDDED_NUL_STRING_MESSAGE);
+        assert_eq!(
+            diag.span,
+            source.find('"').unwrap()..source.rfind('"').unwrap() + 1
+        );
+        assert!(matches!(diag.kind, ParseDiagnosticKind::InvalidLiteral));
+    }
+
+    #[test]
+    fn parse_string_literal_rejects_raw_embedded_nul() {
+        let source = format!("fn main() {{ let s = \"a{}b\"; }}", '\0');
+        let result = parse(&source);
+        assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+        let diag = &result.errors[0];
+        assert_eq!(diag.message, EMBEDDED_NUL_STRING_MESSAGE);
+        let start = source.find('"').unwrap();
+        assert_eq!(diag.span, start..start + 5);
+        assert!(matches!(diag.kind, ParseDiagnosticKind::InvalidLiteral));
+    }
+
+    #[test]
+    fn parse_raw_string_literal_rejects_raw_embedded_nul() {
+        let source = format!("fn main() {{ let s = r\"a{}b\"; }}", '\0');
+        let result = parse(&source);
+        assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+        let diag = &result.errors[0];
+        assert_eq!(diag.message, EMBEDDED_NUL_STRING_MESSAGE);
+        let start = source.find("r\"").unwrap();
+        assert_eq!(diag.span, start..start + 6);
+        assert!(matches!(diag.kind, ParseDiagnosticKind::InvalidLiteral));
+    }
+
+    #[test]
+    fn parse_interpolated_string_literal_rejects_raw_embedded_nul() {
+        let source = format!("fn main() {{ let s = f\"a{}b\"; }}", '\0');
+        let result = parse(&source);
+        assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+        let diag = &result.errors[0];
+        assert_eq!(diag.message, EMBEDDED_NUL_STRING_MESSAGE);
+        let start = source.find("f\"").unwrap();
+        assert_eq!(diag.span, start..start + 6);
+        assert!(matches!(diag.kind, ParseDiagnosticKind::InvalidLiteral));
+    }
+
+    #[test]
+    fn parse_interpolated_string_literal_rejects_embedded_nul_escape() {
+        let source = r#"fn main() { let s = f"a\0{name}"; }"#;
+        let result = parse(source);
+        assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+        let diag = &result.errors[0];
+        assert_eq!(diag.message, EMBEDDED_NUL_STRING_MESSAGE);
+        let start = source.find("f\"").unwrap();
+        assert_eq!(
+            diag.span,
+            start..source[start..].find("\";").unwrap() + start + 1
+        );
+        assert!(matches!(diag.kind, ParseDiagnosticKind::InvalidLiteral));
     }
 
     #[test]

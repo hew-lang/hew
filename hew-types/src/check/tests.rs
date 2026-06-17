@@ -4396,6 +4396,86 @@ fn typecheck_i64_literal_missing_catchall_is_error() {
     );
 }
 
+/// Literal-only fixed-width and pointer-width integer matches are fail-closed:
+/// without a catch-all there are infinitely many missing values, so these are
+/// hard non-exhaustive errors for every integer width, not just i64.
+#[test]
+fn typecheck_integer_literal_missing_catchall_is_error_for_all_widths() {
+    for ty in [
+        "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize",
+    ] {
+        let (errors, warnings) = parse_and_check(&format!(
+            "fn _f(x: {ty}) -> i64 {{\n\
+                 match x {{\n\
+                     0 => 10,\n\
+                     1 => 20,\n\
+                 }}\n\
+                 0\n\
+             }}\n"
+        ));
+        assert!(
+            warnings
+                .iter()
+                .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "non-exhaustive literal {ty} match must not be a warning: {warnings:?}"
+        );
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "literal {ty} missing catch-all must be an error: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn typecheck_integer_literal_with_catchall_is_exhaustive() {
+    for ty in ["i32", "u8"] {
+        let (errors, warnings) = parse_and_check(&format!(
+            "fn main() {{\n\
+                 let x: {ty} = 1;\n\
+                 match x {{\n\
+                     0 => 10,\n\
+                     1 => 20,\n\
+                     _ => 0,\n\
+                 }}\n\
+                 let _done = 0;\n\
+             }}\n"
+        ));
+        assert!(
+            errors.is_empty(),
+            "catch-all {ty} match must not error: {errors:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+            "catch-all {ty} match must not warn as non-exhaustive: {warnings:?}"
+        );
+    }
+}
+
+#[test]
+fn typecheck_bool_true_false_match_remains_exhaustive() {
+    let (errors, warnings) = parse_and_check(concat!(
+        "fn main() {\n",
+        "    let x = true;\n",
+        "    match x {\n",
+        "        true => 1,\n",
+        "        false => 0,\n",
+        "    }\n",
+        "    let _done = 0;\n",
+        "}\n",
+    ));
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert!(
+        warnings
+            .iter()
+            .all(|w| !matches!(w.kind, TypeErrorKind::NonExhaustiveMatch)),
+        "exhaustive bool match must not warn as non-exhaustive: {warnings:?}"
+    );
+}
+
 /// String matches are over an open domain; literal arms need a catch-all.
 #[test]
 fn typecheck_string_literal_missing_catchall_is_error() {

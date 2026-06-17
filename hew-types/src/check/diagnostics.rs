@@ -505,7 +505,19 @@ impl Checker {
                     if has_literal_arm
                         && matches!(
                             scrutinee_ty,
-                            Ty::I64 | Ty::IntLiteral | Ty::Char | Ty::String
+                            Ty::I8
+                                | Ty::I16
+                                | Ty::I32
+                                | Ty::I64
+                                | Ty::U8
+                                | Ty::U16
+                                | Ty::U32
+                                | Ty::U64
+                                | Ty::Isize
+                                | Ty::Usize
+                                | Ty::IntLiteral
+                                | Ty::Char
+                                | Ty::String
                         )
                     {
                         self.error_non_exhaustive(span, &["_".to_string()], |_| "_".to_string());

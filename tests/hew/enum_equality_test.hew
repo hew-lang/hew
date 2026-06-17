@@ -1,0 +1,48 @@
+//! Regression coverage for equality on fieldless enum values.
+
+import std::testing;
+
+enum Colour {
+    Red;
+    Green;
+    Blue;
+}
+
+fn colour_id(c: Colour) -> i64 {
+    match c {
+        Colour::Red => 1,
+        Colour::Green => 2,
+        Colour::Blue => 3,
+    }
+}
+
+#[test]
+fn fieldless_enum_equal_true_for_same_variant() {
+    let c = Colour::Red;
+    testing.assert_true(c == Colour::Red);
+}
+
+#[test]
+fn fieldless_enum_equal_false_for_different_variant() {
+    let c = Colour::Green;
+    testing.assert_false(c == Colour::Red);
+}
+
+#[test]
+fn fieldless_enum_not_equal_true_for_different_variant() {
+    let c = Colour::Blue;
+    testing.assert_true(c != Colour::Red);
+}
+
+#[test]
+fn fieldless_enum_not_equal_false_for_same_variant() {
+    let c = Colour::Green;
+    testing.assert_false(c != Colour::Green);
+}
+
+#[test]
+fn match_on_same_fieldless_enum_still_dispatches_by_tag() {
+    testing.assert_eq(colour_id(Colour::Red), 1);
+    testing.assert_eq(colour_id(Colour::Green), 2);
+    testing.assert_eq(colour_id(Colour::Blue), 3);
+}

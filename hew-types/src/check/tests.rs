@@ -3171,8 +3171,9 @@ fn record_inequality_and_ordering_comparisons_rejected() {
     );
 }
 
-/// The gate keys off `TypeDefKind::Struct`/`Record`; enum comparisons must
-/// not trip it (enum `==` keeps its current checker behaviour).
+/// Fieldless enums are tag values; their `==` remains admitted so MIR/codegen
+/// can lower the comparison to tag equality instead of tripping the aggregate
+/// structural-equality gate.
 #[test]
 fn enum_equality_not_gated_by_record_comparison_refusal() {
     let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() -> bool {\n    let a = Colour::Red;\n    let b = Colour::Green;\n    a == b\n}";
@@ -3180,6 +3181,88 @@ fn enum_equality_not_gated_by_record_comparison_refusal() {
     assert!(
         output.errors.is_empty(),
         "enum `==` must not trip the record-comparison gate: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn enum_ordering_reports_checker_diagnostic() {
+    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() {\n    let a = Colour::Red;\n    let b = Colour::Green;\n    let _ = a < b;\n}";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`<` is not supported for enum `Colour`")),
+        "expected checker refusal for enum ordering: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn payload_enum_equality_reports_checker_diagnostic() {
+    let source = "enum Shape {\n    Circle(i64);\n    Empty;\n}\n\nfn main() {\n    let a = Circle(1);\n    let b = Circle(1);\n    let _ = a == b;\n}";
+    let output = check_source(source);
+    let err = output
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::InvalidOperation)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected InvalidOperation for payload enum `==`: {:#?}",
+                output.errors
+            )
+        });
+    assert!(
+        err.message
+            .contains("`==` on enum `Shape` with payload variants is not supported"),
+        "diagnostic must name the operator and enum: {}",
+        err.message
+    );
+    assert!(
+        err.message.contains("match on it instead"),
+        "diagnostic must suggest matching instead: {}",
+        err.message
+    );
+    assert!(
+        !err.message.contains("IntCmp lhs is not an integer"),
+        "checker diagnostic must not leak codegen NYI text: {}",
+        err.message
+    );
+}
+
+#[test]
+fn builtin_payload_enum_comparison_reports_checker_diagnostic() {
+    let source = "fn main() {\n    let a: Option<i64> = Some(1);\n    let b: Option<i64> = Some(2);\n    let _ = a == b;\n    let ok: Result<i64, i64> = Ok(1);\n    let err: Result<i64, i64> = Err(2);\n    let _ = ok != err;\n}";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message
+                    .contains("`==` on enum `Option<i64>` with payload variants is not supported")),
+        "expected checker refusal for builtin Option `==`: {:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains(
+                    "`!=` on enum `Result<i64, i64>` with payload variants is not supported"
+                )),
+        "expected checker refusal for builtin Result `!=`: {:#?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("IntCmp lhs is not an integer")),
+        "checker diagnostic must not leak codegen NYI text: {:#?}",
         output.errors
     );
 }

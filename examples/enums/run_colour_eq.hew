@@ -1,0 +1,28 @@
+// Exercises equality and inequality on a user-defined fieldless enum.
+//
+// Fieldless enum values are represented as discriminant tags, so `==` and
+// `!=` compare the tag of each operand.
+enum Colour {
+    Red;
+    Green;
+    Blue;
+}
+
+fn describe_eq(c: Colour) {
+    if c == Colour::Red {
+        println("red-eq");
+    } else {
+        println("not-red");
+    }
+    if c != Colour::Blue {
+        println("not-blue");
+    } else {
+        println("blue");
+    }
+}
+
+fn main() {
+    describe_eq(Colour::Red);
+    describe_eq(Colour::Green);
+    describe_eq(Colour::Blue);
+}

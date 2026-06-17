@@ -6669,6 +6669,40 @@ impl Builder {
         }
     }
 
+    fn fieldless_enum_layout_key(&self, ty: &ResolvedTy) -> Option<String> {
+        let ResolvedTy::Named { name, args, .. } = ty else {
+            return None;
+        };
+        let short = short_name(name);
+        let key = if args.is_empty() {
+            name.clone()
+        } else {
+            mangle_layout_key(short, args)
+        };
+        self.enum_layouts
+            .iter()
+            .find(|layout| {
+                layout.name == key || layout.name == *name || short_name(&layout.name) == short
+            })
+            .filter(|layout| {
+                layout
+                    .variants
+                    .iter()
+                    .all(|variant| variant.field_tys.is_empty())
+            })
+            .map(|layout| layout.name.clone())
+    }
+
+    fn is_fieldless_enum_comparison(&self, lhs_ty: &ResolvedTy, rhs_ty: &ResolvedTy) -> bool {
+        let Some(lhs_key) = self.fieldless_enum_layout_key(lhs_ty) else {
+            return false;
+        };
+        let Some(rhs_key) = self.fieldless_enum_layout_key(rhs_ty) else {
+            return false;
+        };
+        lhs_key == rhs_key
+    }
+
     /// True when `elem_ty` is an owned (non-Copy) Vec element that was
     /// constructed through the owned descriptor and must route element loads
     /// through `hew_vec_get_owned`. Two owned shapes:
@@ -9976,6 +10010,40 @@ impl Builder {
         if let Some(pred) = cmp_pred {
             let lhs_ty = self.subst_ty(lhs_ty);
             let rhs_ty = self.subst_ty(rhs_ty);
+            if matches!(pred, CmpPred::Eq | CmpPred::NotEq)
+                && self.is_fieldless_enum_comparison(&lhs_ty, &rhs_ty)
+            {
+                let (Place::Local(lhs_local), Place::Local(rhs_local)) = (lhs, rhs) else {
+                    self.locals.pop();
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "enum equality over non-local operands".to_string(),
+                            site,
+                        },
+                        note: "fieldless enum equality lowers through the tagged-union \
+                               discriminant; operands must first materialise as enum locals"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let lhs_tag = self.alloc_local(ResolvedTy::I64);
+                self.instructions.push(Instr::Move {
+                    dest: lhs_tag,
+                    src: Place::EnumTag(lhs_local),
+                });
+                let rhs_tag = self.alloc_local(ResolvedTy::I64);
+                self.instructions.push(Instr::Move {
+                    dest: rhs_tag,
+                    src: Place::EnumTag(rhs_local),
+                });
+                self.instructions.push(Instr::IntCmp {
+                    dest,
+                    pred,
+                    lhs: lhs_tag,
+                    rhs: rhs_tag,
+                });
+                return Some(dest);
+            }
             if let (Some(lhs_width), Some(rhs_width)) = (float_width(&lhs_ty), float_width(&rhs_ty))
             {
                 if lhs_width == rhs_width {

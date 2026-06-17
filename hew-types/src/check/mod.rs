@@ -633,6 +633,7 @@ impl Checker {
             assign_target_shapes: std::mem::take(&mut self.assign_target_shapes),
             errors: std::mem::take(&mut self.errors),
             warnings: std::mem::take(&mut self.warnings),
+            user_clone_record_seeds: std::mem::take(&mut self.user_clone_record_seeds),
             type_defs: resolved_type_defs,
             internal_builtin_enum_names,
             fn_sigs: resolved_fn_sigs,

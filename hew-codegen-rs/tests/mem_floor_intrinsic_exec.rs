@@ -414,6 +414,7 @@ fn floor_pipeline_with_driver(driver: RawMirFunction) -> IrPipeline {
         hashset_lowering_facts: vec![],
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
     }
 }
 

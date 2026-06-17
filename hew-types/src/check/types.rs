@@ -205,6 +205,18 @@ pub struct TypeCheckOutput {
     pub assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
     pub errors: Vec<TypeError>,
     pub warnings: Vec<TypeError>,
+    /// Canonical record names (unqualified, matching the codegen thunk naming
+    /// convention) that appear as `clone` call sites in user code and are NOT
+    /// already seeded via actor-state or owned-Vec paths.
+    ///
+    /// Populated by the checker when it accepts a `RecordCloneInplace` rewrite.
+    /// Codegen consumes this via `IrPipeline::user_clone_record_seeds` to seed
+    /// `emit_state_clone_drop_synthesis` so the
+    /// `__hew_record_clone_inplace_<R>` body is emitted for records first
+    /// cloned at user-code call sites.
+    ///
+    /// Duplicates are harmless (the seed collector deduplicates).
+    pub user_clone_record_seeds: Vec<String>,
     pub type_defs: HashMap<String, TypeDef>,
     /// Names of monomorphic builtin enums (e.g. `LookupError`) that were
     /// pre-registered into `type_defs` from `std/builtins.hew` for use in
@@ -936,6 +948,7 @@ impl Default for TypeCheckOutput {
             assign_target_shapes: HashMap::new(),
             errors: Vec::new(),
             warnings: Vec::new(),
+            user_clone_record_seeds: Vec::new(),
             type_defs: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
             fn_sigs: HashMap::new(),
@@ -1363,6 +1376,20 @@ pub enum MethodCallRewrite {
         direction: WireCodecDirection,
         value_ty: crate::resolved_ty::ResolvedTy,
     },
+    /// User-record `clone` call: `clone p` or `p.clone()` where `p` has a
+    /// user-defined record type that passed `record_clone_admissibility`. HIR
+    /// lowers this to a call to the synthesised
+    /// `__hew_record_clone_inplace_<record_name>` thunk (non-consuming read of
+    /// the source). `record_name` is the canonical (unqualified) name used by
+    /// the codegen thunk naming convention.
+    RecordCloneInplace {
+        record_name: String,
+    },
+    /// `clone x` or `x.clone()` where `x` has a Copy/BitCopy type (`i64`,
+    /// `bool`, `char`, etc.). The checker emits a non-fatal `RedundantClone`
+    /// warning and returns the operand type unchanged. HIR lowers this as a
+    /// plain read (no extra copy is needed — `BitCopy` semantics already copy).
+    CopyCloneNoop,
     /// Static trait dispatch: the method was resolved from the bounds on a
     /// generic type parameter. HIR emits `CallTraitMethodStatic`; MIR
     /// resolves the concrete callee at monomorphization time.
@@ -2006,6 +2033,8 @@ pub struct Checker {
     pub(super) module_registry: ModuleRegistry,
     pub(super) errors: Vec<TypeError>,
     pub(super) warnings: Vec<TypeError>,
+    /// Checker-side accumulator for [`TypeCheckOutput::user_clone_record_seeds`].
+    pub(super) user_clone_record_seeds: Vec<String>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
     pub(super) is_type_patterns: HashMap<SpanKey, Ty>,
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
@@ -2656,6 +2685,7 @@ impl Checker {
             module_registry,
             errors: Vec::new(),
             warnings: Vec::new(),
+            user_clone_record_seeds: Vec::new(),
             expr_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             expr_type_source_modules: HashMap::new(),

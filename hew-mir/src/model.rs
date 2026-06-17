@@ -56,7 +56,7 @@ impl Default for SendAliasMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct IrPipeline {
     pub thir: Vec<ThirFunction>,
     pub raw_mir: Vec<RawMirFunction>,
@@ -253,6 +253,21 @@ pub struct IrPipeline {
     /// these abstract bodies are intentionally dropped here — surfacing them
     /// would change user-visible output for programs that compile today.
     pub polymorphic_mir: Vec<PolymorphicMirFunction>,
+    /// Canonical record names that appear as the receiver of a user-authored
+    /// `.clone()` call in this module. Populated from
+    /// `TypeCheckOutput::user_clone_record_seeds` via `attach_lowering_facts`.
+    ///
+    /// Codegen's `collect_reachable_clone_targets` consumes this as an
+    /// additional seed so that every record cloned by user code has a
+    /// `__hew_record_clone_inplace_<R>` / `__hew_record_drop_inplace_<R>`
+    /// thunk pair synthesised, even for records not reachable via actor state
+    /// or `Vec<R>` ownership seeds.
+    ///
+    /// WHY here and not in codegen directly: `IrPipeline` is the
+    /// checker→codegen boundary; codegen consumes pipeline fields, never
+    /// `TypeCheckOutput` directly. WHEN-OBSOLETE: if user-facing `Clone`
+    /// becomes a first-class trait with a dedicated codegen path.
+    pub user_clone_record_seeds: Vec<String>,
 }
 
 impl IrPipeline {
@@ -271,6 +286,8 @@ impl IrPipeline {
     pub fn attach_lowering_facts(&mut self, tco: &hew_types::TypeCheckOutput) {
         self.hashmap_lowering_facts = tco.hashmap_layout_facts.values().cloned().collect();
         self.hashset_lowering_facts = tco.hashset_layout_facts.values().cloned().collect();
+        self.user_clone_record_seeds
+            .clone_from(&tco.user_clone_record_seeds);
     }
 
     /// Store the checker's `actor_send_aliasing` side table in the pipeline
@@ -3569,6 +3586,26 @@ pub enum Instr {
         operand: Place,
         direction: WireCodecDirection,
         value_ty: ResolvedTy,
+    },
+    /// Deep-clone a user record via `__hew_record_clone_inplace_<R>`.
+    ///
+    /// `dest` is the freshly-alloc'd destination Place (same type as `src`).
+    /// Codegen emits:
+    ///   1. `memcpy(dst_ptr, src_ptr, sizeof(R))` — `BitCopy` fields correct,
+    ///      heap-pointer fields byte-aliased.
+    ///   2. `i32 rc = __hew_record_clone_inplace_<R>(src_ptr, dst_ptr)` —
+    ///      overwrites each owned-heap field in `dst` with a deep clone; on
+    ///      failure drops already-cloned `dst` fields and rolls back.
+    ///   3. Trap on `rc != 0` (fail-closed; no partial clone surviving).
+    ///
+    /// `record_name` is the canonical unqualified record name (sans module
+    /// prefix), used to build the thunk symbol and index the clone descriptor.
+    ///
+    /// WASM-TODO(#2050): not yet lowered in sandbox emitter.
+    RecordCloneInplace {
+        dest: Place,
+        src: Place,
+        record_name: String,
     },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },

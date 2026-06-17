@@ -1355,6 +1355,7 @@ mod tests {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            user_clone_record_seeds: vec![],
         }
     }
 
@@ -1632,6 +1633,7 @@ mod tests {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            user_clone_record_seeds: vec![],
         };
         let offset = source.find("Point").unwrap();
         let result = hover(source, &pr, Some(&tc), offset);
@@ -1736,6 +1738,7 @@ mod tests {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            user_clone_record_seeds: vec![],
         };
         let result = hover(source, &pr, Some(&tc), x_offset);
         assert!(result.is_some(), "should find hover via expr_types");
@@ -1800,6 +1803,7 @@ mod tests {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            user_clone_record_seeds: vec![],
         };
 
         let result = hover(source, &pr, Some(&tc), count_offset).unwrap();
@@ -1918,6 +1922,7 @@ mod tests {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            user_clone_record_seeds: vec![],
         };
 
         let result = hover(source, &pr, Some(&tc), use_offset).unwrap();
@@ -2086,6 +2091,7 @@ mod tests {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            user_clone_record_seeds: vec![],
         };
         let result = hover(source, &pr, Some(&tc), x_offset).unwrap();
         // Goes through ResolvedTy::from_ty(materialize_literal_defaults)

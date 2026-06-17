@@ -3951,7 +3951,8 @@ fn collect_call_sites_in_expr(
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. } => {
+        | HirExprKind::MachineStateName { receiver, .. }
+        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
             collect_call_sites_in_expr(receiver, out, trait_out);
         }
         HirExprKind::StreamRecvAwait { stream, .. } => {
@@ -6734,6 +6735,7 @@ impl LowerCtx {
             | HirExprKind::GeneratorNext {
                 receiver: object, ..
             }
+            | HirExprKind::RecordCloneCall { src: object, .. }
             | HirExprKind::ConnAwaitRead { conn: object, .. } => {
                 self.wrap_var_self_explicit_expr_returns(object, receiver, abi_return_ty);
             }
@@ -17341,6 +17343,44 @@ impl LowerCtx {
                     ret_ty,
                 )
             }
+            // `clone p` or `p.clone()` on a user-defined record type: lower to a
+            // `RecordCloneCall` node. MIR lowers this to an alloca + memcpy +
+            // call to `__hew_record_clone_inplace_<record_name>`.
+            // Non-consuming read of the receiver — the original stays live.
+            Some(MethodCallRewrite::RecordCloneInplace { record_name }) => {
+                // Prefer the checker-typed result; fall back to constructing
+                // a Named type from the record name (should always resolve).
+                let ret_ty = self
+                    .expr_types
+                    .get(&key)
+                    .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+                    .unwrap_or_else(|| ResolvedTy::Named {
+                        name: record_name.clone(),
+                        args: vec![],
+                        builtin: None,
+                        is_opaque: false,
+                    });
+                let sym = format!("__hew_record_clone_inplace_{record_name}");
+                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                (
+                    HirExprKind::RecordCloneCall {
+                        src: Box::new(lowered_receiver),
+                        clone_fn_sym: sym,
+                        record_name,
+                    },
+                    ret_ty,
+                )
+            }
+            // `clone x` or `x.clone()` on a Copy/BitCopy type: lower as a plain
+            // read of the receiver — BitCopy semantics already duplicate on use.
+            // The checker emitted a `StyleSuggestion` warning at check time.
+            // Unwrap the receiver's inner kind directly; we do not insert any
+            // new HIR node — the "result" is the operand itself.
+            Some(MethodCallRewrite::CopyCloneNoop) => {
+                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                let ty = lowered_receiver.ty.clone();
+                (lowered_receiver.kind, ty)
+            }
             None => {
                 if let Expr::Identifier(module_name) = &receiver.0 {
                     if let Some(module) = self.missing_stdlib_module_import(module_name) {
@@ -19992,7 +20032,8 @@ fn collect_captures_walk(
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. } => {
+        | HirExprKind::MachineStateName { receiver, .. }
+        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
             collect_captures_walk(receiver, param_ids, seen, captures, self_id);
         }
         HirExprKind::StreamRecvAwait { stream, .. } => {
@@ -20308,7 +20349,8 @@ fn collect_general_closure_captures_walk(
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. } => {
+        | HirExprKind::MachineStateName { receiver, .. }
+        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
             collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -21094,7 +21136,8 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. } => {
+        | HirExprKind::MachineStateName { receiver, .. }
+        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
             collect_hir_emitted_events_walk(receiver, event_names, out);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -24026,7 +24069,8 @@ fn scan_expr_for_call_shape(
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. } => {
+        | HirExprKind::MachineStateName { receiver, .. }
+        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
         }
         HirExprKind::MachineEmit { fields, .. } => {

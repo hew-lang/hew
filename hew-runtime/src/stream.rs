@@ -4521,13 +4521,16 @@ mod tests {
         let (accepted, _) = listener.accept().unwrap();
         // The connection is established; tell the peer it may reset now.
         accepted_tx.send(()).unwrap();
+        // join() guarantees the peer thread has set SO_LINGER=0 and dropped its
+        // socket — the RST (or FIN) is sent before we read. No sleep needed: the
+        // synchronization is the join, and `backing.next()` below is a BLOCKING
+        // read that returns only once the reset/EOF is observed. A wall-clock
+        // "give the RST time to arrive" sleep is a jitter window, not a wait.
         t.join().unwrap();
-
-        // Give the RST time to arrive.
-        std::thread::sleep(std::time::Duration::from_millis(20));
 
         let mut backing = TcpStreamBacking { stream: accepted };
         // RST produces either ConnectionReset or Ok(0) EOF — either way None.
+        // The read blocks until that event arrives (the deterministic wait).
         let result = backing.next();
         assert!(
             result.is_none(),

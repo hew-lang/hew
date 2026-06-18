@@ -135,12 +135,30 @@ filter = "test(connection_drop_wakes_pending_remote_ask)"
 retries = 1
 
 [[profile.ci.overrides]]
-# circuit_breaker_trips_on_repeated_crashes is timing-sensitive: it polls for a
-# supervisor restart between two fault-injected crashes. On Windows CI runners
-# under load the scheduler can take longer than the 5-second inner poll window
-# to process the restart, causing the second crash to target the old (closed)
-# actor mailbox and never be recorded. One retry absorbs transient jitter
-# without masking real circuit-breaker regressions.
+# circuit_breaker_trips_on_repeated_crashes injects two crashes and expects the
+# breaker (max_crashes=2) to OPEN. Two distinct flakes were diagnosed 2026-06-18:
+#   (1) FIXED — a causality bug: the test read hew_crash_log_count() the instant
+#       it observed the monitor DOWN, but the crash-log push runs on the crashing
+#       worker AFTER the trap that delivers DOWN (signal.rs), so the read raced
+#       the push and fast-failed (~0.02s) under load. Now waits for the crash
+#       count to reach its target (wait_for_crash_count, a logical-event wait);
+#       the wait ceilings were widened to 30s contention headroom.
+#   (2) RESIDUAL (this retry) — under peak contention (~1-8% scaling with load)
+#       the breaker stays CLOSED at the 30s ceiling even though both deaths are
+#       observed and both crashes hit the GLOBAL log (down_count=2, crash_log=2,
+#       circuit_state=0). The per-child circuit crash_stats reached <2: one of the
+#       two crashes was not classified Crashed by the supervisor's apply_restart
+#       path under contention, so it never reached circuit_breaker_record_crash.
+# SHIM: retry absorbs the residual production circuit-breaker crash-classification
+#   race; the fast causality flake is gone, so this no longer masks that class.
+# WHEN obsolete: when the supervisor reliably classifies every fault-injected
+#   crash on a freshly-restarted child as Crashed under contention (production
+#   crash-counting fix), making the breaker open deterministically.
+# WHAT the real solution looks like: harden apply_restart's exit-state read so a
+#   crash on a child mid-restart is always counted into the per-child crash_stats;
+#   then the test reaches 100/100 and this retry is removed.
+# Correctness invariant: a genuinely broken breaker (never opens on 2 crashes)
+#   fails on BOTH attempts — the retry only absorbs the intermittent miscount.
 filter = "test(circuit_breaker_trips_on_repeated_crashes)"
 retries = 1
 
@@ -226,15 +244,17 @@ test-group = "real-timing"
 slow-timeout = { period = "30s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
-# tcp_stream_backing_records_error_on_reset is a real loopback-TCP timing test:
-# it connects a peer, forces a RST via SO_LINGER=0, and spins an accept-retry
-# loop (FreeBSD/BSD return ECONNABORTED when the RST beats the accept). On the
-# native runners this completes in milliseconds, but inside the FreeBSD VM under
-# QEMU emulation the connect/accept/RST round-trip is slow enough that the loop
-# can exceed the default 300s ci slow-timeout — VM scheduling latency, not a
-# logic hang. Widen the kill window for this one test so the FreeBSD gate does
-# not false-fail on emulated networking jitter; the assertion stays strict
-# (next() must return None on RST/EOF), so a genuine regression still fails.
+# tcp_stream_backing_records_error_on_reset is a loopback-TCP reset test: it
+# gates the RST on an explicit "accepted" handshake, forces it via SO_LINGER=0 +
+# drop, joins the peer thread (so the RST is sent before the read), then blocks
+# on a single read that returns None on RST/EOF. It is determinism-clean — the
+# join + blocking read ARE the synchronization, with no wall-clock "let the RST
+# arrive" sleep (removed 2026-06-18). This slow-timeout is purely a HANG CEILING
+# for genuine physical-runner latency: inside the FreeBSD VM under QEMU emulation
+# the connect/accept/RST round-trip can exceed the default 300s ci slow-timeout.
+# It is NOT a jitter-absorb window — the test makes no timing bet, so a real
+# regression fails fast (wrong read result), and the wide period only prevents a
+# false KILL on a slow VM. The assertion stays strict (next() must return None).
 filter = "test(tcp_stream_backing_records_error_on_reset)"
 slow-timeout = { period = "120s", terminate-after = 6 }
 

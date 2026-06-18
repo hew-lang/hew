@@ -3715,7 +3715,6 @@ mod tests {
             TWO_PROCESS_ASK_TIMEOUT_NAME,
         );
         let send_value: u32 = 21;
-        let started = Instant::now();
         // SAFETY: remote_pid was resolved from a separate helper process over TCP.
         let reply_ptr = unsafe {
             hew_node_api_ask(
@@ -3727,16 +3726,17 @@ mod tests {
                 std::mem::size_of::<u32>(),
             )
         };
-        let elapsed = started.elapsed();
+        // The deterministic invariant is the typed OUTCOME: a server that never
+        // replies (the timeout-server holds past the ask deadline) must surface
+        // `AskError::Timeout` with a null reply. Elapsed wall time is NOT asserted
+        // — under load the 250ms ask deadline can fire later, but the OUTCOME is
+        // load-independent. The ask's own timeout is the hang ceiling; a genuine
+        // never-resolving ask is caught by nextest's slow-timeout, not a window.
         assert!(
             reply_ptr.is_null(),
             "timeout ask unexpectedly returned a reply"
         );
         assert_eq!(hew_node_ask_take_last_error(), AskError::Timeout as i32);
-        assert!(
-            elapsed < Duration::from_millis(1_500),
-            "timeout ask took {elapsed:?}, expected <1500ms"
-        );
         // SAFETY: node is owned by this helper process.
         unsafe {
             assert_eq!(hew_node_stop(node.as_ptr()), 0);

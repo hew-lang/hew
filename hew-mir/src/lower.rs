@@ -6958,6 +6958,61 @@ impl Builder {
         lhs_key == rhs_key
     }
 
+    fn record_layout_key_for_eq(&self, ty: &ResolvedTy) -> Option<String> {
+        let ResolvedTy::Named { name, args, .. } = ty else {
+            return None;
+        };
+        let short = short_name(name);
+        let key = if args.is_empty() {
+            name.clone()
+        } else {
+            mangle_layout_key(short, args)
+        };
+        self.lookup_record_field_order(&key)
+            .or_else(|| self.lookup_record_field_order(name))
+            .map(|_| key)
+    }
+
+    fn payload_enum_layout_key_for_eq(&self, ty: &ResolvedTy) -> Option<String> {
+        let ResolvedTy::Named { name, args, .. } = ty else {
+            return None;
+        };
+        let short = short_name(name);
+        let key = if args.is_empty() {
+            name.clone()
+        } else {
+            mangle_layout_key(short, args)
+        };
+        self.enum_layouts
+            .iter()
+            .find(|layout| {
+                layout.name == key || layout.name == *name || short_name(&layout.name) == short
+            })
+            .filter(|layout| {
+                layout
+                    .variants
+                    .iter()
+                    .any(|variant| !variant.field_tys.is_empty())
+            })
+            .map(|layout| layout.name.clone())
+    }
+
+    fn is_structural_eq_comparison(&self, lhs_ty: &ResolvedTy, rhs_ty: &ResolvedTy) -> bool {
+        if let (Some(lhs_key), Some(rhs_key)) = (
+            self.record_layout_key_for_eq(lhs_ty),
+            self.record_layout_key_for_eq(rhs_ty),
+        ) {
+            return lhs_key == rhs_key;
+        }
+        if let (Some(lhs_key), Some(rhs_key)) = (
+            self.payload_enum_layout_key_for_eq(lhs_ty),
+            self.payload_enum_layout_key_for_eq(rhs_ty),
+        ) {
+            return lhs_key == rhs_key;
+        }
+        false
+    }
+
     /// True when `elem_ty` is an owned (non-Copy) Vec element that was
     /// constructed through the owned descriptor and must route element loads
     /// through `hew_vec_get_owned`. Two owned shapes:
@@ -10385,6 +10440,34 @@ impl Builder {
                     pred,
                     lhs: lhs_tag,
                     rhs: rhs_tag,
+                });
+                return Some(dest);
+            }
+            if matches!(pred, CmpPred::Eq | CmpPred::NotEq)
+                && self.is_structural_eq_comparison(&lhs_ty, &rhs_ty)
+            {
+                if !matches!((lhs, rhs), (Place::Local(_), Place::Local(_))) {
+                    self.locals.pop();
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: "structural equality over non-local operands".to_string(),
+                            site,
+                        },
+                        note: "structural equality lowers by passing aggregate local addresses to \
+                               the codegen equality thunk"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                // Keep using `IntCmp` as the MIR carrier: the checker has
+                // admitted only equality-eligible aggregates, and codegen routes
+                // aggregate-typed Eq/NotEq operands to the structural equality
+                // thunk instead of integer `icmp`.
+                self.push_instr(Instr::IntCmp {
+                    dest,
+                    pred,
+                    lhs,
+                    rhs,
                 });
                 return Some(dest);
             }

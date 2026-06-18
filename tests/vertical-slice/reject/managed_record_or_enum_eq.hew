@@ -1,0 +1,7 @@
+type Person { name: string }
+
+fn main() {
+    let a = Person { name: "ada" };
+    let b = Person { name: "ada" };
+    let _ = a == b;
+}

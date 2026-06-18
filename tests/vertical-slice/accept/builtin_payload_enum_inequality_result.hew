@@ -1,5 +1,8 @@
 fn main() {
     let ok: Result<i64, i64> = Ok(1);
     let err: Result<i64, i64> = Err(2);
-    let _ = ok != err;
+    let ok2: Result<i64, i64> = Ok(1);
+
+    println(ok != err);
+    println(ok != ok2);
 }

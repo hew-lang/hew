@@ -327,36 +327,15 @@ expect_check_fail_contains \
   "not its declared supertrait" \
   "static_trait_dispatch_missing_super_impl"
 expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/payload_enum_equality.hew" \
-  "payload variants is not supported" \
-  "payload_enum_equality"
-if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/builtin_payload_enum_equality.hew" \
-    >"${reject_output}" 2>&1; then
-  echo "expected builtin_payload_enum_equality to fail closed under hew check" >&2
-  exit 1
-fi
-# shellcheck disable=SC2016  # backtick-containing diagnostic string; not shell expansion.
-grep -qF '`==` on enum `Option<i64>` with payload variants is not supported' "${reject_output}"
-grep -qF 'let _ = a == b;' "${reject_output}"
+  "${ROOT}/tests/vertical-slice/reject/managed_record_or_enum_eq.hew" \
+  "layout-managed/non-Copy" \
+  "managed_record_or_enum_eq"
+run_accept_expect_stdout "payload_enum_equality"
+run_accept_expect_stdout "builtin_payload_enum_equality"
+run_accept_expect_stdout "builtin_payload_enum_inequality_result"
 if grep -qF 'E_CODEGEN_FRONT' "${reject_output}" || \
     grep -qF 'IntCmp lhs is not an integer' "${reject_output}"; then
-  echo "builtin_payload_enum_equality leaked codegen-front diagnostics" >&2
-  cat "${reject_output}" >&2
-  exit 1
-fi
-if "${HEW}" check \
-    "${ROOT}/tests/vertical-slice/reject/builtin_payload_enum_inequality_result.hew" \
-    >"${reject_output}" 2>&1; then
-  echo "expected builtin_payload_enum_inequality_result to fail closed under hew check" >&2
-  exit 1
-fi
-# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
-grep -qF '`!=` on enum `Result<i64, i64>` with payload variants is not supported' "${reject_output}"
-grep -qF 'let _ = ok != err;' "${reject_output}"
-if grep -qF 'E_CODEGEN_FRONT' "${reject_output}" || \
-    grep -qF 'IntCmp lhs is not an integer' "${reject_output}"; then
-  echo "builtin_payload_enum_inequality_result leaked codegen-front diagnostics" >&2
+  echo "managed_record_or_enum_eq leaked codegen-front diagnostics" >&2
   cat "${reject_output}" >&2
   exit 1
 fi

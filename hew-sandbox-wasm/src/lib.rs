@@ -871,6 +871,37 @@ fn main() {
     }
 
     #[test]
+    fn structural_eq_is_profile_rejected_until_vm_compare_exists() {
+        assert_profile_rejection(
+            r"
+type Point { x: i64; y: i64; }
+
+fn main() {
+    let a = Point { x: 1, y: 2 };
+    let b = Point { x: 1, y: 2 };
+    println(a == b);
+}
+",
+            "reserved_runtime_feature",
+        );
+        assert_profile_rejection(
+            r"
+enum Shape {
+    Circle(i64);
+    Empty;
+}
+
+fn main() {
+    let a: Shape = Shape::Circle(1);
+    let b: Shape = Shape::Circle(1);
+    println(a == b);
+}
+",
+            "reserved_runtime_feature",
+        );
+    }
+
+    #[test]
     fn user_resource_type_is_profile_rejected_w3030() {
         // W3.030 V15 — `#[resource]` types carry an implicit drop contract
         // that dispatches `<T>::close` on every scope-exit path through the

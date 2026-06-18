@@ -5,6 +5,7 @@ use super::types::GenericLambdaSig;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::eq_eligibility::{ty_is_eq_eligible, EqEligibility};
 use crate::BuiltinType;
 
 type DangerousRcBinding = (String, String);
@@ -3454,24 +3455,17 @@ impl Checker {
         }
     }
 
-    /// Fail-closed gate for comparisons whose structural lowering is not
-    /// implemented.
+    /// Fail-closed gate for aggregate comparisons outside the structural-equality subset.
     ///
-    /// Records remain fully gated. Enums split by payload shape:
-    /// fieldless enums are tag values and may use `==`/`!=`; payload-bearing
-    /// enums need structural equality (tag plus per-variant payload) and are
-    /// rejected at the checker until that lowering exists.
-    ///
-    /// WHY: structural aggregate equality is spec'd as a v0.5+ feature but
-    /// has no HIR/MIR/codegen lowering — without this gate the comparison
-    /// reaches codegen as `IntCmp` on an aggregate operand and dies with an
-    /// unspanned codegen-front rejection (`E_NOT_YET_IMPLEMENTED:
-    /// fail-closed: IntCmp lhs is not an integer`), leaking from the wrong
-    /// layer. LESSONS `boundary-fail-closed`.
-    /// WHEN: obsolete once structural record/payload-enum equality lands.
-    /// WHAT: the real solution lowers `==`/`!=` on records to field-wise
-    /// comparison, and on payload enums to tag dispatch plus payload compares;
-    /// ordering would additionally need a spec'd ordering semantics.
+    /// Eligible records and payload enums may use `==`/`!=`; ordering remains
+    /// rejected. The gate deliberately uses `ty_is_eq_eligible`, not the broader
+    /// `MarkerTrait::Eq`, because semantic Eq admits managed types such as
+    /// `string` while the current structural thunk would only compare pointer
+    /// bytes for those fields.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "aggregate comparison admission keeps record, enum, and diagnostic routing in one checker gate"
+    )]
     fn reject_record_comparison(
         &mut self,
         op: BinaryOp,
@@ -3481,8 +3475,14 @@ impl Checker {
         right_span: &Span,
     ) {
         enum UnsupportedComparison {
-            Record(String),
-            PayloadEnum(String),
+            Record {
+                type_name: String,
+                reason: Option<EqEligibility>,
+            },
+            PayloadEnum {
+                type_name: String,
+                reason: EqEligibility,
+            },
             EnumOrdering(String),
         }
 
@@ -3492,12 +3492,33 @@ impl Checker {
             };
             let type_name = ty.user_facing().to_string();
             if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
-                return Some(UnsupportedComparison::PayloadEnum(type_name));
+                if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+                    let eligibility = ty_is_eq_eligible(ty, &self.type_defs);
+                    return (eligibility != EqEligibility::Eligible).then_some(
+                        UnsupportedComparison::PayloadEnum {
+                            type_name,
+                            reason: eligibility,
+                        },
+                    );
+                }
+                return Some(UnsupportedComparison::EnumOrdering(type_name));
             }
             let type_def = self.type_defs.get(name)?;
             match type_def.kind {
                 TypeDefKind::Struct | TypeDefKind::Record => {
-                    Some(UnsupportedComparison::Record(type_name))
+                    if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+                        let eligibility = ty_is_eq_eligible(ty, &self.type_defs);
+                        return (eligibility != EqEligibility::Eligible).then_some(
+                            UnsupportedComparison::Record {
+                                type_name,
+                                reason: Some(eligibility),
+                            },
+                        );
+                    }
+                    Some(UnsupportedComparison::Record {
+                        type_name,
+                        reason: None,
+                    })
                 }
                 TypeDefKind::Enum => {
                     let has_payload_variant = type_def
@@ -3505,7 +3526,17 @@ impl Checker {
                         .values()
                         .any(|variant| !matches!(variant, VariantDef::Unit));
                     if has_payload_variant {
-                        Some(UnsupportedComparison::PayloadEnum(type_name))
+                        if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+                            let eligibility = ty_is_eq_eligible(ty, &self.type_defs);
+                            (eligibility != EqEligibility::Eligible).then_some(
+                                UnsupportedComparison::PayloadEnum {
+                                    type_name,
+                                    reason: eligibility,
+                                },
+                            )
+                        } else {
+                            Some(UnsupportedComparison::EnumOrdering(type_name))
+                        }
                     } else if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
                         None
                     } else {
@@ -3524,15 +3555,15 @@ impl Checker {
             end: right_span.end,
         };
         let (message, suggestion) = match unsupported {
-            UnsupportedComparison::Record(type_name) => {
-                if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+            UnsupportedComparison::Record { type_name, reason } => {
+                if let Some(reason) = reason {
                     (
                         format!(
-                            "`{op}` on record type `{type_name}` is not yet implemented; \
-                             structural record equality is a planned feature"
+                            "`{op}` on record type `{type_name}` is not supported because {}",
+                            Self::structural_eq_ineligibility_reason(reason)
                         ),
-                        "compare individual fields until structural record equality lands \
-                         (e.g. `a.x == b.x && a.y == b.y`)"
+                        "compare individual eligible fields explicitly, or match/destructure and \
+                         handle managed fields with their supported equality operations"
                             .to_string(),
                     )
                 } else {
@@ -3542,13 +3573,16 @@ impl Checker {
                     )
                 }
             }
-            UnsupportedComparison::PayloadEnum(type_name) => (
-                format!(
-                    "`{op}` on enum `{type_name}` with payload variants is not supported; \
-                     match on it instead"
-                ),
-                "match on the enum and compare payload fields in the relevant arms".to_string(),
-            ),
+            UnsupportedComparison::PayloadEnum { type_name, reason } => {
+                (
+                    format!(
+                        "`{op}` on enum `{type_name}` with payload variants is not supported because {}",
+                        Self::structural_eq_ineligibility_reason(reason)
+                    ),
+                    "match on the enum and compare eligible payload fields in the relevant arms"
+                        .to_string(),
+                )
+            }
             UnsupportedComparison::EnumOrdering(type_name) => (
                 format!("`{op}` is not supported for enum `{type_name}`"),
                 "match on the enum and compare an explicit value in each arm".to_string(),
@@ -3560,6 +3594,29 @@ impl Checker {
             message,
             vec![suggestion],
         );
+    }
+
+    fn structural_eq_ineligibility_reason(reason: EqEligibility) -> String {
+        match reason {
+            EqEligibility::Eligible => {
+                "structural equality eligibility was unexpectedly unresolved".to_string()
+            }
+            EqEligibility::IneligibleFloat(float_ty) => format!(
+                "a field or payload contains floating-point data `{}`",
+                float_ty.user_facing()
+            ),
+            EqEligibility::IneligibleManaged(managed_ty) => format!(
+                "a field or payload contains layout-managed/non-Copy data `{}`",
+                managed_ty.user_facing()
+            ),
+            EqEligibility::IneligibleOwned(owned_ty) => format!(
+                "a field or payload contains owned or heap-backed data `{}`",
+                owned_ty.user_facing()
+            ),
+            EqEligibility::IneligibleUnknown => {
+                "aggregate equality eligibility is unknown".to_string()
+            }
+        }
     }
 
     /// Type-check an arithmetic operation where at least one operand is `duration`.

@@ -13584,6 +13584,70 @@ fn lower_instruction(
             let (lhs_ptr, lhs_ty) = place_pointer(fn_ctx, *lhs)?;
             let (rhs_ptr, rhs_ty) = place_pointer(fn_ctx, *rhs)?;
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest)?;
+            if matches!(pred, CmpPred::Eq | CmpPred::NotEq)
+                && rhs_ty == lhs_ty
+                && matches!(
+                    lhs_ty,
+                    BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_)
+                )
+            {
+                let lhs_resolved_ty = place_resolved_ty(fn_ctx, *lhs)?;
+                let rhs_resolved_ty = place_resolved_ty(fn_ctx, *rhs)?;
+                if !matches!(
+                    (lhs_resolved_ty, rhs_resolved_ty),
+                    (ResolvedTy::Named { .. }, ResolvedTy::Named { .. })
+                ) {
+                    return Err(CodegenError::FailClosed(format!(
+                        "IntCmp aggregate operands must be named structural-equality types; \
+                         got lhs={lhs_resolved_ty:?}, rhs={rhs_resolved_ty:?}"
+                    )));
+                }
+                let dest_int = match dest_ty {
+                    BasicTypeEnum::IntType(t) => t,
+                    _ => {
+                        return Err(CodegenError::FailClosed(
+                            "IntCmp aggregate dest is not an integer".into(),
+                        ))
+                    }
+                };
+                let callee = get_or_emit_eq_thunk(fn_ctx, lhs_ty)?;
+                let eq_i32 = fn_ctx
+                    .builder
+                    .build_call(
+                        callee,
+                        &[lhs_ptr.into(), rhs_ptr.into()],
+                        "structural_eq_thunk",
+                    )
+                    .llvm_ctx("structural eq thunk call")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "structural equality thunk unexpectedly returned void".into(),
+                        )
+                    })?
+                    .into_int_value();
+                let zero = eq_i32.get_type().const_zero();
+                let predicate = if *pred == CmpPred::Eq {
+                    IntPredicate::NE
+                } else {
+                    IntPredicate::EQ
+                };
+                let bit = fn_ctx
+                    .builder
+                    .build_int_compare(predicate, eq_i32, zero, "structural_eq_bit")
+                    .llvm_ctx("structural eq icmp")?;
+                let widened = fn_ctx
+                    .builder
+                    .build_int_z_extend_or_bit_cast(bit, dest_int, "structural_eq_zext")
+                    .llvm_ctx("structural eq zext")?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, widened)
+                    .llvm_ctx("structural eq store")?;
+                let _ = ctx;
+                return Ok(());
+            }
             if matches!(lhs_ty, BasicTypeEnum::PointerType(_))
                 && rhs_ty == lhs_ty
                 && matches!(pred, CmpPred::Eq | CmpPred::NotEq)

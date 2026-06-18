@@ -5969,17 +5969,27 @@ impl Builder {
     ///   1. `ValueClass::BitCopy` scalars (i64/f64/bool/char/…), actor pids, and
     ///      `#[copy]` records — provided they are transitively free of `#[opaque]`
     ///      runtime handles (gate 2 below).
-    ///   2. `ResolvedTy::Function { .. }` — a named-function reference. Its
-    ///      runtime representation is a two-word `{ code_ptr, env_ptr }` fat
-    ///      pointer where `env_ptr` is null by construction (no captures). Both
-    ///      words are non-owning addresses; flat-copying them across the generator
-    ///      thread boundary is safe.
+    ///   2. `ResolvedTy::Function { .. }` — a named-function reference. Safety
+    ///      rests on three independent properties: (a) `hew_gen_ctx_create`
+    ///      flat-`memcpy`s the arg block and only `libc::free`s the flat buffer at
+    ///      thread end — it never recurses into inner pointers, so a non-null
+    ///      env-box is not freed by the generator; (b) `Function` is
+    ///      `PersistentShare`, so the body side never drops the fn value; (c)
+    ///      `derive_closure_pair_drop_allowed` marks any closure read as a call
+    ///      argument "aliased" and excludes it from the drop set — a capturing
+    ///      closure passed where `fn(..)` is declared leaks its env box rather than
+    ///      double-freeing. Note: a named fn literal produced by the compiler has a
+    ///      null env word; a capturing closure that structurally unifies with
+    ///      `fn(..)` (via `unify.rs`) may carry a non-null env word — the safety
+    ///      argument above covers both, but the laundered-closure path leaks the
+    ///      env box. That is accepted here; a stricter check belongs in a
+    ///      follow-up lane alongside the `genfn-owned-captures` work.
     ///   3. `ResolvedTy::Closure { captures, .. }` where `captures.is_empty()` —
-    ///      an empty-capture closure. Same null-env guarantee: no heap env box
-    ///      exists to alias. Note: a closure with non-empty captures carries a
-    ///      heap-boxed env; flat-copying it would shallow-alias the caller's heap
-    ///      → double-free / UAF at generator teardown. That case is REJECTED here
-    ///      and deferred to the `genfn-owned-captures` lane.
+    ///      an empty-capture closure. No heap env box exists to alias. Closures
+    ///      with non-empty captures carry a heap-boxed env; flat-copying them would
+    ///      shallow-alias the caller's heap → double-free / UAF at generator
+    ///      teardown. That case is REJECTED here and deferred to the
+    ///      `genfn-owned-captures` lane.
     ///
     /// Rejected shapes (fail closed):
     ///   * `ResolvedTy::Closure { captures, .. }` with non-empty `captures`.
@@ -5995,9 +6005,13 @@ impl Builder {
     /// and an empty-capture closure all answer `true` (admissible). Every other
     /// shape answers `false` (fail closed).
     fn gen_env_capture_admissible(&self, ty: &ResolvedTy) -> bool {
-        // Fast-path: admit a bare named-function reference (`fn(..)->R`) — its
-        // runtime env word is null by construction, so the 16-byte {code,env}
-        // pair is safe to flat-copy across the generator thread boundary.
+        // Fast-path: admit a fn-typed value (`fn(..)->R`). Safety is guaranteed
+        // by flat-free semantics (generator runtime never recurses into inner
+        // pointers), PersistentShare no-drop on the body side, and alias-on-arg
+        // exclusion from the closure-pair drop set. A named fn literal has a null
+        // env word; a capturing closure that unifies structurally with `fn(..)`
+        // may have a non-null env word and will leak it — accepted and documented
+        // above; a tighter check is deferred to the genfn-owned-captures lane.
         if matches!(ty, ResolvedTy::Function { .. }) {
             return true;
         }

@@ -1696,13 +1696,11 @@ run_accept_expect_status "vec_string_index_use_loop" 14
 # = xs[1] + xs[2] - xs[0] (20 + 12 - 10).
 run_accept_expect_status "vec_i64_index" 22
 
-# Reject: scalar index on Vec<f32> is fail-closed — narrower scalars
-# (i8/u8/i16/u16/f32/isize/usize) have no hew_vec_get_T getter yet, so the HIR
-# element-type gate surfaces it as a compile-time diagnostic instead of a deep
-# MIR NotYetImplemented.
+# Reject: scalar index on Vec<isize> is fail-closed until platform-sized
+# element widths have target-width-aware MIR dispatch.
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/vec_index_unsupported_elem.hew" \
-  "Vec<f32> scalar index (xs[i]) is not yet supported" \
+  "Vec<isize> scalar index (xs[i]) is not yet supported" \
   "vec_index_unsupported_elem"
 
 # Accept (S1): Vec::<i64>::new() turbofish syntax with type annotation. Exit 0.

@@ -16,10 +16,41 @@
 
 use std::ffi::{c_int, c_void};
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use crate::io_time::hew_now_ms;
 use crate::timer::HewTimerCb;
+
+// ---------------------------------------------------------------------------
+// Ticker-notify hook
+//
+// The ticker thread in `timer_periodic` registers a lightweight `fn()` here
+// at startup.  `hew_timer_wheel_schedule_handle` calls it after every insert
+// so the ticker re-evaluates its park deadline.  An unconditional call on
+// every insert is correct: a spurious wake just re-computes and re-parks.
+//
+// WHY here: the wheel is the insert site; `timer_periodic` depends on
+// `timer_wheel`, so the hook must live in `timer_wheel` to avoid a circular
+// dependency.
+// ---------------------------------------------------------------------------
+
+static TICKER_NOTIFY_HOOK: OnceLock<fn()> = OnceLock::new();
+
+/// Register the ticker's wakeup function.  Called once from
+/// `timer_periodic::start_ticker_thread`.  Subsequent calls are ignored.
+pub(crate) fn register_ticker_notify_hook(f: fn()) {
+    // OnceLock: only the first registration wins; safe to call again.
+    let _ = TICKER_NOTIFY_HOOK.set(f);
+}
+
+/// Notify the ticker that a new timer has been inserted.  Called from the
+/// schedule path while the wheel lock is **not** held.
+#[inline]
+fn notify_ticker() {
+    if let Some(f) = TICKER_NOTIFY_HOOK.get() {
+        f();
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -455,7 +486,12 @@ pub unsafe extern "C" fn hew_timer_wheel_schedule_handle(
     }));
 
     insert_entry(&mut w, entry);
-    HewTimerHandle { entry, generation }
+    let handle = HewTimerHandle { entry, generation };
+    // Release the wheel lock before notifying the ticker so the ticker can
+    // immediately call hew_timer_wheel_next_deadline_ms without contending.
+    drop(w);
+    notify_ticker();
+    handle
 }
 
 /// Mark a timer entry as cancelled.

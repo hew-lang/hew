@@ -1,0 +1,12 @@
+type Point {
+    x: i64;
+    y: i64;
+}
+
+fn main() {
+    let (a, (b, c)) = (1, (2, 3));
+    println(a + b + c);
+
+    let (p, (q, Point { x, y })) = (4, (5, Point { x: 6, y: 7 }));
+    println(p + q + x + y);
+}

@@ -9589,24 +9589,6 @@ impl LowerCtx {
                 for (idx, (elem_pat, elem_ty)) in
                     element_patterns.iter().zip(element_tys).enumerate()
                 {
-                    let elem_name = match &elem_pat.0 {
-                        Pattern::Identifier(n) => n.clone(),
-                        Pattern::Wildcard => format!("_{idx}"),
-                        _ => {
-                            // Nested tuple / constructor patterns are out of scope.
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::NotYetImplemented {
-                                    construct: "nested pattern in tuple-let".to_string(),
-                                    owning_pass: "pattern-matching".to_string(),
-                                },
-                                elem_pat.1.clone(),
-                                "only identifier and wildcard patterns are supported \
-                                 inside tuple-let in v0.5",
-                            ));
-                            format!("__unsupported_{idx}")
-                        }
-                    };
-
                     // Build a TupleIndex expression: `__tuple_N.<idx>`.
                     // Use `ResolvedRef::Binding(temp_id)` so MIR can resolve
                     // the proxy local from `binding_locals` and recover the
@@ -9636,12 +9618,23 @@ impl LowerCtx {
                         span: elem_pat.1.clone(),
                     };
 
-                    let elem_binding = self.bind(elem_name, elem_ty, false, elem_pat.1.clone());
-                    stmts.push(HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Let(elem_binding, Some(projection)),
-                        span: elem_pat.1.clone(),
-                    });
+                    if matches!(elem_pat.0, Pattern::Wildcard) {
+                        self.push_pattern_binding_stmt(
+                            format!("_{idx}"),
+                            elem_ty,
+                            projection,
+                            &mut stmts,
+                            elem_pat.1.clone(),
+                        );
+                    } else {
+                        self.lower_pattern_value_into_stmts(
+                            elem_pat,
+                            projection,
+                            elem_ty,
+                            &mut stmts,
+                            elem_pat.1.clone(),
+                        );
+                    }
                 }
 
                 return stmts;
@@ -9744,33 +9737,6 @@ impl LowerCtx {
                 for pat_field in pat_fields {
                     let field_name = &pat_field.name;
 
-                    // Determine the binder name: either the sub-pattern's identifier
-                    // or, if the pattern field has no sub-pattern (`{ x }` shorthand),
-                    // the field name itself.
-                    let binder_name = match &pat_field.pattern {
-                        None => field_name.clone(), // shorthand `{ x }` → bind as `x`
-                        Some((Pattern::Identifier(n), _)) => n.clone(),
-                        Some((Pattern::Wildcard, _)) => {
-                            // `{ x: _ }` — wildcard sub-pattern: bind synthetic name.
-                            let idx = stmts.len();
-                            format!("__{field_name}_{idx}")
-                        }
-                        Some((_, ps)) => {
-                            // Nested non-identifier sub-pattern: out of scope for
-                            // this lane — flat field binders only.  Fail closed.
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::NotYetImplemented {
-                                    construct: "nested pattern in record-let field".into(),
-                                    owning_pass: "pattern-matching".into(),
-                                },
-                                ps.clone(),
-                                "only identifier and wildcard sub-patterns are supported \
-                                 in record-let fields in v0.6",
-                            ));
-                            format!("__unsupported_{field_name}")
-                        }
-                    };
-
                     // Look up the instantiated field type.
                     let field_span = pat_field
                         .pattern
@@ -9812,12 +9778,17 @@ impl LowerCtx {
                         span: field_span.clone(),
                     };
 
-                    let field_binding = self.bind(binder_name, field_ty, false, field_span.clone());
-                    stmts.push(HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Let(field_binding, Some(projection)),
-                        span: field_span,
-                    });
+                    let field_pattern = pat_field
+                        .pattern
+                        .clone()
+                        .unwrap_or_else(|| (Pattern::Identifier(field_name.clone()), field_span));
+                    self.lower_pattern_value_into_stmts(
+                        &field_pattern,
+                        projection,
+                        field_ty,
+                        &mut stmts,
+                        field_pattern.1.clone(),
+                    );
                 }
 
                 return stmts;
@@ -9826,6 +9797,245 @@ impl LowerCtx {
 
         // Non-tuple statements: delegate to the single-statement path.
         vec![self.lower_stmt(stmt, span, return_ty)]
+    }
+
+    fn lower_pattern_value_into_stmts(
+        &mut self,
+        pattern: &Spanned<Pattern>,
+        value: HirExpr,
+        value_ty: ResolvedTy,
+        stmts: &mut Vec<HirStmt>,
+        span: Span,
+    ) {
+        match &pattern.0 {
+            Pattern::Identifier(name) => {
+                self.push_pattern_binding_stmt(name.clone(), value_ty, value, stmts, span);
+            }
+            Pattern::Wildcard => {
+                let name = format!("_{}", stmts.len());
+                self.push_pattern_binding_stmt(name, value_ty, value, stmts, span);
+            }
+            Pattern::Tuple(elements) => {
+                self.lower_tuple_pattern_value_into_stmts(elements, value, &value_ty, stmts, span);
+            }
+            Pattern::Struct { fields, .. } => {
+                self.lower_record_pattern_value_into_stmts(fields, value, &value_ty, stmts, span);
+            }
+            Pattern::Constructor { .. }
+            | Pattern::Literal(_)
+            | Pattern::Or(_, _)
+            | Pattern::Regex { .. } => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::NotYetImplemented {
+                        construct: "unsupported nested let pattern".into(),
+                        owning_pass: "pattern-matching".into(),
+                    },
+                    pattern.1.clone(),
+                    "let destructure supports nested tuple and record patterns here; \
+                     refutable patterns remain reserved for match/if-let",
+                ));
+                let name = format!("__unsupported_{}", stmts.len());
+                self.push_pattern_binding_stmt(name, value_ty, value, stmts, span);
+            }
+        }
+    }
+
+    fn push_pattern_binding_stmt(
+        &mut self,
+        name: String,
+        ty: ResolvedTy,
+        value: HirExpr,
+        stmts: &mut Vec<HirStmt>,
+        span: Span,
+    ) -> BindingId {
+        let binding = self.bind(name, ty, false, span.clone());
+        let binding_id = binding.id;
+        stmts.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(binding, Some(value)),
+            span,
+        });
+        binding_id
+    }
+
+    fn lower_tuple_pattern_value_into_stmts(
+        &mut self,
+        elements: &[Spanned<Pattern>],
+        value: HirExpr,
+        value_ty: &ResolvedTy,
+        stmts: &mut Vec<HirStmt>,
+        span: Span,
+    ) {
+        let element_tys = match &value_ty {
+            ResolvedTy::Tuple(elems) if elems.len() == elements.len() => elems.clone(),
+            ResolvedTy::Tuple(elems) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::NotYetImplemented {
+                        construct: format!(
+                            "nested tuple pattern with {} elements for tuple with {} elements",
+                            elements.len(),
+                            elems.len()
+                        ),
+                        owning_pass: "type-checker".to_string(),
+                    },
+                    span.clone(),
+                    "nested tuple pattern element count does not match tuple value arity",
+                ));
+                vec![ResolvedTy::Unit; elements.len()]
+            }
+            _ => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::NotYetImplemented {
+                        construct: "nested tuple pattern on non-tuple value".into(),
+                        owning_pass: "pattern-lowering".into(),
+                    },
+                    span.clone(),
+                    "nested tuple pattern requires a tuple-typed value",
+                ));
+                vec![ResolvedTy::Unit; elements.len()]
+            }
+        };
+        let temp_name = format!("__tuple_nested_{}", self.ids.binding().0);
+        let temp_binding = self.bind(temp_name.clone(), value_ty.clone(), false, span.clone());
+        let temp_id = temp_binding.id;
+        stmts.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(temp_binding, Some(value)),
+            span: span.clone(),
+        });
+        for (idx, (elem_pat, elem_ty)) in elements.iter().zip(element_tys).enumerate() {
+            let temp_ref =
+                self.binding_ref_expr(temp_name.clone(), temp_id, value_ty.clone(), span.clone());
+            let projection = HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                value_class: ValueClass::of_ty(&elem_ty, &self.type_classes),
+                ty: elem_ty.clone(),
+                intent: IntentKind::Read,
+                kind: HirExprKind::TupleIndex {
+                    tuple: Box::new(temp_ref),
+                    index: idx,
+                },
+                span: elem_pat.1.clone(),
+            };
+            self.lower_pattern_value_into_stmts(
+                elem_pat,
+                projection,
+                elem_ty,
+                stmts,
+                elem_pat.1.clone(),
+            );
+        }
+    }
+
+    fn lower_record_pattern_value_into_stmts(
+        &mut self,
+        fields: &[hew_parser::ast::PatternField],
+        value: HirExpr,
+        value_ty: &ResolvedTy,
+        stmts: &mut Vec<HirStmt>,
+        span: Span,
+    ) {
+        let declared_fields: Vec<(String, ResolvedTy)> =
+            if let ResolvedTy::Named { name, args, .. } = value_ty {
+                if let Some(entry) = self.record_registry.get(name.as_str()) {
+                    let subst: HashMap<String, ResolvedTy> = entry
+                        .type_params
+                        .iter()
+                        .zip(args.iter())
+                        .map(|(param, arg)| (param.clone(), arg.clone()))
+                        .collect();
+                    entry
+                        .fields
+                        .iter()
+                        .map(|(fname, fty)| (fname.clone(), substitute_ty(fty, &subst)))
+                        .collect()
+                } else {
+                    self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: name.clone(),
+                        reason: "record type not in HIR registry".into(),
+                    },
+                    span.clone(),
+                    "record type missing from HIR registry; cannot desugar nested record pattern",
+                ));
+                    Vec::new()
+                }
+            } else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::NotYetImplemented {
+                        construct: "nested record pattern on non-named type".into(),
+                        owning_pass: "pattern-lowering".into(),
+                    },
+                    span.clone(),
+                    "nested record destructure requires a named record type",
+                ));
+                Vec::new()
+            };
+        let temp_name = format!("__rec_nested_{}", self.ids.binding().0);
+        let temp_binding = self.bind(temp_name.clone(), value_ty.clone(), false, span.clone());
+        let temp_id = temp_binding.id;
+        stmts.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(temp_binding, Some(value)),
+            span: span.clone(),
+        });
+        for field in fields {
+            let field_ty = declared_fields
+                .iter()
+                .find(|(fname, _)| fname == &field.name)
+                .map_or(ResolvedTy::Unit, |(_, fty)| fty.clone());
+            let field_span = field
+                .pattern
+                .as_ref()
+                .map_or_else(|| span.clone(), |(_, ps)| ps.clone());
+            let temp_ref =
+                self.binding_ref_expr(temp_name.clone(), temp_id, value_ty.clone(), span.clone());
+            let projection = HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                value_class: ValueClass::of_ty(&field_ty, &self.type_classes),
+                ty: field_ty.clone(),
+                intent: IntentKind::Consume,
+                kind: HirExprKind::FieldAccess {
+                    object: Box::new(temp_ref),
+                    field: field.name.clone(),
+                },
+                span: field_span.clone(),
+            };
+            let field_pattern = field
+                .pattern
+                .clone()
+                .unwrap_or_else(|| (Pattern::Identifier(field.name.clone()), field_span));
+            self.lower_pattern_value_into_stmts(
+                &field_pattern,
+                projection,
+                field_ty,
+                stmts,
+                field_pattern.1.clone(),
+            );
+        }
+    }
+
+    fn binding_ref_expr(
+        &mut self,
+        name: String,
+        id: BindingId,
+        ty: ResolvedTy,
+        span: Span,
+    ) -> HirExpr {
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&ty, &self.type_classes),
+            ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::BindingRef {
+                name,
+                resolved: ResolvedRef::Binding(id),
+            },
+            span,
+        }
     }
 
     fn lower_expression_stmt_kind(&mut self, expr: &Spanned<Expr>) -> HirStmtKind {

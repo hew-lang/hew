@@ -963,21 +963,23 @@ fn task_handle_ti5_task_annotation_in_let_rejects_task_not_nameable() {
     );
 }
 
-/// TI-4 (reject): `let x = await name` inside a `fork{}` body emits
-/// `AwaitOutOfPosition`. Await is only legal as a statement-expression, never
-/// as a let-value — the result cannot be bound.
+/// `let x = await t` over a value-returning `Task<T>` is a bindable let-value:
+/// the child's `T` is read back on the resume edge through the value-task
+/// result channel. It must NOT emit `AwaitOutOfPosition` — binding it is its
+/// purpose. (A unit `await t` in let position, with no bindable value, still
+/// trips the position gate; covered by the await-position tests below.)
 #[test]
-fn task_handle_ti4_await_in_let_value_position_rejects() {
+fn task_handle_value_await_in_let_value_position_accepted() {
     let output = lower(
         "fn compute() -> i64 { return 1; } \
-         fn f() { scope { fork t = compute(); let x = await t; } }",
+         fn f() { scope { fork t = compute(); let x = await t; let _ = x; } }",
     );
     assert!(
-        output
+        !output
             .diagnostics
             .iter()
             .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition)),
-        "let x = await t inside fork must emit AwaitOutOfPosition: {:?}",
+        "let x = await t (value task) must be accepted as a bindable let-value: {:?}",
         output.diagnostics
     );
 }

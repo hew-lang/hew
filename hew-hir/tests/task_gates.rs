@@ -343,35 +343,38 @@ fn deadline_non_empty_body_rejected() {
 // ── AwaitTask tests ─────────────────────────────────────────────────────────
 
 #[test]
-fn await_unit_task_accepted() {
-    // Valid: awaiting a unit-returning worker must not trip the non-unit gate.
+fn await_unit_task_in_scope_accepted() {
+    // Valid: awaiting a unit-returning worker as a statement inside a `scope{}`
+    // body must not trip the position gate.
     let source = r"
         fn main() {
-            let task = worker();
-            await task;
+            scope {
+                fork task = worker();
+                await task;
+            }
         }
         fn worker() {}
     ";
     let output = lower(source);
 
-    let has_gate_diagnostic = output
+    let has_position_reject = output
         .diagnostics
         .iter()
-        .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitTaskResultUnsupported { .. }));
+        .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition));
     assert!(
-        !has_gate_diagnostic,
-        "Valid await should not trigger gate; got: {:#?}",
+        !has_position_reject,
+        "unit task statement await in scope should not trip the position gate; got: {:#?}",
         output.diagnostics
     );
 }
 
 #[test]
-fn value_await_in_let_rejected_fail_closed() {
-    // HEW-SPEC-2026 §4.3 value resolution (`let v = await x;` for a
-    // Task<i64> fork binding) is not wired yet: task results have no
-    // result-propagation substrate (wrapper discards the callee return).
-    // The let-value await must refuse with a clear AwaitOutOfPosition
-    // diagnostic — never bind a fabricated value.
+fn value_await_in_let_accepted() {
+    // `let v = await x;` over a value-returning `Task<i64>` fork binding is a
+    // bindable, value-producing await: the child's `T` is read back on the
+    // resume edge through the value-task result channel. It must NOT trip the
+    // let-value position gate (which rejects only awaits with no bindable
+    // value, e.g. a unit `await t` in let position).
     let source = r"
         fn compute() -> i64 { 42 }
         fn main() {
@@ -388,8 +391,8 @@ fn value_await_in_let_rejected_fail_closed() {
         matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition) && d.note.contains("let-value")
     });
     assert!(
-        has_let_value_reject,
-        "value await in let position must fail closed; got: {:#?}",
+        !has_let_value_reject,
+        "value await in let position must be accepted (bindable); got: {:#?}",
         output.diagnostics
     );
 }

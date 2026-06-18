@@ -599,13 +599,6 @@ pub enum HirDiagnosticKind {
         /// Site identifier for error reporting.
         site: SiteId,
     },
-    /// Awaiting non-unit task result. The awaited task must return unit
-    /// because task result value propagation is not yet wired. Fail-closed
-    /// per FC-P1-A1 audit.
-    AwaitTaskResultUnsupported {
-        /// Site identifier for error reporting.
-        site: SiteId,
-    },
     /// Pool supervisor child accessor is not yet implemented. The program
     /// performs a field access on a supervisor-typed handle (`sup.child_name`)
     /// where the named child is declared with `pool name: Type` rather than

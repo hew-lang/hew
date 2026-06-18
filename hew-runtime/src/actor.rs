@@ -3484,24 +3484,30 @@ pub unsafe extern "C" fn hew_actor_register_type(
     }
     // SAFETY: Caller guarantees `name` is a NUL-terminated static string.
     let cstr = unsafe { std::ffi::CStr::from_ptr(name) };
-    // Leak the string to get a `&'static str`. This is intentional: type
-    // names are registered once and must outlive all profiler snapshots.
-    // SHIM: WHY: `&'static str` is required by the dispatch type registry.
-    //       WHEN: Remove leak if we switch to an owned type-name map.
+    // Pass the owned name to the registry, which leaks it to `&'static str`
+    // exactly once — only when it actually inserts a new type. Type names must
+    // outlive all profiler snapshots, but this call fires once per *spawn*, not
+    // once per *type*: leaking here would orphan one string per spawn of an
+    // already-registered type. Deferring the leak into the table's locked
+    // insert keeps it one-per-type.
+    // SHIM: WHY: the registry stores `&'static str`; the leak-on-insert keeps
+    //       it bounded to one string per actor type.
+    //       WHEN: Remove the leak if we switch to an owned/`Arc<str>` map.
     //       REAL: Store an `Arc<str>` or intern into a static arena.
-    // JIT LEAK RISK: Under ORCv2 JIT reloads each unique dispatch fn leaks one
-    //       String per reload cycle.  `clear_dispatch_registry()` (called at
-    //       session reset) clears the pointer-to-name map entries but cannot
-    //       reclaim the leaked strings.  Acceptable for Milestone 2; tracked
-    //       in #1226 M3 (ORCv2 ResourceTracker choreography).
+    // JIT LEAK RISK: Under ORCv2 JIT reloads each *new* unique dispatch fn
+    //       leaks one String per reload cycle (the table inserts a fresh key).
+    //       `clear_dispatch_registry()` (called at session reset) clears the
+    //       pointer-to-name map entries but cannot reclaim the leaked strings.
+    //       Acceptable for Milestone 2; tracked in #1226 M3 (ORCv2
+    //       ResourceTracker choreography).
     let Ok(s) = cstr.to_str() else { return };
-    let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
+    let name = s.to_owned();
     // Convert the void pointer to the dispatch function type for registration.
     // SAFETY: The caller has cast the dispatch function pointer to void*; we cast it
     // back to the correct function pointer type. This is safe as long as the caller
     // passed a valid dispatch function pointer.
     let dispatch_fn: Option<HewDispatchFn> = unsafe { std::mem::transmute(dispatch) };
-    crate::profiler::actor_registry::register_dispatch_type(dispatch_fn, leaked);
+    crate::profiler::actor_registry::register_dispatch_type(dispatch_fn, name);
 }
 
 /// No-op stub for non-profiler native builds.

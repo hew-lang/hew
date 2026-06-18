@@ -484,6 +484,7 @@ ElaboratedMirFunction {
                         kind: CowHeap {
                             drop_fn: "hew_string_drop",
                         },
+                        guard: None,
                     },
                 ],
             },
@@ -543,6 +544,7 @@ ElaboratedMirFunction {
                         kind: CowHeap {
                             drop_fn: "hew_string_drop",
                         },
+                        guard: None,
                     },
                     ElabDrop {
                         place: Local(
@@ -553,6 +555,7 @@ ElaboratedMirFunction {
                         kind: CowHeap {
                             drop_fn: "hew_string_drop",
                         },
+                        guard: None,
                     },
                 ],
             },

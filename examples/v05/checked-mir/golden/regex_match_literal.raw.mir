@@ -290,6 +290,161 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            157,
+            285,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            193,
+            282,
+        ),
+        (
+            0,
+            1,
+        ): (
+            193,
+            282,
+        ),
+        (
+            0,
+            2,
+        ): (
+            193,
+            282,
+        ),
+        (
+            0,
+            3,
+        ): (
+            193,
+            282,
+        ),
+        (
+            0,
+            4,
+        ): (
+            193,
+            282,
+        ),
+        (
+            1,
+            0,
+        ): (
+            193,
+            282,
+        ),
+        (
+            1,
+            1,
+        ): (
+            193,
+            282,
+        ),
+        (
+            2,
+            0,
+        ): (
+            193,
+            282,
+        ),
+        (
+            2,
+            1,
+        ): (
+            193,
+            282,
+        ),
+        (
+            2,
+            2,
+        ): (
+            193,
+            282,
+        ),
+        (
+            3,
+            0,
+        ): (
+            193,
+            282,
+        ),
+        (
+            3,
+            1,
+        ): (
+            193,
+            282,
+        ),
+        (
+            3,
+            2,
+        ): (
+            193,
+            282,
+        ),
+        (
+            4,
+            0,
+        ): (
+            193,
+            282,
+        ),
+        (
+            4,
+            1,
+        ): (
+            193,
+            282,
+        ),
+        (
+            4,
+            2,
+        ): (
+            193,
+            282,
+        ),
+        (
+            5,
+            0,
+        ): (
+            193,
+            282,
+        ),
+        (
+            5,
+            1,
+        ): (
+            193,
+            282,
+        ),
+        (
+            5,
+            2,
+        ): (
+            193,
+            282,
+        ),
+        (
+            5,
+            3,
+        ): (
+            193,
+            282,
+        ),
+        (
+            5,
+            4,
+        ): (
+            193,
+            282,
+        ),
+    },
 }
 RawMirFunction {
     name: "main",
@@ -600,6 +755,98 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            285,
+            400,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            308,
+            332,
+        ),
+        (
+            0,
+            1,
+        ): (
+            308,
+            332,
+        ),
+        (
+            1,
+            0,
+        ): (
+            308,
+            332,
+        ),
+        (
+            2,
+            0,
+        ): (
+            338,
+            362,
+        ),
+        (
+            2,
+            1,
+        ): (
+            338,
+            362,
+        ),
+        (
+            3,
+            0,
+        ): (
+            338,
+            362,
+        ),
+        (
+            4,
+            0,
+        ): (
+            368,
+            391,
+        ),
+        (
+            4,
+            1,
+        ): (
+            368,
+            391,
+        ),
+        (
+            5,
+            0,
+        ): (
+            368,
+            391,
+        ),
+        (
+            6,
+            0,
+        ): (
+            397,
+            399,
+        ),
+        (
+            6,
+            1,
+        ): (
+            397,
+            399,
+        ),
+        (
+            6,
+            2,
+        ): (
+            397,
+            399,
+        ),
+    },
 }
 RawMirFunction {
     name: "Pattern::is_match",
@@ -758,6 +1005,42 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            3372,
+            6325,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            3540,
+            3606,
+        ),
+        (
+            1,
+            0,
+        ): (
+            3540,
+            3606,
+        ),
+        (
+            1,
+            1,
+        ): (
+            3540,
+            3606,
+        ),
+        (
+            1,
+            2,
+        ): (
+            3540,
+            3606,
+        ),
+    },
 }
 RawMirFunction {
     name: "Pattern::matches",
@@ -916,6 +1199,42 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            3372,
+            6325,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            3710,
+            3776,
+        ),
+        (
+            1,
+            0,
+        ): (
+            3710,
+            3776,
+        ),
+        (
+            1,
+            1,
+        ): (
+            3710,
+            3776,
+        ),
+        (
+            1,
+            2,
+        ): (
+            3710,
+            3776,
+        ),
+    },
 }
 RawMirFunction {
     name: "Pattern::find",
@@ -1074,6 +1393,42 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            3372,
+            6325,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            3904,
+            3966,
+        ),
+        (
+            1,
+            0,
+        ): (
+            3904,
+            3966,
+        ),
+        (
+            1,
+            1,
+        ): (
+            3904,
+            3966,
+        ),
+        (
+            1,
+            2,
+        ): (
+            3904,
+            3966,
+        ),
+    },
 }
 RawMirFunction {
     name: "Pattern::replace",
@@ -1258,6 +1613,42 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            3372,
+            6325,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            4129,
+            4207,
+        ),
+        (
+            1,
+            0,
+        ): (
+            4129,
+            4207,
+        ),
+        (
+            1,
+            1,
+        ): (
+            4129,
+            4207,
+        ),
+        (
+            1,
+            2,
+        ): (
+            4129,
+            4207,
+        ),
+    },
 }
 RawMirFunction {
     name: "Pattern::find_all",
@@ -1470,6 +1861,42 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            3372,
+            6325,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            4341,
+            4407,
+        ),
+        (
+            1,
+            0,
+        ): (
+            4341,
+            4407,
+        ),
+        (
+            1,
+            1,
+        ): (
+            4341,
+            4407,
+        ),
+        (
+            1,
+            2,
+        ): (
+            4341,
+            4407,
+        ),
+    },
 }
 RawMirFunction {
     name: "Pattern::capture",
@@ -2203,6 +2630,168 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            3372,
+            6325,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            4550,
+            4650,
+        ),
+        (
+            1,
+            0,
+        ): (
+            4550,
+            4650,
+        ),
+        (
+            1,
+            1,
+        ): (
+            4550,
+            4650,
+        ),
+        (
+            1,
+            2,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            2,
+            0,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            2,
+            1,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            2,
+            2,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            3,
+            0,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            3,
+            1,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            3,
+            2,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            3,
+            3,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            3,
+            4,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            4,
+            0,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            4,
+            1,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            4,
+            2,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            4,
+            3,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            5,
+            0,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            5,
+            1,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            6,
+            0,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            6,
+            1,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            6,
+            2,
+        ): (
+            4650,
+            4753,
+        ),
+        (
+            6,
+            3,
+        ): (
+            4650,
+            4753,
+        ),
+    },
 }
 RawMirFunction {
     name: "Pattern::capture_named",
@@ -2936,6 +3525,168 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            3372,
+            6325,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            4902,
+            5000,
+        ),
+        (
+            1,
+            0,
+        ): (
+            4902,
+            5000,
+        ),
+        (
+            1,
+            1,
+        ): (
+            4902,
+            5000,
+        ),
+        (
+            1,
+            2,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            2,
+            0,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            2,
+            1,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            2,
+            2,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            3,
+            0,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            3,
+            1,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            3,
+            2,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            3,
+            3,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            3,
+            4,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            4,
+            0,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            4,
+            1,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            4,
+            2,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            4,
+            3,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            5,
+            0,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            5,
+            1,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            6,
+            0,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            6,
+            1,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            6,
+            2,
+        ): (
+            5000,
+            5103,
+        ),
+        (
+            6,
+            3,
+        ): (
+            5000,
+            5103,
+        ),
+    },
 }
 RawMirFunction {
     name: "Pattern::captures",
@@ -3408,6 +4159,77 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            3372,
+            6325,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            5233,
+            5322,
+        ),
+        (
+            1,
+            0,
+        ): (
+            5233,
+            5322,
+        ),
+        (
+            1,
+            1,
+        ): (
+            5233,
+            5322,
+        ),
+        (
+            1,
+            2,
+        ): (
+            5322,
+            5409,
+        ),
+        (
+            2,
+            0,
+        ): (
+            5322,
+            5409,
+        ),
+        (
+            2,
+            1,
+        ): (
+            5322,
+            5409,
+        ),
+        (
+            2,
+            2,
+        ): (
+            5409,
+            5473,
+        ),
+        (
+            2,
+            3,
+        ): (
+            5409,
+            5473,
+        ),
+        (
+            2,
+            4,
+        ): (
+            5409,
+            5473,
+        ),
+    },
 }
 RawMirFunction {
     name: "Pattern::find_all_submatch",
@@ -3880,6 +4702,77 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            3372,
+            6325,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            5623,
+            5721,
+        ),
+        (
+            1,
+            0,
+        ): (
+            5623,
+            5721,
+        ),
+        (
+            1,
+            1,
+        ): (
+            5623,
+            5721,
+        ),
+        (
+            1,
+            2,
+        ): (
+            5721,
+            5808,
+        ),
+        (
+            2,
+            0,
+        ): (
+            5721,
+            5808,
+        ),
+        (
+            2,
+            1,
+        ): (
+            5721,
+            5808,
+        ),
+        (
+            2,
+            2,
+        ): (
+            5808,
+            5872,
+        ),
+        (
+            2,
+            3,
+        ): (
+            5808,
+            5872,
+        ),
+        (
+            2,
+            4,
+        ): (
+            5808,
+            5872,
+        ),
+    },
 }
 RawMirFunction {
     name: "Pattern::clone",
@@ -4042,6 +4935,42 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            3372,
+            6325,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            5989,
+            6045,
+        ),
+        (
+            1,
+            0,
+        ): (
+            5989,
+            6045,
+        ),
+        (
+            1,
+            1,
+        ): (
+            5989,
+            6045,
+        ),
+        (
+            1,
+            2,
+        ): (
+            5989,
+            6045,
+        ),
+    },
 }
 RawMirFunction {
     name: "Pattern::free",
@@ -4151,6 +5080,28 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            3372,
+            6325,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            6264,
+            6314,
+        ),
+        (
+            1,
+            0,
+        ): (
+            6264,
+            6314,
+        ),
+    },
 }
 RawMirFunction {
     name: "CaptureMatches::len",
@@ -4688,6 +5639,196 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            6888,
+            8198,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            7027,
+            7094,
+        ),
+        (
+            0,
+            1,
+        ): (
+            7027,
+            7094,
+        ),
+        (
+            0,
+            2,
+        ): (
+            7027,
+            7094,
+        ),
+        (
+            0,
+            3,
+        ): (
+            7027,
+            7094,
+        ),
+        (
+            1,
+            0,
+        ): (
+            7066,
+            7084,
+        ),
+        (
+            1,
+            1,
+        ): (
+            7066,
+            7084,
+        ),
+        (
+            1,
+            2,
+        ): (
+            7066,
+            7084,
+        ),
+        (
+            2,
+            0,
+        ): (
+            7066,
+            7084,
+        ),
+        (
+            3,
+            0,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            3,
+            1,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            4,
+            0,
+        ): (
+            7066,
+            7084,
+        ),
+        (
+            5,
+            0,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            5,
+            1,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            5,
+            2,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            5,
+            3,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            6,
+            0,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            7,
+            0,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            7,
+            1,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            7,
+            2,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            8,
+            0,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            8,
+            1,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            8,
+            2,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            9,
+            0,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            9,
+            1,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            9,
+            2,
+        ): (
+            7094,
+            7135,
+        ),
+        (
+            10,
+            0,
+        ): (
+            7094,
+            7135,
+        ),
+    },
 }
 RawMirFunction {
     name: "CaptureMatches::is_empty",
@@ -4841,6 +5982,49 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            6888,
+            8198,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            7243,
+            7263,
+        ),
+        (
+            1,
+            0,
+        ): (
+            7243,
+            7263,
+        ),
+        (
+            1,
+            1,
+        ): (
+            7243,
+            7263,
+        ),
+        (
+            1,
+            2,
+        ): (
+            7243,
+            7263,
+        ),
+        (
+            1,
+            3,
+        ): (
+            7243,
+            7263,
+        ),
+    },
 }
 RawMirFunction {
     name: "CaptureMatches::width",
@@ -4944,6 +6128,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            6888,
+            8198,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            7385,
+            7406,
+        ),
+        (
+            0,
+            1,
+        ): (
+            7385,
+            7406,
+        ),
+        (
+            0,
+            2,
+        ): (
+            7385,
+            7406,
+        ),
+    },
 }
 RawMirFunction {
     name: "CaptureMatches::group",
@@ -6098,6 +7311,329 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            6888,
+            8198,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            0,
+            1,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            0,
+            2,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            0,
+            3,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            0,
+            4,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            1,
+            0,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            1,
+            1,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            1,
+            2,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            1,
+            3,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            2,
+            0,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            3,
+            0,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            3,
+            1,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            3,
+            2,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            3,
+            3,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            4,
+            0,
+        ): (
+            7562,
+            7680,
+        ),
+        (
+            5,
+            0,
+        ): (
+            7649,
+            7670,
+        ),
+        (
+            5,
+            1,
+        ): (
+            7649,
+            7670,
+        ),
+        (
+            5,
+            2,
+        ): (
+            7649,
+            7670,
+        ),
+        (
+            5,
+            3,
+        ): (
+            7649,
+            7670,
+        ),
+        (
+            6,
+            0,
+        ): (
+            7649,
+            7670,
+        ),
+        (
+            7,
+            0,
+        ): (
+            7680,
+            7716,
+        ),
+        (
+            8,
+            0,
+        ): (
+            7649,
+            7670,
+        ),
+        (
+            9,
+            0,
+        ): (
+            7680,
+            7716,
+        ),
+        (
+            9,
+            1,
+        ): (
+            7716,
+            7789,
+        ),
+        (
+            9,
+            2,
+        ): (
+            7716,
+            7789,
+        ),
+        (
+            10,
+            0,
+        ): (
+            7758,
+            7779,
+        ),
+        (
+            10,
+            1,
+        ): (
+            7758,
+            7779,
+        ),
+        (
+            10,
+            2,
+        ): (
+            7758,
+            7779,
+        ),
+        (
+            10,
+            3,
+        ): (
+            7758,
+            7779,
+        ),
+        (
+            11,
+            0,
+        ): (
+            7758,
+            7779,
+        ),
+        (
+            12,
+            0,
+        ): (
+            7789,
+            7861,
+        ),
+        (
+            12,
+            1,
+        ): (
+            7789,
+            7861,
+        ),
+        (
+            12,
+            2,
+        ): (
+            7789,
+            7861,
+        ),
+        (
+            12,
+            3,
+        ): (
+            7789,
+            7861,
+        ),
+        (
+            12,
+            4,
+        ): (
+            7789,
+            7861,
+        ),
+        (
+            12,
+            5,
+        ): (
+            7789,
+            7861,
+        ),
+        (
+            13,
+            0,
+        ): (
+            7758,
+            7779,
+        ),
+        (
+            14,
+            0,
+        ): (
+            7789,
+            7861,
+        ),
+        (
+            15,
+            0,
+        ): (
+            7789,
+            7861,
+        ),
+        (
+            15,
+            1,
+        ): (
+            7789,
+            7861,
+        ),
+        (
+            16,
+            0,
+        ): (
+            7789,
+            7861,
+        ),
+        (
+            17,
+            0,
+        ): (
+            7789,
+            7861,
+        ),
+        (
+            18,
+            0,
+        ): (
+            7789,
+            7861,
+        ),
+        (
+            18,
+            1,
+        ): (
+            7789,
+            7861,
+        ),
+        (
+            18,
+            2,
+        ): (
+            7789,
+            7861,
+        ),
+    },
 }
 RawMirFunction {
     name: "CaptureMatches::whole",
@@ -6294,6 +7830,42 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            6888,
+            8198,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            7996,
+            8027,
+        ),
+        (
+            0,
+            1,
+        ): (
+            7996,
+            8027,
+        ),
+        (
+            1,
+            0,
+        ): (
+            7996,
+            8027,
+        ),
+        (
+            1,
+            1,
+        ): (
+            7996,
+            8027,
+        ),
+    },
 }
 RawMirFunction {
     name: "regex$new",
@@ -6315,6 +7887,18 @@ RawMirFunction {
             builtin: None,
             is_opaque: false,
         },
+        Named {
+            name: "Pattern",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        Unit,
+        Bool,
+        Bool,
+        String,
+        String,
+        String,
         Named {
             name: "Pattern",
             args: [],
@@ -6358,6 +7942,186 @@ RawMirFunction {
         BasicBlock {
             id: 1,
             statements: [
+                Bind {
+                    binding: BindingId(
+                        40,
+                    ),
+                    name: "re",
+                    site: SiteId(
+                        175,
+                    ),
+                    ty: Named {
+                        name: "Pattern",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        40,
+                    ),
+                    name: "re",
+                    site: SiteId(
+                        180,
+                    ),
+                    ty: Named {
+                        name: "Pattern",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        2,
+                    ),
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_regex_is_valid",
+                builtin: None,
+                args: [
+                    Local(
+                        2,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        4,
+                    ),
+                ),
+                next: 2,
+            },
+        },
+        BasicBlock {
+            id: 2,
+            statements: [],
+            instructions: [
+                BoolNot {
+                    dest: Local(
+                        5,
+                    ),
+                    operand: Local(
+                        4,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    5,
+                ),
+                then_target: 3,
+                else_target: 4,
+            },
+        },
+        BasicBlock {
+            id: 3,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        39,
+                    ),
+                    name: "pattern",
+                    site: SiteId(
+                        185,
+                    ),
+                    ty: String,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        114,
+                        101,
+                        103,
+                        101,
+                        120,
+                        46,
+                        110,
+                        101,
+                        119,
+                        58,
+                        32,
+                        105,
+                        110,
+                        118,
+                        97,
+                        108,
+                        105,
+                        100,
+                        32,
+                        112,
+                        97,
+                        116,
+                        116,
+                        101,
+                        114,
+                        110,
+                        58,
+                        32,
+                    ],
+                    dest: Local(
+                        6,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "string::fmt",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        7,
+                    ),
+                ),
+                next: 6,
+            },
+        },
+        BasicBlock {
+            id: 4,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 5,
+            },
+        },
+        BasicBlock {
+            id: 5,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        192,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        40,
+                    ),
+                    name: "re",
+                    site: SiteId(
+                        193,
+                    ),
+                    ty: Named {
+                        name: "Pattern",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
                 Return {
                     site: Some(
                         SiteId(
@@ -6375,20 +8139,74 @@ RawMirFunction {
             instructions: [
                 Move {
                     dest: Local(
-                        2,
+                        9,
                     ),
                     src: Local(
-                        1,
+                        2,
                     ),
                 },
                 Move {
                     dest: ReturnSlot,
                     src: Local(
-                        2,
+                        9,
                     ),
                 },
             ],
             terminator: Return,
+        },
+        BasicBlock {
+            id: 6,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "string_concat",
+                builtin: None,
+                args: [
+                    Local(
+                        6,
+                    ),
+                    Local(
+                        7,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        8,
+                    ),
+                ),
+                next: 7,
+            },
+        },
+        BasicBlock {
+            id: 7,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "panic",
+                builtin: None,
+                args: [
+                    Local(
+                        8,
+                    ),
+                ],
+                dest: None,
+                next: 8,
+            },
+        },
+        BasicBlock {
+            id: 8,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        182,
+                    ),
+                    ty: Never,
+                },
+            ],
+            instructions: [],
+            terminator: Goto {
+                target: 5,
+            },
         },
     ],
     decisions: [
@@ -6418,8 +8236,8 @@ RawMirFunction {
                 is_opaque: false,
             },
             value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
+            intent: Consume,
+            strategy: Move,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
@@ -6432,10 +8250,236 @@ RawMirFunction {
             strategy: CowShare,
             why: "first vertical-slice classifier",
         },
+        DecisionFact {
+            site: SiteId(
+                192,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                178,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                179,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                180,
+            ),
+            ty: Named {
+                name: "Pattern",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                191,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                182,
+            ),
+            ty: Never,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                183,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                184,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                187,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                185,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                193,
+            ),
+            ty: Named {
+                name: "Pattern",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
     ],
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            8405,
+            8814,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            8467,
+            8508,
+        ),
+        (
+            1,
+            0,
+        ): (
+            8467,
+            8508,
+        ),
+        (
+            1,
+            1,
+        ): (
+            8508,
+            8616,
+        ),
+        (
+            2,
+            0,
+        ): (
+            8508,
+            8616,
+        ),
+        (
+            2,
+            1,
+        ): (
+            8508,
+            8616,
+        ),
+        (
+            3,
+            0,
+        ): (
+            8549,
+            8596,
+        ),
+        (
+            3,
+            1,
+        ): (
+            8549,
+            8596,
+        ),
+        (
+            4,
+            0,
+        ): (
+            8549,
+            8596,
+        ),
+        (
+            5,
+            0,
+        ): (
+            8549,
+            8596,
+        ),
+        (
+            5,
+            1,
+        ): (
+            8549,
+            8596,
+        ),
+        (
+            5,
+            2,
+        ): (
+            8549,
+            8596,
+        ),
+        (
+            6,
+            0,
+        ): (
+            8549,
+            8596,
+        ),
+        (
+            7,
+            0,
+        ): (
+            8549,
+            8596,
+        ),
+        (
+            8,
+            0,
+        ): (
+            8549,
+            8596,
+        ),
+    },
 }
 RawMirFunction {
     name: "i32::fmt",
@@ -6454,11 +8498,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        43,
+                        44,
                     ),
                     name: "val",
                     site: SiteId(
-                        207,
+                        223,
                     ),
                     ty: I32,
                     intent: Read,
@@ -6487,7 +8531,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            206,
+                            222,
                         ),
                     ),
                     ty: String,
@@ -6507,7 +8551,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                206,
+                222,
             ),
             ty: String,
             value_class: CowValue,
@@ -6517,7 +8561,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                207,
+                223,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -6529,6 +8573,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14556,
+            14644,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14620,
+            14639,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14620,
+            14639,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14620,
+            14639,
+        ),
+    },
 }
 RawMirFunction {
     name: "i64::fmt",
@@ -6547,11 +8620,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        44,
+                        45,
                     ),
                     name: "val",
                     site: SiteId(
-                        210,
+                        226,
                     ),
                     ty: I64,
                     intent: Read,
@@ -6580,7 +8653,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            209,
+                            225,
                         ),
                     ),
                     ty: String,
@@ -6600,7 +8673,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                209,
+                225,
             ),
             ty: String,
             value_class: CowValue,
@@ -6610,7 +8683,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                210,
+                226,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -6622,6 +8695,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14644,
+            14732,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14708,
+            14727,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14708,
+            14727,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14708,
+            14727,
+        ),
+    },
 }
 RawMirFunction {
     name: "u32::fmt",
@@ -6640,11 +8742,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        45,
+                        46,
                     ),
                     name: "val",
                     site: SiteId(
-                        213,
+                        229,
                     ),
                     ty: U32,
                     intent: Read,
@@ -6673,7 +8775,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            212,
+                            228,
                         ),
                     ),
                     ty: String,
@@ -6693,7 +8795,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                212,
+                228,
             ),
             ty: String,
             value_class: CowValue,
@@ -6703,7 +8805,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                213,
+                229,
             ),
             ty: U32,
             value_class: BitCopy,
@@ -6715,6 +8817,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14906,
+            14994,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14970,
+            14989,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14970,
+            14989,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14970,
+            14989,
+        ),
+    },
 }
 RawMirFunction {
     name: "u64::fmt",
@@ -6733,11 +8864,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        46,
+                        47,
                     ),
                     name: "val",
                     site: SiteId(
-                        216,
+                        232,
                     ),
                     ty: U64,
                     intent: Read,
@@ -6766,7 +8897,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            215,
+                            231,
                         ),
                     ),
                     ty: String,
@@ -6786,7 +8917,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                215,
+                231,
             ),
             ty: String,
             value_class: CowValue,
@@ -6796,7 +8927,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                216,
+                232,
             ),
             ty: U64,
             value_class: BitCopy,
@@ -6808,6 +8939,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14994,
+            15082,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15058,
+            15077,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15058,
+            15077,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15058,
+            15077,
+        ),
+    },
 }
 RawMirFunction {
     name: "bool::fmt",
@@ -6826,11 +8986,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        47,
+                        48,
                     ),
                     name: "val",
                     site: SiteId(
-                        219,
+                        235,
                     ),
                     ty: Bool,
                     intent: Read,
@@ -6859,7 +9019,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            218,
+                            234,
                         ),
                     ),
                     ty: String,
@@ -6879,7 +9039,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                218,
+                234,
             ),
             ty: String,
             value_class: CowValue,
@@ -6889,7 +9049,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                219,
+                235,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -6901,6 +9061,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15082,
+            15172,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15148,
+            15167,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15148,
+            15167,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15148,
+            15167,
+        ),
+    },
 }
 RawMirFunction {
     name: "char::fmt",
@@ -6919,11 +9108,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        48,
+                        49,
                     ),
                     name: "val",
                     site: SiteId(
-                        222,
+                        238,
                     ),
                     ty: Char,
                     intent: Read,
@@ -6952,7 +9141,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            221,
+                            237,
                         ),
                     ),
                     ty: String,
@@ -6972,7 +9161,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                221,
+                237,
             ),
             ty: String,
             value_class: CowValue,
@@ -6982,7 +9171,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                222,
+                238,
             ),
             ty: Char,
             value_class: BitCopy,
@@ -6994,6 +9183,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15172,
+            15262,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15238,
+            15257,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15238,
+            15257,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15238,
+            15257,
+        ),
+    },
 }
 RawMirFunction {
     name: "f64::fmt",
@@ -7012,11 +9230,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        49,
+                        50,
                     ),
                     name: "val",
                     site: SiteId(
-                        225,
+                        241,
                     ),
                     ty: F64,
                     intent: Read,
@@ -7045,7 +9263,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            224,
+                            240,
                         ),
                     ),
                     ty: String,
@@ -7065,7 +9283,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                224,
+                240,
             ),
             ty: String,
             value_class: CowValue,
@@ -7075,7 +9293,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                225,
+                241,
             ),
             ty: F64,
             value_class: BitCopy,
@@ -7087,6 +9305,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15262,
+            15350,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15326,
+            15345,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15326,
+            15345,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15326,
+            15345,
+        ),
+    },
 }
 RawMirFunction {
     name: "string::fmt",
@@ -7104,11 +9351,11 @@ RawMirFunction {
             statements: [
                 Use {
                     binding: BindingId(
-                        50,
+                        51,
                     ),
                     name: "val",
                     site: SiteId(
-                        227,
+                        243,
                     ),
                     ty: String,
                     intent: Read,
@@ -7116,7 +9363,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            227,
+                            243,
                         ),
                     ),
                     ty: String,
@@ -7136,7 +9383,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                227,
+                243,
             ),
             ty: String,
             value_class: CowValue,
@@ -7148,4 +9395,26 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15350,
+            15920,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15420,
+            15428,
+        ),
+        (
+            0,
+            1,
+        ): (
+            15420,
+            15428,
+        ),
+    },
 }

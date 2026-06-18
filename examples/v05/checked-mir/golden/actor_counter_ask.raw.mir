@@ -131,6 +131,42 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            227,
+            295,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            2,
+        ): (
+            266,
+            283,
+        ),
+        (
+            0,
+            3,
+        ): (
+            266,
+            283,
+        ),
+        (
+            1,
+            0,
+        ): (
+            266,
+            283,
+        ),
+        (
+            2,
+            1,
+        ): (
+            266,
+            283,
+        ),
+    },
 }
 RawMirFunction {
     name: "Counter__recv__total",
@@ -189,6 +225,28 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            295,
+            343,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            2,
+        ): (
+            331,
+            341,
+        ),
+        (
+            0,
+            3,
+        ): (
+            331,
+            341,
+        ),
+    },
 }
 RawMirFunction {
     name: "main",
@@ -1053,6 +1111,210 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            346,
+            547,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            362,
+            399,
+        ),
+        (
+            0,
+            1,
+        ): (
+            362,
+            399,
+        ),
+        (
+            0,
+            2,
+        ): (
+            362,
+            399,
+        ),
+        (
+            0,
+            3,
+        ): (
+            399,
+            414,
+        ),
+        (
+            0,
+            4,
+        ): (
+            399,
+            414,
+        ),
+        (
+            1,
+            0,
+        ): (
+            420,
+            435,
+        ),
+        (
+            1,
+            1,
+        ): (
+            420,
+            435,
+        ),
+        (
+            2,
+            0,
+        ): (
+            441,
+            470,
+        ),
+        (
+            3,
+            0,
+        ): (
+            441,
+            470,
+        ),
+        (
+            3,
+            1,
+        ): (
+            470,
+            546,
+        ),
+        (
+            3,
+            2,
+        ): (
+            470,
+            546,
+        ),
+        (
+            3,
+            3,
+        ): (
+            470,
+            546,
+        ),
+        (
+            3,
+            4,
+        ): (
+            470,
+            546,
+        ),
+        (
+            4,
+            0,
+        ): (
+            470,
+            546,
+        ),
+        (
+            4,
+            1,
+        ): (
+            470,
+            546,
+        ),
+        (
+            5,
+            0,
+        ): (
+            470,
+            546,
+        ),
+        (
+            5,
+            1,
+        ): (
+            470,
+            546,
+        ),
+        (
+            6,
+            0,
+        ): (
+            470,
+            546,
+        ),
+        (
+            6,
+            1,
+        ): (
+            470,
+            546,
+        ),
+        (
+            6,
+            2,
+        ): (
+            470,
+            546,
+        ),
+        (
+            7,
+            0,
+        ): (
+            470,
+            546,
+        ),
+        (
+            8,
+            0,
+        ): (
+            470,
+            546,
+        ),
+        (
+            8,
+            1,
+        ): (
+            470,
+            546,
+        ),
+        (
+            8,
+            2,
+        ): (
+            470,
+            546,
+        ),
+        (
+            9,
+            0,
+        ): (
+            470,
+            546,
+        ),
+        (
+            10,
+            0,
+        ): (
+            470,
+            546,
+        ),
+        (
+            11,
+            0,
+        ): (
+            470,
+            546,
+        ),
+        (
+            12,
+            0,
+        ): (
+            470,
+            546,
+        ),
+    },
 }
 RawMirFunction {
     name: "i32::fmt",
@@ -1146,6 +1408,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14556,
+            14644,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14620,
+            14639,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14620,
+            14639,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14620,
+            14639,
+        ),
+    },
 }
 RawMirFunction {
     name: "i64::fmt",
@@ -1239,6 +1530,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14644,
+            14732,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14708,
+            14727,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14708,
+            14727,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14708,
+            14727,
+        ),
+    },
 }
 RawMirFunction {
     name: "u32::fmt",
@@ -1332,6 +1652,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14906,
+            14994,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14970,
+            14989,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14970,
+            14989,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14970,
+            14989,
+        ),
+    },
 }
 RawMirFunction {
     name: "u64::fmt",
@@ -1425,6 +1774,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14994,
+            15082,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15058,
+            15077,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15058,
+            15077,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15058,
+            15077,
+        ),
+    },
 }
 RawMirFunction {
     name: "bool::fmt",
@@ -1518,6 +1896,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15082,
+            15172,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15148,
+            15167,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15148,
+            15167,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15148,
+            15167,
+        ),
+    },
 }
 RawMirFunction {
     name: "char::fmt",
@@ -1611,6 +2018,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15172,
+            15262,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15238,
+            15257,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15238,
+            15257,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15238,
+            15257,
+        ),
+    },
 }
 RawMirFunction {
     name: "f64::fmt",
@@ -1704,6 +2140,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15262,
+            15350,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15326,
+            15345,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15326,
+            15345,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15326,
+            15345,
+        ),
+    },
 }
 RawMirFunction {
     name: "string::fmt",
@@ -1765,4 +2230,26 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15350,
+            15920,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15420,
+            15428,
+        ),
+        (
+            0,
+            1,
+        ): (
+            15420,
+            15428,
+        ),
+    },
 }

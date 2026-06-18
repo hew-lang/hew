@@ -2963,37 +2963,663 @@ ElaboratedMirFunction {
         ElabBlock {
             id: 60,
             kind: Cleanup,
-            drops: [],
+            drops: [
+                ElabDrop {
+                    place: Local(
+                        19,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        14,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+            ],
             successor: None,
         },
         ElabBlock {
             id: 61,
             kind: Cleanup,
-            drops: [],
+            drops: [
+                ElabDrop {
+                    place: Local(
+                        39,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        33,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Bool,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        30,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        19,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        14,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+            ],
             successor: None,
         },
         ElabBlock {
             id: 62,
             kind: Cleanup,
-            drops: [],
+            drops: [
+                ElabDrop {
+                    place: Local(
+                        51,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        39,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        33,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Bool,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        30,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        19,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        14,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+            ],
             successor: None,
         },
         ElabBlock {
             id: 63,
             kind: Cleanup,
-            drops: [],
+            drops: [
+                ElabDrop {
+                    place: Local(
+                        51,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        39,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        33,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Bool,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        30,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        19,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        14,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+            ],
             successor: None,
         },
         ElabBlock {
             id: 64,
             kind: Cleanup,
-            drops: [],
+            drops: [
+                ElabDrop {
+                    place: Local(
+                        51,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        39,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        33,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Bool,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        30,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        19,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        14,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+            ],
             successor: None,
         },
         ElabBlock {
             id: 65,
             kind: Cleanup,
-            drops: [],
+            drops: [
+                ElabDrop {
+                    place: Local(
+                        51,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        39,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        33,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Bool,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        30,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        19,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+                ElabDrop {
+                    place: Local(
+                        14,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I64,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: CowHeap {
+                        drop_fn: "hew_vec_free",
+                    },
+                    guard: None,
+                },
+            ],
             successor: None,
         },
     ],
@@ -3219,7 +3845,48 @@ ElaboratedMirFunction {
                 block: 21,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            19,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            14,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
         (
@@ -3347,7 +4014,108 @@ ElaboratedMirFunction {
                 block: 34,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            39,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            33,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                Bool,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            30,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            19,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            14,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
         (
@@ -3463,7 +4231,128 @@ ElaboratedMirFunction {
                 block: 46,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            51,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            39,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            33,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                Bool,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            30,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            19,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            14,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
         (
@@ -3481,7 +4370,128 @@ ElaboratedMirFunction {
                 block: 48,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            51,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            39,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            33,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                Bool,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            30,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            19,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            14,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
         (
@@ -3498,7 +4508,128 @@ ElaboratedMirFunction {
                 block: 49,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            51,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            39,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            33,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                Bool,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            30,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            19,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            14,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
         (
@@ -3515,7 +4646,128 @@ ElaboratedMirFunction {
                 block: 50,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            51,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            39,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            33,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                Bool,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            30,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            19,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            14,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
         (
@@ -3542,7 +4794,128 @@ ElaboratedMirFunction {
                 block: 52,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            51,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            39,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            33,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                Bool,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            30,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            19,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            14,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
         (
@@ -3550,7 +4923,128 @@ ElaboratedMirFunction {
                 block: 53,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            51,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            39,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            33,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                Bool,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            30,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            19,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            14,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
         (
@@ -3568,7 +5062,128 @@ ElaboratedMirFunction {
                 block: 55,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            51,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            39,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            33,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                Bool,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            30,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            19,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            14,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
         (
@@ -3585,7 +5200,128 @@ ElaboratedMirFunction {
                 block: 56,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            51,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            39,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            33,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                Bool,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            30,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            19,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            14,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
         (
@@ -3610,7 +5346,128 @@ ElaboratedMirFunction {
                 block: 58,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            51,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            39,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I32,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            33,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                Bool,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            30,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            19,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                F64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            14,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
     ],

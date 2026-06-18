@@ -19,6 +19,13 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            447,
+            468,
+        ),
+    ),
+    instr_spans: {},
 }
 RawMirFunction {
     name: "Boss__recv__go",
@@ -332,6 +339,63 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            521,
+            616,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            2,
+        ): (
+            547,
+            559,
+        ),
+        (
+            0,
+            3,
+        ): (
+            547,
+            559,
+        ),
+        (
+            0,
+            5,
+        ): (
+            569,
+            584,
+        ),
+        (
+            0,
+            6,
+        ): (
+            569,
+            584,
+        ),
+        (
+            0,
+            8,
+        ): (
+            594,
+            608,
+        ),
+        (
+            0,
+            9,
+        ): (
+            594,
+            608,
+        ),
+        (
+            0,
+            10,
+        ): (
+            594,
+            608,
+        ),
+    },
 }
 RawMirFunction {
     name: "main",
@@ -696,6 +760,63 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            619,
+            717,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            642,
+            667,
+        ),
+        (
+            0,
+            1,
+        ): (
+            667,
+            702,
+        ),
+        (
+            0,
+            2,
+        ): (
+            667,
+            702,
+        ),
+        (
+            0,
+            3,
+        ): (
+            702,
+            708,
+        ),
+        (
+            1,
+            0,
+        ): (
+            714,
+            716,
+        ),
+        (
+            1,
+            1,
+        ): (
+            714,
+            716,
+        ),
+        (
+            1,
+            2,
+        ): (
+            714,
+            716,
+        ),
+    },
 }
 RawMirFunction {
     name: "i32::fmt",
@@ -789,6 +910,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14556,
+            14644,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14620,
+            14639,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14620,
+            14639,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14620,
+            14639,
+        ),
+    },
 }
 RawMirFunction {
     name: "i64::fmt",
@@ -882,6 +1032,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14644,
+            14732,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14708,
+            14727,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14708,
+            14727,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14708,
+            14727,
+        ),
+    },
 }
 RawMirFunction {
     name: "u32::fmt",
@@ -975,6 +1154,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14906,
+            14994,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14970,
+            14989,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14970,
+            14989,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14970,
+            14989,
+        ),
+    },
 }
 RawMirFunction {
     name: "u64::fmt",
@@ -1068,6 +1276,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14994,
+            15082,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15058,
+            15077,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15058,
+            15077,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15058,
+            15077,
+        ),
+    },
 }
 RawMirFunction {
     name: "bool::fmt",
@@ -1161,6 +1398,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15082,
+            15172,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15148,
+            15167,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15148,
+            15167,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15148,
+            15167,
+        ),
+    },
 }
 RawMirFunction {
     name: "char::fmt",
@@ -1254,6 +1520,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15172,
+            15262,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15238,
+            15257,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15238,
+            15257,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15238,
+            15257,
+        ),
+    },
 }
 RawMirFunction {
     name: "f64::fmt",
@@ -1347,6 +1642,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15262,
+            15350,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15326,
+            15345,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15326,
+            15345,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15326,
+            15345,
+        ),
+    },
 }
 RawMirFunction {
     name: "string::fmt",
@@ -1408,4 +1732,26 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15350,
+            15920,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15420,
+            15428,
+        ),
+        (
+            0,
+            1,
+        ): (
+            15420,
+            15428,
+        ),
+    },
 }

@@ -318,7 +318,7 @@ ElaboratedMirFunction {
             site: SiteId(
                 18,
             ),
-            ty: I32,
+            ty: U8,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -563,6 +563,7 @@ ElaboratedMirFunction {
                         kind: CowHeap {
                             drop_fn: "hew_bytes_drop",
                         },
+                        guard: None,
                     },
                     ElabDrop {
                         place: Local(
@@ -573,6 +574,7 @@ ElaboratedMirFunction {
                         kind: CowHeap {
                             drop_fn: "hew_bytes_drop",
                         },
+                        guard: None,
                     },
                 ],
             },

@@ -357,6 +357,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },

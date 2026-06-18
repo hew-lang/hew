@@ -64,10 +64,13 @@ RawMirFunction {
         I64,
         I64,
         I64,
+        I64,
+        Bool,
+        I64,
+        I64,
         Bool,
         String,
         String,
-        I64,
         Bool,
         Named {
             name: "Vec",
@@ -861,6 +864,60 @@ RawMirFunction {
                     ),
                     ty: Unit,
                 },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        22,
+                    ),
+                    value: 1,
+                },
+                Move {
+                    dest: Local(
+                        23,
+                    ),
+                    src: Local(
+                        22,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        24,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        25,
+                    ),
+                    pred: SignedLessEq,
+                    lhs: Local(
+                        23,
+                    ),
+                    rhs: Local(
+                        24,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    25,
+                ),
+                then_target: 15,
+                else_target: 16,
+            },
+        },
+        BasicBlock {
+            id: 15,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: DivideByZero,
+            },
+        },
+        BasicBlock {
+            id: 16,
+            statements: [
                 Use {
                     binding: BindingId(
                         0,
@@ -885,17 +942,9 @@ RawMirFunction {
             instructions: [
                 ConstI64 {
                     dest: Local(
-                        22,
+                        26,
                     ),
                     value: 0,
-                },
-                Move {
-                    dest: Local(
-                        20,
-                    ),
-                    src: Local(
-                        22,
-                    ),
                 },
             ],
             terminator: Call {
@@ -910,36 +959,44 @@ RawMirFunction {
                 ],
                 dest: Some(
                     Local(
-                        23,
+                        27,
                     ),
                 ),
-                next: 15,
+                next: 17,
             },
         },
         BasicBlock {
-            id: 15,
+            id: 17,
             statements: [],
             instructions: [
+                Move {
+                    dest: Local(
+                        20,
+                    ),
+                    src: Local(
+                        26,
+                    ),
+                },
                 Move {
                     dest: Local(
                         21,
                     ),
                     src: Local(
-                        23,
+                        27,
                     ),
                 },
             ],
             terminator: Goto {
-                target: 16,
+                target: 18,
             },
         },
         BasicBlock {
-            id: 16,
+            id: 18,
             statements: [],
             instructions: [
                 IntCmp {
                     dest: Local(
-                        24,
+                        28,
                     ),
                     pred: SignedLess,
                     lhs: Local(
@@ -952,14 +1009,14 @@ RawMirFunction {
             ],
             terminator: Branch {
                 cond: Local(
-                    24,
+                    28,
                 ),
-                then_target: 17,
-                else_target: 19,
+                then_target: 19,
+                else_target: 21,
             },
         },
         BasicBlock {
-            id: 17,
+            id: 19,
             statements: [
                 Bind {
                     binding: BindingId(
@@ -977,7 +1034,7 @@ RawMirFunction {
                     ),
                     name: "names",
                     site: SiteId(
-                        34,
+                        35,
                     ),
                     ty: Named {
                         name: "Vec",
@@ -997,7 +1054,7 @@ RawMirFunction {
                     ),
                     name: "i",
                     site: SiteId(
-                        35,
+                        36,
                     ),
                     ty: I64,
                     intent: Read,
@@ -1021,22 +1078,16 @@ RawMirFunction {
                 ],
                 dest: Some(
                     Local(
-                        25,
+                        29,
                     ),
                 ),
-                next: 20,
+                next: 22,
             },
         },
         BasicBlock {
-            id: 18,
+            id: 20,
             statements: [],
             instructions: [
-                ConstI64 {
-                    dest: Local(
-                        27,
-                    ),
-                    value: 1,
-                },
                 IntArithChecked {
                     op: Add,
                     signed: Signed,
@@ -1047,27 +1098,27 @@ RawMirFunction {
                         20,
                     ),
                     rhs: Local(
-                        27,
+                        23,
                     ),
                     overflow_flag: Local(
-                        28,
+                        31,
                     ),
                 },
             ],
             terminator: Branch {
                 cond: Local(
-                    28,
+                    31,
                 ),
-                then_target: 22,
-                else_target: 16,
+                then_target: 24,
+                else_target: 18,
             },
         },
         BasicBlock {
-            id: 19,
+            id: 21,
             statements: [
                 Evaluate {
                     site: SiteId(
-                        39,
+                        40,
                     ),
                     ty: Unit,
                 },
@@ -1079,14 +1130,14 @@ RawMirFunction {
                 args: [],
                 dest: Some(
                     Local(
-                        29,
+                        32,
                     ),
                 ),
-                next: 23,
+                next: 25,
             },
         },
         BasicBlock {
-            id: 20,
+            id: 22,
             statements: [
                 Bind {
                     binding: BindingId(
@@ -1094,7 +1145,7 @@ RawMirFunction {
                     ),
                     name: "n",
                     site: SiteId(
-                        33,
+                        34,
                     ),
                     ty: String,
                 },
@@ -1104,7 +1155,7 @@ RawMirFunction {
                     ),
                     name: "n",
                     site: SiteId(
-                        37,
+                        38,
                     ),
                     ty: String,
                     intent: Read,
@@ -1113,10 +1164,10 @@ RawMirFunction {
             instructions: [
                 Move {
                     dest: Local(
-                        26,
+                        30,
                     ),
                     src: Local(
-                        25,
+                        29,
                     ),
                 },
             ],
@@ -1125,30 +1176,30 @@ RawMirFunction {
                 builtin: None,
                 args: [
                     Local(
-                        26,
+                        30,
                     ),
                 ],
                 dest: None,
-                next: 21,
+                next: 23,
             },
         },
         BasicBlock {
-            id: 21,
+            id: 23,
             statements: [
                 Evaluate {
                     site: SiteId(
-                        36,
+                        37,
                     ),
                     ty: Unit,
                 },
             ],
             instructions: [],
             terminator: Goto {
-                target: 18,
+                target: 20,
             },
         },
         BasicBlock {
-            id: 22,
+            id: 24,
             statements: [],
             instructions: [],
             terminator: Trap {
@@ -1156,7 +1207,7 @@ RawMirFunction {
             },
         },
         BasicBlock {
-            id: 23,
+            id: 25,
             statements: [
                 Bind {
                     binding: BindingId(
@@ -1164,7 +1215,7 @@ RawMirFunction {
                     ),
                     name: "pts",
                     site: SiteId(
-                        40,
+                        41,
                     ),
                     ty: Named {
                         name: "Vec",
@@ -1188,7 +1239,7 @@ RawMirFunction {
                     ),
                     name: "pts",
                     site: SiteId(
-                        43,
+                        44,
                     ),
                     ty: Named {
                         name: "Vec",
@@ -1211,116 +1262,23 @@ RawMirFunction {
             instructions: [
                 Move {
                     dest: Local(
-                        30,
+                        33,
                     ),
                     src: Local(
-                        29,
+                        32,
                     ),
                 },
                 ConstI64 {
                     dest: Local(
-                        31,
+                        34,
                     ),
                     value: 1,
                 },
                 ConstI64 {
                     dest: Local(
-                        32,
-                    ),
-                    value: 2,
-                },
-                RecordInit {
-                    ty: Named {
-                        name: "Point",
-                        args: [],
-                        builtin: None,
-                        is_opaque: false,
-                    },
-                    fields: [
-                        (
-                            FieldOffset(
-                                0,
-                            ),
-                            Local(
-                                31,
-                            ),
-                        ),
-                        (
-                            FieldOffset(
-                                1,
-                            ),
-                            Local(
-                                32,
-                            ),
-                        ),
-                    ],
-                    dest: Local(
-                        33,
-                    ),
-                },
-            ],
-            terminator: Call {
-                callee: "hew_vec_push_layout",
-                builtin: None,
-                args: [
-                    Local(
-                        30,
-                    ),
-                    Local(
-                        33,
-                    ),
-                ],
-                dest: None,
-                next: 24,
-            },
-        },
-        BasicBlock {
-            id: 24,
-            statements: [
-                Evaluate {
-                    site: SiteId(
-                        42,
-                    ),
-                    ty: Unit,
-                },
-                Use {
-                    binding: BindingId(
-                        5,
-                    ),
-                    name: "pts",
-                    site: SiteId(
-                        48,
-                    ),
-                    ty: Named {
-                        name: "Vec",
-                        args: [
-                            Named {
-                                name: "Point",
-                                args: [],
-                                builtin: None,
-                                is_opaque: false,
-                            },
-                        ],
-                        builtin: Some(
-                            Vec,
-                        ),
-                        is_opaque: false,
-                    },
-                    intent: Read,
-                },
-            ],
-            instructions: [
-                ConstI64 {
-                    dest: Local(
-                        34,
-                    ),
-                    value: 3,
-                },
-                ConstI64 {
-                    dest: Local(
                         35,
                     ),
-                    value: 4,
+                    value: 2,
                 },
                 RecordInit {
                     ty: Named {
@@ -1357,22 +1315,22 @@ RawMirFunction {
                 builtin: None,
                 args: [
                     Local(
-                        30,
+                        33,
                     ),
                     Local(
                         36,
                     ),
                 ],
                 dest: None,
-                next: 25,
+                next: 26,
             },
         },
         BasicBlock {
-            id: 25,
+            id: 26,
             statements: [
                 Evaluate {
                     site: SiteId(
-                        47,
+                        43,
                     ),
                     ty: Unit,
                 },
@@ -1382,7 +1340,7 @@ RawMirFunction {
                     ),
                     name: "pts",
                     site: SiteId(
-                        53,
+                        49,
                     ),
                     ty: Named {
                         name: "Vec",
@@ -1407,6 +1365,99 @@ RawMirFunction {
                     dest: Local(
                         37,
                     ),
+                    value: 3,
+                },
+                ConstI64 {
+                    dest: Local(
+                        38,
+                    ),
+                    value: 4,
+                },
+                RecordInit {
+                    ty: Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    fields: [
+                        (
+                            FieldOffset(
+                                0,
+                            ),
+                            Local(
+                                37,
+                            ),
+                        ),
+                        (
+                            FieldOffset(
+                                1,
+                            ),
+                            Local(
+                                38,
+                            ),
+                        ),
+                    ],
+                    dest: Local(
+                        39,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_push_layout",
+                builtin: None,
+                args: [
+                    Local(
+                        33,
+                    ),
+                    Local(
+                        39,
+                    ),
+                ],
+                dest: None,
+                next: 27,
+            },
+        },
+        BasicBlock {
+            id: 27,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        48,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "pts",
+                    site: SiteId(
+                        54,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Named {
+                                name: "Point",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        40,
+                    ),
                     value: 1,
                 },
             ],
@@ -1419,103 +1470,12 @@ RawMirFunction {
                 ),
                 args: [
                     Local(
-                        30,
+                        33,
                     ),
-                    Local(
-                        37,
-                    ),
-                ],
-                dest: Some(
-                    Local(
-                        38,
-                    ),
-                ),
-                next: 26,
-            },
-        },
-        BasicBlock {
-            id: 26,
-            statements: [
-                Bind {
-                    binding: BindingId(
-                        6,
-                    ),
-                    name: "p",
-                    site: SiteId(
-                        52,
-                    ),
-                    ty: Named {
-                        name: "Point",
-                        args: [],
-                        builtin: None,
-                        is_opaque: false,
-                    },
-                },
-                Use {
-                    binding: BindingId(
-                        6,
-                    ),
-                    name: "p",
-                    site: SiteId(
-                        57,
-                    ),
-                    ty: Named {
-                        name: "Point",
-                        args: [],
-                        builtin: None,
-                        is_opaque: false,
-                    },
-                    intent: Read,
-                },
-            ],
-            instructions: [
-                Move {
-                    dest: Local(
-                        39,
-                    ),
-                    src: Local(
-                        38,
-                    ),
-                },
-                RecordFieldLoad {
-                    record: Local(
-                        39,
-                    ),
-                    field_offset: FieldOffset(
-                        0,
-                    ),
-                    dest: Local(
-                        40,
-                    ),
-                },
-            ],
-            terminator: Call {
-                callee: "println_i64",
-                builtin: None,
-                args: [
                     Local(
                         40,
                     ),
                 ],
-                dest: None,
-                next: 27,
-            },
-        },
-        BasicBlock {
-            id: 27,
-            statements: [
-                Evaluate {
-                    site: SiteId(
-                        55,
-                    ),
-                    ty: Unit,
-                },
-            ],
-            instructions: [],
-            terminator: Call {
-                callee: "Vec::new",
-                builtin: None,
-                args: [],
                 dest: Some(
                     Local(
                         41,
@@ -1529,49 +1489,31 @@ RawMirFunction {
             statements: [
                 Bind {
                     binding: BindingId(
-                        7,
+                        6,
                     ),
-                    name: "tags",
+                    name: "p",
                     site: SiteId(
-                        59,
+                        53,
                     ),
                     ty: Named {
-                        name: "Vec",
-                        args: [
-                            Named {
-                                name: "Tag",
-                                args: [],
-                                builtin: None,
-                                is_opaque: false,
-                            },
-                        ],
-                        builtin: Some(
-                            Vec,
-                        ),
+                        name: "Point",
+                        args: [],
+                        builtin: None,
                         is_opaque: false,
                     },
                 },
                 Use {
                     binding: BindingId(
-                        7,
+                        6,
                     ),
-                    name: "tags",
+                    name: "p",
                     site: SiteId(
-                        62,
+                        58,
                     ),
                     ty: Named {
-                        name: "Vec",
-                        args: [
-                            Named {
-                                name: "Tag",
-                                args: [],
-                                builtin: None,
-                                is_opaque: false,
-                            },
-                        ],
-                        builtin: Some(
-                            Vec,
-                        ),
+                        name: "Point",
+                        args: [],
+                        builtin: None,
                         is_opaque: false,
                     },
                     intent: Read,
@@ -1586,17 +1528,126 @@ RawMirFunction {
                         41,
                     ),
                 },
+                RecordFieldLoad {
+                    record: Local(
+                        42,
+                    ),
+                    field_offset: FieldOffset(
+                        0,
+                    ),
+                    dest: Local(
+                        43,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "println_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        43,
+                    ),
+                ],
+                dest: None,
+                next: 29,
+            },
+        },
+        BasicBlock {
+            id: 29,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        56,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "Vec::new",
+                builtin: None,
+                args: [],
+                dest: Some(
+                    Local(
+                        44,
+                    ),
+                ),
+                next: 30,
+            },
+        },
+        BasicBlock {
+            id: 30,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        7,
+                    ),
+                    name: "tags",
+                    site: SiteId(
+                        60,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Named {
+                                name: "Tag",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        7,
+                    ),
+                    name: "tags",
+                    site: SiteId(
+                        63,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Named {
+                                name: "Tag",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        45,
+                    ),
+                    src: Local(
+                        44,
+                    ),
+                },
                 StringLit {
                     bytes: [
                         97,
                     ],
                     dest: Local(
-                        43,
+                        46,
                     ),
                 },
                 ConstI64 {
                     dest: Local(
-                        44,
+                        47,
                     ),
                     value: 1,
                 },
@@ -1613,7 +1664,7 @@ RawMirFunction {
                                 0,
                             ),
                             Local(
-                                43,
+                                46,
                             ),
                         ),
                         (
@@ -1621,12 +1672,12 @@ RawMirFunction {
                                 1,
                             ),
                             Local(
-                                44,
+                                47,
                             ),
                         ),
                     ],
                     dest: Local(
-                        45,
+                        48,
                     ),
                 },
             ],
@@ -1635,22 +1686,22 @@ RawMirFunction {
                 builtin: None,
                 args: [
                     Local(
-                        42,
+                        45,
                     ),
                     Local(
-                        45,
+                        48,
                     ),
                 ],
                 dest: None,
-                next: 29,
+                next: 31,
             },
         },
         BasicBlock {
-            id: 29,
+            id: 31,
             statements: [
                 Evaluate {
                     site: SiteId(
-                        61,
+                        62,
                     ),
                     ty: Unit,
                 },
@@ -1660,7 +1711,7 @@ RawMirFunction {
                     ),
                     name: "tags",
                     site: SiteId(
-                        67,
+                        68,
                     ),
                     ty: Named {
                         name: "Vec",
@@ -1683,7 +1734,7 @@ RawMirFunction {
             instructions: [
                 ConstI64 {
                     dest: Local(
-                        46,
+                        49,
                     ),
                     value: 0,
                 },
@@ -1697,22 +1748,22 @@ RawMirFunction {
                 ),
                 args: [
                     Local(
-                        42,
+                        45,
                     ),
                     Local(
-                        46,
+                        49,
                     ),
                 ],
                 dest: Some(
                     Local(
-                        47,
+                        50,
                     ),
                 ),
-                next: 30,
+                next: 32,
             },
         },
         BasicBlock {
-            id: 30,
+            id: 32,
             statements: [
                 Bind {
                     binding: BindingId(
@@ -1720,7 +1771,7 @@ RawMirFunction {
                     ),
                     name: "t",
                     site: SiteId(
-                        66,
+                        67,
                     ),
                     ty: Named {
                         name: "Tag",
@@ -1735,7 +1786,7 @@ RawMirFunction {
                     ),
                     name: "t",
                     site: SiteId(
-                        71,
+                        72,
                     ),
                     ty: Named {
                         name: "Tag",
@@ -1749,21 +1800,21 @@ RawMirFunction {
             instructions: [
                 Move {
                     dest: Local(
-                        48,
+                        51,
                     ),
                     src: Local(
-                        47,
+                        50,
                     ),
                 },
                 RecordFieldLoad {
                     record: Local(
-                        48,
+                        51,
                     ),
                     field_offset: FieldOffset(
                         1,
                     ),
                     dest: Local(
-                        49,
+                        52,
                     ),
                 },
             ],
@@ -1772,19 +1823,19 @@ RawMirFunction {
                 builtin: None,
                 args: [
                     Local(
-                        49,
+                        52,
                     ),
                 ],
                 dest: None,
-                next: 31,
+                next: 33,
             },
         },
         BasicBlock {
-            id: 31,
+            id: 33,
             statements: [
                 Evaluate {
                     site: SiteId(
-                        69,
+                        70,
                     ),
                     ty: Unit,
                 },
@@ -2137,9 +2188,19 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                39,
+                40,
             ),
             ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                33,
+            ),
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -2186,7 +2247,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                33,
+                34,
             ),
             ty: String,
             value_class: CowValue,
@@ -2196,7 +2257,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                34,
+                35,
             ),
             ty: Named {
                 name: "Vec",
@@ -2215,7 +2276,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                35,
+                36,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -2225,7 +2286,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                36,
+                37,
             ),
             ty: Unit,
             value_class: BitCopy,
@@ -2235,7 +2296,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                37,
+                38,
             ),
             ty: String,
             value_class: CowValue,
@@ -2245,7 +2306,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                40,
+                41,
             ),
             ty: Named {
                 name: "Vec",
@@ -2269,7 +2330,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                42,
+                43,
             ),
             ty: Unit,
             value_class: BitCopy,
@@ -2279,7 +2340,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                43,
+                44,
             ),
             ty: Named {
                 name: "Vec",
@@ -2303,7 +2364,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                44,
+                45,
             ),
             ty: Named {
                 name: "Point",
@@ -2311,16 +2372,6 @@ RawMirFunction {
                 builtin: None,
                 is_opaque: false,
             },
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                45,
-            ),
-            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -2340,7 +2391,7 @@ RawMirFunction {
             site: SiteId(
                 47,
             ),
-            ty: Unit,
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -2349,6 +2400,16 @@ RawMirFunction {
         DecisionFact {
             site: SiteId(
                 48,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                49,
             ),
             ty: Named {
                 name: "Vec",
@@ -2372,7 +2433,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                49,
+                50,
             ),
             ty: Named {
                 name: "Point",
@@ -2380,16 +2441,6 @@ RawMirFunction {
                 builtin: None,
                 is_opaque: false,
             },
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                50,
-            ),
-            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -2409,6 +2460,16 @@ RawMirFunction {
             site: SiteId(
                 52,
             ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                53,
+            ),
             ty: Named {
                 name: "Point",
                 args: [],
@@ -2422,7 +2483,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                53,
+                54,
             ),
             ty: Named {
                 name: "Vec",
@@ -2446,19 +2507,9 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                54,
-            ),
-            ty: I64,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
                 55,
             ),
-            ty: Unit,
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -2468,7 +2519,7 @@ RawMirFunction {
             site: SiteId(
                 56,
             ),
-            ty: I64,
+            ty: Unit,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -2477,6 +2528,16 @@ RawMirFunction {
         DecisionFact {
             site: SiteId(
                 57,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                58,
             ),
             ty: Named {
                 name: "Point",
@@ -2491,7 +2552,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                59,
+                60,
             ),
             ty: Named {
                 name: "Vec",
@@ -2515,7 +2576,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                61,
+                62,
             ),
             ty: Unit,
             value_class: BitCopy,
@@ -2525,7 +2586,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                62,
+                63,
             ),
             ty: Named {
                 name: "Vec",
@@ -2540,21 +2601,6 @@ RawMirFunction {
                 builtin: Some(
                     Vec,
                 ),
-                is_opaque: false,
-            },
-            value_class: CowValue,
-            intent: Read,
-            strategy: CowShare,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                63,
-            ),
-            ty: Named {
-                name: "Tag",
-                args: [],
-                builtin: None,
                 is_opaque: false,
             },
             value_class: CowValue,
@@ -2566,7 +2612,12 @@ RawMirFunction {
             site: SiteId(
                 64,
             ),
-            ty: String,
+            ty: Named {
+                name: "Tag",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
             value_class: CowValue,
             intent: Read,
             strategy: CowShare,
@@ -2576,6 +2627,16 @@ RawMirFunction {
             site: SiteId(
                 65,
             ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                66,
+            ),
             ty: I64,
             value_class: BitCopy,
             intent: Read,
@@ -2584,7 +2645,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                66,
+                67,
             ),
             ty: Named {
                 name: "Tag",
@@ -2599,7 +2660,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                67,
+                68,
             ),
             ty: Named {
                 name: "Vec",
@@ -2623,19 +2684,9 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                68,
-            ),
-            ty: I64,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
                 69,
             ),
-            ty: Unit,
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -2645,7 +2696,7 @@ RawMirFunction {
             site: SiteId(
                 70,
             ),
-            ty: I64,
+            ty: Unit,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -2654,6 +2705,16 @@ RawMirFunction {
         DecisionFact {
             site: SiteId(
                 71,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                72,
             ),
             ty: Named {
                 name: "Tag",
@@ -2670,6 +2731,546 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            411,
+            1019,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            427,
+            468,
+        ),
+        (
+            1,
+            0,
+        ): (
+            427,
+            468,
+        ),
+        (
+            1,
+            1,
+        ): (
+            468,
+            485,
+        ),
+        (
+            1,
+            2,
+        ): (
+            468,
+            485,
+        ),
+        (
+            2,
+            0,
+        ): (
+            491,
+            509,
+        ),
+        (
+            2,
+            1,
+        ): (
+            491,
+            509,
+        ),
+        (
+            3,
+            0,
+        ): (
+            515,
+            534,
+        ),
+        (
+            3,
+            1,
+        ): (
+            515,
+            534,
+        ),
+        (
+            4,
+            0,
+        ): (
+            540,
+            564,
+        ),
+        (
+            4,
+            1,
+        ): (
+            540,
+            564,
+        ),
+        (
+            4,
+            2,
+        ): (
+            540,
+            564,
+        ),
+        (
+            4,
+            3,
+        ): (
+            540,
+            564,
+        ),
+        (
+            5,
+            0,
+        ): (
+            540,
+            564,
+        ),
+        (
+            6,
+            0,
+        ): (
+            540,
+            564,
+        ),
+        (
+            6,
+            1,
+        ): (
+            540,
+            564,
+        ),
+        (
+            6,
+            2,
+        ): (
+            564,
+            576,
+        ),
+        (
+            7,
+            0,
+        ): (
+            582,
+            603,
+        ),
+        (
+            7,
+            1,
+        ): (
+            582,
+            603,
+        ),
+        (
+            8,
+            0,
+        ): (
+            582,
+            603,
+        ),
+        (
+            9,
+            1,
+        ): (
+            609,
+            637,
+        ),
+        (
+            9,
+            2,
+        ): (
+            609,
+            637,
+        ),
+        (
+            9,
+            3,
+        ): (
+            609,
+            637,
+        ),
+        (
+            9,
+            4,
+        ): (
+            609,
+            637,
+        ),
+        (
+            10,
+            0,
+        ): (
+            609,
+            637,
+        ),
+        (
+            11,
+            0,
+        ): (
+            609,
+            637,
+        ),
+        (
+            11,
+            1,
+        ): (
+            609,
+            637,
+        ),
+        (
+            11,
+            2,
+        ): (
+            609,
+            637,
+        ),
+        (
+            12,
+            0,
+        ): (
+            609,
+            637,
+        ),
+        (
+            12,
+            1,
+        ): (
+            609,
+            637,
+        ),
+        (
+            12,
+            2,
+        ): (
+            637,
+            656,
+        ),
+        (
+            13,
+            0,
+        ): (
+            637,
+            656,
+        ),
+        (
+            14,
+            0,
+        ): (
+            662,
+            750,
+        ),
+        (
+            14,
+            1,
+        ): (
+            662,
+            750,
+        ),
+        (
+            14,
+            4,
+        ): (
+            662,
+            750,
+        ),
+        (
+            15,
+            0,
+        ): (
+            662,
+            750,
+        ),
+        (
+            16,
+            0,
+        ): (
+            662,
+            750,
+        ),
+        (
+            16,
+            1,
+        ): (
+            662,
+            750,
+        ),
+        (
+            17,
+            0,
+        ): (
+            662,
+            750,
+        ),
+        (
+            17,
+            1,
+        ): (
+            662,
+            750,
+        ),
+        (
+            17,
+            2,
+        ): (
+            662,
+            750,
+        ),
+        (
+            18,
+            0,
+        ): (
+            662,
+            750,
+        ),
+        (
+            18,
+            1,
+        ): (
+            662,
+            750,
+        ),
+        (
+            19,
+            0,
+        ): (
+            698,
+            728,
+        ),
+        (
+            20,
+            0,
+        ): (
+            728,
+            738,
+        ),
+        (
+            20,
+            1,
+        ): (
+            728,
+            738,
+        ),
+        (
+            21,
+            0,
+        ): (
+            750,
+            788,
+        ),
+        (
+            22,
+            0,
+        ): (
+            698,
+            728,
+        ),
+        (
+            22,
+            1,
+        ): (
+            728,
+            738,
+        ),
+        (
+            23,
+            0,
+        ): (
+            728,
+            738,
+        ),
+        (
+            24,
+            0,
+        ): (
+            728,
+            738,
+        ),
+        (
+            25,
+            0,
+        ): (
+            750,
+            788,
+        ),
+        (
+            25,
+            1,
+        ): (
+            788,
+            818,
+        ),
+        (
+            25,
+            2,
+        ): (
+            788,
+            818,
+        ),
+        (
+            25,
+            3,
+        ): (
+            788,
+            818,
+        ),
+        (
+            25,
+            4,
+        ): (
+            788,
+            818,
+        ),
+        (
+            26,
+            0,
+        ): (
+            824,
+            854,
+        ),
+        (
+            26,
+            1,
+        ): (
+            824,
+            854,
+        ),
+        (
+            26,
+            2,
+        ): (
+            824,
+            854,
+        ),
+        (
+            26,
+            3,
+        ): (
+            824,
+            854,
+        ),
+        (
+            27,
+            0,
+        ): (
+            860,
+            884,
+        ),
+        (
+            27,
+            1,
+        ): (
+            860,
+            884,
+        ),
+        (
+            28,
+            0,
+        ): (
+            860,
+            884,
+        ),
+        (
+            28,
+            1,
+        ): (
+            884,
+            896,
+        ),
+        (
+            28,
+            2,
+        ): (
+            884,
+            896,
+        ),
+        (
+            29,
+            0,
+        ): (
+            902,
+            939,
+        ),
+        (
+            30,
+            0,
+        ): (
+            902,
+            939,
+        ),
+        (
+            30,
+            1,
+        ): (
+            939,
+            973,
+        ),
+        (
+            30,
+            2,
+        ): (
+            939,
+            973,
+        ),
+        (
+            30,
+            3,
+        ): (
+            939,
+            973,
+        ),
+        (
+            30,
+            4,
+        ): (
+            939,
+            973,
+        ),
+        (
+            31,
+            0,
+        ): (
+            979,
+            1004,
+        ),
+        (
+            31,
+            1,
+        ): (
+            979,
+            1004,
+        ),
+        (
+            32,
+            0,
+        ): (
+            979,
+            1004,
+        ),
+        (
+            32,
+            1,
+        ): (
+            1004,
+            1016,
+        ),
+        (
+            32,
+            2,
+        ): (
+            1004,
+            1016,
+        ),
+        (
+            33,
+            0,
+        ): (
+            1004,
+            1016,
+        ),
+    },
 }
 RawMirFunction {
     name: "i32::fmt",
@@ -2692,7 +3293,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        102,
+                        103,
                     ),
                     ty: I32,
                     intent: Read,
@@ -2721,7 +3322,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            101,
+                            102,
                         ),
                     ),
                     ty: String,
@@ -2741,7 +3342,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                101,
+                102,
             ),
             ty: String,
             value_class: CowValue,
@@ -2751,7 +3352,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                102,
+                103,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -2763,6 +3364,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14556,
+            14644,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14620,
+            14639,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14620,
+            14639,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14620,
+            14639,
+        ),
+    },
 }
 RawMirFunction {
     name: "i64::fmt",
@@ -2785,7 +3415,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        105,
+                        106,
                     ),
                     ty: I64,
                     intent: Read,
@@ -2814,7 +3444,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            104,
+                            105,
                         ),
                     ),
                     ty: String,
@@ -2834,7 +3464,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                104,
+                105,
             ),
             ty: String,
             value_class: CowValue,
@@ -2844,7 +3474,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                105,
+                106,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -2856,6 +3486,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14644,
+            14732,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14708,
+            14727,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14708,
+            14727,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14708,
+            14727,
+        ),
+    },
 }
 RawMirFunction {
     name: "u32::fmt",
@@ -2878,7 +3537,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        108,
+                        109,
                     ),
                     ty: U32,
                     intent: Read,
@@ -2907,7 +3566,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            107,
+                            108,
                         ),
                     ),
                     ty: String,
@@ -2927,7 +3586,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                107,
+                108,
             ),
             ty: String,
             value_class: CowValue,
@@ -2937,7 +3596,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                108,
+                109,
             ),
             ty: U32,
             value_class: BitCopy,
@@ -2949,6 +3608,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14906,
+            14994,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14970,
+            14989,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14970,
+            14989,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14970,
+            14989,
+        ),
+    },
 }
 RawMirFunction {
     name: "u64::fmt",
@@ -2971,7 +3659,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        111,
+                        112,
                     ),
                     ty: U64,
                     intent: Read,
@@ -3000,7 +3688,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            110,
+                            111,
                         ),
                     ),
                     ty: String,
@@ -3020,7 +3708,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                110,
+                111,
             ),
             ty: String,
             value_class: CowValue,
@@ -3030,7 +3718,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                111,
+                112,
             ),
             ty: U64,
             value_class: BitCopy,
@@ -3042,6 +3730,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14994,
+            15082,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15058,
+            15077,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15058,
+            15077,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15058,
+            15077,
+        ),
+    },
 }
 RawMirFunction {
     name: "bool::fmt",
@@ -3064,7 +3781,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        114,
+                        115,
                     ),
                     ty: Bool,
                     intent: Read,
@@ -3093,7 +3810,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            113,
+                            114,
                         ),
                     ),
                     ty: String,
@@ -3113,7 +3830,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                113,
+                114,
             ),
             ty: String,
             value_class: CowValue,
@@ -3123,7 +3840,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                114,
+                115,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -3135,6 +3852,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15082,
+            15172,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15148,
+            15167,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15148,
+            15167,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15148,
+            15167,
+        ),
+    },
 }
 RawMirFunction {
     name: "char::fmt",
@@ -3157,7 +3903,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        117,
+                        118,
                     ),
                     ty: Char,
                     intent: Read,
@@ -3186,7 +3932,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            116,
+                            117,
                         ),
                     ),
                     ty: String,
@@ -3206,7 +3952,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                116,
+                117,
             ),
             ty: String,
             value_class: CowValue,
@@ -3216,7 +3962,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                117,
+                118,
             ),
             ty: Char,
             value_class: BitCopy,
@@ -3228,6 +3974,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15172,
+            15262,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15238,
+            15257,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15238,
+            15257,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15238,
+            15257,
+        ),
+    },
 }
 RawMirFunction {
     name: "f64::fmt",
@@ -3250,7 +4025,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        120,
+                        121,
                     ),
                     ty: F64,
                     intent: Read,
@@ -3279,7 +4054,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            119,
+                            120,
                         ),
                     ),
                     ty: String,
@@ -3299,7 +4074,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                119,
+                120,
             ),
             ty: String,
             value_class: CowValue,
@@ -3309,7 +4084,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                120,
+                121,
             ),
             ty: F64,
             value_class: BitCopy,
@@ -3321,6 +4096,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15262,
+            15350,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15326,
+            15345,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15326,
+            15345,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15326,
+            15345,
+        ),
+    },
 }
 RawMirFunction {
     name: "string::fmt",
@@ -3342,7 +4146,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        122,
+                        123,
                     ),
                     ty: String,
                     intent: Read,
@@ -3350,7 +4154,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            122,
+                            123,
                         ),
                     ),
                     ty: String,
@@ -3370,7 +4174,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                122,
+                123,
             ),
             ty: String,
             value_class: CowValue,
@@ -3382,4 +4186,26 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15350,
+            15920,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15420,
+            15428,
+        ),
+        (
+            0,
+            1,
+        ): (
+            15420,
+            15428,
+        ),
+    },
 }

@@ -652,6 +652,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                     ElabDrop {
                         place: ActorHandle(
@@ -674,6 +675,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },

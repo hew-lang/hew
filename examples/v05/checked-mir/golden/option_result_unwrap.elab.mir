@@ -39,6 +39,27 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
+            intent: Consume,
+        },
+        Bind {
+            binding: BindingId(
+                1,
+            ),
+            name: "__option_unwrap_value",
+            site: SiteId(
+                5,
+            ),
+            ty: I64,
+        },
+        Use {
+            binding: BindingId(
+                1,
+            ),
+            name: "__option_unwrap_value",
+            site: SiteId(
+                5,
+            ),
+            ty: I64,
             intent: Read,
         },
         Evaluate {
@@ -49,7 +70,7 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                1,
+                2,
             ),
             name: "b",
             site: SiteId(
@@ -68,7 +89,7 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                1,
+                2,
             ),
             name: "b",
             site: SiteId(
@@ -84,6 +105,27 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
+            intent: Consume,
+        },
+        Bind {
+            binding: BindingId(
+                3,
+            ),
+            name: "__option_unwrap_value",
+            site: SiteId(
+                12,
+            ),
+            ty: F64,
+        },
+        Use {
+            binding: BindingId(
+                3,
+            ),
+            name: "__option_unwrap_value",
+            site: SiteId(
+                12,
+            ),
+            ty: F64,
             intent: Read,
         },
         Evaluate {
@@ -94,7 +136,7 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                2,
+                4,
             ),
             name: "c",
             site: SiteId(
@@ -113,7 +155,7 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                2,
+                4,
             ),
             name: "c",
             site: SiteId(
@@ -129,11 +171,11 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
-            intent: Read,
+            intent: Consume,
         },
         Bind {
             binding: BindingId(
-                3,
+                6,
             ),
             name: "cv",
             site: SiteId(
@@ -143,7 +185,7 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                4,
+                7,
             ),
             name: "d",
             site: SiteId(
@@ -162,7 +204,7 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                4,
+                7,
             ),
             name: "d",
             site: SiteId(
@@ -178,6 +220,48 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
+            intent: Consume,
+        },
+        Bind {
+            binding: BindingId(
+                5,
+            ),
+            name: "__option_unwrap_value",
+            site: SiteId(
+                18,
+            ),
+            ty: I32,
+        },
+        Use {
+            binding: BindingId(
+                5,
+            ),
+            name: "__option_unwrap_value",
+            site: SiteId(
+                18,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                8,
+            ),
+            name: "__option_unwrap_or_value",
+            site: SiteId(
+                25,
+            ),
+            ty: I64,
+        },
+        Use {
+            binding: BindingId(
+                8,
+            ),
+            name: "__option_unwrap_or_value",
+            site: SiteId(
+                25,
+            ),
+            ty: I64,
             intent: Read,
         },
         Evaluate {
@@ -188,7 +272,7 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                5,
+                9,
             ),
             name: "e",
             site: SiteId(
@@ -207,7 +291,7 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                5,
+                9,
             ),
             name: "e",
             site: SiteId(
@@ -223,6 +307,27 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
+            intent: Consume,
+        },
+        Bind {
+            binding: BindingId(
+                10,
+            ),
+            name: "__option_unwrap_or_value",
+            site: SiteId(
+                33,
+            ),
+            ty: F64,
+        },
+        Use {
+            binding: BindingId(
+                10,
+            ),
+            name: "__option_unwrap_or_value",
+            site: SiteId(
+                33,
+            ),
+            ty: F64,
             intent: Read,
         },
         Evaluate {
@@ -233,7 +338,7 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                6,
+                11,
             ),
             name: "g",
             site: SiteId(
@@ -252,7 +357,7 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                6,
+                11,
             ),
             name: "g",
             site: SiteId(
@@ -268,11 +373,11 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
-            intent: Read,
+            intent: Consume,
         },
         Bind {
             binding: BindingId(
-                7,
+                13,
             ),
             name: "gv",
             site: SiteId(
@@ -282,7 +387,7 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                8,
+                14,
             ),
             name: "r",
             site: SiteId(
@@ -302,7 +407,7 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                8,
+                14,
             ),
             name: "r",
             site: SiteId(
@@ -319,6 +424,48 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
+            intent: Consume,
+        },
+        Bind {
+            binding: BindingId(
+                12,
+            ),
+            name: "__option_unwrap_or_value",
+            site: SiteId(
+                40,
+            ),
+            ty: I32,
+        },
+        Use {
+            binding: BindingId(
+                12,
+            ),
+            name: "__option_unwrap_or_value",
+            site: SiteId(
+                40,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                15,
+            ),
+            name: "__result_unwrap_value",
+            site: SiteId(
+                46,
+            ),
+            ty: I64,
+        },
+        Use {
+            binding: BindingId(
+                15,
+            ),
+            name: "__result_unwrap_value",
+            site: SiteId(
+                46,
+            ),
+            ty: I64,
             intent: Read,
         },
         Evaluate {
@@ -329,7 +476,7 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                9,
+                16,
             ),
             name: "rf",
             site: SiteId(
@@ -349,7 +496,7 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                9,
+                16,
             ),
             name: "rf",
             site: SiteId(
@@ -366,6 +513,27 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
+            intent: Consume,
+        },
+        Bind {
+            binding: BindingId(
+                17,
+            ),
+            name: "__result_unwrap_value",
+            site: SiteId(
+                53,
+            ),
+            ty: F64,
+        },
+        Use {
+            binding: BindingId(
+                17,
+            ),
+            name: "__result_unwrap_value",
+            site: SiteId(
+                53,
+            ),
+            ty: F64,
             intent: Read,
         },
         Evaluate {
@@ -376,7 +544,7 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                10,
+                18,
             ),
             name: "ri",
             site: SiteId(
@@ -396,7 +564,7 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                10,
+                18,
             ),
             name: "ri",
             site: SiteId(
@@ -413,11 +581,11 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
-            intent: Read,
+            intent: Consume,
         },
         Bind {
             binding: BindingId(
-                11,
+                20,
             ),
             name: "riv",
             site: SiteId(
@@ -427,7 +595,7 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                12,
+                21,
             ),
             name: "ru",
             site: SiteId(
@@ -447,7 +615,7 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                12,
+                21,
             ),
             name: "ru",
             site: SiteId(
@@ -464,6 +632,48 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
+            intent: Consume,
+        },
+        Bind {
+            binding: BindingId(
+                19,
+            ),
+            name: "__result_unwrap_value",
+            site: SiteId(
+                59,
+            ),
+            ty: I32,
+        },
+        Use {
+            binding: BindingId(
+                19,
+            ),
+            name: "__result_unwrap_value",
+            site: SiteId(
+                59,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                22,
+            ),
+            name: "__result_unwrap_or_value",
+            site: SiteId(
+                66,
+            ),
+            ty: I64,
+        },
+        Use {
+            binding: BindingId(
+                22,
+            ),
+            name: "__result_unwrap_or_value",
+            site: SiteId(
+                66,
+            ),
+            ty: I64,
             intent: Read,
         },
         Evaluate {
@@ -474,7 +684,7 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                13,
+                23,
             ),
             name: "rv",
             site: SiteId(
@@ -494,7 +704,7 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                13,
+                23,
             ),
             name: "rv",
             site: SiteId(
@@ -511,11 +721,11 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
-            intent: Read,
+            intent: Consume,
         },
         Bind {
             binding: BindingId(
-                14,
+                25,
             ),
             name: "rvv",
             site: SiteId(
@@ -525,7 +735,7 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                15,
+                26,
             ),
             name: "p",
             site: SiteId(
@@ -545,7 +755,7 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                15,
+                26,
             ),
             name: "p",
             site: SiteId(
@@ -566,7 +776,28 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                16,
+                24,
+            ),
+            name: "__result_unwrap_or_value",
+            site: SiteId(
+                73,
+            ),
+            ty: I32,
+        },
+        Use {
+            binding: BindingId(
+                24,
+            ),
+            name: "__result_unwrap_or_value",
+            site: SiteId(
+                73,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                27,
             ),
             name: "ok",
             site: SiteId(
@@ -576,11 +807,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                15,
+                26,
             ),
             name: "p",
             site: SiteId(
-                80,
+                81,
             ),
             ty: Named {
                 name: "Result",
@@ -597,58 +828,47 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                17,
+                28,
             ),
             name: "err",
             site: SiteId(
-                79,
+                80,
             ),
             ty: Bool,
         },
         Use {
             binding: BindingId(
-                16,
+                27,
             ),
             name: "ok",
             site: SiteId(
-                84,
+                86,
             ),
             ty: Bool,
             intent: Read,
         },
         Use {
             binding: BindingId(
-                17,
+                28,
             ),
             name: "err",
             site: SiteId(
-                88,
+                90,
             ),
             ty: Bool,
             intent: Read,
         },
         Evaluate {
             site: SiteId(
-                82,
+                84,
             ),
             ty: Unit,
         },
         Use {
             binding: BindingId(
-                3,
+                6,
             ),
             name: "cv",
-            site: SiteId(
-                100,
-            ),
-            ty: I32,
-            intent: Read,
-        },
-        Use {
-            binding: BindingId(
-                7,
-            ),
-            name: "gv",
             site: SiteId(
                 102,
             ),
@@ -657,9 +877,9 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                11,
+                13,
             ),
-            name: "riv",
+            name: "gv",
             site: SiteId(
                 104,
             ),
@@ -668,53 +888,64 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                14,
+                20,
             ),
-            name: "rvv",
+            name: "riv",
             site: SiteId(
                 106,
             ),
             ty: I32,
             intent: Read,
         },
+        Use {
+            binding: BindingId(
+                25,
+            ),
+            name: "rvv",
+            site: SiteId(
+                108,
+            ),
+            ty: I32,
+            intent: Read,
+        },
         Bind {
             binding: BindingId(
-                18,
+                29,
             ),
             name: "keep",
             site: SiteId(
-                96,
+                98,
             ),
             ty: I64,
         },
         Use {
             binding: BindingId(
-                18,
+                29,
             ),
             name: "keep",
             site: SiteId(
-                108,
+                110,
             ),
             ty: I64,
             intent: Read,
         },
         Evaluate {
             site: SiteId(
-                107,
+                109,
             ),
             ty: Unit,
         },
         Return {
             site: Some(
                 SiteId(
-                    110,
+                    112,
                 ),
             ),
             ty: I64,
         },
         Drop {
             binding: BindingId(
-                15,
+                26,
             ),
             name: "p",
             ty: Named {
@@ -725,187 +956,6 @@ ElaboratedMirFunction {
                 ],
                 builtin: Some(
                     Result,
-                ),
-                is_opaque: false,
-            },
-        },
-        Drop {
-            binding: BindingId(
-                13,
-            ),
-            name: "rv",
-            ty: Named {
-                name: "Result",
-                args: [
-                    I32,
-                    String,
-                ],
-                builtin: Some(
-                    Result,
-                ),
-                is_opaque: false,
-            },
-        },
-        Drop {
-            binding: BindingId(
-                12,
-            ),
-            name: "ru",
-            ty: Named {
-                name: "Result",
-                args: [
-                    I64,
-                    String,
-                ],
-                builtin: Some(
-                    Result,
-                ),
-                is_opaque: false,
-            },
-        },
-        Drop {
-            binding: BindingId(
-                10,
-            ),
-            name: "ri",
-            ty: Named {
-                name: "Result",
-                args: [
-                    I32,
-                    String,
-                ],
-                builtin: Some(
-                    Result,
-                ),
-                is_opaque: false,
-            },
-        },
-        Drop {
-            binding: BindingId(
-                9,
-            ),
-            name: "rf",
-            ty: Named {
-                name: "Result",
-                args: [
-                    F64,
-                    String,
-                ],
-                builtin: Some(
-                    Result,
-                ),
-                is_opaque: false,
-            },
-        },
-        Drop {
-            binding: BindingId(
-                8,
-            ),
-            name: "r",
-            ty: Named {
-                name: "Result",
-                args: [
-                    I64,
-                    String,
-                ],
-                builtin: Some(
-                    Result,
-                ),
-                is_opaque: false,
-            },
-        },
-        Drop {
-            binding: BindingId(
-                6,
-            ),
-            name: "g",
-            ty: Named {
-                name: "Option",
-                args: [
-                    I32,
-                ],
-                builtin: Some(
-                    Option,
-                ),
-                is_opaque: false,
-            },
-        },
-        Drop {
-            binding: BindingId(
-                5,
-            ),
-            name: "e",
-            ty: Named {
-                name: "Option",
-                args: [
-                    F64,
-                ],
-                builtin: Some(
-                    Option,
-                ),
-                is_opaque: false,
-            },
-        },
-        Drop {
-            binding: BindingId(
-                4,
-            ),
-            name: "d",
-            ty: Named {
-                name: "Option",
-                args: [
-                    I64,
-                ],
-                builtin: Some(
-                    Option,
-                ),
-                is_opaque: false,
-            },
-        },
-        Drop {
-            binding: BindingId(
-                2,
-            ),
-            name: "c",
-            ty: Named {
-                name: "Option",
-                args: [
-                    I32,
-                ],
-                builtin: Some(
-                    Option,
-                ),
-                is_opaque: false,
-            },
-        },
-        Drop {
-            binding: BindingId(
-                1,
-            ),
-            name: "b",
-            ty: Named {
-                name: "Option",
-                args: [
-                    F64,
-                ],
-                builtin: Some(
-                    Option,
-                ),
-                is_opaque: false,
-            },
-        },
-        Drop {
-            binding: BindingId(
-                0,
-            ),
-            name: "a",
-            ty: Named {
-                name: "Option",
-                args: [
-                    I64,
-                ],
-                builtin: Some(
-                    Option,
                 ),
                 is_opaque: false,
             },
@@ -976,6 +1026,16 @@ ElaboratedMirFunction {
                 is_opaque: false,
             },
             value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                5,
+            ),
+            ty: I64,
+            value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
             why: "first vertical-slice classifier",
@@ -1044,6 +1104,16 @@ ElaboratedMirFunction {
                 is_opaque: false,
             },
             value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                12,
+            ),
+            ty: F64,
+            value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
             why: "first vertical-slice classifier",
@@ -1101,6 +1171,16 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                18,
+            ),
+            ty: I32,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1170,6 +1250,16 @@ ElaboratedMirFunction {
                 is_opaque: false,
             },
             value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                25,
+            ),
+            ty: I64,
+            value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
             why: "first vertical-slice classifier",
@@ -1180,8 +1270,8 @@ ElaboratedMirFunction {
             ),
             ty: I64,
             value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
+            intent: Consume,
+            strategy: Move,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
@@ -1248,6 +1338,16 @@ ElaboratedMirFunction {
                 is_opaque: false,
             },
             value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                33,
+            ),
+            ty: F64,
+            value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
             why: "first vertical-slice classifier",
@@ -1258,8 +1358,8 @@ ElaboratedMirFunction {
             ),
             ty: F64,
             value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
+            intent: Consume,
+            strategy: Move,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
@@ -1316,6 +1416,16 @@ ElaboratedMirFunction {
                 is_opaque: false,
             },
             value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                40,
+            ),
+            ty: I32,
+            value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
             why: "first vertical-slice classifier",
@@ -1326,8 +1436,8 @@ ElaboratedMirFunction {
             ),
             ty: I32,
             value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
+            intent: Consume,
+            strategy: Move,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
@@ -1395,6 +1505,16 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                46,
+            ),
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1466,6 +1586,16 @@ ElaboratedMirFunction {
                 is_opaque: false,
             },
             value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                53,
+            ),
+            ty: F64,
+            value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
             why: "first vertical-slice classifier",
@@ -1525,6 +1655,16 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                59,
+            ),
+            ty: I32,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1596,6 +1736,16 @@ ElaboratedMirFunction {
                 is_opaque: false,
             },
             value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                66,
+            ),
+            ty: I64,
+            value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
             why: "first vertical-slice classifier",
@@ -1606,8 +1756,8 @@ ElaboratedMirFunction {
             ),
             ty: I64,
             value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
+            intent: Consume,
+            strategy: Move,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
@@ -1666,6 +1816,16 @@ ElaboratedMirFunction {
                 is_opaque: false,
             },
             value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                73,
+            ),
+            ty: I32,
+            value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
             why: "first vertical-slice classifier",
@@ -1676,8 +1836,8 @@ ElaboratedMirFunction {
             ),
             ty: I32,
             value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
+            intent: Consume,
+            strategy: Move,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
@@ -1742,7 +1902,27 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
+                78,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
                 79,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                80,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -1752,7 +1932,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                80,
+                81,
             ),
             ty: Named {
                 name: "Result",
@@ -1774,7 +1954,7 @@ ElaboratedMirFunction {
             site: SiteId(
                 82,
             ),
-            ty: Unit,
+            ty: Bool,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1783,6 +1963,66 @@ ElaboratedMirFunction {
         DecisionFact {
             site: SiteId(
                 83,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                84,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                85,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                94,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                88,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                86,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                89,
             ),
             ty: String,
             value_class: CowValue,
@@ -1802,69 +2042,9 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                86,
-            ),
-            ty: String,
-            value_class: CowValue,
-            intent: Read,
-            strategy: CowShare,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                84,
-            ),
-            ty: Bool,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                87,
-            ),
-            ty: String,
-            value_class: CowValue,
-            intent: Read,
-            strategy: CowShare,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
                 90,
             ),
-            ty: String,
-            value_class: CowValue,
-            intent: Read,
-            strategy: CowShare,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                88,
-            ),
             ty: Bool,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                96,
-            ),
-            ty: I64,
-            value_class: BitCopy,
-            intent: Consume,
-            strategy: Move,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                97,
-            ),
-            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1876,8 +2056,8 @@ ElaboratedMirFunction {
             ),
             ty: I64,
             value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
+            intent: Consume,
+            strategy: Move,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
@@ -1894,7 +2074,7 @@ ElaboratedMirFunction {
             site: SiteId(
                 100,
             ),
-            ty: I32,
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1964,7 +2144,7 @@ ElaboratedMirFunction {
             site: SiteId(
                 107,
             ),
-            ty: Unit,
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1974,7 +2154,17 @@ ElaboratedMirFunction {
             site: SiteId(
                 108,
             ),
-            ty: I64,
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                109,
+            ),
+            ty: Unit,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1983,6 +2173,16 @@ ElaboratedMirFunction {
         DecisionFact {
             site: SiteId(
                 110,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                112,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -2114,29 +2314,525 @@ ElaboratedMirFunction {
         },
         ElabBlock {
             id: 20,
-            kind: Cleanup,
+            kind: Normal,
             drops: [],
             successor: None,
         },
         ElabBlock {
             id: 21,
-            kind: Cleanup,
+            kind: Normal,
             drops: [],
             successor: None,
         },
         ElabBlock {
             id: 22,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 23,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 24,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 25,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 26,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 27,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 28,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 29,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 30,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 31,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 32,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 33,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 34,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 35,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 36,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 37,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 38,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 39,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 40,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 41,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 42,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 43,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 44,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 45,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 46,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 47,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 48,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 49,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 50,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 51,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 52,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 53,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 54,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 55,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 56,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 57,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 58,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 59,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 60,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 61,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 62,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 63,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 64,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 65,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 66,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 67,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 68,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 69,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 70,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 71,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 72,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 73,
             kind: Cleanup,
             drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 74,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 75,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 76,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 77,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 78,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 79,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 80,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 81,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 82,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 83,
+            kind: Cleanup,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 84,
+            kind: Cleanup,
+            drops: [
+                ElabDrop {
+                    place: Local(
+                        121,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I64,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: EnumInPlace,
+                    guard: None,
+                },
+            ],
+            successor: None,
+        },
+        ElabBlock {
+            id: 85,
+            kind: Cleanup,
+            drops: [
+                ElabDrop {
+                    place: Local(
+                        121,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I64,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: EnumInPlace,
+                    guard: None,
+                },
+            ],
+            successor: None,
+        },
+        ElabBlock {
+            id: 86,
+            kind: Cleanup,
+            drops: [
+                ElabDrop {
+                    place: Local(
+                        121,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I64,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: EnumInPlace,
+                    guard: None,
+                },
+            ],
+            successor: None,
+        },
+        ElabBlock {
+            id: 87,
+            kind: Cleanup,
+            drops: [
+                ElabDrop {
+                    place: Local(
+                        121,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I64,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: EnumInPlace,
+                    guard: None,
+                },
+            ],
+            successor: None,
+        },
+        ElabBlock {
+            id: 88,
+            kind: Cleanup,
+            drops: [
+                ElabDrop {
+                    place: Local(
+                        121,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I64,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                    drop_fn: None,
+                    kind: EnumInPlace,
+                    guard: None,
+                },
+            ],
             successor: None,
         },
     ],
     drop_plans: [
         (
-            Call {
+            Branch {
                 block: 0,
-                callee: "println_i64",
-                next: 1,
+                then_target: 2,
+                else_target: 3,
             },
             DropPlan {
                 drops: [],
@@ -2153,27 +2849,7 @@ ElaboratedMirFunction {
         (
             Call {
                 block: 1,
-                callee: "println_f64",
-                next: 2,
-            },
-            DropPlan {
-                drops: [],
-            },
-        ),
-        (
-            Call {
-                block: 2,
                 callee: "println_i64",
-                next: 3,
-            },
-            DropPlan {
-                drops: [],
-            },
-        ),
-        (
-            Call {
-                block: 3,
-                callee: "println_f64",
                 next: 4,
             },
             DropPlan {
@@ -2181,10 +2857,35 @@ ElaboratedMirFunction {
             },
         ),
         (
-            Call {
+            Goto {
+                block: 2,
+                target: 1,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 2,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 3,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
                 block: 4,
-                callee: "println_i64",
-                next: 5,
+                then_target: 6,
+                else_target: 7,
             },
             DropPlan {
                 drops: [],
@@ -2194,26 +2895,6 @@ ElaboratedMirFunction {
             Call {
                 block: 5,
                 callee: "println_f64",
-                next: 6,
-            },
-            DropPlan {
-                drops: [],
-            },
-        ),
-        (
-            Call {
-                block: 6,
-                callee: "println_i64",
-                next: 7,
-            },
-            DropPlan {
-                drops: [],
-            },
-        ),
-        (
-            Call {
-                block: 7,
-                callee: "to_string_bool",
                 next: 8,
             },
             DropPlan {
@@ -2221,50 +2902,17 @@ ElaboratedMirFunction {
             },
         ),
         (
-            Call {
-                block: 8,
-                callee: "string_concat",
-                next: 9,
+            Goto {
+                block: 6,
+                target: 5,
             },
             DropPlan {
                 drops: [],
             },
         ),
         (
-            Call {
-                block: 9,
-                callee: "to_string_bool",
-                next: 10,
-            },
-            DropPlan {
-                drops: [],
-            },
-        ),
-        (
-            Call {
-                block: 10,
-                callee: "string_concat",
-                next: 11,
-            },
-            DropPlan {
-                drops: [],
-            },
-        ),
-        (
-            Call {
-                block: 11,
-                callee: "println_str",
-                next: 12,
-            },
-            DropPlan {
-                drops: [],
-            },
-        ),
-        (
-            Branch {
-                block: 12,
-                then_target: 13,
-                else_target: 14,
+            Cancel {
+                block: 6,
             },
             DropPlan {
                 drops: [],
@@ -2272,7 +2920,7 @@ ElaboratedMirFunction {
         ),
         (
             Panic {
-                block: 13,
+                block: 7,
             },
             DropPlan {
                 drops: [],
@@ -2280,9 +2928,88 @@ ElaboratedMirFunction {
         ),
         (
             Branch {
-                block: 14,
-                then_target: 15,
+                block: 8,
+                then_target: 10,
+                else_target: 11,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 9,
+                then_target: 13,
                 else_target: 16,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 10,
+                target: 9,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 10,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 11,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 12,
+                callee: "println_i64",
+                next: 17,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 13,
+                target: 12,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 13,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 14,
+                target: 12,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 14,
             },
             DropPlan {
                 drops: [],
@@ -2299,16 +3026,18 @@ ElaboratedMirFunction {
         (
             Branch {
                 block: 16,
-                then_target: 17,
-                else_target: 18,
+                then_target: 14,
+                else_target: 15,
             },
             DropPlan {
                 drops: [],
             },
         ),
         (
-            Panic {
+            Branch {
                 block: 17,
+                then_target: 19,
+                else_target: 22,
             },
             DropPlan {
                 drops: [],
@@ -2317,8 +3046,799 @@ ElaboratedMirFunction {
         (
             Call {
                 block: 18,
+                callee: "println_f64",
+                next: 23,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 19,
+                target: 18,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 19,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 20,
+                target: 18,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 20,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 21,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 22,
+                then_target: 20,
+                else_target: 21,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 23,
+                then_target: 25,
+                else_target: 28,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 24,
+                then_target: 30,
+                else_target: 31,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 25,
+                target: 24,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 25,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 26,
+                target: 24,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 26,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 27,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 28,
+                then_target: 26,
+                else_target: 27,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 29,
                 callee: "println_i64",
-                next: 19,
+                next: 32,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 30,
+                target: 29,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 30,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 31,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 32,
+                then_target: 34,
+                else_target: 35,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 33,
+                callee: "println_f64",
+                next: 36,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 34,
+                target: 33,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 34,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 35,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 36,
+                then_target: 38,
+                else_target: 39,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 37,
+                then_target: 41,
+                else_target: 44,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 38,
+                target: 37,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 38,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 39,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 40,
+                callee: "println_i64",
+                next: 45,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 41,
+                target: 40,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 41,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 42,
+                target: 40,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 42,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 43,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 44,
+                then_target: 42,
+                else_target: 43,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 45,
+                then_target: 47,
+                else_target: 50,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 46,
+                then_target: 52,
+                else_target: 55,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 47,
+                target: 46,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 47,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 48,
+                target: 46,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 48,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 49,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 50,
+                then_target: 48,
+                else_target: 49,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 51,
+                then_target: 57,
+                else_target: 60,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 52,
+                target: 51,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 52,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            121,
+                        ),
+                        ty: Named {
+                            name: "Result",
+                            args: [
+                                I64,
+                                String,
+                            ],
+                            builtin: Some(
+                                Result,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: EnumInPlace,
+                        guard: None,
+                    },
+                ],
+            },
+        ),
+        (
+            Goto {
+                block: 53,
+                target: 51,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 53,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            121,
+                        ),
+                        ty: Named {
+                            name: "Result",
+                            args: [
+                                I64,
+                                String,
+                            ],
+                            builtin: Some(
+                                Result,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: EnumInPlace,
+                        guard: None,
+                    },
+                ],
+            },
+        ),
+        (
+            Panic {
+                block: 54,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            121,
+                        ),
+                        ty: Named {
+                            name: "Result",
+                            args: [
+                                I64,
+                                String,
+                            ],
+                            builtin: Some(
+                                Result,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: EnumInPlace,
+                        guard: None,
+                    },
+                ],
+            },
+        ),
+        (
+            Branch {
+                block: 55,
+                then_target: 53,
+                else_target: 54,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 56,
+                callee: "to_string_bool",
+                next: 61,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 57,
+                target: 56,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 57,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            121,
+                        ),
+                        ty: Named {
+                            name: "Result",
+                            args: [
+                                I64,
+                                String,
+                            ],
+                            builtin: Some(
+                                Result,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: EnumInPlace,
+                        guard: None,
+                    },
+                ],
+            },
+        ),
+        (
+            Goto {
+                block: 58,
+                target: 56,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 58,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            121,
+                        ),
+                        ty: Named {
+                            name: "Result",
+                            args: [
+                                I64,
+                                String,
+                            ],
+                            builtin: Some(
+                                Result,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: EnumInPlace,
+                        guard: None,
+                    },
+                ],
+            },
+        ),
+        (
+            Panic {
+                block: 59,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            121,
+                        ),
+                        ty: Named {
+                            name: "Result",
+                            args: [
+                                I64,
+                                String,
+                            ],
+                            builtin: Some(
+                                Result,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: EnumInPlace,
+                        guard: None,
+                    },
+                ],
+            },
+        ),
+        (
+            Branch {
+                block: 60,
+                then_target: 58,
+                else_target: 59,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 61,
+                callee: "string_concat",
+                next: 62,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 62,
+                callee: "to_string_bool",
+                next: 63,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 63,
+                callee: "string_concat",
+                next: 64,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 64,
+                callee: "println_str",
+                next: 65,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 65,
+                then_target: 66,
+                else_target: 67,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 66,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            121,
+                        ),
+                        ty: Named {
+                            name: "Result",
+                            args: [
+                                I64,
+                                String,
+                            ],
+                            builtin: Some(
+                                Result,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: EnumInPlace,
+                        guard: None,
+                    },
+                ],
+            },
+        ),
+        (
+            Branch {
+                block: 67,
+                then_target: 68,
+                else_target: 69,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 68,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            121,
+                        ),
+                        ty: Named {
+                            name: "Result",
+                            args: [
+                                I64,
+                                String,
+                            ],
+                            builtin: Some(
+                                Result,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: EnumInPlace,
+                        guard: None,
+                    },
+                ],
+            },
+        ),
+        (
+            Branch {
+                block: 69,
+                then_target: 70,
+                else_target: 71,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Panic {
+                block: 70,
+            },
+            DropPlan {
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            121,
+                        ),
+                        ty: Named {
+                            name: "Result",
+                            args: [
+                                I64,
+                                String,
+                            ],
+                            builtin: Some(
+                                Result,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: EnumInPlace,
+                        guard: None,
+                    },
+                ],
+            },
+        ),
+        (
+            Call {
+                block: 71,
+                callee: "println_i64",
+                next: 72,
             },
             DropPlan {
                 drops: [],
@@ -2326,10 +3846,30 @@ ElaboratedMirFunction {
         ),
         (
             Return {
-                block: 19,
+                block: 72,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            121,
+                        ),
+                        ty: Named {
+                            name: "Result",
+                            args: [
+                                I64,
+                                String,
+                            ],
+                            builtin: Some(
+                                Result,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: EnumInPlace,
+                        guard: None,
+                    },
+                ],
             },
         ),
     ],
@@ -2342,11 +3882,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                22,
+                33,
             ),
             name: "val",
             site: SiteId(
-                140,
+                142,
             ),
             ty: I32,
             intent: Read,
@@ -2354,7 +3894,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    139,
+                    141,
                 ),
             ),
             ty: String,
@@ -2363,7 +3903,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                139,
+                141,
             ),
             ty: String,
             value_class: CowValue,
@@ -2373,7 +3913,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                140,
+                142,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -2433,11 +3973,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                23,
+                34,
             ),
             name: "val",
             site: SiteId(
-                143,
+                145,
             ),
             ty: I64,
             intent: Read,
@@ -2445,7 +3985,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    142,
+                    144,
                 ),
             ),
             ty: String,
@@ -2454,7 +3994,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                142,
+                144,
             ),
             ty: String,
             value_class: CowValue,
@@ -2464,7 +4004,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                143,
+                145,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -2524,11 +4064,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                24,
+                35,
             ),
             name: "val",
             site: SiteId(
-                146,
+                148,
             ),
             ty: U32,
             intent: Read,
@@ -2536,7 +4076,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    145,
+                    147,
                 ),
             ),
             ty: String,
@@ -2545,7 +4085,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                145,
+                147,
             ),
             ty: String,
             value_class: CowValue,
@@ -2555,7 +4095,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                146,
+                148,
             ),
             ty: U32,
             value_class: BitCopy,
@@ -2615,11 +4155,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                25,
+                36,
             ),
             name: "val",
             site: SiteId(
-                149,
+                151,
             ),
             ty: U64,
             intent: Read,
@@ -2627,7 +4167,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    148,
+                    150,
                 ),
             ),
             ty: String,
@@ -2636,7 +4176,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                148,
+                150,
             ),
             ty: String,
             value_class: CowValue,
@@ -2646,7 +4186,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                149,
+                151,
             ),
             ty: U64,
             value_class: BitCopy,
@@ -2706,11 +4246,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                26,
+                37,
             ),
             name: "val",
             site: SiteId(
-                152,
+                154,
             ),
             ty: Bool,
             intent: Read,
@@ -2718,7 +4258,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    151,
+                    153,
                 ),
             ),
             ty: String,
@@ -2727,7 +4267,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                151,
+                153,
             ),
             ty: String,
             value_class: CowValue,
@@ -2737,7 +4277,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                152,
+                154,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -2797,11 +4337,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                27,
+                38,
             ),
             name: "val",
             site: SiteId(
-                155,
+                157,
             ),
             ty: Char,
             intent: Read,
@@ -2809,7 +4349,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    154,
+                    156,
                 ),
             ),
             ty: String,
@@ -2818,7 +4358,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                154,
+                156,
             ),
             ty: String,
             value_class: CowValue,
@@ -2828,7 +4368,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                155,
+                157,
             ),
             ty: Char,
             value_class: BitCopy,
@@ -2888,11 +4428,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                28,
+                39,
             ),
             name: "val",
             site: SiteId(
-                158,
+                160,
             ),
             ty: F64,
             intent: Read,
@@ -2900,7 +4440,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    157,
+                    159,
                 ),
             ),
             ty: String,
@@ -2909,7 +4449,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                157,
+                159,
             ),
             ty: String,
             value_class: CowValue,
@@ -2919,7 +4459,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                158,
+                160,
             ),
             ty: F64,
             value_class: BitCopy,
@@ -2979,11 +4519,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                29,
+                40,
             ),
             name: "val",
             site: SiteId(
-                160,
+                162,
             ),
             ty: String,
             intent: Read,
@@ -2991,7 +4531,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    160,
+                    162,
                 ),
             ),
             ty: String,
@@ -3000,7 +4540,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                160,
+                162,
             ),
             ty: String,
             value_class: CowValue,

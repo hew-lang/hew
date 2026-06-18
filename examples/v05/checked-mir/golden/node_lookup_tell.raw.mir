@@ -32,7 +32,7 @@ RawMirFunction {
                     ),
                     name: "msg",
                     site: SiteId(
-                        4,
+                        5,
                     ),
                     ty: Named {
                         name: "Ping",
@@ -104,7 +104,7 @@ RawMirFunction {
             statements: [
                 Evaluate {
                     site: SiteId(
-                        1,
+                        2,
                     ),
                     ty: Unit,
                 },
@@ -126,22 +126,12 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                1,
+                2,
             ),
             ty: I64,
             value_class: BitCopy,
             intent: Consume,
             strategy: Move,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                2,
-            ),
-            ty: I64,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
@@ -158,6 +148,16 @@ RawMirFunction {
             site: SiteId(
                 4,
             ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                5,
+            ),
             ty: Named {
                 name: "Ping",
                 args: [],
@@ -173,6 +173,49 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            228,
+            298,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            2,
+        ): (
+            265,
+            286,
+        ),
+        (
+            0,
+            3,
+        ): (
+            265,
+            286,
+        ),
+        (
+            0,
+            4,
+        ): (
+            265,
+            286,
+        ),
+        (
+            1,
+            0,
+        ): (
+            265,
+            286,
+        ),
+        (
+            2,
+            1,
+        ): (
+            265,
+            286,
+        ),
+    },
 }
 RawMirFunction {
     name: "Worker__recv__total",
@@ -189,7 +232,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            5,
+                            6,
                         ),
                     ),
                     ty: I64,
@@ -219,7 +262,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                5,
+                6,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -231,6 +274,28 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            298,
+            346,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            2,
+        ): (
+            334,
+            344,
+        ),
+        (
+            0,
+            3,
+        ): (
+            334,
+            344,
+        ),
+    },
 }
 RawMirFunction {
     name: "main",
@@ -626,7 +691,7 @@ RawMirFunction {
             statements: [
                 Evaluate {
                     site: SiteId(
-                        6,
+                        7,
                     ),
                     ty: Unit,
                 },
@@ -668,7 +733,7 @@ RawMirFunction {
             statements: [
                 Evaluate {
                     site: SiteId(
-                        9,
+                        10,
                     ),
                     ty: Unit,
                 },
@@ -678,7 +743,7 @@ RawMirFunction {
                     ),
                     name: "worker",
                     site: SiteId(
-                        12,
+                        13,
                     ),
                     ty: Named {
                         name: "LocalPid",
@@ -702,7 +767,7 @@ RawMirFunction {
                     ),
                     name: "worker",
                     site: SiteId(
-                        16,
+                        17,
                     ),
                     ty: Named {
                         name: "LocalPid",
@@ -814,7 +879,7 @@ RawMirFunction {
             statements: [
                 Evaluate {
                     site: SiteId(
-                        14,
+                        15,
                     ),
                     ty: I32,
                 },
@@ -874,7 +939,7 @@ RawMirFunction {
                     ),
                     name: "missing",
                     site: SiteId(
-                        18,
+                        19,
                     ),
                     ty: Named {
                         name: "Result",
@@ -913,7 +978,7 @@ RawMirFunction {
                     ),
                     name: "missing",
                     site: SiteId(
-                        22,
+                        23,
                     ),
                     ty: Named {
                         name: "Result",
@@ -1001,7 +1066,7 @@ RawMirFunction {
                     ),
                     name: "missing_code",
                     site: SiteId(
-                        21,
+                        22,
                     ),
                     ty: I64,
                 },
@@ -1011,7 +1076,7 @@ RawMirFunction {
                     ),
                     name: "missing_code",
                     site: SiteId(
-                        35,
+                        36,
                     ),
                     ty: I64,
                     intent: Read,
@@ -1057,7 +1122,7 @@ RawMirFunction {
                     ),
                     name: "pid",
                     site: SiteId(
-                        23,
+                        24,
                     ),
                     ty: Named {
                         name: "RemotePid",
@@ -1081,7 +1146,7 @@ RawMirFunction {
                     ),
                     name: "pid",
                     site: SiteId(
-                        25,
+                        26,
                     ),
                     ty: Named {
                         name: "RemotePid",
@@ -1232,7 +1297,7 @@ RawMirFunction {
                     ),
                     name: "unexpected",
                     site: SiteId(
-                        24,
+                        25,
                     ),
                     ty: Named {
                         name: "Result",
@@ -1259,7 +1324,7 @@ RawMirFunction {
                     ),
                     name: "unexpected",
                     site: SiteId(
-                        30,
+                        31,
                     ),
                     ty: Named {
                         name: "Result",
@@ -1441,7 +1506,7 @@ RawMirFunction {
             statements: [
                 Evaluate {
                     site: SiteId(
-                        34,
+                        35,
                     ),
                     ty: Unit,
                 },
@@ -1500,7 +1565,7 @@ RawMirFunction {
                     ),
                     name: "found",
                     site: SiteId(
-                        38,
+                        39,
                     ),
                     ty: Named {
                         name: "Result",
@@ -1539,7 +1604,7 @@ RawMirFunction {
                     ),
                     name: "found",
                     site: SiteId(
-                        42,
+                        43,
                     ),
                     ty: Named {
                         name: "Result",
@@ -1627,7 +1692,7 @@ RawMirFunction {
                     ),
                     name: "status",
                     site: SiteId(
-                        41,
+                        42,
                     ),
                     ty: I64,
                 },
@@ -1659,7 +1724,7 @@ RawMirFunction {
                     ),
                     name: "pid",
                     site: SiteId(
-                        43,
+                        44,
                     ),
                     ty: Named {
                         name: "RemotePid",
@@ -1683,7 +1748,7 @@ RawMirFunction {
                     ),
                     name: "pid",
                     site: SiteId(
-                        45,
+                        46,
                     ),
                     ty: Named {
                         name: "RemotePid",
@@ -1834,7 +1899,7 @@ RawMirFunction {
                     ),
                     name: "delivered",
                     site: SiteId(
-                        44,
+                        45,
                     ),
                     ty: Named {
                         name: "Result",
@@ -1861,7 +1926,7 @@ RawMirFunction {
                     ),
                     name: "delivered",
                     site: SiteId(
-                        50,
+                        51,
                     ),
                     ty: Named {
                         name: "Result",
@@ -1937,7 +2002,7 @@ RawMirFunction {
                     ),
                     name: "send_code",
                     site: SiteId(
-                        49,
+                        50,
                     ),
                     ty: I64,
                 },
@@ -1947,7 +2012,7 @@ RawMirFunction {
                     ),
                     name: "send_code",
                     site: SiteId(
-                        55,
+                        56,
                     ),
                     ty: I64,
                     intent: Read,
@@ -2083,7 +2148,7 @@ RawMirFunction {
                     ),
                     name: "worker",
                     site: SiteId(
-                        61,
+                        62,
                     ),
                     ty: Named {
                         name: "LocalPid",
@@ -2133,7 +2198,7 @@ RawMirFunction {
                     ),
                     name: "send_code",
                     site: SiteId(
-                        71,
+                        72,
                     ),
                     ty: I64,
                     intent: Read,
@@ -2234,7 +2299,7 @@ RawMirFunction {
                     ),
                     name: "total",
                     site: SiteId(
-                        58,
+                        59,
                     ),
                     ty: I64,
                 },
@@ -2244,7 +2309,7 @@ RawMirFunction {
                     ),
                     name: "total",
                     site: SiteId(
-                        66,
+                        67,
                     ),
                     ty: I64,
                     intent: Read,
@@ -2290,7 +2355,7 @@ RawMirFunction {
                     ),
                     name: "v",
                     site: SiteId(
-                        62,
+                        63,
                     ),
                     ty: I64,
                 },
@@ -2300,7 +2365,7 @@ RawMirFunction {
                     ),
                     name: "v",
                     site: SiteId(
-                        62,
+                        63,
                     ),
                     ty: I64,
                     intent: Read,
@@ -2339,7 +2404,7 @@ RawMirFunction {
                     ),
                     name: "_e",
                     site: SiteId(
-                        63,
+                        64,
                     ),
                     ty: Named {
                         name: "AskError",
@@ -2458,7 +2523,7 @@ RawMirFunction {
             statements: [
                 Evaluate {
                     site: SiteId(
-                        65,
+                        66,
                     ),
                     ty: Unit,
                 },
@@ -2496,7 +2561,7 @@ RawMirFunction {
             statements: [
                 Evaluate {
                     site: SiteId(
-                        73,
+                        74,
                     ),
                     ty: Unit,
                 },
@@ -2506,7 +2571,7 @@ RawMirFunction {
                     ),
                     name: "status",
                     site: SiteId(
-                        75,
+                        76,
                     ),
                     ty: I64,
                     intent: Read,
@@ -2514,7 +2579,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            75,
+                            76,
                         ),
                     ),
                     ty: I64,
@@ -2534,7 +2599,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                6,
+                7,
             ),
             ty: Unit,
             value_class: BitCopy,
@@ -2544,28 +2609,28 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                7,
+                8,
             ),
             ty: String,
             value_class: CowValue,
             intent: Read,
             strategy: CowShare,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                9,
-            ),
-            ty: Unit,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
             site: SiteId(
                 10,
             ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                11,
+            ),
             ty: String,
             value_class: CowValue,
             intent: Read,
@@ -2574,7 +2639,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                12,
+                13,
             ),
             ty: Named {
                 name: "LocalPid",
@@ -2598,19 +2663,9 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                13,
-            ),
-            ty: I64,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
                 14,
             ),
-            ty: I32,
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -2620,6 +2675,16 @@ RawMirFunction {
             site: SiteId(
                 15,
             ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                16,
+            ),
             ty: String,
             value_class: CowValue,
             intent: Read,
@@ -2628,7 +2693,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                16,
+                17,
             ),
             ty: Named {
                 name: "LocalPid",
@@ -2652,7 +2717,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                18,
+                19,
             ),
             ty: Named {
                 name: "Result",
@@ -2691,7 +2756,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                19,
+                20,
             ),
             ty: String,
             value_class: CowValue,
@@ -2701,7 +2766,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                21,
+                22,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -2711,7 +2776,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                22,
+                23,
             ),
             ty: Named {
                 name: "Result",
@@ -2750,7 +2815,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                23,
+                24,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -2760,7 +2825,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                24,
+                25,
             ),
             ty: Named {
                 name: "Result",
@@ -2787,7 +2852,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                25,
+                26,
             ),
             ty: Named {
                 name: "RemotePid",
@@ -2811,7 +2876,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                26,
+                27,
             ),
             ty: Named {
                 name: "Ping",
@@ -2826,17 +2891,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                27,
-            ),
-            ty: I64,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                29,
+                28,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -2847,6 +2902,16 @@ RawMirFunction {
         DecisionFact {
             site: SiteId(
                 30,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                31,
             ),
             ty: Named {
                 name: "Result",
@@ -2866,16 +2931,6 @@ RawMirFunction {
                 ),
                 is_opaque: false,
             },
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                31,
-            ),
-            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -2905,7 +2960,7 @@ RawMirFunction {
             site: SiteId(
                 34,
             ),
-            ty: Unit,
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -2915,7 +2970,7 @@ RawMirFunction {
             site: SiteId(
                 35,
             ),
-            ty: I64,
+            ty: Unit,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -2933,7 +2988,17 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                38,
+                37,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                39,
             ),
             ty: Named {
                 name: "Result",
@@ -2972,7 +3037,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                39,
+                40,
             ),
             ty: String,
             value_class: CowValue,
@@ -2982,7 +3047,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                41,
+                42,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -2992,7 +3057,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                42,
+                43,
             ),
             ty: Named {
                 name: "Result",
@@ -3031,7 +3096,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                43,
+                44,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -3041,7 +3106,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                44,
+                45,
             ),
             ty: Named {
                 name: "Result",
@@ -3068,7 +3133,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                45,
+                46,
             ),
             ty: Named {
                 name: "RemotePid",
@@ -3092,7 +3157,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                46,
+                47,
             ),
             ty: Named {
                 name: "Ping",
@@ -3107,7 +3172,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                47,
+                48,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -3117,7 +3182,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                49,
+                50,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -3127,7 +3192,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                50,
+                51,
             ),
             ty: Named {
                 name: "Result",
@@ -3147,16 +3212,6 @@ RawMirFunction {
                 ),
                 is_opaque: false,
             },
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                51,
-            ),
-            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -3186,7 +3241,7 @@ RawMirFunction {
             site: SiteId(
                 54,
             ),
-            ty: Bool,
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -3196,7 +3251,7 @@ RawMirFunction {
             site: SiteId(
                 55,
             ),
-            ty: I64,
+            ty: Bool,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -3228,13 +3283,23 @@ RawMirFunction {
             ),
             ty: I64,
             value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                59,
+            ),
+            ty: I64,
+            value_class: BitCopy,
             intent: Consume,
             strategy: Move,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
             site: SiteId(
-                60,
+                61,
             ),
             ty: Named {
                 name: "Result",
@@ -3261,7 +3326,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                61,
+                62,
             ),
             ty: Named {
                 name: "LocalPid",
@@ -3279,16 +3344,6 @@ RawMirFunction {
                 is_opaque: false,
             },
             value_class: AffineResource,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                62,
-            ),
-            ty: I64,
-            value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
             why: "first vertical-slice classifier",
@@ -3317,7 +3372,7 @@ RawMirFunction {
             site: SiteId(
                 65,
             ),
-            ty: Unit,
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -3327,7 +3382,7 @@ RawMirFunction {
             site: SiteId(
                 66,
             ),
-            ty: I64,
+            ty: Unit,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -3345,7 +3400,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                69,
+                68,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -3387,6 +3442,16 @@ RawMirFunction {
             site: SiteId(
                 73,
             ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                74,
+            ),
             ty: Unit,
             value_class: BitCopy,
             intent: Read,
@@ -3395,7 +3460,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                75,
+                76,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -3407,6 +3472,861 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            422,
+            1727,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            445,
+            471,
+        ),
+        (
+            0,
+            1,
+        ): (
+            445,
+            471,
+        ),
+        (
+            1,
+            0,
+        ): (
+            477,
+            503,
+        ),
+        (
+            1,
+            1,
+        ): (
+            477,
+            503,
+        ),
+        (
+            2,
+            0,
+        ): (
+            509,
+            550,
+        ),
+        (
+            2,
+            1,
+        ): (
+            509,
+            550,
+        ),
+        (
+            2,
+            2,
+        ): (
+            509,
+            550,
+        ),
+        (
+            2,
+            3,
+        ): (
+            550,
+            594,
+        ),
+        (
+            2,
+            4,
+        ): (
+            550,
+            594,
+        ),
+        (
+            3,
+            0,
+        ): (
+            600,
+            695,
+        ),
+        (
+            3,
+            1,
+        ): (
+            600,
+            695,
+        ),
+        (
+            4,
+            0,
+        ): (
+            600,
+            695,
+        ),
+        (
+            4,
+            1,
+        ): (
+            695,
+            984,
+        ),
+        (
+            4,
+            2,
+        ): (
+            695,
+            984,
+        ),
+        (
+            4,
+            3,
+        ): (
+            695,
+            984,
+        ),
+        (
+            4,
+            4,
+        ): (
+            695,
+            984,
+        ),
+        (
+            5,
+            0,
+        ): (
+            771,
+            825,
+        ),
+        (
+            5,
+            1,
+        ): (
+            984,
+            1010,
+        ),
+        (
+            5,
+            2,
+        ): (
+            984,
+            1010,
+        ),
+        (
+            6,
+            0,
+        ): (
+            695,
+            984,
+        ),
+        (
+            6,
+            1,
+        ): (
+            771,
+            825,
+        ),
+        (
+            6,
+            2,
+        ): (
+            771,
+            825,
+        ),
+        (
+            6,
+            3,
+        ): (
+            771,
+            825,
+        ),
+        (
+            7,
+            0,
+        ): (
+            771,
+            825,
+        ),
+        (
+            7,
+            1,
+        ): (
+            771,
+            825,
+        ),
+        (
+            7,
+            2,
+        ): (
+            771,
+            825,
+        ),
+        (
+            8,
+            0,
+        ): (
+            695,
+            984,
+        ),
+        (
+            9,
+            0,
+        ): (
+            695,
+            984,
+        ),
+        (
+            9,
+            1,
+        ): (
+            695,
+            984,
+        ),
+        (
+            9,
+            2,
+        ): (
+            695,
+            984,
+        ),
+        (
+            10,
+            0,
+        ): (
+            771,
+            825,
+        ),
+        (
+            10,
+            1,
+        ): (
+            771,
+            825,
+        ),
+        (
+            10,
+            2,
+        ): (
+            771,
+            825,
+        ),
+        (
+            10,
+            3,
+        ): (
+            771,
+            825,
+        ),
+        (
+            10,
+            4,
+        ): (
+            771,
+            825,
+        ),
+        (
+            11,
+            0,
+        ): (
+            771,
+            825,
+        ),
+        (
+            11,
+            1,
+        ): (
+            771,
+            825,
+        ),
+        (
+            11,
+            2,
+        ): (
+            771,
+            825,
+        ),
+        (
+            12,
+            0,
+        ): (
+            771,
+            825,
+        ),
+        (
+            12,
+            1,
+        ): (
+            771,
+            825,
+        ),
+        (
+            12,
+            2,
+        ): (
+            771,
+            825,
+        ),
+        (
+            13,
+            0,
+        ): (
+            771,
+            825,
+        ),
+        (
+            13,
+            1,
+        ): (
+            771,
+            825,
+        ),
+        (
+            13,
+            2,
+        ): (
+            771,
+            825,
+        ),
+        (
+            14,
+            0,
+        ): (
+            771,
+            825,
+        ),
+        (
+            15,
+            0,
+        ): (
+            771,
+            825,
+        ),
+        (
+            15,
+            1,
+        ): (
+            771,
+            825,
+        ),
+        (
+            15,
+            2,
+        ): (
+            771,
+            825,
+        ),
+        (
+            16,
+            0,
+        ): (
+            1016,
+            1108,
+        ),
+        (
+            16,
+            1,
+        ): (
+            1016,
+            1108,
+        ),
+        (
+            17,
+            0,
+        ): (
+            1016,
+            1108,
+        ),
+        (
+            17,
+            1,
+        ): (
+            1108,
+            1697,
+        ),
+        (
+            17,
+            2,
+        ): (
+            1108,
+            1697,
+        ),
+        (
+            17,
+            3,
+        ): (
+            1108,
+            1697,
+        ),
+        (
+            17,
+            4,
+        ): (
+            1108,
+            1697,
+        ),
+        (
+            18,
+            0,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            18,
+            1,
+        ): (
+            1697,
+            1713,
+        ),
+        (
+            19,
+            0,
+        ): (
+            1108,
+            1697,
+        ),
+        (
+            19,
+            1,
+        ): (
+            1176,
+            1230,
+        ),
+        (
+            19,
+            2,
+        ): (
+            1176,
+            1230,
+        ),
+        (
+            19,
+            3,
+        ): (
+            1176,
+            1230,
+        ),
+        (
+            20,
+            0,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            20,
+            1,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            20,
+            2,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            21,
+            0,
+        ): (
+            1108,
+            1697,
+        ),
+        (
+            22,
+            0,
+        ): (
+            1108,
+            1697,
+        ),
+        (
+            22,
+            1,
+        ): (
+            1108,
+            1697,
+        ),
+        (
+            22,
+            2,
+        ): (
+            1108,
+            1697,
+        ),
+        (
+            23,
+            0,
+        ): (
+            1176,
+            1230,
+        ),
+        (
+            23,
+            1,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            23,
+            2,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            23,
+            3,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            23,
+            4,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            24,
+            0,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            24,
+            1,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            24,
+            2,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            24,
+            3,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            25,
+            0,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            25,
+            1,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            25,
+            2,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            26,
+            0,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            26,
+            1,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            26,
+            2,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            27,
+            0,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            28,
+            0,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            28,
+            1,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            28,
+            2,
+        ): (
+            1230,
+            1365,
+        ),
+        (
+            29,
+            0,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            30,
+            0,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            30,
+            1,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            30,
+            2,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            31,
+            0,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            31,
+            1,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            31,
+            2,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            32,
+            0,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            32,
+            1,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            32,
+            2,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            32,
+            3,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            33,
+            0,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            33,
+            1,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            33,
+            2,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            34,
+            0,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            34,
+            1,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            34,
+            2,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            35,
+            0,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            35,
+            1,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            35,
+            2,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            35,
+            3,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            36,
+            0,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            37,
+            0,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            37,
+            1,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            37,
+            2,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            38,
+            0,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            39,
+            0,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            39,
+            1,
+        ): (
+            1401,
+            1544,
+        ),
+        (
+            40,
+            0,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            40,
+            1,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            40,
+            2,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            40,
+            3,
+        ): (
+            1544,
+            1564,
+        ),
+        (
+            41,
+            0,
+        ): (
+            1719,
+            1726,
+        ),
+        (
+            41,
+            1,
+        ): (
+            1719,
+            1726,
+        ),
+    },
 }
 RawMirFunction {
     name: "i32::fmt",
@@ -3429,7 +4349,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        105,
+                        106,
                     ),
                     ty: I32,
                     intent: Read,
@@ -3458,7 +4378,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            104,
+                            105,
                         ),
                     ),
                     ty: String,
@@ -3478,7 +4398,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                104,
+                105,
             ),
             ty: String,
             value_class: CowValue,
@@ -3488,7 +4408,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                105,
+                106,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -3500,6 +4420,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14556,
+            14644,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14620,
+            14639,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14620,
+            14639,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14620,
+            14639,
+        ),
+    },
 }
 RawMirFunction {
     name: "i64::fmt",
@@ -3522,7 +4471,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        108,
+                        109,
                     ),
                     ty: I64,
                     intent: Read,
@@ -3551,7 +4500,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            107,
+                            108,
                         ),
                     ),
                     ty: String,
@@ -3571,7 +4520,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                107,
+                108,
             ),
             ty: String,
             value_class: CowValue,
@@ -3581,7 +4530,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                108,
+                109,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -3593,6 +4542,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14644,
+            14732,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14708,
+            14727,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14708,
+            14727,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14708,
+            14727,
+        ),
+    },
 }
 RawMirFunction {
     name: "u32::fmt",
@@ -3615,7 +4593,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        111,
+                        112,
                     ),
                     ty: U32,
                     intent: Read,
@@ -3644,7 +4622,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            110,
+                            111,
                         ),
                     ),
                     ty: String,
@@ -3664,7 +4642,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                110,
+                111,
             ),
             ty: String,
             value_class: CowValue,
@@ -3674,7 +4652,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                111,
+                112,
             ),
             ty: U32,
             value_class: BitCopy,
@@ -3686,6 +4664,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14906,
+            14994,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14970,
+            14989,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14970,
+            14989,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14970,
+            14989,
+        ),
+    },
 }
 RawMirFunction {
     name: "u64::fmt",
@@ -3708,7 +4715,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        114,
+                        115,
                     ),
                     ty: U64,
                     intent: Read,
@@ -3737,7 +4744,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            113,
+                            114,
                         ),
                     ),
                     ty: String,
@@ -3757,7 +4764,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                113,
+                114,
             ),
             ty: String,
             value_class: CowValue,
@@ -3767,7 +4774,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                114,
+                115,
             ),
             ty: U64,
             value_class: BitCopy,
@@ -3779,6 +4786,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14994,
+            15082,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15058,
+            15077,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15058,
+            15077,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15058,
+            15077,
+        ),
+    },
 }
 RawMirFunction {
     name: "bool::fmt",
@@ -3801,7 +4837,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        117,
+                        118,
                     ),
                     ty: Bool,
                     intent: Read,
@@ -3830,7 +4866,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            116,
+                            117,
                         ),
                     ),
                     ty: String,
@@ -3850,7 +4886,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                116,
+                117,
             ),
             ty: String,
             value_class: CowValue,
@@ -3860,7 +4896,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                117,
+                118,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -3872,6 +4908,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15082,
+            15172,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15148,
+            15167,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15148,
+            15167,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15148,
+            15167,
+        ),
+    },
 }
 RawMirFunction {
     name: "char::fmt",
@@ -3894,7 +4959,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        120,
+                        121,
                     ),
                     ty: Char,
                     intent: Read,
@@ -3923,7 +4988,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            119,
+                            120,
                         ),
                     ),
                     ty: String,
@@ -3943,7 +5008,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                119,
+                120,
             ),
             ty: String,
             value_class: CowValue,
@@ -3953,7 +5018,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                120,
+                121,
             ),
             ty: Char,
             value_class: BitCopy,
@@ -3965,6 +5030,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15172,
+            15262,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15238,
+            15257,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15238,
+            15257,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15238,
+            15257,
+        ),
+    },
 }
 RawMirFunction {
     name: "f64::fmt",
@@ -3987,7 +5081,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        123,
+                        124,
                     ),
                     ty: F64,
                     intent: Read,
@@ -4016,7 +5110,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            122,
+                            123,
                         ),
                     ),
                     ty: String,
@@ -4036,7 +5130,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                122,
+                123,
             ),
             ty: String,
             value_class: CowValue,
@@ -4046,7 +5140,7 @@ RawMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                123,
+                124,
             ),
             ty: F64,
             value_class: BitCopy,
@@ -4058,6 +5152,35 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15262,
+            15350,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15326,
+            15345,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15326,
+            15345,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15326,
+            15345,
+        ),
+    },
 }
 RawMirFunction {
     name: "string::fmt",
@@ -4079,7 +5202,7 @@ RawMirFunction {
                     ),
                     name: "val",
                     site: SiteId(
-                        125,
+                        126,
                     ),
                     ty: String,
                     intent: Read,
@@ -4087,7 +5210,7 @@ RawMirFunction {
                 Return {
                     site: Some(
                         SiteId(
-                            125,
+                            126,
                         ),
                     ),
                     ty: String,
@@ -4107,7 +5230,7 @@ RawMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                125,
+                126,
             ),
             ty: String,
             value_class: CowValue,
@@ -4119,4 +5242,26 @@ RawMirFunction {
     intrinsic_id: None,
     await_deadline_ns: {},
     lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15350,
+            15920,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15420,
+            15428,
+        ),
+        (
+            0,
+            1,
+        ): (
+            15420,
+            15428,
+        ),
+    },
 }

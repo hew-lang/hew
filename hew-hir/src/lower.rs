@@ -10874,7 +10874,7 @@ impl LowerCtx {
                             body: body_block,
                         }
                     }
-                    (_, Pattern::Identifier(_)) => self.lower_for_iter_desugar(
+                    (None, _) => self.lower_for_iter_desugar(
                         pattern,
                         iterable,
                         body,
@@ -10883,16 +10883,16 @@ impl LowerCtx {
                         *is_await,
                     ),
                     _ => {
-                        // Non-identifier pattern: not supported in this slice.
+                        // Non-identifier range pattern: not supported in this slice.
                         self.unsupported(
                             pattern.1.clone(),
-                            "for-in with non-identifier binding pattern",
+                            "for-range with non-identifier binding pattern",
                             "for-while-lowering",
                         );
                         self.push_scope();
                         let _ = self.lower_block(body, &ResolvedTy::Unit);
                         self.pop_scope();
-                        HirExprKind::Unsupported("for-in with non-identifier pattern".into())
+                        HirExprKind::Unsupported("for-range with non-identifier pattern".into())
                     }
                 };
 
@@ -16919,8 +16919,13 @@ impl LowerCtx {
         span: Span,
         is_await: bool,
     ) -> HirExprKind {
-        let Pattern::Identifier(var_name) = &pattern.0 else {
-            unreachable!("lower_for_iter_desugar is only called for identifier patterns");
+        let (var_name, destructure_pattern) = if let Pattern::Identifier(var_name) = &pattern.0 {
+            (var_name.clone(), None)
+        } else {
+            (
+                format!("__forelem_{}", self.ids.binding().0),
+                Some(pattern.clone()),
+            )
         };
         let lowered_iterable = self.lower_expr(iterable, IntentKind::Consume);
         let (iter_init, iter_ty, elem_ty, next_call) = match lowered_iterable.ty.clone() {
@@ -17181,7 +17186,28 @@ impl LowerCtx {
             name: var_name.clone(),
             ty: elem_ty.clone(),
         };
-        let body_block = self.lower_block(body, &ResolvedTy::Unit);
+        let mut body_prelude = Vec::new();
+        if let Some(destructure_pattern) = &destructure_pattern {
+            let elem_ref = self.make_binding_ref(
+                var_name.clone(),
+                loop_binding.id,
+                elem_ty.clone(),
+                IntentKind::Read,
+                pattern.1.clone(),
+            );
+            self.lower_pattern_value_into_stmts(
+                destructure_pattern,
+                elem_ref,
+                elem_ty.clone(),
+                &mut body_prelude,
+                pattern.1.clone(),
+            );
+        }
+        let mut body_block = self.lower_block(body, &ResolvedTy::Unit);
+        if !body_prelude.is_empty() {
+            body_prelude.extend(body_block.statements);
+            body_block.statements = body_prelude;
+        }
         self.pop_scope();
         let body_ty = body_block.ty.clone();
         let some_body = self.make_expr(

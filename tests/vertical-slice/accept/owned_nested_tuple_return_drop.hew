@@ -4,5 +4,7 @@ fn make_nested() -> ((string, i64), bool) {
 
 fn main() {
     let t = make_nested();
-    println(f"{(t.0).0}:{(t.0).1}:{t.1}");
+    let (inner, flag) = t;
+    let (s, n) = inner;
+    println(f"{s}:{n}:{flag}");
 }

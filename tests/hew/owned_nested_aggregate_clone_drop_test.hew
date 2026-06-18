@@ -15,9 +15,11 @@ fn make_nested() -> ((string, i64), bool) {
 #[test]
 fn test_nested_tuple_return_drops_cleanly() {
     let t = make_nested();
-    testing.assert_eq_str((t.0).0, "hi");
-    testing.assert_eq((t.0).1, 7);
-    testing.assert_true(t.1);
+    let (inner, flag) = t;
+    let (s, n) = inner;
+    testing.assert_eq_str(s, "hi");
+    testing.assert_eq(n, 7);
+    testing.assert_true(flag);
 }
 
 #[test]
@@ -25,39 +27,48 @@ fn test_vec_clone_deep_copies_nested_tuple_fields() {
     let xs: Vec<((string, i64), bool)> = Vec::new();
     xs.push((("a", 1), true));
     xs.push((("b", 2), false));
-
     let ys = xs.clone();
     xs.set(0, (("zzz", 9), true));
-
     let first = ys.get(0);
     let second = ys.get(1);
+    let (f_inner, f_flag) = first;
+    let (f_s, f_n) = f_inner;
+    let (s_inner, s_flag) = second;
+    let (s_s, s_n) = s_inner;
     testing.assert_eq(ys.len(), 2);
-    testing.assert_eq_str((first.0).0, "a");
-    testing.assert_eq((first.0).1, 1);
-    testing.assert_true(first.1);
-    testing.assert_eq_str((second.0).0, "b");
-    testing.assert_eq((second.0).1, 2);
-    testing.assert_true(!second.1);
+    testing.assert_eq_str(f_s, "a");
+    testing.assert_eq(f_n, 1);
+    testing.assert_true(f_flag);
+    testing.assert_eq_str(s_s, "b");
+    testing.assert_eq(s_n, 2);
+    testing.assert_true(!s_flag);
 }
 
 #[test]
 fn test_vec_clone_drops_nested_bytes_leaf_cleanly() {
     let xs: Vec<((bytes, i64), bool)> = Vec::new();
-    let a: bytes = unsafe { hew_bytes_from_str("ab") };
-    let b: bytes = unsafe { hew_bytes_from_str("cd") };
+    let a: bytes = unsafe {
+        hew_bytes_from_str("ab")
+    };
+    let b: bytes = unsafe {
+        hew_bytes_from_str("cd")
+    };
     xs.push(((a, 11), true));
     xs.push(((b, 12), false));
-
     let ys = xs.clone();
     let first = ys.get(0);
     let second = ys.get(1);
+    let (f_inner, f_flag) = first;
+    let (f_b, f_n) = f_inner;
+    let (s_inner, s_flag) = second;
+    let (s_b, s_n) = s_inner;
     testing.assert_eq(ys.len(), 2);
-    testing.assert_eq_str((first.0).0.to_string(), "ab");
-    testing.assert_eq((first.0).1, 11);
-    testing.assert_true(first.1);
-    testing.assert_eq_str((second.0).0.to_string(), "cd");
-    testing.assert_eq((second.0).1, 12);
-    testing.assert_true(!second.1);
+    testing.assert_eq_str(f_b.to_string(), "ab");
+    testing.assert_eq(f_n, 11);
+    testing.assert_true(f_flag);
+    testing.assert_eq_str(s_b.to_string(), "cd");
+    testing.assert_eq(s_n, 12);
+    testing.assert_true(!s_flag);
 }
 
 #[test]
@@ -65,17 +76,19 @@ fn test_vec_clone_drops_nested_record_leaf_cleanly() {
     let xs: Vec<((Rec, i64), bool)> = Vec::new();
     xs.push(((Rec { s: "hi" }, 21), true));
     xs.push(((Rec { s: "bye" }, 22), false));
-
     let ys = xs.clone();
     xs.set(0, ((Rec { s: "changed" }, 99), true));
-
     let first = ys.get(0);
     let second = ys.get(1);
+    let (f_inner, f_flag) = first;
+    let (f_rec, f_n) = f_inner;
+    let (s_inner, s_flag) = second;
+    let (s_rec, s_n) = s_inner;
     testing.assert_eq(ys.len(), 2);
-    testing.assert_eq_str(((first.0).0).s, "hi");
-    testing.assert_eq((first.0).1, 21);
-    testing.assert_true(first.1);
-    testing.assert_eq_str(((second.0).0).s, "bye");
-    testing.assert_eq((second.0).1, 22);
-    testing.assert_true(!second.1);
+    testing.assert_eq_str(f_rec.s, "hi");
+    testing.assert_eq(f_n, 21);
+    testing.assert_true(f_flag);
+    testing.assert_eq_str(s_rec.s, "bye");
+    testing.assert_eq(s_n, 22);
+    testing.assert_true(!s_flag);
 }

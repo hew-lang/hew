@@ -2,11 +2,13 @@ fn main() {
     let xs: Vec<((string, i64), bool)> = Vec::new();
     xs.push((("a", 1), true));
     xs.push((("b", 2), false));
-
     let ys = xs.clone();
     xs.set(0, (("zzz", 9), true));
-
     let first = ys.get(0);
     let second = ys.get(1);
-    println(f"{ys.len()}:{(first.0).0}:{(first.0).1}:{first.1}:{(second.0).0}:{(second.0).1}:{second.1}");
+    let (f_inner, f_flag) = first;
+    let (f_s, f_n) = f_inner;
+    let (s_inner, s_flag) = second;
+    let (s_s, s_n) = s_inner;
+    println(f"{ys.len()}:{f_s}:{f_n}:{f_flag}:{s_s}:{s_n}:{s_flag}");
 }

@@ -7313,8 +7313,7 @@ mod tests {
     /// timeout) are set as environment variables so `cluster_config_from_env`
     /// picks them up at node-start time.  These tests run under simulated time
     /// (enabled before any node starts so the SWIM driver picks up the sim
-    /// clock), so `HEW_SWIM_TEST_TIME_SCALE` is irrelevant for them: the
-    /// driver never reads real wall time during the test.
+    /// clock): the driver never reads real wall time during the test.
     struct SwimTimingEnv;
 
     /// Protocol period used by the fast-test SWIM clock (ms).
@@ -7378,8 +7377,7 @@ mod tests {
     ///
     /// Runs under simulated time (enabled by `SwimTimingEnv::fast()` before
     /// any node starts): the SWIM driver uses the sim clock, so the test is
-    /// load-immune — wall time is irrelevant and `HEW_SWIM_TEST_TIME_SCALE`
-    /// has no effect on these tests.
+    /// load-immune — wall time is irrelevant.
     ///
     /// The detector is driven through its two transitions in order — SUSPECT
     /// first (synchronised on, not raced), then SUSPECT→DEAD — because a single
@@ -7456,7 +7454,7 @@ mod tests {
         // Racing this — advancing straight past the suspect timeout while B was
         // still ALIVE — is what hung this test on Linux under load: the single
         // tick spent itself on ALIVE→SUSPECT, then the frozen sim clock starved
-        // the SUSPECT→DEAD tick (the driver busy-spins in `sim_sleep_ms` without
+        // the SUSPECT→DEAD tick (the driver waits in `sim_sleep_ms` without
         // advancing time), so `on_member_dead` never fired and `recv` blocked
         // until the harness deadline.
         crate::deterministic::hew_simtime_advance_ms((2 * SWIM_TEST_PERIOD_MS).cast_signed());
@@ -7506,10 +7504,9 @@ mod tests {
     /// by one protocol period at a time, sleeping real `SWIM_ALIVE_REAL_SLEEP_MS`
     /// between advances so the loopback TCP ping-ack round-trip completes and
     /// the connection-reader thread can update `last_seen_ms = hew_now_ms()`.
-    /// This is load-immune: the SWIM thresholds are in sim time, so `TSan`'s
-    /// ~10× CPU overhead never causes a false-DEAD verdict.
-    ///
-    /// `HEW_SWIM_TEST_TIME_SCALE` is irrelevant for this test.
+    /// This is load-immune: the SWIM thresholds are in sim time, so high CPU
+    /// overhead (e.g. from `TSan` or coverage instrumentation) never causes a
+    /// false-DEAD verdict.
     #[cfg_attr(windows, ignore)]
     // WINDOWS-TODO: loopback TCP on Windows has higher round-trip latency
     // (15 ms OS timer granularity) than this test's real-sleep window.  Fix

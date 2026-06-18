@@ -1,0 +1,12 @@
+// Validation: record destructure of a type with an owned string field must not
+// double-free.  The record temp is consumed once; the field projections move
+// (not copy) the owned value out.  Exit code 7 confirms the numeric field was
+// correctly read.  Run under MallocScribble=1 on macOS to catch use-after-free.
+type Payload { tag: i64; label: string; }
+
+fn main() -> i64 {
+    let p = Payload { tag: 7, label: "hello" };
+    let Payload { tag, label } = p;
+    let _ = label;
+    tag
+}

@@ -867,6 +867,19 @@ pub enum TypeErrorKind {
         /// Sorted names of the impl methods that are not on the trait.
         methods: Vec<String>,
     },
+    /// A refutable pattern was used in a `let` binding.
+    ///
+    /// `let` bindings have no failure arm, so only irrefutable patterns
+    /// (plain identifiers, wildcards, product-type records/structs, and
+    /// tuples) are legal. Enum variants, literal patterns, and or-patterns
+    /// are refutable and must be used in `if let` or `match` instead.
+    ///
+    /// Envelope code: `E_REFUTABLE_LET_PATTERN`.
+    RefutableLetPattern {
+        /// Human-readable label for the rejected pattern kind,
+        /// e.g. `"enum variant"`, `"literal"`, or `"or-pattern"`.
+        kind_label: String,
+    },
     /// A function carrying `#[intrinsic("…")]` was declared outside the
     /// designated stdlib-floor modules.
     ///
@@ -989,6 +1002,7 @@ impl TypeErrorKind {
             Self::TraitImplExtraMethods { .. } => "TraitImplExtraMethods",
             Self::IntrinsicOutsideFloor { .. } => "IntrinsicOutsideFloor",
             Self::IntrinsicOnMethod { .. } => "IntrinsicOnMethod",
+            Self::RefutableLetPattern { .. } => "RefutableLetPattern",
         }
     }
 }

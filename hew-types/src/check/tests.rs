@@ -26676,4 +26676,89 @@ mod every_attribute {
             output.errors
         );
     }
+
+    // -----------------------------------------------------------------------
+    // t2-let-destructure Stage 1: refutable-let gate + irrefutable acceptance
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn let_refutable_enum_constructor_emits_exactly_one_error() {
+        // `let Some(x) = opt;` — refutable enum variant in let position.
+        // Must emit exactly one RefutableLetPattern error; binders must still exist
+        // for error-recovery (no UnresolvedSymbol cascade on subsequent uses of `x`).
+        let output = check_source("fn main() -> i64 { let opt = Some(5); let Some(x) = opt; x }");
+        let refutable_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::RefutableLetPattern { .. }))
+            .collect();
+        assert_eq!(
+            refutable_errors.len(),
+            1,
+            "expected exactly one RefutableLetPattern error, got: {:#?}",
+            output.errors
+        );
+        // No cascade: must not also emit UnresolvedVariable for `x`.
+        let unresolved: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::UndefinedVariable))
+            .collect();
+        assert!(
+            unresolved.is_empty(),
+            "refutable let gate must not cascade into UndefinedVariable; got: {unresolved:#?}"
+        );
+        // The error message must mention `if let` or `match`.
+        let err_msg = &refutable_errors[0].message;
+        assert!(
+            err_msg.contains("if let") || err_msg.contains("match"),
+            "refutable-let error message must mention `if let` or `match`; got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn let_refutable_literal_emits_exactly_one_error() {
+        // `let 5 = n;` — literal pattern in let position.
+        let output = check_source("fn main() -> i64 { let n = 5; let 5 = n; n }");
+        let refutable_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::RefutableLetPattern { .. }))
+            .collect();
+        assert_eq!(
+            refutable_errors.len(),
+            1,
+            "literal let pattern must emit exactly one RefutableLetPattern error; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn let_irrefutable_record_no_error() {
+        // `let Point { x, y } = p;` — irrefutable product type in let position.
+        // Must emit zero checker errors; binders x and y must resolve.
+        let output = check_source(
+            "type Point { x: i64; y: i64; }
+             fn main() -> i64 { let p = Point { x: 1, y: 2 }; let Point { x, y } = p; x + y }",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "irrefutable record let must emit zero checker errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn let_irrefutable_struct_record_keyword_no_error() {
+        // `record`-keyword product type is also irrefutable.
+        let output = check_source(
+            "record Pair { a: i64, b: i64 }
+             fn main() -> i64 { let p = Pair { a: 3, b: 4 }; let Pair { a, b } = p; a + b }",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "irrefutable `record`-keyword destructure must emit zero checker errors; got: {:#?}",
+            output.errors
+        );
+    }
 }

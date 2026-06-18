@@ -9631,6 +9631,182 @@ impl LowerCtx {
 
                 return stmts;
             }
+
+            // Record-let: `let Point { x, y } = value_expr;`
+            //
+            // Desugar into the same three-phase template as tuple-let:
+            //   1. `let __rec_N = expr;`         — synthetic temp binds the record
+            //   2. `let x = __rec_N.x;`          — per-field FieldAccess projection
+            //   3. `let y = __rec_N.y;`
+            //
+            // Checker authority: the refutability gate (Stage 1) has already
+            // rejected non-product-type scrutinee patterns before HIR lowers.
+            // `bind_pattern` (called by the checker at check_stmt time) has
+            // already bound the field names in the checker's env; HIR mirrors
+            // those bindings via `self.bind(...)` below.
+            if let Pattern::Struct {
+                fields: pat_fields, ..
+            } = &pattern.0
+            {
+                let rec_val = self.lower_expr(value_expr, IntentKind::Consume);
+                let rec_ty = rec_val.ty.clone();
+
+                // Look up declared field types from the record registry.
+                // The record registry holds source-declared types (possibly
+                // mentioning generic type params); we substitute concrete
+                // type args from the resolved value type.
+                let (type_params, declared_fields): (Vec<String>, Vec<(String, ResolvedTy)>) =
+                    if let ResolvedTy::Named { name, args, .. } = &rec_ty {
+                        if let Some(entry) = self.record_registry.get(name.as_str()) {
+                            let type_params = entry.type_params.clone();
+                            let subst: HashMap<String, ResolvedTy> = type_params
+                                .iter()
+                                .zip(args.iter())
+                                .map(|(param, arg)| (param.clone(), arg.clone()))
+                                .collect();
+                            let instantiated: Vec<(String, ResolvedTy)> = entry
+                                .fields
+                                .iter()
+                                .map(|(fname, fty)| (fname.clone(), substitute_ty(fty, &subst)))
+                                .collect();
+                            (type_params, instantiated)
+                        } else {
+                            // Type not in registry (imported or unknown).
+                            // The checker already reported an error; emit
+                            // a fail-closed diagnostic and abort the desugar.
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: name.clone(),
+                                    reason: "record type not in HIR registry".into(),
+                                },
+                                span.clone(),
+                                "record type missing from HIR registry; \
+                                 cannot desugar let-record",
+                            ));
+                            return vec![HirStmt {
+                                node: self.ids.node(),
+                                kind: HirStmtKind::Expr(
+                                    self.unsupported_expr(span, "record type not in registry"),
+                                ),
+                                span: 0..0,
+                            }];
+                        }
+                    } else {
+                        // Non-named type: checker should have caught this.
+                        // Fail closed.
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::NotYetImplemented {
+                                construct: "let-record on non-named type".into(),
+                                owning_pass: "pattern-lowering".into(),
+                            },
+                            span.clone(),
+                            "record destructure requires a named record type",
+                        ));
+                        return vec![HirStmt {
+                            node: self.ids.node(),
+                            kind: HirStmtKind::Expr(
+                                self.unsupported_expr(span, "let-record on non-named type"),
+                            ),
+                            span: 0..0,
+                        }];
+                    };
+                let _ = type_params; // consumed during substitution above
+
+                // Phase 1: bind the record value to a synthetic temp.
+                let temp_name = format!("__rec_{}", self.ids.binding().0);
+                let temp_binding =
+                    self.bind(temp_name.clone(), rec_ty.clone(), false, span.clone());
+                let temp_id = temp_binding.id;
+                let temp_stmt = HirStmt {
+                    node: self.ids.node(),
+                    kind: HirStmtKind::Let(temp_binding, Some(rec_val)),
+                    span: span.clone(),
+                };
+
+                let mut stmts = vec![temp_stmt];
+
+                // Phase 2: per-field projection lets.
+                for pat_field in pat_fields {
+                    let field_name = &pat_field.name;
+
+                    // Determine the binder name: either the sub-pattern's identifier
+                    // or, if the pattern field has no sub-pattern (`{ x }` shorthand),
+                    // the field name itself.
+                    let binder_name = match &pat_field.pattern {
+                        None => field_name.clone(), // shorthand `{ x }` → bind as `x`
+                        Some((Pattern::Identifier(n), _)) => n.clone(),
+                        Some((Pattern::Wildcard, _)) => {
+                            // `{ x: _ }` — wildcard sub-pattern: bind synthetic name.
+                            let idx = stmts.len();
+                            format!("__{field_name}_{idx}")
+                        }
+                        Some((_, ps)) => {
+                            // Nested non-identifier sub-pattern: out of scope for
+                            // this lane — flat field binders only.  Fail closed.
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::NotYetImplemented {
+                                    construct: "nested pattern in record-let field".into(),
+                                    owning_pass: "pattern-matching".into(),
+                                },
+                                ps.clone(),
+                                "only identifier and wildcard sub-patterns are supported \
+                                 in record-let fields in v0.6",
+                            ));
+                            format!("__unsupported_{field_name}")
+                        }
+                    };
+
+                    // Look up the instantiated field type.
+                    let field_span = pat_field
+                        .pattern
+                        .as_ref()
+                        .map_or_else(|| span.clone(), |(_, ps)| ps.clone());
+                    let field_ty = declared_fields
+                        .iter()
+                        .find(|(fname, _)| fname == field_name)
+                        // Field not in registry — checker already reported the error.
+                        // Use Unit for HIR type-recovery so downstream does not crash.
+                        .map_or_else(|| ResolvedTy::Unit, |(_, fty)| fty.clone());
+
+                    // Build a FieldAccess expression: `__rec_N.<field_name>`.
+                    // `ResolvedRef::Binding(temp_id)` — same as the tuple-let path
+                    // (`:9579`) — so MIR resolves the proxy local from
+                    // `binding_locals` via its BindingId.
+                    let temp_ref = HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        value_class: ValueClass::of_ty(&rec_ty, &self.type_classes),
+                        ty: rec_ty.clone(),
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::BindingRef {
+                            name: temp_name.clone(),
+                            resolved: ResolvedRef::Binding(temp_id),
+                        },
+                        span: span.clone(),
+                    };
+                    let projection = HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        value_class: ValueClass::of_ty(&field_ty, &self.type_classes),
+                        ty: field_ty.clone(),
+                        intent: IntentKind::Consume,
+                        kind: HirExprKind::FieldAccess {
+                            object: Box::new(temp_ref),
+                            field: field_name.clone(),
+                        },
+                        span: field_span.clone(),
+                    };
+
+                    let field_binding = self.bind(binder_name, field_ty, false, field_span.clone());
+                    stmts.push(HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Let(field_binding, Some(projection)),
+                        span: field_span,
+                    });
+                }
+
+                return stmts;
+            }
         }
 
         // Non-tuple statements: delegate to the single-statement path.

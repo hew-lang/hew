@@ -1578,6 +1578,7 @@ run_accept_expect_stdout "hashmap_values_string"
 run_accept_expect_stdout "vec_scalar_range_slice"
 run_accept_expect_stdout "vec_string_range_slice"
 
+# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/hashmap_values_managed_record.hew" \
   'HashMap<i64, User>.values()` is not yet supported: projecting from a map with value type `User` into an owned `Vec` is not lowered' \
@@ -1587,6 +1588,7 @@ expect_check_fail_error_count \
   1 \
   "hashmap_values_managed_record"
 
+# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/hashmap_keys_managed_record.hew" \
   'HashMap<i64, Vec<i64>>.keys()` is not yet supported: projecting from a map with value type `Vec<i64>` into an owned `Vec` is not lowered' \
@@ -1595,6 +1597,16 @@ expect_check_fail_error_count \
   "${ROOT}/tests/vertical-slice/reject/hashmap_keys_managed_record.hew" \
   1 \
   "hashmap_keys_managed_record"
+
+# shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/hashmap_keys_bytes.hew" \
+  'HashMap<bytes, i64>.keys()` is not yet supported: projecting key type `bytes` into an owned `Vec` is not lowered' \
+  "hashmap_keys_bytes"
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/hashmap_keys_bytes.hew" \
+  1 \
+  "hashmap_keys_bytes"
 
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/vec_record_range_slice.hew" \

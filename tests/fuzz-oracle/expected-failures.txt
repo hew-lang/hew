@@ -15,7 +15,7 @@
 # continuously guarded.  Do NOT remove entries to make the gate green if the
 # regression still fails — fix the underlying compiler instead.
 #
-# Total: 6 known-failing entries (5 intentional-trap/abort fixtures + 1 compiler gap).
+# Total: 5 known-failing entries (5 intentional-trap/abort fixtures).
 #
 # Intentional aborts/traps: fixtures in tests/vertical-slice/accept/ that are
 # designed to trap or abort at runtime as their correctness proof.  Listed here
@@ -30,5 +30,3 @@ string_slice_oob_panics.hew  # intentional abort: out-of-bounds string slice cal
 isize_div_by_zero_traps.hew  # intentional trap: isize / 0 → DivideByZero signal (SIGILL x86_64 / SIGTRAP aarch64)
 isize_shift_oob_traps.hew    # intentional trap: isize << 64 → ShiftOutOfRange signal (SIGILL x86_64 / SIGTRAP aarch64)
 
-# Compiler/runtime gaps (checker-valid programs that fail after hew check):
-vec_record_slice.hew  # Vec<record> range-slice panics: hew_vec_slice_range_ptr missing owned element layout descriptor; issue: #TODO-vec-managed-projection

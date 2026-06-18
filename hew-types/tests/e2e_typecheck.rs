@@ -3780,7 +3780,9 @@ fn vec_string_index_still_rejected() {
 }
 
 #[test]
-fn slice_param_annotation_rejected_before_codegen() {
+fn slice_param_annotation_accepted_as_vec_alias() {
+    // `[T]` is now an alias for `Vec<T>`: a function with a `[i32]` param is
+    // identical to one typed `Vec<i32>` and must typecheck cleanly.
     let output = typecheck_inline(
         r"
         fn take(xs: [i32]) {}
@@ -3788,17 +3790,18 @@ fn slice_param_annotation_rejected_before_codegen() {
         fn main() {}",
     );
     assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("slice annotations are not supported")
-        ),
-        "expected slice parameter annotation to fail before lowering, got: {:#?}",
+        output.errors.is_empty(),
+        "slice parameter annotation [i32] should be accepted as Vec<i32> alias, got: {:#?}",
         output.errors
     );
 }
 
 #[test]
-fn loader_registered_module_slice_signature_rejected_before_registration() {
+fn loader_registered_module_slice_signature_accepted_as_vec_alias() {
+    // Regression test for issue #856. Originally a module exporting `[T]`-typed
+    // signatures was rejected at import. Since `[T]` is now an alias for `Vec<T>`,
+    // such a module must import cleanly — the slice annotation is lowered to Vec<i32>
+    // in the registry loader before any error path is reached.
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("clock should be monotonic")
@@ -3829,13 +3832,11 @@ fn loader_registered_module_slice_signature_rejected_before_registration() {
     let _ = fs::remove_dir_all(&search_root);
 
     assert!(
-        output.errors.iter().any(|e| {
-            e.kind == hew_types::error::TypeErrorKind::UnresolvedImport
-                && e.message.contains(
-                    "unsupported slice annotations in signature(s): public function `take`",
-                )
-        }),
-        "expected registry-loaded module slice signature to fail closed at import, got: {:#?}",
+        !output
+            .errors
+            .iter()
+            .any(|e| { e.kind == hew_types::error::TypeErrorKind::UnresolvedImport }),
+        "registry-loaded module with [i32] signature should import cleanly as Vec<i32>, got: {:#?}",
         output.errors
     );
 }
@@ -4665,10 +4666,13 @@ fn hashmap_unresolved_multiple_method_calls_no_duplicate_diagnostic() {
 
 #[test]
 fn type_def_with_error_field_is_pruned_from_output() {
+    // `[T]` is now a valid Vec<T> alias so it no longer produces Ty::Error.
+    // Use `Task<i64>` instead: it is compiler-internal and resolves to Ty::Error
+    // via the TaskNotNameable path, which is exactly what triggers pruning.
     let output = typecheck_inline(
         r"
         type Broken {
-            value: [i64];
+            value: Task<i64>;
             ok: i64;
         }
         ",
@@ -4677,8 +4681,8 @@ fn type_def_with_error_field_is_pruned_from_output() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("slice")),
-        "expected slice annotation to produce Ty::Error, got: {:#?}",
+            .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
+        "expected Task<i64> to produce Ty::Error (TaskNotNameable), got: {:#?}",
         output.errors
     );
     assert!(
@@ -4690,10 +4694,16 @@ fn type_def_with_error_field_is_pruned_from_output() {
 
 #[test]
 fn enum_with_error_variant_payload_is_pruned_from_output() {
+    // `[i64]` is now a valid Vec<i64> alias so it no longer produces Ty::Error.
+    // `Vec<[i64; 2]>` fires only a diagnostic — the field type remains the
+    // concrete Named type, so pruning does not trigger.
+    // Use `Task<i64>` instead: it is compiler-internal and resolve_type_expr
+    // returns Ty::Error directly via the TaskNotNameable path, which is exactly
+    // what triggers variant pruning.
     let output = typecheck_inline(
         r"
         enum Broken {
-            Bad([i64]);
+            Bad(Task<i64>);
             Good(i64);
         }
         ",
@@ -4702,8 +4712,8 @@ fn enum_with_error_variant_payload_is_pruned_from_output() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("slice")),
-        "expected slice annotation to produce Ty::Error, got: {:#?}",
+            .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
+        "expected Task<i64> to produce Ty::Error (TaskNotNameable), got: {:#?}",
         output.errors
     );
     assert!(
@@ -4715,6 +4725,10 @@ fn enum_with_error_variant_payload_is_pruned_from_output() {
 
 #[test]
 fn type_def_method_with_error_param_is_pruned_from_output() {
+    // `[i64]` is now a valid Vec<i64> alias so it no longer produces Ty::Error.
+    // Use `Task<i64>` instead: it is compiler-internal and resolve_type_expr
+    // returns Ty::Error directly via the TaskNotNameable path, which is what
+    // triggers method pruning.
     let output = typecheck_inline(
         r"
         type Widget {
@@ -4726,7 +4740,7 @@ fn type_def_method_with_error_param_is_pruned_from_output() {
                 w.value
             }
 
-            fn broken(w: Widget, bad: [i64]) -> i64 {
+            fn broken(w: Widget, bad: Task<i64>) -> i64 {
                 w.value
             }
         }
@@ -4736,8 +4750,8 @@ fn type_def_method_with_error_param_is_pruned_from_output() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("slice")),
-        "expected slice annotation to produce Ty::Error, got: {:#?}",
+            .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
+        "expected Task<i64> to produce Ty::Error (TaskNotNameable), got: {:#?}",
         output.errors
     );
     let widget = output
@@ -4758,6 +4772,10 @@ fn type_def_method_with_error_param_is_pruned_from_output() {
 
 #[test]
 fn type_def_method_with_error_return_is_pruned_from_output() {
+    // `[i64]` is now a valid Vec<i64> alias so it no longer produces Ty::Error.
+    // Use `Task<i64>` instead: it is compiler-internal and resolve_type_expr
+    // returns Ty::Error directly via the TaskNotNameable path, which is what
+    // triggers method pruning.
     let output = typecheck_inline(
         r"
         type Widget {
@@ -4769,7 +4787,7 @@ fn type_def_method_with_error_return_is_pruned_from_output() {
                 w.value
             }
 
-            fn broken(w: Widget) -> [i64] {
+            fn broken(w: Widget) -> Task<i64> {
                 w.value
             }
         }
@@ -4779,8 +4797,8 @@ fn type_def_method_with_error_return_is_pruned_from_output() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation && e.message.contains("slice")),
-        "expected slice annotation to produce Ty::Error, got: {:#?}",
+            .any(|e| e.kind == TypeErrorKind::TaskNotNameable),
+        "expected Task<i64> to produce Ty::Error (TaskNotNameable), got: {:#?}",
         output.errors
     );
     let widget = output

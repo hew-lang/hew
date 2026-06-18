@@ -144,6 +144,16 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     //    (no user surface yields a ptr-element Vec).
     "hew_vec_get_ptr",
     "hew_vec_slice_range_ptr",
+    // -- Per-type slice-range symbols replaced by the unified bytesize path.
+    //    I32/I64/F64 scalar slice-range now routes through
+    //    `hew_vec_slice_range_bytesize` (layout-aware, overflow-checked);
+    //    the per-type symbols are no longer emitted by the MIR lowering pass.
+    //    `hew_vec_slice_range_bytesize` itself IS covered by the corpus
+    //    (vec_element_widths golden). Remove these pins when per-type symbols
+    //    are reinstated or the bytesize path is split again.
+    "hew_vec_slice_range_f64",
+    "hew_vec_slice_range_i32",
+    "hew_vec_slice_range_i64",
     // -- Metric families with no Phase-A user surface. `std::metrics`
     //    exposes only the scalar register/mutate path (counter, gauge,
     //    and the simple histogram), all covered by the

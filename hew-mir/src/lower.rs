@@ -22199,6 +22199,19 @@ impl Builder {
     /// Copy operands carry no single-owner drop obligation and share freely, so
     /// they must NOT be flagged: `BitCopy` ints/durations, non-owning borrows,
     /// and persistent handles are excluded by `aggregate_ingress_moves_binding_ty`.
+    ///
+    /// `CowValue` operands with `IntentKind::Capture` share the refcounted handle
+    /// via `CowShare` rather than moving it; the source binding stays Live.  The
+    /// canonical case is `for x in vec { … }` desugaring, which places the Vec
+    /// handle into `VecIter { vec: _, idx: 0 }` with Capture intent so the source
+    /// collection is usable after the loop.  Emitting `AggregateAlias` for such
+    /// a captured (shared) `CowValue` operand would incorrectly mark the source
+    /// Consumed.
+    ///
+    /// All other intent values (Read, Consume, Modify, Yield, Unknown) trigger
+    /// the alias marker as before — including `CowValue` with Read intent, where
+    /// the HIR signals a structural move into an aggregate (e.g. strings into
+    /// tuples or `HashSet.insert`).
     fn alias_moved_owned_operand(&mut self, operand: &HirExpr) {
         let HirExprKind::BindingRef {
             name,
@@ -22209,6 +22222,14 @@ impl Builder {
         };
         let ty = self.subst_ty(&operand.ty);
         if !self.aggregate_ingress_moves_binding_ty(&ty) {
+            return;
+        }
+        // A CowValue binding with Capture intent is a refcount-share (CowShare),
+        // not a structural move.  The source stays Live; skip the alias marker.
+        // This intent is set exclusively by the for-in Vec borrow desugaring path.
+        if operand.intent == IntentKind::Capture
+            && ValueClass::of_ty(&ty, &self.type_classes) == ValueClass::CowValue
+        {
             return;
         }
         self.statements.push(MirStatement::AggregateAlias {

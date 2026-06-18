@@ -14625,9 +14625,16 @@ impl Builder {
                 value: 0,
             });
             let bad_step = self.alloc_local(ResolvedTy::Bool);
+            // For an unsigned counter the step is unsigned: only zero is
+            // degenerate (`UnsignedLessEq(step, 0)` ≡ `step == 0`).  For a
+            // signed counter, `SignedLessEq` also rejects negative steps.
+            let step_guard_pred = match counter_signedness {
+                IntSignedness::Unsigned => CmpPred::UnsignedLessEq,
+                IntSignedness::Signed => CmpPred::SignedLessEq,
+            };
             self.instructions.push(Instr::IntCmp {
                 dest: bad_step,
-                pred: CmpPred::SignedLessEq,
+                pred: step_guard_pred,
                 lhs: step_val,
                 rhs: zero,
             });
@@ -14760,13 +14767,20 @@ impl Builder {
         // `counter >= bound` (bound == start).  Either way, false → exit.
         self.start_block(header_bb);
         let cond = self.alloc_local(ResolvedTy::Bool);
+        // Select ordering predicate by both direction AND signedness so that
+        // unsigned ranges with high-bit-set bounds (e.g. crossing the sign
+        // bit) compare correctly.  Signed ICmp on an unsigned counter treats
+        // high-bit values as negative, producing 0 iterations for ranges such
+        // as `0x7FFF_FFFF_FFFF_FFFEu64 .. 0x8000_0000_0000_0001u64`.
+        let header_pred = match (descending, counter_signedness) {
+            (true, IntSignedness::Signed) => CmpPred::SignedGreaterEq,
+            (true, IntSignedness::Unsigned) => CmpPred::UnsignedGreaterEq,
+            (false, IntSignedness::Signed) => CmpPred::SignedLess,
+            (false, IntSignedness::Unsigned) => CmpPred::UnsignedLess,
+        };
         self.push_instr(Instr::IntCmp {
             dest: cond,
-            pred: if descending {
-                CmpPred::SignedGreaterEq
-            } else {
-                CmpPred::SignedLess
-            },
+            pred: header_pred,
             lhs: counter,
             rhs: bound,
         });

@@ -120,3 +120,38 @@ fn test_i64_negative_one_greater_than_min() {
     testing.assert_true(neg_one > min_val);
     testing.assert_true(min_val < neg_one);
 }
+
+// ── for-range over unsigned values crossing the sign bit ─────────────
+//
+// `for i in START..END` where both bounds have the high bit pattern
+// that a SIGNED comparison would misread.  Specifically:
+//   START = 0x7FFF_FFFF_FFFF_FFFE  (i64::MAX - 1, expressed as u64)
+//   END   = 0x8000_0000_0000_0001  (i64::MIN+1 reinterpreted as u64)
+//
+// Correct unsigned range: START, START+1, START+2 → 3 iterations.
+// Bug (signed header): the header sees END as negative → `counter < bound`
+// is always false → 0 iterations.
+#[test]
+fn test_for_range_u64_crossing_sign_bit_iterates_correctly() {
+    // 0x7FFF_FFFF_FFFF_FFFE = i64::MAX - 1; within i64 range so literal cast is safe.
+    let start: u64 = 9223372036854775806 as u64;
+    // 0x8000_0000_0000_0001 = -9223372036854775807 interpreted as unsigned.
+    let end: u64 = (-9223372036854775807) as u64;
+    var count: i64 = 0;
+    for i in start .. end {
+        let _ = i;
+        count = count + 1;
+    }
+    testing.assert_eq(count, 3);
+}
+
+// Verify a normal signed for-range is unaffected.
+#[test]
+fn test_for_range_i64_normal_ascending_unaffected() {
+    var count: i64 = 0;
+    for i in 0 .. 5 {
+        let _ = i;
+        count = count + 1;
+    }
+    testing.assert_eq(count, 5);
+}

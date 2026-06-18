@@ -235,10 +235,23 @@ pub unsafe extern "C" fn hew_crash_stats_record(
     stats_ref.record_crash(signal, timestamp_ns);
 }
 
-/// Count crashes within a time window from the current time.
+/// Count crashes within a time window ending at `now_ns`.
 ///
-/// Returns the number of crashes that occurred within `window_ns` nanoseconds
-/// of the current monotonic time.
+/// Returns the number of recorded crashes whose timestamp falls in
+/// `[now_ns - window_ns, now_ns]`. `now_ns` MUST come from the **same monotonic
+/// clock** that produced the timestamps passed to [`hew_crash_stats_record`].
+///
+/// WHY the caller supplies `now_ns` instead of this function reading its own
+/// clock: crash timestamps are recorded by the supervisor with
+/// `supervisor::monotonic_time_ns()` (its own process-lifetime epoch). This
+/// module owns a *separate* lazily-initialized epoch. When the two epochs were
+/// captured at different times (epoch ordering is non-deterministic and depends
+/// on which module first read the clock), a timestamp recorded against the
+/// supervisor epoch can read as "in the future" of this module's `now`, so the
+/// `timestamp <= now_ns` window guard silently dropped it. Under load that
+/// undercounted recent crashes and left the circuit breaker closed when it
+/// should have opened — a fail-open supervisor defect. Taking `now_ns` from the
+/// recording clock makes the comparison single-clock and race-free.
 ///
 /// # Safety
 ///
@@ -248,15 +261,15 @@ pub unsafe extern "C" fn hew_crash_stats_record(
 pub unsafe extern "C" fn hew_crash_stats_recent_count(
     stats: *mut CrashStats,
     window_ns: u64,
+    now_ns: u64,
 ) -> u32 {
     if stats.is_null() {
         return 0;
     }
 
-    let now = monotonic_time_ns();
     // SAFETY: Caller guarantees stats is valid and non-null.
     let stats_ref = unsafe { &*stats };
-    stats_ref.recent_crash_count(window_ns, now)
+    stats_ref.recent_crash_count(window_ns, now_ns)
 }
 
 /// Free a crash statistics structure.
@@ -468,6 +481,62 @@ mod tests {
             // Check that old entries were overwritten
             assert_eq!((*stats).recent_timestamps[0], 1008); // 10 % 8 = 2, so slot 0 has timestamp 1008
             assert_eq!((*stats).recent_timestamps[1], 1009); // 11 % 8 = 3, so slot 1 has timestamp 1009
+
+            hew_crash_stats_free(stats);
+        }
+    }
+
+    #[test]
+    fn recent_count_uses_caller_clock_not_a_second_epoch() {
+        // Regression: the circuit breaker recorded crash timestamps with the
+        // supervisor's monotonic clock but counted recent crashes against this
+        // module's *separate* epoch via `hew_crash_stats_recent_count`'s own
+        // `monotonic_time_ns()`. When the recording clock ran ahead of the
+        // counting clock (non-deterministic epoch ordering under load), a
+        // freshly-recorded timestamp read as "in the future" and the
+        // `timestamp <= now_ns` window guard silently dropped it — undercounting
+        // crashes and leaving the breaker CLOSED when it should OPEN.
+        //
+        // The fix takes `now_ns` from the SAME clock that recorded the
+        // timestamps. This test models the skew directly: record two crashes at
+        // T and T+1µs, then count with a `now_ns` that equals the latest
+        // recorded timestamp (the caller's own clock). Both must be counted.
+        // SAFETY: stats is valid, single-threaded test.
+        let stats = unsafe { hew_crash_stats_new() };
+        // SAFETY: stats is the valid pointer from hew_crash_stats_new above;
+        // all record/recent_count/free calls are single-threaded in this test.
+        unsafe {
+            let t0: u64 = 5_000_000_000; // 5s on the recording clock
+            let t1: u64 = t0 + 1_000; // +1µs
+            hew_crash_stats_record(stats, -1, t0);
+            hew_crash_stats_record(stats, -1, t1);
+
+            let window_ns: u64 = 60 * 1_000_000_000; // 60s window
+
+            // `now_ns` == latest recorded timestamp (single-clock contract).
+            // Both crashes fall in [now-window, now].
+            assert_eq!(
+                hew_crash_stats_recent_count(stats, window_ns, t1),
+                2,
+                "both recorded crashes must count when now_ns is the recording clock"
+            );
+
+            // A `now_ns` BEHIND the recorded timestamps (the cross-epoch skew
+            // the bug introduced) would drop the future-looking entries. The
+            // window guard correctly excludes timestamps strictly after `now_ns`,
+            // which is exactly why supplying the wrong (lagging) clock undercounted.
+            assert_eq!(
+                hew_crash_stats_recent_count(stats, window_ns, t0 - 1),
+                0,
+                "timestamps after a stale now_ns are excluded — the skew failure mode"
+            );
+
+            // Boundary: now_ns exactly at the older crash counts only it.
+            assert_eq!(
+                hew_crash_stats_recent_count(stats, window_ns, t0),
+                1,
+                "now_ns at the older timestamp counts exactly the in-window entry"
+            );
 
             hew_crash_stats_free(stats);
         }

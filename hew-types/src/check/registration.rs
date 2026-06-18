@@ -3072,7 +3072,10 @@ impl Checker {
 
     /// Resolve a trait-bound name against the registered trait table,
     /// accepting both unqualified and module-qualified forms.
-    fn is_known_trait(&self, name: &str) -> bool {
+    pub(super) fn is_known_trait(&self, name: &str) -> bool {
+        if MarkerTrait::from_name(name).is_some() {
+            return true;
+        }
         if self.trait_defs.contains_key(name) {
             return true;
         }

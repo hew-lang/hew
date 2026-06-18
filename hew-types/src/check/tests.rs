@@ -13357,6 +13357,89 @@ fn marker_trait_bounds_on_primitives_unaffected() {
     );
 }
 
+#[test]
+fn partial_ord_marker_bounds_accept_i64_and_f64() {
+    let source = r"
+        fn smaller<T: PartialOrd>(a: T, b: T) -> T {
+            if a < b { a } else { b }
+        }
+
+        fn main() -> i64 {
+            let i = smaller(3, 7);
+            let f = smaller(3.5, 2.0);
+            if i == 3 && f > 2.0 { 0 } else { 1 }
+        }
+    ";
+
+    let output = check_source(source);
+    assert!(
+        output.errors.is_empty(),
+        "PartialOrd marker bound should accept i64 and f64 comparisons; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn unknown_trait_bound_reports_unknown_trait_not_missing_impl() {
+    let source = r"
+        fn passthrough<T: Mystery>(x: T) -> T { x }
+
+        fn main() {
+            let _ = passthrough(5);
+        }
+    ";
+
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::UndefinedType && e.message.contains("unknown trait `Mystery`")
+        }),
+        "unknown trait bound should report an unknown trait diagnostic; got: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("does not implement trait `Mystery`")),
+        "unknown trait bound must not be reported as a missing impl; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn unbounded_generic_ordering_requires_partial_ord_bound() {
+    let source = r"
+        fn smaller<T>(a: T, b: T) -> T {
+            if a < b { a } else { b }
+        }
+
+        fn main() -> i64 {
+            smaller(3, 7)
+        }
+    ";
+
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("requires type parameter `T`")
+                && e.message.contains("`PartialOrd`")
+                && e.span.start < e.span.end
+        }),
+        "unbounded generic ordering should report a spanned PartialOrd-bound error; got: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("IntCmp lhs is not an integer")),
+        "generic ordering must not leak the backend IntCmp diagnostic; got: {:?}",
+        output.errors
+    );
+}
+
 // -------------------------------------------------------------------------
 // E2 structural method-presence tests
 //
@@ -15046,7 +15129,8 @@ fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
         checker
             .errors
             .iter()
-            .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied),
+            .any(|error| error.kind == TypeErrorKind::UndefinedType
+                && error.message.contains("unknown trait `MissingTrait`")),
         "expected cyclic trait hierarchy bound check to fail with a diagnostic; got {:?}",
         checker.errors
     );

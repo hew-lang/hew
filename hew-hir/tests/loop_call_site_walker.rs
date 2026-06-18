@@ -50,11 +50,11 @@ fn inner_generic_call_in_while_condition_surfaces_via_substitution() {
     // so `should_continue$$i64` was never discovered during
     // closure-under-substitution.
     //
-    // `should_continue` accepts T and returns bool using concrete comparison.
+    // `should_continue` accepts T and returns bool by ordering T.
     // The outer `wrap` passes a concrete `i64` counter into `should_continue`
     // so the checker records `should_continue(counter)` with T=i64.
     let source = r"
-        pub fn should_continue<T>(x: T, limit: T) -> bool {
+        pub fn should_continue<T: PartialOrd>(x: T, limit: T) -> bool {
             x < limit
         }
 

@@ -3347,6 +3347,13 @@ impl Checker {
                     // types agree — a mismatch already produced the more
                     // precise error above.
                     if self.errors.len() == errors_before {
+                        self.reject_unbounded_generic_ordering(
+                            op,
+                            &left_resolved,
+                            &right_resolved,
+                            &left.1,
+                            &right.1,
+                        );
                         self.reject_record_comparison(
                             op,
                             &left_resolved,
@@ -3456,6 +3463,73 @@ impl Checker {
                 }
             }
         }
+    }
+
+    fn reject_unbounded_generic_ordering(
+        &mut self,
+        op: BinaryOp,
+        left_resolved: &Ty,
+        right_resolved: &Ty,
+        left_span: &Span,
+        right_span: &Span,
+    ) {
+        if !matches!(
+            op,
+            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual
+        ) {
+            return;
+        }
+        let Some(param_name) = self.same_current_type_param_name(left_resolved, right_resolved)
+        else {
+            return;
+        };
+        if self.type_param_carries_bound(&param_name, "PartialOrd") {
+            return;
+        }
+        let span = Span {
+            start: left_span.start,
+            end: right_span.end,
+        };
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            &span,
+            format!("`{op}` requires type parameter `{param_name}` to be bounded by `PartialOrd`"),
+        );
+    }
+
+    fn same_current_type_param_name(&self, left: &Ty, right: &Ty) -> Option<String> {
+        let left_name = self.current_type_param_name(left)?;
+        let right_name = self.current_type_param_name(right)?;
+        (left_name == right_name).then_some(left_name)
+    }
+
+    fn current_type_param_name(&self, ty: &Ty) -> Option<String> {
+        let Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } = ty
+        else {
+            return None;
+        };
+        if !args.is_empty() {
+            return None;
+        }
+        if self
+            .current_type_param_bounds
+            .iter()
+            .rev()
+            .any(|frame| frame.bounds.contains_key(name))
+        {
+            return Some(name.clone());
+        }
+        let fn_name = self.current_function.as_ref()?;
+        self.fn_sigs.get(fn_name).and_then(|sig| {
+            sig.type_params
+                .iter()
+                .any(|param_name| param_name == name)
+                .then_some(name.clone())
+        })
     }
 
     /// Fail-closed gate for aggregate comparisons outside the structural-equality subset.

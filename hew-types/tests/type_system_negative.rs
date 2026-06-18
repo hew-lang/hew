@@ -2160,6 +2160,65 @@ fn vec_push_copy_tuple_element_is_accepted() {
 }
 
 #[test]
+fn vec_push_nested_owned_tuple_element_is_accepted() {
+    let output = typecheck(
+        r#"
+        fn main() {
+            let v: Vec<((string, i64), bool)> = Vec::new();
+            v.push((("a", 1), true));
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "nested owned tuple Vec::push must type-check, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_push_nested_tuple_with_inner_vec_stays_rejected() {
+    let output = typecheck(
+        r#"
+        fn main() {
+            let inner: Vec<i64> = Vec::new();
+            let v: Vec<((Vec<i64>, i64), bool)> = Vec::new();
+            v.push(((inner, 1), true));
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("contains a `Vec`/`HashMap`/`HashSet`")
+        }),
+        "nested tuple with inner Vec must stay rejected, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn vec_push_nested_tuple_with_function_stays_rejected() {
+    let output = typecheck(
+        r#"
+        fn f() -> i64 { return 1; }
+        fn main() {
+            let v: Vec<((fn() -> i64, i64), bool)> = Vec::new();
+            v.push(((f, 1), true));
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("contains a function value")
+        }),
+        "nested tuple with function field must stay rejected, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn vec_get_copy_record_element_is_accepted() {
     let output = typecheck(
         r"

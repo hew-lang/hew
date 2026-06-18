@@ -160,11 +160,15 @@ impl BuiltinLinkage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinTy {
+    I8,
+    I16,
     I32,
     I64,
     U8,
+    U16,
     U32,
     U64,
+    F32,
     F64,
     Bool,
     Char,
@@ -197,11 +201,15 @@ impl BuiltinTy {
     #[must_use]
     pub fn to_resolved(self) -> ResolvedTy {
         match self {
+            BuiltinTy::I8 => ResolvedTy::I8,
+            BuiltinTy::I16 => ResolvedTy::I16,
             BuiltinTy::I32 => ResolvedTy::I32,
             BuiltinTy::I64 => ResolvedTy::I64,
             BuiltinTy::U8 => ResolvedTy::U8,
+            BuiltinTy::U16 => ResolvedTy::U16,
             BuiltinTy::U32 => ResolvedTy::U32,
             BuiltinTy::U64 => ResolvedTy::U64,
+            BuiltinTy::F32 => ResolvedTy::F32,
             BuiltinTy::F64 => ResolvedTy::F64,
             BuiltinTy::Bool => ResolvedTy::Bool,
             BuiltinTy::Char => ResolvedTy::Char,
@@ -262,15 +270,25 @@ const U8_U8: &[BuiltinTy] = &[BuiltinTy::U8, BuiltinTy::U8];
 const BYTES: &[BuiltinTy] = &[BuiltinTy::Bytes];
 const VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny];
 const VEC_ANY_BOOL: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::Bool];
+const VEC_ANY_I8: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I8];
+const VEC_ANY_U8: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::U8];
+const VEC_ANY_I16: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I16];
+const VEC_ANY_U16: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::U16];
 const VEC_ANY_I32: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I32];
 const VEC_ANY_I64: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64];
+const VEC_ANY_F32: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::F32];
 const VEC_ANY_F64: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::F64];
 const VEC_ANY_STRING: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::String];
 const VEC_ANY_PTR: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::Pointer];
 const VEC_ANY_I64_PTR: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::Pointer];
 const VEC_ANY_I64_BOOL: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::Bool];
 const VEC_ANY_I64_I32: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::I32];
+const VEC_ANY_I64_I8: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::I8];
+const VEC_ANY_I64_U8: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::U8];
+const VEC_ANY_I64_I16: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::I16];
+const VEC_ANY_I64_U16: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::U16];
 const VEC_ANY_I64_I64: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::I64];
+const VEC_ANY_I64_F32: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::F32];
 const VEC_ANY_I64_F64: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::F64];
 const VEC_ANY_I64_STRING: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, BuiltinTy::String];
 const VEC_ANY_VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::VecAny];
@@ -994,6 +1012,42 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
+        "hew_vec_push_i8",
+        BuiltinClass::ClassA,
+        VEC_ANY_I8,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_push_i8",
+        },
+    ),
+    direct(
+        "hew_vec_push_u8",
+        BuiltinClass::ClassA,
+        VEC_ANY_U8,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_push_u8",
+        },
+    ),
+    direct(
+        "hew_vec_push_i16",
+        BuiltinClass::ClassA,
+        VEC_ANY_I16,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_push_i16",
+        },
+    ),
+    direct(
+        "hew_vec_push_u16",
+        BuiltinClass::ClassA,
+        VEC_ANY_U16,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_push_u16",
+        },
+    ),
+    direct(
         "hew_vec_push_i32",
         BuiltinClass::ClassA,
         VEC_ANY_I32,
@@ -1018,6 +1072,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_push_f64",
+        },
+    ),
+    direct(
+        "hew_vec_push_f32",
+        BuiltinClass::ClassA,
+        VEC_ANY_F32,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_push_f32",
         },
     ),
     direct(
@@ -1057,6 +1120,42 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
+        "hew_vec_pop_i8",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::I8,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_pop_i8",
+        },
+    ),
+    direct(
+        "hew_vec_pop_u8",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::U8,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_pop_u8",
+        },
+    ),
+    direct(
+        "hew_vec_pop_i16",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::I16,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_pop_i16",
+        },
+    ),
+    direct(
+        "hew_vec_pop_u16",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::U16,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_pop_u16",
+        },
+    ),
+    direct(
         "hew_vec_pop_i32",
         BuiltinClass::ClassA,
         VEC_ANY,
@@ -1081,6 +1180,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::F64,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_pop_f64",
+        },
+    ),
+    direct(
+        "hew_vec_pop_f32",
+        BuiltinClass::ClassA,
+        VEC_ANY,
+        BuiltinTy::F32,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_pop_f32",
         },
     ),
     direct(
@@ -1111,6 +1219,42 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
+        "hew_vec_get_i8",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::I8,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_get_i8",
+        },
+    ),
+    direct(
+        "hew_vec_get_u8",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::U8,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_get_u8",
+        },
+    ),
+    direct(
+        "hew_vec_get_i16",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::I16,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_get_i16",
+        },
+    ),
+    direct(
+        "hew_vec_get_u16",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::U16,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_get_u16",
+        },
+    ),
+    direct(
         "hew_vec_get_i32",
         BuiltinClass::ClassA,
         VEC_ANY_I64,
@@ -1135,6 +1279,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::F64,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_get_f64",
+        },
+    ),
+    direct(
+        "hew_vec_get_f32",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64,
+        BuiltinTy::F32,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_get_f32",
         },
     ),
     direct(
@@ -1165,6 +1318,42 @@ pub const CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
+        "hew_vec_set_i8",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64_I8,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_set_i8",
+        },
+    ),
+    direct(
+        "hew_vec_set_u8",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64_U8,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_set_u8",
+        },
+    ),
+    direct(
+        "hew_vec_set_i16",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64_I16,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_set_i16",
+        },
+    ),
+    direct(
+        "hew_vec_set_u16",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64_U16,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_set_u16",
+        },
+    ),
+    direct(
         "hew_vec_set_i32",
         BuiltinClass::ClassA,
         VEC_ANY_I64_I32,
@@ -1189,6 +1378,15 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_vec_set_f64",
+        },
+    ),
+    direct(
+        "hew_vec_set_f32",
+        BuiltinClass::ClassA,
+        VEC_ANY_I64_F32,
+        BuiltinTy::Unit,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_vec_set_f32",
         },
     ),
     direct(

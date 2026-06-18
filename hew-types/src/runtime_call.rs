@@ -67,13 +67,18 @@ use strum::{EnumIter, IntoEnumIterator};
 pub enum VecGetElem {
     #[default]
     Bool,
+    F32,
     F64,
+    I8,
+    I16,
     I32,
     I64,
     Layout,
     Owned,
     Ptr,
     Str,
+    U8,
+    U16,
 }
 
 /// Element-type discriminator for `Vec<T>::slice_range` runtime entries
@@ -83,6 +88,7 @@ pub enum VecGetElem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
 pub enum VecSliceElem {
     #[default]
+    Bytesize,
     F64,
     I32,
     I64,
@@ -652,14 +658,20 @@ impl RuntimeCallFamily {
             Self::TaskSpawnThread => "hew_task_spawn_thread",
             // Vec
             Self::VecGet(VecGetElem::Bool) => "hew_vec_get_bool",
+            Self::VecGet(VecGetElem::F32) => "hew_vec_get_f32",
             Self::VecGet(VecGetElem::F64) => "hew_vec_get_f64",
+            Self::VecGet(VecGetElem::I8) => "hew_vec_get_i8",
+            Self::VecGet(VecGetElem::I16) => "hew_vec_get_i16",
             Self::VecGet(VecGetElem::I32) => "hew_vec_get_i32",
             Self::VecGet(VecGetElem::I64) => "hew_vec_get_i64",
             Self::VecGet(VecGetElem::Layout) => "hew_vec_get_layout",
             Self::VecGet(VecGetElem::Owned) => "hew_vec_get_owned",
             Self::VecGet(VecGetElem::Ptr) => "hew_vec_get_ptr",
             Self::VecGet(VecGetElem::Str) => "hew_vec_get_str",
+            Self::VecGet(VecGetElem::U8) => "hew_vec_get_u8",
+            Self::VecGet(VecGetElem::U16) => "hew_vec_get_u16",
             Self::VecLen => "hew_vec_len",
+            Self::VecSliceRange(VecSliceElem::Bytesize) => "hew_vec_slice_range_bytesize",
             Self::VecSliceRange(VecSliceElem::F64) => "hew_vec_slice_range_f64",
             Self::VecSliceRange(VecSliceElem::I32) => "hew_vec_slice_range_i32",
             Self::VecSliceRange(VecSliceElem::I64) => "hew_vec_slice_range_i64",
@@ -879,14 +891,20 @@ impl RuntimeCallFamily {
             "hew_task_spawn_thread" => Self::TaskSpawnThread,
             // Vec
             "hew_vec_get_bool" => Self::VecGet(VecGetElem::Bool),
+            "hew_vec_get_f32" => Self::VecGet(VecGetElem::F32),
             "hew_vec_get_f64" => Self::VecGet(VecGetElem::F64),
+            "hew_vec_get_i8" => Self::VecGet(VecGetElem::I8),
+            "hew_vec_get_i16" => Self::VecGet(VecGetElem::I16),
             "hew_vec_get_i32" => Self::VecGet(VecGetElem::I32),
             "hew_vec_get_i64" => Self::VecGet(VecGetElem::I64),
             "hew_vec_get_layout" => Self::VecGet(VecGetElem::Layout),
             "hew_vec_get_owned" => Self::VecGet(VecGetElem::Owned),
             "hew_vec_get_ptr" => Self::VecGet(VecGetElem::Ptr),
             "hew_vec_get_str" => Self::VecGet(VecGetElem::Str),
+            "hew_vec_get_u8" => Self::VecGet(VecGetElem::U8),
+            "hew_vec_get_u16" => Self::VecGet(VecGetElem::U16),
             "hew_vec_len" => Self::VecLen,
+            "hew_vec_slice_range_bytesize" => Self::VecSliceRange(VecSliceElem::Bytesize),
             "hew_vec_slice_range_f64" => Self::VecSliceRange(VecSliceElem::F64),
             "hew_vec_slice_range_i32" => Self::VecSliceRange(VecSliceElem::I32),
             "hew_vec_slice_range_i64" => Self::VecSliceRange(VecSliceElem::I64),

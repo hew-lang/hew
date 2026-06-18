@@ -26326,6 +26326,146 @@ fn emit_cow_heap_drop(
     Ok(())
 }
 
+fn codegen_record_layouts(fn_ctx: &FnCtx<'_, '_>) -> Vec<hew_mir::RecordLayout> {
+    fn_ctx
+        .record_field_resolved_tys
+        .iter()
+        .map(|(name, tys)| hew_mir::RecordLayout {
+            name: name.clone(),
+            field_tys: tys.clone(),
+        })
+        .collect()
+}
+
+fn classify_record_drop_fields_for_key(
+    fn_ctx: &FnCtx<'_, '_>,
+    record_key: &str,
+) -> CodegenResult<Vec<StateFieldCloneKind>> {
+    let record_layouts = codegen_record_layouts(fn_ctx);
+    let fields = record_layouts
+        .iter()
+        .find(|layout| layout.name == record_key || short_name(&layout.name) == record_key)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "aggregate-recursive drop: record leaf `{record_key}` has no registered field layout"
+            ))
+        })?;
+    fields
+        .field_tys
+        .iter()
+        .map(|field_ty| {
+            let mut visited = HashSet::new();
+            hew_mir::classify_state_field_with_enum_layouts(
+                field_ty,
+                &record_layouts,
+                fn_ctx.enum_layouts,
+                &mut visited,
+            )
+            .map_err(|e| {
+                CodegenError::FailClosed(format!(
+                    "aggregate-recursive drop: record leaf `{record_key}` field {field_ty:?} \
+                     is not drop-classifiable: {e}"
+                ))
+            })
+        })
+        .collect()
+}
+
+fn classify_enum_drop_variants_for_key(
+    fn_ctx: &FnCtx<'_, '_>,
+    enum_key: &str,
+) -> CodegenResult<Vec<Vec<StateFieldCloneKind>>> {
+    let record_layouts = codegen_record_layouts(fn_ctx);
+    let layout = fn_ctx
+        .enum_layouts
+        .iter()
+        .find(|layout| layout.name == enum_key || short_name(&layout.name) == enum_key)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "aggregate-recursive drop: enum leaf `{enum_key}` has no registered enum layout"
+            ))
+        })?;
+    layout
+        .variants
+        .iter()
+        .map(|variant| {
+            variant
+                .field_tys
+                .iter()
+                .map(|field_ty| {
+                    let mut visited = HashSet::new();
+                    hew_mir::classify_state_field_with_enum_layouts(
+                        field_ty,
+                        &record_layouts,
+                        fn_ctx.enum_layouts,
+                        &mut visited,
+                    )
+                    .map_err(|e| {
+                        CodegenError::FailClosed(format!(
+                            "aggregate-recursive drop: enum leaf `{enum_key}` payload \
+                             field {field_ty:?} is not drop-classifiable: {e}"
+                        ))
+                    })
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn emit_bytes_slot_drop<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    slot_ptr: PointerValue<'ctx>,
+    label: &str,
+) -> CodegenResult<()> {
+    let ctx = fn_ctx.ctx;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let bytes_ty = match resolve_ty(ctx, &ResolvedTy::Bytes, fn_ctx.record_layouts)? {
+        BasicTypeEnum::StructType(st) => {
+            let fields = st.get_field_types();
+            let valid = fields.len() == 3
+                && matches!(fields[0], BasicTypeEnum::PointerType(_))
+                && matches!(fields[1], BasicTypeEnum::IntType(it) if it.get_bit_width() == 32)
+                && matches!(fields[2], BasicTypeEnum::IntType(it) if it.get_bit_width() == 32);
+            if !valid {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate-recursive drop: Bytes resolved to non BytesTriple layout {fields:?}"
+                )));
+            }
+            st
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "aggregate-recursive drop: Bytes resolved to {other:?}, not a BytesTriple struct"
+            )));
+        }
+    };
+    let data_slot = fn_ctx
+        .builder
+        .build_struct_gep(bytes_ty, slot_ptr, 0, &format!("{label}_bytes_data_slot"))
+        .llvm_ctx_with(|| format!("{label} bytes data-slot gep"))?;
+    let data_ptr = fn_ctx
+        .builder
+        .build_load(ptr_ty, data_slot, &format!("{label}_bytes_data"))
+        .llvm_ctx_with(|| format!("{label} bytes data load"))?
+        .into_pointer_value();
+    let helper = get_or_declare_drop_helper(
+        ctx,
+        fn_ctx.llvm_mod,
+        &DropHelper {
+            name: "hew_bytes_drop",
+        },
+    );
+    fn_ctx
+        .builder
+        .build_call(helper, &[data_ptr.into()], &format!("{label}_bytes_drop"))
+        .llvm_ctx_with(|| format!("{label} bytes drop call"))?;
+    fn_ctx
+        .builder
+        .build_store(data_slot, ptr_ty.const_null())
+        .llvm_ctx_with(|| format!("{label} bytes null-store"))?;
+    Ok(())
+}
+
 /// W5.011 `DropKind::AggregateRecursive` arm. Walk the heap-owning fields
 /// of an aggregate (`Tuple` / `Array`) whose structural descriptor is the
 /// `ResolvedTy` the `ElabDrop` carries, dropping each heap-owning leaf at
@@ -26428,6 +26568,9 @@ fn emit_heap_slot_drop<'ctx>(
     depth: u32,
     label: &str,
 ) -> CodegenResult<()> {
+    if matches!(ty, ResolvedTy::Bytes) {
+        return emit_bytes_slot_drop(fn_ctx, slot_ptr, label);
+    }
     if let Some(symbol) = cow_heap_release_symbol(fn_ctx, ty) {
         let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
         let handle = fn_ctx
@@ -26450,6 +26593,71 @@ fn emit_heap_slot_drop<'ctx>(
     }
     if matches!(ty, ResolvedTy::Tuple(_) | ResolvedTy::Array(_, _)) {
         return emit_aggregate_recursive_drop(fn_ctx, slot_ptr, ty, depth, label);
+    }
+    if matches!(ty, ResolvedTy::Named { builtin: None, .. }) {
+        let record_layouts = codegen_record_layouts(fn_ctx);
+        let mut visited = HashSet::new();
+        let kind = hew_mir::classify_state_field_with_enum_layouts(
+            ty,
+            &record_layouts,
+            fn_ctx.enum_layouts,
+            &mut visited,
+        )
+        .map_err(|e| {
+            CodegenError::FailClosed(format!(
+                "aggregate-recursive drop: named leaf {ty:?} is not drop-classifiable: {e}"
+            ))
+        })?;
+        match kind {
+            StateFieldCloneKind::UserRecord { name } => {
+                let helper = get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &name);
+                if helper.count_basic_blocks() == 0 {
+                    let record_struct = record_struct_for(fn_ctx, ty)?;
+                    let field_kinds = classify_record_drop_fields_for_key(fn_ctx, &name)?;
+                    emit_record_drop_inplace_body(
+                        fn_ctx.ctx,
+                        fn_ctx.llvm_mod,
+                        &name,
+                        record_struct,
+                        &field_kinds,
+                    )?;
+                }
+                fn_ctx
+                    .builder
+                    .build_call(helper, &[slot_ptr.into()], &format!("{label}_record_drop"))
+                    .llvm_ctx_with(|| format!("{label} record drop call"))?;
+                return Ok(());
+            }
+            StateFieldCloneKind::Enum { name } => {
+                let helper = get_or_declare_enum_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &name);
+                if helper.count_basic_blocks() == 0 {
+                    let layout = fn_ctx.machine_layouts.get(&name).ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "aggregate-recursive drop: enum leaf `{name}` has no codegen layout"
+                        ))
+                    })?;
+                    let variant_kinds = classify_enum_drop_variants_for_key(fn_ctx, &name)?;
+                    emit_enum_drop_inplace_body(
+                        fn_ctx.ctx,
+                        fn_ctx.llvm_mod,
+                        &name,
+                        layout,
+                        &variant_kinds,
+                    )?;
+                }
+                fn_ctx
+                    .builder
+                    .build_call(helper, &[slot_ptr.into()], &format!("{label}_enum_drop"))
+                    .llvm_ctx_with(|| format!("{label} enum drop call"))?;
+                return Ok(());
+            }
+            other => {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate-recursive drop: named leaf {ty:?} classified as {other:?}, \
+                     not a user record or enum"
+                )));
+            }
+        }
     }
     // Fix #2.1 — classify the remaining leaf fail-CLOSED instead of a blanket
     // `Ok(())`. Only PROVEN non-heap (bitcopy / zero-sized) leaves are a true
@@ -47666,9 +47874,9 @@ mod tests {
         );
     }
 
-    /// W5.011 Slice 1: `DropKind::AggregateRecursive` on a `(string, i64)`
-    /// tuple local must GEP the struct, drop the heap-owning `string` field
-    /// via `hew_string_drop`, and leave the `i64` field untouched.
+    /// `DropKind::AggregateRecursive` on a `(string, bytes, i64)` tuple local
+    /// must GEP the struct, drop the heap-owning `string` and `bytes` fields
+    /// through their matching helpers, and leave the `i64` field untouched.
     #[test]
     fn aggregate_recursive_tuple_drops_only_heap_field() {
         use hew_mir::{DropKind, ElabDrop};
@@ -47676,7 +47884,8 @@ mod tests {
         let m = ctx.create_module("agg_tuple_test");
         let harness = build_harness(&ctx, &[], &[]);
         let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
-        let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]);
+        let tuple_ty =
+            ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::Bytes, ResolvedTy::I64]);
         alloc_local(&mut fn_ctx, 0, tuple_ty.clone());
         let drop = ElabDrop {
             place: Place::Local(0),
@@ -47692,11 +47901,20 @@ mod tests {
             ir.contains("call void @hew_string_drop("),
             "tuple drop must release its string field via hew_string_drop; got:\n{ir}"
         );
+        assert!(
+            ir.contains("call void @hew_bytes_drop("),
+            "tuple drop must release its bytes field via hew_bytes_drop; got:\n{ir}"
+        );
         // Exactly one heap-owning field → exactly one release call.
         assert_eq!(
             ir.matches("call void @hew_string_drop(").count(),
             1,
             "the i64 field must not produce a drop call; got:\n{ir}"
+        );
+        assert_eq!(
+            ir.matches("call void @hew_bytes_drop(").count(),
+            1,
+            "the bytes field must produce one drop call; got:\n{ir}"
         );
         assert!(
             ir.contains("getelementptr"),
@@ -47874,17 +48092,16 @@ mod tests {
         }
     }
 
-    /// W5.011 P3 (Fix #2.1): the aggregate-recursive walk must NOT silently
-    /// no-op an unsupported heap-owning leaf. A `(Bytes,)` tuple — `Bytes`
-    /// is deliberately absent from the single-`ptr` release table — must
-    /// fail closed rather than skip the field's release.
+    /// The aggregate-recursive walk must NOT silently no-op an unsupported
+    /// heap-owning leaf. A cancellation token still has no aggregate-recursive
+    /// leaf release and must fail closed rather than skip the field's release.
     #[test]
     fn aggregate_recursive_unsupported_leaf_fails_closed() {
         let ctx = Context::create();
         let m = ctx.create_module("agg_unsupported_leaf_test");
         let harness = build_harness(&ctx, &[], &[]);
         let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
-        let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::Bytes]);
+        let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::CancellationToken]);
         alloc_local(&mut fn_ctx, 0, tuple_ty.clone());
         let (slot, _) = place_pointer(&fn_ctx, Place::Local(0)).expect("slot");
         let err = emit_aggregate_recursive_drop(&fn_ctx, slot, &tuple_ty, 0, "agg_unsupported")

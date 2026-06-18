@@ -15991,11 +15991,9 @@ impl LowerCtx {
             TypeExpr::Array { element, size } => {
                 ResolvedTy::Array(Box::new(self.lower_type(element)), *size)
             }
-            TypeExpr::Slice(elem) => ResolvedTy::named_builtin(
-                "Vec",
-                BuiltinType::Vec,
-                vec![self.lower_type(elem)],
-            ),
+            TypeExpr::Slice(elem) => {
+                ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![self.lower_type(elem)])
+            }
             TypeExpr::Function {
                 params,
                 return_type,

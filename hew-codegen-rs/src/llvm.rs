@@ -36505,6 +36505,13 @@ fn lower_terminator<'ctx>(
         Terminator::Select { arms, .. } => {
             emit_select_terminator(fn_ctx, arms)?;
         }
+        Terminator::SuspendingSelect {
+            arms,
+            resume,
+            cleanup,
+        } => {
+            emit_suspending_select_terminator(fn_ctx, arms, *resume, *cleanup)?;
+        }
         Terminator::Join {
             branches,
             result,
@@ -38009,6 +38016,25 @@ fn emit_select_terminator<'ctx>(
     }
 
     Ok(())
+}
+
+/// Emit the LLVM IR for `Terminator::SuspendingSelect` — the coro-suspend
+/// sibling of [`emit_select_terminator`]. (Real implementation lands in S3;
+/// this fail-closed placeholder keeps the layered commits honest — a carrier
+/// reaching codegen before the ramp is wired is a named error, never a
+/// miscompile.)
+fn emit_suspending_select_terminator<'ctx>(
+    _fn_ctx: &FnCtx<'_, 'ctx>,
+    _arms: &[hew_mir::SelectArm],
+    _resume: u32,
+    _cleanup: u32,
+) -> CodegenResult<()> {
+    Err(CodegenError::FailClosed(
+        "Terminator::SuspendingSelect reached codegen but the suspending-select \
+         ramp is not yet wired (S3); the MIR producer must keep select on the \
+         blocking Terminator::Select path until the coro waitset lands"
+            .into(),
+    ))
 }
 
 /// Emit the LLVM IR for `Terminator::Join` — the wait-ALL sibling of

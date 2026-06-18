@@ -427,6 +427,24 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
                 }
                 emit_edge(*next);
             }
+            // The suspending select's resume edge dispatches to exactly one
+            // winning arm `body_block` (each body reaches `resume` — the join —
+            // through its own `Goto`); cleanup is the abandon teardown edge. The
+            // default suspend-return edge exits the function. Mirror the
+            // `Select` arm-body edges plus the suspend resume/cleanup edges, or
+            // the arm bodies are dead and an aggregate arm binding trips a false
+            // `InitialisedBeforeUse`.
+            Terminator::SuspendingSelect {
+                arms,
+                resume,
+                cleanup,
+            } => {
+                for arm in arms {
+                    emit_edge(arm.body_block);
+                }
+                emit_edge(*resume);
+                emit_edge(*cleanup);
+            }
             // Suspend's default edge exits the function (returns to the
             // executor); resume + cleanup are the in-CFG successor edges.
             Terminator::Suspend {
@@ -504,6 +522,19 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
         Terminator::Select { arms, next } => {
             let mut succs: Vec<u32> = arms.iter().map(|arm| arm.body_block).collect();
             succs.push(*next);
+            succs
+        }
+        // Mirror `Select` (arm bodies are real runtime successors of the resume
+        // dispatch) plus the suspend resume/cleanup edges. Must mirror
+        // `build_preds` exactly or the worklist and the meet disagree.
+        Terminator::SuspendingSelect {
+            arms,
+            resume,
+            cleanup,
+        } => {
+            let mut succs: Vec<u32> = arms.iter().map(|arm| arm.body_block).collect();
+            succs.push(*resume);
+            succs.push(*cleanup);
             succs
         }
         // Suspend's default edge exits the function; resume + cleanup are the

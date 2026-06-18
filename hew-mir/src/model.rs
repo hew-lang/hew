@@ -2275,6 +2275,27 @@ impl BasicBlock {
                 cleanup,
                 ..
             } => vec![*timeout_body_block, *resume, *cleanup],
+            // The suspending select ramp parks the racing continuation on the
+            // first-ready of N readiness sources + an optional deadline. The
+            // default suspend-return edge exits to the executor. The resume
+            // edge's winner dispatch jumps to exactly one arm's `body_block`
+            // (each body reaches `resume` — the join — through its own `Goto`),
+            // so the arm bodies are real CFG successors exactly as
+            // `Terminator::Select`'s are; without them the arm bodies are
+            // unreachable and an aggregate arm binding spanning a body trips a
+            // false `InitialisedBeforeUse`. `cleanup` (abandon) is the suspend
+            // teardown edge. Mirror `dataflow::build_preds` / `dataflow::successors`
+            // exactly (body blocks + resume + cleanup).
+            Terminator::SuspendingSelect {
+                arms,
+                resume,
+                cleanup,
+            } => {
+                let mut succs: Vec<u32> = arms.iter().map(|arm| arm.body_block).collect();
+                succs.push(*resume);
+                succs.push(*cleanup);
+                succs
+            }
         }
     }
 }
@@ -2955,6 +2976,53 @@ pub enum Terminator {
     /// block reached after the winning arm body completes — the join
     /// edge that converges the per-arm bodies.
     Select { arms: Vec<SelectArm>, next: u32 },
+    /// Sealed `select{}` from a SUSPENDABLE caller (cut-select-waitset).
+    /// The coro-suspend sibling of [`Terminator::Select`]: instead of the
+    /// blocking `hew_select_first` busy-poll (a `std::thread::sleep(1ms)`
+    /// loop over the per-arm readiness flags that PINS the M:N worker),
+    /// codegen builds the SAME per-arm readiness waitset (each arm's
+    /// channel + readiness observer firing `hew_reply_channel_signal_ready`
+    /// on its source becoming readable) but attaches ONE shared
+    /// `HewAwaitCancel` arbiter + the parked actor to every arm's channel,
+    /// arms the `AfterTimer` arm as a deadline on that arbiter
+    /// (`hew_await_cancel_schedule_deadline_ms` on `hew_global_timer_wheel`
+    /// — the same shared wheel cut-task-sleep uses), then `coro.suspend`s,
+    /// freeing the worker. The FIRST arm to become ready (or the deadline)
+    /// wins the arbiter's one-shot CAS and re-enqueues the parked
+    /// continuation (`enqueue_resume`); on the resume edge codegen scans
+    /// the readiness flags once (non-blocking) to find the winner, binds
+    /// it, and CANCELS the losers (deregister the other observers + cancel
+    /// the timer). The abandon edge cancels the arbiter (no wake),
+    /// deregisters every observer, and frees the registration.
+    ///
+    /// The `arms` payload is identical to [`Terminator::Select`] — every
+    /// arm carries `body_block` (reached on win) and `binding` (the per-arm
+    /// value slot; `None` for `AfterTimer`). Carries the same SUSPEND
+    /// carrier the codegen boundary reads for `has_suspend` / `is_coroutine`:
+    /// any function whose CFG contains this terminator is lowered as a
+    /// `presplitcoroutine`. Emitted ONLY when the lowering function carries
+    /// the execution context
+    /// (`FunctionCallConv::carries_execution_context` — actor handler /
+    /// closure / task entry); a `FunctionCallConv::Default` caller (`main`,
+    /// free fns) runs on a foreign thread with no parkable continuation and
+    /// keeps the blocking [`Terminator::Select`] / `hew_select_first` path.
+    SuspendingSelect {
+        /// The select arms — the same shape [`Terminator::Select`] carries.
+        /// Codegen reads each arm's kind to build its readiness observer and
+        /// each arm's `body_block` to route the winner edge.
+        arms: Vec<SelectArm>,
+        /// Block reached on the coro switch resume / immediate-ready edge
+        /// (case 0) — the winner-scan + per-arm dispatch. This is the `next`
+        /// join block of the original select; the winner blocks branch into
+        /// their arm bodies which converge here.
+        resume: u32,
+        /// Block reached on the coro switch cleanup edge (case 1) — the
+        /// frame's teardown when the parked continuation is abandoned
+        /// (`coro.destroy`); every observer is deregistered and the arbiter
+        /// freed there. Rides the multi-suspend epilogue, so `cleanup`
+        /// equals `resume` exactly as the recv / ask / sleep carriers do.
+        cleanup: u32,
+    },
     /// Sealed `join { }` construct — the wait-ALL sibling of
     /// [`Terminator::Select`]. Every branch is an actor-ask issued
     /// concurrently; codegen issues each ask (channel alloc + ask issue,

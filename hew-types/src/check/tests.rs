@@ -3155,66 +3155,28 @@ fn typecheck_binary_op_type_mismatch() {
     );
 }
 
-/// Structural record equality has no MIR/codegen lowering yet; the checker
-/// must refuse `==` on record values with a spanned diagnostic instead of
-/// leaking an unspanned `IntCmp` rejection from codegen-front.
 #[test]
-fn record_equality_comparison_reports_not_yet_implemented() {
+fn record_equality_comparison_typechecks_when_structurally_eligible() {
     let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    if a == b {\n        println(\"equal\");\n    }\n}";
     let output = check_source(source);
-    let err = output
-        .errors
-        .iter()
-        .find(|e| e.kind == TypeErrorKind::InvalidOperation)
-        .unwrap_or_else(|| {
-            panic!(
-                "expected InvalidOperation for record `==`: {:#?}",
-                output.errors
-            )
-        });
     assert!(
-        err.message
-            .contains("`==` on record type `Pt` is not yet implemented"),
-        "diagnostic must name the operator and type: {}",
-        err.message
-    );
-    // The span must cover the whole comparison (both operands), not just
-    // one operand. The parser's operand spans may extend a byte past the
-    // identifier, so pin "starts at `a`, reaches past `b`" rather than the
-    // exact end offset.
-    let cmp_start = source.find("a == b").unwrap();
-    assert_eq!(
-        err.span.start, cmp_start,
-        "diagnostic must start at the left operand"
-    );
-    assert!(
-        err.span.end >= cmp_start + "a == b".len(),
-        "diagnostic must reach the right operand: {:?}",
-        err.span
-    );
-    assert!(
-        err.suggestions
-            .iter()
-            .any(|s| s.contains("compare individual fields")),
-        "diagnostic must suggest field-wise comparison: {:?}",
-        err.suggestions
+        output.errors.is_empty(),
+        "eligible record `==` should typecheck: {:#?}",
+        output.errors
     );
 }
 
-/// `!=` and the ordering operators leak through the same codegen-front
-/// `IntCmp` path as `==`; all six comparison operators are gated.
+/// `!=` is admitted for eligible records; ordering remains rejected.
 #[test]
-fn record_inequality_and_ordering_comparisons_rejected() {
+fn record_inequality_typechecks_and_ordering_is_rejected() {
     let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    let ne = a != b;\n    let lt = a < b;\n    let _ = ne;\n    let _ = lt;\n}";
     let output = check_source(source);
     assert!(
-        output
+        !output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message
-                    .contains("`!=` on record type `Pt` is not yet implemented")),
-        "expected refusal for record `!=`: {:#?}",
+            .any(|e| e.message.contains("`!=` on record type `Pt`")),
+        "eligible record `!=` should typecheck: {:#?}",
         output.errors
     );
     assert!(
@@ -3259,68 +3221,76 @@ fn enum_ordering_reports_checker_diagnostic() {
 }
 
 #[test]
-fn payload_enum_equality_reports_checker_diagnostic() {
+fn payload_enum_equality_typechecks_when_structurally_eligible() {
     let source = "enum Shape {\n    Circle(i64);\n    Empty;\n}\n\nfn main() {\n    let a = Circle(1);\n    let b = Circle(1);\n    let _ = a == b;\n}";
     let output = check_source(source);
-    let err = output
-        .errors
-        .iter()
-        .find(|e| e.kind == TypeErrorKind::InvalidOperation)
-        .unwrap_or_else(|| {
-            panic!(
-                "expected InvalidOperation for payload enum `==`: {:#?}",
-                output.errors
-            )
-        });
     assert!(
-        err.message
-            .contains("`==` on enum `Shape` with payload variants is not supported"),
-        "diagnostic must name the operator and enum: {}",
-        err.message
-    );
-    assert!(
-        err.message.contains("match on it instead"),
-        "diagnostic must suggest matching instead: {}",
-        err.message
-    );
-    assert!(
-        !err.message.contains("IntCmp lhs is not an integer"),
-        "checker diagnostic must not leak codegen NYI text: {}",
-        err.message
+        output.errors.is_empty(),
+        "eligible payload enum `==` should typecheck: {:#?}",
+        output.errors
     );
 }
 
 #[test]
-fn builtin_payload_enum_comparison_reports_checker_diagnostic() {
+fn builtin_payload_enum_comparison_typechecks_when_structurally_eligible() {
     let source = "fn main() {\n    let a: Option<i64> = Some(1);\n    let b: Option<i64> = Some(2);\n    let _ = a == b;\n    let ok: Result<i64, i64> = Ok(1);\n    let err: Result<i64, i64> = Err(2);\n    let _ = ok != err;\n}";
     let output = check_source(source);
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+        output.errors.is_empty(),
+        "eligible builtin payload enum comparisons should typecheck: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn record_with_string_field_eq_rejects_with_named_diagnostic() {
+    let output = check_source(
+        r#"
+        type Person { name: string }
+
+        fn main() {
+            let a = Person { name: "ada" };
+            let b = Person { name: "ada" };
+            let _ = a == b;
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("`==` on record type `Person`")
+                && e.message.contains("field or payload")
+                && e.message.contains("layout-managed/non-Copy")
+                && e.message.contains("string")
+                && !e.message.contains("IntCmp")
+        }),
+        "managed record eq should fail closed with a named checker diagnostic: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn managed_payload_enum_eq_rejects_with_named_diagnostic() {
+    let output = check_source(
+        r#"
+        fn main() {
+            let a: Option<string> = Some("ada");
+            let b: Option<string> = Some("ada");
+            let _ = a == b;
+        }
+        "#,
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
                 && e.message
-                    .contains("`==` on enum `Option<i64>` with payload variants is not supported")),
-        "expected checker refusal for builtin Option `==`: {:#?}",
-        output.errors
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains(
-                    "`!=` on enum `Result<i64, i64>` with payload variants is not supported"
-                )),
-        "expected checker refusal for builtin Result `!=`: {:#?}",
-        output.errors
-    );
-    assert!(
-        !output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("IntCmp lhs is not an integer")),
-        "checker diagnostic must not leak codegen NYI text: {:#?}",
+                    .contains("`==` on enum `Option<string>` with payload variants")
+                && e.message.contains("field or payload")
+                && e.message.contains("layout-managed/non-Copy")
+                && e.message.contains("string")
+                && !e.message.contains("IntCmp")
+        }),
+        "managed payload enum eq should fail closed with a named checker diagnostic: {:#?}",
         output.errors
     );
 }

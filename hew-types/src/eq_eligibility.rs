@@ -7,9 +7,10 @@
 //! Named-type field traversal is shared with [`crate::hash_eligibility`] via
 //! [`crate::eligibility_walker::walk_fields_for_eligibility`].
 
-use crate::check::TypeDef;
+use crate::check::{TypeDef, TypeDefKind, VariantDef};
 use crate::eligibility_walker::walk_fields_for_eligibility;
 use crate::ty::Ty;
+use crate::BuiltinType;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,11 +45,24 @@ fn eq_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<EqE
         Ty::Tuple(elems) => elems
             .iter()
             .find_map(|elem| eq_ineligibility(elem, type_defs)),
-        Ty::Named { name, .. } => match type_defs.get(name) {
+        Ty::Named {
+            builtin: Some(BuiltinType::Option | BuiltinType::Result),
+            args,
+            ..
+        } => args.iter().find_map(|arg| eq_ineligibility(arg, type_defs)),
+        Ty::Named { name, args, .. } => match type_defs.get(name).or_else(|| {
+            name.split_once('.')
+                .and_then(|(_, local)| type_defs.get(local))
+        }) {
             Some(type_def) if type_def.is_indirect => {
                 Some(EqEligibility::IneligibleOwned(ty.clone()))
             }
-            Some(type_def) => walk_fields_for_eligibility(type_def, type_defs, eq_ineligibility),
+            Some(type_def) if type_def.kind == TypeDefKind::Enum => {
+                walk_variants_for_eq_eligibility(type_def, args, type_defs)
+            }
+            Some(type_def) => {
+                walk_instantiated_fields_for_eq_eligibility(type_def, args, type_defs)
+            }
             None => Some(EqEligibility::IneligibleUnknown),
         },
         Ty::Var(_) | Ty::Error => Some(EqEligibility::IneligibleUnknown),
@@ -67,6 +81,60 @@ fn eq_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<EqE
         | Ty::Task(_)
         | Ty::AssocType { .. } => Some(EqEligibility::IneligibleOwned(ty.clone())),
     }
+}
+
+fn instantiate_type_def_member(ty: &Ty, type_params: &[String], type_args: &[Ty]) -> Ty {
+    if type_params.is_empty() || type_params.len() != type_args.len() {
+        return ty.clone();
+    }
+    let substitutions: HashMap<String, Ty> = type_params
+        .iter()
+        .cloned()
+        .zip(type_args.iter().cloned())
+        .collect();
+    ty.substitute_named_params_parallel(&substitutions)
+}
+
+fn walk_instantiated_fields_for_eq_eligibility(
+    type_def: &TypeDef,
+    type_args: &[Ty],
+    type_defs: &HashMap<String, TypeDef>,
+) -> Option<EqEligibility> {
+    if type_args.is_empty() {
+        return walk_fields_for_eligibility(type_def, type_defs, eq_ineligibility);
+    }
+    let mut field_names: Vec<&String> = type_def.fields.keys().collect();
+    field_names.sort();
+    field_names.into_iter().find_map(|name| {
+        let field_ty = type_def.fields.get(name)?;
+        let field_ty = instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
+        eq_ineligibility(&field_ty, type_defs)
+    })
+}
+
+fn walk_variants_for_eq_eligibility(
+    type_def: &TypeDef,
+    type_args: &[Ty],
+    type_defs: &HashMap<String, TypeDef>,
+) -> Option<EqEligibility> {
+    let mut variant_names: Vec<&String> = type_def.variants.keys().collect();
+    variant_names.sort();
+    variant_names.into_iter().find_map(|name| {
+        let variant = type_def.variants.get(name)?;
+        match variant {
+            VariantDef::Unit => None,
+            VariantDef::Tuple(fields) => fields.iter().find_map(|field_ty| {
+                let field_ty =
+                    instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
+                eq_ineligibility(&field_ty, type_defs)
+            }),
+            VariantDef::Struct(fields) => fields.iter().find_map(|(_, field_ty)| {
+                let field_ty =
+                    instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
+                eq_ineligibility(&field_ty, type_defs)
+            }),
+        }
+    })
 }
 
 #[must_use]

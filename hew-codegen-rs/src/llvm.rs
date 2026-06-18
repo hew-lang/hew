@@ -47336,7 +47336,7 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -47391,7 +47391,7 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)

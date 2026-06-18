@@ -15359,8 +15359,13 @@ impl Builder {
         let owned_elem = self.is_owned_vec_element(elem_ty);
         let get_symbol = match elem_ty {
             ResolvedTy::Bool => "hew_vec_get_bool",
+            ResolvedTy::I8 => "hew_vec_get_i8",
+            ResolvedTy::U8 => "hew_vec_get_u8",
+            ResolvedTy::I16 => "hew_vec_get_i16",
+            ResolvedTy::U16 => "hew_vec_get_u16",
             ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_get_i32",
             ResolvedTy::I64 | ResolvedTy::U64 => "hew_vec_get_i64",
+            ResolvedTy::F32 => "hew_vec_get_f32",
             ResolvedTy::F64 => "hew_vec_get_f64",
             ResolvedTy::String => "hew_vec_get_str",
             _ if owned_elem => "hew_vec_get_owned",
@@ -15520,9 +15525,18 @@ impl Builder {
         };
 
         let slice_symbol = match &elem_ty {
-            ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_slice_range_i32",
-            ResolvedTy::I64 | ResolvedTy::U64 => "hew_vec_slice_range_i64",
-            ResolvedTy::F64 => "hew_vec_slice_range_f64",
+            ResolvedTy::Bool
+            | ResolvedTy::Char
+            | ResolvedTy::I8
+            | ResolvedTy::U8
+            | ResolvedTy::I16
+            | ResolvedTy::U16
+            | ResolvedTy::I32
+            | ResolvedTy::U32
+            | ResolvedTy::I64
+            | ResolvedTy::U64
+            | ResolvedTy::F32
+            | ResolvedTy::F64 => "hew_vec_slice_range_bytesize",
             ResolvedTy::String => "hew_vec_slice_range_str",
             // HIR rejects range-slices for Named elements today; this arm stays
             // as a fail-closed backstop for any future gate relaxation.
@@ -29651,32 +29665,52 @@ fn is_vec_receiver_borrow_symbol(callee: &str) -> bool {
             | "hew_vec_clear"
             | "hew_vec_clear_layout"
             | "hew_vec_push_bool"
+            | "hew_vec_push_i8"
+            | "hew_vec_push_u8"
+            | "hew_vec_push_i16"
+            | "hew_vec_push_u16"
             | "hew_vec_push_i32"
             | "hew_vec_push_i64"
+            | "hew_vec_push_f32"
             | "hew_vec_push_f64"
             | "hew_vec_push_str"
             | "hew_vec_push_layout"
             | "hew_vec_push_ptr"
             | "hew_vec_push_owned"
             | "hew_vec_get_bool"
+            | "hew_vec_get_i8"
+            | "hew_vec_get_u8"
+            | "hew_vec_get_i16"
+            | "hew_vec_get_u16"
             | "hew_vec_get_i32"
             | "hew_vec_get_i64"
+            | "hew_vec_get_f32"
             | "hew_vec_get_f64"
             | "hew_vec_get_str"
             | "hew_vec_get_layout"
             | "hew_vec_get_ptr"
             | "hew_vec_get_owned"
             | "hew_vec_set_bool"
+            | "hew_vec_set_i8"
+            | "hew_vec_set_u8"
+            | "hew_vec_set_i16"
+            | "hew_vec_set_u16"
             | "hew_vec_set_i32"
             | "hew_vec_set_i64"
+            | "hew_vec_set_f32"
             | "hew_vec_set_f64"
             | "hew_vec_set_str"
             | "hew_vec_set_layout"
             | "hew_vec_set_ptr"
             | "hew_vec_set_owned"
             | "hew_vec_pop_bool"
+            | "hew_vec_pop_i8"
+            | "hew_vec_pop_u8"
+            | "hew_vec_pop_i16"
+            | "hew_vec_pop_u16"
             | "hew_vec_pop_i32"
             | "hew_vec_pop_i64"
+            | "hew_vec_pop_f32"
             | "hew_vec_pop_f64"
             | "hew_vec_pop_str"
             | "hew_vec_pop_layout"
@@ -29692,6 +29726,7 @@ fn is_vec_receiver_borrow_symbol(callee: &str) -> bool {
             | "hew_vec_slice_range_i32"
             | "hew_vec_slice_range_i64"
             | "hew_vec_slice_range_f64"
+            | "hew_vec_slice_range_bytesize"
             | "hew_vec_slice_range_str"
             | "hew_vec_slice_range_ptr"
             | "hew_vec_append"

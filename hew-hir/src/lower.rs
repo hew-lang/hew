@@ -203,7 +203,8 @@ enum ForIterNextCall {
 fn literal_match_supported(lit: &HirLiteral, ty: &ResolvedTy) -> bool {
     match (lit, ty) {
         (HirLiteral::Integer(_), ty) => literal_match_integer_ty(ty),
-        (HirLiteral::Bool(_), ResolvedTy::Bool)
+        (HirLiteral::Float(_), ResolvedTy::F32 | ResolvedTy::F64)
+        | (HirLiteral::Bool(_), ResolvedTy::Bool)
         | (HirLiteral::Char(_), ResolvedTy::Char)
         | (HirLiteral::String(_), ResolvedTy::String) => true,
         _ => false,
@@ -20145,16 +20146,8 @@ impl LowerCtx {
                         (HirLiteral::Bool(_), ResolvedTy::Bool) => ResolvedTy::Bool,
                         (HirLiteral::Char(_), ResolvedTy::Char) => ResolvedTy::Char,
                         (HirLiteral::String(_), ResolvedTy::String) => ResolvedTy::String,
-                        (HirLiteral::Float(_), _) => {
-                            let _ = self.lower_expr(&arm.body, IntentKind::Read);
-                            self.unsupported(
-                                pattern_span.clone(),
-                                "float literal pattern in match arm",
-                                "match-literal-stage2",
-                            );
-                            rejected = true;
-                            continue;
-                        }
+                        (HirLiteral::Float(_), ResolvedTy::F32) => ResolvedTy::F32,
+                        (HirLiteral::Float(_), ResolvedTy::F64) => ResolvedTy::F64,
                         (HirLiteral::Duration(_) | HirLiteral::Unit, _) => {
                             let _ = self.lower_expr(&arm.body, IntentKind::Read);
                             self.unsupported(

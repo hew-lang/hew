@@ -4584,9 +4584,9 @@ fn typecheck_string_literal_with_catchall_is_exhaustive() {
 }
 
 #[test]
-fn typecheck_float_literal_pattern_errors() {
+fn typecheck_float_literal_pattern_is_accepted() {
     let (errors, _) = parse_and_check(concat!(
-        "fn main() {\n",
+        "fn main() -> i64 {\n",
         "    let x: f64 = -1.0;\n",
         "    match x {\n",
         "        -1.0 => 10,\n",
@@ -4595,12 +4595,10 @@ fn typecheck_float_literal_pattern_errors() {
         "}\n",
     ));
     assert!(
-        errors.iter().any(|e| {
-            matches!(e.kind, TypeErrorKind::InvalidOperation)
-                && e.message
-                    .contains("float literal patterns are not supported")
-        }),
-        "expected float literal pattern rejection, got: {errors:?}"
+        !errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::InvalidOperation)),
+        "float literal pattern must not emit InvalidOperation, got: {errors:?}"
     );
 }
 

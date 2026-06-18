@@ -461,11 +461,16 @@ impl Checker {
         match pattern {
             Pattern::Wildcard => {}
             Pattern::Literal(literal) => {
-                if matches!(literal, Literal::Float(_)) {
+                if matches!(literal, Literal::Float(_))
+                    && !matches!(ty, Ty::F32 | Ty::F64 | Ty::FloatLiteral)
+                {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        "float literal patterns are not supported in match arms".to_string(),
+                        format!(
+                            "float literal pattern cannot be used for scrutinee type `{}`",
+                            ty.user_facing()
+                        ),
                     );
                 } else {
                     if let Literal::Integer { value, .. } = literal {

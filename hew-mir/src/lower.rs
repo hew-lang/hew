@@ -12629,12 +12629,22 @@ impl Builder {
             if let hew_hir::HirMatchArmPredicate::Literal { lit, ty } = &arm.predicate {
                 let expected = self.lower_match_literal_constant(lit, ty, arm.body.site)?;
                 let cond_local = self.alloc_local(ResolvedTy::Bool);
-                self.push_instr(Instr::IntCmp {
-                    pred: CmpPred::Eq,
-                    lhs: Place::Local(scrutinee_local),
-                    rhs: expected,
-                    dest: cond_local,
-                });
+                if let Some(width) = float_width(ty) {
+                    self.push_instr(Instr::FloatCmp {
+                        pred: CmpPred::Eq,
+                        lhs: Place::Local(scrutinee_local),
+                        rhs: expected,
+                        dest: cond_local,
+                        width,
+                    });
+                } else {
+                    self.push_instr(Instr::IntCmp {
+                        pred: CmpPred::Eq,
+                        lhs: Place::Local(scrutinee_local),
+                        rhs: expected,
+                        dest: cond_local,
+                    });
+                }
                 let matched_bb = self.alloc_block();
                 self.finish_current_block(Terminator::Branch {
                     cond: cond_local,
@@ -12729,6 +12739,27 @@ impl Builder {
                 self.push_instr(Instr::CharLit {
                     value: *value as u32,
                     dest,
+                });
+                Some(dest)
+            }
+            (HirLiteral::Float(value), ResolvedTy::F32 | ResolvedTy::F64) => {
+                let (value_bits, width) = match ty {
+                    ResolvedTy::F32 => {
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "checker admitted the f32 literal pattern"
+                        )]
+                        let narrowed = *value as f32;
+                        (u64::from(narrowed.to_bits()), FloatWidth::F32)
+                    }
+                    ResolvedTy::F64 => (value.to_bits(), FloatWidth::F64),
+                    _ => unreachable!("match arm pattern guards the float type"),
+                };
+                let dest = self.alloc_local(ty.clone());
+                self.push_instr(Instr::FloatLit {
+                    dest,
+                    value_bits,
+                    width,
                 });
                 Some(dest)
             }

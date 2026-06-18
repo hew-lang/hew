@@ -947,6 +947,50 @@ pub unsafe extern "C" fn hew_select_first(
     }
 }
 
+/// Scan multiple reply channels ONCE (non-blocking) and return the index of the
+/// first one that is ready, or -1 if none is. This is the cooperative
+/// (worker-freeing) sibling of [`hew_select_first`]: instead of busy-polling the
+/// readiness flags on the calling worker (a `std::thread::sleep(1ms)` loop that
+/// PINS the worker), the suspending-select codegen ramp attaches a shared
+/// `HewAwaitCancel` arbiter + the parked actor to every arm's channel, arms the
+/// deadline on the global timer wheel, and `coro.suspend`s. The first arm to
+/// become ready (or the deadline) wins the arbiter and re-enqueues the parked
+/// continuation; on the resume edge codegen calls THIS function once to find
+/// which arm won (the same first-ready scan `hew_select_first` does inside its
+/// loop, minus the block). A -1 return on the readiness-wake edge means the wake
+/// was the deadline (no channel ready) — codegen routes that to the `AfterTimer`
+/// winner block.
+///
+/// # Safety
+///
+/// `channels` must point to a valid array of `count` valid
+/// `*mut HewReplyChannel` pointers.
+#[no_mangle]
+#[expect(clippy::cast_possible_wrap, reason = "C ABI: reply count fits in i32")]
+pub unsafe extern "C" fn hew_select_ready_index(
+    channels: *mut *mut HewReplyChannel,
+    count: i32,
+) -> i32 {
+    if channels.is_null() || count <= 0 {
+        return -1;
+    }
+    #[expect(clippy::cast_sign_loss, reason = "count validated > 0")]
+    let n = count as usize;
+    for i in 0..n {
+        // SAFETY: caller guarantees array and elements are valid.
+        let ch = unsafe { *channels.add(i) };
+        if ch.is_null() {
+            continue;
+        }
+        // SAFETY: ch is valid per caller contract.
+        if unsafe { (*ch).ready.load(Ordering::Acquire) } {
+            #[expect(clippy::cast_possible_truncation, reason = "index fits in i32")]
+            return i as i32;
+        }
+    }
+    -1
+}
+
 #[cfg(test)]
 pub(crate) fn active_channel_count() -> usize {
     ACTIVE_CHANNELS.load(Ordering::Relaxed)

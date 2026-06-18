@@ -57,4 +57,26 @@ fn main() {
     let j: u8 = 200;
     let j_i32: i32 = j.saturating_as_i32();
     println(f"saturating_as_i32(u8:200) = {j_i32 as i64}");
+
+    // Same-width sign change: i32 -> u32
+    // In-range positive value passes through unchanged.
+    let k: i32 = 100;
+    let k_u32: u32 = k.saturating_as_u32();
+    println(f"saturating_as_u32(i32:100) = {k_u32 as i64}");
+
+    // Negative source clamps to 0.
+    let l: i32 = -1;
+    let l_u32: u32 = l.saturating_as_u32();
+    println(f"saturating_as_u32(i32:-1) = {l_u32 as i64}");
+
+    // Same-width sign change: u32 -> i32
+    // In-range value passes through unchanged.
+    let m: u32 = 100;
+    let m_i32: i32 = m.saturating_as_i32();
+    println(f"saturating_as_i32(u32:100) = {m_i32 as i64}");
+
+    // Value above i32::MAX clamps to 2147483647.
+    let n: u32 = 3000000000;
+    let n_i32: i32 = n.saturating_as_i32();
+    println(f"saturating_as_i32(u32:3000000000) = {n_i32 as i64}");
 }

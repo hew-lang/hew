@@ -1,0 +1,24 @@
+type Point {
+    x: i64,
+    y: i64,
+}
+
+fn main() {
+    let xs: Vec<i8> = Vec::new();
+    xs.push(-1);
+    xs.push(7);
+    println(xs[0]);
+    println(xs[1]);
+
+    let ys: Vec<f32> = Vec::new();
+    ys.push(1.5);
+    ys.push(2.5);
+    let zs = ys[0..2];
+    println(zs[0]);
+    println(zs[1]);
+
+    let points: Vec<Point> = Vec::new();
+    points.push(Point { x: 3, y: 30 });
+    let p = points[0];
+    println(p.x + p.y);
+}

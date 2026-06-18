@@ -172,6 +172,112 @@ fn array_literal_lowers_to_vec_desugar() {
 }
 
 #[test]
+fn map_literal_lowers_to_hashmap_new_insert_desugar() {
+    let output = lower("fn f() { let m = {\"a\": 1, \"b\": 2}; }");
+    assert!(
+        output.diagnostics.is_empty(),
+        "map literal should lower through HashMap desugar without diagnostics: {:?}",
+        output.diagnostics
+    );
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "{verify:?}");
+
+    let func = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(func) => Some(func),
+            _ => None,
+        })
+        .expect("fixture lowers one function");
+    let Some(HirStmtKind::Let(_, Some(init))) = func.body.statements.first().map(|stmt| &stmt.kind)
+    else {
+        panic!("expected first statement to be a let with a map-literal initializer");
+    };
+    let HirExprKind::Block(block) = &init.kind else {
+        panic!(
+            "map literal should lower to a synthetic block, got {:?}",
+            init.kind
+        );
+    };
+    assert_eq!(init.ty.user_facing().to_string(), "HashMap<string, i64>");
+    assert_eq!(block.statements.len(), 3);
+    assert!(matches!(
+        block.statements[0].kind,
+        HirStmtKind::Let(
+            _,
+            Some(hew_hir::HirExpr {
+                kind: HirExprKind::Call { .. },
+                ..
+            })
+        )
+    ));
+    let insert_count = block
+        .statements
+        .iter()
+        .filter(|stmt| {
+            matches!(
+                &stmt.kind,
+                HirStmtKind::Expr(hew_hir::HirExpr {
+                    kind: HirExprKind::ResolvedImplCall {
+                        method_name,
+                        target_symbol,
+                        ..
+                    },
+                    ..
+                }) if method_name == "insert" && target_symbol == "hew_hashmap_insert_layout"
+            )
+        })
+        .count();
+    assert_eq!(insert_count, 2);
+}
+
+#[test]
+fn empty_map_literal_lowers_to_bare_hashmap_new() {
+    let output = lower("fn f() { let m: HashMap<string, i64> = {}; }");
+    assert!(
+        output.diagnostics.is_empty(),
+        "empty map literal should lower through HashMap::new without diagnostics: {:?}",
+        output.diagnostics
+    );
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "{verify:?}");
+
+    let func = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(func) => Some(func),
+            _ => None,
+        })
+        .expect("fixture lowers one function");
+    let Some(HirStmtKind::Let(_, Some(init))) = func.body.statements.first().map(|stmt| &stmt.kind)
+    else {
+        panic!("expected first statement to be a let with an empty-map initializer");
+    };
+    let HirExprKind::Block(block) = &init.kind else {
+        panic!(
+            "empty map literal should lower to a synthetic block, got {:?}",
+            init.kind
+        );
+    };
+    assert_eq!(init.ty.user_facing().to_string(), "HashMap<string, i64>");
+    assert_eq!(block.statements.len(), 1);
+    assert!(matches!(
+        block.statements[0].kind,
+        HirStmtKind::Let(
+            _,
+            Some(hew_hir::HirExpr {
+                kind: HirExprKind::Call { .. },
+                ..
+            })
+        )
+    ));
+}
+
+#[test]
 fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
     // Defense-in-depth: verify_hir emits NotYetImplemented for any Unsupported
     // HIR node it finds, even when the lowerer already emitted the diagnostic.

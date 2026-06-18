@@ -11224,6 +11224,18 @@ impl LowerCtx {
                     self.lower_regular_call(function, args, &span, site)
                 }
             }
+            Expr::Block(block) if block.stmts.is_empty() && block.trailing_expr.is_none() => {
+                if self
+                    .checker_expr_ty_if_present(&span)
+                    .is_some_and(|ty| Self::is_hashmap_ty(&ty))
+                {
+                    self.lower_map_literal(&[], &span)
+                } else {
+                    let block = self.lower_block(block, &ResolvedTy::Unit);
+                    let ty = block.ty.clone();
+                    (HirExprKind::Block(block), ty)
+                }
+            }
             Expr::Block(block) => {
                 let block = self.lower_block(block, &ResolvedTy::Unit);
                 let ty = block.ty.clone();
@@ -12519,6 +12531,7 @@ impl LowerCtx {
             Expr::InterpolatedString(parts) => self.lower_interpolated_string(parts, span.clone()),
             Expr::Tuple(elems) => self.lower_tuple_literal(elems, &span),
             Expr::Array(elems) => self.lower_array_literal(elems, &span),
+            Expr::MapLiteral { entries } => self.lower_map_literal(entries, &span),
             Expr::Cast { expr: value, ty } => self.lower_numeric_cast_expr(value, ty, &span),
             Expr::IfLet {
                 pattern,
@@ -14170,6 +14183,79 @@ impl LowerCtx {
         }
     }
 
+    fn checker_expr_ty_if_present(&mut self, span: &Span) -> Option<ResolvedTy> {
+        let key = self.mk_key(span);
+        self.expr_types
+            .get(&key)
+            .cloned()
+            .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+    }
+
+    fn is_hashmap_ty(ty: &ResolvedTy) -> bool {
+        matches!(
+            ty,
+            ResolvedTy::Named {
+                name,
+                builtin: Some(BuiltinType::HashMap),
+                args,
+                ..
+            } if name == "HashMap" && args.len() == 2
+        )
+    }
+
+    fn map_literal_hashmap_ty(
+        &mut self,
+        span: &Span,
+    ) -> Option<(ResolvedTy, ResolvedTy, ResolvedTy)> {
+        let key = self.mk_key(span);
+        let Some(ty) = self.expr_types.get(&key).cloned() else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "map literal".to_string(),
+                    reason: "missing expr_types entry".to_string(),
+                },
+                span.clone(),
+                "map literal lowering requires the checker HashMap<K, V> type",
+            ));
+            return None;
+        };
+        let result_ty = match ResolvedTy::from_ty(&ty) {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "map literal".to_string(),
+                        reason: err.to_string(),
+                    },
+                    span.clone(),
+                    "checker-authoritative map literal type failed boundary conversion",
+                ));
+                return None;
+            }
+        };
+        match &result_ty {
+            ResolvedTy::Named {
+                name,
+                args,
+                builtin: Some(BuiltinType::HashMap),
+                ..
+            } if name == "HashMap" && args.len() == 2 => {
+                Some((result_ty.clone(), args[0].clone(), args[1].clone()))
+            }
+            other => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "map literal".to_string(),
+                        reason: format!("checker produced non-HashMap type `{other}`"),
+                    },
+                    span.clone(),
+                    "map literal lowering requires the checker HashMap<K, V> type",
+                ));
+                None
+            }
+        }
+    }
+
     #[allow(
         clippy::match_same_arms,
         reason = "tuple, nested-collection, and closure-pair arms intentionally stay \
@@ -14247,6 +14333,72 @@ impl LowerCtx {
                 args: Vec::new(),
             },
             vec_ty,
+            IntentKind::Read,
+            span,
+        )
+    }
+
+    fn make_hashmap_new_expr(&mut self, hashmap_ty: ResolvedTy, span: Span) -> HirExpr {
+        let call_type_args = match &hashmap_ty {
+            ResolvedTy::Named { args, .. } => args.clone(),
+            _ => Vec::new(),
+        };
+        let callee_ty = ResolvedTy::Function {
+            params: Vec::new(),
+            ret: Box::new(hashmap_ty.clone()),
+        };
+        let callee = self.make_expr(
+            HirExprKind::BindingRef {
+                name: "HashMap::new".to_string(),
+                resolved: ResolvedRef::Builtin(
+                    hew_types::runtime_call::RuntimeCallFamily::HashMapNew,
+                ),
+            },
+            callee_ty,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let call = self.make_expr(
+            HirExprKind::Call {
+                callee: Box::new(callee),
+                args: Vec::new(),
+            },
+            hashmap_ty,
+            IntentKind::Read,
+            span,
+        );
+        if !call_type_args.is_empty() {
+            self.call_site_type_args.insert(call.site, call_type_args);
+        }
+        call
+    }
+
+    fn make_hashmap_insert_expr(
+        &mut self,
+        map_ref: HirExpr,
+        key: HirExpr,
+        value: HirExpr,
+        key_ty: &ResolvedTy,
+        value_ty: &ResolvedTy,
+        span: Span,
+    ) -> HirExpr {
+        self.make_expr(
+            HirExprKind::ResolvedImplCall {
+                receiver: Box::new(map_ref),
+                impl_id: ImplId(u32::MAX),
+                method_name: "insert".to_string(),
+                target_symbol: "hew_hashmap_insert_layout".to_string(),
+                target_family: hew_types::MethodTargetFamily::HashMap(
+                    hew_types::HashMapMethod::Insert,
+                ),
+                type_args: vec![
+                    Self::resolved_ty_pattern(key_ty),
+                    Self::resolved_ty_pattern(value_ty),
+                ],
+                args: vec![key, value],
+                ret_ty: ResolvedTy::Unit,
+            },
+            ResolvedTy::Unit,
             IntentKind::Read,
             span,
         )
@@ -14367,6 +14519,86 @@ impl LowerCtx {
                 span: span.clone(),
             }),
             vec_ty,
+        )
+    }
+
+    fn lower_map_literal(
+        &mut self,
+        entries: &[(Spanned<Expr>, Spanned<Expr>)],
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let Some((map_ty, key_ty, value_ty)) = self.map_literal_hashmap_ty(span) else {
+            return (
+                HirExprKind::Unsupported("map literal missing checker HashMap type".into()),
+                ResolvedTy::Unit,
+            );
+        };
+
+        let lowered_entries: Vec<(HirExpr, HirExpr)> = entries
+            .iter()
+            .map(|(key, value)| {
+                (
+                    self.lower_expr(key, IntentKind::Read),
+                    self.lower_expr(value, IntentKind::Read),
+                )
+            })
+            .collect();
+        let block_scope = self.ids.scope();
+        self.push_scope();
+        let temp_name = format!("__hew_map_{}", self.ids.binding().0);
+        let temp_binding = self.bind(temp_name.clone(), map_ty.clone(), false, span.clone());
+        let temp_binding_id = temp_binding.id;
+        let init_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(
+                temp_binding,
+                Some(self.make_hashmap_new_expr(map_ty.clone(), span.clone())),
+            ),
+            span: span.clone(),
+        };
+        let mut statements = Vec::with_capacity(lowered_entries.len() + 1);
+        statements.push(init_stmt);
+        for (key, value) in lowered_entries {
+            let map_ref = self.make_binding_ref(
+                temp_name.clone(),
+                temp_binding_id,
+                map_ty.clone(),
+                IntentKind::Read,
+                key.span.clone(),
+            );
+            let insert_expr = self.make_hashmap_insert_expr(
+                map_ref,
+                key,
+                value,
+                &key_ty,
+                &value_ty,
+                span.clone(),
+            );
+            statements.push(HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Expr(insert_expr),
+                span: span.clone(),
+            });
+        }
+        let tail = self.make_binding_ref(
+            temp_name,
+            temp_binding_id,
+            map_ty.clone(),
+            IntentKind::Consume,
+            span.clone(),
+        );
+        self.pop_scope();
+
+        (
+            HirExprKind::Block(HirBlock {
+                node: self.ids.node(),
+                scope: block_scope,
+                statements,
+                tail: Some(Box::new(tail)),
+                ty: map_ty.clone(),
+                span: span.clone(),
+            }),
+            map_ty,
         )
     }
 

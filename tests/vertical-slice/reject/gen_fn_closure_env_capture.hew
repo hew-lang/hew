@@ -1,0 +1,24 @@
+// Reject fixture: gen_fn_closure_env_capture — a generator that captures a
+// closure-with-env as a free variable must fail closed at MIR lowering.
+//
+// A closure literal that captures an outer binding carries a heap-boxed env
+// pointer. Flat-copying the two-word {code_ptr, env_ptr} across the generator
+// thread boundary shallow-aliases the caller's heap env — a double-free / UAF
+// at generator teardown when the generator runtime frees its copy of the env.
+//
+// This fixture is the boundary guard for the fn-typed-param admission gate:
+// the gate was widened to admit `ResolvedTy::Function` and empty-capture
+// `ResolvedTy::Closure`, but a `Closure` with non-empty captures must STILL
+// fail closed. Captures `base` from the enclosing scope — a non-empty
+// `captures` list on the Closure type — so admission is denied.
+//
+// Harness verb: hew check
+// Expected: rejected, fail closed (capture of opaque/owned value into a
+// generator); diagnostic notes heap-env shallow-alias hazard.
+
+fn main() {
+    let base = 10;
+    let f = |x: i64| -> i64 { x + base };
+    let g = gen { yield f(1); };
+    for v in g { println(v); }
+}

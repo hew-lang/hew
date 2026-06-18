@@ -1315,6 +1315,23 @@ grep -q 'outside of generator' "${reject_output}"
 run_accept_expect_stdout "gen_fn_param_capture"
 run_accept_expect_stdout "gen_block_capture_outer"
 
+# Accept: a `gen fn` with a bare named-fn reference parameter (`fn(i64)->i64`).
+# A named-fn reference lowers to a two-word {code_ptr, env_ptr} fat pointer
+# with env_ptr null by construction — safe to flat-copy across the generator
+# thread boundary. Before the fix the fn-typed param was rejected as
+# PersistentShare and poisoned sibling scalar params via all_materialisable=false.
+run_accept_expect_stdout "gen_fn_fn_typed_param"
+
+# Reject: a generator that captures a closure-with-env must still fail closed
+# after the fn-typed-param gate was widened. A closure literal capturing an
+# outer binding carries a heap-boxed env; flat-copying it across the thread
+# boundary would shallow-alias the caller's env (double-free / UAF at teardown).
+# The gate admits only null-env fns and empty-capture closures.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/gen_fn_closure_env_capture.hew" \
+  "capture of opaque/owned value" \
+  "gen_fn_closure_env_capture"
+
 # Reject: a generator that captures an `#[opaque]` runtime handle as a free
 # variable must fail closed. An opaque handle classifies as `BitCopy`
 # (pointer-width, no drop), so the capture gate's `BitCopy` check alone would

@@ -1,0 +1,40 @@
+// Accept + run: a `gen fn` whose parameter is a bare named-function reference.
+//
+// Regression fixture for the fn-typed generator parameter capture gap.
+// Before the fix, a fn-typed (`fn(i64)->i64`, `ResolvedTy::Function`) parameter
+// classified as `ValueClass::PersistentShare` and was rejected by the generator
+// env capture gate, which previously admitted only `BitCopy` scalars. The
+// non-admissible `f` poisoned the entire env via `all_materialisable = false`,
+// dragging the sibling scalar `n` down with it — both params failed with
+// `InitialisedBeforeUse` and `UnresolvedPlace` even though `n` alone would pass.
+//
+// The fix extends `gen_env_capture_admissible` to admit `ResolvedTy::Function`
+// and empty-capture `ResolvedTy::Closure` as null-env flat-copy-safe values.
+// A named-fn reference lowers to a two-word {code_ptr, env_ptr} fat pointer
+// with env_ptr null by construction — safe to flat-copy across the generator
+// thread boundary.
+//
+// Exact expected stdout:
+//   0
+//   2
+//   4
+//   6
+// (mapped(3, double) yields double(0)=0, double(1)=2, double(2)=4; total = 6.)
+gen fn mapped(n: i64, f: fn(i64) -> i64) -> i64 {
+    var i = 0;
+    while i < n {
+        yield f(i);
+        i = i + 1;
+    }
+}
+
+fn double(x: i64) -> i64 { x * 2 }
+
+fn main() {
+    var total = 0;
+    for v in mapped(3, double) {
+        println(v);
+        total = total + v;
+    }
+    println(total);
+}

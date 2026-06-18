@@ -1,0 +1,10 @@
+fn main() {
+    let n = 5;
+    if let 5 = n {
+        println(5);
+    }
+    if let 4 = n {
+        println(99);
+    }
+    println(6);
+}

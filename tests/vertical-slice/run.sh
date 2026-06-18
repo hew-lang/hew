@@ -753,6 +753,8 @@ grep -q 'LocalPid' "${reject_output}"
 run_accept_expect_stdout "print_int"
 run_accept_expect_stdout "print_bool"
 run_accept_expect_stdout "print_f64"
+run_accept_expect_stdout "iflet_literal"
+run_accept_expect_stdout "iflet_nested_ctor"
 run_check_run_expect_stdout "const_ref_init"
 
 # W4.039 — bytes-to-string triple-ABI canonicalisation. Behavioural proof

@@ -9963,13 +9963,22 @@ impl Builder {
                 scrutinee,
                 variant_idx,
                 bindings,
+                payload_variant_predicates,
                 body,
                 ..
-            } => self.lower_while_let(label.as_deref(), scrutinee, *variant_idx, bindings, body),
+            } => self.lower_while_let(
+                label.as_deref(),
+                scrutinee,
+                *variant_idx,
+                bindings,
+                payload_variant_predicates,
+                body,
+            ),
             HirExprKind::IfLet {
                 scrutinee,
                 variant_idx,
                 bindings,
+                payload_variant_predicates,
                 body,
                 else_body,
                 result_ty,
@@ -9978,6 +9987,7 @@ impl Builder {
                 scrutinee,
                 *variant_idx,
                 bindings,
+                payload_variant_predicates,
                 body,
                 else_body.as_ref(),
                 result_ty,
@@ -14136,6 +14146,7 @@ impl Builder {
         scrutinee: &HirExpr,
         variant_idx: u32,
         bindings: &[hew_hir::HirMatchArmBinding],
+        payload_variant_predicates: &[hew_hir::HirPayloadVariantPredicate],
         body: &hew_hir::HirBlock,
     ) -> Option<Place> {
         // Two-line addition for back-edge `DropPlan` plumbing tips this fn
@@ -14216,7 +14227,20 @@ impl Builder {
         // pre-existing entries in `binding_locals` so nested while-let loops
         // can shadow the same name without confusion.
         self.start_block(body_bb);
-        let mut overwritten_bindings = Vec::with_capacity(bindings.len());
+        let mut nested_binding_jobs: Vec<(u32, u32, hew_hir::HirMatchArmBinding)> = Vec::new();
+        for pvp in payload_variant_predicates {
+            self.emit_payload_variant_predicate_checks(
+                pvp,
+                scrutinee_local,
+                variant_idx,
+                exit_bb,
+                scrutinee.site,
+                &mut nested_binding_jobs,
+            )?;
+        }
+
+        let mut overwritten_bindings =
+            Vec::with_capacity(bindings.len() + nested_binding_jobs.len());
         for binding in bindings {
             let binding_ty = self.subst_ty(&binding.ty);
             self.statements.push(MirStatement::Bind {
@@ -14236,6 +14260,31 @@ impl Builder {
                 src: Place::MachineVariant {
                     local: scrutinee_local,
                     variant_idx,
+                    field_idx: binding.field_idx,
+                },
+            });
+            let previous = self.binding_locals.insert(binding.binding, dest);
+            overwritten_bindings.push((binding.binding, previous));
+        }
+        for (src_local, src_variant_idx, binding) in nested_binding_jobs {
+            let binding_ty = self.subst_ty(&binding.ty);
+            self.statements.push(MirStatement::Bind {
+                binding: binding.binding,
+                name: binding.name.clone(),
+                site: scrutinee.site,
+                ty: binding_ty.clone(),
+            });
+            self.record_binding_scope(binding.binding);
+            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+                self.owned_locals
+                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+            }
+            let dest = self.alloc_local(binding.ty.clone());
+            self.push_instr(Instr::Move {
+                dest,
+                src: Place::MachineVariant {
+                    local: src_local,
+                    variant_idx: src_variant_idx,
                     field_idx: binding.field_idx,
                 },
             });
@@ -14317,16 +14366,19 @@ impl Builder {
     /// Returns the result `Place::Local` (which both branches write). For a
     /// Unit-typed `if let` the result local is allocated but never read.
     #[allow(
+        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "single coherent CFG builder for if-let; mirrors lower_while_let binding \
-                  setup and lower_if branch shape — splitting would require passing many \
-                  intermediate block IDs and binding-restore state across helper boundaries"
+                  setup, nested predicate checks, and lower_if branch shape — splitting would \
+                  require passing many intermediate block IDs and binding-restore state across \
+                  helper boundaries"
     )]
     fn lower_if_let(
         &mut self,
         scrutinee: &HirExpr,
         variant_idx: u32,
         bindings: &[hew_hir::HirMatchArmBinding],
+        payload_variant_predicates: &[hew_hir::HirPayloadVariantPredicate],
         body: &hew_hir::HirBlock,
         else_body: Option<&hew_hir::HirBlock>,
         result_ty: &ResolvedTy,
@@ -14394,7 +14446,20 @@ impl Builder {
         // Then arm: bind payload fields (same as lower_while_let body entry),
         // lower body, move result into result_place.
         self.start_block(then_bb);
-        let mut overwritten_bindings = Vec::with_capacity(bindings.len());
+        let mut nested_binding_jobs: Vec<(u32, u32, hew_hir::HirMatchArmBinding)> = Vec::new();
+        for pvp in payload_variant_predicates {
+            self.emit_payload_variant_predicate_checks(
+                pvp,
+                scrutinee_local,
+                variant_idx,
+                else_bb,
+                scrutinee.site,
+                &mut nested_binding_jobs,
+            )?;
+        }
+
+        let mut overwritten_bindings =
+            Vec::with_capacity(bindings.len() + nested_binding_jobs.len());
         for binding in bindings {
             let binding_ty = self.subst_ty(&binding.ty);
             self.statements.push(MirStatement::Bind {
@@ -14414,6 +14479,31 @@ impl Builder {
                 src: Place::MachineVariant {
                     local: scrutinee_local,
                     variant_idx,
+                    field_idx: binding.field_idx,
+                },
+            });
+            let previous = self.binding_locals.insert(binding.binding, dest);
+            overwritten_bindings.push((binding.binding, previous));
+        }
+        for (src_local, src_variant_idx, binding) in nested_binding_jobs {
+            let binding_ty = self.subst_ty(&binding.ty);
+            self.statements.push(MirStatement::Bind {
+                binding: binding.binding,
+                name: binding.name.clone(),
+                site: scrutinee.site,
+                ty: binding_ty.clone(),
+            });
+            self.record_binding_scope(binding.binding);
+            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+                self.owned_locals
+                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+            }
+            let dest = self.alloc_local(binding.ty.clone());
+            self.push_instr(Instr::Move {
+                dest,
+                src: Place::MachineVariant {
+                    local: src_local,
+                    variant_idx: src_variant_idx,
                     field_idx: binding.field_idx,
                 },
             });

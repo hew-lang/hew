@@ -10296,36 +10296,49 @@ impl LowerCtx {
                     };
                 };
 
-                // Nested constructor subpatterns (`while let Ok(Ok(v)) = ...`)
-                // are admitted by the checker for `match` arms but the
-                // while-let lowering below consumes only the flat payload
-                // bindings — honouring the nested tag checks needs the
-                // recursive predicate emission that only `lower_match_enum_tag`
-                // wires. Fail closed rather than silently dropping the check.
-                if !resolution.payload_variant_patterns.is_empty() {
-                    self.unsupported(
-                        pattern_span.clone(),
-                        "nested constructor patterns in while-let are reserved \
-                         for a future lane; match on the value instead",
-                        "while-let-substrate",
-                    );
-                    self.push_scope();
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
-                    self.pop_scope();
-                    let unsupported_expr = HirExpr {
+                if let PatternKind::Literal = resolution.pattern_kind {
+                    let Pattern::Literal(lit) = &pattern.0 else {
+                        self.unsupported(
+                            pattern_span.clone(),
+                            "while-let literal resolution on non-literal pattern",
+                            "while-let-substrate",
+                        );
+                        let unsupported_expr = HirExpr {
+                            node: self.ids.node(),
+                            site: self.ids.site(),
+                            ty: ResolvedTy::Unit,
+                            value_class: ValueClass::BitCopy,
+                            intent: IntentKind::Read,
+                            kind: HirExprKind::Unsupported(
+                                "while-let with invalid literal resolution".into(),
+                            ),
+                            span: span.clone(),
+                        };
+                        return HirStmt {
+                            node: self.ids.node(),
+                            kind: HirStmtKind::Expr(unsupported_expr),
+                            span: span.clone(),
+                        };
+                    };
+                    let condition =
+                        self.literal_pattern_condition(scrutinee_hir, lit, pattern_span.clone());
+                    let body_block = self.lower_block(body, &ResolvedTy::Unit);
+                    let while_expr = HirExpr {
                         node: self.ids.node(),
                         site: self.ids.site(),
                         ty: ResolvedTy::Unit,
                         value_class: ValueClass::BitCopy,
                         intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported(
-                            "while-let with nested constructor pattern".into(),
-                        ),
+                        kind: HirExprKind::While {
+                            label: label.clone(),
+                            condition: Box::new(condition),
+                            body: body_block,
+                        },
                         span: span.clone(),
                     };
                     return HirStmt {
                         node: self.ids.node(),
-                        kind: HirStmtKind::Expr(unsupported_expr),
+                        kind: HirStmtKind::Expr(while_expr),
                         span: span.clone(),
                     };
                 }
@@ -10449,10 +10462,21 @@ impl LowerCtx {
                         })
                         .collect()
                 };
+                let mut payload_variant_predicates =
+                    Vec::with_capacity(resolution.payload_variant_patterns.len());
+                let mut pvp_error = false;
+                for pvp in &resolution.payload_variant_patterns {
+                    if let Some(pred) = self.build_payload_variant_predicate(pvp, pattern_span) {
+                        payload_variant_predicates.push(pred);
+                    } else {
+                        pvp_error = true;
+                        break;
+                    }
+                }
                 let body_block = self.lower_block(body, &ResolvedTy::Unit);
                 self.pop_scope();
 
-                if binding_error {
+                if binding_error || pvp_error {
                     let unsupported_expr = HirExpr {
                         node: self.ids.node(),
                         site: self.ids.site(),
@@ -10483,6 +10507,7 @@ impl LowerCtx {
                         variant_match,
                         variant_idx,
                         bindings,
+                        payload_variant_predicates,
                         body: body_block,
                     },
                     span: span.clone(),
@@ -10826,7 +10851,7 @@ impl LowerCtx {
         body: &Block,
         else_body: Option<&Block>,
         result_ty: &ResolvedTy,
-        _span: &Span,
+        span: &Span,
     ) -> Option<HirExprKind> {
         let scrutinee_hir = self.lower_expr(scrutinee_expr, IntentKind::Read);
         // Register a generic-enum instantiation so MIR/codegen find the
@@ -10851,26 +10876,52 @@ impl LowerCtx {
             return None;
         };
 
-        // Nested constructor subpatterns (`if let Ok(Ok(v)) = ...`) are
-        // admitted by the checker for `match` arms but this lowering consumes
-        // only the flat payload bindings — honouring the nested tag checks
-        // needs the recursive predicate emission that only
-        // `lower_match_enum_tag` wires. Fail closed rather than silently
-        // dropping the check.
-        if !resolution.payload_variant_patterns.is_empty() {
-            self.unsupported(
-                pattern_span.clone(),
-                "nested constructor patterns in if-let are reserved for a \
-                 future lane; match on the value instead",
-                "if-let-substrate",
-            );
-            self.push_scope();
-            let _ = self.lower_block(body, &ResolvedTy::Unit);
-            self.pop_scope();
-            if let Some(eb) = else_body {
-                let _ = self.lower_block(eb, &ResolvedTy::Unit);
-            }
-            return None;
+        if let PatternKind::Literal = resolution.pattern_kind {
+            let Pattern::Literal(lit) = &pattern.0 else {
+                self.unsupported(
+                    pattern_span.clone(),
+                    "if-let literal resolution on non-literal pattern",
+                    "if-let-substrate",
+                );
+                self.push_scope();
+                let _ = self.lower_block(body, &ResolvedTy::Unit);
+                self.pop_scope();
+                if let Some(eb) = else_body {
+                    let _ = self.lower_block(eb, &ResolvedTy::Unit);
+                }
+                return None;
+            };
+            let condition =
+                self.literal_pattern_condition(scrutinee_hir, lit, pattern_span.clone());
+            let then_block = self.lower_block(body, result_ty);
+            let then_ty = then_block.ty.clone();
+            let then_expr = HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                ty: then_ty.clone(),
+                value_class: ValueClass::of_ty(&then_ty, &self.type_classes),
+                intent: IntentKind::Read,
+                kind: HirExprKind::Block(then_block),
+                span: span.clone(),
+            };
+            let else_expr = else_body.map(|eb| {
+                let else_block = self.lower_block(eb, result_ty);
+                let else_ty = else_block.ty.clone();
+                Box::new(HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: else_ty.clone(),
+                    value_class: ValueClass::of_ty(&else_ty, &self.type_classes),
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::Block(else_block),
+                    span: span.clone(),
+                })
+            });
+            return Some(HirExprKind::If {
+                condition: Box::new(condition),
+                then_expr: Box::new(then_expr),
+                else_expr,
+            });
         }
 
         let (PatternKind::VariantCtor, Some(variant_match)) =
@@ -10958,12 +11009,23 @@ impl LowerCtx {
                 })
                 .collect()
         };
+        let mut payload_variant_predicates =
+            Vec::with_capacity(resolution.payload_variant_patterns.len());
+        let mut pvp_error = false;
+        for pvp in &resolution.payload_variant_patterns {
+            if let Some(pred) = self.build_payload_variant_predicate(pvp, pattern_span) {
+                payload_variant_predicates.push(pred);
+            } else {
+                pvp_error = true;
+                break;
+            }
+        }
         let body_block = self.lower_block(body, result_ty);
         self.pop_scope();
 
         let else_block = else_body.as_ref().map(|eb| self.lower_block(eb, result_ty));
 
-        if binding_error {
+        if binding_error || pvp_error {
             return None;
         }
 
@@ -10972,10 +11034,42 @@ impl LowerCtx {
             variant_match,
             variant_idx,
             bindings,
+            payload_variant_predicates,
             body: body_block,
             else_body: else_block,
             result_ty: result_ty.clone(),
         })
+    }
+
+    fn literal_pattern_condition(
+        &mut self,
+        scrutinee: HirExpr,
+        lit: &Literal,
+        span: Span,
+    ) -> HirExpr {
+        let (literal, _) = literal_to_hir(lit);
+        let literal_expr = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: scrutinee.ty.clone(),
+            value_class: ValueClass::of_ty(&scrutinee.ty, &self.type_classes),
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(literal),
+            span: span.clone(),
+        };
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: ResolvedTy::Bool,
+            value_class: ValueClass::BitCopy,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Binary {
+                op: BinaryOp::Equal,
+                left: Box::new(scrutinee),
+                right: Box::new(literal_expr),
+            },
+            span,
+        }
     }
 
     fn lower_compound_assignment(

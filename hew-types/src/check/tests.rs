@@ -19645,10 +19645,9 @@ mod supervisor_child_slot_tests {
 
 // ── if-let / while-let pattern contract ──────────────────────────────────
 //
-// These tests verify that the checker rejects Struct, Tuple, Or, and
-// Literal patterns at the top level of `if let` / `while let`, because
-// codegen has no support for them.  Constructor, Wildcard, and Identifier
-// are the only allowed patterns.
+// These tests verify that the checker admits the top-level `if let` /
+// `while let` patterns HIR lowering supports and keeps unsupported forms
+// fail-closed.
 #[cfg(test)]
 mod iflet_whilelet_pattern_contract {
     use super::*;
@@ -19665,12 +19664,13 @@ mod iflet_whilelet_pattern_contract {
     }
 
     #[test]
-    fn iflet_stmt_literal_pattern_is_rejected() {
+    fn iflet_stmt_literal_pattern_is_accepted() {
         let errors = check_iflet_whilelet(r"fn foo(x: i64) { if let 1 = x { 0 } }");
         assert!(
-            errors.iter().any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("literal")),
-            "expected InvalidOperation for literal if-let pattern; got: {errors:?}",
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "literal if-let pattern must not emit InvalidOperation; got: {errors:?}",
         );
     }
 
@@ -19733,12 +19733,13 @@ mod iflet_whilelet_pattern_contract {
     }
 
     #[test]
-    fn whilelet_stmt_literal_pattern_is_rejected() {
+    fn whilelet_stmt_literal_pattern_is_accepted() {
         let errors = check_iflet_whilelet(r"fn foo(x: i64) { while let 1 = x { break; } }");
         assert!(
-            errors.iter().any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("literal")),
-            "expected InvalidOperation for literal while-let pattern; got: {errors:?}",
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "literal while-let pattern must not emit InvalidOperation; got: {errors:?}",
         );
     }
 

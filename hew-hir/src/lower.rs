@@ -10767,7 +10767,17 @@ impl LowerCtx {
                 // misread as a range adapter.
                 let peeled = Self::peel_range_adapter_chain(&iterable.0);
                 let kind = match (peeled, &pattern.0) {
-                    (Some(spec), Pattern::Identifier(var_name)) if spec.step_before_rev => {
+                    (Some(spec), pat)
+                        if spec.step_before_rev
+                            && matches!(pat, Pattern::Identifier(_) | Pattern::Wildcard) =>
+                    {
+                        let binding_name = match &pattern.0 {
+                            Pattern::Identifier(var_name) => var_name.clone(),
+                            Pattern::Wildcard => {
+                                format!("__hew_for_wildcard_{}", self.ids.binding().0)
+                            }
+                            _ => unreachable!("range-for arm only matches identifiers or wildcard"),
+                        };
                         // `.step_by(k)` before `.rev()` does not commute with the
                         // supported `.rev()`-then-`.step_by(k)` order and cannot
                         // be expressed by the order-insensitive ForRange fold
@@ -10789,8 +10799,7 @@ impl LowerCtx {
                         // errors for the loop variable.  The primary diagnostic
                         // above is the actionable one.
                         self.push_scope();
-                        let _ =
-                            self.bind(var_name.clone(), ResolvedTy::I64, false, pattern.1.clone());
+                        let _ = self.bind(binding_name, ResolvedTy::I64, false, pattern.1.clone());
                         let _ = self.lower_block(body, &ResolvedTy::Unit);
                         self.pop_scope();
                         HirExprKind::Unsupported(
@@ -10798,7 +10807,16 @@ impl LowerCtx {
                                 .into(),
                         )
                     }
-                    (Some(spec), Pattern::Identifier(var_name)) => {
+                    (Some(spec), pat)
+                        if matches!(pat, Pattern::Identifier(_) | Pattern::Wildcard) =>
+                    {
+                        let binding_name = match &pattern.0 {
+                            Pattern::Identifier(var_name) => var_name.clone(),
+                            Pattern::Wildcard => {
+                                format!("__hew_for_wildcard_{}", self.ids.binding().0)
+                            }
+                            _ => unreachable!("range-for arm only matches identifiers or wildcard"),
+                        };
                         let RangeAdapterChain {
                             range_start,
                             range_end,
@@ -10871,8 +10889,7 @@ impl LowerCtx {
                         // Bind the loop variable inside a fresh scope so it is
                         // scoped to the body but visible during body lowering.
                         self.push_scope();
-                        let binding =
-                            self.bind(var_name.clone(), elem_ty, false, pattern.1.clone());
+                        let binding = self.bind(binding_name, elem_ty, false, pattern.1.clone());
                         let body_block = self.lower_block(body, &ResolvedTy::Unit);
                         self.pop_scope();
 

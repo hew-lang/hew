@@ -1674,6 +1674,7 @@ run_accept_expect_status "vec_string_index_use_loop" 14
 # bounds-checked lower_vec_index path, dispatching to hew_vec_get_i64. Exit 22
 # = xs[1] + xs[2] - xs[0] (20 + 12 - 10).
 run_accept_expect_status "vec_i64_index" 22
+run_accept_expect_status "for_wildcard_range" 3
 
 # Reject: scalar index on Vec<isize> is fail-closed until platform-sized
 # element widths have target-width-aware MIR dispatch.

@@ -474,7 +474,8 @@ impl Checker {
                     );
                 } else {
                     if let Literal::Integer { value, .. } = literal {
-                        if let Some(info) = integer_type_info(ty) {
+                        let ptr_width = self.pointer_width();
+                        if let Some(info) = integer_type_info(ty, ptr_width) {
                             if *value < 0 && !info.signed {
                                 self.report_error(
                                     TypeErrorKind::InvalidOperation,
@@ -484,8 +485,8 @@ impl Checker {
                                         ty.user_facing()
                                     ),
                                 );
-                            } else if !integer_fits_type(*value, ty) {
-                                let (lo, hi) = integer_type_range(ty).unwrap_or((0, 0));
+                            } else if !integer_fits_type(*value, ty, ptr_width) {
+                                let (lo, hi) = integer_type_range(ty, ptr_width).unwrap_or((0, 0));
                                 self.report_error(
                                     TypeErrorKind::InvalidOperation,
                                     span,

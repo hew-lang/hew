@@ -805,7 +805,8 @@ impl Checker {
             // Validate the literal value fits in the resolved type before
             // re-recording.  Emit an error and skip re-recording on overflow.
             if let Some(value) = maybe_value {
-                if value < 0 && !integer_type_info(&resolved).is_some_and(|i| i.signed) {
+                let ptr_width = self.pointer_width();
+                if value < 0 && !integer_type_info(&resolved, ptr_width).is_some_and(|i| i.signed) {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &span,
@@ -817,8 +818,8 @@ impl Checker {
                     );
                     continue;
                 }
-                if !integer_fits_type(value, &resolved) {
-                    let (lo, hi) = integer_type_range(&resolved).unwrap_or((0, 0));
+                if !integer_fits_type(value, &resolved, ptr_width) {
+                    let (lo, hi) = integer_type_range(&resolved, ptr_width).unwrap_or((0, 0));
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         &span,

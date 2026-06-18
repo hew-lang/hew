@@ -119,7 +119,15 @@ pub(super) fn first_infer_span_in_extern_fn(function: &ExternFnDecl) -> Option<S
         })
 }
 
-pub(super) fn integer_type_info(ty: &Ty) -> Option<IntegerTypeInfo> {
+/// Classify a concrete integer type into `(width, signed)`.
+///
+/// `ptr_width` is the target pointer width in bits (32 on `wasm32`, 64 on
+/// native targets), sourced from the checker's target (`Checker::pointer_width`).
+/// It governs the resolved `width` of the platform-sized `Isize`/`Usize` arms;
+/// every fixed-width arm ignores it. Threading the target width here — rather
+/// than a host `cfg!(target_pointer_width)` — keeps `isize`/`usize`
+/// classification correct under cross-compilation.
+pub(super) fn integer_type_info(ty: &Ty, ptr_width: u8) -> Option<IntegerTypeInfo> {
     match ty {
         Ty::I8 => Some(IntegerTypeInfo {
             width: 8,
@@ -151,6 +159,14 @@ pub(super) fn integer_type_info(ty: &Ty) -> Option<IntegerTypeInfo> {
         }),
         Ty::U64 => Some(IntegerTypeInfo {
             width: 64,
+            signed: false,
+        }),
+        Ty::Isize => Some(IntegerTypeInfo {
+            width: ptr_width,
+            signed: true,
+        }),
+        Ty::Usize => Some(IntegerTypeInfo {
+            width: ptr_width,
             signed: false,
         }),
         _ => None,
@@ -218,7 +234,14 @@ pub(super) fn extract_float_literal_value(expr: &Expr) -> Option<f64> {
 }
 
 /// Check if an integer value fits in a specific integer type.
-pub(super) fn integer_fits_type(value: i64, ty: &Ty) -> bool {
+///
+/// `ptr_width` (32 on `wasm32`, 64 native) determines the bounds of the
+/// platform-sized `Isize`/`Usize` arms: a 32-bit target bounds `isize` to the
+/// `i32` range and `usize` to the `u32` range, matching the LLVM width codegen
+/// emits for the target. Literal values are carried as `i64`, so a `usize`
+/// above `i64::MAX` is unrepresentable on the const path — mirroring today's
+/// `u64` literal behaviour, not a regression introduced here.
+pub(super) fn integer_fits_type(value: i64, ty: &Ty, ptr_width: u8) -> bool {
     match ty {
         Ty::I8 => i8::try_from(value).is_ok(),
         Ty::I16 => i16::try_from(value).is_ok(),
@@ -228,6 +251,20 @@ pub(super) fn integer_fits_type(value: i64, ty: &Ty) -> bool {
         Ty::U16 => u16::try_from(value).is_ok(),
         Ty::U32 => u32::try_from(value).is_ok(),
         Ty::U64 => u64::try_from(value).is_ok(),
+        Ty::Isize => {
+            if ptr_width == 32 {
+                i32::try_from(value).is_ok()
+            } else {
+                true // 64-bit isize == i64 range
+            }
+        }
+        Ty::Usize => {
+            if ptr_width == 32 {
+                u32::try_from(value).is_ok()
+            } else {
+                u64::try_from(value).is_ok() // 64-bit usize == u64 range
+            }
+        }
         _ => false,
     }
 }
@@ -248,7 +285,11 @@ pub(super) fn float_fits_type(value: f64, ty: &Ty) -> bool {
 }
 
 /// Get the min/max range description for an integer type (for error messages).
-pub(super) fn integer_type_range(ty: &Ty) -> Option<(i128, i128)> {
+///
+/// `ptr_width` (32 on `wasm32`, 64 native) selects the platform-sized
+/// `Isize`/`Usize` bounds so the "does not fit" diagnostic reports the range
+/// the target actually enforces (matching [`integer_fits_type`]).
+pub(super) fn integer_type_range(ty: &Ty, ptr_width: u8) -> Option<(i128, i128)> {
     match ty {
         Ty::I8 => Some((i128::from(i8::MIN), i128::from(i8::MAX))),
         Ty::I16 => Some((i128::from(i16::MIN), i128::from(i16::MAX))),
@@ -258,6 +299,20 @@ pub(super) fn integer_type_range(ty: &Ty) -> Option<(i128, i128)> {
         Ty::U16 => Some((0, i128::from(u16::MAX))),
         Ty::U32 => Some((0, i128::from(u32::MAX))),
         Ty::U64 => Some((0, i128::from(u64::MAX))),
+        Ty::Isize => {
+            if ptr_width == 32 {
+                Some((i128::from(i32::MIN), i128::from(i32::MAX)))
+            } else {
+                Some((i128::from(i64::MIN), i128::from(i64::MAX)))
+            }
+        }
+        Ty::Usize => {
+            if ptr_width == 32 {
+                Some((0, i128::from(u32::MAX)))
+            } else {
+                Some((0, i128::from(u64::MAX)))
+            }
+        }
         _ => None,
     }
 }

@@ -1,0 +1,23 @@
+//! Ratchets unsigned f-string interpolation through the compiled Hew path.
+
+import std::testing;
+
+#[test]
+fn test_fstring_formats_u8_max_without_sign_extension() {
+    testing.assert_eq_str(f"{255u8}", "255");
+}
+
+#[test]
+fn test_fstring_formats_u8_high_bit_boundary() {
+    testing.assert_eq_str(f"{0x80u8}", "128");
+}
+
+#[test]
+fn test_fstring_formats_u16_decimal_max_without_sign_extension() {
+    testing.assert_eq_str(f"{65535u16}", "65535");
+}
+
+#[test]
+fn test_fstring_formats_u16_hex_max_without_sign_extension() {
+    testing.assert_eq_str(f"{0xFFFFu16}", "65535");
+}

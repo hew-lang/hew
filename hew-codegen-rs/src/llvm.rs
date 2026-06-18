@@ -2770,23 +2770,21 @@ fn runtime_ffi_param_abi_bits(symbol: &str, param_idx: usize) -> Option<u32> {
     }
 }
 
-/// Reconcile an integer value to a target integer type using **signed**
-/// semantics (truncate when narrowing, sign-extend when widening, pass through
-/// when equal).
+/// Reconcile an integer value to a target integer type.
 ///
 /// This is the single width-reconciliation primitive for the extern call
 /// boundary: it bridges the Hew-facing integer width of an argument/result
-/// against the runtime C function's declared LLVM integer width. Hew's scalar
-/// integers (`i32`/`i64`, indices, the `-1` not-found sentinel) are signed, so
-/// sign-extension is the correct widen — a narrow `-1` must stay `-1`, not
-/// become a large unsigned value. Non-integer types and equal-width integers
-/// pass through unchanged.
+/// against the runtime C function's declared LLVM integer width. Signed values
+/// sign-extend when widening so narrow negative sentinels stay negative;
+/// unsigned values zero-extend so high-bit magnitudes stay positive.
+/// Non-integer types and equal-width integers pass through unchanged.
 ///
 /// Returns the (possibly converted) value as a `BasicValueEnum`.
-fn reconcile_int_width_signed<'ctx>(
+fn reconcile_int_width<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     value: inkwell::values::BasicValueEnum<'ctx>,
     target_ty: BasicTypeEnum<'ctx>,
+    signed: bool,
     what: &str,
 ) -> CodegenResult<inkwell::values::BasicValueEnum<'ctx>> {
     let (BasicTypeEnum::IntType(target_int), inkwell::values::BasicValueEnum::IntValue(src_int)) =
@@ -2807,11 +2805,27 @@ fn reconcile_int_width_signed<'ctx>(
             .llvm_ctx_with(|| format!("FFI {what} truncate"))?
             .into());
     }
-    Ok(fn_ctx
-        .builder
-        .build_int_s_extend(src_int, target_int, "ffi_ret_sext")
-        .llvm_ctx_with(|| format!("FFI {what} sign-extend"))?
-        .into())
+    let converted = if signed {
+        fn_ctx
+            .builder
+            .build_int_s_extend(src_int, target_int, "ffi_sext")
+            .llvm_ctx_with(|| format!("FFI {what} sign-extend"))?
+    } else {
+        fn_ctx
+            .builder
+            .build_int_z_extend(src_int, target_int, "ffi_zext")
+            .llvm_ctx_with(|| format!("FFI {what} zero-extend"))?
+    };
+    Ok(converted.into())
+}
+
+fn reconcile_int_width_signed<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    value: inkwell::values::BasicValueEnum<'ctx>,
+    target_ty: BasicTypeEnum<'ctx>,
+    what: &str,
+) -> CodegenResult<inkwell::values::BasicValueEnum<'ctx>> {
+    reconcile_int_width(fn_ctx, value, target_ty, true, what)
 }
 
 fn declare_catalog_ffi<'ctx>(
@@ -33957,7 +33971,8 @@ fn lower_terminator<'ctx>(
                     // `hew_string_char_at(.., i32)`). Without this, codegen
                     // hands an i64 to an i32 param and LLVM verification
                     // rejects the module. Signed narrow/widen keeps negative
-                    // values correct. See `reconcile_int_width_signed`.
+                    // values correct for signed operands; unsigned operands
+                    // must zero-extend at this boundary.
                     // NOTE: for _raw, declared_param_tys has trailing ptr; loop
                     // uses args.len() indices so it never misclassifies it.
                     let declared_param_tys = value.get_type().get_param_types();
@@ -33986,10 +34001,12 @@ fn lower_terminator<'ctx>(
                             .llvm_ctx("call arg load")?;
                         let reconciled = match declared_param_tys.get(idx) {
                             Some(BasicMetadataTypeEnum::IntType(param_int)) => {
-                                reconcile_int_width_signed(
+                                let arg_resolved_ty = place_resolved_ty(fn_ctx, *arg)?;
+                                reconcile_int_width(
                                     fn_ctx,
                                     loaded,
                                     (*param_int).into(),
+                                    !is_unsigned_integer_ty(arg_resolved_ty),
                                     "argument",
                                 )?
                             }
@@ -34032,7 +34049,7 @@ fn lower_terminator<'ctx>(
                             // incompatible shapes (int vs struct) still fail closed.
                             ret_val
                         } else if dest_ty.is_int_type() && return_ty.is_int_type() {
-                            reconcile_int_width_signed(fn_ctx, ret_val, dest_ty, "return")?
+                            reconcile_int_width(fn_ctx, ret_val, dest_ty, true, "return")?
                         } else {
                             return Err(CodegenError::FailClosed(format!(
                                 "Call dest type {dest_ty:?} does not match callee return {:?}",

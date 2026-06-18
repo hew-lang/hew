@@ -258,6 +258,7 @@ const PRINT_RUNTIME: &str = "hew_print_value";
 const I32: &[BuiltinTy] = &[BuiltinTy::I32];
 const I64: &[BuiltinTy] = &[BuiltinTy::I64];
 const U8: &[BuiltinTy] = &[BuiltinTy::U8];
+const U16: &[BuiltinTy] = &[BuiltinTy::U16];
 const U32: &[BuiltinTy] = &[BuiltinTy::U32];
 const U64: &[BuiltinTy] = &[BuiltinTy::U64];
 const F64: &[BuiltinTy] = &[BuiltinTy::F64];
@@ -573,6 +574,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
     tostring_entry!("to_string_i32", I32, "hew_int_to_string"),
     tostring_entry!("to_string_i64", I64, "hew_i64_to_string"),
     tostring_entry!("to_string_u8", U8, "hew_u8_to_string"),
+    tostring_entry!("to_string_u16", U16, "hew_uint_to_string"),
     tostring_entry!("to_string_u32", U32, "hew_uint_to_string"),
     tostring_entry!("to_string_u64", U64, "hew_u64_to_string"),
     tostring_entry!("to_string_f64", F64, "hew_float_to_string"),
@@ -2454,6 +2456,7 @@ fn to_string_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
         ResolvedTy::I32 => Some("to_string_i32"),
         ResolvedTy::I64 => Some("to_string_i64"),
         ResolvedTy::U8 => Some("to_string_u8"),
+        ResolvedTy::U16 => Some("to_string_u16"),
         ResolvedTy::U32 => Some("to_string_u32"),
         ResolvedTy::U64 => Some("to_string_u64"),
         ResolvedTy::F64 => Some("to_string_f64"),

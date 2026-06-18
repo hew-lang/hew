@@ -3462,6 +3462,10 @@ impl Checker {
     /// `MarkerTrait::Eq`, because semantic Eq admits managed types such as
     /// `string` while the current structural thunk would only compare pointer
     /// bytes for those fields.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "aggregate comparison admission keeps record, enum, and diagnostic routing in one checker gate"
+    )]
     fn reject_record_comparison(
         &mut self,
         op: BinaryOp,

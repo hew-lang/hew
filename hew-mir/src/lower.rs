@@ -119,6 +119,58 @@ fn numeric_method_op(op: NumericMethodOp) -> IntArithOp {
     }
 }
 
+/// Upgrade or keep an integer comparison predicate based on operand signedness.
+///
+/// `Eq`/`NotEq` are bit-equality and are signedness-agnostic — returned
+/// unchanged.  For ordering predicates, returns the `Unsigned*` variant when
+/// both operands are unsigned integers so that `icmp ult/ule/ugt/uge` is
+/// emitted rather than the signed equivalents.  This is the correctness
+/// boundary: a signed predicate on an unsigned `0x8000_0000_0000_0000u64`
+/// would treat it as negative, making `0x8000… > 1` silently return `false`.
+///
+/// Returns `None` if the operands have mismatched signedness (which the type
+/// checker rejects before MIR, so this is a fail-closed guard for any future
+/// regression).
+fn cmp_select_by_signedness(
+    pred: CmpPred,
+    lhs_ty: &ResolvedTy,
+    rhs_ty: &ResolvedTy,
+) -> Option<CmpPred> {
+    // Equality is bit-equality: signedness-agnostic.
+    if matches!(pred, CmpPred::Eq | CmpPred::NotEq) {
+        return Some(pred);
+    }
+    let lhs_sign = integer_signedness(lhs_ty);
+    let rhs_sign = integer_signedness(rhs_ty);
+    match (lhs_sign, rhs_sign) {
+        (Some(IntSignedness::Unsigned), Some(IntSignedness::Unsigned)) => {
+            let unsigned_pred = match pred {
+                CmpPred::SignedLess => CmpPred::UnsignedLess,
+                CmpPred::SignedLessEq => CmpPred::UnsignedLessEq,
+                CmpPred::SignedGreater => CmpPred::UnsignedGreater,
+                CmpPred::SignedGreaterEq => CmpPred::UnsignedGreaterEq,
+                // Already unsigned or non-ordering — pass through.
+                other => other,
+            };
+            Some(unsigned_pred)
+        }
+        (Some(IntSignedness::Signed), Some(IntSignedness::Signed)) => {
+            // Both signed: signed predicates are already correct.
+            Some(pred)
+        }
+        (Some(_), Some(_)) => {
+            // Mismatched signedness — the type checker should have rejected
+            // this.  Fail closed: return None so the caller emits no
+            // instruction rather than silently picking a wrong predicate.
+            None
+        }
+        // Non-integer operands (floats, bools, etc.) take the float or
+        // other branch before reaching IntCmp; pass through for those
+        // callers.
+        _ => Some(pred),
+    }
+}
+
 fn numeric_method_signedness(signedness: NumericSignedness) -> IntSignedness {
     match signedness {
         NumericSignedness::Signed => IntSignedness::Signed,
@@ -10264,6 +10316,12 @@ impl Builder {
         // `if 1 == 1 { ... }` cannot construct a condition Place for
         // CFG-construction-lane `If` lowering — the boolean-condition
         // pre-requisite called out by the cluster plan §1 / Slice 0.
+        //
+        // Ordering predicates (`< <= > >=`) start as `Signed*`; after
+        // resolving operand types below, `cmp_select_by_signedness`
+        // upgrades them to `Unsigned*` for unsigned integer operands so
+        // that high-bit-set values (e.g. `0x8000…u64 > 1`) compare
+        // correctly.  `Eq`/`NotEq` are bit-equality and stay unchanged.
         let cmp_pred = match op {
             BinaryOp::Equal => Some(CmpPred::Eq),
             BinaryOp::NotEqual => Some(CmpPred::NotEq),
@@ -10276,6 +10334,16 @@ impl Builder {
         if let Some(pred) = cmp_pred {
             let lhs_ty = self.subst_ty(lhs_ty);
             let rhs_ty = self.subst_ty(rhs_ty);
+            // Select the predicate signed/unsigned variant based on
+            // operand signedness.  `Eq`/`NotEq` are signedness-agnostic
+            // and pass through unchanged.  The checker rejects mixed-sign
+            // comparisons upstream, so both operands always have matching
+            // signedness here; if they don't, fail closed — undo the dest
+            // alloc so the local table stays coherent.
+            let Some(pred) = cmp_select_by_signedness(pred, &lhs_ty, &rhs_ty) else {
+                self.locals.pop();
+                return None;
+            };
             if matches!(pred, CmpPred::Eq | CmpPred::NotEq)
                 && self.is_fieldless_enum_comparison(&lhs_ty, &rhs_ty)
             {
@@ -14557,9 +14625,16 @@ impl Builder {
                 value: 0,
             });
             let bad_step = self.alloc_local(ResolvedTy::Bool);
+            // For an unsigned counter the step is unsigned: only zero is
+            // degenerate (`UnsignedLessEq(step, 0)` ≡ `step == 0`).  For a
+            // signed counter, `SignedLessEq` also rejects negative steps.
+            let step_guard_pred = match counter_signedness {
+                IntSignedness::Unsigned => CmpPred::UnsignedLessEq,
+                IntSignedness::Signed => CmpPred::SignedLessEq,
+            };
             self.instructions.push(Instr::IntCmp {
                 dest: bad_step,
-                pred: CmpPred::SignedLessEq,
+                pred: step_guard_pred,
                 lhs: step_val,
                 rhs: zero,
             });
@@ -14692,13 +14767,20 @@ impl Builder {
         // `counter >= bound` (bound == start).  Either way, false → exit.
         self.start_block(header_bb);
         let cond = self.alloc_local(ResolvedTy::Bool);
+        // Select ordering predicate by both direction AND signedness so that
+        // unsigned ranges with high-bit-set bounds (e.g. crossing the sign
+        // bit) compare correctly.  Signed ICmp on an unsigned counter treats
+        // high-bit values as negative, producing 0 iterations for ranges such
+        // as `0x7FFF_FFFF_FFFF_FFFEu64 .. 0x8000_0000_0000_0001u64`.
+        let header_pred = match (descending, counter_signedness) {
+            (true, IntSignedness::Signed) => CmpPred::SignedGreaterEq,
+            (true, IntSignedness::Unsigned) => CmpPred::UnsignedGreaterEq,
+            (false, IntSignedness::Signed) => CmpPred::SignedLess,
+            (false, IntSignedness::Unsigned) => CmpPred::UnsignedLess,
+        };
         self.push_instr(Instr::IntCmp {
             dest: cond,
-            pred: if descending {
-                CmpPred::SignedGreaterEq
-            } else {
-                CmpPred::SignedLess
-            },
+            pred: header_pred,
             lhs: counter,
             rhs: bound,
         });

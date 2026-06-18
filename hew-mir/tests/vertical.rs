@@ -1747,6 +1747,89 @@ fn lower_all_six_comparison_preds() {
 }
 
 #[test]
+fn lower_unsigned_ordering_ops_select_unsigned_predicates() {
+    // Unsigned integer ordering comparisons must emit the Unsigned* predicate
+    // family, not the Signed* family.  A signed predicate on a high-bit-set
+    // unsigned value (e.g. 0x8000…u64) would treat it as negative, producing
+    // a silently wrong boolean.
+    let cases: &[(&str, CmpPred)] = &[
+        (
+            "fn f() -> i64 { let a: u64 = 1; let b: u64 = 2; let r = a < b; 0 }",
+            CmpPred::UnsignedLess,
+        ),
+        (
+            "fn f() -> i64 { let a: u64 = 1; let b: u64 = 2; let r = a <= b; 0 }",
+            CmpPred::UnsignedLessEq,
+        ),
+        (
+            "fn f() -> i64 { let a: u64 = 1; let b: u64 = 2; let r = a > b; 0 }",
+            CmpPred::UnsignedGreater,
+        ),
+        (
+            "fn f() -> i64 { let a: u64 = 1; let b: u64 = 2; let r = a >= b; 0 }",
+            CmpPred::UnsignedGreaterEq,
+        ),
+        (
+            "fn f() -> i64 { let a: u32 = 1; let b: u32 = 2; let r = a < b; 0 }",
+            CmpPred::UnsignedLess,
+        ),
+        (
+            "fn f() -> i64 { let a: u8 = 1; let b: u8 = 2; let r = a > b; 0 }",
+            CmpPred::UnsignedGreater,
+        ),
+    ];
+    for (src, expected) in cases {
+        let pipeline = pipeline(src);
+        let func = &pipeline.raw_mir[0];
+        let got = func.blocks[0]
+            .instructions
+            .iter()
+            .find_map(|i| match i {
+                Instr::IntCmp { pred, .. } => Some(*pred),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no IntCmp emitted for {src}"));
+        assert_eq!(got, *expected, "wrong CmpPred for {src}");
+    }
+}
+
+#[test]
+fn lower_signed_ordering_ops_still_select_signed_predicates() {
+    // Signed integer ordering comparisons must continue to emit the Signed*
+    // predicate family — the unsigned fix must not affect signed operands.
+    let cases: &[(&str, CmpPred)] = &[
+        ("fn f() -> i64 { let r = 1 < 2; 0 }", CmpPred::SignedLess),
+        ("fn f() -> i64 { let r = 1 <= 2; 0 }", CmpPred::SignedLessEq),
+        ("fn f() -> i64 { let r = 1 > 2; 0 }", CmpPred::SignedGreater),
+        (
+            "fn f() -> i64 { let r = 1 >= 2; 0 }",
+            CmpPred::SignedGreaterEq,
+        ),
+        (
+            "fn f() -> i64 { let a: i32 = 1; let b: i32 = 2; let r = a < b; 0 }",
+            CmpPred::SignedLess,
+        ),
+        (
+            "fn f() -> i64 { let a: i8 = 1; let b: i8 = 2; let r = a > b; 0 }",
+            CmpPred::SignedGreater,
+        ),
+    ];
+    for (src, expected) in cases {
+        let pipeline = pipeline(src);
+        let func = &pipeline.raw_mir[0];
+        let got = func.blocks[0]
+            .instructions
+            .iter()
+            .find_map(|i| match i {
+                Instr::IntCmp { pred, .. } => Some(*pred),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no IntCmp emitted for {src}"));
+        assert_eq!(got, *expected, "wrong CmpPred for {src}");
+    }
+}
+
+#[test]
 fn lower_float_comparisons_emit_floatcmp_for_f64_and_f32() {
     let cases: &[(&str, CmpPred, FloatWidth)] = &[
         (

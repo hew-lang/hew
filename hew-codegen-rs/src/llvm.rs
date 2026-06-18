@@ -13770,9 +13770,14 @@ fn lower_instruction(
                 CmpPred::SignedLessEq => IntPredicate::SLE,
                 CmpPred::SignedGreater => IntPredicate::SGT,
                 CmpPred::SignedGreaterEq => IntPredicate::SGE,
-                // B-5: shift-range check reinterprets operands as unsigned.
-                // Catches both negative counts (wrap to large unsigned) and
-                // counts ≥ bit-width in one compare.
+                // Unsigned ordering predicates: emitted for unsigned integer
+                // operands so that high-bit-set values compare correctly.
+                // `UnsignedGreaterEq` also covers the shift-range check (B-5)
+                // which reinterprets operands as unsigned to catch negative
+                // shift counts and counts ≥ bit-width in a single compare.
+                CmpPred::UnsignedLess => IntPredicate::ULT,
+                CmpPred::UnsignedLessEq => IntPredicate::ULE,
+                CmpPred::UnsignedGreater => IntPredicate::UGT,
                 CmpPred::UnsignedGreaterEq => IntPredicate::UGE,
             };
             let bit = fn_ctx
@@ -13837,7 +13842,14 @@ fn lower_instruction(
                 CmpPred::SignedLessEq => FloatPredicate::OLE,
                 CmpPred::SignedGreater => FloatPredicate::OGT,
                 CmpPred::SignedGreaterEq => FloatPredicate::OGE,
-                CmpPred::UnsignedGreaterEq => {
+                // Unsigned integer predicates must never reach FloatCmp.
+                // The lowering routes floats through FloatCmp and integers
+                // through IntCmp before predicate selection; unsigned predicates
+                // are only emitted for integer operands.
+                CmpPred::UnsignedLess
+                | CmpPred::UnsignedLessEq
+                | CmpPred::UnsignedGreater
+                | CmpPred::UnsignedGreaterEq => {
                     return Err(CodegenError::FailClosed(
                         "FloatCmp does not support unsigned integer predicates".into(),
                     ));

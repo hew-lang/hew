@@ -2336,7 +2336,12 @@ fn intern_runtime_decl<'ctx>(
         "hew_string_slice_codepoints" => {
             ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false)
         }
-        "hew_rc_new" => ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
+        // hew_rc_new(data: *const u8, size: i64, align: i64, drop_fn: *const fn) -> *mut u8.
+        // `align` is the payload's ABI alignment so the runtime can over-align
+        // the allocation rather than guessing from the source address.
+        "hew_rc_new" => {
+            ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into(), ptr_ty.into()], false)
+        }
         // hew_supervisor_new(strategy: c_int, max_restarts: c_int, window_secs: c_int)
         //                    -> *mut HewSupervisor
         // (`hew-runtime/src/supervisor.rs:1608`). Box-allocates an empty
@@ -11932,6 +11937,14 @@ fn emit_spawn_task_closure(
             "SpawnTaskClosure could not compute closure environment byte size".into(),
         ));
     };
+    // Thread the environment struct's authoritative ABI alignment into the Rc
+    // allocation. The runtime over-aligns the payload to this value instead of
+    // guessing from the source pointer's trailing zeros, which would
+    // under-align an over-aligned closure capture.
+    let env_align = fn_ctx.ctx.i64_type().const_int(
+        u64::from(fn_ctx.target_data.get_abi_alignment(&env_struct)),
+        false,
+    );
     let rc_new = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
@@ -11943,7 +11956,12 @@ fn emit_spawn_task_closure(
         .builder
         .build_call(
             rc_new,
-            &[env_ptr.into(), env_size.into(), null_drop.into()],
+            &[
+                env_ptr.into(),
+                env_size.into(),
+                env_align.into(),
+                null_drop.into(),
+            ],
             "hew_closure_env_rc_new",
         )
         .llvm_ctx("hew_rc_new call")?

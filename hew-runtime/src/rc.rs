@@ -44,16 +44,20 @@ unsafe fn header_from_data(data_ptr: *mut u8) -> *mut HewRcInner {
     unsafe { data_ptr.sub(offset) }.cast()
 }
 
-const MAX_INFERRED_PAYLOAD_ALIGN: usize = std::mem::align_of::<u128>();
-
-fn payload_align(data: *const u8, data_size: usize) -> usize {
-    if data.is_null() || data_size == 0 {
+/// Normalise the caller-supplied payload alignment into a valid `Layout`
+/// alignment (a non-zero power of two).
+///
+/// Codegen knows the payload type's ABI alignment and threads it in via
+/// `hew_rc_new`'s `align` argument. A value of `0` means "no explicit
+/// alignment" (e.g. a zero-sized payload); we fall back to `1`, which is
+/// the natural alignment of an empty allocation. A non-power-of-two value
+/// would be a codegen bug, so we round up to the next power of two rather
+/// than under-aligning the allocation.
+fn normalise_align(align: usize) -> usize {
+    if align <= 1 {
         1
     } else {
-        // Without an explicit ABI alignment, only infer up to a conservative
-        // max_align_t-style bound. Over-aligned callers must thread alignment
-        // explicitly instead of relying on source-address trailing zeros.
-        (1usize << (data as usize).trailing_zeros()).min(MAX_INFERRED_PAYLOAD_ALIGN)
+        align.next_power_of_two()
     }
 }
 
@@ -74,11 +78,20 @@ fn alloc_layout(data_size: usize, data_align: usize) -> Option<(Layout, usize)> 
 /// heap-allocated block with a reference count header. Returns a pointer
 /// to the data region (caller uses this as the Rc handle).
 ///
+/// `align` is the payload type's ABI alignment, which codegen knows from
+/// the LLVM layout and threads in explicitly. The allocation is aligned to
+/// (at least) this value so that over-aligned payloads (SIMD vectors,
+/// cache-line-padded structs) are not under-aligned. Pass `0` only for a
+/// zero-sized / null payload.
+///
 /// Returns null if the layout computation overflows.
 ///
 /// # Safety
 ///
 /// - `data` must be valid for `size` bytes (may be null if `size == 0`).
+/// - `align` must be the payload's true ABI alignment (or `0` when there
+///   is no payload). A value smaller than the payload's real alignment
+///   produces an under-aligned allocation.
 /// - `drop_fn`, if provided, will be called with a pointer to the data
 ///   region when the strong count reaches zero.
 #[no_mangle]
@@ -89,9 +102,10 @@ fn alloc_layout(data_size: usize, data_align: usize) -> Option<(Layout, usize)> 
 pub unsafe extern "C" fn hew_rc_new(
     data: *const u8,
     size: usize,
+    align: usize,
     drop_fn: Option<unsafe extern "C" fn(*mut u8)>,
 ) -> *mut u8 {
-    let data_align = payload_align(data, size);
+    let data_align = normalise_align(align);
     let Some((layout, data_offset)) = alloc_layout(size, data_align) else {
         return ptr::null_mut();
     };
@@ -370,7 +384,12 @@ mod tests {
         // SAFETY: Test exercises the Rc FFI lifecycle with valid pointers.
         unsafe {
             let val: i32 = 42;
-            let rc = hew_rc_new((&raw const val).cast(), size_of::<i32>(), None);
+            let rc = hew_rc_new(
+                (&raw const val).cast(),
+                size_of::<i32>(),
+                align_of::<i32>(),
+                None,
+            );
             assert!(!rc.is_null());
 
             // Read value through Rc
@@ -408,6 +427,7 @@ mod tests {
             let rc = hew_rc_new(
                 (&raw const val).cast(),
                 size_of::<i32>(),
+                align_of::<i32>(),
                 Some(drop_counter),
             );
 
@@ -425,7 +445,12 @@ mod tests {
         // SAFETY: Test exercises weak reference upgrade with valid Rc pointers.
         unsafe {
             let val: i32 = 77;
-            let rc = hew_rc_new((&raw const val).cast(), size_of::<i32>(), None);
+            let rc = hew_rc_new(
+                (&raw const val).cast(),
+                size_of::<i32>(),
+                align_of::<i32>(),
+                None,
+            );
 
             // Downgrade to weak
             let weak = hew_rc_downgrade(rc);
@@ -453,22 +478,45 @@ mod tests {
     }
 
     #[test]
-    fn rc_caps_overaligned_source_alignment() {
-        #[repr(align(4096))]
+    fn rc_honours_overaligned_data_align() {
+        // A 64-byte cache-line-aligned payload. Its true alignment (64)
+        // exceeds align_of::<u128>() (16) — the bound the old trailing-zeros
+        // heuristic capped at — and is NOT recoverable from the byte size.
+        // The authoritative alignment must come from the caller.
+        #[repr(align(64))]
         struct Over {
-            _x: [u8; 16],
+            _x: [u8; 64],
         }
+        assert!(align_of::<Over>() > size_of::<u128>());
 
         // SAFETY: hew_rc_new copies from a valid Over pointer and returns an
         // Rc allocation that is dropped before the test exits.
         unsafe {
-            let value = Over { _x: [1; 16] };
-            let rc = hew_rc_new((&raw const value).cast(), size_of::<Over>(), None);
+            let value = Over { _x: [1; 64] };
+            let rc = hew_rc_new(
+                (&raw const value).cast(),
+                size_of::<Over>(),
+                align_of::<Over>(),
+                None,
+            );
             assert!(!rc.is_null());
             let header = header_from_data(rc);
-            assert_eq!((*header).data_align, MAX_INFERRED_PAYLOAD_ALIGN);
-            assert_eq!(rc as usize % MAX_INFERRED_PAYLOAD_ALIGN, 0);
+            // The header records the caller's authoritative alignment, and the
+            // returned data pointer actually satisfies it. Under the old
+            // heuristic data_align would have been capped at 16 and this
+            // allocation could land on a 16-aligned (not 64-aligned) address.
+            assert_eq!((*header).data_align, align_of::<Over>());
+            assert_eq!(rc as usize % align_of::<Over>(), 0);
             hew_rc_drop(rc);
         }
+    }
+
+    #[test]
+    fn rc_normalises_zero_and_non_power_of_two_align() {
+        assert_eq!(normalise_align(0), 1);
+        assert_eq!(normalise_align(1), 1);
+        assert_eq!(normalise_align(8), 8);
+        assert_eq!(normalise_align(3), 4);
+        assert_eq!(normalise_align(48), 64);
     }
 }

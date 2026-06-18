@@ -42,6 +42,11 @@ pub(crate) fn primitive_copy_layout(
         Ty::I32 | Ty::U32 | Ty::Char | Ty::F32 => Some((4, 4)),
         // f64 is hash-ineligible but included for the same reason.
         Ty::I64 | Ty::U64 | Ty::Duration | Ty::F64 => Some((8, 8)),
+        Ty::Array(elem, count) => {
+            let (elem_size, elem_align) = primitive_copy_layout(elem, type_defs)?;
+            let count = usize::try_from(*count).ok()?;
+            Some((elem_size.checked_mul(count)?, elem_align))
+        }
         Ty::Named { name, args, .. } => {
             // Try direct lookup first, then strip module prefix (mirrors lookup_type_def).
             let type_def = type_defs.get(name.as_str()).or_else(|| {
@@ -1287,12 +1292,14 @@ impl Checker {
         }
 
         let mut visiting = HashSet::new();
-        if self.vec_element_contains_structural_array(resolved, &mut visiting) {
+        if self.vec_element_contains_structural_array(resolved, &mut visiting)
+            && !self.vec_element_has_copy_layout(resolved)
+        {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "Vec<{}> is not supported; vec lowering does not support array element types yet",
+                    "Vec<{}> is not supported; vec lowering does not support heap-bearing array element types yet",
                     resolved.user_facing()
                 ),
             );

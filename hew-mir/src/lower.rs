@@ -9354,6 +9354,9 @@ impl Builder {
                 let mut arg_places = vec![receiver_place];
                 for arg in args {
                     arg_places.push(self.lower_value(arg)?);
+                    if builtin_method_arg_is_move_ingress(target_family) {
+                        self.consume_moved_builtin_method_arg(arg);
+                    }
                     if is_array_literal_push {
                         self.alias_moved_owned_operand(arg);
                     }
@@ -22071,6 +22074,27 @@ impl Builder {
         });
     }
 
+    fn consume_moved_builtin_method_arg(&mut self, operand: &HirExpr) {
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(id),
+        } = &operand.kind
+        else {
+            return;
+        };
+        let ty = self.subst_ty(&operand.ty);
+        if !self.aggregate_ingress_moves_binding_ty(&ty) {
+            return;
+        }
+        self.statements.push(MirStatement::Use {
+            binding: *id,
+            name: name.clone(),
+            site: operand.site,
+            ty,
+            intent: IntentKind::Consume,
+        });
+    }
+
     /// True when a `Let` RHS produces a named-function pair whose `env_ptr`
     /// is null by construction: a direct `Item`-resolved fn reference
     /// (`let f = double;`), a rebind of an already-exempt binding, or either
@@ -29706,6 +29730,14 @@ fn ty_is_closure_pair_vec(ty: &ResolvedTy) -> bool {
             args,
             ..
         } if args.first().is_some_and(ty_is_closure_pair)
+    )
+}
+
+fn builtin_method_arg_is_move_ingress(family: &hew_types::MethodTargetFamily) -> bool {
+    matches!(
+        family,
+        hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::Insert)
+            | hew_types::MethodTargetFamily::HashSet(hew_types::HashSetMethod::Insert)
     )
 }
 

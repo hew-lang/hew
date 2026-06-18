@@ -1,0 +1,11 @@
+// CHECK-MIR-REJECT: UseAfterConsume
+//
+// HashSet.insert takes ownership of a managed string element. Reusing the
+// source binding after insert would leave both the set slot and source binding
+// on drop paths for the same heap owner.
+fn main() -> string {
+    let words: HashSet<string> = HashSet::new();
+    let word = "colour";
+    words.insert(word);
+    word
+}

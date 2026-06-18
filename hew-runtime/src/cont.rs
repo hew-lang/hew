@@ -347,13 +347,17 @@ pub unsafe extern "C" fn hew_gen_coro_destroy(companion: *mut c_void) {
     // SAFETY: handle is the generator's coro frame handle (or null); destroy is
     // the single teardown owner and runs the cleanup outline.
     unsafe { hew_cont_destroy(handle) };
-    // SAFETY: offset 8 (one pointer past handle) is within the companion block
-    // (it has at least the two leading pointer fields), so advancing the base by
-    // 8 bytes lands at the env-pointer field.
-    let env_slot = unsafe { companion.cast::<u8>().add(8) };
+    // The env pointer is the SECOND field — one pointer-width past the handle.
+    // Use the target pointer width (4 bytes on wasm32, 8 on native) so the
+    // offset matches the companion layout the codegen emits on this target.
+    let ptr_width = core::mem::size_of::<*mut c_void>();
+    // SAFETY: offset ptr_width (one pointer past handle) is within the companion
+    // block (it has at least the two leading pointer fields), so advancing the
+    // base by one pointer width lands at the env-pointer field.
+    let env_slot = unsafe { companion.cast::<u8>().add(ptr_width) };
     // SAFETY: the env field is a `*mut c_void` written by the MakeGenerator
     // codegen (or null). `read_unaligned` is sound regardless of the static
-    // alignment of the byte-offset cast (the field is in fact 8-aligned).
+    // alignment of the byte-offset cast (the field is in fact pointer-aligned).
     let env = unsafe { ptr::read_unaligned(env_slot.cast::<*mut c_void>()) };
     // SAFETY: env came from hew_cont_frame_alloc (or is null); symmetric free.
     unsafe { hew_cont_frame_free(env) };

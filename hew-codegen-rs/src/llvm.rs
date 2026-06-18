@@ -196,20 +196,6 @@ impl std::fmt::Display for CodegenError {
                         "the suspending channel-receive substrate",
                         "WASM-TODO(#1451)",
                     )
-                } else if symbol == "hew_gen_yield"
-                    || symbol == "hew_gen_ctx_create"
-                    || symbol == "hew_gen_next"
-                    || symbol == "hew_gen_free"
-                {
-                    // Construction (`hew_gen_ctx_create`), suspension
-                    // (`hew_gen_yield`), consumption (`hew_gen_next`), and
-                    // release (`hew_gen_free`) all belong to the native-only
-                    // generator substrate; whichever the WASM gate reports first
-                    // surfaces the same "generator" category.
-                    (
-                        "the generator substrate",
-                        "WASM-TODO(#1451): generator wasm parity not yet designed",
-                    )
                 } else {
                     ("a native-only runtime substrate", "WASM-TODO(#1451)")
                 };
@@ -725,30 +711,13 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
             if let Terminator::SuspendingChannelRecv { .. } = &block.terminator {
                 return Some("hew_channel_await_recv".to_string());
             }
-            // Generators substrate WASM parity gate: `Terminator::Yield` emits a
-            // direct call to the runtime symbol `hew_gen_yield`, but the
-            // `generator` module is gated `#[cfg(not(target_arch = "wasm32"))]`
-            // (`hew-runtime/src/lib.rs:501`) — the symbol does not exist in
-            // the WASM build. Surface a structured
-            // `WasmUnsupportedSubstrate` diagnostic at the codegen front
-            // gate rather than letting wasm-ld discover a dangling
-            // reference. The native path is unaffected.
-            // WASM-TODO(#1451): cooperative `hew_gen_yield` parity is
-            // tracked under the umbrella WASM task-scope/scheduler port
-            // issue; until it lands, generators are a native-only
-            // substrate (Tenet 5 with an explicit tracked gap per
-            // `boundary-fail-closed` LESSON P0).
-            if let Terminator::Yield { .. } = &block.terminator {
-                return Some("hew_gen_yield".to_string());
-            }
-            // Generator construction emits `hew_gen_ctx_create`, also gated
-            // `#[cfg(not(target_arch = "wasm32"))]` in the runtime. A `gen fn` /
-            // `gen { }` construction site in a WASM build would otherwise emit a
-            // dangling reference; surface the same structured native-only
-            // diagnostic the Yield gate above produces.
-            if let Terminator::MakeGenerator { .. } = &block.terminator {
-                return Some("hew_gen_ctx_create".to_string());
-            }
+            // Generators are wasm-parity-clean: `Terminator::Yield` /
+            // `MakeGenerator` lower to the `llvm.coro.*` + `hew_cont_*`
+            // continuation substrate (the same one the await family uses), which
+            // imports no host malloc / asyncify and runs in-module on wasm32
+            // (#1758 closed). There is therefore NO generator wasm-exclusion
+            // gate — a generator program builds and runs on wasm32 like any other
+            // coroutine.
             // Lambda-actor construction emits `hew_lambda_actor_new`. The
             // whole `hew-runtime/src/lambda_actor.rs` module is gated
             // `#![cfg(not(target_arch = "wasm32"))]`, so a lambda-actor
@@ -46040,48 +46009,39 @@ mod tests {
         );
     }
 
-    /// R-1 (plan review): a user-fn `<Type>::<method>` close is pure Hew
-    /// code and is NOT WASM-excluded. The scan must skip the user-fn arm
-    /// silently.
+    /// Generators are WASM-PARITY-CLEAN: a `Terminator::Yield`-carrying body
+    /// lowers to the `llvm.coro.*` continuation substrate (no native-only
+    /// `hew_gen_*` symbols), so the wasm-exclusion scan must NOT flag it (#1758
+    /// closed). This is the inverse of the deleted native-only gate.
     #[test]
-    fn wasm_exclusion_scan_flags_terminator_yield_as_hew_gen_yield() {
-        // Generators substrate WASM parity gate: any function whose CFG contains a
-        // `Terminator::Yield` must surface as a structured
-        // `WasmUnsupportedSubstrate("hew_gen_yield")` from the
-        // wasm-exclusion scan — the runtime `generator` module is
-        // `cfg(not(target_arch = "wasm32"))` so the symbol does not
-        // exist in the WASM build. Tenet 5 / LESSONS P0
-        // `boundary-fail-closed`.
+    fn wasm_exclusion_scan_does_not_flag_generator_yield() {
         let ptr_ty = ResolvedTy::Pointer {
             is_mutable: true,
             pointee: Box::new(ResolvedTy::Unit),
         };
         let body = RawMirFunction {
             name: "__hew_gen_body_wasm_excl_test_0".to_string(),
-            return_ty: ResolvedTy::I64,
+            return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
-            params: vec![ptr_ty.clone(), ptr_ty.clone()],
-            locals: vec![ptr_ty.clone(), ptr_ty.clone(), ResolvedTy::I64],
+            params: vec![ptr_ty.clone()],
+            locals: vec![ptr_ty.clone(), ResolvedTy::I64],
             blocks: vec![
                 BasicBlock {
                     id: 0,
                     statements: Vec::new(),
                     instructions: vec![Instr::ConstI64 {
-                        dest: Place::Local(2),
+                        dest: Place::Local(1),
                         value: 1,
                     }],
                     terminator: Terminator::Yield {
-                        value: Place::Local(2),
+                        value: Place::Local(1),
                         next: 1,
                     },
                 },
                 BasicBlock {
                     id: 1,
                     statements: Vec::new(),
-                    instructions: vec![Instr::Move {
-                        dest: Place::ReturnSlot,
-                        src: Place::Local(2),
-                    }],
+                    instructions: Vec::new(),
                     terminator: Terminator::Return,
                 },
             ],
@@ -46093,35 +46053,12 @@ mod tests {
             span: None,
             instr_spans: ::std::collections::HashMap::new(),
         };
-        let pipeline = IrPipeline {
-            thir: Vec::new(),
-            raw_mir: vec![body],
-            checked_mir: Vec::new(),
-            elaborated_mir: Vec::new(),
-            diagnostics: Vec::new(),
-            opaque_handle_names: Vec::new(),
-            record_layouts: Vec::new(),
-            actor_layouts: Vec::new(),
-            supervisor_layouts: Vec::new(),
-            machine_layouts: Vec::new(),
-            enum_layouts: Vec::new(),
-            regex_literals: Vec::new(),
-            user_consts: Vec::new(),
-            gen_state_layouts: vec![],
-            extern_decls: vec![],
-            dyn_vtable_registry: vec![],
-            hashmap_lowering_facts: vec![],
-            hashset_lowering_facts: vec![],
-            actor_send_aliasing: std::collections::HashMap::new(),
-            polymorphic_mir: Vec::new(),
-            user_clone_record_seeds: vec![],
-        };
-        let found = uses_wasm_excluded_symbol(&pipeline)
-            .expect("Terminator::Yield must be flagged as WASM-excluded");
+        let pipeline = raw_mir_only_pipeline(body);
         assert_eq!(
-            found, "hew_gen_yield",
-            "WASM exclusion scan must surface `hew_gen_yield` for a \
-             function containing `Terminator::Yield`; got `{found}`"
+            uses_wasm_excluded_symbol(&pipeline),
+            None,
+            "a generator (Terminator::Yield) body lowers to the wasm-clean coro \
+             substrate and must NOT be flagged as WASM-excluded (#1758)"
         );
     }
 

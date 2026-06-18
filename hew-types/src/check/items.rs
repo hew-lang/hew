@@ -1889,7 +1889,7 @@ impl Checker {
         let resolved_param_ty = self.subst.resolve(ty);
         if !param.is_mutable
             || is_receiver
-            || !Self::is_non_copy_aggregate_param_type(&resolved_param_ty)
+            || !self.is_non_copy_aggregate_param_type(&resolved_param_ty)
         {
             return;
         }
@@ -1908,9 +1908,14 @@ impl Checker {
         );
     }
 
-    fn is_non_copy_aggregate_param_type(ty: &Ty) -> bool {
+    fn is_non_copy_aggregate_param_type(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Named { builtin: None, .. } | Ty::Tuple(_) | Ty::Array(_, _) => !ty.is_copy(),
+            Ty::Named {
+                builtin: None,
+                name,
+                ..
+            } => self.lookup_type_def(name).is_some() && !self.vec_element_has_copy_layout(ty),
+            Ty::Tuple(_) | Ty::Array(_, _) => !ty.is_copy(),
             _ => false,
         }
     }

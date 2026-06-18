@@ -33064,7 +33064,15 @@ fn generator_coro_companion_ty<'ctx>(
                 .into(),
         )
     })?;
-    let yield_llvm = resolve_ty(fn_ctx.ctx, yield_ty, fn_ctx.record_layouts)?;
+    // A `Generator<Never, R>` never yields (a no-yield gen body); `Never` has no
+    // value representation, so the out-value channel is a zero-payload stand-in
+    // (`i8`) that is never written or read. Resolving `Never` directly would fail
+    // ("Never type cannot occur in a value-bearing position").
+    let yield_llvm = if matches!(yield_ty, ResolvedTy::Never) {
+        fn_ctx.ctx.i8_type().into()
+    } else {
+        resolve_ty(fn_ctx.ctx, yield_ty, fn_ctx.record_layouts)?
+    };
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     let i8_ty = fn_ctx.ctx.i8_type();
     // `{ ptr handle, ptr env, i8 started, Y out_value }`. The two `ptr` fields
@@ -34117,6 +34125,26 @@ fn lower_terminator<'ctx>(
                 ))
             })?;
             let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+
+            // The body must be a coroutine RAMP — it returns the `coro.begin`
+            // handle (`ptr`). A body with no `yield` (a `Generator<Never, R>`
+            // no-yield gen) is NOT a coroutine (no suspend carrier), so its LLVM
+            // return is its logical type, not a handle. Such a generator never
+            // suspends or yields and is not iterable (`for x in g` over a `Never`
+            // yield is rejected by the checker); lowering its construction is not
+            // yet supported. Fail closed with a precise diagnostic rather than
+            // mis-driving a non-ramp call as a coro handle.
+            if !matches!(
+                body_function.get_type().get_return_type(),
+                Some(BasicTypeEnum::PointerType(_))
+            ) {
+                return Err(CodegenError::Unsupported(
+                    "a generator body with no `yield` (a never-yielding \
+                     `Generator<Never, R>`) is not lowerable: it is not a \
+                     coroutine and cannot be iterated. Add at least one `yield`, \
+                     or use a plain function for a value-returning computation",
+                ));
+            }
 
             // ── 1. Heap-allocate the companion via `hew_cont_frame_alloc`. ──
             // The companion `{ ptr handle, i8 started, Y out_value }` is allocated
@@ -37153,6 +37181,39 @@ fn lower_auto_mutex_bracket<'ctx>(
     Ok(())
 }
 
+/// Whether a function lowers as an `llvm.coro` switched-resume coroutine ramp
+/// (its LLVM return type is the `coro.begin` handle `ptr`, and it gets the coro
+/// prologue + shared cleanup/suspend-return epilogue).
+///
+/// A function is a coroutine when EITHER it carries a suspend-family terminator
+/// (the await family + a generator `Yield`) OR it is a generator body
+/// (`__hew_gen_body_*`). The generator-body name check is load-bearing for a
+/// NO-YIELD generator (`gen { 1 }` → `Generator<Never, R>`): it carries no
+/// `Yield`, so the terminator scan alone would treat it as an ordinary function
+/// returning its logical type — but its construction site (`MakeGenerator`)
+/// drives it as a coro ramp expecting the handle. Marking every gen body a
+/// coroutine makes a no-yield generator a ramp that runs straight to its final
+/// suspend (the consumer's first `next()` then observes `None`), keeping the
+/// representation uniform.
+fn is_coroutine_function(func: &RawMirFunction) -> bool {
+    func.name.starts_with("__hew_gen_body_")
+        || func.blocks.iter().any(|b| {
+            matches!(
+                b.terminator,
+                Terminator::Yield { .. }
+                    | Terminator::Suspend { .. }
+                    | Terminator::SuspendingAsk { .. }
+                    | Terminator::SuspendingRead { .. }
+                    | Terminator::SuspendingCallClosure { .. }
+                    | Terminator::SuspendingStreamNext { .. }
+                    | Terminator::SuspendingStreamSend { .. }
+                    | Terminator::SuspendingAccept { .. }
+                    | Terminator::SuspendingChannelRecv { .. }
+                    | Terminator::SuspendingRemoteAsk { .. }
+            )
+        })
+}
+
 // ---------------------------------------------------------------------------
 // Per-function declaration + body lowering
 // ---------------------------------------------------------------------------
@@ -37191,25 +37252,7 @@ fn declare_function<'ctx>(
     // back (it only drives resume/poll and observes Ready). The `returns_unit`
     // flag below is derived from the LOGICAL return type so the body's return
     // lowering still knows whether there is a value to deposit.
-    let is_coroutine = func.blocks.iter().any(|b| {
-        matches!(
-            b.terminator,
-            // `Terminator::Yield` makes a generator body a coroutine ramp: the
-            // generator substrate lowers `yield` to `coro.suspend` on the same
-            // `llvm.coro.*` substrate as the await family, so a `Yield`-carrying
-            // body returns the `coro.begin` handle (`ptr`) like any other ramp.
-            Terminator::Yield { .. }
-                | Terminator::Suspend { .. }
-                | Terminator::SuspendingAsk { .. }
-                | Terminator::SuspendingRead { .. }
-                | Terminator::SuspendingCallClosure { .. }
-                | Terminator::SuspendingStreamNext { .. }
-                | Terminator::SuspendingStreamSend { .. }
-                | Terminator::SuspendingAccept { .. }
-                | Terminator::SuspendingChannelRecv { .. }
-                | Terminator::SuspendingRemoteAsk { .. }
-        )
-    });
+    let is_coroutine = is_coroutine_function(func);
     let return_ty_llvm = if is_coroutine {
         ctx.ptr_type(AddressSpace::default()).into()
     } else if matches!(func.call_conv, FunctionCallConv::LambdaActorBody(_)) {
@@ -37713,25 +37756,13 @@ fn lower_function<'ctx>(
     // stored suspend index. The single fallthrough `coro.end` wired in the
     // epilogue below is what makes the second-and-later yield-back-to-executor
     // land on a real return instead of `unreachable` (the prior crash).
-    let has_suspend = func.blocks.iter().any(|b| {
-        matches!(
-            b.terminator,
-            // A generator body's `yield` is a `coro.suspend` on this same
-            // substrate (the `Terminator::Yield` codegen arm calls
-            // `CoroContext::emit_suspend`), so a `Yield`-carrying body needs the
-            // coro prologue + shared cleanup/suspend-return epilogue emitted.
-            Terminator::Yield { .. }
-                | Terminator::Suspend { .. }
-                | Terminator::SuspendingAsk { .. }
-                | Terminator::SuspendingRead { .. }
-                | Terminator::SuspendingCallClosure { .. }
-                | Terminator::SuspendingStreamNext { .. }
-                | Terminator::SuspendingStreamSend { .. }
-                | Terminator::SuspendingAccept { .. }
-                | Terminator::SuspendingChannelRecv { .. }
-                | Terminator::SuspendingRemoteAsk { .. }
-        )
-    });
+    // A generator body's `yield` is a `coro.suspend` on this same substrate (the
+    // `Terminator::Yield` codegen arm calls `CoroContext::emit_suspend`), so a
+    // gen body — whether it yields or is a no-yield `Generator<Never, R>` —
+    // needs the coro prologue + shared cleanup/suspend-return epilogue. Reuses
+    // the same coroutine predicate `declare_function` uses, so the prologue
+    // emission and the `ptr`-handle return type agree.
+    let has_suspend = is_coroutine_function(func);
 
     // DWARF subprogram + function-entry location for `hew build -g` (W0.060).
     // Emitted only for plain (non-suspend) `fn`s whose span falls within the

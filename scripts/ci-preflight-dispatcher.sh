@@ -46,6 +46,10 @@ CI_REQUIRED_CHECKS=(
     "playground-check (release-gate.yml: make playground-check)	make playground-check"
     "Hew test suite ratchet (ci.yml: make test-hew-ratchet)	make test-hew-ratchet"
     "Stdlib type-check ratchet (ci.yml: make test-stdlib-ratchet)	make test-stdlib-ratchet"
+    "Vertical slice oracle (ci.yml: make test-vertical-slice)	make test-vertical-slice"
+    "Package-import oracle (ci.yml: make test-pkg-import)	make test-pkg-import"
+    "Fuzz-oracle ratchet (ci.yml: make fuzz-oracle)	make fuzz-oracle"
+    "Sandbox parity (ci.yml: make sandbox-parity)	make sandbox-parity"
 )
 
 usage() {
@@ -275,8 +279,9 @@ is_sandbox_parity_path() {
 is_vertical_slice_path() {
     # tests/pkg-import is the cross-module package-import sibling of the
     # vertical-slice oracle: same end-to-end compiler ladder, same lane.
+    # tests/fuzz-oracle is the trap/signal ratchet — same compiler-ladder tier.
     case "$1" in
-        tests/vertical-slice/*|tests/pkg-import/*)
+        tests/vertical-slice/*|tests/pkg-import/*|tests/fuzz-oracle/*)
             return 0
             ;;
     esac
@@ -286,6 +291,21 @@ is_vertical_slice_path() {
 is_hew_tests_path() {
     case "$1" in
         tests/hew/*)
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+is_trap_fixtures_path() {
+    # MIR bounds/trap lowering and the fuzz-oracle fixture corpus.
+    # Changes here must run make fuzz-oracle — the ratchet that checks trap
+    # signal codes (SIGILL/SIGTRAP) and expected-failures.txt alignment.
+    case "$1" in
+        hew-mir/src/lower.rs|\
+        hew-mir/src/model.rs|\
+        hew-codegen-rs/src/llvm.rs|\
+        tests/fuzz-oracle/*)
             return 0
             ;;
     esac
@@ -417,6 +437,7 @@ needs_stdlib_lint=0
 needs_hew_suite=0
 needs_sandbox_fixture_check=0
 needs_sandbox_parity=0
+needs_trap_fixtures=0
 
 for path in "${CHANGED_FILES[@]}"; do
     case "$path" in
@@ -439,6 +460,14 @@ for path in "${CHANGED_FILES[@]}"; do
             esac
             ;;
     esac
+
+    # Parallel side-channel: trap-fixture paths set needs_trap_fixtures regardless
+    # of which primary bucket claims the path.  This mirrors the needs_hew_suite /
+    # needs_stdlib_lint pattern — the flag appends make fuzz-oracle after the
+    # lane body without changing the lane selector itself.
+    if is_trap_fixtures_path "$path"; then
+        needs_trap_fixtures=1
+    fi
 
     if is_sandbox_parity_path "$path"; then
         has_scripts_config=1
@@ -587,9 +616,15 @@ case "$LANE" in
         add_command "make test-parser"
         ;;
     types)
+        # Run the full frontend pipeline (hew-types + hew-hir + hew-mir) rather
+        # than the narrow make test-types (hew-types + hew-parser + hew-lexer only).
+        # A type-checker change can break hew-hir / hew-mir tests that test-types
+        # never runs — this was the root cause of #2026 (reject_unbounded_generic_ordering).
+        # make test-types remains the iteration target; this lane is the gate.
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
-        add_command "make test-types"
+        add_command "make test-compiler-pipeline"
+        add_command "make fuzz-oracle"
         ;;
     cli)
         add_command "cargo fmt --all -- --check"
@@ -602,12 +637,21 @@ case "$LANE" in
         add_command "make test-compiler-pipeline"
         add_command "make test-vertical-slice"
         add_command "make test-pkg-import"
+        # fuzz-oracle catches trap signal-code regressions (SIGILL/SIGTRAP) and
+        # ratchet mismatches invisible to the nextest workspace run (#2025).
+        add_command "make fuzz-oracle"
+        # await_e2e is in hew-cli, not covered by test-compiler-pipeline; a codegen
+        # change can break the suspend/resume async path visible only via CLI e2e (#2023).
+        add_command "cargo nextest run --profile ci -p hew-cli --test await_e2e"
         ;;
     vertical-slice)
         add_command "cargo fmt --all -- --check"
         add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-vertical-slice"
         add_command "make test-pkg-import"
+        # fuzz-oracle reads the vertical-slice/accept fixtures: a fixture change
+        # that skips fuzz-oracle misses the trap signal-code ratchet (#2025).
+        add_command "make fuzz-oracle"
         ;;
     observe)
         add_command "cargo fmt --all -- --check"
@@ -637,6 +681,11 @@ case "$LANE" in
         # catches the same class of breakage that CI's fallback lane would catch.
         add_command "make test-hew-ratchet"
         add_command "make test-vertical-slice"
+        # await_e2e covers the suspend/resume crash-recovery path; this lane owns
+        # the runtime surface where that breakage originates (#2023).
+        add_command "cargo nextest run --profile ci -p hew-cli --test await_e2e"
+        # fuzz-oracle catches trap signal-code regressions visible via the runtime.
+        add_command "make fuzz-oracle"
         if (( has_observe == 1 )); then
             add_command "cargo nextest run --profile ci -p hew-observe"
         fi
@@ -666,12 +715,19 @@ case "$LANE" in
         #
         # Hew-language suites run after the Rust workspace to keep the ratchet
         # verdict separate from the Rust test verdict.
+        #
+        # The sequence below mirrors CI's build-and-test job exactly so a green
+        # fallback preflight predicts a green merge-queue outcome.
         add_command "make ci-preflight-smoke"
         add_command "make lint"
         add_command "make playground-check"
         add_command "make test"
+        add_command "make test-vertical-slice"
+        add_command "make test-pkg-import"
+        add_command "make fuzz-oracle"
         add_command "make test-hew-ratchet"
         add_command "make test-stdlib-ratchet"
+        add_command "make sandbox-parity"
         ;;
     *)
         die "unhandled lane: $LANE"
@@ -705,6 +761,13 @@ fi
 
 if (( needs_sandbox_parity == 1 )); then
     add_command "make sandbox-parity"
+fi
+
+if (( needs_trap_fixtures == 1 )) && [[ "$LANE" != "fallback" && "$LANE" != "compiler-pipeline" && "$LANE" != "types" && "$LANE" != "runtime-net" && "$LANE" != "vertical-slice" ]]; then
+    # MIR bounds/trap lowering or fuzz-oracle corpus changed in a lane that does
+    # not already include fuzz-oracle.  Append it so the trap signal-code ratchet
+    # runs before push regardless of the primary lane selected.
+    add_command "make fuzz-oracle"
 fi
 
 # Test-only override for dispatcher command execution. This keeps failure-policy

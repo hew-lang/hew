@@ -1,7 +1,6 @@
 import json
 import os
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -522,16 +521,19 @@ def test_fallback_lane_includes_hew_suite_ratchets() -> None:
 def test_parser_plus_types_narrow_multi_bucket_uses_types_lane() -> None:
     """Parser + type-checker changes route to the types lane, not fallback.
 
-    test-types runs hew-types + hew-parser + hew-lexer, covering both buckets.
-    This avoids the 9156-test fallback suite for a change that only touches the
-    parser/types dependency closure.
+    The types lane runs test-compiler-pipeline (the full HIR/MIR/codegen closure)
+    plus fuzz-oracle, covering both buckets.  A type-checker change can break
+    hew-hir / hew-mir tests that make test-types alone never runs (#2026).
+    This avoids the 9156-test fallback suite while keeping the gate sound.
     """
     result = run_dispatcher("hew-parser/src/parser.rs", "hew-types/src/lib.rs")
     assert result.returncode == 0, result.stderr
     assert "Selected profile: types" in result.stdout, (
         f"Expected types profile for parser + types diff.\nstdout:\n{result.stdout}"
     )
-    assert "make test-types" in result.stdout, result.stdout
+    assert "make test-compiler-pipeline" in result.stdout, result.stdout
+    # fuzz-oracle must run: a type-checker change can produce wrong trap signals.
+    assert "make fuzz-oracle" in result.stdout, result.stdout
     # Must NOT have fallen back to the full suite.
     assert (
         "make test\n" not in result.stdout and "  - make test\n" not in result.stdout

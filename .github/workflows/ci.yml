@@ -145,6 +145,13 @@ jobs:
       - name: Runtime poison-safe lint
         run: make runtime-poison-safe-lint
 
+      - name: Preflight↔CI parity self-test
+        # Assert that the dispatcher's fallback lane mirrors the CI build-and-test
+        # step list.  A new unconditional CI step not reflected in CI_REQUIRED_CHECKS
+        # or CI_BUILD_AND_TEST_STEPS fails here before it can silently skip in local
+        # preflights.
+        run: scripts/check-preflight-ci-parity.sh
+
   # ─────────────────────────────────────────────────────────────────────────
   # License gate — enforce the deny.toml allow-list so no copyleft or unknown
   # dep silently enters the shipping graph. Runs on every push/PR; fast (~5 s).
@@ -290,6 +297,16 @@ jobs:
       # hew-wasm browser/tooling smoke stays isolated in playground-wasm-build.
       # hew-cabi is excluded — its #[no_mangle] symbols conflict with
       # hew-runtime when both link into a test binary.
+      #
+      # >>> CI-PARITY-STEPS
+      # The steps from here to <<< CI-PARITY-STEPS are the build-and-test gates
+      # that scripts/check-preflight-ci-parity.sh asserts are mirrored in the
+      # dispatcher's CI_REQUIRED_CHECKS array.  When adding a new unconditional
+      # gating step, add it inside this block AND update CI_REQUIRED_CHECKS in
+      # scripts/ci-preflight-dispatcher.sh so the local preflight predicts CI.
+      # The parity self-test in the lint job parses this block directly — the
+      # maintained CI_BUILD_AND_TEST_STEPS list in the parity script is now
+      # derived from here instead of a hand-maintained copy.
       - name: Run Rust workspace tests
         if: env.RUN_CODE_PATH == 'true'
         # line-tables-only: the release build + wasm build + full debug
@@ -298,7 +315,7 @@ jobs:
         # is the dominant target/ cost and nothing in CI reads it.
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
-        run: >-
+        run: >-  # parity-cmd: make test
           cargo nextest run --workspace
           --exclude hew-wasm
           --exclude hew-cabi
@@ -348,6 +365,7 @@ jobs:
       - name: Run sandbox VM parity
         if: env.RUN_CODE_PATH == 'true'
         run: make sandbox-parity
+      # <<< CI-PARITY-STEPS
 
       - name: Upload test reports
         if: always() && env.RUN_CODE_PATH == 'true'

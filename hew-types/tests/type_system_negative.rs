@@ -2197,13 +2197,13 @@ fn vec_clone_nested_owned_tuple_element_is_accepted() {
 #[test]
 fn vec_push_nested_tuple_with_inner_vec_stays_rejected() {
     let output = typecheck(
-        r#"
+        r"
         fn main() {
             let inner: Vec<i64> = Vec::new();
             let v: Vec<((Vec<i64>, i64), bool)> = Vec::new();
             v.push(((inner, 1), true));
         }
-        "#,
+        ",
     );
     assert!(
         output.errors.iter().any(|e| {
@@ -2218,13 +2218,13 @@ fn vec_push_nested_tuple_with_inner_vec_stays_rejected() {
 #[test]
 fn vec_push_nested_tuple_with_function_stays_rejected() {
     let output = typecheck(
-        r#"
+        r"
         fn f() -> i64 { return 1; }
         fn main() {
             let v: Vec<((fn() -> i64, i64), bool)> = Vec::new();
             v.push(((f, 1), true));
         }
-        "#,
+        ",
     );
     assert!(
         output.errors.iter().any(|e| {

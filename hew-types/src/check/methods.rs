@@ -4299,19 +4299,18 @@ impl Checker {
                         .all(|elem| self.vec_tuple_owned_field_admissible(elem))
             }
             Ty::String | Ty::Bytes => true,
-            Ty::Function { .. } | Ty::Closure { .. } => false,
-            Ty::Named {
-                builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
-                ..
-            } => false,
-            Ty::Named {
-                builtin: Some(_), ..
-            } => crate::check::admissibility::primitive_copy_layout(ty, &self.type_defs).is_some(),
             Ty::Named { builtin: None, .. } => {
                 crate::check::admissibility::primitive_copy_layout(ty, &self.type_defs).is_some()
                     || self.vec_owned_element_admissible(ty)
             }
-            Ty::Array(_, _) | Ty::Slice(_) => false,
+            Ty::Function { .. }
+            | Ty::Closure { .. }
+            | Ty::Array(_, _)
+            | Ty::Slice(_)
+            | Ty::Named {
+                builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
+                ..
+            } => false,
             _ => crate::check::admissibility::primitive_copy_layout(ty, &self.type_defs).is_some(),
         }
     }

@@ -1,5 +1,5 @@
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, Instr, IrPipeline, MirCheck};
+use hew_mir::{lower_hir_module, Instr, IrPipeline, MirCheck, MirDiagnosticKind};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -29,6 +29,31 @@ fn lower_clean_to_mir(source: &str) -> IrPipeline {
         hir.diagnostics.is_empty(),
         "HIR diagnostics: {:#?}",
         hir.diagnostics
+    );
+    lower_hir_module(&hir.module)
+}
+
+/// Parse + check + HIR-lower + MIR-lower without asserting clean HIR or MIR;
+/// used for reject tests where the pipeline is expected to emit diagnostics.
+fn lower_to_mir(source: &str) -> IrPipeline {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "checker errors: {:#?}",
+        tc_output.errors
+    );
+    let hir = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
     );
     lower_hir_module(&hir.module)
 }
@@ -400,5 +425,40 @@ fn scope_fork_after_lowers_to_executable_task_and_deadline_abi() {
                 if call.symbol() == "hew_task_scope_cancel_after_ns"
         )),
         "after(duration) must lower to deadline cancellation ABI; instructions: {instructions:#?}"
+    );
+}
+
+#[test]
+fn value_task_await_in_default_callconv_caller_fails_closed() {
+    // A value-returning `fork x = compute(); let v = await x;` in a
+    // Default-callconv function (here `main`) must be refused at MIR: the
+    // fork spawn itself emits `NotYetImplemented` (no execution-context to
+    // park a continuation on), and `lower_await_task` is an additional
+    // defence-in-depth gate. This test asserts the pipeline emits a
+    // `NotYetImplemented` diagnostic — the value-task result-read path is
+    // not wired for blocking callers.
+    let source = r"
+        fn compute() -> i64 { 42 }
+        fn main() {
+            scope {
+                fork x = compute();
+                let v = await x;
+                let _ = v;
+            }
+        }
+    ";
+    let mir = lower_to_mir(source);
+    let has_nyi = mir.diagnostics.iter().any(|d| {
+        matches!(
+            &d.kind,
+            MirDiagnosticKind::NotYetImplemented { construct, .. }
+                if construct.contains("cannot spawn") || construct.contains("await task result")
+        )
+    });
+    assert!(
+        has_nyi,
+        "value-task await from a Default-callconv caller must emit NotYetImplemented; \
+         diagnostics: {:#?}",
+        mir.diagnostics
     );
 }

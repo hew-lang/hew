@@ -398,6 +398,35 @@ fn value_await_in_let_accepted() {
 }
 
 #[test]
+fn unit_task_await_in_let_rejected() {
+    // `let x = await t` where `t: Task<()>` (unit-returning) must still trip
+    // `AwaitOutOfPosition` with the "let-value" note. A unit-returning worker
+    // has nothing to bind: `is_value_task_await` returns false, so the bindable
+    // guard fires. The value-let path must NOT accidentally pass unit awaits.
+    let source = r"
+        fn worker() {}
+        fn main() {
+            scope {
+                fork t = worker();
+                let x = await t;
+                let _ = x;
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_let_value_reject = output.diagnostics.iter().any(|d| {
+        matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition) && d.note.contains("let-value")
+    });
+    assert!(
+        has_let_value_reject,
+        "unit task `await t` in let position must emit AwaitOutOfPosition with 'let-value' note; \
+         got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
 fn await_expression_parses() {
     // Ensure await expressions are parsed correctly
     let source = r"

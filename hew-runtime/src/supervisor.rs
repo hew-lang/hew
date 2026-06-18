@@ -889,11 +889,18 @@ fn circuit_breaker_record_crash(spec: &mut InternalChildSpec, signal: i32, sup_a
             // Check if we should open the circuit
             let window_ns = u64::from(spec.circuit_breaker.window_secs).wrapping_mul(1_000_000_000);
             if !spec.circuit_breaker.crash_stats.is_null() {
+                // Pass the supervisor-clock `now_ns` (the SAME clock used to
+                // record the crash timestamp at the top of this fn) so the
+                // window comparison is single-clock. Reading a second,
+                // independently-epoched clock inside `recent_count` made a
+                // freshly-recorded timestamp look "in the future" under load and
+                // silently undercounted crashes, leaving the breaker CLOSED.
                 // SAFETY: crash_stats was created by hew_crash_stats_new.
                 let recent_count = unsafe {
                     crate::crash::hew_crash_stats_recent_count(
                         spec.circuit_breaker.crash_stats,
                         window_ns,
+                        now_ns,
                     )
                 };
                 if recent_count >= spec.circuit_breaker.max_crashes {

@@ -135,34 +135,6 @@ filter = "test(connection_drop_wakes_pending_remote_ask)"
 retries = 1
 
 [[profile.ci.overrides]]
-# circuit_breaker_trips_on_repeated_crashes injects two crashes and expects the
-# breaker (max_crashes=2) to OPEN. Two distinct flakes were diagnosed 2026-06-18:
-#   (1) FIXED — a causality bug: the test read hew_crash_log_count() the instant
-#       it observed the monitor DOWN, but the crash-log push runs on the crashing
-#       worker AFTER the trap that delivers DOWN (signal.rs), so the read raced
-#       the push and fast-failed (~0.02s) under load. Now waits for the crash
-#       count to reach its target (wait_for_crash_count, a logical-event wait);
-#       the wait ceilings were widened to 30s contention headroom.
-#   (2) RESIDUAL (this retry) — under peak contention (~1-8% scaling with load)
-#       the breaker stays CLOSED at the 30s ceiling even though both deaths are
-#       observed and both crashes hit the GLOBAL log (down_count=2, crash_log=2,
-#       circuit_state=0). The per-child circuit crash_stats reached <2: one of the
-#       two crashes was not classified Crashed by the supervisor's apply_restart
-#       path under contention, so it never reached circuit_breaker_record_crash.
-# SHIM: retry absorbs the residual production circuit-breaker crash-classification
-#   race; the fast causality flake is gone, so this no longer masks that class.
-# WHEN obsolete: when the supervisor reliably classifies every fault-injected
-#   crash on a freshly-restarted child as Crashed under contention (production
-#   crash-counting fix), making the breaker open deterministically.
-# WHAT the real solution looks like: harden apply_restart's exit-state read so a
-#   crash on a child mid-restart is always counted into the per-child crash_stats;
-#   then the test reaches 100/100 and this retry is removed.
-# Correctness invariant: a genuinely broken breaker (never opens on 2 crashes)
-#   fails on BOTH attempts — the retry only absorbs the intermittent miscount.
-filter = "test(circuit_breaker_trips_on_repeated_crashes)"
-retries = 1
-
-[[profile.ci.overrides]]
 # eval_file_cross_chunk_failure_preserves_prior_chunk_stdout drives a full
 # compile+link+execute of two chunks via `hew eval -f`. Under heavy CI load
 # (Linux Rust/codegen, macOS arm64) the pre-codegen tempdir/object setup in

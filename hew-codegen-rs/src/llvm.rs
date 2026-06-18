@@ -2587,14 +2587,6 @@ fn intern_runtime_decl<'ctx>(
         // Emitted by MIR at arm-body exit (success path) and on the partial-failure
         // cleanup paths (captures[0..j] already allocated when capture[j] is null).
         "hew_regex_free_capture" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
-        // hew_gen_yield(ctx: *mut HewGenCtx, value: *mut c_void, size: usize) -> bool
-        // (`hew-runtime/src/generator.rs:229`). Sends a yielded value on the
-        // generator's yield channel, deep-copying `size` bytes from `value`,
-        // then blocks until the consumer either resumes (returns `true`) or
-        // cancels (returns `false`). Codegen emits this from the
-        // `Terminator::Yield` arm of the gen-body lowering. The body fn must
-        // declare its `ctx` parameter as `Local(1)` (per the lower_gen_block
-        // contract); the codegen arm loads the pointer from that slot.
         // hew_cancel_token_is_requested(token: *mut HewCancellationToken) -> i32
         // (`hew-runtime/src/task_scope.rs:272`). Returns nonzero when the token
         // (or any ancestor) has been signalled. Codegen emits this from the
@@ -12650,9 +12642,10 @@ fn lower_instruction(
         } => {
             // Generator consumption on the `llvm.coro.*` continuation substrate.
             // The `Generator<Y, R>` slot points at the heap companion
-            // `{ ptr handle, i8 started, Y out_value }`; construction
-            // (`MakeGenerator`) already ran the body to its FIRST yield, so the
-            // first value sits in `companion.out_value` with `started == 0`.
+            // `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending,
+            // Y out_value }`; construction (`MakeGenerator`) already ran the body
+            // to its FIRST yield, so the first value sits in `companion.out_value`
+            // with `started == 0` and `pending == 1`.
             //
             // Each `.next()` (LAZY one-value-per-resume, see the `started` gate
             // in `generator_coro_companion_ty`):
@@ -25924,12 +25917,14 @@ fn cow_heap_release_symbol(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> Option<&'
         } => Some(HASHSET_FREE_LAYOUT_SYMBOL),
         // A `Generator<Y, R>` / `AsyncGenerator<Y>` value releases via
         // `hew_gen_coro_destroy`: the value is the heap companion
-        // `{ ptr handle, i8 started, Y out }`; destroy runs the coro frame's
-        // `cleanup` outline (dropping every value the body still owns —
-        // mid-iteration suspended values, cross-yield-live owned locals) then
-        // frees the companion. Single teardown owner, null-safe. Dispatched on
-        // the builtin discriminant, not the name string, so a user
-        // `type Generator { ... }` (builtin: None) never routes here.
+        // `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending,
+        // Y out }`; destroy runs the coro frame's `cleanup` outline (dropping
+        // every value the body still owns — mid-iteration suspended values,
+        // cross-yield-live owned locals), typed-drops an un-consumed pending
+        // out-value via the planted thunk, then frees the companion. Single
+        // teardown owner, null-safe. Dispatched on the builtin discriminant, not
+        // the name string, so a user `type Generator { ... }` (builtin: None)
+        // never routes here.
         ResolvedTy::Named {
             builtin:
                 Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
@@ -34281,13 +34276,17 @@ fn lower_terminator<'ctx>(
             //
             // Construction shape (mirrors the proven `coro_emission_exec`
             // driver):
-            //   1. Heap-allocate the companion `{ ptr handle, Y out_value }` via
-            //      `hew_alloc` — the `Generator<Y, R>` value points at it.
+            //   1. Heap-allocate the companion `{ ptr handle, ptr env,
+            //      ptr out_drop_thunk, i8 started, i8 pending, Y out_value }` via
+            //      `hew_cont_frame_alloc` — the `Generator<Y, R>` value points at
+            //      it. Plant the per-`Y` out-drop thunk (null for BitCopy `Y`).
             //   2. Call `__hew_gen_body(&companion.out_value, env_ptr?)`. The
             //      ramp runs the body to its FIRST `coro.suspend` (the first
             //      `yield`, with the first value already published to
             //      `*out_value`) and returns the `coro.begin` handle.
-            //   3. Store the returned handle into `companion.handle`.
+            //   3. Store the returned handle into `companion.handle` and set
+            //      `pending` from the post-ramp done state (a suspended body has a
+            //      live un-consumed yield in `out_value`).
             //   4. Store the companion pointer into the `Generator<Y, R>` slot.
             //
             // The env (capture record) is passed by ADDRESS into the ramp's

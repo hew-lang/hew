@@ -548,6 +548,17 @@ impl Checker {
         span: &Span,
     ) {
         for bound in bounds {
+            if !self.is_known_trait(bound) {
+                let similar =
+                    crate::error::find_similar(bound, self.trait_defs.keys().map(String::as_str));
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedType,
+                    span,
+                    format!("unknown trait `{bound}` in bound on type parameter `{param_name}`"),
+                    similar,
+                );
+                continue;
+            }
             if self.type_satisfies_trait_bound(resolved_arg, bound) {
                 self.report_missing_dispatchable_supertrait_impls(
                     param_name,

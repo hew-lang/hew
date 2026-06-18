@@ -23,6 +23,8 @@ pub enum MarkerTrait {
     Clone,
     /// Equality comparable
     Eq,
+    /// Numeric ordering comparable, including floating-point values.
+    PartialOrd,
     /// Ordered
     Ord,
     /// Numeric value accepted by generic math builtins.
@@ -62,6 +64,7 @@ impl std::fmt::Display for MarkerTrait {
             MarkerTrait::Copy => write!(f, "Copy"),
             MarkerTrait::Clone => write!(f, "Clone"),
             MarkerTrait::Eq => write!(f, "Eq"),
+            MarkerTrait::PartialOrd => write!(f, "PartialOrd"),
             MarkerTrait::Ord => write!(f, "Ord"),
             MarkerTrait::Num => write!(f, "Num"),
             MarkerTrait::Hash => write!(f, "Hash"),
@@ -88,6 +91,7 @@ impl MarkerTrait {
             "Copy" => Some(Self::Copy),
             "Clone" => Some(Self::Clone),
             "Eq" => Some(Self::Eq),
+            "PartialOrd" => Some(Self::PartialOrd),
             "Ord" => Some(Self::Ord),
             "Num" => Some(Self::Num),
             "Hash" => Some(Self::Hash),
@@ -615,6 +619,9 @@ impl TraitRegistry {
             // Handled per-type below; fall through to the match.
         }
         if marker == MarkerTrait::Num {
+            return ty.is_numeric();
+        }
+        if marker == MarkerTrait::PartialOrd {
             return ty.is_numeric();
         }
         match ty {

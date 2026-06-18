@@ -1161,6 +1161,14 @@ struct CoroState<'ctx> {
     /// were inlined). `None` for a coroutine that carries an explicit final
     /// Suspend (a generator) — its `Return` arm just `ret`s the handle.
     final_suspend_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
+    /// Whether this coroutine is a GENERATOR body (its MIR carries
+    /// `Terminator::Yield`). A generator's value channel is the explicit
+    /// out-pointer parameter the body publishes each yield into (NOT the
+    /// await-family reply channel), so its shared `final_suspend_block` emits a
+    /// value-free `coro.suspend(is_final=true)` — completion just flips
+    /// `coro.done` so the consumer's next `GeneratorNext` reads `None`. There is
+    /// no `hew_get_reply_channel` / `hew_reply` deposit for a generator.
+    is_generator: bool,
 }
 
 struct FnCtx<'a, 'ctx> {
@@ -1738,8 +1746,22 @@ fn intern_runtime_decl<'ctx>(
         // The continuation-handle verbs the driver calls to run a closure-invoke
         // callee coroutine (`hew-runtime/src/cont.rs`). Identical declarations to
         // the actor-dispatch trampoline's get-or-declare locals (llvm.rs ~26563).
+        // hew_cont_frame_alloc(size: u64) -> ptr (cont.rs:134). Size-headered
+        // coro-frame allocator (always `u64` size on all targets, incl. wasm32);
+        // generator companions allocate through it so their drop free is the
+        // symmetric `hew_cont_frame_free` partner.
+        "hew_cont_frame_alloc" => ptr_ty.fn_type(&[i64_ty.into()], false),
+        // hew_gen_coro_destroy(companion: *mut c_void) -> void (cont.rs). Single
+        // teardown owner of a generator value: destroys the coro frame (handle at
+        // companion offset 0) then frees the companion. Null-safe.
+        "hew_gen_coro_destroy" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         // hew_cont_resume(handle: *mut c_void) -> void (cont.rs:216).
         "hew_cont_resume" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_cont_done(handle: *mut c_void) -> bool (cont.rs:238). `true` once
+        // the coroutine reached its final suspend (`coro.done`); the generator
+        // consumer (`Instr::GeneratorNext`) reads it as the done/None sentinel.
+        // The C return is `bool` (i1), null-safe (a null handle reports done).
+        "hew_cont_done" => ctx.bool_type().fn_type(&[ptr_ty.into()], false),
         // hew_cont_poll(handle: *mut c_void, out_value: *mut c_void) -> ResumePoll
         // (cont.rs:271). `ResumePoll` is `#[repr(i32)]` (Pending=0, Ready=1), so
         // the C return is i32; the driver reads Ready as "callee completed".
@@ -7984,16 +8006,17 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
         } => Ok(Some(DropHelper {
             name: "hew_sink_close",
         })),
-        // Generator<Y, R> / AsyncGenerator<Y> handle drop routes to `hew_gen_free`
-        // (the same symbol the standalone generator-binding drop uses). The handle
-        // is a `*mut HewGenCtx` loaded from the field slot; `emit_field_drop_step`'s
-        // `_` arm loads it and calls `void(ptr)`. `hew_gen_free` is null-tolerant
-        // and the move-checker + tuple/record/enum drop-allow provers keep it
-        // exactly-once (same posture as Stream/Sink).
+        // Generator<Y, R> / AsyncGenerator<Y> value drop routes to
+        // `hew_gen_coro_destroy` (the same symbol the standalone generator-binding
+        // drop uses). The value is the heap companion ptr loaded from the field
+        // slot; `emit_field_drop_step`'s `_` arm loads it and calls `void(ptr)`.
+        // `hew_gen_coro_destroy` is null-tolerant and the move-checker + tuple/
+        // record/enum drop-allow provers keep it exactly-once (same posture as
+        // Stream/Sink).
         StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Generator,
         } => Ok(Some(DropHelper {
-            name: "hew_gen_free",
+            name: "hew_gen_coro_destroy",
         })),
         // CancellationToken handle drop routes to `hew_cancel_token_release`
         // (ref-count decrement, free-at-zero; null-tolerant).
@@ -12676,60 +12699,83 @@ fn lower_instruction(
             ctx,
             yield_ty,
         } => {
-            // Generator consumption (thread-based runtime,
-            // `hew-runtime/src/generator.rs:341`). Resume the generator, receive
-            // the next yielded value, and unbox it into `dest: Option<yield_ty>`:
-            //   - call `hew_gen_next(ctx, &out_size) -> *mut c_void`
-            //   - null result  → write None (tag 1) into dest
-            //   - non-null     → load the payload, write Some (tag 0) + value,
-            //                    free the heap pointer (consumer owns it).
-            // The Option tag convention (Some = 0, None = 1) matches
-            // `IntArithCheckedOption` above.
+            // Generator consumption on the `llvm.coro.*` continuation substrate.
+            // The `Generator<Y, R>` slot points at the heap companion
+            // `{ ptr handle, i8 started, Y out_value }`; construction
+            // (`MakeGenerator`) already ran the body to its FIRST yield, so the
+            // first value sits in `companion.out_value` with `started == 0`.
+            //
+            // Each `.next()` (LAZY one-value-per-resume, see the `started` gate
+            // in `generator_coro_companion_ty`):
+            //   1. if `started == 1`: `hew_cont_resume(handle)` — advance the body
+            //      to its NEXT yield (running exactly that yield's side effects),
+            //      publishing the next value into `out_value`. The FIRST `.next()`
+            //      (`started == 0`) skips this so it observes the pre-positioned
+            //      first value without first advancing the body.
+            //   2. `done = hew_cont_done(handle)`:
+            //        done  → write None (tag 1),
+            //        !done → read `v = companion.out_value`, write Some (tag 0) +
+            //                `v`, set `started = 1`.
+            // The Option tag convention (Some = 0, None = 1) is preserved exactly
+            // from the prior thread-runtime path.
+            //
+            // Resume-before-read on every call AFTER the first is what gives the
+            // lazy interleaving: the consumer observes value N, runs its loop
+            // body, then the next `.next()` resumes the generator (firing the
+            // body's next-yield effects) before reading value N+1. Resuming
+            // eagerly after a read instead would fire the next yield's effects
+            // before the consumer saw the current value (an eager-by-one drain).
             let Place::Local(dest_local) = dest else {
                 return Err(CodegenError::FailClosed(
                     "Instr::GeneratorNext destination must be a local Option<Y> enum slot".into(),
                 ));
             };
-            // Load the generator context handle (an opaque `ptr`).
+            // Load the companion pointer from the `Generator<Y, R>` slot.
             let (ctx_slot, _ctx_slot_ty) = place_pointer(fn_ctx, *ctx)?;
             let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-            let ctx_handle = fn_ctx
+            let i8_ty = fn_ctx.ctx.i8_type();
+            let companion = fn_ctx
                 .builder
-                .build_load(ptr_ty, ctx_slot, "gen_next_ctx")
-                .llvm_ctx("gen next ctx load")?
+                .build_load(ptr_ty, ctx_slot, "gen_next_companion")
+                .llvm_ctx("gen next companion load")?
                 .into_pointer_value();
-            // Out-param for the yielded value's byte size (written by the
-            // runtime; not otherwise consumed — the payload type is statically
-            // known from `yield_ty`).
-            let i64_ty = fn_ctx.ctx.i64_type();
-            let out_size = build_entry_alloca(fn_ctx, i64_ty.into(), "gen_next_out_size")?;
-            let next_fn = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_gen_next",
-            )?;
-            let value_ptr = fn_ctx
-                .builder
-                .build_call(
-                    next_fn,
-                    &[ctx_handle.into(), out_size.into()],
-                    "hew_gen_next_call",
-                )
-                .llvm_ctx("hew_gen_next call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_gen_next returned void".into()))?
-                .into_pointer_value();
-            let is_null = fn_ctx
-                .builder
-                .build_is_null(value_ptr, "gen_next_is_done")
-                .llvm_ctx("gen next null check")?;
+            let (yield_llvm, companion_ty) = generator_coro_companion_ty(fn_ctx, *ctx)?;
 
-            // Resolve the Option tag/payload slots (shared by both arms) and the
-            // yielded value's LLVM type BEFORE the conditional branch — these
-            // GEP/type resolutions must be emitted into the current (pre-branch)
-            // block, never after its terminator.
+            // Load the coro handle (field 0).
+            let handle_ptr = fn_ctx
+                .builder
+                .build_struct_gep(companion_ty, companion, 0, "gen_next_handle_ptr")
+                .map_err(|e| {
+                    CodegenError::FailClosed(format!("gen next handle GEP failed: {e:?}"))
+                })?;
+            let handle = fn_ctx
+                .builder
+                .build_load(ptr_ty, handle_ptr, "gen_next_handle")
+                .llvm_ctx("gen next handle load")?
+                .into_pointer_value();
+            // The `started` gate (field 2).
+            let started_ptr = fn_ctx
+                .builder
+                .build_struct_gep(companion_ty, companion, 2, "gen_next_started_ptr")
+                .map_err(|e| {
+                    CodegenError::FailClosed(format!("gen next started GEP failed: {e:?}"))
+                })?;
+            let started = fn_ctx
+                .builder
+                .build_load(i8_ty, started_ptr, "gen_next_started")
+                .llvm_ctx("gen next started load")?
+                .into_int_value();
+            let started_set = fn_ctx
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    started,
+                    i8_ty.const_zero(),
+                    "gen_next_started_set",
+                )
+                .llvm_ctx("gen next started cmp")?;
+
+            // Resolve the Option tag/payload slots up front.
             let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(*dest_local))?;
             let tag_int = match tag_ty {
                 BasicTypeEnum::IntType(t) => t,
@@ -12745,10 +12791,11 @@ fn lower_instruction(
                 field_idx: 0,
             };
             let (payload_ptr, payload_ty) = place_pointer(fn_ctx, some_payload)?;
-            let yield_llvm = resolve_ty(fn_ctx.ctx, yield_ty, fn_ctx.record_layouts)?;
-            if yield_llvm != payload_ty {
+            let yield_resolved = resolve_ty(fn_ctx.ctx, yield_ty, fn_ctx.record_layouts)?;
+            if yield_resolved != payload_ty || yield_resolved != yield_llvm {
                 return Err(CodegenError::FailClosed(format!(
-                    "GeneratorNext yield type {yield_llvm:?} must match Some payload slot {payload_ty:?}"
+                    "GeneratorNext yield type {yield_resolved:?} must match Some payload slot \
+                     {payload_ty:?} and companion out-value {yield_llvm:?}"
                 )));
             }
 
@@ -12759,13 +12806,58 @@ fn lower_instruction(
                 .ok_or_else(|| {
                     CodegenError::Llvm("gen-next block has no parent function".into())
                 })?;
+            let resume_bb = fn_ctx.ctx.append_basic_block(parent_fn, "gen_next_resume");
+            let check_done_bb = fn_ctx
+                .ctx
+                .append_basic_block(parent_fn, "gen_next_check_done");
             let none_bb = fn_ctx.ctx.append_basic_block(parent_fn, "gen_next_none");
             let some_bb = fn_ctx.ctx.append_basic_block(parent_fn, "gen_next_some");
             let cont_bb = fn_ctx.ctx.append_basic_block(parent_fn, "gen_next_cont");
+
+            // ── started? resume the body : skip (first call) → check_done ──
             fn_ctx
                 .builder
-                .build_conditional_branch(is_null, none_bb, some_bb)
-                .llvm_ctx("gen next branch")?;
+                .build_conditional_branch(started_set, resume_bb, check_done_bb)
+                .llvm_ctx("gen next started branch")?;
+
+            // ── resume_bb: advance the body to its next yield. ──
+            fn_ctx.builder.position_at_end(resume_bb);
+            let resume_fn = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_cont_resume",
+            )?;
+            fn_ctx
+                .builder
+                .build_call(resume_fn, &[handle.into()], "hew_cont_resume_call")
+                .llvm_ctx("hew_cont_resume call")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(check_done_bb)
+                .llvm_ctx("gen next resume -> check_done")?;
+
+            // ── check_done_bb: done = hew_cont_done(handle). ──
+            fn_ctx.builder.position_at_end(check_done_bb);
+            let done_fn = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_cont_done",
+            )?;
+            let done = fn_ctx
+                .builder
+                .build_call(done_fn, &[handle.into()], "hew_cont_done_call")
+                .llvm_ctx("hew_cont_done call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_cont_done returned void".into()))?
+                .into_int_value();
+            // `hew_cont_done` returns i1: true → None, false → Some.
+            fn_ctx
+                .builder
+                .build_conditional_branch(done, none_bb, some_bb)
+                .llvm_ctx("gen next done branch")?;
 
             // ── None: generator is done. Write tag 1; leave payload undef. ──
             fn_ctx.builder.position_at_end(none_bb);
@@ -12778,14 +12870,18 @@ fn lower_instruction(
                 .build_unconditional_branch(cont_bb)
                 .llvm_ctx("gen next None br")?;
 
-            // ── Some: load the yielded value, write tag 0 + payload, free. ──
-            // Load the yielded value from the runtime-returned heap pointer; the
-            // payload slot's LLVM type is the Some-variant field type
-            // (`yield_ty`), validated above.
+            // ── Some: read the published value, write tag 0 + payload, mark
+            // started so the NEXT `.next()` resumes before reading. ──
             fn_ctx.builder.position_at_end(some_bb);
-            let loaded = fn_ctx
+            let out_value_ptr = fn_ctx
                 .builder
-                .build_load(yield_llvm, value_ptr, "gen_next_value")
+                .build_struct_gep(companion_ty, companion, 3, "gen_next_out_ptr")
+                .map_err(|e| {
+                    CodegenError::FailClosed(format!("gen next out-value GEP failed: {e:?}"))
+                })?;
+            let yielded = fn_ctx
+                .builder
+                .build_load(yield_llvm, out_value_ptr, "gen_next_value")
                 .llvm_ctx("gen next value load")?;
             fn_ctx
                 .builder
@@ -12793,16 +12889,18 @@ fn lower_instruction(
                 .llvm_ctx("gen next Some tag store")?;
             fn_ctx
                 .builder
-                .build_store(payload_ptr, loaded)
+                .build_store(payload_ptr, yielded)
                 .llvm_ctx("gen next Some payload store")?;
-            // The consumer owns the heap pointer `hew_gen_next` returned; free it
-            // now that the value has been copied into the Option payload slot
-            // (the runtime deep-copied it from the generator thread).
-            let free_fn = get_or_declare_libc_free(fn_ctx.ctx, fn_ctx.llvm_mod);
+            // Mark started: the value just read is now owned by the consumer
+            // (moved by-value into the Option payload); the body retains no copy.
+            // The next `.next()` will resume to overwrite `out_value` with the
+            // following yield. There is no per-yield heap free here (unlike the
+            // thread path, which deep-copied each yield to a fresh heap block) —
+            // the value rides the companion out-slot by-value.
             fn_ctx
                 .builder
-                .build_call(free_fn, &[value_ptr.into()], "gen_next_free_payload")
-                .llvm_ctx("gen next payload free")?;
+                .build_store(started_ptr, i8_ty.const_int(1, false))
+                .llvm_ctx("gen next started set")?;
             fn_ctx
                 .builder
                 .build_unconditional_branch(cont_bb)
@@ -25831,15 +25929,19 @@ fn cow_heap_release_symbol(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> Option<&'
             builtin: Some(hew_types::BuiltinType::HashSet),
             ..
         } => Some(HASHSET_FREE_LAYOUT_SYMBOL),
-        // A `Generator<Y, R>` / `AsyncGenerator<Y>` handle releases via
-        // `hew_gen_free` (cancel-if-running, join thread, drain yields, free
-        // ctx). Dispatched on the builtin discriminant, not the name string, so
-        // a user `type Generator { ... }` (builtin: None) never routes here.
+        // A `Generator<Y, R>` / `AsyncGenerator<Y>` value releases via
+        // `hew_gen_coro_destroy`: the value is the heap companion
+        // `{ ptr handle, i8 started, Y out }`; destroy runs the coro frame's
+        // `cleanup` outline (dropping every value the body still owns —
+        // mid-iteration suspended values, cross-yield-live owned locals) then
+        // frees the companion. Single teardown owner, null-safe. Dispatched on
+        // the builtin discriminant, not the name string, so a user
+        // `type Generator { ... }` (builtin: None) never routes here.
         ResolvedTy::Named {
             builtin:
                 Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
             ..
-        } => Some("hew_gen_free"),
+        } => Some("hew_gen_coro_destroy"),
         _ => None,
     }
 }
@@ -25866,8 +25968,10 @@ fn is_known_cow_heap_drop_symbol(symbol: &str) -> bool {
             | "hew_vec_free_closure_pairs"
             | HASHMAP_FREE_LAYOUT_SYMBOL
             | HASHSET_FREE_LAYOUT_SYMBOL
-            // Generator<Y, R> / AsyncGenerator<Y> context release.
-            | "hew_gen_free"
+            // Generator<Y, R> / AsyncGenerator<Y> value release: destroy the
+            // coro frame + free the companion (the coro substrate's single
+            // teardown owner).
+            | "hew_gen_coro_destroy"
     )
 }
 /// binding's alloca, call the single-`ptr`-arg release symbol, then
@@ -32928,6 +33032,83 @@ fn emit_enum_variant_literal(
     Ok(())
 }
 
+/// The yield type `Y` and the coro-companion struct
+/// `{ ptr handle, i8 started, ptr env, Y out }` for a `Generator<Y, R>` /
+/// `AsyncGenerator<Y>` place.
+///
+/// A generator value on the coro substrate is a heap **companion** the
+/// `Generator<Y, R>` slot points at:
+///
+/// - field 0 `handle` — `ptr`, the `coro.begin` frame handle (`HewCont`),
+/// - field 1 `env` — `ptr`, a HEAP copy of the capture-env record (null for a
+///   capture-free generator). The body reads its free variables through this
+///   pointer; it is heap-owned (not the caller's stack record) so it stays valid
+///   across every suspend, when the constructing frame has long returned.
+/// - field 2 `started` — `i8` lazy-resume gate (0 until the first value is
+///   consumed; see below),
+/// - field 3 `out_value` — `Y`, the value channel the body publishes each
+///   yield into and the consumer reads.
+///
+/// `handle` and `env` are the first two `ptr` fields (offsets 0 and 8) so the
+/// runtime `hew_gen_coro_destroy` can read them at fixed offsets without knowing
+/// `Y`.
+///
+/// The companion is heap-allocated at `MakeGenerator` and freed at the
+/// generator's drop (after `hew_cont_destroy`), so a `Generator` value is
+/// self-contained: it survives moves, stores into records, and being passed
+/// across function boundaries (the prior thread-runtime handle had the same
+/// single-`ptr` shape).
+///
+/// ## The `started` gate (lazy per-resume interleaving)
+///
+/// Construction pre-runs the ramp to its FIRST `yield`, so the first value is
+/// already published before any `.next()`. If `.next()` resumed eagerly after
+/// reading, the body would advance to its NEXT yield (running that yield's side
+/// effects) BEFORE the consumer observed the current value — collapsing the
+/// lazy one-value-per-resume interleaving. The `started` flag defers the resume
+/// to the TOP of each `.next()` EXCEPT the first: next #1 reads the
+/// pre-positioned value and sets `started`; every later `.next()` resumes first
+/// (advancing the body, firing exactly that yield's effects) then reads.
+///
+/// `Y` is the FIRST type argument of the `Generator<Y, R>` named type. Fails
+/// closed if the place is not a generator builtin or carries no type args.
+fn generator_coro_companion_ty<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    gen_place: Place,
+) -> CodegenResult<(BasicTypeEnum<'ctx>, inkwell::types::StructType<'ctx>)> {
+    let gen_ty = place_resolved_ty(fn_ctx, gen_place)?;
+    let ResolvedTy::Named {
+        builtin: Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
+        args,
+        ..
+    } = gen_ty
+    else {
+        return Err(CodegenError::FailClosed(format!(
+            "generator coro companion requested for non-generator place {gen_place:?} \
+             (resolved {gen_ty:?})"
+        )));
+    };
+    let yield_ty = args.first().ok_or_else(|| {
+        CodegenError::FailClosed(
+            "Generator<Y, R> type carries no yield type argument — the checker must \
+             have populated the yield type by construction"
+                .into(),
+        )
+    })?;
+    let yield_llvm = resolve_ty(fn_ctx.ctx, yield_ty, fn_ctx.record_layouts)?;
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let i8_ty = fn_ctx.ctx.i8_type();
+    // `{ ptr handle, ptr env, i8 started, Y out_value }`. The two `ptr` fields
+    // lead (offsets 0, 8) so the runtime destroy reads them without knowing `Y`.
+    // Unpacked (natural alignment) so the out-value's load/store honour `Y`'s
+    // alignment.
+    let companion = fn_ctx.ctx.struct_type(
+        &[ptr_ty.into(), ptr_ty.into(), i8_ty.into(), yield_llvm],
+        false,
+    );
+    Ok((yield_llvm, companion))
+}
+
 fn lower_terminator<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbols: &FnSymbolMap<'ctx>,
@@ -33843,203 +34024,89 @@ fn lower_terminator<'ctx>(
             emit_trap_with_code(fn_ctx, code, "trap")?;
         }
         Terminator::Yield { value, next } => {
-            // Generator suspension (thread-based runtime, `hew-runtime/src/generator.rs`).
+            // Generator suspension on the `llvm.coro.*` continuation substrate.
             //
-            // Producer contract (`lower_gen_block`): the enclosing gen-body
-            // function has two leading pointer parameters — `Local(0)` is the
-            // body-argument copy (unused here) and `Local(1)` is the
-            // `*mut HewGenCtx` runtime context. The body fn signature matches
-            // the runtime's `body_fn: extern "C" fn(*mut c_void, *mut HewGenCtx)`
-            // that `hew_gen_ctx_create` expects.
+            // Producer contract (`lower_gen_block`): the gen-body function is a
+            // coroutine ramp whose `Local(0)` is the out-pointer `*mut Y` — the
+            // value channel. Each `yield` publishes its value there then suspends:
+            //   1. Load `out = Local(0)` (the consumer's companion out-slot).
+            //   2. Store `value` into `*out` (the yielded value rides the frame
+            //      out-pointer — NOT `hew_cont_poll`'s out_value arg, which the
+            //      runtime accepts and ignores; the body owns the publish).
+            //   3. `coro.suspend(resume = next, cleanup, suspend_return,
+            //      is_final = false)` via `CoroContext::emit_suspend`. Control
+            //      returns to the executor (consumer); a `hew_cont_resume` lands
+            //      on `next` (case 0); a `hew_cont_destroy` tears the frame down
+            //      through the shared cleanup epilogue (case 1).
             //
-            // Lowering shape:
-            //   1. Load `ctx = *Local(1)` (the gen-context pointer).
-            //   2. Materialise `(payload_ptr, payload_size)` for `value`.
-            //   3. Call `hew_gen_yield(ctx, payload_ptr, payload_size) -> i1`.
-            //      The runtime deep-copies `payload_size` bytes from
-            //      `payload_ptr` (so the local slot may continue to be used
-            //      after the call) and blocks on the resume channel.
-            //   4. If the return is `true`, branch to `next` (resume point).
-            //      If `false`, the consumer cancelled / dropped the generator:
-            //      return immediately from the body function so the runtime
-            //      thread can hit its `catch_unwind`/done-sentinel path.
-            //
-            // `Local(1)` is the only place where the ctx pointer lives; the
-            // producer never writes to it after the prologue. The load type
-            // is `ptr` (opaque LLVM pointer) because the slot's resolved
-            // type is `ResolvedTy::Pointer { is_mutable: true, pointee: Unit }`
-            // which `primitive_to_llvm` lowers to an opaque pointer.
-            let (ctx_slot, _ctx_slot_ty) = fn_ctx.locals.get(&1).copied().ok_or_else(|| {
+            // The yielded value is COPIED into `*out` (a value store), never a
+            // pointer to a body-local slot that is dead across the suspend.
+            // CoroSplit spills the body's cross-suspend-live locals into the heap
+            // frame automatically; the out-slot lives in the consumer's companion
+            // (heap), reachable after every resume.
+            let coro = fn_ctx.coro.ok_or_else(|| {
                 CodegenError::FailClosed(
-                    "Terminator::Yield: gen-body function has no Local(1) \
-                         ctx-pointer parameter — the `lower_gen_block` producer \
-                         must prepend `*mut HewGenCtx` as the body fn's second \
-                         parameter before codegen runs"
+                    "Terminator::Yield reached codegen but the function carries no \
+                     coro prologue state — lower_function must detect the Yield \
+                     carrier (has_suspend) and emit the coro prologue before the body"
+                        .into(),
+                )
+            })?;
+            // The out-pointer parameter slot (Local(0)). Loaded as an opaque
+            // `ptr`; its pointee is the yield type `Y`.
+            let (out_slot, _out_slot_ty) = fn_ctx.locals.get(&0).copied().ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "Terminator::Yield: gen-body coroutine ramp has no Local(0) \
+                     out-pointer parameter — `lower_gen_block` must prepend the \
+                     out-pointer `*mut Y` as the ramp's first parameter"
                         .to_string(),
                 )
             })?;
             let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-            let ctx_ptr = fn_ctx
+            let out_ptr = fn_ctx
                 .builder
-                .build_load(ptr_ty, ctx_slot, "gen_ctx_load")
-                .llvm_ctx("gen ctx load")?
+                .build_load(ptr_ty, out_slot, "gen_out_ptr")
+                .llvm_ctx("gen out-pointer load")?
                 .into_pointer_value();
-            let (payload_ptr, payload_size) =
-                actor_payload_ptr_size(fn_ctx, *value, "gen_yield_payload")?;
-            let yield_fn = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_gen_yield",
-            )?;
-            let keep_going = fn_ctx
+            // Publish the yielded value to `*out`. `place_load_value` reads the
+            // value out of `value`'s slot at its resolved LLVM type; the store
+            // copies it into the consumer-owned out-slot.
+            let (value_ptr, value_ty) = place_pointer(fn_ctx, *value)?;
+            let yielded = fn_ctx
                 .builder
-                .build_call(
-                    yield_fn,
-                    &[ctx_ptr.into(), payload_ptr.into(), payload_size.into()],
-                    "hew_gen_yield_call",
-                )
-                .llvm_ctx("hew_gen_yield call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_gen_yield returned void".into()))?
-                .into_int_value();
-
-            let parent_fn = fn_ctx
+                .build_load(value_ty, value_ptr, "gen_yield_value")
+                .llvm_ctx("gen yield value load")?;
+            fn_ctx
                 .builder
-                .get_insert_block()
-                .and_then(|bb| bb.get_parent())
-                .ok_or_else(|| CodegenError::Llvm("yield block has no parent function".into()))?;
-            let cancel_bb = fn_ctx
-                .ctx
-                .append_basic_block(parent_fn, "gen_yield_cancelled");
-            // Cancel-observation block: emitted on the resume-success branch
-            // out of `hew_gen_yield` (generators substrate cancel-observation seam —
-            // always-emit per Tenet 1 / LESSONS P0 `boundary-fail-closed`).
-            // The runtime helper tolerates a null token (`cabi_guard!`
-            // returns 0), so emitting against a null pointer today keeps the
-            // seam fail-closed-correct before the per-scope
-            // cancel token into the gen-context. The follow-up cancel-token surface replaces the null
-            // pointer with a load from a `ctx.cancel_token` field. The cost
-            // is one predictable branch per yield; the value is that a
-            // parent-scope cancel signalled while the generator was
-            // suspended at the yield is observed at the next instruction
-            // after resume rather than only when the consumer next drops the
-            // generator. Leaked-actor avoidance is the load-bearing
-            // invariant — see plan §6 R2.
-            let cancel_check_bb = fn_ctx
-                .ctx
-                .append_basic_block(parent_fn, "gen_yield_cancel_check");
-            let next_bb = *fn_ctx
+                .build_store(out_ptr, yielded)
+                .llvm_ctx("gen yield value publish")?;
+            // Suspend (non-final). The resume edge is the MIR `next` block; the
+            // destroy edge routes to the shared single-teardown cleanup epilogue.
+            let resume_bb = *fn_ctx
                 .blocks
                 .get(next)
                 .ok_or_else(|| CodegenError::FailClosed(format!("Yield next bb{next} missing")))?;
-            // `hew_gen_yield` returns `true` when the consumer asked for
-            // another value; `false` when the consumer cancelled (or the
-            // channel was dropped). Branch accordingly: the in-channel
-            // cancel goes straight to `cancel_bb`; a "keep going" reply
-            // routes through `cancel_check_bb` so an out-of-band scope
-            // cancel is observed before the body resumes user work.
-            fn_ctx
-                .builder
-                .build_conditional_branch(keep_going, cancel_check_bb, cancel_bb)
-                .llvm_ctx("yield cont branch")?;
-
-            // ── cancel_check_bb: scope-cancel observation ──
-            // Loads the live parent cancel-token snapshot via
-            // `hew_gen_ctx_parent_cancel_token(ctx_ptr)` (the generator
-            // context's borrowed reference to its consumer thread's
-            // `HewExecutionContext::cancel_token` at create time) and
-            // feeds it into `hew_cancel_token_is_requested`. The
-            // accessor returns null when no enclosing execution context
-            // was installed at create time; `hew_cancel_token_is_requested`
-            // tolerates null (cabi_guard! returns 0), so the seam stays
-            // fail-closed-correct in test-fixture and root-scope paths.
-            // This is the load-bearing operand swap that promotes the
-            // generators substrate cancel-observation seam from a
-            // const-null observer to a live parent-scope observer:
-            // a parent-scope cancel signalled while the generator was
-            // suspended at the yield is now observed at the next
-            // instruction after resume rather than only when the
-            // consumer next drops the generator.
-            fn_ctx.builder.position_at_end(cancel_check_bb);
-            let parent_token_fn = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_gen_ctx_parent_cancel_token",
+            let cc = crate::coro::CoroContext {
+                ctx: fn_ctx.ctx,
+                llvm_mod: fn_ctx.llvm_mod,
+                builder: &fn_ctx.builder,
+                function: fn_ctx
+                    .builder
+                    .get_insert_block()
+                    .and_then(|bb| bb.get_parent())
+                    .ok_or_else(|| {
+                        CodegenError::Llvm("yield block has no parent function".into())
+                    })?,
+                handle: coro.handle,
+                id_token: coro.id_token,
+            };
+            cc.emit_suspend(
+                resume_bb,
+                coro.cleanup_block,
+                coro.suspend_return_block,
+                false,
+                "gen_yield",
             )?;
-            let parent_token = fn_ctx
-                .builder
-                .build_call(
-                    parent_token_fn,
-                    &[ctx_ptr.into()],
-                    "hew_gen_ctx_parent_cancel_token_call",
-                )
-                .llvm_ctx("hew_gen_ctx_parent_cancel_token call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("hew_gen_ctx_parent_cancel_token returned void".into())
-                })?
-                .into_pointer_value();
-            let cancel_token_check_fn = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_cancel_token_is_requested",
-            )?;
-            let cancel_status = fn_ctx
-                .builder
-                .build_call(
-                    cancel_token_check_fn,
-                    &[parent_token.into()],
-                    "hew_cancel_token_is_requested_call",
-                )
-                .llvm_ctx("hew_cancel_token_is_requested call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("hew_cancel_token_is_requested returned void".into())
-                })?
-                .into_int_value();
-            let zero_i32 = fn_ctx.ctx.i32_type().const_zero();
-            let cancel_requested = fn_ctx
-                .builder
-                .build_int_compare(
-                    inkwell::IntPredicate::NE,
-                    cancel_status,
-                    zero_i32,
-                    "gen_yield_cancel_requested",
-                )
-                .llvm_ctx("cancel status cmp")?;
-            fn_ctx
-                .builder
-                .build_conditional_branch(cancel_requested, cancel_bb, next_bb)
-                .llvm_ctx("yield cancel-observation branch")?;
-
-            // Cancel path: return from the body function. The runtime thread
-            // unwraps the return at the catch_unwind boundary, frees the
-            // body_arg copy, and sends the done sentinel to the consumer.
-            // The return value is undef because the consumer never observes
-            // a body-completion value through the thread-based runtime
-            // (only yields propagate over the channel); the return slot is
-            // never reached on this cancel path. Returning unit/void would
-            // require declare_function to accept Unit returns, which is out
-            // of the current spine — fall back to an `unreachable` after a
-            // trap-style `return ConstNull` would be misleading. Use the
-            // return slot's existing alloca (which may be uninit) to
-            // satisfy LLVM's typing without changing the body fn signature
-            // contract.
-            fn_ctx.builder.position_at_end(cancel_bb);
-            let ret_val = fn_ctx
-                .builder
-                .build_load(fn_ctx.return_ty, fn_ctx.return_slot, "gen_cancel_ret")
-                .llvm_ctx("gen cancel ret load")?;
-            fn_ctx
-                .builder
-                .build_return(Some(&ret_val))
-                .llvm_ctx("gen cancel ret")?;
         }
         Terminator::MakeGenerator {
             dest,
@@ -34047,25 +34114,32 @@ fn lower_terminator<'ctx>(
             next,
             env,
         } => {
-            // Generator construction (thread-based runtime,
-            // `hew-runtime/src/generator.rs:132`). The MIR producer
-            // (`lower_gen_block`) emitted this terminator with the deterministic
-            // `__hew_gen_body_*` body-fn name; codegen resolves that function's
-            // address and calls `hew_gen_ctx_create(<&body_fn>, arg, size)`,
-            // storing the returned `*mut HewGenCtx` handle into `dest`.
+            // Generator construction on the `llvm.coro.*` continuation
+            // substrate. The MIR producer (`lower_gen_block`) emitted this
+            // terminator with the deterministic `__hew_gen_body_*` body-fn name;
+            // that body is an `llvm.coro` ramp (it carries `Terminator::Yield`,
+            // detected by `is_coroutine` in `declare_function`, so its LLVM
+            // return type is the `coro.begin` handle `ptr` and its leading param
+            // is the out-pointer `*mut Y`, optionally followed by the env ptr).
             //
-            // Body arg: a capture-free generator passes `(null, 0)`. When the
-            // body captures BitCopy free variables (`gen fn` params / `gen { }`
-            // captured outer locals), `env` is `Some` — the stack env record
-            // `lower_gen_block` built in this frame. Pass its address + byte
-            // size. `hew_gen_ctx_create` deep-copies `arg_size` bytes
-            // SYNCHRONOUSLY on the caller thread (before `thread::spawn`) and
-            // frees that copy when the body thread ends, so a stack pointer is
-            // safe and NO malloc/memcpy is needed here — unlike the lambda-actor
-            // path, which owns the whole heap-env protocol. Captures are
-            // plain-copyable only — `BitCopy` AND transitively opaque-handle-free
-            // (`gen_env_capture_admissible` fail-closes owned and opaque
-            // captures) — so there are no per-field clones or env-field drops.
+            // Construction shape (mirrors the proven `coro_emission_exec`
+            // driver):
+            //   1. Heap-allocate the companion `{ ptr handle, Y out_value }` via
+            //      `hew_alloc` — the `Generator<Y, R>` value points at it.
+            //   2. Call `__hew_gen_body(&companion.out_value, env_ptr?)`. The
+            //      ramp runs the body to its FIRST `coro.suspend` (the first
+            //      `yield`, with the first value already published to
+            //      `*out_value`) and returns the `coro.begin` handle.
+            //   3. Store the returned handle into `companion.handle`.
+            //   4. Store the companion pointer into the `Generator<Y, R>` slot.
+            //
+            // The env (capture record) is passed by ADDRESS into the ramp's
+            // env param: the coro frame is single-owner (no body thread), so the
+            // body reads the caller's env record directly while constructing the
+            // frame — no deep-copy/thread-boundary protocol is needed. Captures
+            // are plain-copyable only (`gen_env_capture_admissible` fail-closes
+            // owned and opaque captures), so the body's env reads are read-only
+            // views and there is no per-field clone or env-field drop.
             let body_function = fn_ctx.llvm_mod.get_function(body_fn).ok_or_else(|| {
                 CodegenError::FailClosed(format!(
                     "Terminator::MakeGenerator: generator body fn `{body_fn}` was not \
@@ -34073,20 +34147,90 @@ fn lower_terminator<'ctx>(
                      register the `__hew_gen_body_*` function in the pipeline"
                 ))
             })?;
-            let body_fn_ptr = body_function.as_global_value().as_pointer_value();
             let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-            let (arg_ptr, arg_size): (BasicMetadataValueEnum, BasicMetadataValueEnum) = match env {
-                None => (
-                    ptr_ty.const_null().into(),
-                    fn_ctx.ctx.i64_type().const_zero().into(),
-                ),
+
+            // ── 1. Heap-allocate the companion via `hew_cont_frame_alloc`. ──
+            // The companion `{ ptr handle, i8 started, Y out_value }` is allocated
+            // through the SAME size-headered allocator the coro frame uses, so its
+            // scope-exit drop (`hew_gen_coro_destroy` → `hew_cont_frame_free`) is
+            // symmetric without separate size bookkeeping. `hew_cont_frame_alloc`
+            // 16-byte-aligns every block, which covers `Y`'s alignment for every
+            // Hew scalar / pointer / aggregate (the same invariant the coro frame
+            // itself relies on, `cont.rs` FRAME_ALIGN).
+            let (_yield_llvm, companion_ty) = generator_coro_companion_ty(fn_ctx, *dest)?;
+            let companion_size = companion_ty.size_of().ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "generator coro companion struct has no static size".into(),
+                )
+            })?;
+            let alloc_fn = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_cont_frame_alloc",
+            )?;
+            let companion = fn_ctx
+                .builder
+                .build_call(alloc_fn, &[companion_size.into()], "gen_companion_alloc")
+                .llvm_ctx("gen companion hew_cont_frame_alloc call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_cont_frame_alloc returned void".into())
+                })?
+                .into_pointer_value();
+
+            // ── 2. Init the `started` gate (field 2) to 0: the consumer's first
+            // `.next()` reads the pre-positioned first value WITHOUT resuming.
+            let started_ptr = fn_ctx
+                .builder
+                .build_struct_gep(companion_ty, companion, 2, "gen_companion_started_ptr")
+                .map_err(|e| {
+                    CodegenError::FailClosed(format!("gen companion started GEP failed: {e:?}"))
+                })?;
+            fn_ctx
+                .builder
+                .build_store(started_ptr, fn_ctx.ctx.i8_type().const_zero())
+                .llvm_ctx("gen companion started init")?;
+
+            // ── 3. Heap-copy the capture env (field 1) and assemble ramp args. ──
+            // The body reads its free variables through the env pointer ACROSS
+            // suspends, long after this constructing frame has returned — so the
+            // env MUST be heap-owned, not the caller's stack record. Heap-copy the
+            // env into a fresh block now (the caller's record is live HERE), store
+            // its pointer in the companion (freed by `hew_gen_coro_destroy`), and
+            // pass THAT to the ramp. Captures are plain-copyable only
+            // (`gen_env_capture_admissible` rejects owned/opaque), so a flat
+            // memcpy + flat free is sound — no per-field clone or drop.
+            let env_field_ptr = fn_ctx
+                .builder
+                .build_struct_gep(companion_ty, companion, 1, "gen_companion_env_ptr")
+                .map_err(|e| {
+                    CodegenError::FailClosed(format!("gen companion env GEP failed: {e:?}"))
+                })?;
+            let out_value_ptr = fn_ctx
+                .builder
+                .build_struct_gep(companion_ty, companion, 3, "gen_companion_out_ptr")
+                .map_err(|e| {
+                    CodegenError::FailClosed(format!("gen companion out-value GEP failed: {e:?}"))
+                })?;
+            let mut ramp_args: Vec<BasicMetadataValueEnum> = vec![out_value_ptr.into()];
+            match env {
+                None => {
+                    // Capture-free: no env. Null the companion env field so the
+                    // destroy's `hew_dealloc(null)` is a no-op.
+                    fn_ctx
+                        .builder
+                        .build_store(env_field_ptr, ptr_ty.const_null())
+                        .llvm_ctx("gen companion env null")?;
+                }
                 Some(env_place) => {
                     let (env_slot, env_slot_ty) = place_pointer(fn_ctx, *env_place)?;
                     let BasicTypeEnum::StructType(env_struct) = env_slot_ty else {
                         return Err(CodegenError::FailClosed(format!(
                             "MakeGenerator env place {env_place:?} is not struct-typed \
-                                 (got {env_slot_ty:?}); the capture env must be the \
-                                 RecordInit'd env record"
+                             (got {env_slot_ty:?}); the capture env must be the \
+                             RecordInit'd env record"
                         )));
                     };
                     let env_size = env_struct.size_of().ok_or_else(|| {
@@ -34094,36 +34238,76 @@ fn lower_terminator<'ctx>(
                             "MakeGenerator env struct has no static size".into(),
                         )
                     })?;
-                    (env_slot.into(), env_size.into())
+                    // Allocate the heap env through the size-headered
+                    // `hew_cont_frame_alloc`, so `hew_gen_coro_destroy` frees it
+                    // via the symmetric `hew_cont_frame_free` without separate
+                    // (size, align) bookkeeping. 16-byte aligned — covers the env
+                    // record's alignment (plain-copyable fields only).
+                    let env_alloc_fn = intern_runtime_decl(
+                        fn_ctx.ctx,
+                        fn_ctx.llvm_mod,
+                        &mut fn_ctx.runtime_decls.borrow_mut(),
+                        "hew_cont_frame_alloc",
+                    )?;
+                    let heap_env = fn_ctx
+                        .builder
+                        .build_call(env_alloc_fn, &[env_size.into()], "gen_env_alloc")
+                        .llvm_ctx("gen env hew_cont_frame_alloc call")?
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed("hew_cont_frame_alloc returned void".into())
+                        })?
+                        .into_pointer_value();
+                    fn_ctx
+                        .builder
+                        .build_memcpy(heap_env, 1, env_slot, 1, env_size)
+                        .map_err(|e| {
+                            CodegenError::FailClosed(format!(
+                                "MakeGenerator env memcpy failed: {e:?}"
+                            ))
+                        })?;
+                    fn_ctx
+                        .builder
+                        .build_store(env_field_ptr, heap_env)
+                        .llvm_ctx("gen companion env store")?;
+                    ramp_args.push(heap_env.into());
                 }
-            };
-            let create_fn = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_gen_ctx_create",
-            )?;
+            }
             let gen_handle = fn_ctx
                 .builder
-                .build_call(
-                    create_fn,
-                    &[body_fn_ptr.into(), arg_ptr, arg_size],
-                    "hew_gen_ctx_create_call",
-                )
-                .llvm_ctx("hew_gen_ctx_create call")?
+                .build_call(body_function, &ramp_args, "gen_body_ramp_call")
+                .llvm_ctx("generator coro ramp call")?
                 .try_as_basic_value()
                 .basic()
                 .ok_or_else(|| {
-                    CodegenError::FailClosed("hew_gen_ctx_create returned void".into())
+                    CodegenError::FailClosed(
+                        "generator coro ramp returned void; a coroutine ramp must return \
+                         its coro.begin handle (ptr)"
+                            .into(),
+                    )
+                })?
+                .into_pointer_value();
+
+            // ── 3. Store the handle into `companion.handle` (field 0). ──
+            let handle_ptr = fn_ctx
+                .builder
+                .build_struct_gep(companion_ty, companion, 0, "gen_companion_handle_ptr")
+                .map_err(|e| {
+                    CodegenError::FailClosed(format!("gen companion handle GEP failed: {e:?}"))
                 })?;
-            // Store the handle into the generator value slot. The slot's
-            // resolved type is `Generator<Y, R>`, lowered to an opaque `ptr` by
-            // `primitive_to_llvm`, so the store is a plain pointer store.
+            fn_ctx
+                .builder
+                .build_store(handle_ptr, gen_handle)
+                .llvm_ctx("gen companion handle store")?;
+
+            // ── 4. Store the companion ptr into the `Generator<Y, R>` slot. ──
             let (dest_slot, _dest_ty) = place_pointer(fn_ctx, *dest)?;
             fn_ctx
                 .builder
-                .build_store(dest_slot, gen_handle)
-                .llvm_ctx("hew_gen_ctx_create handle store")?;
+                .build_store(dest_slot, companion)
+                .llvm_ctx("generator companion ptr store")?;
+            let _ = ptr_ty;
             let next_bb = *fn_ctx.blocks.get(next).ok_or_else(|| {
                 CodegenError::FailClosed(format!("MakeGenerator next bb{next} missing"))
             })?;
@@ -37041,7 +37225,12 @@ fn declare_function<'ctx>(
     let is_coroutine = func.blocks.iter().any(|b| {
         matches!(
             b.terminator,
-            Terminator::Suspend { .. }
+            // `Terminator::Yield` makes a generator body a coroutine ramp: the
+            // generator substrate lowers `yield` to `coro.suspend` on the same
+            // `llvm.coro.*` substrate as the await family, so a `Yield`-carrying
+            // body returns the `coro.begin` handle (`ptr`) like any other ramp.
+            Terminator::Yield { .. }
+                | Terminator::Suspend { .. }
                 | Terminator::SuspendingAsk { .. }
                 | Terminator::SuspendingRead { .. }
                 | Terminator::SuspendingCallClosure { .. }
@@ -37558,7 +37747,12 @@ fn lower_function<'ctx>(
     let has_suspend = func.blocks.iter().any(|b| {
         matches!(
             b.terminator,
-            Terminator::Suspend { .. }
+            // A generator body's `yield` is a `coro.suspend` on this same
+            // substrate (the `Terminator::Yield` codegen arm calls
+            // `CoroContext::emit_suspend`), so a `Yield`-carrying body needs the
+            // coro prologue + shared cleanup/suspend-return epilogue emitted.
+            Terminator::Yield { .. }
+                | Terminator::Suspend { .. }
                 | Terminator::SuspendingAsk { .. }
                 | Terminator::SuspendingRead { .. }
                 | Terminator::SuspendingCallClosure { .. }
@@ -37658,15 +37852,25 @@ fn lower_function<'ctx>(
             .blocks
             .iter()
             .any(|b| matches!(b.terminator, Terminator::Suspend { is_final: true, .. }));
-        // A SuspendingAsk-driven coroutine (no explicit final Suspend) completes
-        // at its `Return` terminator(s). Reserve ONE shared final-suspend block
-        // that every `Return` branches to, so the body-side reply deposit + the
-        // synthesized `coro.suspend(is_final=true)` are emitted exactly once
-        // regardless of how many return paths the handler has — mirroring the
-        // shared `cleanup_block` / `suspend_return_block` plumbing. The body of
-        // this block is filled in the coroutine epilogue (where the reply value
-        // type and `return_slot` are settled). A generator (explicit final)
-        // needs no such block: its `Return` arm just `ret`s the handle.
+        // A generator body carries `Terminator::Yield` (its non-final suspends)
+        // and completes at its `Return` — it has no explicit final `Suspend`.
+        // Its completion routes through the shared `final_suspend_block` like a
+        // SuspendingAsk coroutine, but the block emits a VALUE-FREE final suspend
+        // (the value channel is the out-pointer, not a reply channel).
+        let is_generator = func
+            .blocks
+            .iter()
+            .any(|b| matches!(b.terminator, Terminator::Yield { .. }));
+        // A coroutine with no explicit final Suspend (a SuspendingAsk handler OR
+        // a generator) completes at its `Return` terminator(s). Reserve ONE
+        // shared final-suspend block that every `Return` branches to, so the
+        // (reply deposit for await; value-free for generators) + the synthesized
+        // `coro.suspend(is_final=true)` are emitted exactly once regardless of
+        // how many return paths the body has — mirroring the shared
+        // `cleanup_block` / `suspend_return_block` plumbing. The body of this
+        // block is filled in the coroutine epilogue. A coroutine that ALREADY
+        // carries an explicit final Suspend needs no such block: its `Return`
+        // arm just `ret`s the handle.
         let final_suspend_block = if has_explicit_final_suspend {
             None
         } else {
@@ -37680,6 +37884,7 @@ fn lower_function<'ctx>(
             logical_return_ty,
             has_explicit_final_suspend,
             final_suspend_block,
+            is_generator,
         })
     } else {
         None
@@ -38543,7 +38748,13 @@ fn lower_function<'ctx>(
         // arm so it runs exactly once at the convergence point.
         if let Some(final_suspend_block) = coro.final_suspend_block {
             fn_ctx.builder.position_at_end(final_suspend_block);
-            if let Some(logical_ty) = coro.logical_return_ty {
+            // A GENERATOR deposits no reply on completion — its value channel is
+            // the out-pointer, surfaced per-yield, not a reply channel. Its
+            // `Return` (body run off the end) just flips `coro.done` via this
+            // value-free final suspend so the consumer's next `GeneratorNext`
+            // observes `None`. Skip the await-family `hew_get_reply_channel` /
+            // `hew_reply` deposit entirely.
+            if let Some(logical_ty) = coro.logical_return_ty.filter(|_| !coro.is_generator) {
                 let loaded = fn_ctx
                     .builder
                     .build_load(logical_ty, fn_ctx.return_slot, "coro_ret_val")
@@ -45014,39 +45225,42 @@ mod tests {
     /// of `g.next()` requires `.next()` HIR rewrite + `hew_gen_ctx_create`
     /// emission from the enclosing fn, both of which are tracked separately.
     #[test]
-    fn yield_terminator_emits_hew_gen_yield_call_and_module_verifies() {
+    fn yield_terminator_lowers_to_coro_suspend_and_publishes_out_pointer() {
+        // A generator body carrying `Terminator::Yield` lowers to an
+        // `llvm.coro` switched-resume coroutine ramp: it is marked
+        // `presplitcoroutine`, publishes the yielded value to its out-pointer
+        // (`Local(0)`) before each `coro.suspend`, and emits NO thread-runtime
+        // `hew_gen_*` calls. This is the codegen-side contract for the
+        // generator→coro reroute.
         let ptr_ty = ResolvedTy::Pointer {
             is_mutable: true,
             pointee: Box::new(ResolvedTy::Unit),
         };
         let gen_body = RawMirFunction {
             name: "__hew_gen_body_test_0".to_string(),
-            return_ty: ResolvedTy::I64,
+            return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
-            // Local(0) = body arg ptr, Local(1) = *mut HewGenCtx — must match
-            // the runtime body_fn signature `extern "C" fn(*mut c_void, *mut HewGenCtx)`.
-            params: vec![ptr_ty.clone(), ptr_ty.clone()],
-            locals: vec![ptr_ty.clone(), ptr_ty.clone(), ResolvedTy::I64],
+            // Local(0) = out-pointer `*mut Y` — the coro ramp's only param for a
+            // capture-free generator.
+            params: vec![ptr_ty.clone()],
+            locals: vec![ptr_ty.clone(), ResolvedTy::I64],
             blocks: vec![
                 BasicBlock {
                     id: 0,
                     statements: Vec::new(),
                     instructions: vec![Instr::ConstI64 {
-                        dest: Place::Local(2),
+                        dest: Place::Local(1),
                         value: 7,
                     }],
                     terminator: Terminator::Yield {
-                        value: Place::Local(2),
+                        value: Place::Local(1),
                         next: 1,
                     },
                 },
                 BasicBlock {
                     id: 1,
                     statements: Vec::new(),
-                    instructions: vec![Instr::Move {
-                        dest: Place::ReturnSlot,
-                        src: Place::Local(2),
-                    }],
+                    instructions: Vec::new(),
                     terminator: Terminator::Return,
                 },
             ],
@@ -45085,42 +45299,31 @@ mod tests {
         let m = build_module(&ctx, &pipeline, "gen_yield_codegen_test")
             .expect("Terminator::Yield must lower without error");
         let ir = m.print_to_string().to_string();
+        // The body is a presplit coroutine carrying the coro intrinsics.
         assert!(
-            ir.contains("call i1 @hew_gen_yield"),
-            "Yield arm must emit a call to hew_gen_yield; got IR:\n{ir}"
-        );
-        // Cancel-observation seam: every Yield arm emits a post-resume
-        // `hew_cancel_token_is_requested` call whose operand is the live
-        // parent cancel-token snapshot loaded via
-        // `hew_gen_ctx_parent_cancel_token(ctx_ptr)`. The accessor call
-        // MUST precede the observation call in the IR so the operand
-        // dependency is well-formed; both calls are mandatory.
-        assert!(
-            ir.contains("call ptr @hew_gen_ctx_parent_cancel_token"),
-            "Yield arm must load the parent cancel-token snapshot via \
-             hew_gen_ctx_parent_cancel_token before the observation call; \
-             got IR:\n{ir}"
+            ir.contains("presplitcoroutine"),
+            "Yield-carrying gen body must be a presplitcoroutine ramp; got IR:\n{ir}"
         );
         assert!(
-            ir.contains("call i32 @hew_cancel_token_is_requested"),
-            "Yield arm must emit a cancel-observation call after resume \
-             (always-emit cancel-observation per Tenet 1); got IR:\n{ir}"
+            ir.contains("@llvm.coro.suspend"),
+            "Yield arm must emit llvm.coro.suspend; got IR:\n{ir}"
         );
-        // The cancel-observation branches through a dedicated block so the
-        // resume-success edge is structurally observable.
+        // The reroute removes EVERY thread-runtime generator symbol.
         assert!(
-            ir.contains("gen_yield_cancel_check"),
-            "cancel-observation block label must surface in IR; got IR:\n{ir}"
+            !ir.contains("hew_gen_yield"),
+            "Yield arm must NOT emit the thread-runtime hew_gen_yield; got IR:\n{ir}"
         );
-        // Sanity: the const-null operand from the pre-swap seam must no
-        // longer appear as the observation call's argument. We grep the IR
-        // for the specific call-site form that the pre-swap path emitted
-        // (`hew_cancel_token_is_requested(ptr null)`); the post-swap form
-        // passes the parent_token SSA result instead.
         assert!(
-            !ir.contains("call i32 @hew_cancel_token_is_requested(ptr null)"),
-            "Yield arm must NOT pass const-null to hew_cancel_token_is_requested \
-             after the cancel-token-surface swap; got IR:\n{ir}"
+            !ir.contains("hew_gen_ctx_parent_cancel_token"),
+            "the thread-runtime cancel-observation seam must be gone; got IR:\n{ir}"
+        );
+        // The value is loaded then published to the out-pointer before suspend
+        // (the value channel). `gen_out_ptr` is the loaded out-pointer SSA;
+        // `gen_yield_value` is the loaded yielded value.
+        assert!(
+            ir.contains("gen_out_ptr") && ir.contains("gen_yield_value"),
+            "Yield arm must load the out-pointer and the yielded value, then \
+             publish; got IR:\n{ir}"
         );
         assert!(
             m.verify().is_ok(),
@@ -45128,12 +45331,14 @@ mod tests {
         );
     }
 
-    /// An enclosing function carrying a `Terminator::MakeGenerator` must emit a
-    /// call to `hew_gen_ctx_create` passing the gen-body function pointer, store
-    /// the returned handle into the `Generator<Y, R>` value slot, and verify.
-    /// This is the codegen-side contract for Slice 1's construction seam.
+    /// An enclosing function carrying a `Terminator::MakeGenerator` must
+    /// heap-allocate the generator companion, call the gen-body coro RAMP with
+    /// the companion's out-pointer (the ramp returns the `coro.begin` handle),
+    /// store that handle into the companion, store the companion into the
+    /// `Generator<Y, R>` value slot, and verify. This is the codegen-side
+    /// contract for the coro construction seam.
     #[test]
-    fn make_generator_terminator_emits_hew_gen_ctx_create_and_module_verifies() {
+    fn make_generator_terminator_constructs_coro_companion_and_module_verifies() {
         let ptr_ty = ResolvedTy::Pointer {
             is_mutable: true,
             pointee: Box::new(ResolvedTy::Unit),
@@ -45144,21 +45349,36 @@ mod tests {
             builtin: Some(hew_types::BuiltinType::Generator),
             is_opaque: false,
         };
-        // The gen-body function the construction site references (mirrors what
-        // `lower_gen_block` mints). Its signature is the runtime body_fn
-        // contract `extern "C" fn(*mut c_void, *mut HewGenCtx)`.
+        // The gen-body coro ramp the construction site references (mirrors what
+        // `lower_gen_block` mints): a single leading out-pointer param `*mut Y`,
+        // and it carries `Terminator::Yield` so `is_coroutine` overrides its LLVM
+        // return type to the `coro.begin` handle (`ptr`).
         let gen_body = RawMirFunction {
             name: "__hew_gen_body_make_test_0".to_string(),
             return_ty: ResolvedTy::Unit,
             call_conv: FunctionCallConv::Default,
-            params: vec![ptr_ty.clone(), ptr_ty.clone()],
-            locals: vec![ptr_ty.clone(), ptr_ty.clone()],
-            blocks: vec![BasicBlock {
-                id: 0,
-                statements: Vec::new(),
-                instructions: Vec::new(),
-                terminator: Terminator::Return,
-            }],
+            params: vec![ptr_ty.clone()],
+            locals: vec![ptr_ty.clone(), ResolvedTy::I64],
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: vec![Instr::ConstI64 {
+                        dest: Place::Local(1),
+                        value: 7,
+                    }],
+                    terminator: Terminator::Yield {
+                        value: Place::Local(1),
+                        next: 1,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                },
+            ],
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
@@ -45229,14 +45449,23 @@ mod tests {
         let m = build_module(&ctx, &pipeline, "make_generator_codegen_test")
             .expect("Terminator::MakeGenerator must lower without error");
         let ir = m.print_to_string().to_string();
+        // The companion is heap-allocated via the size-headered coro allocator.
         assert!(
-            ir.contains("call ptr @hew_gen_ctx_create"),
-            "MakeGenerator arm must emit a call to hew_gen_ctx_create; got IR:\n{ir}"
+            ir.contains("@hew_cont_frame_alloc"),
+            "MakeGenerator must allocate the companion via hew_cont_frame_alloc; \
+             got IR:\n{ir}"
         );
-        // The construction passes the gen-body function address as the first arg.
+        // The construction CALLS the gen-body coro ramp directly (not the deleted
+        // hew_gen_ctx_create).
         assert!(
-            ir.contains("@__hew_gen_body_make_test_0"),
-            "MakeGenerator must reference the gen-body function pointer; got IR:\n{ir}"
+            ir.contains("call ptr @__hew_gen_body_make_test_0"),
+            "MakeGenerator must call the gen-body coro ramp returning the handle; \
+             got IR:\n{ir}"
+        );
+        assert!(
+            !ir.contains("hew_gen_ctx_create"),
+            "MakeGenerator must NOT emit the thread-runtime hew_gen_ctx_create; \
+             got IR:\n{ir}"
         );
         assert!(
             m.verify().is_ok(),

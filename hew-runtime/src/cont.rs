@@ -302,6 +302,66 @@ pub unsafe extern "C" fn hew_cont_destroy(handle: *mut c_void) {
     unsafe { coro_destroy(handle) }
 }
 
+/// Destroy a generator's coro **companion** — the heap block a `Generator<Y, R>`
+/// value points at, laid out `{ ptr coro_handle, ptr env, i8 started, Y out }`
+/// and allocated by codegen via [`hew_cont_frame_alloc`]. The two leading `ptr`
+/// fields (handle at offset 0, env at offset 8) are read here at fixed offsets
+/// without knowing `Y`.
+///
+/// This is the SOLE teardown owner of a generator value, called exactly once at
+/// the generator's scope-exit drop (or early drop while suspended). It:
+///   1. reads the coro handle at offset 0 and [`hew_cont_destroy`]s it — the
+///      coro `cleanup` outline drops every value the body still owns in its
+///      frame (a value suspended mid-iteration, a cross-yield-live owned local),
+///      then frees the coro frame. Exactly the single-owner destroy discipline.
+///   2. reads the heap env at offset 8 and frees it via [`hew_cont_frame_free`]
+///      (null for a capture-free generator → no-op). The env holds only
+///      plain-copyable captures (`gen_env_capture_admissible` rejects
+///      owned/opaque), so a flat free with no per-field drop is sound.
+///   3. frees the companion block via [`hew_cont_frame_free`] (the symmetric
+///      partner of the `hew_cont_frame_alloc` codegen used). The companion's
+///      `out_value` field is a stale BIT-COPY of the last value the consumer
+///      already moved out by-value (into its `Option<Y>` payload); it is NOT
+///      dropped here — doing so would double-free the value the consumer owns.
+///      The live values live in the coro frame, dropped in step 1.
+///
+/// Null-safe (a never-constructed / already-dropped generator). After this the
+/// companion, its env, and its coro frame are dangling.
+///
+/// # Safety
+///
+/// `companion`, if non-null, MUST be a generator companion block from
+/// `hew_cont_frame_alloc` whose offset-0 word is a live (or null) coro handle
+/// and offset-8 word is a live (or null) env block (also from
+/// `hew_cont_frame_alloc`), not yet destroyed. Called exactly once per generator
+/// value.
+#[no_mangle]
+pub unsafe extern "C" fn hew_gen_coro_destroy(companion: *mut c_void) {
+    if companion.is_null() {
+        return;
+    }
+    // SAFETY: offset 0 of the companion is the coro handle (a `*mut c_void`),
+    // written by the `MakeGenerator` codegen. `read` is aligned (the companion
+    // is FRAME_ALIGN-aligned and the handle is the first field).
+    let handle = unsafe { ptr::read(companion.cast::<*mut c_void>()) };
+    // SAFETY: handle is the generator's coro frame handle (or null); destroy is
+    // the single teardown owner and runs the cleanup outline.
+    unsafe { hew_cont_destroy(handle) };
+    // SAFETY: offset 8 (one pointer past handle) is within the companion block
+    // (it has at least the two leading pointer fields), so advancing the base by
+    // 8 bytes lands at the env-pointer field.
+    let env_slot = unsafe { companion.cast::<u8>().add(8) };
+    // SAFETY: the env field is a `*mut c_void` written by the MakeGenerator
+    // codegen (or null). `read_unaligned` is sound regardless of the static
+    // alignment of the byte-offset cast (the field is in fact 8-aligned).
+    let env = unsafe { ptr::read_unaligned(env_slot.cast::<*mut c_void>()) };
+    // SAFETY: env came from hew_cont_frame_alloc (or is null); symmetric free.
+    unsafe { hew_cont_frame_free(env) };
+    // SAFETY: companion came from hew_cont_frame_alloc; this is its symmetric
+    // free (reads the size header hew_cont_frame_alloc stored).
+    unsafe { hew_cont_frame_free(companion) };
+}
+
 // ── coro-frame fn-pointer dispatch ────────────────────────────────────────
 //
 // CoroSplit stores the `.resume` and `.destroy` fn pointers at the start of

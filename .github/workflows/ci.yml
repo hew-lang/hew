@@ -387,6 +387,20 @@ jobs:
           tools: nextest,cargo-llvm-cov
           cache-shared-key: coverage
 
+      - name: Free runner disk
+        # cargo-llvm-cov instruments the full workspace and writes a separate
+        # target/llvm-cov-target/ tree on top of the normal target/. That
+        # combination — LLVM 22.1.5 download/install plus the instrumented
+        # build — has exhausted the runner disk at the LLVM install step
+        # (System.IO.IOException: No space left on device). Mirror the same
+        # preinstalled-toolchain purge the Linux build job carries (PR #1995).
+        if: env.RUN_CODE_PATH == 'true'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          sudo docker system prune -af >/dev/null 2>&1 || true
+          df -h /
+
       # hew-codegen-rs depends on inkwell -> llvm-sys-221, whose build
       # script requires LLVM_SYS_221_PREFIX. `cargo llvm-cov nextest
       # --workspace` resolves and compiles the full workspace.

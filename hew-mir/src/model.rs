@@ -3273,9 +3273,9 @@ pub enum Place {
 /// Integer comparison predicate. Maps 1:1 to LLVM `IntPredicate`. The
 /// signed-ness selector is intentional: Hew's spine treats `i64` as a
 /// signed 64-bit integer, so the default cmp lowerings are signed
-/// comparisons. Once unsigned types reach value-bearing positions in
-/// the spine, the lowering picks the unsigned variant from the same
-/// enum; the IR shape doesn't change.
+/// comparisons. For unsigned integer operands, `lower_binop_to_int_cmp`
+/// selects the `Unsigned*` variants so that high-bit-set values compare
+/// correctly (`0x8000… > 1` must be true for `u64`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmpPred {
     Eq,
@@ -3284,10 +3284,19 @@ pub enum CmpPred {
     SignedLessEq,
     SignedGreater,
     SignedGreaterEq,
+    /// Unsigned <: reinterprets both operands as unsigned. Used by
+    /// ordering comparisons on unsigned integer types.
+    UnsignedLess,
+    /// Unsigned ≤: reinterprets both operands as unsigned. Used by
+    /// ordering comparisons on unsigned integer types.
+    UnsignedLessEq,
+    /// Unsigned >: reinterprets both operands as unsigned. Used by
+    /// ordering comparisons on unsigned integer types.
+    UnsignedGreater,
     /// Unsigned ≥: reinterprets both operands as unsigned. Used by
-    /// shift-range checking to catch both negative shift counts (which
-    /// become large unsigned values) and counts ≥ bit-width in a single
-    /// compare. B-5 wires this; prior slices had no unsigned predicate.
+    /// ordering comparisons on unsigned integer types AND by shift-range
+    /// checking to catch both negative shift counts (which become large
+    /// unsigned values) and counts ≥ bit-width in a single compare.
     UnsignedGreaterEq,
 }
 

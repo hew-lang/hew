@@ -1,0 +1,10 @@
+// MIR-corpus fixture: managed string moved into HashSet.insert and not reused.
+//
+// This must compile: the move-checker consumes the source binding at insert,
+// but no later use observes the consumed binding.
+fn main() {
+    let words: HashSet<string> = HashSet::new();
+    let word = "behaviour";
+    words.insert(word);
+    println(words.len());
+}

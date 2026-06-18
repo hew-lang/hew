@@ -1091,6 +1091,67 @@ fn cowvalue_string_moved_into_tuple_rejects_post_move_use() {
 }
 
 #[test]
+fn managed_string_moved_into_hashset_insert_rejects_post_move_use() {
+    let p = lower_source(
+        r#"fn main() -> string {
+            let words: HashSet<string> = HashSet::new();
+            let word = "colour";
+            words.insert(word);
+            word
+        }"#,
+    );
+    assert!(
+        p.diagnostics.iter().any(
+            |d| matches!(&d.kind, MirDiagnosticKind::UseAfterConsume { name, .. } if name == "word")
+        ),
+        "reusing a managed string after HashSet.insert moves it into the set \
+         must fire UseAfterConsume: {:?}",
+        p.diagnostics
+    );
+}
+
+#[test]
+fn managed_string_moved_into_hashmap_insert_rejects_post_move_use() {
+    let p = lower_source(
+        r#"fn main() -> string {
+            let labels: HashMap<string, string> = HashMap::new();
+            let key = "k";
+            let value = "v";
+            labels.insert(key, value);
+            value
+        }"#,
+    );
+    assert!(
+        p.diagnostics.iter().any(
+            |d| matches!(&d.kind, MirDiagnosticKind::UseAfterConsume { name, .. } if name == "value")
+        ),
+        "reusing a managed string after HashMap.insert moves it into the map \
+         must fire UseAfterConsume: {:?}",
+        p.diagnostics
+    );
+}
+
+#[test]
+fn managed_string_insert_without_reuse_stays_clean() {
+    let p = lower_source(
+        r#"fn main() -> i64 {
+            let words: HashSet<string> = HashSet::new();
+            let word = "behaviour";
+            words.insert(word);
+            words.len()
+        }"#,
+    );
+    assert!(
+        !p.diagnostics
+            .iter()
+            .any(|d| matches!(&d.kind, MirDiagnosticKind::UseAfterConsume { .. })),
+        "moving a managed string into HashSet.insert without reusing it must not \
+         over-reject: {:?}",
+        p.diagnostics
+    );
+}
+
+#[test]
 fn checked_mir_rejects_use_of_uninitialised_binding() {
     // `let x;` declares without initialising; the subsequent `let _y = x;`
     // reads `x` before any `Bind` for it. The check fires on the

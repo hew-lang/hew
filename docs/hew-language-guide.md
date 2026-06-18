@@ -496,7 +496,12 @@ fn main() {
 }
 ```
 
-Inside a single actor and in free functions, pass values freely and keep using them. Do not defensively `.clone()` for ordinary fn calls. The move boundary is only at an actor send.
+Inside a single actor and in free functions, ordinary function calls do not move
+their arguments, so you can keep using those values afterward. Ownership-sink
+operations still move managed values: for example, `HashSet.insert(x)` and
+`HashMap.insert(k, v)` take ownership of managed string keys/elements/values. If
+you need to keep using the original after such an insert, pass `clone x` (or
+`x.clone()`) into the collection.
 
 ### .clone() produces an independent copy
 

@@ -16,6 +16,7 @@ Each `.hew` source in this directory exercises one `MirCheck` variant.
 | `use_after_consume_in_block.hew`   | `UseAfterConsume`            | shipping |
 | `init_before_use_in_block.hew`     | `InitialisedBeforeUse`       | shipping |
 | `use_after_consume_in_if.hew`      | `UseAfterConsume`            | shipping |
+| `use_after_hashset_insert_managed_string.hew` | `UseAfterConsume` | shipping |
 | `aliasing.hew`                     | `Aliasing`                   | deferred |
 | `generator_borrow.hew`             | `GeneratorBorrowAcrossYield` | deferred |
 | `actor_send_escape.hew`            | `ActorSendEscape`            | deferred |

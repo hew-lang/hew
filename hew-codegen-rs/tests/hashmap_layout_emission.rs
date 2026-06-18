@@ -70,6 +70,8 @@ fn base_pipeline(
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -131,6 +133,8 @@ fn emit_ll(pipeline: IrPipeline, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options)
         .expect("hashmap layout synthesis pipeline must emit successfully");
@@ -519,6 +523,8 @@ fn hash_thunk_dedup_one_per_record_per_module() {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -660,6 +666,8 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -783,6 +791,8 @@ fn hashmap_layout_emit_for_wasm_target_emits_descriptor_object() {
         native: false,
         wasm: true,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module_objects(&pipeline, &options)
         .expect("layout HashMap descriptor path must emit a wasm object");
@@ -838,6 +848,8 @@ fn hashset_layout_emit_for_wasm_target_emits_descriptor_object() {
         native: false,
         wasm: true,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module_objects(&pipeline, &options)
         .expect("layout HashSet descriptor path must emit a wasm object");
@@ -909,6 +921,8 @@ fn lower_hashmap_layout_probe_with_wrong_arity_fails_closed() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {
@@ -943,6 +957,8 @@ fn lower_hashset_layout_probe_with_wrong_arity_fails_closed() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {
@@ -974,6 +990,8 @@ fn lower_hashmap_layout_probe_with_dest_fails_closed() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {
@@ -1055,6 +1073,8 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),

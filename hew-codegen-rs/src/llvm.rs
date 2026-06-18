@@ -77,6 +77,10 @@ use hew_runtime::internal::types::{
 
 use inkwell::builder::Builder;
 use inkwell::context::Context;
+use inkwell::debug_info::{
+    AsDIScope, DICompileUnit, DIFile, DIFlags, DIFlagsConstants, DWARFEmissionKind,
+    DWARFSourceLanguage, DebugInfoBuilder,
+};
 use inkwell::intrinsics::Intrinsic;
 use inkwell::module::{Linkage, Module as LlvmModule};
 use inkwell::targets::{
@@ -325,6 +329,14 @@ pub struct EmitOptions<'a> {
     /// the deployment-target form (`<arch>-apple-macosx<version>`) so the
     /// object's minimum-OS tag matches the link step.
     pub target_triple: Option<&'a str>,
+    /// Whether to emit DWARF debug info (`hew build -g`). When `false` the
+    /// emitted module carries zero debug metadata (the legacy behaviour).
+    pub debug: bool,
+    /// Path to the originating Hew source file, used as the DWARF
+    /// `DICompileUnit`/`DIFile` and to build the byte-offset → line index for
+    /// function-entry locations. `None` (or `debug == false`) emits no debug
+    /// info. Only consulted when `debug` is `true`.
+    pub source_path: Option<&'a Path>,
 }
 
 /// Result of an emit: the paths of every produced artefact, for the CLI to
@@ -335,6 +347,81 @@ pub struct EmitArtefacts {
     pub native_obj_path: Option<std::path::PathBuf>,
     pub wasm_obj_path: Option<std::path::PathBuf>,
     pub wasm_path: Option<std::path::PathBuf>,
+}
+
+// ---------------------------------------------------------------------------
+// DWARF debug-info inputs (W0.060, `hew build -g`)
+// ---------------------------------------------------------------------------
+
+/// Source inputs for DWARF emission, threaded from [`EmitOptions`] when
+/// `hew build -g` requests debug info. Borrowed for the duration of a single
+/// module build. `None` everywhere a build runs without `-g`.
+#[derive(Debug, Clone, Copy)]
+struct DebugInput<'a> {
+    /// The originating `.hew` source path — the DWARF `DIFile`.
+    source_path: &'a Path,
+    /// The full source text, used once to build the byte-offset → line index.
+    source_text: &'a str,
+}
+
+/// Byte-offset → 1-based (line, column) index over a source file, built once
+/// per module from the source text. `line_starts[i]` is the byte offset of the
+/// first byte of 1-based line `i + 1`.
+struct LineIndex {
+    line_starts: Vec<usize>,
+    /// Total byte length of the source file. A span whose start lies beyond
+    /// this is not from this file (e.g. a monomorphised stdlib function pulled
+    /// into the module carries a byte offset into the stdlib source, not the
+    /// user's file) and must NOT be mapped to a fabricated line here.
+    source_len: usize,
+}
+
+impl LineIndex {
+    fn new(source: &str) -> Self {
+        let mut line_starts = vec![0usize];
+        for (idx, byte) in source.bytes().enumerate() {
+            if byte == b'\n' {
+                line_starts.push(idx + 1);
+            }
+        }
+        Self {
+            line_starts,
+            source_len: source.len(),
+        }
+    }
+
+    /// Whether `offset` falls within this source file. Spans that fall outside
+    /// belong to a different file (a different `DIFile` this single-file index
+    /// cannot represent); the caller fails closed and emits no location.
+    fn contains(&self, offset: usize) -> bool {
+        offset <= self.source_len
+    }
+
+    /// 1-based line number containing byte `offset`. `line_starts` is sorted
+    /// ascending, so the count of starts at or before `offset` is the line
+    /// number; clamped to `>= 1` so a 0 offset maps to line 1.
+    fn line(&self, offset: usize) -> u32 {
+        let n = self.line_starts.partition_point(|&start| start <= offset);
+        u32::try_from(n.max(1)).unwrap_or(u32::MAX)
+    }
+
+    /// 1-based column of byte `offset` within its line.
+    fn column(&self, offset: usize) -> u32 {
+        let line = self.line(offset) as usize;
+        let line_start = self.line_starts.get(line - 1).copied().unwrap_or(0);
+        u32::try_from(offset.saturating_sub(line_start) + 1).unwrap_or(u32::MAX)
+    }
+}
+
+/// Per-module DWARF emission state, created once in [`build_module_for_target`]
+/// and threaded into each [`lower_function`] call. The [`DebugInfoBuilder`] is
+/// finalized by `build_module_for_target` before module verification (inkwell
+/// requires `finalize()` before any code generation, verification included).
+struct ModuleDebugCtx<'a, 'ctx> {
+    di_builder: &'a DebugInfoBuilder<'ctx>,
+    compile_unit: DICompileUnit<'ctx>,
+    file: DIFile<'ctx>,
+    line_index: &'a LineIndex,
 }
 
 /// Emit native + wasm artefacts for `pipeline`'s raw MIR. Returns the paths
@@ -395,11 +482,31 @@ fn emit_module_with_options(
     std::fs::create_dir_all(options.out_dir)?;
     let mut artefacts = EmitArtefacts::default();
 
+    // DWARF source inputs for `hew build -g`. Read the source text once here;
+    // the byte-offset → line index and the `DICompileUnit`/`DIFile` are built
+    // per module inside `build_module_for_target`. Fail-closed: if `-g` was
+    // requested but the source path is absent or unreadable, emit no debug
+    // info (a location-free object is valid) rather than a fabricated table.
+    let debug_source: Option<String> = if options.debug {
+        options
+            .source_path
+            .and_then(|path| std::fs::read_to_string(path).ok())
+    } else {
+        None
+    };
+    let debug_input: Option<DebugInput<'_>> = match (options.source_path, &debug_source) {
+        (Some(source_path), Some(source_text)) => Some(DebugInput {
+            source_path,
+            source_text,
+        }),
+        _ => None,
+    };
+
     // Build the textual IR once and reuse it for both targets. `.ll` is also
     // the cheapest forensic artefact — `opt -passes=verify` runs against it
     // directly without re-deriving anything.
     let ll_path = options.out_dir.join(format!("{}.ll", options.module_name));
-    emit_textual(pipeline, options.module_name, &ll_path)?;
+    emit_textual(pipeline, options.module_name, &ll_path, debug_input)?;
     artefacts.ll_path = Some(ll_path.clone());
 
     if options.native {
@@ -412,7 +519,13 @@ fn emit_module_with_options(
             Some(triple) => triple.to_string(),
             None => native_emission_triple(),
         };
-        emit_object_in_process(pipeline, options.module_name, &triple_str, &obj_path)?;
+        emit_object_in_process(
+            pipeline,
+            options.module_name,
+            &triple_str,
+            &obj_path,
+            debug_input,
+        )?;
         artefacts.native_obj_path = Some(obj_path);
     }
 
@@ -426,6 +539,7 @@ fn emit_module_with_options(
             options.module_name,
             "wasm32-unknown-unknown",
             &wasm_obj_path,
+            debug_input,
         )?;
         if link_freestanding_wasm {
             let wasm_path = options
@@ -490,7 +604,7 @@ fn validate_codegen_front_with_name(pipeline: &IrPipeline, module_name: &str) ->
     validate_target_substrate(pipeline, &triple)?;
     let machine = target_machine_for_triple(&triple)?;
     let ctx = Context::create();
-    build_module_for_target(&ctx, pipeline, module_name, Some(&machine))?;
+    build_module_for_target(&ctx, pipeline, module_name, Some(&machine), None)?;
     Ok(())
 }
 
@@ -896,13 +1010,14 @@ fn emit_object_in_process(
     module_name: &str,
     triple: &str,
     out_path: &Path,
+    debug: Option<DebugInput<'_>>,
 ) -> CodegenResult<()> {
     let _guard = llvm_codegen_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let machine = target_machine_for_triple(triple)?;
     let ctx = Context::create();
-    let llvm_mod = build_module_for_target(&ctx, pipeline, module_name, Some(&machine))?;
+    let llvm_mod = build_module_for_target(&ctx, pipeline, module_name, Some(&machine), debug)?;
     // Run LLVM's coroutine lowering (CoroSplit et al.) before instruction
     // selection. `write_to_file` does NOT run the module optimization pipeline,
     // so a `presplitcoroutine` function would otherwise reach the backend
@@ -37087,6 +37202,42 @@ fn module_uses_node_authority(raw_mir: &[RawMirFunction]) -> bool {
 /// `spawn` site (which also calls `hew_sched_init`) would otherwise trap.
 /// `hew_sched_init` is idempotent (a second call CAS-fails to a no-op), so the
 /// spawn-site and supervisor-bootstrap calls remain harmless.
+/// Stage 2 (gdb `-g`): set the builder's current debug location from a
+/// per-instruction / per-terminator source span (`(start_byte, end_byte)`),
+/// scoped to the function's `DISubprogram`.
+///
+/// Fail-closed no-op when the function carries no subprogram (it is not a
+/// plain, in-file, non-suspend `fn`), when there is no span for this position
+/// (the previous, nearest-enclosing location persists — legal at -O0, never a
+/// fabricated line), or when the span's start maps outside the compiled file
+/// (a monomorphised stdlib body carries an offset into the stdlib source, not
+/// the user's). Reuses the Stage-1 byte→line index as the single line
+/// authority.
+fn set_debug_location_for_span<'ctx>(
+    ctx: &'ctx Context,
+    builder: &Builder<'ctx>,
+    debug: Option<&ModuleDebugCtx<'_, 'ctx>>,
+    subprogram: Option<inkwell::debug_info::DISubprogram<'ctx>>,
+    span: Option<&(u32, u32)>,
+) {
+    let (Some(dctx), Some(subprogram), Some(&(start, _end))) = (debug, subprogram, span) else {
+        return;
+    };
+    if !dctx.line_index.contains(start as usize) {
+        return;
+    }
+    let line = dctx.line_index.line(start as usize);
+    let column = dctx.line_index.column(start as usize);
+    let loc = dctx.di_builder.create_debug_location(
+        ctx,
+        line,
+        column,
+        subprogram.as_debug_info_scope(),
+        None,
+    );
+    builder.set_current_debug_location(loc);
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "module-lowering context is deliberately passed as explicit borrows"
@@ -37110,6 +37261,7 @@ fn lower_function<'ctx>(
     emit_wasm_entry_alias: bool,
     has_supervisors: bool,
     module_uses_runtime: bool,
+    debug: Option<&ModuleDebugCtx<'_, 'ctx>>,
 ) -> CodegenResult<()> {
     let symbol = *fn_symbols.get(&func.name).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -37177,6 +37329,57 @@ fn lower_function<'ctx>(
                 | Terminator::SuspendingRemoteAsk { .. }
         )
     });
+
+    // DWARF subprogram + function-entry location for `hew build -g` (W0.060).
+    // Emitted only for plain (non-suspend) `fn`s whose span falls within the
+    // compiled source file. FAIL-CLOSED on two fronts: a function with no span
+    // gets NO debug info (a location-free function is legal at -O0) rather than
+    // a fabricated line 0; and a span that lies outside this file — e.g. a
+    // monomorphised stdlib function pulled into the module carries a byte
+    // offset into the *stdlib* source, not the user's file — is skipped rather
+    // than mapped to a wrong line in `dbg.hew`. Suspend-carrying coroutine
+    // bodies are skipped too — their `DISubprogram` must survive `CoroSplit`,
+    // a later stage — so emitting one now would risk verifier/codegen breakage.
+    //
+    // `fn_subprogram` is captured for the body walk below: Stage 2 sets a
+    // per-instruction `DILocation` scoped to this subprogram so gdb steps the
+    // body line-by-line.
+    let mut fn_subprogram: Option<inkwell::debug_info::DISubprogram<'ctx>> = None;
+    let entry_debug_loc = match (debug, func.span) {
+        (Some(dctx), Some((start, _end)))
+            if !has_suspend && dctx.line_index.contains(start as usize) =>
+        {
+            let line = dctx.line_index.line(start as usize);
+            let column = dctx.line_index.column(start as usize);
+            let subroutine_ty =
+                dctx.di_builder
+                    .create_subroutine_type(dctx.file, None, &[], DIFlags::PUBLIC);
+            let subprogram = dctx.di_builder.create_function(
+                dctx.compile_unit.as_debug_info_scope(),
+                &func.name,
+                Some(&func.name),
+                dctx.file,
+                line,
+                subroutine_ty,
+                /* is_local_to_unit */ false,
+                /* is_definition */ true,
+                /* scope_line */ line,
+                DIFlags::PUBLIC,
+                /* is_optimized */ false,
+            );
+            llvm_fn.set_subprogram(subprogram);
+            fn_subprogram = Some(subprogram);
+            let loc = dctx.di_builder.create_debug_location(
+                ctx,
+                line,
+                column,
+                subprogram.as_debug_info_scope(),
+                None,
+            );
+            Some(loc)
+        }
+        _ => None,
+    };
 
     // The coroutine prologue (when present) must own the function ENTRY block so
     // `coro.id` is the first instruction. Emit it before the alloca prologue.
@@ -37278,6 +37481,15 @@ fn lower_function<'ctx>(
             .llvm_ctx("coro.begin -> alloca.prologue branch")?;
     }
     builder.position_at_end(prologue_bb);
+
+    // Attach the function-entry source location so every instruction lowered
+    // into the body inherits a `!dbg`. The verifier requires a debug location
+    // on any call site inside a function that carries a `DISubprogram`; setting
+    // it here (before the alloca prologue and body) covers them all. Stage 2
+    // refines this single coarse line into a per-statement line table.
+    if let Some(loc) = entry_debug_loc {
+        builder.set_current_debug_location(loc);
+    }
 
     // The body's return-value slot is sized to the LOGICAL return type. For an
     // ordinary function that IS `return_ty_llvm`. For a coroutine, `return_ty_llvm`
@@ -37997,7 +38209,22 @@ fn lower_function<'ctx>(
     for block in &func.blocks {
         let bb = *blocks.get(&block.id).expect("block in map");
         fn_ctx.builder.position_at_end(bb);
-        for instr in &block.instructions {
+        for (instr_idx, instr) in block.instructions.iter().enumerate() {
+            // Stage 2 (gdb `-g`): refine the current debug location to this
+            // instruction's originating statement line so the body steps
+            // line-by-line. Fail-closed inside the helper: no subprogram / no
+            // side-table span / out-of-file span leaves the nearest-enclosing
+            // location in place rather than fabricating a line. The
+            // function-entry location seeded before this loop keeps every call
+            // site `!dbg`-tagged for the verifier.
+            set_debug_location_for_span(
+                ctx,
+                &fn_ctx.builder,
+                debug,
+                fn_subprogram,
+                func.instr_spans
+                    .get(&(block.id, u32::try_from(instr_idx).unwrap_or(u32::MAX))),
+            );
             lower_instruction(&fn_ctx, instr, block.id, drop_plans)?;
         }
         if cooperate_sites
@@ -38010,6 +38237,21 @@ fn lower_function<'ctx>(
         // terminator so the alloca null-stores precede the ret/br.
         // LESSONS: cleanup-all-exits (P0), lifecycle-symmetry (P0).
         emit_elab_drops(&fn_ctx, block.id, drop_plans)?;
+        // Stage 2 (gdb `-g`): a call / branch / return lowers to a TERMINATOR,
+        // not an `Instr`, so a call-statement (`println(r)`) would otherwise
+        // inherit the previous instruction's line. The terminator span is keyed
+        // one slot past the last instruction (`block.instructions.len()`), kept
+        // aligned through any post-seal splices by `shift_instr_spans_on_insert`.
+        set_debug_location_for_span(
+            ctx,
+            &fn_ctx.builder,
+            debug,
+            fn_subprogram,
+            func.instr_spans.get(&(
+                block.id,
+                u32::try_from(block.instructions.len()).unwrap_or(u32::MAX),
+            )),
+        );
         lower_terminator(
             &fn_ctx,
             fn_symbols,
@@ -38905,12 +39147,17 @@ fn actor_layout_key_from_handler_symbol(symbol: &str) -> Option<String> {
 ///
 /// `checked_mir` is all-or-nothing — if non-empty, every `raw_mir` function
 /// MUST have a matching entry. Fails closed at codegen time if violated.
+///
+/// Test-only thin wrapper over [`build_module_for_target`] with no target
+/// machine and no debug info; production emits through
+/// `emit_textual` / `emit_object_in_process`.
+#[cfg(test)]
 fn build_module<'ctx>(
     ctx: &'ctx Context,
     pipeline: &IrPipeline,
     name: &str,
 ) -> CodegenResult<LlvmModule<'ctx>> {
-    build_module_for_target(ctx, pipeline, name, None)
+    build_module_for_target(ctx, pipeline, name, None, None)
 }
 
 fn build_module_for_target<'ctx>(
@@ -38918,6 +39165,7 @@ fn build_module_for_target<'ctx>(
     pipeline: &IrPipeline,
     name: &str,
     target_machine: Option<&TargetMachine>,
+    debug: Option<DebugInput<'_>>,
 ) -> CodegenResult<LlvmModule<'ctx>> {
     let llvm_mod = ctx.create_module(name);
     let emit_wasm_entry_alias = target_machine.is_some_and(|machine| {
@@ -38936,6 +39184,68 @@ fn build_module_for_target<'ctx>(
         data
     } else {
         host_target_data()
+    };
+
+    // DWARF compile unit + file for `hew build -g` (W0.060). Created once per
+    // module; the `DebugInfoBuilder` is finalized just before `verify()` below
+    // (inkwell requires `finalize()` before any code generation, verification
+    // included). Without a threaded `DebugInput` (`hew build` with no `-g`)
+    // this stays `None` and the module carries zero debug metadata — the
+    // legacy behaviour, byte-for-byte.
+    let line_index = debug.map(|d| LineIndex::new(d.source_text));
+    let module_debug: Option<(DebugInfoBuilder<'ctx>, DICompileUnit<'ctx>, DIFile<'ctx>)> =
+        if let Some(d) = debug {
+            let file_name = d
+                .source_path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| format!("{name}.hew"));
+            let directory = d
+                .source_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|| ".".to_string());
+            let (di_builder, compile_unit) = llvm_mod.create_debug_info_builder(
+                /* allow_unresolved */ true,
+                DWARFSourceLanguage::C,
+                &file_name,
+                &directory,
+                concat!("hew ", env!("CARGO_PKG_VERSION")),
+                /* is_optimized */ false,
+                /* compiler flags */ "",
+                /* runtime_ver */ 0,
+                /* split_name */ "",
+                DWARFEmissionKind::Full,
+                /* dwo_id */ 0,
+                /* split_debug_inlining */ false,
+                /* debug_info_for_profiling */ false,
+                /* sysroot */ "",
+                /* sdk */ "",
+            );
+            // The LLVM verifier requires the module's "Debug Info Version" flag
+            // to equal the current `DEBUG_METADATA_VERSION` (3, stable since
+            // LLVM 3.x and unchanged on LLVM 22); a missing/mismatched value
+            // makes the verifier silently strip all debug info.
+            let debug_metadata_version = ctx.i32_type().const_int(3, false);
+            llvm_mod.add_basic_value_flag(
+                "Debug Info Version",
+                inkwell::module::FlagBehavior::Warning,
+                debug_metadata_version,
+            );
+            let file = compile_unit.get_file();
+            Some((di_builder, compile_unit, file))
+        } else {
+            None
+        };
+    let fn_debug_ctx: Option<ModuleDebugCtx<'_, 'ctx>> = match (&module_debug, &line_index) {
+        (Some((di_builder, compile_unit, file)), Some(line_index)) => Some(ModuleDebugCtx {
+            di_builder,
+            compile_unit: *compile_unit,
+            file: *file,
+            line_index,
+        }),
+        _ => None,
     };
     // Predeclare opaque LLVM named structs for every record / enum / machine
     // outer + `<Name>Event` companion BEFORE any body-fill pass. Record
@@ -39323,6 +39633,7 @@ fn build_module_for_target<'ctx>(
             emit_wasm_entry_alias,
             !pipeline.supervisor_layouts.is_empty(),
             module_uses_runtime,
+            fn_debug_ctx.as_ref(),
         )?;
     }
     // Emit regex module-init infrastructure if the module uses any regex literals.
@@ -39453,6 +39764,12 @@ fn build_module_for_target<'ctx>(
         &pipeline.dyn_vtable_registry,
         &record_layouts,
     )?;
+    // Finalize all deferred debug-info metadata BEFORE verification: inkwell's
+    // `DebugInfoBuilder::finalize` resolves forward references and the verifier
+    // rejects (or silently drops) incomplete debug metadata otherwise.
+    if let Some((di_builder, _, _)) = &module_debug {
+        di_builder.finalize();
+    }
     llvm_mod
         .verify()
         .map_err(|e| CodegenError::LlvmVerify(e.to_string()))?;
@@ -41961,9 +42278,14 @@ fn emit_regex_module_init<'ctx>(
     Ok(Some(init_fn))
 }
 
-fn emit_textual(pipeline: &IrPipeline, name: &str, out: &Path) -> CodegenResult<()> {
+fn emit_textual(
+    pipeline: &IrPipeline,
+    name: &str,
+    out: &Path,
+    debug: Option<DebugInput<'_>>,
+) -> CodegenResult<()> {
     let ctx = Context::create();
-    let llvm_mod = build_module(&ctx, pipeline, name)?;
+    let llvm_mod = build_module_for_target(&ctx, pipeline, name, None, debug)?;
     llvm_mod
         .print_to_file(out)
         .llvm_ctx_with(|| format!("print_to_file {}", out.display()))?;
@@ -42058,6 +42380,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -42142,6 +42466,8 @@ mod tests {
             native: true,
             wasm: false,
             target_triple: None,
+            debug: false,
+            source_path: None,
         };
         let host_artefacts = emit_module(&pipeline, &host_opts).expect("host emit");
         let host_obj = std::fs::read(
@@ -42180,6 +42506,8 @@ mod tests {
             native: true,
             wasm: false,
             target_triple: Some(cross_triple),
+            debug: false,
+            source_path: None,
         };
         let cross_artefacts = emit_module(&pipeline, &cross_opts).expect("cross emit");
         let cross_obj = std::fs::read(
@@ -42441,6 +42769,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let main = RawMirFunction {
             name: "main".to_string(),
@@ -42481,6 +42811,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -42560,6 +42892,8 @@ mod tests {
                 await_deadline_ns: std::collections::HashMap::new(),
 
                 lambda_actor_user_param_locals: Vec::new(),
+                span: None,
+                instr_spans: ::std::collections::HashMap::new(),
             }],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
@@ -42597,7 +42931,7 @@ mod tests {
         let pipeline = hashmap_descriptor_width_probe_pipeline();
         let module = if let Some(triple) = triple {
             let machine = target_machine_for_triple(triple).expect("target machine");
-            build_module_for_target(&ctx, &pipeline, module_name, Some(&machine))
+            build_module_for_target(&ctx, &pipeline, module_name, Some(&machine), None)
                 .expect("targeted descriptor probe module")
         } else {
             build_module(&ctx, &pipeline, module_name).expect("native descriptor probe module")
@@ -42686,6 +43020,8 @@ mod tests {
                 await_deadline_ns: std::collections::HashMap::new(),
 
                 lambda_actor_user_param_locals: Vec::new(),
+                span: None,
+                instr_spans: ::std::collections::HashMap::new(),
             }],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
@@ -42717,7 +43053,7 @@ mod tests {
         let pipeline = vec_descriptor_width_probe_pipeline();
         let module = if let Some(triple) = triple {
             let machine = target_machine_for_triple(triple).expect("target machine");
-            build_module_for_target(&ctx, &pipeline, module_name, Some(&machine))
+            build_module_for_target(&ctx, &pipeline, module_name, Some(&machine), None)
                 .expect("targeted vec descriptor probe module")
         } else {
             build_module(&ctx, &pipeline, module_name).expect("native vec descriptor probe module")
@@ -42786,6 +43122,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -42918,6 +43256,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -43044,6 +43384,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -43122,6 +43464,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -43194,6 +43538,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -43469,6 +43815,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -43676,6 +44024,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -44378,6 +44728,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
 
         let pipeline = IrPipeline {
@@ -44463,6 +44815,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -44570,6 +44924,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         // The enclosing function: allocate a Generator-typed local, construct it
         // via MakeGenerator, then return.
@@ -44603,6 +44959,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -44674,6 +45032,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -44764,6 +45124,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let layout = GenStateLayout {
             function_name: body_name.to_string(),
@@ -45259,6 +45621,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -45368,6 +45732,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -45430,6 +45796,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -45491,6 +45859,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -45547,6 +45917,8 @@ mod tests {
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
 
         let cases = [
@@ -47428,6 +47800,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: vec![],
@@ -47469,6 +47843,8 @@ mod tests {
             native: false,
             wasm: false,
             target_triple: None,
+            debug: false,
+            source_path: None,
         };
         let artefacts = emit_module(&pipeline, &options)
             .expect("CoerceToDynTrait must lower cleanly with the registry populated");
@@ -47572,6 +47948,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: vec![],
@@ -47609,6 +47987,8 @@ mod tests {
             native: false,
             wasm: false,
             target_triple: None,
+            debug: false,
+            source_path: None,
         };
         let err = emit_module(&pipeline, &options).expect_err(
             "CoerceToDynTrait must fail closed when the registry has no matching entry",
@@ -47920,6 +48300,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let elab = ElaboratedMirFunction {
             name: "frame_owned_drop_with_drop_fn".to_string(),
@@ -47987,6 +48369,8 @@ mod tests {
             native: false,
             wasm: false,
             target_triple: None,
+            debug: false,
+            source_path: None,
         };
         let err = emit_module(&pipeline, &options)
             .expect_err("FrameOwned trait-object drop with drop_fn=Some must fail closed");
@@ -48120,6 +48504,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         // Minimal stub actor: no state fields, no handlers, no clone/drop
         // symbols.  The trampoline emits a vacuous dispatch switch; the
@@ -48213,6 +48599,7 @@ mod tests {
             &pipeline,
             "wasm_runtime_exit_actor_test",
             Some(&machine),
+            None,
         )
         .expect("wasm actor runtime-exit epilogue module must build");
         assert!(
@@ -48365,6 +48752,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -48432,8 +48821,9 @@ mod tests {
         let pipeline = pipeline_with_coro_probe();
         let machine = target_machine_for_triple(triple)
             .unwrap_or_else(|e| panic!("target machine for {triple}: {e:?}"));
-        let module = build_module_for_target(&ctx, &pipeline, "coro_split_test", Some(&machine))
-            .unwrap_or_else(|e| panic!("coroutine module must build for {triple}: {e:?}"));
+        let module =
+            build_module_for_target(&ctx, &pipeline, "coro_split_test", Some(&machine), None)
+                .unwrap_or_else(|e| panic!("coroutine module must build for {triple}: {e:?}"));
         assert!(
             crate::coro::module_has_coroutines(&module),
             "{triple}: module must carry a coroutine before split"
@@ -48552,6 +48942,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -48590,9 +48982,14 @@ mod tests {
         let pipeline = pipeline_with_two_suspends();
         let machine = target_machine_for_triple(triple)
             .unwrap_or_else(|e| panic!("target machine for {triple}: {e:?}"));
-        let module =
-            build_module_for_target(&ctx, &pipeline, "coro_multi_split_test", Some(&machine))
-                .unwrap_or_else(|e| panic!("two-suspend module must build for {triple}: {e:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "coro_multi_split_test",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|e| panic!("two-suspend module must build for {triple}: {e:?}"));
         assert!(
             crate::coro::module_has_coroutines(&module),
             "{triple}: module must carry a coroutine before split"
@@ -48732,6 +49129,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -48841,6 +49240,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }
     }
 
@@ -48866,6 +49267,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }
     }
 
@@ -48893,6 +49296,8 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let mut raw_mir = vec![main];
         let mut handler_layouts = Vec::with_capacity(handlers.len());
@@ -49471,9 +49876,14 @@ mod tests {
         );
         let machine = target_machine_for_triple(triple)
             .unwrap_or_else(|e| panic!("target machine for {triple}: {e:?}"));
-        let module =
-            build_module_for_target(&ctx, &pipeline, "parity_dispatch_test", Some(&machine))
-                .unwrap_or_else(|e| panic!("dispatch-drive module must build for {triple}: {e:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "parity_dispatch_test",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|e| panic!("dispatch-drive module must build for {triple}: {e:?}"));
         assert!(
             crate::coro::module_has_coroutines(&module),
             "{triple}: the driven handler must be a coroutine before split"
@@ -49582,9 +49992,14 @@ fn main() {
         let pipeline = pipeline_from_await_source();
         let machine = target_machine_for_triple(triple)
             .unwrap_or_else(|e| panic!("target machine for {triple}: {e:?}"));
-        let module =
-            build_module_for_target(&ctx, &pipeline, "suspending_ask_split_test", Some(&machine))
-                .unwrap_or_else(|e| panic!("{triple}: SuspendingAsk module must build: {e:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "suspending_ask_split_test",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|e| panic!("{triple}: SuspendingAsk module must build: {e:?}"));
         assert!(
             crate::coro::module_has_coroutines(&module),
             "{triple}: the awaiting handler must be a coroutine before split"
@@ -49791,6 +50206,8 @@ fn main() {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         };
         let pipeline =
             pipeline_with_actor_handlers("MallocWidthActor", vec![(handler_layout, handler_fn)]);
@@ -49799,9 +50216,14 @@ fn main() {
         let ctx = Context::create();
         let wasm_machine =
             target_machine_for_triple("wasm32-unknown-unknown").expect("wasm32 target machine");
-        let wasm_mod =
-            build_module_for_target(&ctx, &pipeline, "malloc_width_wasm32", Some(&wasm_machine))
-                .expect("wasm32 codec-thunk module must build without LLVM verifier error");
+        let wasm_mod = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "malloc_width_wasm32",
+            Some(&wasm_machine),
+            None,
+        )
+        .expect("wasm32 codec-thunk module must build without LLVM verifier error");
         let wasm_ir = wasm_mod.print_to_string().to_string();
 
         // The deserialize thunk must call `malloc` with an i32 argument on wasm32.

@@ -82,6 +82,8 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -161,6 +163,8 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -242,6 +246,8 @@ fn pipeline_no_duplex() -> IrPipeline {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -314,6 +320,8 @@ fn duplex_pair_call_blocks_wasm_emission() {
         native: false,
         wasm: true,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {
@@ -343,6 +351,8 @@ fn duplex_close_drop_blocks_wasm_emission() {
         native: false,
         wasm: true,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {
@@ -373,6 +383,8 @@ fn duplex_pair_native_only_succeeds_without_wasm_emit() {
         native: true,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts =
         emit_module(&pipeline, &options).expect("duplex pipeline with wasm: false must succeed");
@@ -406,6 +418,8 @@ fn non_duplex_pipeline_does_not_trigger_wasm_substrate_error() {
         native: false,
         wasm: false, // avoid invoking wasm-ld in unit tests
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let result = emit_module(&pipeline, &options);
     // The result may succeed or fail for other reasons, but must NOT fail with

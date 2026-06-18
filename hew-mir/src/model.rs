@@ -1733,6 +1733,31 @@ pub struct RawMirFunction {
     /// five-slot shape; the user params live INSIDE the message payload, not
     /// in the LLVM argument list.
     pub lambda_actor_user_param_locals: Vec<u32>,
+    /// Byte-offset span `(start, end)` of this function's declaration in the
+    /// originating source file, threaded from `HirFn::span` at MIR lowering.
+    /// Codegen maps `start` through a byte-offset → line index to emit the
+    /// function-entry `DILocation` / `DISubprogram` declaration line under
+    /// `hew build -g`. `None` for synthesised functions (drop shims, machine
+    /// dispatch, vtable thunks) and hand-built test MIR that carry no faithful
+    /// source span — fail-closed: codegen emits NO location for them rather
+    /// than fabricating `line = 0` (a location-free function is legal at -O0).
+    pub span: Option<(u32, u32)>,
+    /// Per-instruction source spans for the backend-authority `Instr` stream,
+    /// keyed by `(block_id, instruction_index)` and valued by the originating
+    /// HIR statement/expression's byte-offset span `(start, end)`. Threaded
+    /// from each `Instr` push in `lower.rs` via the lowering cursor's
+    /// `current_span` (the enclosing statement/tail). A side-table — rather
+    /// than a field on `Instr` — keeps the backend `Instr` enum and its many
+    /// codegen match sites unchanged.
+    ///
+    /// Codegen maps `start` through the same byte-offset → line index used for
+    /// the function-entry line (Stage 1) to set a per-instruction `DILocation`
+    /// under `hew build -g`, so gdb steps line-by-line. Fail-closed: an
+    /// instruction with no entry here (a synthesised instruction lowered
+    /// outside any statement) inherits the nearest enclosing location rather
+    /// than fabricating one; empty for synthesised functions and hand-built
+    /// test MIR.
+    pub instr_spans: std::collections::HashMap<(u32, u32), (u32, u32)>,
 }
 
 /// A generic origin function lowered against abstract `ResolvedTy::TypeParam`

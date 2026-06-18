@@ -64,6 +64,8 @@ fn impl_method_stub(name: &str) -> RawMirFunction {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     }
 }
 
@@ -135,6 +137,8 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module(pipeline, &options).expect("emit_module must succeed");
     let ll_path: &Path = artefacts.ll_path.as_deref().expect("emit_module ll_path");

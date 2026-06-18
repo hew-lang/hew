@@ -66,6 +66,8 @@ fn pipeline_discard_extern(
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
     let checked = CheckedMirFunction {
         name: "probe".to_string(),
@@ -142,6 +144,8 @@ fn emit_options(module_name: &str) -> (EmitOptions<'static>, std::path::PathBuf)
             native: false,
             wasm: false,
             target_triple: None,
+            debug: false,
+            source_path: None,
         },
         tmp,
     )

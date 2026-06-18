@@ -65,6 +65,8 @@ fn pipeline_with_task_abi_call(
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),
@@ -155,6 +157,8 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
                 await_deadline_ns: std::collections::HashMap::new(),
 
                 lambda_actor_user_param_locals: Vec::new(),
+                span: None,
+                instr_spans: ::std::collections::HashMap::new(),
             },
             RawMirFunction {
                 name: "long_op".to_string(),
@@ -168,6 +172,8 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
                 await_deadline_ns: std::collections::HashMap::new(),
 
                 lambda_actor_user_param_locals: Vec::new(),
+                span: None,
+                instr_spans: ::std::collections::HashMap::new(),
             },
         ],
         checked_mir: vec![
@@ -246,6 +252,8 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
                 await_deadline_ns: std::collections::HashMap::new(),
 
                 lambda_actor_user_param_locals: Vec::new(),
+                span: None,
+                instr_spans: ::std::collections::HashMap::new(),
             },
             RawMirFunction {
                 name: "long_op".to_string(),
@@ -259,6 +267,8 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
                 await_deadline_ns: std::collections::HashMap::new(),
 
                 lambda_actor_user_param_locals: Vec::new(),
+                span: None,
+                instr_spans: ::std::collections::HashMap::new(),
             },
         ],
         checked_mir: vec![
@@ -357,6 +367,8 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
                 await_deadline_ns: std::collections::HashMap::new(),
 
                 lambda_actor_user_param_locals: Vec::new(),
+                span: None,
+                instr_spans: ::std::collections::HashMap::new(),
             },
             RawMirFunction {
                 name: "__hew_closure_invoke_main_0".to_string(),
@@ -370,6 +382,8 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
                 await_deadline_ns: std::collections::HashMap::new(),
 
                 lambda_actor_user_param_locals: Vec::new(),
+                span: None,
+                instr_spans: ::std::collections::HashMap::new(),
             },
         ],
         checked_mir: vec![
@@ -428,6 +442,8 @@ fn task_abi_emission_task_new_declare() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(&pipeline, &options).expect("hew_task_new emission should succeed");
     let ir = read_ll(&tmp);
@@ -456,6 +472,8 @@ fn task_abi_emission_task_await_blocking_declare() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(&pipeline, &options).expect("hew_task_await_blocking emission should succeed");
     let ir = read_ll(&tmp);
@@ -482,6 +500,8 @@ fn task_abi_emission_task_get_result_declare() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(&pipeline, &options).expect("hew_task_get_result emission should succeed");
     let ir = read_ll(&tmp);
@@ -504,6 +524,8 @@ fn task_abi_emission_task_free_declare() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(&pipeline, &options).expect("hew_task_free emission should succeed");
     let ir = read_ll(&tmp);
@@ -565,6 +587,8 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),
@@ -615,6 +639,8 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(&pipeline, &options)
         .expect("hew_task_new + hew_task_scope_spawn emission should succeed");
@@ -665,6 +691,8 @@ fn task_abi_emission_spawn_task_direct_synthesizes_wrapper() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(&pipeline, &options).expect("SpawnTaskDirect emission should succeed");
     let ir = read_ll(&tmp);
@@ -694,6 +722,8 @@ fn task_abi_emission_spawn_task_direct_rejects_contextless_target() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {
@@ -719,6 +749,8 @@ fn task_abi_emission_spawn_task_closure_threads_execution_context() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(&pipeline, &options).expect("SpawnTaskClosure emission should succeed");
     let ir = read_ll(&tmp);
@@ -751,6 +783,8 @@ fn task_abi_emission_task_spawn_thread_fail_closed() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {

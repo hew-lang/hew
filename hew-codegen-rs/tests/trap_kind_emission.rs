@@ -61,6 +61,8 @@ fn emit_ll(source: &str, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts =
         emit_module(&pipeline, &options).expect("trap-kind pipeline must emit successfully");
@@ -92,6 +94,8 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "trap_probe".to_string(),
@@ -142,6 +146,8 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options).expect("trap-kind MIR fixture must emit");
     let ll_path: &Path = artefacts

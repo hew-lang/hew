@@ -119,6 +119,8 @@ fn floor_fn(name: &str, id: &str, params: Vec<ResolvedTy>, ret: ResolvedTy) -> R
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     }
 }
 
@@ -253,6 +255,8 @@ fn driver_main() -> RawMirFunction {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     }
 }
 
@@ -349,6 +353,8 @@ fn driver_copy_no_free() -> RawMirFunction {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     }
 }
 
@@ -427,6 +433,8 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> std::path::PathBuf {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts =
         emit_module(pipeline, &options).expect("floor exec pipeline must emit successfully");
@@ -628,6 +636,8 @@ fn mem_floor_is_not_a_wasm_excluded_substrate() {
         native: false,
         wasm: true,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     if let Err(CodegenError::WasmUnsupportedSubstrate { symbol }) = emit_module(&pipeline, &options)
     {
@@ -660,6 +670,8 @@ fn mem_floor_emits_linkable_wasm_module() {
         native: false,
         wasm: true,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options)
         .expect("floor pipeline must emit a wasm module (wasm toolchain required)");

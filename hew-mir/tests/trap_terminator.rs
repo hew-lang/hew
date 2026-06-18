@@ -48,6 +48,8 @@ fn trap_fn(kind: TrapKind) -> RawMirFunction {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     }
 }
 

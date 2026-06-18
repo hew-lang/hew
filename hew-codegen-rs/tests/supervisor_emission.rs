@@ -98,6 +98,8 @@ fn supervisor_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
 
     // `main` exits 42 — the fixture shape. Returns i64 so the produced
@@ -129,6 +131,8 @@ fn supervisor_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
 
     let supervisor_layout = SupervisorLayout {
@@ -189,6 +193,8 @@ fn emit_to_string(pipeline: &IrPipeline, slug: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(pipeline, &options).expect("supervisor emission should succeed");
     let ll = tmp.join("probe.ll");
@@ -312,6 +318,8 @@ fn on_crash_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
 
     let bootstrap_fn = RawMirFunction {
@@ -331,6 +339,8 @@ fn on_crash_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
 
     let main_fn = RawMirFunction {
@@ -359,6 +369,8 @@ fn on_crash_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
 
     let supervisor_layout = SupervisorLayout {
@@ -486,6 +498,8 @@ fn supervisor_bootstrap_fails_closed_on_missing_on_crash_symbol() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let err = emit_module(&pipeline, &options)
         .expect_err("missing on_crash symbol should fail closed at codegen");
@@ -510,6 +524,8 @@ fn supervisor_bootstrap_accepts_duration_window() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     emit_module(&pipeline, &options)
         .expect("a `60s` duration window must be accepted and converted to seconds");
@@ -528,6 +544,8 @@ fn supervisor_bootstrap_rejects_invalid_window() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let err = emit_module(&pipeline, &options)
         .expect_err("a non-duration, non-integer window must fail closed at codegen");

@@ -64,6 +64,8 @@ fn pipeline_with_entry_terminator(
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -145,6 +147,8 @@ fn consistency_check_rejects_pending_fact_at_pipeline_finalize() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {
@@ -178,6 +182,8 @@ fn consistency_check_rejects_pending_hashset_fact_at_pipeline_finalize() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     match emit_module(&pipeline, &options) {
         Err(CodegenError::FailClosed(msg)) => {
@@ -318,6 +324,8 @@ fn emit_ll(pipeline: IrPipeline, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options)
         .unwrap_or_else(|e| panic!("hashmap op pipeline for {module_name} must emit: {e:?}"));
@@ -560,6 +568,8 @@ fn pending_fact_without_matching_call_still_fails_closed() {
             native: false,
             wasm: false,
             target_triple: None,
+            debug: false,
+            source_path: None,
         },
     ) {
         Err(CodegenError::FailClosed(msg)) => {

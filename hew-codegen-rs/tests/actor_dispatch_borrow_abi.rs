@@ -58,6 +58,8 @@ fn emit_ll_text(pipeline: &hew_mir::IrPipeline, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module(pipeline, &options).expect("emit_module must succeed");
     let ll_path: &Path = artefacts
@@ -676,6 +678,8 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
     IrPipeline {
         thir: Vec::new(),
@@ -794,6 +798,8 @@ fn relay_resend_recv_pipeline() -> IrPipeline {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
     IrPipeline {
         thir: Vec::new(),

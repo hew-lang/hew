@@ -66,6 +66,8 @@ fn pipeline_with_call_runtime_abi_parts(
             await_deadline_ns: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "probe".to_string(),
@@ -139,6 +141,8 @@ fn call_runtime_abi_fails_closed_with_symbol_in_message() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {
@@ -199,6 +203,8 @@ fn call_runtime_abi_succeeds_for_lambda_actor_release() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let result = emit_module(&pipeline, &options);
     assert!(
@@ -224,6 +230,8 @@ fn actor_link_and_monitor_runtime_calls_are_codegen_reachable_without_dest() {
             native: false,
             wasm: false,
             target_triple: None,
+            debug: false,
+            source_path: None,
         };
         let result = emit_module(&pipeline, &options);
         assert!(
@@ -248,6 +256,8 @@ fn actor_monitor_runtime_call_with_dest_still_fails_closed() {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let result = emit_module(&pipeline, &options);
     match result {

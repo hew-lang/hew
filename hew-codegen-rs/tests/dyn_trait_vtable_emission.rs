@@ -97,6 +97,8 @@ fn impl_method_stub(name: &str, ret: ResolvedTy) -> RawMirFunction {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     }
 }
 
@@ -173,6 +175,8 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         native: false,
         wasm: false,
         target_triple: None,
+        debug: false,
+        source_path: None,
     };
     let artefacts = emit_module(pipeline, &options).expect("emit_module must succeed");
     let ll_path: &Path = artefacts.ll_path.as_deref().expect("emit_module ll_path");
@@ -492,6 +496,8 @@ fn coercion_site_and_vtable_definition_share_same_symbol() {
         await_deadline_ns: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::HashMap::new(),
     };
     let inst = vtable_instance(0, "Speak", ResolvedTy::I64, vec![]);
     let vtable_sym = mangle_dyn_vtable_symbol(0, "Speak", &ResolvedTy::I64);

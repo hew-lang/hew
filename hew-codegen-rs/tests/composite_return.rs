@@ -107,7 +107,7 @@ fn option_some_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
         thir: Vec::new(),
@@ -200,7 +200,7 @@ fn option_string_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
         thir: Vec::new(),
@@ -328,7 +328,7 @@ fn envelope_i64_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
         thir: Vec::new(),
@@ -404,7 +404,7 @@ fn bytes_return_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
         thir: Vec::new(),
@@ -473,7 +473,7 @@ fn tuple_of_bytes_return_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
         thir: Vec::new(),
@@ -555,7 +555,7 @@ fn generic_record_of_string_return_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
         thir: Vec::new(),

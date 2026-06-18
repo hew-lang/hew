@@ -8,7 +8,7 @@ ElaboratedMirFunction {
             ),
             name: "msg",
             site: SiteId(
-                4,
+                5,
             ),
             ty: Named {
                 name: "Ping",
@@ -20,7 +20,7 @@ ElaboratedMirFunction {
         },
         Evaluate {
             site: SiteId(
-                1,
+                2,
             ),
             ty: Unit,
         },
@@ -28,22 +28,12 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                1,
+                2,
             ),
             ty: I64,
             value_class: BitCopy,
             intent: Consume,
             strategy: Move,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                2,
-            ),
-            ty: I64,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
@@ -59,6 +49,16 @@ ElaboratedMirFunction {
         DecisionFact {
             site: SiteId(
                 4,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                5,
             ),
             ty: Named {
                 name: "Ping",
@@ -136,7 +136,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    5,
+                    6,
                 ),
             ),
             ty: I64,
@@ -145,7 +145,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                5,
+                6,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -181,13 +181,13 @@ ElaboratedMirFunction {
     statements: [
         Evaluate {
             site: SiteId(
-                6,
+                7,
             ),
             ty: Unit,
         },
         Evaluate {
             site: SiteId(
-                9,
+                10,
             ),
             ty: Unit,
         },
@@ -197,7 +197,7 @@ ElaboratedMirFunction {
             ),
             name: "worker",
             site: SiteId(
-                12,
+                13,
             ),
             ty: Named {
                 name: "LocalPid",
@@ -221,7 +221,7 @@ ElaboratedMirFunction {
             ),
             name: "worker",
             site: SiteId(
-                16,
+                17,
             ),
             ty: Named {
                 name: "LocalPid",
@@ -242,7 +242,7 @@ ElaboratedMirFunction {
         },
         Evaluate {
             site: SiteId(
-                14,
+                15,
             ),
             ty: I32,
         },
@@ -252,7 +252,7 @@ ElaboratedMirFunction {
             ),
             name: "missing",
             site: SiteId(
-                18,
+                19,
             ),
             ty: Named {
                 name: "Result",
@@ -291,7 +291,7 @@ ElaboratedMirFunction {
             ),
             name: "missing",
             site: SiteId(
-                22,
+                23,
             ),
             ty: Named {
                 name: "Result",
@@ -331,7 +331,7 @@ ElaboratedMirFunction {
             ),
             name: "missing_code",
             site: SiteId(
-                21,
+                22,
             ),
             ty: I64,
         },
@@ -341,7 +341,7 @@ ElaboratedMirFunction {
             ),
             name: "missing_code",
             site: SiteId(
-                35,
+                36,
             ),
             ty: I64,
             intent: Read,
@@ -352,7 +352,7 @@ ElaboratedMirFunction {
             ),
             name: "pid",
             site: SiteId(
-                23,
+                24,
             ),
             ty: Named {
                 name: "RemotePid",
@@ -376,7 +376,7 @@ ElaboratedMirFunction {
             ),
             name: "pid",
             site: SiteId(
-                25,
+                26,
             ),
             ty: Named {
                 name: "RemotePid",
@@ -401,7 +401,7 @@ ElaboratedMirFunction {
             ),
             name: "unexpected",
             site: SiteId(
-                24,
+                25,
             ),
             ty: Named {
                 name: "Result",
@@ -428,7 +428,7 @@ ElaboratedMirFunction {
             ),
             name: "unexpected",
             site: SiteId(
-                30,
+                31,
             ),
             ty: Named {
                 name: "Result",
@@ -452,7 +452,7 @@ ElaboratedMirFunction {
         },
         Evaluate {
             site: SiteId(
-                34,
+                35,
             ),
             ty: Unit,
         },
@@ -462,7 +462,7 @@ ElaboratedMirFunction {
             ),
             name: "found",
             site: SiteId(
-                38,
+                39,
             ),
             ty: Named {
                 name: "Result",
@@ -501,7 +501,7 @@ ElaboratedMirFunction {
             ),
             name: "found",
             site: SiteId(
-                42,
+                43,
             ),
             ty: Named {
                 name: "Result",
@@ -541,7 +541,7 @@ ElaboratedMirFunction {
             ),
             name: "status",
             site: SiteId(
-                41,
+                42,
             ),
             ty: I64,
         },
@@ -550,59 +550,59 @@ ElaboratedMirFunction {
                 9,
             ),
             name: "pid",
-            site: SiteId(
-                43,
-            ),
-            ty: Named {
-                name: "RemotePid",
-                args: [
-                    Named {
-                        name: "Worker",
-                        args: [],
-                        builtin: None,
-                        is_opaque: false,
-                    },
-                ],
-                builtin: Some(
-                    RemotePid,
-                ),
-                is_opaque: false,
-            },
-        },
-        Use {
-            binding: BindingId(
-                9,
-            ),
-            name: "pid",
-            site: SiteId(
-                45,
-            ),
-            ty: Named {
-                name: "RemotePid",
-                args: [
-                    Named {
-                        name: "Worker",
-                        args: [],
-                        builtin: None,
-                        is_opaque: false,
-                    },
-                ],
-                builtin: Some(
-                    RemotePid,
-                ),
-                is_opaque: false,
-            },
-            intent: Read,
-        },
-        Bind {
-            binding: BindingId(
-                10,
-            ),
-            name: "delivered",
             site: SiteId(
                 44,
             ),
             ty: Named {
+                name: "RemotePid",
+                args: [
+                    Named {
+                        name: "Worker",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    RemotePid,
+                ),
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                9,
+            ),
+            name: "pid",
+            site: SiteId(
+                46,
+            ),
+            ty: Named {
+                name: "RemotePid",
+                args: [
+                    Named {
+                        name: "Worker",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    RemotePid,
+                ),
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Bind {
+            binding: BindingId(
+                10,
+            ),
+            name: "delivered",
+            site: SiteId(
+                45,
+            ),
+            ty: Named {
                 name: "Result",
                 args: [
                     Unit,
@@ -627,7 +627,7 @@ ElaboratedMirFunction {
             ),
             name: "delivered",
             site: SiteId(
-                50,
+                51,
             ),
             ty: Named {
                 name: "Result",
@@ -655,7 +655,7 @@ ElaboratedMirFunction {
             ),
             name: "send_code",
             site: SiteId(
-                49,
+                50,
             ),
             ty: I64,
         },
@@ -665,7 +665,7 @@ ElaboratedMirFunction {
             ),
             name: "send_code",
             site: SiteId(
-                55,
+                56,
             ),
             ty: I64,
             intent: Read,
@@ -676,7 +676,7 @@ ElaboratedMirFunction {
             ),
             name: "worker",
             site: SiteId(
-                61,
+                62,
             ),
             ty: Named {
                 name: "LocalPid",
@@ -701,7 +701,7 @@ ElaboratedMirFunction {
             ),
             name: "send_code",
             site: SiteId(
-                71,
+                72,
             ),
             ty: I64,
             intent: Read,
@@ -712,7 +712,7 @@ ElaboratedMirFunction {
             ),
             name: "total",
             site: SiteId(
-                58,
+                59,
             ),
             ty: I64,
         },
@@ -722,7 +722,7 @@ ElaboratedMirFunction {
             ),
             name: "total",
             site: SiteId(
-                66,
+                67,
             ),
             ty: I64,
             intent: Read,
@@ -733,7 +733,7 @@ ElaboratedMirFunction {
             ),
             name: "v",
             site: SiteId(
-                62,
+                63,
             ),
             ty: I64,
         },
@@ -743,7 +743,7 @@ ElaboratedMirFunction {
             ),
             name: "v",
             site: SiteId(
-                62,
+                63,
             ),
             ty: I64,
             intent: Read,
@@ -754,7 +754,7 @@ ElaboratedMirFunction {
             ),
             name: "_e",
             site: SiteId(
-                63,
+                64,
             ),
             ty: Named {
                 name: "AskError",
@@ -767,13 +767,13 @@ ElaboratedMirFunction {
         },
         Evaluate {
             site: SiteId(
-                65,
+                66,
             ),
             ty: Unit,
         },
         Evaluate {
             site: SiteId(
-                73,
+                74,
             ),
             ty: Unit,
         },
@@ -783,7 +783,7 @@ ElaboratedMirFunction {
             ),
             name: "status",
             site: SiteId(
-                75,
+                76,
             ),
             ty: I64,
             intent: Read,
@@ -791,7 +791,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    75,
+                    76,
                 ),
             ),
             ty: I64,
@@ -983,7 +983,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                6,
+                7,
             ),
             ty: Unit,
             value_class: BitCopy,
@@ -993,28 +993,28 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                7,
+                8,
             ),
             ty: String,
             value_class: CowValue,
             intent: Read,
             strategy: CowShare,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                9,
-            ),
-            ty: Unit,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
             site: SiteId(
                 10,
             ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                11,
+            ),
             ty: String,
             value_class: CowValue,
             intent: Read,
@@ -1023,7 +1023,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                12,
+                13,
             ),
             ty: Named {
                 name: "LocalPid",
@@ -1047,19 +1047,9 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                13,
-            ),
-            ty: I64,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
                 14,
             ),
-            ty: I32,
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1069,6 +1059,16 @@ ElaboratedMirFunction {
             site: SiteId(
                 15,
             ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                16,
+            ),
             ty: String,
             value_class: CowValue,
             intent: Read,
@@ -1077,7 +1077,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                16,
+                17,
             ),
             ty: Named {
                 name: "LocalPid",
@@ -1101,7 +1101,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                18,
+                19,
             ),
             ty: Named {
                 name: "Result",
@@ -1140,7 +1140,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                19,
+                20,
             ),
             ty: String,
             value_class: CowValue,
@@ -1150,7 +1150,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                21,
+                22,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -1160,7 +1160,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                22,
+                23,
             ),
             ty: Named {
                 name: "Result",
@@ -1199,7 +1199,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                23,
+                24,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -1209,7 +1209,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                24,
+                25,
             ),
             ty: Named {
                 name: "Result",
@@ -1236,7 +1236,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                25,
+                26,
             ),
             ty: Named {
                 name: "RemotePid",
@@ -1260,7 +1260,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                26,
+                27,
             ),
             ty: Named {
                 name: "Ping",
@@ -1275,17 +1275,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                27,
-            ),
-            ty: I64,
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                29,
+                28,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -1296,6 +1286,16 @@ ElaboratedMirFunction {
         DecisionFact {
             site: SiteId(
                 30,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                31,
             ),
             ty: Named {
                 name: "Result",
@@ -1315,16 +1315,6 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                31,
-            ),
-            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1354,7 +1344,7 @@ ElaboratedMirFunction {
             site: SiteId(
                 34,
             ),
-            ty: Unit,
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1364,7 +1354,7 @@ ElaboratedMirFunction {
             site: SiteId(
                 35,
             ),
-            ty: I64,
+            ty: Unit,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1382,7 +1372,17 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                38,
+                37,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                39,
             ),
             ty: Named {
                 name: "Result",
@@ -1421,7 +1421,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                39,
+                40,
             ),
             ty: String,
             value_class: CowValue,
@@ -1431,7 +1431,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                41,
+                42,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -1441,7 +1441,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                42,
+                43,
             ),
             ty: Named {
                 name: "Result",
@@ -1480,7 +1480,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                43,
+                44,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -1490,7 +1490,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                44,
+                45,
             ),
             ty: Named {
                 name: "Result",
@@ -1517,7 +1517,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                45,
+                46,
             ),
             ty: Named {
                 name: "RemotePid",
@@ -1541,7 +1541,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                46,
+                47,
             ),
             ty: Named {
                 name: "Ping",
@@ -1556,7 +1556,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                47,
+                48,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -1566,7 +1566,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                49,
+                50,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -1576,7 +1576,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                50,
+                51,
             ),
             ty: Named {
                 name: "Result",
@@ -1596,16 +1596,6 @@ ElaboratedMirFunction {
                 ),
                 is_opaque: false,
             },
-            value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                51,
-            ),
-            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1635,7 +1625,7 @@ ElaboratedMirFunction {
             site: SiteId(
                 54,
             ),
-            ty: Bool,
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1645,7 +1635,7 @@ ElaboratedMirFunction {
             site: SiteId(
                 55,
             ),
-            ty: I64,
+            ty: Bool,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1677,13 +1667,23 @@ ElaboratedMirFunction {
             ),
             ty: I64,
             value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                59,
+            ),
+            ty: I64,
+            value_class: BitCopy,
             intent: Consume,
             strategy: Move,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
             site: SiteId(
-                60,
+                61,
             ),
             ty: Named {
                 name: "Result",
@@ -1710,7 +1710,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                61,
+                62,
             ),
             ty: Named {
                 name: "LocalPid",
@@ -1728,16 +1728,6 @@ ElaboratedMirFunction {
                 is_opaque: false,
             },
             value_class: AffineResource,
-            intent: Read,
-            strategy: BorrowRead,
-            why: "first vertical-slice classifier",
-        },
-        DecisionFact {
-            site: SiteId(
-                62,
-            ),
-            ty: I64,
-            value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
             why: "first vertical-slice classifier",
@@ -1766,7 +1756,7 @@ ElaboratedMirFunction {
             site: SiteId(
                 65,
             ),
-            ty: Unit,
+            ty: I64,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1776,7 +1766,7 @@ ElaboratedMirFunction {
             site: SiteId(
                 66,
             ),
-            ty: I64,
+            ty: Unit,
             value_class: BitCopy,
             intent: Read,
             strategy: BorrowRead,
@@ -1794,7 +1784,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                69,
+                68,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -1836,6 +1826,16 @@ ElaboratedMirFunction {
             site: SiteId(
                 73,
             ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                74,
+            ),
             ty: Unit,
             value_class: BitCopy,
             intent: Read,
@@ -1844,7 +1844,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                75,
+                76,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -2131,6 +2131,7 @@ ElaboratedMirFunction {
                     },
                     drop_fn: None,
                     kind: Resource,
+                    guard: None,
                 },
             ],
             successor: None,
@@ -2160,6 +2161,7 @@ ElaboratedMirFunction {
                     },
                     drop_fn: None,
                     kind: Resource,
+                    guard: None,
                 },
                 ElabDrop {
                     place: ActorHandle(
@@ -2182,6 +2184,7 @@ ElaboratedMirFunction {
                     },
                     drop_fn: None,
                     kind: Resource,
+                    guard: None,
                 },
             ],
             successor: None,
@@ -2211,6 +2214,7 @@ ElaboratedMirFunction {
                     },
                     drop_fn: None,
                     kind: Resource,
+                    guard: None,
                 },
             ],
             successor: None,
@@ -2240,6 +2244,7 @@ ElaboratedMirFunction {
                     },
                     drop_fn: None,
                     kind: Resource,
+                    guard: None,
                 },
                 ElabDrop {
                     place: ActorHandle(
@@ -2262,6 +2267,7 @@ ElaboratedMirFunction {
                     },
                     drop_fn: None,
                     kind: Resource,
+                    guard: None,
                 },
             ],
             successor: None,
@@ -2291,6 +2297,7 @@ ElaboratedMirFunction {
                     },
                     drop_fn: None,
                     kind: Resource,
+                    guard: None,
                 },
                 ElabDrop {
                     place: ActorHandle(
@@ -2313,6 +2320,7 @@ ElaboratedMirFunction {
                     },
                     drop_fn: None,
                     kind: Resource,
+                    guard: None,
                 },
             ],
             successor: None,
@@ -2342,6 +2350,7 @@ ElaboratedMirFunction {
                     },
                     drop_fn: None,
                     kind: Resource,
+                    guard: None,
                 },
                 ElabDrop {
                     place: ActorHandle(
@@ -2364,6 +2373,7 @@ ElaboratedMirFunction {
                     },
                     drop_fn: None,
                     kind: Resource,
+                    guard: None,
                 },
             ],
             successor: None,
@@ -2484,6 +2494,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -2515,6 +2526,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -2575,6 +2587,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                     ElabDrop {
                         place: ActorHandle(
@@ -2597,6 +2610,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -2637,6 +2651,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                     ElabDrop {
                         place: ActorHandle(
@@ -2659,6 +2674,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -2699,6 +2715,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                     ElabDrop {
                         place: ActorHandle(
@@ -2721,6 +2738,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -2752,6 +2770,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                     ElabDrop {
                         place: ActorHandle(
@@ -2774,6 +2793,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -2864,6 +2884,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -2895,6 +2916,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -2965,6 +2987,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                     ElabDrop {
                         place: ActorHandle(
@@ -2987,6 +3010,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -3027,6 +3051,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                     ElabDrop {
                         place: ActorHandle(
@@ -3049,6 +3074,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -3080,6 +3106,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                     ElabDrop {
                         place: ActorHandle(
@@ -3102,6 +3129,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -3173,6 +3201,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                     ElabDrop {
                         place: ActorHandle(
@@ -3195,6 +3224,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -3255,6 +3285,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                     ElabDrop {
                         place: ActorHandle(
@@ -3277,6 +3308,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -3318,6 +3350,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                     ElabDrop {
                         place: ActorHandle(
@@ -3340,6 +3373,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -3381,6 +3415,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                     ElabDrop {
                         place: ActorHandle(
@@ -3403,6 +3438,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -3443,6 +3479,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                     ElabDrop {
                         place: ActorHandle(
@@ -3465,6 +3502,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -3505,6 +3543,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                     ElabDrop {
                         place: ActorHandle(
@@ -3527,6 +3566,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -3558,6 +3598,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -3576,7 +3617,7 @@ ElaboratedMirFunction {
             ),
             name: "val",
             site: SiteId(
-                105,
+                106,
             ),
             ty: I32,
             intent: Read,
@@ -3584,7 +3625,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    104,
+                    105,
                 ),
             ),
             ty: String,
@@ -3593,7 +3634,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                104,
+                105,
             ),
             ty: String,
             value_class: CowValue,
@@ -3603,7 +3644,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                105,
+                106,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -3667,7 +3708,7 @@ ElaboratedMirFunction {
             ),
             name: "val",
             site: SiteId(
-                108,
+                109,
             ),
             ty: I64,
             intent: Read,
@@ -3675,7 +3716,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    107,
+                    108,
                 ),
             ),
             ty: String,
@@ -3684,7 +3725,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                107,
+                108,
             ),
             ty: String,
             value_class: CowValue,
@@ -3694,7 +3735,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                108,
+                109,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -3758,7 +3799,7 @@ ElaboratedMirFunction {
             ),
             name: "val",
             site: SiteId(
-                111,
+                112,
             ),
             ty: U32,
             intent: Read,
@@ -3766,7 +3807,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    110,
+                    111,
                 ),
             ),
             ty: String,
@@ -3775,7 +3816,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                110,
+                111,
             ),
             ty: String,
             value_class: CowValue,
@@ -3785,7 +3826,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                111,
+                112,
             ),
             ty: U32,
             value_class: BitCopy,
@@ -3849,7 +3890,7 @@ ElaboratedMirFunction {
             ),
             name: "val",
             site: SiteId(
-                114,
+                115,
             ),
             ty: U64,
             intent: Read,
@@ -3857,7 +3898,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    113,
+                    114,
                 ),
             ),
             ty: String,
@@ -3866,7 +3907,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                113,
+                114,
             ),
             ty: String,
             value_class: CowValue,
@@ -3876,7 +3917,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                114,
+                115,
             ),
             ty: U64,
             value_class: BitCopy,
@@ -3940,7 +3981,7 @@ ElaboratedMirFunction {
             ),
             name: "val",
             site: SiteId(
-                117,
+                118,
             ),
             ty: Bool,
             intent: Read,
@@ -3948,7 +3989,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    116,
+                    117,
                 ),
             ),
             ty: String,
@@ -3957,7 +3998,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                116,
+                117,
             ),
             ty: String,
             value_class: CowValue,
@@ -3967,7 +4008,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                117,
+                118,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -4031,7 +4072,7 @@ ElaboratedMirFunction {
             ),
             name: "val",
             site: SiteId(
-                120,
+                121,
             ),
             ty: Char,
             intent: Read,
@@ -4039,7 +4080,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    119,
+                    120,
                 ),
             ),
             ty: String,
@@ -4048,7 +4089,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                119,
+                120,
             ),
             ty: String,
             value_class: CowValue,
@@ -4058,7 +4099,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                120,
+                121,
             ),
             ty: Char,
             value_class: BitCopy,
@@ -4122,7 +4163,7 @@ ElaboratedMirFunction {
             ),
             name: "val",
             site: SiteId(
-                123,
+                124,
             ),
             ty: F64,
             intent: Read,
@@ -4130,7 +4171,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    122,
+                    123,
                 ),
             ),
             ty: String,
@@ -4139,7 +4180,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                122,
+                123,
             ),
             ty: String,
             value_class: CowValue,
@@ -4149,7 +4190,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                123,
+                124,
             ),
             ty: F64,
             value_class: BitCopy,
@@ -4213,7 +4254,7 @@ ElaboratedMirFunction {
             ),
             name: "val",
             site: SiteId(
-                125,
+                126,
             ),
             ty: String,
             intent: Read,
@@ -4221,7 +4262,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    125,
+                    126,
                 ),
             ),
             ty: String,
@@ -4230,7 +4271,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                125,
+                126,
             ),
             ty: String,
             value_class: CowValue,

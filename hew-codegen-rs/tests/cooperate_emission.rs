@@ -71,7 +71,7 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),

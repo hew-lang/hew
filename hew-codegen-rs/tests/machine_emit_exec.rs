@@ -136,7 +136,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
 
     // `caller()` invokes the step stub with zeroed locals and returns.
@@ -182,7 +182,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
 
     IrPipeline {

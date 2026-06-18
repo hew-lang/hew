@@ -1484,7 +1484,7 @@ fn concrete_vec_validation_reaches_function_wrapped_vec() {
         params: vec![Ty::Named {
             builtin: Some(crate::BuiltinType::Vec),
             name: "Vec".to_string(),
-            args: vec![Ty::Array(Box::new(Ty::I64), 4)],
+            args: vec![Ty::Array(Box::new(Ty::String), 4)],
         }],
         ret: Box::new(Ty::Unit),
     };

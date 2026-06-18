@@ -87,8 +87,13 @@ pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
 ) -> Option<&'static str> {
     match ty {
         crate::Ty::Bool => Some("bool"),
+        crate::Ty::I8 => Some("i8"),
+        crate::Ty::U8 => Some("u8"),
+        crate::Ty::I16 => Some("i16"),
+        crate::Ty::U16 => Some("u16"),
         crate::Ty::Char | crate::Ty::I32 | crate::Ty::U32 => Some("i32"),
         crate::Ty::I64 | crate::Ty::U64 => Some("i64"),
+        crate::Ty::F32 => Some("f32"),
         crate::Ty::F64 => Some("f64"),
         crate::Ty::String => Some("string"),
         // Tuples lower through the layout-descriptor protocol.
@@ -220,8 +225,13 @@ pub fn resolve_vec_method<S: std::hash::BuildHasher>(
         },
         "push" => match vec_element_runtime_suffix(elem_ty, type_defs)? {
             "bool" => Some("hew_vec_push_bool"),
+            "i8" => Some("hew_vec_push_i8"),
+            "u8" => Some("hew_vec_push_u8"),
+            "i16" => Some("hew_vec_push_i16"),
+            "u16" => Some("hew_vec_push_u16"),
             "i32" => Some("hew_vec_push_i32"),
             "i64" => Some("hew_vec_push_i64"),
+            "f32" => Some("hew_vec_push_f32"),
             "f64" => Some("hew_vec_push_f64"),
             "string" => Some("hew_vec_push_str"),
             "ptr" => Some("hew_vec_push_ptr"),
@@ -230,8 +240,13 @@ pub fn resolve_vec_method<S: std::hash::BuildHasher>(
         },
         "pop" => match vec_element_runtime_suffix(elem_ty, type_defs)? {
             "bool" => Some("hew_vec_pop_bool"),
+            "i8" => Some("hew_vec_pop_i8"),
+            "u8" => Some("hew_vec_pop_u8"),
+            "i16" => Some("hew_vec_pop_i16"),
+            "u16" => Some("hew_vec_pop_u16"),
             "i32" => Some("hew_vec_pop_i32"),
             "i64" => Some("hew_vec_pop_i64"),
+            "f32" => Some("hew_vec_pop_f32"),
             "f64" => Some("hew_vec_pop_f64"),
             "string" => Some("hew_vec_pop_str"),
             "ptr" => Some("hew_vec_pop_ptr"),
@@ -240,8 +255,13 @@ pub fn resolve_vec_method<S: std::hash::BuildHasher>(
         },
         "get" => match vec_element_runtime_suffix(elem_ty, type_defs)? {
             "bool" => Some("hew_vec_get_bool"),
+            "i8" => Some("hew_vec_get_i8"),
+            "u8" => Some("hew_vec_get_u8"),
+            "i16" => Some("hew_vec_get_i16"),
+            "u16" => Some("hew_vec_get_u16"),
             "i32" => Some("hew_vec_get_i32"),
             "i64" => Some("hew_vec_get_i64"),
+            "f32" => Some("hew_vec_get_f32"),
             "f64" => Some("hew_vec_get_f64"),
             "string" => Some("hew_vec_get_str"),
             "ptr" => Some("hew_vec_get_ptr"),
@@ -250,8 +270,13 @@ pub fn resolve_vec_method<S: std::hash::BuildHasher>(
         },
         "set" => match vec_element_runtime_suffix(elem_ty, type_defs)? {
             "bool" => Some("hew_vec_set_bool"),
+            "i8" => Some("hew_vec_set_i8"),
+            "u8" => Some("hew_vec_set_u8"),
+            "i16" => Some("hew_vec_set_i16"),
+            "u16" => Some("hew_vec_set_u16"),
             "i32" => Some("hew_vec_set_i32"),
             "i64" => Some("hew_vec_set_i64"),
+            "f32" => Some("hew_vec_set_f32"),
             "f64" => Some("hew_vec_set_f64"),
             "string" => Some("hew_vec_set_str"),
             "ptr" => Some("hew_vec_set_ptr"),
@@ -503,6 +528,22 @@ mod tests {
             Some("hew_vec_push_i32")
         );
         assert_eq!(
+            resolve_vec_method("push", &Ty::I8, &type_defs),
+            Some("hew_vec_push_i8")
+        );
+        assert_eq!(
+            resolve_vec_method("push", &Ty::U8, &type_defs),
+            Some("hew_vec_push_u8")
+        );
+        assert_eq!(
+            resolve_vec_method("push", &Ty::I16, &type_defs),
+            Some("hew_vec_push_i16")
+        );
+        assert_eq!(
+            resolve_vec_method("push", &Ty::U16, &type_defs),
+            Some("hew_vec_push_u16")
+        );
+        assert_eq!(
             resolve_vec_method("push", &Ty::I32, &type_defs),
             Some("hew_vec_push_i32")
         );
@@ -523,6 +564,10 @@ mod tests {
             Some("hew_vec_push_f64")
         );
         assert_eq!(
+            resolve_vec_method("push", &Ty::F32, &type_defs),
+            Some("hew_vec_push_f32")
+        );
+        assert_eq!(
             resolve_vec_method("push", &Ty::String, &type_defs),
             Some("hew_vec_push_str")
         );
@@ -534,6 +579,14 @@ mod tests {
         assert_eq!(
             resolve_vec_method("pop", &Ty::Char, &type_defs),
             Some("hew_vec_pop_i32")
+        );
+        assert_eq!(
+            resolve_vec_method("pop", &Ty::I8, &type_defs),
+            Some("hew_vec_pop_i8")
+        );
+        assert_eq!(
+            resolve_vec_method("pop", &Ty::U16, &type_defs),
+            Some("hew_vec_pop_u16")
         );
         assert_eq!(
             resolve_vec_method("pop", &Ty::I64, &type_defs),
@@ -553,12 +606,24 @@ mod tests {
             Some("hew_vec_get_i32")
         );
         assert_eq!(
+            resolve_vec_method("get", &Ty::U8, &type_defs),
+            Some("hew_vec_get_u8")
+        );
+        assert_eq!(
+            resolve_vec_method("get", &Ty::I16, &type_defs),
+            Some("hew_vec_get_i16")
+        );
+        assert_eq!(
             resolve_vec_method("get", &Ty::I64, &type_defs),
             Some("hew_vec_get_i64")
         );
         assert_eq!(
             resolve_vec_method("get", &Ty::F64, &type_defs),
             Some("hew_vec_get_f64")
+        );
+        assert_eq!(
+            resolve_vec_method("get", &Ty::F32, &type_defs),
+            Some("hew_vec_get_f32")
         );
         // set
         assert_eq!(
@@ -568,6 +633,14 @@ mod tests {
         assert_eq!(
             resolve_vec_method("set", &Ty::Char, &type_defs),
             Some("hew_vec_set_i32")
+        );
+        assert_eq!(
+            resolve_vec_method("set", &Ty::I8, &type_defs),
+            Some("hew_vec_set_i8")
+        );
+        assert_eq!(
+            resolve_vec_method("set", &Ty::U16, &type_defs),
+            Some("hew_vec_set_u16")
         );
         assert_eq!(
             resolve_vec_method("set", &Ty::I32, &type_defs),

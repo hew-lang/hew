@@ -1,0 +1,6208 @@
+RawMirFunction {
+    name: "main",
+    return_ty: I64,
+    call_conv: Default,
+    params: [],
+    locals: [
+        Named {
+            name: "Vec",
+            args: [
+                I8,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Vec",
+            args: [
+                I8,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        I8,
+        I8,
+        Bool,
+        I8,
+        Unit,
+        I64,
+        I64,
+        Bool,
+        I8,
+        I8,
+        I8,
+        Bool,
+        Bool,
+        I64,
+        Unit,
+        I64,
+        I64,
+        Bool,
+        I8,
+        I8,
+        Bool,
+        I64,
+        Named {
+            name: "Vec",
+            args: [
+                U8,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Vec",
+            args: [
+                U8,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        U8,
+        Unit,
+        I64,
+        I64,
+        Bool,
+        U8,
+        U8,
+        Bool,
+        I64,
+        Named {
+            name: "Vec",
+            args: [
+                I16,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Vec",
+            args: [
+                I16,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        I16,
+        I16,
+        Bool,
+        Unit,
+        I64,
+        I64,
+        Bool,
+        I16,
+        I16,
+        I16,
+        Bool,
+        Bool,
+        I64,
+        Named {
+            name: "Vec",
+            args: [
+                U16,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Vec",
+            args: [
+                U16,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        U16,
+        Unit,
+        I64,
+        I64,
+        Bool,
+        U16,
+        U16,
+        Bool,
+        I64,
+        Named {
+            name: "Vec",
+            args: [
+                F32,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Vec",
+            args: [
+                F32,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        F32,
+        F32,
+        I64,
+        I64,
+        Bool,
+        I64,
+        Bool,
+        Named {
+            name: "Vec",
+            args: [
+                F32,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Vec",
+            args: [
+                F32,
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Unit,
+        I64,
+        I64,
+        Bool,
+        F32,
+        F32,
+        Bool,
+        I64,
+        Unit,
+        I64,
+        I64,
+        Bool,
+        F32,
+        F32,
+        Bool,
+        I64,
+        Named {
+            name: "Vec",
+            args: [
+                Named {
+                    name: "Point",
+                    args: [],
+                    builtin: None,
+                    is_opaque: false,
+                },
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        Named {
+            name: "Vec",
+            args: [
+                Named {
+                    name: "Point",
+                    args: [],
+                    builtin: None,
+                    is_opaque: false,
+                },
+            ],
+            builtin: Some(
+                Vec,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        Named {
+            name: "Point",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        Bool,
+        Named {
+            name: "Point",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        Named {
+            name: "Point",
+            args: [],
+            builtin: None,
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        I64,
+        Bool,
+        I64,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "Vec::new",
+                builtin: None,
+                args: [],
+                dest: Some(
+                    Local(
+                        0,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "xs",
+                    site: SiteId(
+                        0,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I8,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "xs",
+                    site: SiteId(
+                        3,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I8,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        1,
+                    ),
+                    src: Local(
+                        0,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        2,
+                    ),
+                    value: 1,
+                },
+                IntNegChecked {
+                    signed: Signed,
+                    dest: Local(
+                        3,
+                    ),
+                    operand: Local(
+                        2,
+                    ),
+                    overflow_flag: Local(
+                        4,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    4,
+                ),
+                then_target: 2,
+                else_target: 3,
+            },
+        },
+        BasicBlock {
+            id: 2,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IntegerOverflow,
+            },
+        },
+        BasicBlock {
+            id: 3,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_vec_push_i8",
+                builtin: None,
+                args: [
+                    Local(
+                        1,
+                    ),
+                    Local(
+                        3,
+                    ),
+                ],
+                dest: None,
+                next: 4,
+            },
+        },
+        BasicBlock {
+            id: 4,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        2,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "xs",
+                    site: SiteId(
+                        7,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I8,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        5,
+                    ),
+                    value: 7,
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_push_i8",
+                builtin: None,
+                args: [
+                    Local(
+                        1,
+                    ),
+                    Local(
+                        5,
+                    ),
+                ],
+                dest: None,
+                next: 5,
+            },
+        },
+        BasicBlock {
+            id: 5,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        6,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "xs",
+                    site: SiteId(
+                        11,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I8,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        7,
+                    ),
+                    value: 0,
+                },
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecLen,
+                        args: [
+                            Local(
+                                1,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                8,
+                            ),
+                        ),
+                    },
+                ),
+                IntCmp {
+                    dest: Local(
+                        9,
+                    ),
+                    pred: UnsignedGreaterEq,
+                    lhs: Local(
+                        7,
+                    ),
+                    rhs: Local(
+                        8,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    9,
+                ),
+                then_target: 6,
+                else_target: 7,
+            },
+        },
+        BasicBlock {
+            id: 6,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IndexOutOfBounds,
+            },
+        },
+        BasicBlock {
+            id: 7,
+            statements: [],
+            instructions: [
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecGet(
+                            I8,
+                        ),
+                        args: [
+                            Local(
+                                1,
+                            ),
+                            Local(
+                                7,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                10,
+                            ),
+                        ),
+                    },
+                ),
+                ConstI64 {
+                    dest: Local(
+                        11,
+                    ),
+                    value: 1,
+                },
+                IntNegChecked {
+                    signed: Signed,
+                    dest: Local(
+                        12,
+                    ),
+                    operand: Local(
+                        11,
+                    ),
+                    overflow_flag: Local(
+                        13,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    13,
+                ),
+                then_target: 8,
+                else_target: 9,
+            },
+        },
+        BasicBlock {
+            id: 8,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IntegerOverflow,
+            },
+        },
+        BasicBlock {
+            id: 9,
+            statements: [],
+            instructions: [
+                IntCmp {
+                    dest: Local(
+                        14,
+                    ),
+                    pred: NotEq,
+                    lhs: Local(
+                        10,
+                    ),
+                    rhs: Local(
+                        12,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    14,
+                ),
+                then_target: 10,
+                else_target: 11,
+            },
+        },
+        BasicBlock {
+            id: 10,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            15,
+                        ),
+                    ),
+                    ty: I64,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        15,
+                    ),
+                    value: 1,
+                },
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        15,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+        BasicBlock {
+            id: 11,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 12,
+            },
+        },
+        BasicBlock {
+            id: 12,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        17,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "xs",
+                    site: SiteId(
+                        20,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I8,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        17,
+                    ),
+                    value: 1,
+                },
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecLen,
+                        args: [
+                            Local(
+                                1,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                18,
+                            ),
+                        ),
+                    },
+                ),
+                IntCmp {
+                    dest: Local(
+                        19,
+                    ),
+                    pred: UnsignedGreaterEq,
+                    lhs: Local(
+                        17,
+                    ),
+                    rhs: Local(
+                        18,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    19,
+                ),
+                then_target: 14,
+                else_target: 15,
+            },
+        },
+        BasicBlock {
+            id: 13,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 12,
+            },
+        },
+        BasicBlock {
+            id: 14,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IndexOutOfBounds,
+            },
+        },
+        BasicBlock {
+            id: 15,
+            statements: [],
+            instructions: [
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecGet(
+                            I8,
+                        ),
+                        args: [
+                            Local(
+                                1,
+                            ),
+                            Local(
+                                17,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                20,
+                            ),
+                        ),
+                    },
+                ),
+                ConstI64 {
+                    dest: Local(
+                        21,
+                    ),
+                    value: 7,
+                },
+                IntCmp {
+                    dest: Local(
+                        22,
+                    ),
+                    pred: NotEq,
+                    lhs: Local(
+                        20,
+                    ),
+                    rhs: Local(
+                        21,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    22,
+                ),
+                then_target: 16,
+                else_target: 17,
+            },
+        },
+        BasicBlock {
+            id: 16,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            23,
+                        ),
+                    ),
+                    ty: I64,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        23,
+                    ),
+                    value: 2,
+                },
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        23,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+        BasicBlock {
+            id: 17,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 18,
+            },
+        },
+        BasicBlock {
+            id: 18,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        25,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "Vec::new",
+                builtin: None,
+                args: [],
+                dest: Some(
+                    Local(
+                        24,
+                    ),
+                ),
+                next: 20,
+            },
+        },
+        BasicBlock {
+            id: 19,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 18,
+            },
+        },
+        BasicBlock {
+            id: 20,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        1,
+                    ),
+                    name: "u8s",
+                    site: SiteId(
+                        26,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            U8,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        1,
+                    ),
+                    name: "u8s",
+                    site: SiteId(
+                        29,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            U8,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        25,
+                    ),
+                    src: Local(
+                        24,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        26,
+                    ),
+                    value: 200,
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_push_u8",
+                builtin: None,
+                args: [
+                    Local(
+                        25,
+                    ),
+                    Local(
+                        26,
+                    ),
+                ],
+                dest: None,
+                next: 21,
+            },
+        },
+        BasicBlock {
+            id: 21,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        28,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        1,
+                    ),
+                    name: "u8s",
+                    site: SiteId(
+                        33,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            U8,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        28,
+                    ),
+                    value: 0,
+                },
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecLen,
+                        args: [
+                            Local(
+                                25,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                29,
+                            ),
+                        ),
+                    },
+                ),
+                IntCmp {
+                    dest: Local(
+                        30,
+                    ),
+                    pred: UnsignedGreaterEq,
+                    lhs: Local(
+                        28,
+                    ),
+                    rhs: Local(
+                        29,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    30,
+                ),
+                then_target: 22,
+                else_target: 23,
+            },
+        },
+        BasicBlock {
+            id: 22,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IndexOutOfBounds,
+            },
+        },
+        BasicBlock {
+            id: 23,
+            statements: [],
+            instructions: [
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecGet(
+                            U8,
+                        ),
+                        args: [
+                            Local(
+                                25,
+                            ),
+                            Local(
+                                28,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                31,
+                            ),
+                        ),
+                    },
+                ),
+                ConstI64 {
+                    dest: Local(
+                        32,
+                    ),
+                    value: 200,
+                },
+                IntCmp {
+                    dest: Local(
+                        33,
+                    ),
+                    pred: NotEq,
+                    lhs: Local(
+                        31,
+                    ),
+                    rhs: Local(
+                        32,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    33,
+                ),
+                then_target: 24,
+                else_target: 25,
+            },
+        },
+        BasicBlock {
+            id: 24,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            36,
+                        ),
+                    ),
+                    ty: I64,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        34,
+                    ),
+                    value: 5,
+                },
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        34,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+        BasicBlock {
+            id: 25,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 26,
+            },
+        },
+        BasicBlock {
+            id: 26,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        38,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "Vec::new",
+                builtin: None,
+                args: [],
+                dest: Some(
+                    Local(
+                        35,
+                    ),
+                ),
+                next: 28,
+            },
+        },
+        BasicBlock {
+            id: 27,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 26,
+            },
+        },
+        BasicBlock {
+            id: 28,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        2,
+                    ),
+                    name: "i16s",
+                    site: SiteId(
+                        39,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I16,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        2,
+                    ),
+                    name: "i16s",
+                    site: SiteId(
+                        42,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I16,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        36,
+                    ),
+                    src: Local(
+                        35,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        37,
+                    ),
+                    value: 1234,
+                },
+                IntNegChecked {
+                    signed: Signed,
+                    dest: Local(
+                        38,
+                    ),
+                    operand: Local(
+                        37,
+                    ),
+                    overflow_flag: Local(
+                        39,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    39,
+                ),
+                then_target: 29,
+                else_target: 30,
+            },
+        },
+        BasicBlock {
+            id: 29,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IntegerOverflow,
+            },
+        },
+        BasicBlock {
+            id: 30,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "hew_vec_push_i16",
+                builtin: None,
+                args: [
+                    Local(
+                        36,
+                    ),
+                    Local(
+                        38,
+                    ),
+                ],
+                dest: None,
+                next: 31,
+            },
+        },
+        BasicBlock {
+            id: 31,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        41,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        2,
+                    ),
+                    name: "i16s",
+                    site: SiteId(
+                        47,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            I16,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        41,
+                    ),
+                    value: 0,
+                },
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecLen,
+                        args: [
+                            Local(
+                                36,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                42,
+                            ),
+                        ),
+                    },
+                ),
+                IntCmp {
+                    dest: Local(
+                        43,
+                    ),
+                    pred: UnsignedGreaterEq,
+                    lhs: Local(
+                        41,
+                    ),
+                    rhs: Local(
+                        42,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    43,
+                ),
+                then_target: 32,
+                else_target: 33,
+            },
+        },
+        BasicBlock {
+            id: 32,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IndexOutOfBounds,
+            },
+        },
+        BasicBlock {
+            id: 33,
+            statements: [],
+            instructions: [
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecGet(
+                            I16,
+                        ),
+                        args: [
+                            Local(
+                                36,
+                            ),
+                            Local(
+                                41,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                44,
+                            ),
+                        ),
+                    },
+                ),
+                ConstI64 {
+                    dest: Local(
+                        45,
+                    ),
+                    value: 1234,
+                },
+                IntNegChecked {
+                    signed: Signed,
+                    dest: Local(
+                        46,
+                    ),
+                    operand: Local(
+                        45,
+                    ),
+                    overflow_flag: Local(
+                        47,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    47,
+                ),
+                then_target: 34,
+                else_target: 35,
+            },
+        },
+        BasicBlock {
+            id: 34,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IntegerOverflow,
+            },
+        },
+        BasicBlock {
+            id: 35,
+            statements: [],
+            instructions: [
+                IntCmp {
+                    dest: Local(
+                        48,
+                    ),
+                    pred: NotEq,
+                    lhs: Local(
+                        44,
+                    ),
+                    rhs: Local(
+                        46,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    48,
+                ),
+                then_target: 36,
+                else_target: 37,
+            },
+        },
+        BasicBlock {
+            id: 36,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            51,
+                        ),
+                    ),
+                    ty: I64,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        49,
+                    ),
+                    value: 6,
+                },
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        49,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+        BasicBlock {
+            id: 37,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 38,
+            },
+        },
+        BasicBlock {
+            id: 38,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        53,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "Vec::new",
+                builtin: None,
+                args: [],
+                dest: Some(
+                    Local(
+                        50,
+                    ),
+                ),
+                next: 40,
+            },
+        },
+        BasicBlock {
+            id: 39,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 38,
+            },
+        },
+        BasicBlock {
+            id: 40,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        3,
+                    ),
+                    name: "u16s",
+                    site: SiteId(
+                        54,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            U16,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        3,
+                    ),
+                    name: "u16s",
+                    site: SiteId(
+                        57,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            U16,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        51,
+                    ),
+                    src: Local(
+                        50,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        52,
+                    ),
+                    value: 50000,
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_push_u16",
+                builtin: None,
+                args: [
+                    Local(
+                        51,
+                    ),
+                    Local(
+                        52,
+                    ),
+                ],
+                dest: None,
+                next: 41,
+            },
+        },
+        BasicBlock {
+            id: 41,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        56,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        3,
+                    ),
+                    name: "u16s",
+                    site: SiteId(
+                        61,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            U16,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        54,
+                    ),
+                    value: 0,
+                },
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecLen,
+                        args: [
+                            Local(
+                                51,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                55,
+                            ),
+                        ),
+                    },
+                ),
+                IntCmp {
+                    dest: Local(
+                        56,
+                    ),
+                    pred: UnsignedGreaterEq,
+                    lhs: Local(
+                        54,
+                    ),
+                    rhs: Local(
+                        55,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    56,
+                ),
+                then_target: 42,
+                else_target: 43,
+            },
+        },
+        BasicBlock {
+            id: 42,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IndexOutOfBounds,
+            },
+        },
+        BasicBlock {
+            id: 43,
+            statements: [],
+            instructions: [
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecGet(
+                            U16,
+                        ),
+                        args: [
+                            Local(
+                                51,
+                            ),
+                            Local(
+                                54,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                57,
+                            ),
+                        ),
+                    },
+                ),
+                ConstI64 {
+                    dest: Local(
+                        58,
+                    ),
+                    value: 50000,
+                },
+                IntCmp {
+                    dest: Local(
+                        59,
+                    ),
+                    pred: NotEq,
+                    lhs: Local(
+                        57,
+                    ),
+                    rhs: Local(
+                        58,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    59,
+                ),
+                then_target: 44,
+                else_target: 45,
+            },
+        },
+        BasicBlock {
+            id: 44,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            64,
+                        ),
+                    ),
+                    ty: I64,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        60,
+                    ),
+                    value: 7,
+                },
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        60,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+        BasicBlock {
+            id: 45,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 46,
+            },
+        },
+        BasicBlock {
+            id: 46,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        66,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "Vec::new",
+                builtin: None,
+                args: [],
+                dest: Some(
+                    Local(
+                        61,
+                    ),
+                ),
+                next: 48,
+            },
+        },
+        BasicBlock {
+            id: 47,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 46,
+            },
+        },
+        BasicBlock {
+            id: 48,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "ys",
+                    site: SiteId(
+                        67,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "ys",
+                    site: SiteId(
+                        70,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        62,
+                    ),
+                    src: Local(
+                        61,
+                    ),
+                },
+                FloatLit {
+                    dest: Local(
+                        63,
+                    ),
+                    value_bits: 1069547520,
+                    width: F32,
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_push_f32",
+                builtin: None,
+                args: [
+                    Local(
+                        62,
+                    ),
+                    Local(
+                        63,
+                    ),
+                ],
+                dest: None,
+                next: 49,
+            },
+        },
+        BasicBlock {
+            id: 49,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        69,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "ys",
+                    site: SiteId(
+                        73,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                FloatLit {
+                    dest: Local(
+                        64,
+                    ),
+                    value_bits: 1075838976,
+                    width: F32,
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_push_f32",
+                builtin: None,
+                args: [
+                    Local(
+                        62,
+                    ),
+                    Local(
+                        64,
+                    ),
+                ],
+                dest: None,
+                next: 50,
+            },
+        },
+        BasicBlock {
+            id: 50,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        72,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "ys",
+                    site: SiteId(
+                        76,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        65,
+                    ),
+                    value: 0,
+                },
+                ConstI64 {
+                    dest: Local(
+                        66,
+                    ),
+                    value: 2,
+                },
+                IntCmp {
+                    dest: Local(
+                        67,
+                    ),
+                    pred: SignedGreater,
+                    lhs: Local(
+                        65,
+                    ),
+                    rhs: Local(
+                        66,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    67,
+                ),
+                then_target: 51,
+                else_target: 52,
+            },
+        },
+        BasicBlock {
+            id: 51,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IndexOutOfBounds,
+            },
+        },
+        BasicBlock {
+            id: 52,
+            statements: [],
+            instructions: [
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecLen,
+                        args: [
+                            Local(
+                                62,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                68,
+                            ),
+                        ),
+                    },
+                ),
+                IntCmp {
+                    dest: Local(
+                        69,
+                    ),
+                    pred: SignedGreater,
+                    lhs: Local(
+                        66,
+                    ),
+                    rhs: Local(
+                        68,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    69,
+                ),
+                then_target: 51,
+                else_target: 53,
+            },
+        },
+        BasicBlock {
+            id: 53,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "zs",
+                    site: SiteId(
+                        75,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "zs",
+                    site: SiteId(
+                        81,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecSliceRange(
+                            Bytesize,
+                        ),
+                        args: [
+                            Local(
+                                62,
+                            ),
+                            Local(
+                                65,
+                            ),
+                            Local(
+                                66,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                70,
+                            ),
+                        ),
+                    },
+                ),
+                Move {
+                    dest: Local(
+                        71,
+                    ),
+                    src: Local(
+                        70,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        73,
+                    ),
+                    value: 0,
+                },
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecLen,
+                        args: [
+                            Local(
+                                71,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                74,
+                            ),
+                        ),
+                    },
+                ),
+                IntCmp {
+                    dest: Local(
+                        75,
+                    ),
+                    pred: UnsignedGreaterEq,
+                    lhs: Local(
+                        73,
+                    ),
+                    rhs: Local(
+                        74,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    75,
+                ),
+                then_target: 54,
+                else_target: 55,
+            },
+        },
+        BasicBlock {
+            id: 54,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IndexOutOfBounds,
+            },
+        },
+        BasicBlock {
+            id: 55,
+            statements: [],
+            instructions: [
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecGet(
+                            F32,
+                        ),
+                        args: [
+                            Local(
+                                71,
+                            ),
+                            Local(
+                                73,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                76,
+                            ),
+                        ),
+                    },
+                ),
+                FloatLit {
+                    dest: Local(
+                        77,
+                    ),
+                    value_bits: 1069547520,
+                    width: F32,
+                },
+                FloatCmp {
+                    dest: Local(
+                        78,
+                    ),
+                    pred: NotEq,
+                    lhs: Local(
+                        76,
+                    ),
+                    rhs: Local(
+                        77,
+                    ),
+                    width: F32,
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    78,
+                ),
+                then_target: 56,
+                else_target: 57,
+            },
+        },
+        BasicBlock {
+            id: 56,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            84,
+                        ),
+                    ),
+                    ty: I64,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        79,
+                    ),
+                    value: 3,
+                },
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        79,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+        BasicBlock {
+            id: 57,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 58,
+            },
+        },
+        BasicBlock {
+            id: 58,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        86,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "zs",
+                    site: SiteId(
+                        89,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            F32,
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        81,
+                    ),
+                    value: 1,
+                },
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecLen,
+                        args: [
+                            Local(
+                                71,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                82,
+                            ),
+                        ),
+                    },
+                ),
+                IntCmp {
+                    dest: Local(
+                        83,
+                    ),
+                    pred: UnsignedGreaterEq,
+                    lhs: Local(
+                        81,
+                    ),
+                    rhs: Local(
+                        82,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    83,
+                ),
+                then_target: 60,
+                else_target: 61,
+            },
+        },
+        BasicBlock {
+            id: 59,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 58,
+            },
+        },
+        BasicBlock {
+            id: 60,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IndexOutOfBounds,
+            },
+        },
+        BasicBlock {
+            id: 61,
+            statements: [],
+            instructions: [
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecGet(
+                            F32,
+                        ),
+                        args: [
+                            Local(
+                                71,
+                            ),
+                            Local(
+                                81,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                84,
+                            ),
+                        ),
+                    },
+                ),
+                FloatLit {
+                    dest: Local(
+                        85,
+                    ),
+                    value_bits: 1075838976,
+                    width: F32,
+                },
+                FloatCmp {
+                    dest: Local(
+                        86,
+                    ),
+                    pred: NotEq,
+                    lhs: Local(
+                        84,
+                    ),
+                    rhs: Local(
+                        85,
+                    ),
+                    width: F32,
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    86,
+                ),
+                then_target: 62,
+                else_target: 63,
+            },
+        },
+        BasicBlock {
+            id: 62,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            92,
+                        ),
+                    ),
+                    ty: I64,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        87,
+                    ),
+                    value: 4,
+                },
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        87,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+        BasicBlock {
+            id: 63,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 64,
+            },
+        },
+        BasicBlock {
+            id: 64,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        94,
+                    ),
+                    ty: Unit,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "Vec::new",
+                builtin: None,
+                args: [],
+                dest: Some(
+                    Local(
+                        88,
+                    ),
+                ),
+                next: 66,
+            },
+        },
+        BasicBlock {
+            id: 65,
+            statements: [],
+            instructions: [],
+            terminator: Goto {
+                target: 64,
+            },
+        },
+        BasicBlock {
+            id: 66,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        6,
+                    ),
+                    name: "points",
+                    site: SiteId(
+                        95,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Named {
+                                name: "Point",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        6,
+                    ),
+                    name: "points",
+                    site: SiteId(
+                        98,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Named {
+                                name: "Point",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        89,
+                    ),
+                    src: Local(
+                        88,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        90,
+                    ),
+                    value: 3,
+                },
+                ConstI64 {
+                    dest: Local(
+                        91,
+                    ),
+                    value: 30,
+                },
+                RecordInit {
+                    ty: Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    fields: [
+                        (
+                            FieldOffset(
+                                0,
+                            ),
+                            Local(
+                                90,
+                            ),
+                        ),
+                        (
+                            FieldOffset(
+                                1,
+                            ),
+                            Local(
+                                91,
+                            ),
+                        ),
+                    ],
+                    dest: Local(
+                        92,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "hew_vec_push_layout",
+                builtin: None,
+                args: [
+                    Local(
+                        89,
+                    ),
+                    Local(
+                        92,
+                    ),
+                ],
+                dest: None,
+                next: 67,
+            },
+        },
+        BasicBlock {
+            id: 67,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        97,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        6,
+                    ),
+                    name: "points",
+                    site: SiteId(
+                        103,
+                    ),
+                    ty: Named {
+                        name: "Vec",
+                        args: [
+                            Named {
+                                name: "Point",
+                                args: [],
+                                builtin: None,
+                                is_opaque: false,
+                            },
+                        ],
+                        builtin: Some(
+                            Vec,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        93,
+                    ),
+                    value: 0,
+                },
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecLen,
+                        args: [
+                            Local(
+                                89,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                94,
+                            ),
+                        ),
+                    },
+                ),
+                IntCmp {
+                    dest: Local(
+                        95,
+                    ),
+                    pred: UnsignedGreaterEq,
+                    lhs: Local(
+                        93,
+                    ),
+                    rhs: Local(
+                        94,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    95,
+                ),
+                then_target: 68,
+                else_target: 69,
+            },
+        },
+        BasicBlock {
+            id: 68,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IndexOutOfBounds,
+            },
+        },
+        BasicBlock {
+            id: 69,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        7,
+                    ),
+                    name: "p",
+                    site: SiteId(
+                        102,
+                    ),
+                    ty: Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        7,
+                    ),
+                    name: "p",
+                    site: SiteId(
+                        108,
+                    ),
+                    ty: Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+                Use {
+                    binding: BindingId(
+                        7,
+                    ),
+                    name: "p",
+                    site: SiteId(
+                        110,
+                    ),
+                    ty: Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                CallRuntimeAbi(
+                    RuntimeCall {
+                        family: VecGet(
+                            Layout,
+                        ),
+                        args: [
+                            Local(
+                                89,
+                            ),
+                            Local(
+                                93,
+                            ),
+                        ],
+                        dest: Some(
+                            Local(
+                                96,
+                            ),
+                        ),
+                    },
+                ),
+                Move {
+                    dest: Local(
+                        97,
+                    ),
+                    src: Local(
+                        96,
+                    ),
+                },
+                RecordFieldLoad {
+                    record: Local(
+                        97,
+                    ),
+                    field_offset: FieldOffset(
+                        0,
+                    ),
+                    dest: Local(
+                        98,
+                    ),
+                },
+                RecordFieldLoad {
+                    record: Local(
+                        97,
+                    ),
+                    field_offset: FieldOffset(
+                        1,
+                    ),
+                    dest: Local(
+                        99,
+                    ),
+                },
+                IntArithChecked {
+                    op: Add,
+                    signed: Signed,
+                    dest: Local(
+                        100,
+                    ),
+                    lhs: Local(
+                        98,
+                    ),
+                    rhs: Local(
+                        99,
+                    ),
+                    overflow_flag: Local(
+                        101,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    101,
+                ),
+                then_target: 70,
+                else_target: 71,
+            },
+        },
+        BasicBlock {
+            id: 70,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IntegerOverflow,
+            },
+        },
+        BasicBlock {
+            id: 71,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        100,
+                    ),
+                ],
+                dest: None,
+                next: 72,
+            },
+        },
+        BasicBlock {
+            id: 72,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        105,
+                    ),
+                    ty: Unit,
+                },
+                Return {
+                    site: Some(
+                        SiteId(
+                            112,
+                        ),
+                    ),
+                    ty: I64,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        102,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        102,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                0,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    I8,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                2,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                3,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    I8,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                4,
+            ),
+            ty: I8,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                5,
+            ),
+            ty: I8,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                6,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                7,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    I8,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                8,
+            ),
+            ty: I8,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                17,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                9,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                10,
+            ),
+            ty: I8,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                11,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    I8,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                12,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                13,
+            ),
+            ty: I8,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                14,
+            ),
+            ty: I8,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                16,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                15,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                25,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                18,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                19,
+            ),
+            ty: I8,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                20,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    I8,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                21,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                22,
+            ),
+            ty: I8,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                24,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                23,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                26,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    U8,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                28,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                29,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    U8,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                30,
+            ),
+            ty: U8,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                38,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                31,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                32,
+            ),
+            ty: U8,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                33,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    U8,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                34,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                35,
+            ),
+            ty: U8,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                37,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                36,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                39,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    I16,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                41,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                42,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    I16,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                43,
+            ),
+            ty: I16,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                44,
+            ),
+            ty: I16,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                53,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                45,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                46,
+            ),
+            ty: I16,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                47,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    I16,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                48,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                49,
+            ),
+            ty: I16,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                50,
+            ),
+            ty: I16,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                52,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                51,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                54,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    U16,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                56,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                57,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    U16,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                58,
+            ),
+            ty: U16,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                66,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                59,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                60,
+            ),
+            ty: U16,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                61,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    U16,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                62,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                63,
+            ),
+            ty: U16,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                65,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                64,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                67,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    F32,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                69,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                70,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    F32,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                71,
+            ),
+            ty: F32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                72,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                73,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    F32,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                74,
+            ),
+            ty: F32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                75,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    F32,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                76,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    F32,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                77,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                78,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                86,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                79,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                80,
+            ),
+            ty: F32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                81,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    F32,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                82,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                83,
+            ),
+            ty: F32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                85,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                84,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                94,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                87,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                88,
+            ),
+            ty: F32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                89,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    F32,
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                90,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                91,
+            ),
+            ty: F32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                93,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                92,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                95,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                97,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                98,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                99,
+            ),
+            ty: Named {
+                name: "Point",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                100,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                101,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                102,
+            ),
+            ty: Named {
+                name: "Point",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                103,
+            ),
+            ty: Named {
+                name: "Vec",
+                args: [
+                    Named {
+                        name: "Point",
+                        args: [],
+                        builtin: None,
+                        is_opaque: false,
+                    },
+                ],
+                builtin: Some(
+                    Vec,
+                ),
+                is_opaque: false,
+            },
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                104,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                105,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                106,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                107,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                108,
+            ),
+            ty: Named {
+                name: "Point",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                109,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                110,
+            ),
+            ty: Named {
+                name: "Point",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                112,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            40,
+            855,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            63,
+            97,
+        ),
+        (
+            1,
+            0,
+        ): (
+            63,
+            97,
+        ),
+        (
+            1,
+            1,
+        ): (
+            97,
+            108,
+        ),
+        (
+            1,
+            2,
+        ): (
+            97,
+            108,
+        ),
+        (
+            1,
+            3,
+        ): (
+            97,
+            108,
+        ),
+        (
+            2,
+            0,
+        ): (
+            97,
+            108,
+        ),
+        (
+            3,
+            0,
+        ): (
+            97,
+            108,
+        ),
+        (
+            4,
+            0,
+        ): (
+            114,
+            124,
+        ),
+        (
+            4,
+            1,
+        ): (
+            114,
+            124,
+        ),
+        (
+            5,
+            0,
+        ): (
+            130,
+            175,
+        ),
+        (
+            5,
+            1,
+        ): (
+            130,
+            175,
+        ),
+        (
+            5,
+            2,
+        ): (
+            130,
+            175,
+        ),
+        (
+            5,
+            3,
+        ): (
+            130,
+            175,
+        ),
+        (
+            6,
+            0,
+        ): (
+            130,
+            175,
+        ),
+        (
+            7,
+            0,
+        ): (
+            130,
+            175,
+        ),
+        (
+            7,
+            1,
+        ): (
+            130,
+            175,
+        ),
+        (
+            7,
+            2,
+        ): (
+            130,
+            175,
+        ),
+        (
+            7,
+            3,
+        ): (
+            130,
+            175,
+        ),
+        (
+            8,
+            0,
+        ): (
+            130,
+            175,
+        ),
+        (
+            9,
+            0,
+        ): (
+            130,
+            175,
+        ),
+        (
+            9,
+            1,
+        ): (
+            130,
+            175,
+        ),
+        (
+            10,
+            0,
+        ): (
+            155,
+            169,
+        ),
+        (
+            10,
+            1,
+        ): (
+            155,
+            169,
+        ),
+        (
+            10,
+            2,
+        ): (
+            155,
+            169,
+        ),
+        (
+            11,
+            0,
+        ): (
+            155,
+            169,
+        ),
+        (
+            12,
+            0,
+        ): (
+            175,
+            219,
+        ),
+        (
+            12,
+            1,
+        ): (
+            175,
+            219,
+        ),
+        (
+            12,
+            2,
+        ): (
+            175,
+            219,
+        ),
+        (
+            12,
+            3,
+        ): (
+            175,
+            219,
+        ),
+        (
+            13,
+            0,
+        ): (
+            155,
+            169,
+        ),
+        (
+            14,
+            0,
+        ): (
+            175,
+            219,
+        ),
+        (
+            15,
+            0,
+        ): (
+            175,
+            219,
+        ),
+        (
+            15,
+            1,
+        ): (
+            175,
+            219,
+        ),
+        (
+            15,
+            2,
+        ): (
+            175,
+            219,
+        ),
+        (
+            15,
+            3,
+        ): (
+            175,
+            219,
+        ),
+        (
+            16,
+            0,
+        ): (
+            199,
+            213,
+        ),
+        (
+            16,
+            1,
+        ): (
+            199,
+            213,
+        ),
+        (
+            16,
+            2,
+        ): (
+            199,
+            213,
+        ),
+        (
+            17,
+            0,
+        ): (
+            199,
+            213,
+        ),
+        (
+            18,
+            0,
+        ): (
+            219,
+            254,
+        ),
+        (
+            19,
+            0,
+        ): (
+            199,
+            213,
+        ),
+        (
+            20,
+            0,
+        ): (
+            219,
+            254,
+        ),
+        (
+            20,
+            1,
+        ): (
+            254,
+            267,
+        ),
+        (
+            20,
+            2,
+        ): (
+            254,
+            267,
+        ),
+        (
+            21,
+            0,
+        ): (
+            273,
+            320,
+        ),
+        (
+            21,
+            1,
+        ): (
+            273,
+            320,
+        ),
+        (
+            21,
+            2,
+        ): (
+            273,
+            320,
+        ),
+        (
+            21,
+            3,
+        ): (
+            273,
+            320,
+        ),
+        (
+            22,
+            0,
+        ): (
+            273,
+            320,
+        ),
+        (
+            23,
+            0,
+        ): (
+            273,
+            320,
+        ),
+        (
+            23,
+            1,
+        ): (
+            273,
+            320,
+        ),
+        (
+            23,
+            2,
+        ): (
+            273,
+            320,
+        ),
+        (
+            23,
+            3,
+        ): (
+            273,
+            320,
+        ),
+        (
+            24,
+            0,
+        ): (
+            300,
+            314,
+        ),
+        (
+            24,
+            1,
+        ): (
+            300,
+            314,
+        ),
+        (
+            24,
+            2,
+        ): (
+            300,
+            314,
+        ),
+        (
+            25,
+            0,
+        ): (
+            300,
+            314,
+        ),
+        (
+            26,
+            0,
+        ): (
+            320,
+            357,
+        ),
+        (
+            27,
+            0,
+        ): (
+            300,
+            314,
+        ),
+        (
+            28,
+            0,
+        ): (
+            320,
+            357,
+        ),
+        (
+            28,
+            1,
+        ): (
+            357,
+            373,
+        ),
+        (
+            28,
+            2,
+        ): (
+            357,
+            373,
+        ),
+        (
+            28,
+            3,
+        ): (
+            357,
+            373,
+        ),
+        (
+            29,
+            0,
+        ): (
+            357,
+            373,
+        ),
+        (
+            30,
+            0,
+        ): (
+            357,
+            373,
+        ),
+        (
+            31,
+            0,
+        ): (
+            379,
+            429,
+        ),
+        (
+            31,
+            1,
+        ): (
+            379,
+            429,
+        ),
+        (
+            31,
+            2,
+        ): (
+            379,
+            429,
+        ),
+        (
+            31,
+            3,
+        ): (
+            379,
+            429,
+        ),
+        (
+            32,
+            0,
+        ): (
+            379,
+            429,
+        ),
+        (
+            33,
+            0,
+        ): (
+            379,
+            429,
+        ),
+        (
+            33,
+            1,
+        ): (
+            379,
+            429,
+        ),
+        (
+            33,
+            2,
+        ): (
+            379,
+            429,
+        ),
+        (
+            33,
+            3,
+        ): (
+            379,
+            429,
+        ),
+        (
+            34,
+            0,
+        ): (
+            379,
+            429,
+        ),
+        (
+            35,
+            0,
+        ): (
+            379,
+            429,
+        ),
+        (
+            35,
+            1,
+        ): (
+            379,
+            429,
+        ),
+        (
+            36,
+            0,
+        ): (
+            409,
+            423,
+        ),
+        (
+            36,
+            1,
+        ): (
+            409,
+            423,
+        ),
+        (
+            36,
+            2,
+        ): (
+            409,
+            423,
+        ),
+        (
+            37,
+            0,
+        ): (
+            409,
+            423,
+        ),
+        (
+            38,
+            0,
+        ): (
+            429,
+            466,
+        ),
+        (
+            39,
+            0,
+        ): (
+            409,
+            423,
+        ),
+        (
+            40,
+            0,
+        ): (
+            429,
+            466,
+        ),
+        (
+            40,
+            1,
+        ): (
+            466,
+            482,
+        ),
+        (
+            40,
+            2,
+        ): (
+            466,
+            482,
+        ),
+        (
+            41,
+            0,
+        ): (
+            488,
+            538,
+        ),
+        (
+            41,
+            1,
+        ): (
+            488,
+            538,
+        ),
+        (
+            41,
+            2,
+        ): (
+            488,
+            538,
+        ),
+        (
+            41,
+            3,
+        ): (
+            488,
+            538,
+        ),
+        (
+            42,
+            0,
+        ): (
+            488,
+            538,
+        ),
+        (
+            43,
+            0,
+        ): (
+            488,
+            538,
+        ),
+        (
+            43,
+            1,
+        ): (
+            488,
+            538,
+        ),
+        (
+            43,
+            2,
+        ): (
+            488,
+            538,
+        ),
+        (
+            43,
+            3,
+        ): (
+            488,
+            538,
+        ),
+        (
+            44,
+            0,
+        ): (
+            518,
+            532,
+        ),
+        (
+            44,
+            1,
+        ): (
+            518,
+            532,
+        ),
+        (
+            44,
+            2,
+        ): (
+            518,
+            532,
+        ),
+        (
+            45,
+            0,
+        ): (
+            518,
+            532,
+        ),
+        (
+            46,
+            0,
+        ): (
+            538,
+            573,
+        ),
+        (
+            47,
+            0,
+        ): (
+            518,
+            532,
+        ),
+        (
+            48,
+            0,
+        ): (
+            538,
+            573,
+        ),
+        (
+            48,
+            1,
+        ): (
+            573,
+            585,
+        ),
+        (
+            48,
+            2,
+        ): (
+            573,
+            585,
+        ),
+        (
+            49,
+            0,
+        ): (
+            591,
+            603,
+        ),
+        (
+            49,
+            1,
+        ): (
+            591,
+            603,
+        ),
+        (
+            50,
+            0,
+        ): (
+            609,
+            632,
+        ),
+        (
+            50,
+            1,
+        ): (
+            609,
+            632,
+        ),
+        (
+            50,
+            2,
+        ): (
+            609,
+            632,
+        ),
+        (
+            50,
+            3,
+        ): (
+            609,
+            632,
+        ),
+        (
+            51,
+            0,
+        ): (
+            609,
+            632,
+        ),
+        (
+            52,
+            0,
+        ): (
+            609,
+            632,
+        ),
+        (
+            52,
+            1,
+        ): (
+            609,
+            632,
+        ),
+        (
+            52,
+            2,
+        ): (
+            609,
+            632,
+        ),
+        (
+            53,
+            0,
+        ): (
+            609,
+            632,
+        ),
+        (
+            53,
+            1,
+        ): (
+            609,
+            632,
+        ),
+        (
+            53,
+            2,
+        ): (
+            632,
+            678,
+        ),
+        (
+            53,
+            3,
+        ): (
+            632,
+            678,
+        ),
+        (
+            53,
+            4,
+        ): (
+            632,
+            678,
+        ),
+        (
+            53,
+            5,
+        ): (
+            632,
+            678,
+        ),
+        (
+            54,
+            0,
+        ): (
+            632,
+            678,
+        ),
+        (
+            55,
+            0,
+        ): (
+            632,
+            678,
+        ),
+        (
+            55,
+            1,
+        ): (
+            632,
+            678,
+        ),
+        (
+            55,
+            2,
+        ): (
+            632,
+            678,
+        ),
+        (
+            55,
+            3,
+        ): (
+            632,
+            678,
+        ),
+        (
+            56,
+            0,
+        ): (
+            658,
+            672,
+        ),
+        (
+            56,
+            1,
+        ): (
+            658,
+            672,
+        ),
+        (
+            56,
+            2,
+        ): (
+            658,
+            672,
+        ),
+        (
+            57,
+            0,
+        ): (
+            658,
+            672,
+        ),
+        (
+            58,
+            0,
+        ): (
+            678,
+            724,
+        ),
+        (
+            58,
+            1,
+        ): (
+            678,
+            724,
+        ),
+        (
+            58,
+            2,
+        ): (
+            678,
+            724,
+        ),
+        (
+            58,
+            3,
+        ): (
+            678,
+            724,
+        ),
+        (
+            59,
+            0,
+        ): (
+            658,
+            672,
+        ),
+        (
+            60,
+            0,
+        ): (
+            678,
+            724,
+        ),
+        (
+            61,
+            0,
+        ): (
+            678,
+            724,
+        ),
+        (
+            61,
+            1,
+        ): (
+            678,
+            724,
+        ),
+        (
+            61,
+            2,
+        ): (
+            678,
+            724,
+        ),
+        (
+            61,
+            3,
+        ): (
+            678,
+            724,
+        ),
+        (
+            62,
+            0,
+        ): (
+            704,
+            718,
+        ),
+        (
+            62,
+            1,
+        ): (
+            704,
+            718,
+        ),
+        (
+            62,
+            2,
+        ): (
+            704,
+            718,
+        ),
+        (
+            63,
+            0,
+        ): (
+            704,
+            718,
+        ),
+        (
+            64,
+            0,
+        ): (
+            724,
+            765,
+        ),
+        (
+            65,
+            0,
+        ): (
+            704,
+            718,
+        ),
+        (
+            66,
+            0,
+        ): (
+            724,
+            765,
+        ),
+        (
+            66,
+            1,
+        ): (
+            765,
+            799,
+        ),
+        (
+            66,
+            2,
+        ): (
+            765,
+            799,
+        ),
+        (
+            66,
+            3,
+        ): (
+            765,
+            799,
+        ),
+        (
+            66,
+            4,
+        ): (
+            765,
+            799,
+        ),
+        (
+            67,
+            0,
+        ): (
+            805,
+            828,
+        ),
+        (
+            67,
+            1,
+        ): (
+            805,
+            828,
+        ),
+        (
+            67,
+            2,
+        ): (
+            805,
+            828,
+        ),
+        (
+            67,
+            3,
+        ): (
+            805,
+            828,
+        ),
+        (
+            68,
+            0,
+        ): (
+            805,
+            828,
+        ),
+        (
+            69,
+            0,
+        ): (
+            805,
+            828,
+        ),
+        (
+            69,
+            1,
+        ): (
+            805,
+            828,
+        ),
+        (
+            69,
+            2,
+        ): (
+            828,
+            846,
+        ),
+        (
+            69,
+            3,
+        ): (
+            828,
+            846,
+        ),
+        (
+            69,
+            4,
+        ): (
+            828,
+            846,
+        ),
+        (
+            69,
+            5,
+        ): (
+            828,
+            846,
+        ),
+        (
+            70,
+            0,
+        ): (
+            828,
+            846,
+        ),
+        (
+            71,
+            0,
+        ): (
+            828,
+            846,
+        ),
+        (
+            72,
+            0,
+        ): (
+            852,
+            854,
+        ),
+        (
+            72,
+            1,
+        ): (
+            852,
+            854,
+        ),
+        (
+            72,
+            2,
+        ): (
+            852,
+            854,
+        ),
+    },
+}
+RawMirFunction {
+    name: "i32::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        I32,
+    ],
+    locals: [
+        I32,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        11,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        142,
+                    ),
+                    ty: I32,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_i32",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            141,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                141,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                142,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14556,
+            14644,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14620,
+            14639,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14620,
+            14639,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14620,
+            14639,
+        ),
+    },
+}
+RawMirFunction {
+    name: "i64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        I64,
+    ],
+    locals: [
+        I64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        12,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        145,
+                    ),
+                    ty: I64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            144,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                144,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                145,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14644,
+            14732,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14708,
+            14727,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14708,
+            14727,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14708,
+            14727,
+        ),
+    },
+}
+RawMirFunction {
+    name: "u32::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        U32,
+    ],
+    locals: [
+        U32,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        13,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        148,
+                    ),
+                    ty: U32,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_u32",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            147,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                147,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                148,
+            ),
+            ty: U32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14906,
+            14994,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            14970,
+            14989,
+        ),
+        (
+            1,
+            0,
+        ): (
+            14970,
+            14989,
+        ),
+        (
+            1,
+            1,
+        ): (
+            14970,
+            14989,
+        ),
+    },
+}
+RawMirFunction {
+    name: "u64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        U64,
+    ],
+    locals: [
+        U64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        14,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        151,
+                    ),
+                    ty: U64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_u64",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            150,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                150,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                151,
+            ),
+            ty: U64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            14994,
+            15082,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15058,
+            15077,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15058,
+            15077,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15058,
+            15077,
+        ),
+    },
+}
+RawMirFunction {
+    name: "bool::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        Bool,
+    ],
+    locals: [
+        Bool,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        15,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        154,
+                    ),
+                    ty: Bool,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_bool",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            153,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                153,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                154,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15082,
+            15172,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15148,
+            15167,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15148,
+            15167,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15148,
+            15167,
+        ),
+    },
+}
+RawMirFunction {
+    name: "char::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        Char,
+    ],
+    locals: [
+        Char,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        16,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        157,
+                    ),
+                    ty: Char,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_char",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            156,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                156,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                157,
+            ),
+            ty: Char,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15172,
+            15262,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15238,
+            15257,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15238,
+            15257,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15238,
+            15257,
+        ),
+    },
+}
+RawMirFunction {
+    name: "f64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        F64,
+    ],
+    locals: [
+        F64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        17,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        160,
+                    ),
+                    ty: F64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_f64",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            159,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                159,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                160,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15262,
+            15350,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15326,
+            15345,
+        ),
+        (
+            1,
+            0,
+        ): (
+            15326,
+            15345,
+        ),
+        (
+            1,
+            1,
+        ): (
+            15326,
+            15345,
+        ),
+    },
+}
+RawMirFunction {
+    name: "string::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        String,
+    ],
+    locals: [
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        18,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        162,
+                    ),
+                    ty: String,
+                    intent: Read,
+                },
+                Return {
+                    site: Some(
+                        SiteId(
+                            162,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        0,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                162,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            15350,
+            15920,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            15420,
+            15428,
+        ),
+        (
+            0,
+            1,
+        ): (
+            15420,
+            15428,
+        ),
+    },
+}

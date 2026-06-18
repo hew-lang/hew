@@ -1,0 +1,46 @@
+type Point {
+    x: i64;
+    y: i64;
+}
+
+fn main() -> i64 {
+    let xs: Vec<i8> = Vec::new();
+    xs.push(-1);
+    xs.push(7);
+    if xs[0] != -1 {
+        return 1;
+    }
+    if xs[1] != 7 {
+        return 2;
+    }
+    let u8s: Vec<u8> = Vec::new();
+    u8s.push(200);
+    if u8s[0] != 200 {
+        return 5;
+    }
+    let i16s: Vec<i16> = Vec::new();
+    i16s.push(-1234);
+    if i16s[0] != -1234 {
+        return 6;
+    }
+    let u16s: Vec<u16> = Vec::new();
+    u16s.push(50000);
+    if u16s[0] != 50000 {
+        return 7;
+    }
+    let ys: Vec<f32> = Vec::new();
+    ys.push(1.5);
+    ys.push(2.5);
+    let zs = ys[0..2];
+    if zs[0] != 1.5 {
+        return 3;
+    }
+    if zs[1] != 2.5 {
+        return 4;
+    }
+    let points: Vec<Point> = Vec::new();
+    points.push(Point { x: 3, y: 30 });
+    let p = points[0];
+    println(p.x + p.y);
+    0
+}

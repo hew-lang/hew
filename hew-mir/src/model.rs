@@ -1799,7 +1799,7 @@ pub struct RawMirFunction {
     /// outside any statement) inherits the nearest enclosing location rather
     /// than fabricating one; empty for synthesised functions and hand-built
     /// test MIR.
-    pub instr_spans: std::collections::HashMap<(u32, u32), (u32, u32)>,
+    pub instr_spans: std::collections::BTreeMap<(u32, u32), (u32, u32)>,
 }
 
 /// A generic origin function lowered against abstract `ResolvedTy::TypeParam`

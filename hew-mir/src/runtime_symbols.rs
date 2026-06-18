@@ -456,9 +456,12 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // lowering for value-record element types.
     // Lexicographic note: hew_vec_get_* < hew_vec_len (g < l).
     "hew_vec_get_bool",
+    "hew_vec_get_f32",
     "hew_vec_get_f64",
+    "hew_vec_get_i16",
     "hew_vec_get_i32",
     "hew_vec_get_i64",
+    "hew_vec_get_i8",
     "hew_vec_get_layout",
     // W5.016 owned-element borrow getter: returns a borrowed pointer into the
     // live buffer for an owned (non-Copy) record/enum/tuple element. The for-in
@@ -467,6 +470,8 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_vec_get_owned",
     "hew_vec_get_ptr",
     "hew_vec_get_str",
+    "hew_vec_get_u16",
+    "hew_vec_get_u8",
     // hew_vec_len(v: *mut HewVec) -> i64
     "hew_vec_len",
     // --- Vec<T> range-slice (C-3) -------------------------------
@@ -478,6 +483,7 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // (header-aware copy per element; result vec owns and releases via
     // existing ElemKind::String free-on-drop path in hew_vec_free).
     // Lexicographic note: hew_vec_len < hew_vec_slice_range_* (l < s).
+    "hew_vec_slice_range_bytesize",
     "hew_vec_slice_range_f64",
     "hew_vec_slice_range_i32",
     "hew_vec_slice_range_i64",

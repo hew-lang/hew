@@ -67,7 +67,7 @@ fn pipeline_discard_extern(
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
     let checked = CheckedMirFunction {
         name: "probe".to_string(),

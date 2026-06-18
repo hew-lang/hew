@@ -83,33 +83,6 @@ run_accept_expect_status() {
   echo "PASS ${fixture}"
 }
 
-# run_accept_expect_trap: compile and run a fixture that must terminate via
-# llvm.trap().  llvm.trap() lowers to `ud2` on x86_64 (SIGILL → exit 132) and
-# to `brk` on AArch64 (SIGTRAP → exit 133); both signal a deterministic
-# compiler-generated trap.  Accept either so the test is portable across
-# integration hosts.
-run_accept_expect_trap() {
-  local fixture="$1"
-  echo "RUN ${fixture}"
-  compile_accept "${fixture}"
-  local bin="${ROOT}/.tmp/compile-out/${fixture}"
-  local status=0
-  # shellcheck disable=SC2016
-  if "${TIMEOUT}" --kill-after=5s 30s bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
-    status=0
-  else
-    status=$?
-  fi
-  if [[ "${status}" -ne 132 && "${status}" -ne 133 ]]; then
-    echo "expected ${fixture} to exit via llvm.trap (132 or 133), got ${status}" >&2
-    cat "${accept_output}" >&2
-    cat "${stdout_output}" >&2
-    cat "${stderr_output}" >&2
-    exit 1
-  fi
-  echo "PASS ${fixture}"
-}
-
 run_accept_expect_stdout() {
   local fixture="$1"
   run_accept_expect_status "${fixture}" 0
@@ -1606,6 +1579,9 @@ run_accept_expect_stdout "hashmap_values_scalar"
 run_accept_expect_stdout "hashmap_values_string"
 run_accept_expect_stdout "vec_scalar_range_slice"
 run_accept_expect_stdout "vec_string_range_slice"
+run_accept_expect_stdout "vec_element_widths"
+run_accept_expect_trap "vec_element_width_oob_traps"
+run_accept_expect_stdout "slice_annotation_alias"
 
 # shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
 expect_check_fail_contains \
@@ -1693,14 +1669,24 @@ run_accept_expect_status "vec_string_index_use_loop" 14
 # = xs[1] + xs[2] - xs[0] (20 + 12 - 10).
 run_accept_expect_status "vec_i64_index" 22
 
-# Reject: scalar index on Vec<f32> is fail-closed — narrower scalars
-# (i8/u8/i16/u16/f32/isize/usize) have no hew_vec_get_T getter yet, so the HIR
-# element-type gate surfaces it as a compile-time diagnostic instead of a deep
-# MIR NotYetImplemented.
+# Reject: scalar index on Vec<isize> is fail-closed until platform-sized
+# element widths have target-width-aware MIR dispatch.
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/vec_index_unsupported_elem.hew" \
-  "Vec<f32> scalar index (xs[i]) is not yet supported" \
+  "Vec<isize> scalar index (xs[i]) is not yet supported" \
   "vec_index_unsupported_elem"
+
+# Reject: Vec<[T; N]> is fail-closed at the type checker — codegen cannot lower
+# array/composite Vec elements (Cluster 2 deferred).  A copy-layout array must
+# produce a spanned checker error, not an unspanned codegen error.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/vec_array_element.hew" \
+  "Vec<[i64; 2]> is not supported; vec lowering does not support array element types yet" \
+  "vec_array_element"
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/vec_array_element.hew" \
+  3 \
+  "vec_array_element"
 
 # Accept (S1): Vec::<i64>::new() turbofish syntax with type annotation. Exit 0.
 run_accept_expect_status "vec_new_turbofish_type" 0

@@ -10,7 +10,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     rc::Rc,
 };
 
@@ -3381,7 +3381,7 @@ fn synthesize_machine_step_fn(
         await_deadline_ns: std::collections::HashMap::new(),
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
 
     let thir = ThirFunction {
@@ -5862,7 +5862,7 @@ struct Builder {
     /// instruction's final position in its block, because the per-block buffer
     /// is moved out whole by `finish_current_block` / `finalize_blocks`).
     /// Transferred into `RawMirFunction::instr_spans` at function finalisation.
-    instr_spans: HashMap<(u32, u32), (u32, u32)>,
+    instr_spans: BTreeMap<(u32, u32), (u32, u32)>,
     /// Target pointer width (32 on wasm32, 64 native), threaded from the
     /// compile target so the `isize`/`usize` div/rem signed-MIN and shift-range
     /// trap guards emit the correct per-target constant. Derived from
@@ -15359,8 +15359,13 @@ impl Builder {
         let owned_elem = self.is_owned_vec_element(elem_ty);
         let get_symbol = match elem_ty {
             ResolvedTy::Bool => "hew_vec_get_bool",
+            ResolvedTy::I8 => "hew_vec_get_i8",
+            ResolvedTy::U8 => "hew_vec_get_u8",
+            ResolvedTy::I16 => "hew_vec_get_i16",
+            ResolvedTy::U16 => "hew_vec_get_u16",
             ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_get_i32",
             ResolvedTy::I64 | ResolvedTy::U64 => "hew_vec_get_i64",
+            ResolvedTy::F32 => "hew_vec_get_f32",
             ResolvedTy::F64 => "hew_vec_get_f64",
             ResolvedTy::String => "hew_vec_get_str",
             _ if owned_elem => "hew_vec_get_owned",
@@ -15520,9 +15525,18 @@ impl Builder {
         };
 
         let slice_symbol = match &elem_ty {
-            ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_slice_range_i32",
-            ResolvedTy::I64 | ResolvedTy::U64 => "hew_vec_slice_range_i64",
-            ResolvedTy::F64 => "hew_vec_slice_range_f64",
+            ResolvedTy::Bool
+            | ResolvedTy::Char
+            | ResolvedTy::I8
+            | ResolvedTy::U8
+            | ResolvedTy::I16
+            | ResolvedTy::U16
+            | ResolvedTy::I32
+            | ResolvedTy::U32
+            | ResolvedTy::I64
+            | ResolvedTy::U64
+            | ResolvedTy::F32
+            | ResolvedTy::F64 => "hew_vec_slice_range_bytesize",
             ResolvedTy::String => "hew_vec_slice_range_str",
             // HIR rejects range-slices for Named elements today; this arm stays
             // as a fail-closed backstop for any future gate relaxation.
@@ -16110,7 +16124,7 @@ impl Builder {
             await_deadline_ns: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let builder = Builder {
             current_function_symbol: adapter_symbol.to_string(),
@@ -16517,7 +16531,7 @@ impl Builder {
             await_deadline_ns: builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         // Synthetic HirFn for dataflow checking — no HIR params (the shim
         // locals are positional, not HIR bindings).
@@ -20151,7 +20165,7 @@ impl Builder {
             await_deadline_ns: builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let synthetic_func = HirFn {
             id: hew_hir::ItemId(0),
@@ -20301,7 +20315,7 @@ impl Builder {
             await_deadline_ns: builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
 
         // Synthetic HirFn for dataflow checking — no HIR params (the shim
@@ -20777,7 +20791,7 @@ impl Builder {
             await_deadline_ns: body_builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: user_param_local_ids.clone(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
 
         let thir_statements: Vec<MirStatement> = body_blocks
@@ -21451,7 +21465,7 @@ impl Builder {
             await_deadline_ns: body_builder.await_deadline_ns.clone(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
 
         // A synthetic HirFn shell so `check_function` has a valid fn descriptor.
@@ -23048,8 +23062,6 @@ fn expected_drop_kind_for_validation(drop: &ElabDrop) -> DropKind {
 /// is the actor's null-after-move equivalent for the self-binding
 /// reference).
 fn validate_lambda_captures(captures: &[LambdaCapture], findings: &mut Vec<MirCheck>) {
-    use std::collections::BTreeMap;
-
     for capture in captures {
         if matches!(capture.capture_kind, crate::model::CaptureKind::Weak)
             && !matches!(capture.actor_handle, Place::LambdaActorHandle(_))
@@ -23161,8 +23173,6 @@ fn duplex_parent_local(place: Place) -> Option<u32> {
 /// in `slice3_invariants` exercise every legal and illegal split-state
 /// shape against this checker today.
 fn check_duplex_split_state(block: u32, drops: &[ElabDrop], findings: &mut Vec<MirCheck>) {
-    use std::collections::BTreeMap;
-
     #[derive(Default)]
     struct PerParent {
         whole: u32,
@@ -23338,7 +23348,7 @@ fn validate_cross_block_split_consume(
     blocks: &[BasicBlock],
     elab: &ElaboratedMirFunction,
 ) -> Vec<MirCheck> {
-    use std::collections::{BTreeMap, VecDeque};
+    use std::collections::VecDeque;
 
     let mut findings = Vec::new();
     if blocks.is_empty() {
@@ -23580,7 +23590,6 @@ fn meet_predecessors_split(
     exit_states: &std::collections::HashMap<u32, std::collections::BTreeMap<u32, DuplexSplitState>>,
     all_parents: &std::collections::HashSet<u32>,
 ) -> std::collections::BTreeMap<u32, DuplexSplitState> {
-    use std::collections::BTreeMap;
     if preds.is_empty() {
         return BTreeMap::new();
     }
@@ -25322,7 +25331,7 @@ fn apply_nested_fresh_string_temp_drops(
     blocks: &mut [BasicBlock],
     locals: &[ResolvedTy],
     binding_locals: &HashMap<BindingId, Place>,
-    instr_spans: &mut HashMap<(u32, u32), (u32, u32)>,
+    instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
     let insertions = collect_nested_fresh_string_temp_drops(blocks, locals, binding_locals);
     if insertions.is_empty() {
@@ -25373,7 +25382,7 @@ fn apply_nested_fresh_string_temp_drops(
 /// every instruction after the splice. The spliced instruction itself is left
 /// without an entry by design.
 fn shift_instr_spans_on_insert(
-    instr_spans: &mut HashMap<(u32, u32), (u32, u32)>,
+    instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
     block_id: u32,
     at: u32,
 ) {
@@ -29651,32 +29660,52 @@ fn is_vec_receiver_borrow_symbol(callee: &str) -> bool {
             | "hew_vec_clear"
             | "hew_vec_clear_layout"
             | "hew_vec_push_bool"
+            | "hew_vec_push_i8"
+            | "hew_vec_push_u8"
+            | "hew_vec_push_i16"
+            | "hew_vec_push_u16"
             | "hew_vec_push_i32"
             | "hew_vec_push_i64"
+            | "hew_vec_push_f32"
             | "hew_vec_push_f64"
             | "hew_vec_push_str"
             | "hew_vec_push_layout"
             | "hew_vec_push_ptr"
             | "hew_vec_push_owned"
             | "hew_vec_get_bool"
+            | "hew_vec_get_i8"
+            | "hew_vec_get_u8"
+            | "hew_vec_get_i16"
+            | "hew_vec_get_u16"
             | "hew_vec_get_i32"
             | "hew_vec_get_i64"
+            | "hew_vec_get_f32"
             | "hew_vec_get_f64"
             | "hew_vec_get_str"
             | "hew_vec_get_layout"
             | "hew_vec_get_ptr"
             | "hew_vec_get_owned"
             | "hew_vec_set_bool"
+            | "hew_vec_set_i8"
+            | "hew_vec_set_u8"
+            | "hew_vec_set_i16"
+            | "hew_vec_set_u16"
             | "hew_vec_set_i32"
             | "hew_vec_set_i64"
+            | "hew_vec_set_f32"
             | "hew_vec_set_f64"
             | "hew_vec_set_str"
             | "hew_vec_set_layout"
             | "hew_vec_set_ptr"
             | "hew_vec_set_owned"
             | "hew_vec_pop_bool"
+            | "hew_vec_pop_i8"
+            | "hew_vec_pop_u8"
+            | "hew_vec_pop_i16"
+            | "hew_vec_pop_u16"
             | "hew_vec_pop_i32"
             | "hew_vec_pop_i64"
+            | "hew_vec_pop_f32"
             | "hew_vec_pop_f64"
             | "hew_vec_pop_str"
             | "hew_vec_pop_layout"
@@ -29692,6 +29721,7 @@ fn is_vec_receiver_borrow_symbol(callee: &str) -> bool {
             | "hew_vec_slice_range_i32"
             | "hew_vec_slice_range_i64"
             | "hew_vec_slice_range_f64"
+            | "hew_vec_slice_range_bytesize"
             | "hew_vec_slice_range_str"
             | "hew_vec_slice_range_ptr"
             | "hew_vec_append"
@@ -31330,7 +31360,6 @@ mod slice3_narrowing_proptests {
     use super::*;
     use crate::dataflow::BindingState;
     use proptest::prelude::*;
-    use std::collections::BTreeMap;
 
     /// A `Duplex<i64, i64>` `ResolvedTy` payload — the inner type
     /// detail is irrelevant for narrowing.

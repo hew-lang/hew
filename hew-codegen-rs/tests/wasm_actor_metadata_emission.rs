@@ -64,7 +64,7 @@ fn spawn_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
 
     let handler_fn = RawMirFunction {
@@ -85,7 +85,7 @@ fn spawn_pipeline() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
 
     let actor_layout = ActorLayout {

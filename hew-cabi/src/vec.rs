@@ -242,7 +242,12 @@ extern "C" {
     // Constructors
     pub fn hew_vec_new() -> *mut HewVec;
     pub fn hew_vec_new_bool() -> *mut HewVec;
+    pub fn hew_vec_new_i8() -> *mut HewVec;
+    pub fn hew_vec_new_u8() -> *mut HewVec;
+    pub fn hew_vec_new_i16() -> *mut HewVec;
+    pub fn hew_vec_new_u16() -> *mut HewVec;
     pub fn hew_vec_new_i64() -> *mut HewVec;
+    pub fn hew_vec_new_f32() -> *mut HewVec;
     pub fn hew_vec_new_f64() -> *mut HewVec;
     pub fn hew_vec_new_str() -> *mut HewVec;
     pub fn hew_vec_new_ptr() -> *mut HewVec;
@@ -255,8 +260,13 @@ extern "C" {
 
     // Push
     pub fn hew_vec_push_bool(v: *mut HewVec, val: bool);
+    pub fn hew_vec_push_i8(v: *mut HewVec, val: i8);
+    pub fn hew_vec_push_u8(v: *mut HewVec, val: u8);
+    pub fn hew_vec_push_i16(v: *mut HewVec, val: i16);
+    pub fn hew_vec_push_u16(v: *mut HewVec, val: u16);
     pub fn hew_vec_push_i32(v: *mut HewVec, val: i32);
     pub fn hew_vec_push_i64(v: *mut HewVec, val: i64);
+    pub fn hew_vec_push_f32(v: *mut HewVec, val: f32);
     pub fn hew_vec_push_f64(v: *mut HewVec, val: f64);
     pub fn hew_vec_push_str(v: *mut HewVec, val: *const c_char);
     pub fn hew_vec_push_ptr(v: *mut HewVec, val: *mut c_void);
@@ -267,9 +277,14 @@ extern "C" {
 
     // Get
     pub fn hew_vec_get_bool(v: *mut HewVec, index: i64) -> bool;
+    pub fn hew_vec_get_i8(v: *mut HewVec, index: i64) -> i8;
+    pub fn hew_vec_get_u8(v: *mut HewVec, index: i64) -> u8;
+    pub fn hew_vec_get_i16(v: *mut HewVec, index: i64) -> i16;
+    pub fn hew_vec_get_u16(v: *mut HewVec, index: i64) -> u16;
     #[cfg(not(test))]
     pub fn hew_vec_get_i32(v: *mut HewVec, index: i64) -> i32;
     pub fn hew_vec_get_i64(v: *mut HewVec, index: i64) -> i64;
+    pub fn hew_vec_get_f32(v: *mut HewVec, index: i64) -> f32;
     pub fn hew_vec_get_f64(v: *mut HewVec, index: i64) -> f64;
     pub fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c_char;
     pub fn hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void;
@@ -284,8 +299,13 @@ extern "C" {
 
     // Set
     pub fn hew_vec_set_bool(v: *mut HewVec, index: i64, val: bool);
+    pub fn hew_vec_set_i8(v: *mut HewVec, index: i64, val: i8);
+    pub fn hew_vec_set_u8(v: *mut HewVec, index: i64, val: u8);
+    pub fn hew_vec_set_i16(v: *mut HewVec, index: i64, val: i16);
+    pub fn hew_vec_set_u16(v: *mut HewVec, index: i64, val: u16);
     pub fn hew_vec_set_i32(v: *mut HewVec, index: i64, val: i32);
     pub fn hew_vec_set_i64(v: *mut HewVec, index: i64, val: i64);
+    pub fn hew_vec_set_f32(v: *mut HewVec, index: i64, val: f32);
     pub fn hew_vec_set_f64(v: *mut HewVec, index: i64, val: f64);
     pub fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const c_char);
     pub fn hew_vec_set_generic(v: *mut HewVec, index: i64, data: *const c_void);
@@ -300,8 +320,13 @@ extern "C" {
 
     // Pop
     pub fn hew_vec_pop_bool(v: *mut HewVec) -> bool;
+    pub fn hew_vec_pop_i8(v: *mut HewVec) -> i8;
+    pub fn hew_vec_pop_u8(v: *mut HewVec) -> u8;
+    pub fn hew_vec_pop_i16(v: *mut HewVec) -> i16;
+    pub fn hew_vec_pop_u16(v: *mut HewVec) -> u16;
     pub fn hew_vec_pop_i32(v: *mut HewVec) -> i32;
     pub fn hew_vec_pop_i64(v: *mut HewVec) -> i64;
+    pub fn hew_vec_pop_f32(v: *mut HewVec) -> f32;
     pub fn hew_vec_pop_f64(v: *mut HewVec) -> f64;
     pub fn hew_vec_pop_str(v: *mut HewVec) -> *const c_char;
     pub fn hew_vec_pop_generic(v: *mut HewVec, out: *mut c_void) -> i32;

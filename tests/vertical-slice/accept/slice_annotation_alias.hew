@@ -1,0 +1,10 @@
+fn takes(xs: [i32]) -> i64 {
+    xs.len()
+}
+
+fn main() {
+    let xs: Vec<i32> = Vec::new();
+    xs.push(10);
+    xs.push(20);
+    println(takes(xs));
+}

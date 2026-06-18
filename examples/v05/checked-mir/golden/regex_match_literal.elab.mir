@@ -1688,7 +1688,28 @@ ElaboratedMirFunction {
                 block: 5,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            5,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                String,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
         (
@@ -1705,7 +1726,28 @@ ElaboratedMirFunction {
                 block: 6,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            5,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                String,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
     ],
@@ -2221,7 +2263,28 @@ ElaboratedMirFunction {
                 block: 5,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            5,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                String,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
         (
@@ -2238,7 +2301,28 @@ ElaboratedMirFunction {
                 block: 6,
             },
             DropPlan {
-                drops: [],
+                drops: [
+                    ElabDrop {
+                        place: Local(
+                            5,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                String,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                ],
             },
         ),
     ],
@@ -4973,6 +5057,70 @@ ElaboratedMirFunction {
             ty: String,
             intent: Read,
         },
+        Bind {
+            binding: BindingId(
+                40,
+            ),
+            name: "re",
+            site: SiteId(
+                175,
+            ),
+            ty: Named {
+                name: "Pattern",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+        },
+        Use {
+            binding: BindingId(
+                40,
+            ),
+            name: "re",
+            site: SiteId(
+                180,
+            ),
+            ty: Named {
+                name: "Pattern",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            intent: Read,
+        },
+        Use {
+            binding: BindingId(
+                39,
+            ),
+            name: "pattern",
+            site: SiteId(
+                185,
+            ),
+            ty: String,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                192,
+            ),
+            ty: Unit,
+        },
+        Use {
+            binding: BindingId(
+                40,
+            ),
+            name: "re",
+            site: SiteId(
+                193,
+            ),
+            ty: Named {
+                name: "Pattern",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            intent: Read,
+        },
         Return {
             site: Some(
                 SiteId(
@@ -4985,6 +5133,12 @@ ElaboratedMirFunction {
                 builtin: None,
                 is_opaque: false,
             },
+        },
+        Evaluate {
+            site: SiteId(
+                182,
+            ),
+            ty: Never,
         },
     ],
     decisions: [
@@ -5014,8 +5168,8 @@ ElaboratedMirFunction {
                 is_opaque: false,
             },
             value_class: BitCopy,
-            intent: Read,
-            strategy: BorrowRead,
+            intent: Consume,
+            strategy: Move,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
@@ -5028,6 +5182,126 @@ ElaboratedMirFunction {
             strategy: CowShare,
             why: "first vertical-slice classifier",
         },
+        DecisionFact {
+            site: SiteId(
+                192,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                178,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                179,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                180,
+            ),
+            ty: Named {
+                name: "Pattern",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                191,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                182,
+            ),
+            ty: Never,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                183,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                184,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                187,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                185,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                193,
+            ),
+            ty: Named {
+                name: "Pattern",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
     ],
     blocks: [
         ElabBlock {
@@ -5038,6 +5312,48 @@ ElaboratedMirFunction {
         },
         ElabBlock {
             id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 2,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 3,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 4,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 5,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 6,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 7,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 8,
             kind: Normal,
             drops: [],
             successor: None,
@@ -5063,8 +5379,84 @@ ElaboratedMirFunction {
             },
         ),
         (
-            Return {
+            Call {
                 block: 1,
+                callee: "hew_regex_is_valid",
+                next: 2,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 2,
+                then_target: 3,
+                else_target: 4,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 3,
+                callee: "string::fmt",
+                next: 6,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 4,
+                target: 5,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 5,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 6,
+                callee: "string_concat",
+                next: 7,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 7,
+                callee: "panic",
+                next: 8,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 8,
+                target: 5,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 8,
             },
             DropPlan {
                 drops: [],
@@ -5080,11 +5472,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                43,
+                44,
             ),
             name: "val",
             site: SiteId(
-                207,
+                223,
             ),
             ty: I32,
             intent: Read,
@@ -5092,7 +5484,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    206,
+                    222,
                 ),
             ),
             ty: String,
@@ -5101,7 +5493,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                206,
+                222,
             ),
             ty: String,
             value_class: CowValue,
@@ -5111,7 +5503,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                207,
+                223,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -5171,11 +5563,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                44,
+                45,
             ),
             name: "val",
             site: SiteId(
-                210,
+                226,
             ),
             ty: I64,
             intent: Read,
@@ -5183,7 +5575,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    209,
+                    225,
                 ),
             ),
             ty: String,
@@ -5192,7 +5584,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                209,
+                225,
             ),
             ty: String,
             value_class: CowValue,
@@ -5202,7 +5594,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                210,
+                226,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -5262,11 +5654,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                45,
+                46,
             ),
             name: "val",
             site: SiteId(
-                213,
+                229,
             ),
             ty: U32,
             intent: Read,
@@ -5274,7 +5666,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    212,
+                    228,
                 ),
             ),
             ty: String,
@@ -5283,7 +5675,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                212,
+                228,
             ),
             ty: String,
             value_class: CowValue,
@@ -5293,7 +5685,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                213,
+                229,
             ),
             ty: U32,
             value_class: BitCopy,
@@ -5353,11 +5745,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                46,
+                47,
             ),
             name: "val",
             site: SiteId(
-                216,
+                232,
             ),
             ty: U64,
             intent: Read,
@@ -5365,7 +5757,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    215,
+                    231,
                 ),
             ),
             ty: String,
@@ -5374,7 +5766,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                215,
+                231,
             ),
             ty: String,
             value_class: CowValue,
@@ -5384,7 +5776,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                216,
+                232,
             ),
             ty: U64,
             value_class: BitCopy,
@@ -5444,11 +5836,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                47,
+                48,
             ),
             name: "val",
             site: SiteId(
-                219,
+                235,
             ),
             ty: Bool,
             intent: Read,
@@ -5456,7 +5848,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    218,
+                    234,
                 ),
             ),
             ty: String,
@@ -5465,7 +5857,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                218,
+                234,
             ),
             ty: String,
             value_class: CowValue,
@@ -5475,7 +5867,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                219,
+                235,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -5535,11 +5927,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                48,
+                49,
             ),
             name: "val",
             site: SiteId(
-                222,
+                238,
             ),
             ty: Char,
             intent: Read,
@@ -5547,7 +5939,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    221,
+                    237,
                 ),
             ),
             ty: String,
@@ -5556,7 +5948,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                221,
+                237,
             ),
             ty: String,
             value_class: CowValue,
@@ -5566,7 +5958,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                222,
+                238,
             ),
             ty: Char,
             value_class: BitCopy,
@@ -5626,11 +6018,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                49,
+                50,
             ),
             name: "val",
             site: SiteId(
-                225,
+                241,
             ),
             ty: F64,
             intent: Read,
@@ -5638,7 +6030,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    224,
+                    240,
                 ),
             ),
             ty: String,
@@ -5647,7 +6039,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                224,
+                240,
             ),
             ty: String,
             value_class: CowValue,
@@ -5657,7 +6049,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                225,
+                241,
             ),
             ty: F64,
             value_class: BitCopy,
@@ -5717,11 +6109,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                50,
+                51,
             ),
             name: "val",
             site: SiteId(
-                227,
+                243,
             ),
             ty: String,
             intent: Read,
@@ -5729,7 +6121,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    227,
+                    243,
                 ),
             ),
             ty: String,
@@ -5738,7 +6130,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                227,
+                243,
             ),
             ty: String,
             value_class: CowValue,

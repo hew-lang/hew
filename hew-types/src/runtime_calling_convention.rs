@@ -65,6 +65,18 @@ use std::collections::HashMap;
 /// Layout-descriptor entry points remain future work for records/tuples.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeCallingConvention {
+    /// Pass-by-value in an 8-bit signed integer register class.
+    Scalar8Signed,
+
+    /// Pass-by-value in an 8-bit unsigned integer register class.
+    Scalar8Unsigned,
+
+    /// Pass-by-value in a 16-bit signed integer register class.
+    Scalar16Signed,
+
+    /// Pass-by-value in a 16-bit unsigned integer register class.
+    Scalar16Unsigned,
+
     /// Pass-by-value in a single 32-bit general-purpose register.
     ///
     /// Covers (at the language level): `i8`, `i16`, `i32`, `u8`,
@@ -93,6 +105,9 @@ pub enum RuntimeCallingConvention {
     /// [`Self::LayoutDescriptor`] until W3.017 settles the
     /// cross-target matrix.
     Scalar64,
+
+    /// Pass-by-value in a single 32-bit floating-point register.
+    Float32,
 
     /// Pass-by-value in a single XMM / floating-point register.
     ///
@@ -161,9 +176,14 @@ impl RuntimeCallingConvention {
     #[must_use]
     pub const fn canonical_token(self) -> &'static str {
         match self {
+            Self::Scalar8Signed => "i8",
+            Self::Scalar8Unsigned => "u8",
+            Self::Scalar16Signed => "i16",
+            Self::Scalar16Unsigned => "u16",
             Self::Scalar32 => "i32",
             Self::Bool => "bool",
             Self::Scalar64 => "i64",
+            Self::Float32 => "f32",
             Self::Float64 => "f64",
             Self::StringSlice => "str",
             Self::Pointer => "ptr",
@@ -205,8 +225,11 @@ impl RuntimeCallingConvention {
     #[must_use]
     pub fn for_ty(ty: &Ty) -> Self {
         match ty {
-            // Scalar32: 8/16/32-bit GPR-class integers plus char.
-            Ty::I8 | Ty::I16 | Ty::I32 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::Char => Self::Scalar32,
+            Ty::I8 => Self::Scalar8Signed,
+            Ty::U8 => Self::Scalar8Unsigned,
+            Ty::I16 => Self::Scalar16Signed,
+            Ty::U16 => Self::Scalar16Unsigned,
+            Ty::I32 | Ty::U32 | Ty::Char => Self::Scalar32,
 
             // Bool: dedicated one-byte runtime convention.
             Ty::Bool => Self::Bool,
@@ -214,8 +237,8 @@ impl RuntimeCallingConvention {
             // Scalar64: 64-bit GPR-class integers.
             Ty::I64 | Ty::U64 => Self::Scalar64,
 
-            // Float64: f32 (calling-convention widening) + f64.
-            Ty::F32 | Ty::F64 => Self::Float64,
+            Ty::F32 => Self::Float32,
+            Ty::F64 => Self::Float64,
 
             // StringSlice: the owned `string` representation.
             Ty::String => Self::StringSlice,
@@ -319,9 +342,26 @@ mod tests {
 
     #[test]
     fn canonical_tokens_are_the_documented_stable_surface() {
+        assert_eq!(
+            RuntimeCallingConvention::Scalar8Signed.canonical_token(),
+            "i8"
+        );
+        assert_eq!(
+            RuntimeCallingConvention::Scalar8Unsigned.canonical_token(),
+            "u8"
+        );
+        assert_eq!(
+            RuntimeCallingConvention::Scalar16Signed.canonical_token(),
+            "i16"
+        );
+        assert_eq!(
+            RuntimeCallingConvention::Scalar16Unsigned.canonical_token(),
+            "u16"
+        );
         assert_eq!(RuntimeCallingConvention::Scalar32.canonical_token(), "i32");
         assert_eq!(RuntimeCallingConvention::Bool.canonical_token(), "bool");
         assert_eq!(RuntimeCallingConvention::Scalar64.canonical_token(), "i64");
+        assert_eq!(RuntimeCallingConvention::Float32.canonical_token(), "f32");
         assert_eq!(RuntimeCallingConvention::Float64.canonical_token(), "f64");
         assert_eq!(
             RuntimeCallingConvention::StringSlice.canonical_token(),
@@ -340,9 +380,14 @@ mod tests {
         // (LESSONS row `no-type-aliases-one-canonical-name`) demands
         // exactly one canonical string per shape.
         let tokens = [
+            RuntimeCallingConvention::Scalar8Signed.canonical_token(),
+            RuntimeCallingConvention::Scalar8Unsigned.canonical_token(),
+            RuntimeCallingConvention::Scalar16Signed.canonical_token(),
+            RuntimeCallingConvention::Scalar16Unsigned.canonical_token(),
             RuntimeCallingConvention::Scalar32.canonical_token(),
             RuntimeCallingConvention::Bool.canonical_token(),
             RuntimeCallingConvention::Scalar64.canonical_token(),
+            RuntimeCallingConvention::Float32.canonical_token(),
             RuntimeCallingConvention::Float64.canonical_token(),
             RuntimeCallingConvention::StringSlice.canonical_token(),
             RuntimeCallingConvention::Pointer.canonical_token(),
@@ -360,13 +405,25 @@ mod tests {
     // ── for_ty: total over every Ty constructor ─────────────────────
 
     #[test]
-    fn scalar32_covers_8_16_32_bit_integers() {
-        for ty in [Ty::I8, Ty::I16, Ty::I32, Ty::U8, Ty::U16, Ty::U32, Ty::Char] {
+    fn scalar32_covers_32_bit_integers_and_char() {
+        for ty in [Ty::I32, Ty::U32, Ty::Char] {
             assert_eq!(
                 RuntimeCallingConvention::for_ty(&ty),
                 RuntimeCallingConvention::Scalar32,
                 "expected Scalar32 for {ty:?}",
             );
+        }
+    }
+
+    #[test]
+    fn narrow_integers_route_to_dedicated_width_conventions() {
+        for (ty, expected) in [
+            (Ty::I8, RuntimeCallingConvention::Scalar8Signed),
+            (Ty::U8, RuntimeCallingConvention::Scalar8Unsigned),
+            (Ty::I16, RuntimeCallingConvention::Scalar16Signed),
+            (Ty::U16, RuntimeCallingConvention::Scalar16Unsigned),
+        ] {
+            assert_eq!(RuntimeCallingConvention::for_ty(&ty), expected);
         }
     }
 
@@ -390,11 +447,10 @@ mod tests {
     }
 
     #[test]
-    fn float64_covers_f32_and_f64() {
+    fn float_conventions_preserve_declared_width() {
         assert_eq!(
             RuntimeCallingConvention::for_ty(&Ty::F32),
-            RuntimeCallingConvention::Float64,
-            "f32 widens to f64 at the calling-convention layer",
+            RuntimeCallingConvention::Float32,
         );
         assert_eq!(
             RuntimeCallingConvention::for_ty(&Ty::F64),

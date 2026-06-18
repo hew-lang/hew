@@ -606,11 +606,15 @@ mod tests {
     fn expand_substitutes_t_with_calling_convention_canonical_token() {
         let t = ExternSymbolTemplate::parse("hew_vec_push_{T}").unwrap();
         let cases = [
+            (Ty::I8, "hew_vec_push_i8"),
+            (Ty::U8, "hew_vec_push_u8"),
+            (Ty::I16, "hew_vec_push_i16"),
+            (Ty::U16, "hew_vec_push_u16"),
             (Ty::I32, "hew_vec_push_i32"),
             (Ty::I64, "hew_vec_push_i64"),
             (Ty::U32, "hew_vec_push_i32"),
             (Ty::U64, "hew_vec_push_i64"),
-            (Ty::F32, "hew_vec_push_f64"),
+            (Ty::F32, "hew_vec_push_f32"),
             (Ty::F64, "hew_vec_push_f64"),
             (Ty::String, "hew_vec_push_str"),
         ];

@@ -120,7 +120,7 @@ fn floor_fn(name: &str, id: &str, params: Vec<ResolvedTy>, ret: ResolvedTy) -> R
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     }
 }
 
@@ -256,7 +256,7 @@ fn driver_main() -> RawMirFunction {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     }
 }
 
@@ -354,7 +354,7 @@ fn driver_copy_no_free() -> RawMirFunction {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     }
 }
 

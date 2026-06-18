@@ -584,6 +584,7 @@ ElaboratedMirFunction {
                         ),
                     ),
                     kind: LambdaActorRelease,
+                    guard: None,
                 },
                 ElabDrop {
                     place: LambdaActorHandle(
@@ -606,6 +607,7 @@ ElaboratedMirFunction {
                         ),
                     ),
                     kind: LambdaActorRelease,
+                    guard: None,
                 },
             ],
             successor: None,
@@ -635,6 +637,7 @@ ElaboratedMirFunction {
                         ),
                     ),
                     kind: LambdaActorRelease,
+                    guard: None,
                 },
                 ElabDrop {
                     place: LambdaActorHandle(
@@ -657,6 +660,7 @@ ElaboratedMirFunction {
                         ),
                     ),
                     kind: LambdaActorRelease,
+                    guard: None,
                 },
             ],
             successor: None,
@@ -728,6 +732,7 @@ ElaboratedMirFunction {
                             ),
                         ),
                         kind: LambdaActorRelease,
+                        guard: None,
                     },
                     ElabDrop {
                         place: LambdaActorHandle(
@@ -750,6 +755,7 @@ ElaboratedMirFunction {
                             ),
                         ),
                         kind: LambdaActorRelease,
+                        guard: None,
                     },
                 ],
             },
@@ -801,6 +807,7 @@ ElaboratedMirFunction {
                             ),
                         ),
                         kind: LambdaActorRelease,
+                        guard: None,
                     },
                     ElabDrop {
                         place: LambdaActorHandle(
@@ -823,6 +830,7 @@ ElaboratedMirFunction {
                             ),
                         ),
                         kind: LambdaActorRelease,
+                        guard: None,
                     },
                 ],
             },
@@ -873,6 +881,7 @@ ElaboratedMirFunction {
                             ),
                         ),
                         kind: LambdaActorRelease,
+                        guard: None,
                     },
                     ElabDrop {
                         place: LambdaActorHandle(
@@ -895,6 +904,7 @@ ElaboratedMirFunction {
                             ),
                         ),
                         kind: LambdaActorRelease,
+                        guard: None,
                     },
                 ],
             },
@@ -926,6 +936,7 @@ ElaboratedMirFunction {
                             ),
                         ),
                         kind: LambdaActorRelease,
+                        guard: None,
                     },
                     ElabDrop {
                         place: LambdaActorHandle(
@@ -948,6 +959,7 @@ ElaboratedMirFunction {
                             ),
                         ),
                         kind: LambdaActorRelease,
+                        guard: None,
                     },
                 ],
             },
@@ -998,6 +1010,7 @@ ElaboratedMirFunction {
                             ),
                         ),
                         kind: LambdaActorRelease,
+                        guard: None,
                     },
                     ElabDrop {
                         place: LambdaActorHandle(
@@ -1020,6 +1033,7 @@ ElaboratedMirFunction {
                             ),
                         ),
                         kind: LambdaActorRelease,
+                        guard: None,
                     },
                 ],
             },

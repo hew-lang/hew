@@ -705,6 +705,46 @@ ElaboratedMirFunction {
                 drops: [
                     ElabDrop {
                         place: Local(
+                            9,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                I64,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
+                            7,
+                        ),
+                        ty: Named {
+                            name: "Vec",
+                            args: [
+                                String,
+                            ],
+                            builtin: Some(
+                                Vec,
+                            ),
+                            is_opaque: false,
+                        },
+                        drop_fn: None,
+                        kind: CowHeap {
+                            drop_fn: "hew_vec_free",
+                        },
+                        guard: None,
+                    },
+                    ElabDrop {
+                        place: Local(
                             1,
                         ),
                         ty: Named {
@@ -722,6 +762,7 @@ ElaboratedMirFunction {
                         kind: CowHeap {
                             drop_fn: "hew_hashmap_free_layout",
                         },
+                        guard: None,
                     },
                 ],
             },

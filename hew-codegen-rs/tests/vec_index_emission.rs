@@ -138,7 +138,7 @@ fn vec_index_i64_pipeline() -> IrPipeline {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -292,7 +292,7 @@ fn vec_index_bool_pipeline() -> IrPipeline {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),
@@ -446,7 +446,7 @@ fn vec_index_char_pipeline() -> IrPipeline {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "main".to_string(),

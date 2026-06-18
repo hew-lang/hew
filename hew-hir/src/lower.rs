@@ -14581,8 +14581,13 @@ impl LowerCtx {
     fn vec_push_symbol_for_elem(&self, elem_ty: &ResolvedTy) -> Option<&'static str> {
         match elem_ty {
             ResolvedTy::Bool => Some("hew_vec_push_bool"),
+            ResolvedTy::I8 => Some("hew_vec_push_i8"),
+            ResolvedTy::U8 => Some("hew_vec_push_u8"),
+            ResolvedTy::I16 => Some("hew_vec_push_i16"),
+            ResolvedTy::U16 => Some("hew_vec_push_u16"),
             ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => Some("hew_vec_push_i32"),
             ResolvedTy::I64 | ResolvedTy::U64 => Some("hew_vec_push_i64"),
+            ResolvedTy::F32 => Some("hew_vec_push_f32"),
             ResolvedTy::F64 => Some("hew_vec_push_f64"),
             ResolvedTy::String => Some("hew_vec_push_str"),
             ResolvedTy::Tuple(_) => Some("hew_vec_push_layout"),
@@ -15986,7 +15991,9 @@ impl LowerCtx {
             TypeExpr::Array { element, size } => {
                 ResolvedTy::Array(Box::new(self.lower_type(element)), *size)
             }
-            TypeExpr::Slice(elem) => ResolvedTy::Slice(Box::new(self.lower_type(elem))),
+            TypeExpr::Slice(elem) => {
+                ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![self.lower_type(elem)])
+            }
             TypeExpr::Function {
                 params,
                 return_type,
@@ -26250,6 +26257,7 @@ fn render_elem_ty(ty: &ResolvedTy) -> String {
         ResolvedTy::F32 => "f32".to_string(),
         ResolvedTy::F64 => "f64".to_string(),
         ResolvedTy::String => "String".to_string(),
+        ResolvedTy::Bytes => "bytes".to_string(),
         ResolvedTy::Unit => "()".to_string(),
         ResolvedTy::Named { name, args, .. } if args.is_empty() => name.clone(),
         ResolvedTy::Named { name, args, .. } => {
@@ -26302,10 +26310,17 @@ fn check_vec_index_element_type(
     let is_supported = if is_range_slice {
         matches!(
             elem_ty,
-            ResolvedTy::I32
+            ResolvedTy::Bool
+                | ResolvedTy::Char
+                | ResolvedTy::I8
+                | ResolvedTy::U8
+                | ResolvedTy::I16
+                | ResolvedTy::U16
+                | ResolvedTy::I32
                 | ResolvedTy::U32
                 | ResolvedTy::I64
                 | ResolvedTy::U64
+                | ResolvedTy::F32
                 | ResolvedTy::F64
                 | ResolvedTy::String
         )
@@ -26314,10 +26329,15 @@ fn check_vec_index_element_type(
             elem_ty,
             ResolvedTy::Bool
                 | ResolvedTy::Char
+                | ResolvedTy::I8
+                | ResolvedTy::U8
+                | ResolvedTy::I16
+                | ResolvedTy::U16
                 | ResolvedTy::I32
                 | ResolvedTy::U32
                 | ResolvedTy::I64
                 | ResolvedTy::U64
+                | ResolvedTy::F32
                 | ResolvedTy::F64
                 | ResolvedTy::String
                 | ResolvedTy::Named { .. }
@@ -26344,9 +26364,8 @@ fn check_vec_index_element_type(
             format!(
                 "Vec<{rendered}> range-slice (xs[a..b]) is not yet supported. \
                  Supported element types for Vec range-slicing are: \
-                 i32, u32, i64, u64, f64, and String. \
-                 Vec<bool> and Vec<char> will be added in a future \
-                 width-normalisation slice."
+                 bool, char, i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, \
+                 and String."
             ),
         )
     } else {
@@ -26357,8 +26376,9 @@ fn check_vec_index_element_type(
             format!(
                 "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
                  Supported element types for Vec scalar indexing are: \
-                 bool, char, i32, u32, i64, u64, f64, String, tuples, and \
-                 user-defined types (records, enums, Duplex, etc.)."
+                 bool, char, i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, \
+                 String, tuples, and user-defined types (records, enums, \
+                 Duplex, etc.)."
             ),
         )
     };

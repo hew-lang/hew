@@ -1650,6 +1650,7 @@ ElaboratedMirFunction {
                         kind: CowHeap {
                             drop_fn: "hew_hashset_free_layout",
                         },
+                        guard: None,
                     },
                     ElabDrop {
                         place: Local(
@@ -1669,6 +1670,7 @@ ElaboratedMirFunction {
                         kind: CowHeap {
                             drop_fn: "hew_hashset_free_layout",
                         },
+                        guard: None,
                     },
                 ],
             },

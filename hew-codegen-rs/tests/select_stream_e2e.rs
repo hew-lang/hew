@@ -94,7 +94,7 @@ fn select_stream_i64_pipeline() -> IrPipeline {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![],
         elaborated_mir: vec![],

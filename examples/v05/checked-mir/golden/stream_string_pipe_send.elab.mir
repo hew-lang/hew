@@ -834,6 +834,7 @@ ElaboratedMirFunction {
                         },
                         drop_fn: None,
                         kind: Resource,
+                        guard: None,
                     },
                 ],
             },
@@ -6774,6 +6775,7 @@ ElaboratedMirFunction {
                     kind: CowHeap {
                         drop_fn: "hew_string_drop",
                     },
+                    guard: None,
                 },
             ],
             successor: None,
@@ -6791,6 +6793,7 @@ ElaboratedMirFunction {
                     kind: CowHeap {
                         drop_fn: "hew_string_drop",
                     },
+                    guard: None,
                 },
             ],
             successor: None,
@@ -6987,6 +6990,7 @@ ElaboratedMirFunction {
                         kind: CowHeap {
                             drop_fn: "hew_string_drop",
                         },
+                        guard: None,
                     },
                 ],
             },
@@ -7042,6 +7046,7 @@ ElaboratedMirFunction {
                         kind: CowHeap {
                             drop_fn: "hew_string_drop",
                         },
+                        guard: None,
                     },
                 ],
             },
@@ -7071,6 +7076,7 @@ ElaboratedMirFunction {
                         kind: CowHeap {
                             drop_fn: "hew_string_drop",
                         },
+                        guard: None,
                     },
                 ],
             },
@@ -7091,6 +7097,7 @@ ElaboratedMirFunction {
                         kind: CowHeap {
                             drop_fn: "hew_string_drop",
                         },
+                        guard: None,
                     },
                 ],
             },
@@ -7110,6 +7117,7 @@ ElaboratedMirFunction {
                         kind: CowHeap {
                             drop_fn: "hew_string_drop",
                         },
+                        guard: None,
                     },
                 ],
             },
@@ -8423,12 +8431,151 @@ ElaboratedMirFunction {
             ty: String,
             intent: Read,
         },
+        Bind {
+            binding: BindingId(
+                35,
+            ),
+            name: "contents",
+            site: SiteId(
+                368,
+            ),
+            ty: String,
+        },
+        Bind {
+            binding: BindingId(
+                36,
+            ),
+            name: "errno",
+            site: SiteId(
+                371,
+            ),
+            ty: I32,
+        },
+        Use {
+            binding: BindingId(
+                36,
+            ),
+            name: "errno",
+            site: SiteId(
+                374,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                426,
+            ),
+            ty: Unit,
+        },
+        Use {
+            binding: BindingId(
+                35,
+            ),
+            name: "contents",
+            site: SiteId(
+                427,
+            ),
+            ty: String,
+            intent: Read,
+        },
         Return {
             site: Some(
                 SiteId(
                     367,
                 ),
             ),
+            ty: String,
+        },
+        Bind {
+            binding: BindingId(
+                37,
+            ),
+            name: "detail",
+            site: SiteId(
+                376,
+            ),
+            ty: String,
+        },
+        Use {
+            binding: BindingId(
+                37,
+            ),
+            name: "detail",
+            site: SiteId(
+                381,
+            ),
+            ty: String,
+            intent: Read,
+        },
+        Use {
+            binding: BindingId(
+                34,
+            ),
+            name: "path",
+            site: SiteId(
+                388,
+            ),
+            ty: String,
+            intent: Read,
+        },
+        Use {
+            binding: BindingId(
+                34,
+            ),
+            name: "path",
+            site: SiteId(
+                411,
+            ),
+            ty: String,
+            intent: Read,
+        },
+        Use {
+            binding: BindingId(
+                36,
+            ),
+            name: "errno",
+            site: SiteId(
+                395,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                385,
+            ),
+            ty: Never,
+        },
+        Use {
+            binding: BindingId(
+                37,
+            ),
+            name: "detail",
+            site: SiteId(
+                415,
+            ),
+            ty: String,
+            intent: Read,
+        },
+        Evaluate {
+            site: SiteId(
+                408,
+            ),
+            ty: Never,
+        },
+        Drop {
+            binding: BindingId(
+                37,
+            ),
+            name: "detail",
+            ty: String,
+        },
+        Drop {
+            binding: BindingId(
+                35,
+            ),
+            name: "contents",
             ty: String,
         },
     ],
@@ -8449,13 +8596,398 @@ ElaboratedMirFunction {
             ),
             ty: String,
             value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                369,
+            ),
+            ty: String,
+            value_class: CowValue,
             intent: Read,
             strategy: CowShare,
             why: "first vertical-slice classifier",
         },
         DecisionFact {
             site: SiteId(
-                369,
+                371,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                426,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                373,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                374,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                375,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                425,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                376,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                378,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                379,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                380,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                381,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                383,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                384,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                385,
+            ),
+            ty: Never,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                386,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                403,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                401,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                387,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                390,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                388,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                391,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                399,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                392,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                393,
+            ),
+            ty: Named {
+                name: "IoError",
+                args: [],
+                builtin: None,
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                394,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                395,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                407,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                408,
+            ),
+            ty: Never,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                409,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                421,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                419,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                410,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                413,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                411,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                414,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                417,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                415,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                427,
             ),
             ty: String,
             value_class: CowValue,
@@ -8473,6 +9005,144 @@ ElaboratedMirFunction {
         },
         ElabBlock {
             id: 1,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 2,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 3,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 4,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 5,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 6,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 7,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 8,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 9,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 10,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 11,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 12,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 13,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 14,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 15,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 16,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 17,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 18,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 19,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 20,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 21,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 22,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 23,
+            kind: Normal,
+            drops: [],
+            successor: None,
+        },
+        ElabBlock {
+            id: 24,
             kind: Normal,
             drops: [],
             successor: None,
@@ -8498,8 +9168,258 @@ ElaboratedMirFunction {
             },
         ),
         (
-            Return {
+            Call {
                 block: 1,
+                callee: "hew_stream_last_errno",
+                next: 2,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 2,
+                then_target: 3,
+                else_target: 4,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 3,
+                callee: "hew_stream_last_error",
+                next: 6,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 4,
+                target: 5,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Return {
+                block: 5,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 6,
+                callee: "hew_string_length",
+                next: 7,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Branch {
+                block: 7,
+                then_target: 8,
+                else_target: 9,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 8,
+                callee: "string::fmt",
+                next: 11,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 9,
+                callee: "string::fmt",
+                next: 19,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 10,
+                target: 5,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 10,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 11,
+                callee: "string_concat",
+                next: 12,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 12,
+                callee: "string_concat",
+                next: 13,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 13,
+                callee: "fs$io_error_from_errno",
+                next: 14,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 14,
+                callee: "fs$io_error_message",
+                next: 15,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 15,
+                callee: "string::fmt",
+                next: 16,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 16,
+                callee: "string_concat",
+                next: 17,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 17,
+                callee: "panic",
+                next: 18,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 18,
+                target: 10,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 18,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 19,
+                callee: "string_concat",
+                next: 20,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 20,
+                callee: "string_concat",
+                next: 21,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 21,
+                callee: "string::fmt",
+                next: 22,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 22,
+                callee: "string_concat",
+                next: 23,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Call {
+                block: 23,
+                callee: "panic",
+                next: 24,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Goto {
+                block: 24,
+                target: 10,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 24,
             },
             DropPlan {
                 drops: [],
@@ -8530,22 +9450,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                35,
+                38,
             ),
             name: "file_path",
             site: SiteId(
-                373,
+                430,
             ),
             ty: String,
             intent: Read,
         },
         Bind {
             binding: BindingId(
-                36,
+                39,
             ),
             name: "file",
             site: SiteId(
-                372,
+                429,
             ),
             ty: Named {
                 name: "FileReadStream",
@@ -8556,11 +9476,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                36,
+                39,
             ),
             name: "file",
             site: SiteId(
-                377,
+                434,
             ),
             ty: Named {
                 name: "FileReadStream",
@@ -8572,11 +9492,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                36,
+                39,
             ),
             name: "file",
             site: SiteId(
-                382,
+                439,
             ),
             ty: Named {
                 name: "FileReadStream",
@@ -8589,7 +9509,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    371,
+                    428,
                 ),
             ),
             ty: Named {
@@ -8611,27 +9531,27 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                37,
+                40,
             ),
             name: "errno",
             site: SiteId(
-                385,
+                442,
             ),
             ty: I32,
         },
         Evaluate {
             site: SiteId(
-                387,
+                444,
             ),
             ty: String,
         },
         Use {
             binding: BindingId(
-                37,
+                40,
             ),
             name: "errno",
             site: SiteId(
-                392,
+                449,
             ),
             ty: I32,
             intent: Read,
@@ -8640,7 +9560,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                371,
+                428,
             ),
             ty: Named {
                 name: "Result",
@@ -8665,7 +9585,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                372,
+                429,
             ),
             ty: Named {
                 name: "FileReadStream",
@@ -8680,7 +9600,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                373,
+                430,
             ),
             ty: String,
             value_class: CowValue,
@@ -8690,7 +9610,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                375,
+                432,
             ),
             ty: Named {
                 name: "Result",
@@ -8715,7 +9635,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                376,
+                433,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -8725,7 +9645,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                377,
+                434,
             ),
             ty: Named {
                 name: "FileReadStream",
@@ -8740,7 +9660,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                379,
+                436,
             ),
             ty: Named {
                 name: "Result",
@@ -8765,7 +9685,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                380,
+                437,
             ),
             ty: Named {
                 name: "Result",
@@ -8790,7 +9710,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                381,
+                438,
             ),
             ty: String,
             value_class: CowValue,
@@ -8800,7 +9720,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                382,
+                439,
             ),
             ty: Named {
                 name: "FileReadStream",
@@ -8815,7 +9735,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                384,
+                441,
             ),
             ty: Named {
                 name: "Result",
@@ -8840,7 +9760,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                385,
+                442,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -8850,7 +9770,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                387,
+                444,
             ),
             ty: String,
             value_class: CowValue,
@@ -8860,7 +9780,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                389,
+                446,
             ),
             ty: Named {
                 name: "Result",
@@ -8885,7 +9805,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                390,
+                447,
             ),
             ty: Named {
                 name: "IoError",
@@ -8900,7 +9820,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                391,
+                448,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -8910,7 +9830,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                392,
+                449,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -9112,22 +10032,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                38,
+                41,
             ),
             name: "path",
             site: SiteId(
-                397,
+                454,
             ),
             ty: String,
             intent: Read,
         },
         Use {
             binding: BindingId(
-                39,
+                42,
             ),
             name: "content",
             site: SiteId(
-                398,
+                455,
             ),
             ty: String,
             intent: Read,
@@ -9135,7 +10055,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    394,
+                    451,
                 ),
             ),
             ty: I64,
@@ -9144,7 +10064,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                394,
+                451,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -9154,7 +10074,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                395,
+                452,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -9164,7 +10084,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                396,
+                453,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -9174,7 +10094,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                397,
+                454,
             ),
             ty: String,
             value_class: CowValue,
@@ -9184,7 +10104,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                398,
+                455,
             ),
             ty: String,
             value_class: CowValue,
@@ -9259,22 +10179,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                40,
+                43,
             ),
             name: "file_path",
             site: SiteId(
-                403,
+                460,
             ),
             ty: String,
             intent: Read,
         },
         Use {
             binding: BindingId(
-                41,
+                44,
             ),
             name: "content",
             site: SiteId(
-                404,
+                461,
             ),
             ty: String,
             intent: Read,
@@ -9282,7 +10202,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    400,
+                    457,
                 ),
             ),
             ty: Named {
@@ -9304,11 +10224,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                40,
+                43,
             ),
             name: "file_path",
             site: SiteId(
-                410,
+                467,
             ),
             ty: String,
             intent: Read,
@@ -9317,7 +10237,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                400,
+                457,
             ),
             ty: Named {
                 name: "Result",
@@ -9342,7 +10262,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                401,
+                458,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -9352,7 +10272,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                402,
+                459,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -9362,7 +10282,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                403,
+                460,
             ),
             ty: String,
             value_class: CowValue,
@@ -9372,7 +10292,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                404,
+                461,
             ),
             ty: String,
             value_class: CowValue,
@@ -9382,7 +10302,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                406,
+                463,
             ),
             ty: Named {
                 name: "Result",
@@ -9407,7 +10327,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                407,
+                464,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -9417,7 +10337,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                408,
+                465,
             ),
             ty: Named {
                 name: "Result",
@@ -9442,7 +10362,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                409,
+                466,
             ),
             ty: Named {
                 name: "IoError",
@@ -9457,7 +10377,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                410,
+                467,
             ),
             ty: String,
             value_class: CowValue,
@@ -9630,22 +10550,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                42,
+                45,
             ),
             name: "path",
             site: SiteId(
-                415,
+                472,
             ),
             ty: String,
             intent: Read,
         },
         Use {
             binding: BindingId(
-                43,
+                46,
             ),
             name: "content",
             site: SiteId(
-                416,
+                473,
             ),
             ty: String,
             intent: Read,
@@ -9653,7 +10573,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    412,
+                    469,
                 ),
             ),
             ty: I64,
@@ -9662,7 +10582,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                412,
+                469,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -9672,7 +10592,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                413,
+                470,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -9682,7 +10602,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                414,
+                471,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -9692,7 +10612,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                415,
+                472,
             ),
             ty: String,
             value_class: CowValue,
@@ -9702,7 +10622,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                416,
+                473,
             ),
             ty: String,
             value_class: CowValue,
@@ -9777,22 +10697,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                44,
+                47,
             ),
             name: "file_path",
             site: SiteId(
-                421,
+                478,
             ),
             ty: String,
             intent: Read,
         },
         Use {
             binding: BindingId(
-                45,
+                48,
             ),
             name: "content",
             site: SiteId(
-                422,
+                479,
             ),
             ty: String,
             intent: Read,
@@ -9800,7 +10720,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    418,
+                    475,
                 ),
             ),
             ty: Named {
@@ -9822,11 +10742,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                44,
+                47,
             ),
             name: "file_path",
             site: SiteId(
-                428,
+                485,
             ),
             ty: String,
             intent: Read,
@@ -9835,7 +10755,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                418,
+                475,
             ),
             ty: Named {
                 name: "Result",
@@ -9860,7 +10780,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                419,
+                476,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -9870,7 +10790,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                420,
+                477,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -9880,7 +10800,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                421,
+                478,
             ),
             ty: String,
             value_class: CowValue,
@@ -9890,7 +10810,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                422,
+                479,
             ),
             ty: String,
             value_class: CowValue,
@@ -9900,7 +10820,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                424,
+                481,
             ),
             ty: Named {
                 name: "Result",
@@ -9925,7 +10845,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                425,
+                482,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -9935,7 +10855,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                426,
+                483,
             ),
             ty: Named {
                 name: "Result",
@@ -9960,7 +10880,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                427,
+                484,
             ),
             ty: Named {
                 name: "IoError",
@@ -9975,7 +10895,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                428,
+                485,
             ),
             ty: String,
             value_class: CowValue,
@@ -10148,11 +11068,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                46,
+                49,
             ),
             name: "path",
             site: SiteId(
-                432,
+                489,
             ),
             ty: String,
             intent: Read,
@@ -10160,7 +11080,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    430,
+                    487,
                 ),
             ),
             ty: Bool,
@@ -10169,7 +11089,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                430,
+                487,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -10179,7 +11099,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                431,
+                488,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -10189,7 +11109,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                432,
+                489,
             ),
             ty: String,
             value_class: CowValue,
@@ -10249,11 +11169,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                47,
+                50,
             ),
             name: "path",
             site: SiteId(
-                437,
+                494,
             ),
             ty: String,
             intent: Read,
@@ -10261,7 +11181,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    434,
+                    491,
                 ),
             ),
             ty: I64,
@@ -10270,7 +11190,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                434,
+                491,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -10280,7 +11200,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                435,
+                492,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -10290,7 +11210,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                436,
+                493,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -10300,7 +11220,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                437,
+                494,
             ),
             ty: String,
             value_class: CowValue,
@@ -10375,11 +11295,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                48,
+                51,
             ),
             name: "file_path",
             site: SiteId(
-                442,
+                499,
             ),
             ty: String,
             intent: Read,
@@ -10387,7 +11307,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    439,
+                    496,
                 ),
             ),
             ty: Named {
@@ -10409,11 +11329,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                48,
+                51,
             ),
             name: "file_path",
             site: SiteId(
-                448,
+                505,
             ),
             ty: String,
             intent: Read,
@@ -10422,7 +11342,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                439,
+                496,
             ),
             ty: Named {
                 name: "Result",
@@ -10447,7 +11367,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                440,
+                497,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -10457,7 +11377,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                441,
+                498,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -10467,7 +11387,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                442,
+                499,
             ),
             ty: String,
             value_class: CowValue,
@@ -10477,7 +11397,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                444,
+                501,
             ),
             ty: Named {
                 name: "Result",
@@ -10502,7 +11422,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                445,
+                502,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -10512,7 +11432,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                446,
+                503,
             ),
             ty: Named {
                 name: "Result",
@@ -10537,7 +11457,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                447,
+                504,
             ),
             ty: Named {
                 name: "IoError",
@@ -10552,7 +11472,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                448,
+                505,
             ),
             ty: String,
             value_class: CowValue,
@@ -10725,11 +11645,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                49,
+                52,
             ),
             name: "path",
             site: SiteId(
-                452,
+                509,
             ),
             ty: String,
             intent: Read,
@@ -10737,7 +11657,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    450,
+                    507,
                 ),
             ),
             ty: I64,
@@ -10746,7 +11666,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                450,
+                507,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -10756,7 +11676,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                451,
+                508,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -10766,7 +11686,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                452,
+                509,
             ),
             ty: String,
             value_class: CowValue,
@@ -10826,11 +11746,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                50,
+                53,
             ),
             name: "path",
             site: SiteId(
-                456,
+                513,
             ),
             ty: String,
             intent: Read,
@@ -10838,7 +11758,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    454,
+                    511,
                 ),
             ),
             ty: Bytes,
@@ -10847,7 +11767,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                454,
+                511,
             ),
             ty: Bytes,
             value_class: CowValue,
@@ -10857,7 +11777,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                455,
+                512,
             ),
             ty: Bytes,
             value_class: CowValue,
@@ -10867,7 +11787,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                456,
+                513,
             ),
             ty: String,
             value_class: CowValue,
@@ -10942,82 +11862,82 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                51,
+                54,
             ),
             name: "file_path",
             site: SiteId(
-                460,
+                517,
             ),
             ty: String,
             intent: Read,
         },
         Bind {
             binding: BindingId(
-                52,
+                55,
             ),
             name: "data",
             site: SiteId(
-                459,
+                516,
             ),
             ty: Bytes,
         },
         Bind {
             binding: BindingId(
-                53,
+                56,
             ),
             name: "errno",
             site: SiteId(
-                462,
+                519,
             ),
             ty: I32,
         },
         Use {
             binding: BindingId(
-                53,
+                56,
             ),
             name: "errno",
             site: SiteId(
-                466,
-            ),
-            ty: I32,
-            intent: Read,
-        },
-        Use {
-            binding: BindingId(
-                53,
-            ),
-            name: "errno",
-            site: SiteId(
-                472,
+                523,
             ),
             ty: I32,
             intent: Read,
         },
         Use {
             binding: BindingId(
-                52,
+                56,
+            ),
+            name: "errno",
+            site: SiteId(
+                529,
+            ),
+            ty: I32,
+            intent: Read,
+        },
+        Use {
+            binding: BindingId(
+                55,
             ),
             name: "data",
             site: SiteId(
-                476,
+                533,
             ),
             ty: Bytes,
             intent: Read,
         },
         AggregateAlias {
             binding: BindingId(
-                52,
+                55,
             ),
             name: "data",
             site: SiteId(
-                476,
+                533,
             ),
             ty: Bytes,
         },
         Return {
             site: Some(
                 SiteId(
-                    458,
+                    515,
                 ),
             ),
             ty: Named {
@@ -11039,7 +11959,7 @@ ElaboratedMirFunction {
         },
         Drop {
             binding: BindingId(
-                52,
+                55,
             ),
             name: "data",
             ty: Bytes,
@@ -11048,7 +11968,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                458,
+                515,
             ),
             ty: Named {
                 name: "Result",
@@ -11073,7 +11993,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                459,
+                516,
             ),
             ty: Bytes,
             value_class: CowValue,
@@ -11083,7 +12003,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                460,
+                517,
             ),
             ty: String,
             value_class: CowValue,
@@ -11093,7 +12013,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                462,
+                519,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -11103,7 +12023,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                464,
+                521,
             ),
             ty: Named {
                 name: "Result",
@@ -11128,7 +12048,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                465,
+                522,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -11138,7 +12058,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                466,
+                523,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -11148,7 +12068,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                467,
+                524,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -11158,7 +12078,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                468,
+                525,
             ),
             ty: Named {
                 name: "Result",
@@ -11183,7 +12103,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                469,
+                526,
             ),
             ty: Named {
                 name: "Result",
@@ -11208,7 +12128,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                470,
+                527,
             ),
             ty: Named {
                 name: "IoError",
@@ -11223,7 +12143,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                471,
+                528,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -11233,7 +12153,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                472,
+                529,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -11243,7 +12163,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                474,
+                531,
             ),
             ty: Named {
                 name: "Result",
@@ -11268,7 +12188,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                475,
+                532,
             ),
             ty: Named {
                 name: "Result",
@@ -11293,7 +12213,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                476,
+                533,
             ),
             ty: Bytes,
             value_class: CowValue,
@@ -11439,22 +12359,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                54,
+                57,
             ),
             name: "path",
             site: SiteId(
-                480,
+                537,
             ),
             ty: String,
             intent: Read,
         },
         Use {
             binding: BindingId(
-                55,
+                58,
             ),
             name: "data",
             site: SiteId(
-                481,
+                538,
             ),
             ty: Bytes,
             intent: Read,
@@ -11462,7 +12382,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    477,
+                    534,
                 ),
             ),
             ty: I64,
@@ -11471,7 +12391,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                477,
+                534,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -11481,7 +12401,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                478,
+                535,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -11491,7 +12411,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                479,
+                536,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -11501,7 +12421,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                480,
+                537,
             ),
             ty: String,
             value_class: CowValue,
@@ -11511,7 +12431,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                481,
+                538,
             ),
             ty: Bytes,
             value_class: CowValue,
@@ -11586,22 +12506,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                56,
+                59,
             ),
             name: "file_path",
             site: SiteId(
-                486,
+                543,
             ),
             ty: String,
             intent: Read,
         },
         Use {
             binding: BindingId(
-                57,
+                60,
             ),
             name: "data",
             site: SiteId(
-                487,
+                544,
             ),
             ty: Bytes,
             intent: Read,
@@ -11609,7 +12529,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    483,
+                    540,
                 ),
             ),
             ty: Named {
@@ -11631,11 +12551,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                56,
+                59,
             ),
             name: "file_path",
             site: SiteId(
-                493,
+                550,
             ),
             ty: String,
             intent: Read,
@@ -11644,7 +12564,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                483,
+                540,
             ),
             ty: Named {
                 name: "Result",
@@ -11669,7 +12589,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                484,
+                541,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -11679,7 +12599,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                485,
+                542,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -11689,7 +12609,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                486,
+                543,
             ),
             ty: String,
             value_class: CowValue,
@@ -11699,7 +12619,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                487,
+                544,
             ),
             ty: Bytes,
             value_class: CowValue,
@@ -11709,7 +12629,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                489,
+                546,
             ),
             ty: Named {
                 name: "Result",
@@ -11734,7 +12654,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                490,
+                547,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -11744,7 +12664,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                491,
+                548,
             ),
             ty: Named {
                 name: "Result",
@@ -11769,7 +12689,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                492,
+                549,
             ),
             ty: Named {
                 name: "IoError",
@@ -11784,7 +12704,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                493,
+                550,
             ),
             ty: String,
             value_class: CowValue,
@@ -11957,11 +12877,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                58,
+                61,
             ),
             name: "path",
             site: SiteId(
-                498,
+                555,
             ),
             ty: String,
             intent: Read,
@@ -11969,7 +12889,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    495,
+                    552,
                 ),
             ),
             ty: I64,
@@ -11978,7 +12898,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                495,
+                552,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -11988,7 +12908,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                496,
+                553,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -11998,7 +12918,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                497,
+                554,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -12008,7 +12928,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                498,
+                555,
             ),
             ty: String,
             value_class: CowValue,
@@ -12083,11 +13003,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                59,
+                62,
             ),
             name: "dir_path",
             site: SiteId(
-                503,
+                560,
             ),
             ty: String,
             intent: Read,
@@ -12095,7 +13015,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    500,
+                    557,
                 ),
             ),
             ty: Named {
@@ -12117,11 +13037,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                59,
+                62,
             ),
             name: "dir_path",
             site: SiteId(
-                509,
+                566,
             ),
             ty: String,
             intent: Read,
@@ -12130,7 +13050,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                500,
+                557,
             ),
             ty: Named {
                 name: "Result",
@@ -12155,7 +13075,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                501,
+                558,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -12165,7 +13085,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                502,
+                559,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -12175,7 +13095,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                503,
+                560,
             ),
             ty: String,
             value_class: CowValue,
@@ -12185,7 +13105,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                505,
+                562,
             ),
             ty: Named {
                 name: "Result",
@@ -12210,7 +13130,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                506,
+                563,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -12220,7 +13140,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                507,
+                564,
             ),
             ty: Named {
                 name: "Result",
@@ -12245,7 +13165,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                508,
+                565,
             ),
             ty: Named {
                 name: "IoError",
@@ -12260,7 +13180,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                509,
+                566,
             ),
             ty: String,
             value_class: CowValue,
@@ -12433,11 +13353,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                60,
+                63,
             ),
             name: "path",
             site: SiteId(
-                514,
+                571,
             ),
             ty: String,
             intent: Read,
@@ -12445,7 +13365,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    511,
+                    568,
                 ),
             ),
             ty: I64,
@@ -12454,7 +13374,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                511,
+                568,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -12464,7 +13384,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                512,
+                569,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -12474,7 +13394,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                513,
+                570,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -12484,7 +13404,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                514,
+                571,
             ),
             ty: String,
             value_class: CowValue,
@@ -12559,11 +13479,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                61,
+                64,
             ),
             name: "dir_path",
             site: SiteId(
-                519,
+                576,
             ),
             ty: String,
             intent: Read,
@@ -12571,7 +13491,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    516,
+                    573,
                 ),
             ),
             ty: Named {
@@ -12593,11 +13513,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                61,
+                64,
             ),
             name: "dir_path",
             site: SiteId(
-                526,
+                583,
             ),
             ty: String,
             intent: Read,
@@ -12606,7 +13526,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                516,
+                573,
             ),
             ty: Named {
                 name: "Result",
@@ -12631,7 +13551,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                517,
+                574,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -12641,7 +13561,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                518,
+                575,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -12651,7 +13571,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                519,
+                576,
             ),
             ty: String,
             value_class: CowValue,
@@ -12661,7 +13581,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                521,
+                578,
             ),
             ty: Named {
                 name: "Result",
@@ -12686,7 +13606,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                522,
+                579,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -12696,7 +13616,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                523,
+                580,
             ),
             ty: Named {
                 name: "Result",
@@ -12721,7 +13641,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                524,
+                581,
             ),
             ty: Named {
                 name: "Result",
@@ -12746,7 +13666,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                525,
+                582,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -12756,7 +13676,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                526,
+                583,
             ),
             ty: String,
             value_class: CowValue,
@@ -12766,7 +13686,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                528,
+                585,
             ),
             ty: Named {
                 name: "Result",
@@ -12791,7 +13711,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                529,
+                586,
             ),
             ty: Named {
                 name: "Result",
@@ -12816,7 +13736,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                530,
+                587,
             ),
             ty: Named {
                 name: "IoError",
@@ -12831,7 +13751,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                531,
+                588,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -12841,7 +13761,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                532,
+                589,
             ),
             ty: Named {
                 name: "Result",
@@ -12866,7 +13786,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                533,
+                590,
             ),
             ty: Named {
                 name: "Result",
@@ -12891,7 +13811,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                534,
+                591,
             ),
             ty: Named {
                 name: "IoError",
@@ -12906,7 +13826,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                535,
+                592,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -13134,11 +14054,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                62,
+                65,
             ),
             name: "path",
             site: SiteId(
-                538,
+                595,
             ),
             ty: String,
             intent: Read,
@@ -13146,7 +14066,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    536,
+                    593,
                 ),
             ),
             ty: Named {
@@ -13164,7 +14084,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                536,
+                593,
             ),
             ty: Named {
                 name: "Vec",
@@ -13183,7 +14103,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                537,
+                594,
             ),
             ty: Named {
                 name: "Vec",
@@ -13202,7 +14122,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                538,
+                595,
             ),
             ty: String,
             value_class: CowValue,
@@ -13286,11 +14206,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                63,
+                66,
             ),
             name: "dir_path",
             site: SiteId(
-                542,
+                599,
             ),
             ty: String,
             intent: Read,
@@ -13298,7 +14218,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    544,
+                    601,
                 ),
             ),
             ty: Named {
@@ -13329,17 +14249,17 @@ ElaboratedMirFunction {
         },
         Evaluate {
             site: SiteId(
-                548,
+                605,
             ),
             ty: Unit,
         },
         Use {
             binding: BindingId(
-                63,
+                66,
             ),
             name: "dir_path",
             site: SiteId(
-                551,
+                608,
             ),
             ty: String,
             intent: Read,
@@ -13347,7 +14267,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    553,
+                    610,
                 ),
             ),
             ty: Named {
@@ -13378,17 +14298,17 @@ ElaboratedMirFunction {
         },
         Evaluate {
             site: SiteId(
-                557,
+                614,
             ),
             ty: Unit,
         },
         Use {
             binding: BindingId(
-                63,
+                66,
             ),
             name: "dir_path",
             site: SiteId(
-                561,
+                618,
             ),
             ty: String,
             intent: Read,
@@ -13396,7 +14316,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    558,
+                    615,
                 ),
             ),
             ty: Named {
@@ -13429,7 +14349,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                548,
+                605,
             ),
             ty: Unit,
             value_class: BitCopy,
@@ -13439,7 +14359,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                540,
+                597,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -13449,7 +14369,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                541,
+                598,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -13459,7 +14379,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                542,
+                599,
             ),
             ty: String,
             value_class: CowValue,
@@ -13469,7 +14389,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                547,
+                604,
             ),
             ty: Unit,
             value_class: BitCopy,
@@ -13479,7 +14399,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                544,
+                601,
             ),
             ty: Named {
                 name: "Result",
@@ -13513,7 +14433,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                545,
+                602,
             ),
             ty: Named {
                 name: "IoError",
@@ -13528,7 +14448,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                546,
+                603,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -13538,7 +14458,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                557,
+                614,
             ),
             ty: Unit,
             value_class: BitCopy,
@@ -13548,7 +14468,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                549,
+                606,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -13558,7 +14478,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                550,
+                607,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -13568,7 +14488,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                551,
+                608,
             ),
             ty: String,
             value_class: CowValue,
@@ -13578,7 +14498,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                556,
+                613,
             ),
             ty: Unit,
             value_class: BitCopy,
@@ -13588,7 +14508,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                553,
+                610,
             ),
             ty: Named {
                 name: "Result",
@@ -13622,7 +14542,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                554,
+                611,
             ),
             ty: Named {
                 name: "IoError",
@@ -13637,7 +14557,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                555,
+                612,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -13647,7 +14567,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                558,
+                615,
             ),
             ty: Named {
                 name: "Result",
@@ -13681,7 +14601,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                559,
+                616,
             ),
             ty: Named {
                 name: "Vec",
@@ -13700,7 +14620,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                560,
+                617,
             ),
             ty: Named {
                 name: "Vec",
@@ -13719,7 +14639,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                561,
+                618,
             ),
             ty: String,
             value_class: CowValue,
@@ -13947,22 +14867,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                64,
+                67,
             ),
             name: "from",
             site: SiteId(
-                566,
+                623,
             ),
             ty: String,
             intent: Read,
         },
         Use {
             binding: BindingId(
-                65,
+                68,
             ),
             name: "to",
             site: SiteId(
-                567,
+                624,
             ),
             ty: String,
             intent: Read,
@@ -13970,7 +14890,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    563,
+                    620,
                 ),
             ),
             ty: I64,
@@ -13979,7 +14899,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                563,
+                620,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -13989,7 +14909,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                564,
+                621,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -13999,7 +14919,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                565,
+                622,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -14009,7 +14929,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                566,
+                623,
             ),
             ty: String,
             value_class: CowValue,
@@ -14019,7 +14939,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                567,
+                624,
             ),
             ty: String,
             value_class: CowValue,
@@ -14094,22 +15014,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                66,
+                69,
             ),
             name: "from",
             site: SiteId(
-                572,
+                629,
             ),
             ty: String,
             intent: Read,
         },
         Use {
             binding: BindingId(
-                67,
+                70,
             ),
             name: "to",
             site: SiteId(
-                573,
+                630,
             ),
             ty: String,
             intent: Read,
@@ -14117,7 +15037,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    569,
+                    626,
                 ),
             ),
             ty: Named {
@@ -14139,22 +15059,22 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                66,
+                69,
             ),
             name: "from",
             site: SiteId(
-                579,
+                636,
             ),
             ty: String,
             intent: Read,
         },
         Use {
             binding: BindingId(
-                67,
+                70,
             ),
             name: "to",
             site: SiteId(
-                580,
+                637,
             ),
             ty: String,
             intent: Read,
@@ -14163,7 +15083,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                569,
+                626,
             ),
             ty: Named {
                 name: "Result",
@@ -14188,7 +15108,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                570,
+                627,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -14198,7 +15118,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                571,
+                628,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -14208,7 +15128,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                572,
+                629,
             ),
             ty: String,
             value_class: CowValue,
@@ -14218,7 +15138,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                573,
+                630,
             ),
             ty: String,
             value_class: CowValue,
@@ -14228,7 +15148,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                575,
+                632,
             ),
             ty: Named {
                 name: "Result",
@@ -14253,7 +15173,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                576,
+                633,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -14263,7 +15183,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                577,
+                634,
             ),
             ty: Named {
                 name: "Result",
@@ -14288,7 +15208,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                578,
+                635,
             ),
             ty: Named {
                 name: "IoError",
@@ -14303,7 +15223,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                579,
+                636,
             ),
             ty: String,
             value_class: CowValue,
@@ -14313,7 +15233,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                580,
+                637,
             ),
             ty: String,
             value_class: CowValue,
@@ -14486,22 +15406,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                68,
+                71,
             ),
             name: "from",
             site: SiteId(
-                585,
+                642,
             ),
             ty: String,
             intent: Read,
         },
         Use {
             binding: BindingId(
-                69,
+                72,
             ),
             name: "to",
             site: SiteId(
-                586,
+                643,
             ),
             ty: String,
             intent: Read,
@@ -14509,7 +15429,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    582,
+                    639,
                 ),
             ),
             ty: I64,
@@ -14518,7 +15438,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                582,
+                639,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -14528,7 +15448,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                583,
+                640,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -14538,7 +15458,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                584,
+                641,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -14548,7 +15468,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                585,
+                642,
             ),
             ty: String,
             value_class: CowValue,
@@ -14558,7 +15478,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                586,
+                643,
             ),
             ty: String,
             value_class: CowValue,
@@ -14633,22 +15553,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                70,
+                73,
             ),
             name: "from",
             site: SiteId(
-                591,
+                648,
             ),
             ty: String,
             intent: Read,
         },
         Use {
             binding: BindingId(
-                71,
+                74,
             ),
             name: "to",
             site: SiteId(
-                592,
+                649,
             ),
             ty: String,
             intent: Read,
@@ -14656,7 +15576,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    588,
+                    645,
                 ),
             ),
             ty: Named {
@@ -14678,22 +15598,22 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                70,
+                73,
             ),
             name: "from",
             site: SiteId(
-                598,
+                655,
             ),
             ty: String,
             intent: Read,
         },
         Use {
             binding: BindingId(
-                71,
+                74,
             ),
             name: "to",
             site: SiteId(
-                599,
+                656,
             ),
             ty: String,
             intent: Read,
@@ -14702,7 +15622,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                588,
+                645,
             ),
             ty: Named {
                 name: "Result",
@@ -14727,7 +15647,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                589,
+                646,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -14737,7 +15657,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                590,
+                647,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -14747,7 +15667,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                591,
+                648,
             ),
             ty: String,
             value_class: CowValue,
@@ -14757,7 +15677,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                592,
+                649,
             ),
             ty: String,
             value_class: CowValue,
@@ -14767,7 +15687,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                594,
+                651,
             ),
             ty: Named {
                 name: "Result",
@@ -14792,7 +15712,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                595,
+                652,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -14802,7 +15722,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                596,
+                653,
             ),
             ty: Named {
                 name: "Result",
@@ -14827,7 +15747,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                597,
+                654,
             ),
             ty: Named {
                 name: "IoError",
@@ -14842,7 +15762,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                598,
+                655,
             ),
             ty: String,
             value_class: CowValue,
@@ -14852,7 +15772,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                599,
+                656,
             ),
             ty: String,
             value_class: CowValue,
@@ -15025,11 +15945,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                72,
+                75,
             ),
             name: "path",
             site: SiteId(
-                603,
+                660,
             ),
             ty: String,
             intent: Read,
@@ -15037,7 +15957,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    601,
+                    658,
                 ),
             ),
             ty: Bool,
@@ -15046,7 +15966,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                601,
+                658,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -15056,7 +15976,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                602,
+                659,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -15066,7 +15986,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                603,
+                660,
             ),
             ty: String,
             value_class: CowValue,
@@ -15149,22 +16069,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                73,
+                76,
             ),
             name: "capacity",
             site: SiteId(
-                608,
+                665,
             ),
             ty: I64,
             intent: Read,
         },
         Bind {
             binding: BindingId(
-                74,
+                77,
             ),
             name: "pair",
             site: SiteId(
-                606,
+                663,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -15175,11 +16095,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                74,
+                77,
             ),
             name: "pair",
             site: SiteId(
-                611,
+                668,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -15191,11 +16111,11 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                75,
+                78,
             ),
             name: "sink",
             site: SiteId(
-                610,
+                667,
             ),
             ty: Named {
                 name: "Sink",
@@ -15210,11 +16130,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                74,
+                77,
             ),
             name: "pair",
             site: SiteId(
-                614,
+                671,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -15226,11 +16146,11 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                76,
+                79,
             ),
             name: "input",
             site: SiteId(
-                613,
+                670,
             ),
             ty: Named {
                 name: "Stream",
@@ -15245,11 +16165,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                74,
+                77,
             ),
             name: "pair",
             site: SiteId(
-                617,
+                674,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -15261,17 +16181,17 @@ ElaboratedMirFunction {
         },
         Evaluate {
             site: SiteId(
-                616,
+                673,
             ),
             ty: Unit,
         },
         Use {
             binding: BindingId(
-                75,
+                78,
             ),
             name: "sink",
             site: SiteId(
-                620,
+                677,
             ),
             ty: Named {
                 name: "Sink",
@@ -15287,11 +16207,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                76,
+                79,
             ),
             name: "input",
             site: SiteId(
-                621,
+                678,
             ),
             ty: Named {
                 name: "Stream",
@@ -15307,11 +16227,11 @@ ElaboratedMirFunction {
         },
         AggregateAlias {
             binding: BindingId(
-                75,
+                78,
             ),
             name: "sink",
             site: SiteId(
-                620,
+                677,
             ),
             ty: Named {
                 name: "Sink",
@@ -15326,11 +16246,11 @@ ElaboratedMirFunction {
         },
         AggregateAlias {
             binding: BindingId(
-                76,
+                79,
             ),
             name: "input",
             site: SiteId(
-                621,
+                678,
             ),
             ty: Named {
                 name: "Stream",
@@ -15346,7 +16266,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    605,
+                    662,
                 ),
             ),
             ty: Tuple(
@@ -15376,7 +16296,7 @@ ElaboratedMirFunction {
         },
         Drop {
             binding: BindingId(
-                76,
+                79,
             ),
             name: "input",
             ty: Named {
@@ -15392,7 +16312,7 @@ ElaboratedMirFunction {
         },
         Drop {
             binding: BindingId(
-                75,
+                78,
             ),
             name: "sink",
             ty: Named {
@@ -15410,7 +16330,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                605,
+                662,
             ),
             ty: Tuple(
                 [
@@ -15443,7 +16363,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                606,
+                663,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -15458,7 +16378,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                607,
+                664,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -15468,7 +16388,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                608,
+                665,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -15478,7 +16398,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                610,
+                667,
             ),
             ty: Named {
                 name: "Sink",
@@ -15497,7 +16417,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                611,
+                668,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -15512,7 +16432,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                613,
+                670,
             ),
             ty: Named {
                 name: "Stream",
@@ -15531,7 +16451,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                614,
+                671,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -15546,7 +16466,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                616,
+                673,
             ),
             ty: Unit,
             value_class: BitCopy,
@@ -15556,7 +16476,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                617,
+                674,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -15571,7 +16491,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                619,
+                676,
             ),
             ty: Tuple(
                 [
@@ -15604,7 +16524,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                620,
+                677,
             ),
             ty: Named {
                 name: "Sink",
@@ -15623,7 +16543,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                621,
+                678,
             ),
             ty: Named {
                 name: "Stream",
@@ -15763,22 +16683,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                77,
+                80,
             ),
             name: "capacity",
             site: SiteId(
-                625,
+                682,
             ),
             ty: I64,
             intent: Read,
         },
         Bind {
             binding: BindingId(
-                78,
+                81,
             ),
             name: "pair",
             site: SiteId(
-                623,
+                680,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -15789,11 +16709,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                78,
+                81,
             ),
             name: "pair",
             site: SiteId(
-                628,
+                685,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -15805,11 +16725,11 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                79,
+                82,
             ),
             name: "sink",
             site: SiteId(
-                627,
+                684,
             ),
             ty: Named {
                 name: "Sink",
@@ -15824,11 +16744,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                78,
+                81,
             ),
             name: "pair",
             site: SiteId(
-                631,
+                688,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -15840,11 +16760,11 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                80,
+                83,
             ),
             name: "input",
             site: SiteId(
-                630,
+                687,
             ),
             ty: Named {
                 name: "Stream",
@@ -15859,11 +16779,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                78,
+                81,
             ),
             name: "pair",
             site: SiteId(
-                634,
+                691,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -15875,17 +16795,17 @@ ElaboratedMirFunction {
         },
         Evaluate {
             site: SiteId(
-                633,
+                690,
             ),
             ty: Unit,
         },
         Use {
             binding: BindingId(
-                79,
+                82,
             ),
             name: "sink",
             site: SiteId(
-                637,
+                694,
             ),
             ty: Named {
                 name: "Sink",
@@ -15901,11 +16821,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                80,
+                83,
             ),
             name: "input",
             site: SiteId(
-                638,
+                695,
             ),
             ty: Named {
                 name: "Stream",
@@ -15921,11 +16841,11 @@ ElaboratedMirFunction {
         },
         AggregateAlias {
             binding: BindingId(
-                79,
+                82,
             ),
             name: "sink",
             site: SiteId(
-                637,
+                694,
             ),
             ty: Named {
                 name: "Sink",
@@ -15940,11 +16860,11 @@ ElaboratedMirFunction {
         },
         AggregateAlias {
             binding: BindingId(
-                80,
+                83,
             ),
             name: "input",
             site: SiteId(
-                638,
+                695,
             ),
             ty: Named {
                 name: "Stream",
@@ -15960,7 +16880,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    622,
+                    679,
                 ),
             ),
             ty: Tuple(
@@ -15990,7 +16910,7 @@ ElaboratedMirFunction {
         },
         Drop {
             binding: BindingId(
-                80,
+                83,
             ),
             name: "input",
             ty: Named {
@@ -16006,7 +16926,7 @@ ElaboratedMirFunction {
         },
         Drop {
             binding: BindingId(
-                79,
+                82,
             ),
             name: "sink",
             ty: Named {
@@ -16024,7 +16944,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                622,
+                679,
             ),
             ty: Tuple(
                 [
@@ -16057,7 +16977,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                623,
+                680,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -16072,7 +16992,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                624,
+                681,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -16082,7 +17002,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                625,
+                682,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -16092,7 +17012,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                627,
+                684,
             ),
             ty: Named {
                 name: "Sink",
@@ -16111,7 +17031,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                628,
+                685,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -16126,7 +17046,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                630,
+                687,
             ),
             ty: Named {
                 name: "Stream",
@@ -16145,7 +17065,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                631,
+                688,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -16160,7 +17080,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                633,
+                690,
             ),
             ty: Unit,
             value_class: BitCopy,
@@ -16170,7 +17090,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                634,
+                691,
             ),
             ty: Named {
                 name: "StreamPair",
@@ -16185,7 +17105,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                636,
+                693,
             ),
             ty: Tuple(
                 [
@@ -16218,7 +17138,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                637,
+                694,
             ),
             ty: Named {
                 name: "Sink",
@@ -16237,7 +17157,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                638,
+                695,
             ),
             ty: Named {
                 name: "Stream",
@@ -16373,22 +17293,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                81,
+                84,
             ),
             name: "path",
             site: SiteId(
-                641,
+                698,
             ),
             ty: String,
             intent: Read,
         },
         Bind {
             binding: BindingId(
-                82,
+                85,
             ),
             name: "s",
             site: SiteId(
-                640,
+                697,
             ),
             ty: Named {
                 name: "Stream",
@@ -16403,11 +17323,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                82,
+                85,
             ),
             name: "s",
             site: SiteId(
-                645,
+                702,
             ),
             ty: Named {
                 name: "Stream",
@@ -16423,11 +17343,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                82,
+                85,
             ),
             name: "s",
             site: SiteId(
-                649,
+                706,
             ),
             ty: Named {
                 name: "Stream",
@@ -16443,11 +17363,11 @@ ElaboratedMirFunction {
         },
         AggregateAlias {
             binding: BindingId(
-                82,
+                85,
             ),
             name: "s",
             site: SiteId(
-                649,
+                706,
             ),
             ty: Named {
                 name: "Stream",
@@ -16463,7 +17383,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    639,
+                    696,
                 ),
             ),
             ty: Named {
@@ -16489,7 +17409,7 @@ ElaboratedMirFunction {
         },
         Drop {
             binding: BindingId(
-                82,
+                85,
             ),
             name: "s",
             ty: Named {
@@ -16507,7 +17427,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                639,
+                696,
             ),
             ty: Named {
                 name: "Result",
@@ -16536,7 +17456,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                640,
+                697,
             ),
             ty: Named {
                 name: "Stream",
@@ -16555,7 +17475,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                641,
+                698,
             ),
             ty: String,
             value_class: CowValue,
@@ -16565,7 +17485,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                643,
+                700,
             ),
             ty: Named {
                 name: "Result",
@@ -16594,7 +17514,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                644,
+                701,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -16604,7 +17524,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                645,
+                702,
             ),
             ty: Named {
                 name: "Stream",
@@ -16623,7 +17543,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                647,
+                704,
             ),
             ty: Named {
                 name: "Result",
@@ -16652,7 +17572,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                648,
+                705,
             ),
             ty: Named {
                 name: "Result",
@@ -16681,7 +17601,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                649,
+                706,
             ),
             ty: Named {
                 name: "Stream",
@@ -16700,7 +17620,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                650,
+                707,
             ),
             ty: Named {
                 name: "Result",
@@ -16729,7 +17649,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                651,
+                708,
             ),
             ty: Named {
                 name: "Result",
@@ -16758,7 +17678,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                652,
+                709,
             ),
             ty: String,
             value_class: CowValue,
@@ -16874,29 +17794,7 @@ ElaboratedMirFunction {
                 block: 5,
             },
             DropPlan {
-                drops: [
-                    ElabDrop {
-                        place: Local(
-                            2,
-                        ),
-                        ty: Named {
-                            name: "Stream",
-                            args: [
-                                String,
-                            ],
-                            builtin: Some(
-                                Stream,
-                            ),
-                            is_opaque: false,
-                        },
-                        drop_fn: Some(
-                            Runtime(
-                                StreamClose,
-                            ),
-                        ),
-                        kind: Resource,
-                    },
-                ],
+                drops: [],
             },
         ),
         (
@@ -16913,29 +17811,7 @@ ElaboratedMirFunction {
                 block: 6,
             },
             DropPlan {
-                drops: [
-                    ElabDrop {
-                        place: Local(
-                            2,
-                        ),
-                        ty: Named {
-                            name: "Stream",
-                            args: [
-                                String,
-                            ],
-                            builtin: Some(
-                                Stream,
-                            ),
-                            is_opaque: false,
-                        },
-                        drop_fn: Some(
-                            Runtime(
-                                StreamClose,
-                            ),
-                        ),
-                        kind: Resource,
-                    },
-                ],
+                drops: [],
             },
         ),
     ],
@@ -16958,7 +17834,7 @@ ElaboratedMirFunction {
                 is_opaque: false,
             },
             Named {
-                name: "IoError",
+                name: "fs.IoError",
                 args: [],
                 builtin: None,
                 is_opaque: false,
@@ -16972,22 +17848,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                83,
+                86,
             ),
             name: "path",
             site: SiteId(
-                656,
+                713,
             ),
             ty: String,
             intent: Read,
         },
         Bind {
             binding: BindingId(
-                84,
+                87,
             ),
             name: "s",
             site: SiteId(
-                655,
+                712,
             ),
             ty: Named {
                 name: "Stream",
@@ -17002,11 +17878,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                84,
+                87,
             ),
             name: "s",
             site: SiteId(
-                660,
+                717,
             ),
             ty: Named {
                 name: "Stream",
@@ -17022,11 +17898,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                84,
+                87,
             ),
             name: "s",
             site: SiteId(
-                664,
+                721,
             ),
             ty: Named {
                 name: "Stream",
@@ -17042,11 +17918,11 @@ ElaboratedMirFunction {
         },
         AggregateAlias {
             binding: BindingId(
-                84,
+                87,
             ),
             name: "s",
             site: SiteId(
-                664,
+                721,
             ),
             ty: Named {
                 name: "Stream",
@@ -17062,7 +17938,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    654,
+                    711,
                 ),
             ),
             ty: Named {
@@ -17093,34 +17969,34 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                85,
+                88,
             ),
             name: "errno",
             site: SiteId(
-                666,
+                723,
             ),
             ty: I32,
         },
         Evaluate {
             site: SiteId(
-                668,
+                725,
             ),
             ty: String,
         },
         Use {
             binding: BindingId(
-                85,
+                88,
             ),
             name: "errno",
             site: SiteId(
-                673,
+                730,
             ),
             ty: I32,
             intent: Read,
         },
         Drop {
             binding: BindingId(
-                84,
+                87,
             ),
             name: "s",
             ty: Named {
@@ -17138,7 +18014,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                654,
+                711,
             ),
             ty: Named {
                 name: "Result",
@@ -17172,7 +18048,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                655,
+                712,
             ),
             ty: Named {
                 name: "Stream",
@@ -17191,7 +18067,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                656,
+                713,
             ),
             ty: String,
             value_class: CowValue,
@@ -17201,7 +18077,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                658,
+                715,
             ),
             ty: Named {
                 name: "Result",
@@ -17235,7 +18111,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                659,
+                716,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -17245,7 +18121,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                660,
+                717,
             ),
             ty: Named {
                 name: "Stream",
@@ -17264,7 +18140,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                662,
+                719,
             ),
             ty: Named {
                 name: "Result",
@@ -17298,7 +18174,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                663,
+                720,
             ),
             ty: Named {
                 name: "Result",
@@ -17332,7 +18208,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                664,
+                721,
             ),
             ty: Named {
                 name: "Stream",
@@ -17351,7 +18227,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                665,
+                722,
             ),
             ty: Named {
                 name: "Result",
@@ -17385,7 +18261,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                666,
+                723,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -17395,7 +18271,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                668,
+                725,
             ),
             ty: String,
             value_class: CowValue,
@@ -17405,7 +18281,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                670,
+                727,
             ),
             ty: Named {
                 name: "Result",
@@ -17439,7 +18315,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                671,
+                728,
             ),
             ty: Named {
                 name: "fs.IoError",
@@ -17454,7 +18330,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                672,
+                729,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -17464,7 +18340,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                673,
+                730,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -17592,29 +18468,7 @@ ElaboratedMirFunction {
                 block: 5,
             },
             DropPlan {
-                drops: [
-                    ElabDrop {
-                        place: Local(
-                            2,
-                        ),
-                        ty: Named {
-                            name: "Stream",
-                            args: [
-                                String,
-                            ],
-                            builtin: Some(
-                                Stream,
-                            ),
-                            is_opaque: false,
-                        },
-                        drop_fn: Some(
-                            Runtime(
-                                StreamClose,
-                            ),
-                        ),
-                        kind: Resource,
-                    },
-                ],
+                drops: [],
             },
         ),
         (
@@ -17651,29 +18505,7 @@ ElaboratedMirFunction {
                 block: 8,
             },
             DropPlan {
-                drops: [
-                    ElabDrop {
-                        place: Local(
-                            2,
-                        ),
-                        ty: Named {
-                            name: "Stream",
-                            args: [
-                                String,
-                            ],
-                            builtin: Some(
-                                Stream,
-                            ),
-                            is_opaque: false,
-                        },
-                        drop_fn: Some(
-                            Runtime(
-                                StreamClose,
-                            ),
-                        ),
-                        kind: Resource,
-                    },
-                ],
+                drops: [],
             },
         ),
     ],
@@ -17705,22 +18537,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                86,
+                89,
             ),
             name: "path",
             site: SiteId(
-                677,
+                734,
             ),
             ty: String,
             intent: Read,
         },
         Bind {
             binding: BindingId(
-                87,
+                90,
             ),
             name: "s",
             site: SiteId(
-                676,
+                733,
             ),
             ty: Named {
                 name: "Sink",
@@ -17735,11 +18567,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                87,
+                90,
             ),
             name: "s",
             site: SiteId(
-                681,
+                738,
             ),
             ty: Named {
                 name: "Sink",
@@ -17755,11 +18587,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                87,
+                90,
             ),
             name: "s",
             site: SiteId(
-                685,
+                742,
             ),
             ty: Named {
                 name: "Sink",
@@ -17775,11 +18607,11 @@ ElaboratedMirFunction {
         },
         AggregateAlias {
             binding: BindingId(
-                87,
+                90,
             ),
             name: "s",
             site: SiteId(
-                685,
+                742,
             ),
             ty: Named {
                 name: "Sink",
@@ -17795,7 +18627,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    675,
+                    732,
                 ),
             ),
             ty: Named {
@@ -17821,7 +18653,7 @@ ElaboratedMirFunction {
         },
         Drop {
             binding: BindingId(
-                87,
+                90,
             ),
             name: "s",
             ty: Named {
@@ -17839,7 +18671,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                675,
+                732,
             ),
             ty: Named {
                 name: "Result",
@@ -17868,7 +18700,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                676,
+                733,
             ),
             ty: Named {
                 name: "Sink",
@@ -17887,7 +18719,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                677,
+                734,
             ),
             ty: String,
             value_class: CowValue,
@@ -17897,7 +18729,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                679,
+                736,
             ),
             ty: Named {
                 name: "Result",
@@ -17926,7 +18758,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                680,
+                737,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -17936,7 +18768,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                681,
+                738,
             ),
             ty: Named {
                 name: "Sink",
@@ -17955,7 +18787,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                683,
+                740,
             ),
             ty: Named {
                 name: "Result",
@@ -17984,7 +18816,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                684,
+                741,
             ),
             ty: Named {
                 name: "Result",
@@ -18013,7 +18845,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                685,
+                742,
             ),
             ty: Named {
                 name: "Sink",
@@ -18032,7 +18864,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                686,
+                743,
             ),
             ty: Named {
                 name: "Result",
@@ -18061,7 +18893,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                687,
+                744,
             ),
             ty: Named {
                 name: "Result",
@@ -18090,7 +18922,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                688,
+                745,
             ),
             ty: String,
             value_class: CowValue,
@@ -18206,29 +19038,7 @@ ElaboratedMirFunction {
                 block: 5,
             },
             DropPlan {
-                drops: [
-                    ElabDrop {
-                        place: Local(
-                            2,
-                        ),
-                        ty: Named {
-                            name: "Sink",
-                            args: [
-                                String,
-                            ],
-                            builtin: Some(
-                                Sink,
-                            ),
-                            is_opaque: false,
-                        },
-                        drop_fn: Some(
-                            Runtime(
-                                SinkClose,
-                            ),
-                        ),
-                        kind: Resource,
-                    },
-                ],
+                drops: [],
             },
         ),
         (
@@ -18245,29 +19055,7 @@ ElaboratedMirFunction {
                 block: 6,
             },
             DropPlan {
-                drops: [
-                    ElabDrop {
-                        place: Local(
-                            2,
-                        ),
-                        ty: Named {
-                            name: "Sink",
-                            args: [
-                                String,
-                            ],
-                            builtin: Some(
-                                Sink,
-                            ),
-                            is_opaque: false,
-                        },
-                        drop_fn: Some(
-                            Runtime(
-                                SinkClose,
-                            ),
-                        ),
-                        kind: Resource,
-                    },
-                ],
+                drops: [],
             },
         ),
     ],
@@ -18290,7 +19078,7 @@ ElaboratedMirFunction {
                 is_opaque: false,
             },
             Named {
-                name: "IoError",
+                name: "fs.IoError",
                 args: [],
                 builtin: None,
                 is_opaque: false,
@@ -18304,22 +19092,22 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                88,
+                91,
             ),
             name: "path",
             site: SiteId(
-                692,
+                749,
             ),
             ty: String,
             intent: Read,
         },
         Bind {
             binding: BindingId(
-                89,
+                92,
             ),
             name: "s",
             site: SiteId(
-                691,
+                748,
             ),
             ty: Named {
                 name: "Sink",
@@ -18334,11 +19122,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                89,
+                92,
             ),
             name: "s",
             site: SiteId(
-                696,
+                753,
             ),
             ty: Named {
                 name: "Sink",
@@ -18354,11 +19142,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                89,
+                92,
             ),
             name: "s",
             site: SiteId(
-                700,
+                757,
             ),
             ty: Named {
                 name: "Sink",
@@ -18374,11 +19162,11 @@ ElaboratedMirFunction {
         },
         AggregateAlias {
             binding: BindingId(
-                89,
+                92,
             ),
             name: "s",
             site: SiteId(
-                700,
+                757,
             ),
             ty: Named {
                 name: "Sink",
@@ -18394,7 +19182,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    690,
+                    747,
                 ),
             ),
             ty: Named {
@@ -18425,34 +19213,34 @@ ElaboratedMirFunction {
         },
         Bind {
             binding: BindingId(
-                90,
+                93,
             ),
             name: "errno",
             site: SiteId(
-                702,
+                759,
             ),
             ty: I32,
         },
         Evaluate {
             site: SiteId(
-                704,
+                761,
             ),
             ty: String,
         },
         Use {
             binding: BindingId(
-                90,
+                93,
             ),
             name: "errno",
             site: SiteId(
-                709,
+                766,
             ),
             ty: I32,
             intent: Read,
         },
         Drop {
             binding: BindingId(
-                89,
+                92,
             ),
             name: "s",
             ty: Named {
@@ -18470,7 +19258,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                690,
+                747,
             ),
             ty: Named {
                 name: "Result",
@@ -18504,7 +19292,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                691,
+                748,
             ),
             ty: Named {
                 name: "Sink",
@@ -18523,7 +19311,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                692,
+                749,
             ),
             ty: String,
             value_class: CowValue,
@@ -18533,7 +19321,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                694,
+                751,
             ),
             ty: Named {
                 name: "Result",
@@ -18567,7 +19355,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                695,
+                752,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -18577,7 +19365,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                696,
+                753,
             ),
             ty: Named {
                 name: "Sink",
@@ -18596,7 +19384,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                698,
+                755,
             ),
             ty: Named {
                 name: "Result",
@@ -18630,7 +19418,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                699,
+                756,
             ),
             ty: Named {
                 name: "Result",
@@ -18664,7 +19452,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                700,
+                757,
             ),
             ty: Named {
                 name: "Sink",
@@ -18683,7 +19471,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                701,
+                758,
             ),
             ty: Named {
                 name: "Result",
@@ -18717,7 +19505,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                702,
+                759,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -18727,7 +19515,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                704,
+                761,
             ),
             ty: String,
             value_class: CowValue,
@@ -18737,7 +19525,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                706,
+                763,
             ),
             ty: Named {
                 name: "Result",
@@ -18771,7 +19559,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                707,
+                764,
             ),
             ty: Named {
                 name: "fs.IoError",
@@ -18786,7 +19574,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                708,
+                765,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -18796,7 +19584,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                709,
+                766,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -18924,29 +19712,7 @@ ElaboratedMirFunction {
                 block: 5,
             },
             DropPlan {
-                drops: [
-                    ElabDrop {
-                        place: Local(
-                            2,
-                        ),
-                        ty: Named {
-                            name: "Sink",
-                            args: [
-                                String,
-                            ],
-                            builtin: Some(
-                                Sink,
-                            ),
-                            is_opaque: false,
-                        },
-                        drop_fn: Some(
-                            Runtime(
-                                SinkClose,
-                            ),
-                        ),
-                        kind: Resource,
-                    },
-                ],
+                drops: [],
             },
         ),
         (
@@ -18983,29 +19749,7 @@ ElaboratedMirFunction {
                 block: 8,
             },
             DropPlan {
-                drops: [
-                    ElabDrop {
-                        place: Local(
-                            2,
-                        ),
-                        ty: Named {
-                            name: "Sink",
-                            args: [
-                                String,
-                            ],
-                            builtin: Some(
-                                Sink,
-                            ),
-                            is_opaque: false,
-                        },
-                        drop_fn: Some(
-                            Runtime(
-                                SinkClose,
-                            ),
-                        ),
-                        kind: Resource,
-                    },
-                ],
+                drops: [],
             },
         ),
     ],
@@ -19018,11 +19762,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                91,
+                94,
             ),
             name: "source",
             site: SiteId(
-                713,
+                770,
             ),
             ty: Named {
                 name: "Stream",
@@ -19038,11 +19782,11 @@ ElaboratedMirFunction {
         },
         Use {
             binding: BindingId(
-                92,
+                95,
             ),
             name: "dest",
             site: SiteId(
-                714,
+                771,
             ),
             ty: Named {
                 name: "Sink",
@@ -19058,7 +19802,7 @@ ElaboratedMirFunction {
         },
         Evaluate {
             site: SiteId(
-                711,
+                768,
             ),
             ty: Unit,
         },
@@ -19066,7 +19810,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                711,
+                768,
             ),
             ty: Unit,
             value_class: BitCopy,
@@ -19076,7 +19820,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                712,
+                769,
             ),
             ty: Unit,
             value_class: BitCopy,
@@ -19086,7 +19830,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                713,
+                770,
             ),
             ty: Named {
                 name: "Stream",
@@ -19105,7 +19849,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                714,
+                771,
             ),
             ty: Named {
                 name: "Sink",
@@ -19174,11 +19918,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                96,
+                99,
             ),
             name: "val",
             site: SiteId(
-                745,
+                802,
             ),
             ty: I32,
             intent: Read,
@@ -19186,7 +19930,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    744,
+                    801,
                 ),
             ),
             ty: String,
@@ -19195,7 +19939,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                744,
+                801,
             ),
             ty: String,
             value_class: CowValue,
@@ -19205,7 +19949,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                745,
+                802,
             ),
             ty: I32,
             value_class: BitCopy,
@@ -19265,11 +20009,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                97,
+                100,
             ),
             name: "val",
             site: SiteId(
-                748,
+                805,
             ),
             ty: I64,
             intent: Read,
@@ -19277,7 +20021,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    747,
+                    804,
                 ),
             ),
             ty: String,
@@ -19286,7 +20030,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                747,
+                804,
             ),
             ty: String,
             value_class: CowValue,
@@ -19296,7 +20040,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                748,
+                805,
             ),
             ty: I64,
             value_class: BitCopy,
@@ -19356,11 +20100,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                98,
+                101,
             ),
             name: "val",
             site: SiteId(
-                751,
+                808,
             ),
             ty: U32,
             intent: Read,
@@ -19368,7 +20112,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    750,
+                    807,
                 ),
             ),
             ty: String,
@@ -19377,7 +20121,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                750,
+                807,
             ),
             ty: String,
             value_class: CowValue,
@@ -19387,7 +20131,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                751,
+                808,
             ),
             ty: U32,
             value_class: BitCopy,
@@ -19447,11 +20191,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                99,
+                102,
             ),
             name: "val",
             site: SiteId(
-                754,
+                811,
             ),
             ty: U64,
             intent: Read,
@@ -19459,7 +20203,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    753,
+                    810,
                 ),
             ),
             ty: String,
@@ -19468,7 +20212,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                753,
+                810,
             ),
             ty: String,
             value_class: CowValue,
@@ -19478,7 +20222,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                754,
+                811,
             ),
             ty: U64,
             value_class: BitCopy,
@@ -19538,11 +20282,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                100,
+                103,
             ),
             name: "val",
             site: SiteId(
-                757,
+                814,
             ),
             ty: Bool,
             intent: Read,
@@ -19550,7 +20294,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    756,
+                    813,
                 ),
             ),
             ty: String,
@@ -19559,7 +20303,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                756,
+                813,
             ),
             ty: String,
             value_class: CowValue,
@@ -19569,7 +20313,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                757,
+                814,
             ),
             ty: Bool,
             value_class: BitCopy,
@@ -19629,11 +20373,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                101,
+                104,
             ),
             name: "val",
             site: SiteId(
-                760,
+                817,
             ),
             ty: Char,
             intent: Read,
@@ -19641,7 +20385,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    759,
+                    816,
                 ),
             ),
             ty: String,
@@ -19650,7 +20394,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                759,
+                816,
             ),
             ty: String,
             value_class: CowValue,
@@ -19660,7 +20404,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                760,
+                817,
             ),
             ty: Char,
             value_class: BitCopy,
@@ -19720,11 +20464,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                102,
+                105,
             ),
             name: "val",
             site: SiteId(
-                763,
+                820,
             ),
             ty: F64,
             intent: Read,
@@ -19732,7 +20476,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    762,
+                    819,
                 ),
             ),
             ty: String,
@@ -19741,7 +20485,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                762,
+                819,
             ),
             ty: String,
             value_class: CowValue,
@@ -19751,7 +20495,7 @@ ElaboratedMirFunction {
         },
         DecisionFact {
             site: SiteId(
-                763,
+                820,
             ),
             ty: F64,
             value_class: BitCopy,
@@ -19811,11 +20555,11 @@ ElaboratedMirFunction {
     statements: [
         Use {
             binding: BindingId(
-                103,
+                106,
             ),
             name: "val",
             site: SiteId(
-                765,
+                822,
             ),
             ty: String,
             intent: Read,
@@ -19823,7 +20567,7 @@ ElaboratedMirFunction {
         Return {
             site: Some(
                 SiteId(
-                    765,
+                    822,
                 ),
             ),
             ty: String,
@@ -19832,7 +20576,7 @@ ElaboratedMirFunction {
     decisions: [
         DecisionFact {
             site: SiteId(
-                765,
+                822,
             ),
             ty: String,
             value_class: CowValue,

@@ -2560,7 +2560,6 @@ pub struct Checker {
     pub(super) wasm_reject_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
     /// Tracks slice annotation spans we've already rejected so repeated
     /// resolution passes don't emit duplicate diagnostics.
-    pub(super) unsupported_slice_spans: HashSet<SpanKey>,
     /// Inside a machine transition body, the (`machine_name`, `source_state_name`, `event_name`) tuple.
     pub(super) current_machine_transition: Option<(String, String, String)>,
     /// Inside a machine state `entry` or `exit` lifecycle block, the
@@ -2863,7 +2862,6 @@ impl Checker {
             repl_fragment: false,
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),
-            unsupported_slice_spans: HashSet::new(),
             current_machine_transition: None,
             current_machine_lifecycle: None,
             const_values: HashMap::new(),

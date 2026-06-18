@@ -1,0 +1,23 @@
+extern "C" {
+    fn hew_bytes_from_str(s: string) -> bytes;
+}
+
+fn main() {
+    let xs: Vec<((bytes, i64), bool)> = Vec::new();
+    let a: bytes = unsafe {
+        hew_bytes_from_str("ab")
+    };
+    let b: bytes = unsafe {
+        hew_bytes_from_str("cd")
+    };
+    xs.push(((a, 11), true));
+    xs.push(((b, 12), false));
+    let ys = xs.clone();
+    let first = ys.get(0);
+    let second = ys.get(1);
+    let (f_inner, f_flag) = first;
+    let (f_b, f_n) = f_inner;
+    let (s_inner, s_flag) = second;
+    let (s_b, s_n) = s_inner;
+    println(f"{ys.len()}:{f_b.to_string()}:{f_n}:{f_flag}:{s_b.to_string()}:{s_n}:{s_flag}");
+}

@@ -7815,6 +7815,8 @@ fn collection_layout_witness(
         StateFieldCloneKind::BitCopy { .. }
         | StateFieldCloneKind::String
         | StateFieldCloneKind::Bytes
+        | StateFieldCloneKind::Tuple { .. }
+        | StateFieldCloneKind::Array { .. }
         | StateFieldCloneKind::IoHandle { .. }
         | StateFieldCloneKind::UserRecord { .. }
         // Enum is NOT a runtime-managed collection: its clone/drop is a
@@ -7843,6 +7845,13 @@ fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Clo
         StateFieldCloneKind::Bytes => Ok(Some(CloneHelper::RefcountBump {
             name: "hew_bytes_clone_ref",
         })),
+        StateFieldCloneKind::Tuple { .. } => Err(CodegenError::FailClosed(
+            "Tuple arm requires a synthesised in-place tuple clone helper; caller must dispatch separately"
+                .into(),
+        )),
+        StateFieldCloneKind::Array { .. } => Err(CodegenError::FailClosed(
+            "Array arm has no clone helper until array construction is wired end-to-end".into(),
+        )),
         StateFieldCloneKind::Vec { .. }
         | StateFieldCloneKind::HashMap { .. }
         | StateFieldCloneKind::HashSet { .. } => unreachable!(
@@ -7925,6 +7934,14 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
         StateFieldCloneKind::Bytes => Ok(Some(DropHelper {
             name: "hew_bytes_drop",
         })),
+        StateFieldCloneKind::Tuple { .. } => Err(CodegenError::FailClosed(
+            "Tuple arm requires a synthesised in-place tuple drop helper; caller must dispatch separately"
+                .into(),
+        )),
+        StateFieldCloneKind::Array { .. } => Err(CodegenError::FailClosed(
+            "Array arm has no in-place field drop helper until array construction is wired end-to-end"
+                .into(),
+        )),
         StateFieldCloneKind::Vec { .. }
         | StateFieldCloneKind::HashMap { .. }
         | StateFieldCloneKind::HashSet { .. } => unreachable!(
@@ -8643,6 +8660,79 @@ fn emit_field_clone_step<'ctx>(
     })?;
 
     match kind {
+        StateFieldCloneKind::Tuple { elems } => {
+            let parent_field_ty = st_ty.get_field_type_at_index(field_idx).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "tuple field clone: parent struct {st_ty:?} has no field at index {field_idx}"
+                ))
+            })?;
+            let tuple_struct = match parent_field_ty {
+                BasicTypeEnum::StructType(st) => st,
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "tuple field clone: parent struct field {field_idx} is {other:?}, \
+                         not a struct; classifier/layout drift"
+                    )));
+                }
+            };
+            let key = state_kind_tuple_key(elems);
+            emit_tuple_kind_inplace_thunk_bodies(ctx, llvm_mod, &key, tuple_struct, elems)?;
+            let helper = get_or_declare_tuple_clone_inplace(ctx, llvm_mod, &key);
+            let src_field = builder
+                .build_struct_gep(
+                    st_ty,
+                    src,
+                    field_idx,
+                    &format!("src_f{field_idx}_tuple_ptr"),
+                )
+                .llvm_ctx_with(|| format!("clone src gep tuple f{field_idx}"))?;
+            let dst_field = builder
+                .build_struct_gep(
+                    st_ty,
+                    dst,
+                    field_idx,
+                    &format!("dst_f{field_idx}_tuple_ptr"),
+                )
+                .llvm_ctx_with(|| format!("clone dst gep tuple f{field_idx}"))?;
+            let call_site = builder
+                .build_call(
+                    helper,
+                    &[src_field.into(), dst_field.into()],
+                    &format!("tuple_clone_inplace_f{field_idx}"),
+                )
+                .llvm_ctx_with(|| format!("clone tuple helper call f{field_idx}"))?;
+            let rc = call_site
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "tuple clone helper returned void at f{field_idx}"
+                    ))
+                })?
+                .into_int_value();
+            let failed = builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    rc,
+                    i32_ty.const_zero(),
+                    &format!("tuple_clone_failed_f{field_idx}"),
+                )
+                .llvm_ctx_with(|| format!("tuple clone cmp f{field_idx}"))?;
+            builder
+                .build_conditional_branch(failed, rollback_bb, store_bb)
+                .llvm_ctx_with(|| format!("tuple clone branch f{field_idx}"))?;
+            builder.position_at_end(store_bb);
+            builder
+                .build_unconditional_branch(next_bb)
+                .llvm_ctx_with(|| format!("tuple clone next branch f{field_idx}"))?;
+            return Ok(());
+        }
+        StateFieldCloneKind::Array { .. } => {
+            return Err(CodegenError::FailClosed(format!(
+                "field_clone_step reached nested array at f{field_idx}; array clone/drop \
+                 thunk construction remains fail-closed until array value construction is wired"
+            )));
+        }
         StateFieldCloneKind::UserRecord { name } => {
             // In-place clone: helper writes into dst.<field_idx> directly.
             // Result is i32; non-zero -> rollback (helper has already
@@ -8894,6 +8984,45 @@ fn emit_field_drop_step<'ctx>(
         // owns the call to `.free()`. Actor state drop does not auto-free opaque
         // handles — consistent with `drop_helper_for_kind` returning `Ok(None)`.
         StateFieldCloneKind::OpaqueHandle { .. } => Ok(()),
+        StateFieldCloneKind::Tuple { elems } => {
+            let parent_field_ty = st_ty.get_field_type_at_index(field_idx).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "tuple field drop: parent struct {st_ty:?} has no field at index {field_idx}"
+                ))
+            })?;
+            let tuple_struct = match parent_field_ty {
+                BasicTypeEnum::StructType(st) => st,
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "tuple field drop: parent struct field {field_idx} is {other:?}, \
+                         not a struct; classifier/layout drift"
+                    )));
+                }
+            };
+            let key = state_kind_tuple_key(elems);
+            emit_tuple_kind_drop_inplace_body(ctx, llvm_mod, &key, tuple_struct, elems)?;
+            let helper = get_or_declare_tuple_drop_inplace(ctx, llvm_mod, &key);
+            let field_ptr = builder
+                .build_struct_gep(
+                    st_ty,
+                    state,
+                    field_idx,
+                    &format!("drop_f{field_idx}_tuple_ptr"),
+                )
+                .llvm_ctx_with(|| format!("drop tuple gep f{field_idx}"))?;
+            builder
+                .build_call(
+                    helper,
+                    &[field_ptr.into()],
+                    &format!("drop_tuple_f{field_idx}"),
+                )
+                .llvm_ctx_with(|| format!("drop tuple call f{field_idx}"))?;
+            Ok(())
+        }
+        StateFieldCloneKind::Array { .. } => Err(CodegenError::FailClosed(format!(
+            "field_drop_step reached nested array at f{field_idx}; array field drop remains \
+             fail-closed until array value construction is wired"
+        ))),
         StateFieldCloneKind::UserRecord { name } => {
             let helper = get_or_declare_record_drop_inplace(ctx, llvm_mod, name);
             let field_ptr = builder
@@ -10398,6 +10527,14 @@ fn collect_clone_target_names(
         StateFieldCloneKind::Vec { elem } | StateFieldCloneKind::HashSet { elem } => {
             collect_clone_target_names(elem, rec_queue, rec_seen, enum_queue, enum_seen);
         }
+        StateFieldCloneKind::Tuple { elems } => {
+            for elem in elems {
+                collect_clone_target_names(elem, rec_queue, rec_seen, enum_queue, enum_seen);
+            }
+        }
+        StateFieldCloneKind::Array { elem, .. } => {
+            collect_clone_target_names(elem, rec_queue, rec_seen, enum_queue, enum_seen);
+        }
         StateFieldCloneKind::HashMap { key, val } => {
             collect_clone_target_names(key, rec_queue, rec_seen, enum_queue, enum_seen);
             collect_clone_target_names(val, rec_queue, rec_seen, enum_queue, enum_seen);
@@ -10842,6 +10979,24 @@ fn overwrite_heap_leaf_capacity(
             StateFieldCloneKind::UserRecord { name } => {
                 overwrite_heap_leaf_capacity(cx, cx.record_kinds(name)?, depth + 1)?
             }
+            StateFieldCloneKind::Tuple { elems } => {
+                overwrite_heap_leaf_capacity(cx, elems, depth + 1)?
+            }
+            StateFieldCloneKind::Array { elem, len } => {
+                let per_elem =
+                    overwrite_heap_leaf_capacity(cx, std::slice::from_ref(elem), depth + 1)?;
+                per_elem
+                    .checked_mul(usize::try_from(*len).map_err(|_| {
+                        CodegenError::FailClosed(
+                            "overwrite-release capacity walk: array length exceeds usize".into(),
+                        )
+                    })?)
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "overwrite-release capacity walk: array leaf capacity overflow".into(),
+                        )
+                    })?
+            }
             StateFieldCloneKind::Enum { name } => {
                 let mut max = 0usize;
                 for variant in cx.enum_kinds(name)? {
@@ -10965,6 +11120,44 @@ fn emit_overwrite_collect_leaves<'ctx>(
                     depth + 1,
                 )?;
                 None
+            }
+            StateFieldCloneKind::Tuple { elems } => {
+                let parent_field_ty = st_ty.get_field_type_at_index(idx_u).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "overwrite-release collect: parent struct {st_ty:?} has no field at \
+                         index {idx_u} for tuple"
+                    ))
+                })?;
+                let nested_struct = match parent_field_ty {
+                    BasicTypeEnum::StructType(st) => st,
+                    other => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "overwrite-release collect: tuple field {idx_u} is {other:?}, \
+                             not a struct"
+                        )));
+                    }
+                };
+                let field_ptr = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_tuple_ptr"))
+                    .llvm_ctx_with(|| format!("{label} nested tuple gep"))?;
+                emit_overwrite_collect_leaves(
+                    cx,
+                    builder,
+                    f,
+                    nested_struct,
+                    field_ptr,
+                    elems,
+                    slots,
+                    next_slot,
+                    depth + 1,
+                )?;
+                None
+            }
+            StateFieldCloneKind::Array { .. } => {
+                return Err(CodegenError::FailClosed(
+                    "overwrite-release collect reached array field; array state reassignment is not wired"
+                        .into(),
+                ));
             }
             StateFieldCloneKind::Enum { name } => {
                 let field_ptr = builder
@@ -11229,6 +11422,42 @@ fn emit_overwrite_neutralize_leaves<'ctx>(
                     slots,
                     depth + 1,
                 )?;
+            }
+            StateFieldCloneKind::Tuple { elems } => {
+                let parent_field_ty = st_ty.get_field_type_at_index(idx_u).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "overwrite-release neutralize: parent struct {st_ty:?} has no field at \
+                         index {idx_u} for tuple"
+                    ))
+                })?;
+                let nested_struct = match parent_field_ty {
+                    BasicTypeEnum::StructType(st) => st,
+                    other => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "overwrite-release neutralize: tuple field {idx_u} is {other:?}, \
+                             not a struct"
+                        )));
+                    }
+                };
+                let field_ptr = builder
+                    .build_struct_gep(st_ty, base, idx_u, &format!("{label}_tuple_ptr"))
+                    .llvm_ctx_with(|| format!("{label} nested tuple gep"))?;
+                emit_overwrite_neutralize_leaves(
+                    cx,
+                    builder,
+                    f,
+                    nested_struct,
+                    field_ptr,
+                    elems,
+                    slots,
+                    depth + 1,
+                )?;
+            }
+            StateFieldCloneKind::Array { .. } => {
+                return Err(CodegenError::FailClosed(
+                    "overwrite-release neutralize reached array field; array state reassignment is not wired"
+                        .into(),
+                ));
             }
             StateFieldCloneKind::Enum { name } => {
                 let field_ptr = builder
@@ -15826,6 +16055,12 @@ fn lower_actor_state_field_store(
                     )
                     .llvm_ctx("ActorStateFieldStore enum overwrite release")?;
             }
+            StateFieldCloneKind::Tuple { .. } | StateFieldCloneKind::Array { .. } => {
+                return Err(CodegenError::FailClosed(format!(
+                    "ActorStateFieldStore field {idx}: aggregate state-field reassignment \
+                     is not wired for kind {kind:?}"
+                )));
+            }
             StateFieldCloneKind::BitCopy { .. }
             | StateFieldCloneKind::IoHandle { .. }
             // ClosurePair: closure-valued actor state is rejected at check
@@ -17250,6 +17485,45 @@ fn tuple_thunk_key(elems: &[ResolvedTy]) -> String {
     out
 }
 
+fn state_kind_key_fragment(kind: &StateFieldCloneKind) -> String {
+    match kind {
+        StateFieldCloneKind::BitCopy { size_bytes } => format!("bit{size_bytes}"),
+        StateFieldCloneKind::String => "string".to_string(),
+        StateFieldCloneKind::Bytes => "bytes".to_string(),
+        StateFieldCloneKind::Tuple { elems } => state_kind_tuple_key(elems),
+        StateFieldCloneKind::Array { elem, len } => {
+            format!("array_{}_{}", len, state_kind_key_fragment(elem))
+        }
+        StateFieldCloneKind::Vec { elem } => {
+            format!("vec_{}", state_kind_key_fragment(elem))
+        }
+        StateFieldCloneKind::HashMap { key, val } => {
+            format!(
+                "hashmap_{}_{}",
+                state_kind_key_fragment(key),
+                state_kind_key_fragment(val)
+            )
+        }
+        StateFieldCloneKind::HashSet { elem } => {
+            format!("hashset_{}", state_kind_key_fragment(elem))
+        }
+        StateFieldCloneKind::IoHandle { kind } => format!("io_{kind:?}"),
+        StateFieldCloneKind::UserRecord { name } => format!("record_{name}"),
+        StateFieldCloneKind::Enum { name } => format!("enum_{name}"),
+        StateFieldCloneKind::ClosurePair => "closure_pair".to_string(),
+        StateFieldCloneKind::OpaqueHandle { name } => format!("opaque_{name}"),
+    }
+}
+
+fn state_kind_tuple_key(elems: &[StateFieldCloneKind]) -> String {
+    let mut out = String::from("kind_tuple");
+    for elem in elems {
+        out.push('_');
+        out.push_str(&state_kind_key_fragment(elem));
+    }
+    out
+}
+
 /// Lookup-or-declare the synthesised per-tuple in-place clone helper. Signature
 /// mirrors the record helper: `fn(*const src, *mut dst) -> i32` (0 = success,
 /// non-zero = partial-clone rollback complete).
@@ -17288,6 +17562,38 @@ fn get_or_declare_tuple_drop_inplace<'ctx>(
         ctx.void_type().fn_type(&[ptr_ty.into()], false),
         Some(Linkage::Internal),
     )
+}
+
+fn emit_tuple_kind_inplace_thunk_bodies<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    tuple_key: &str,
+    tuple_struct: StructType<'ctx>,
+    kinds: &[StateFieldCloneKind],
+) -> CodegenResult<()> {
+    let clone_fn = get_or_declare_tuple_clone_inplace(ctx, llvm_mod, tuple_key);
+    if clone_fn.count_basic_blocks() == 0 {
+        emit_aggregate_clone_inplace_body(ctx, llvm_mod, clone_fn, tuple_struct, kinds)?;
+    }
+    let drop_fn = get_or_declare_tuple_drop_inplace(ctx, llvm_mod, tuple_key);
+    if drop_fn.count_basic_blocks() == 0 {
+        emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, kinds)?;
+    }
+    Ok(())
+}
+
+fn emit_tuple_kind_drop_inplace_body<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    tuple_key: &str,
+    tuple_struct: StructType<'ctx>,
+    kinds: &[StateFieldCloneKind],
+) -> CodegenResult<()> {
+    let drop_fn = get_or_declare_tuple_drop_inplace(ctx, llvm_mod, tuple_key);
+    if drop_fn.count_basic_blocks() == 0 {
+        emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, kinds)?;
+    }
+    Ok(())
 }
 
 /// Select the canonical `(clone, free)` runtime symbol pair for a nested
@@ -17495,13 +17801,6 @@ fn tuple_field_clone_kind(
     record_layouts: &[hew_mir::RecordLayout],
     enum_layouts: &[EnumLayout],
 ) -> CodegenResult<hew_mir::StateFieldCloneKind> {
-    // Nested tuple fields have no record-field classifier arm; fail closed.
-    if matches!(elem_ty, ResolvedTy::Tuple(_)) {
-        return Err(CodegenError::FailClosed(format!(
-            "owned tuple element with a nested tuple field {elem_ty:?} is not supported \
-             yet (nested owned tuple clone/drop is a follow-on)"
-        )));
-    }
     let mut visited = HashSet::new();
     hew_mir::classify_state_field_with_enum_layouts(
         elem_ty,
@@ -17936,7 +18235,11 @@ fn const_elem_witness_global<'ctx>(
 fn is_owned_vec_runtime_symbol(symbol: &str) -> bool {
     matches!(
         symbol,
-        "hew_vec_push_owned" | "hew_vec_get_owned" | "hew_vec_set_owned" | "hew_vec_pop_owned"
+        "hew_vec_push_owned"
+            | "hew_vec_get_owned"
+            | "hew_vec_set_owned"
+            | "hew_vec_pop_owned"
+            | "hew_vec_clone_owned"
     )
 }
 
@@ -17963,6 +18266,8 @@ fn owned_vec_fn_type<'ctx>(
             .fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false)),
         // i32 hew_vec_pop_owned(ptr vec, ptr out)
         "hew_vec_pop_owned" => Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
+        // ptr hew_vec_clone_owned(ptr vec)
+        "hew_vec_clone_owned" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         _ => Err(CodegenError::FailClosed(format!(
             "not an owned Vec runtime symbol: {symbol}"
         ))),
@@ -17984,12 +18289,13 @@ fn get_or_declare_owned_vec_runtime<'ctx>(
     ))
 }
 
-/// Lower an owned-element Vec direct call (`hew_vec_{push,get,set,pop}_owned`).
+/// Lower an owned-element Vec direct call (`hew_vec_{push,get,set,pop,clone}_owned`).
 ///
 /// Parallel to `lower_layout_vec_direct_call`, but the runtime reads the
 /// element descriptor from the handle (stamped at construction), so no
 /// descriptor pointer is passed per op. push/set deep-clone the element in,
-/// get borrows a pointer into the live buffer, pop moves the element out.
+/// clone deep-copies the whole Vec, get borrows a pointer into the live buffer,
+/// and pop moves the element out.
 fn lower_owned_vec_direct_call(
     fn_ctx: &FnCtx<'_, '_>,
     callee: &str,
@@ -18000,7 +18306,7 @@ fn lower_owned_vec_direct_call(
     let expected_arity = match callee {
         "hew_vec_push_owned" | "hew_vec_get_owned" => 2,
         "hew_vec_set_owned" => 3,
-        "hew_vec_pop_owned" => 1,
+        "hew_vec_pop_owned" | "hew_vec_clone_owned" => 1,
         _ => {
             return Err(CodegenError::FailClosed(format!(
                 "lower_owned_vec_direct_call called with non-owned Vec symbol `{callee}`"
@@ -18113,6 +18419,25 @@ fn lower_owned_vec_direct_call(
                     "hew_vec_pop_owned_call",
                 )
                 .llvm_ctx("hew_vec_pop_owned call")?;
+        }
+        "hew_vec_clone_owned" => {
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_clone_owned returns a Vec; producer must supply a dest".into(),
+                )
+            })?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[vec_ptr.into()], "hew_vec_clone_owned_call")
+                .llvm_ctx("hew_vec_clone_owned call")?;
+            let new_vec_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_vec_clone_owned returned void".into())
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, new_vec_ptr)
+                .llvm_ctx("hew_vec_clone_owned store")?;
         }
         _ => unreachable!("arity gate above restricts callee to the owned Vec family"),
     }
@@ -26027,6 +26352,146 @@ fn emit_cow_heap_drop(
     Ok(())
 }
 
+fn codegen_record_layouts(fn_ctx: &FnCtx<'_, '_>) -> Vec<hew_mir::RecordLayout> {
+    fn_ctx
+        .record_field_resolved_tys
+        .iter()
+        .map(|(name, tys)| hew_mir::RecordLayout {
+            name: name.clone(),
+            field_tys: tys.clone(),
+        })
+        .collect()
+}
+
+fn classify_record_drop_fields_for_key(
+    fn_ctx: &FnCtx<'_, '_>,
+    record_key: &str,
+) -> CodegenResult<Vec<StateFieldCloneKind>> {
+    let record_layouts = codegen_record_layouts(fn_ctx);
+    let fields = record_layouts
+        .iter()
+        .find(|layout| layout.name == record_key || short_name(&layout.name) == record_key)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "aggregate-recursive drop: record leaf `{record_key}` has no registered field layout"
+            ))
+        })?;
+    fields
+        .field_tys
+        .iter()
+        .map(|field_ty| {
+            let mut visited = HashSet::new();
+            hew_mir::classify_state_field_with_enum_layouts(
+                field_ty,
+                &record_layouts,
+                fn_ctx.enum_layouts,
+                &mut visited,
+            )
+            .map_err(|e| {
+                CodegenError::FailClosed(format!(
+                    "aggregate-recursive drop: record leaf `{record_key}` field {field_ty:?} \
+                     is not drop-classifiable: {e}"
+                ))
+            })
+        })
+        .collect()
+}
+
+fn classify_enum_drop_variants_for_key(
+    fn_ctx: &FnCtx<'_, '_>,
+    enum_key: &str,
+) -> CodegenResult<Vec<Vec<StateFieldCloneKind>>> {
+    let record_layouts = codegen_record_layouts(fn_ctx);
+    let layout = fn_ctx
+        .enum_layouts
+        .iter()
+        .find(|layout| layout.name == enum_key || short_name(&layout.name) == enum_key)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "aggregate-recursive drop: enum leaf `{enum_key}` has no registered enum layout"
+            ))
+        })?;
+    layout
+        .variants
+        .iter()
+        .map(|variant| {
+            variant
+                .field_tys
+                .iter()
+                .map(|field_ty| {
+                    let mut visited = HashSet::new();
+                    hew_mir::classify_state_field_with_enum_layouts(
+                        field_ty,
+                        &record_layouts,
+                        fn_ctx.enum_layouts,
+                        &mut visited,
+                    )
+                    .map_err(|e| {
+                        CodegenError::FailClosed(format!(
+                            "aggregate-recursive drop: enum leaf `{enum_key}` payload \
+                             field {field_ty:?} is not drop-classifiable: {e}"
+                        ))
+                    })
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn emit_bytes_slot_drop<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    slot_ptr: PointerValue<'ctx>,
+    label: &str,
+) -> CodegenResult<()> {
+    let ctx = fn_ctx.ctx;
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let bytes_ty = match resolve_ty(ctx, &ResolvedTy::Bytes, fn_ctx.record_layouts)? {
+        BasicTypeEnum::StructType(st) => {
+            let fields = st.get_field_types();
+            let valid = fields.len() == 3
+                && matches!(fields[0], BasicTypeEnum::PointerType(_))
+                && matches!(fields[1], BasicTypeEnum::IntType(it) if it.get_bit_width() == 32)
+                && matches!(fields[2], BasicTypeEnum::IntType(it) if it.get_bit_width() == 32);
+            if !valid {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate-recursive drop: Bytes resolved to non BytesTriple layout {fields:?}"
+                )));
+            }
+            st
+        }
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "aggregate-recursive drop: Bytes resolved to {other:?}, not a BytesTriple struct"
+            )));
+        }
+    };
+    let data_slot = fn_ctx
+        .builder
+        .build_struct_gep(bytes_ty, slot_ptr, 0, &format!("{label}_bytes_data_slot"))
+        .llvm_ctx_with(|| format!("{label} bytes data-slot gep"))?;
+    let data_ptr = fn_ctx
+        .builder
+        .build_load(ptr_ty, data_slot, &format!("{label}_bytes_data"))
+        .llvm_ctx_with(|| format!("{label} bytes data load"))?
+        .into_pointer_value();
+    let helper = get_or_declare_drop_helper(
+        ctx,
+        fn_ctx.llvm_mod,
+        &DropHelper {
+            name: "hew_bytes_drop",
+        },
+    );
+    fn_ctx
+        .builder
+        .build_call(helper, &[data_ptr.into()], &format!("{label}_bytes_drop"))
+        .llvm_ctx_with(|| format!("{label} bytes drop call"))?;
+    fn_ctx
+        .builder
+        .build_store(data_slot, ptr_ty.const_null())
+        .llvm_ctx_with(|| format!("{label} bytes null-store"))?;
+    Ok(())
+}
+
 /// W5.011 `DropKind::AggregateRecursive` arm. Walk the heap-owning fields
 /// of an aggregate (`Tuple` / `Array`) whose structural descriptor is the
 /// `ResolvedTy` the `ElabDrop` carries, dropping each heap-owning leaf at
@@ -26129,6 +26594,9 @@ fn emit_heap_slot_drop<'ctx>(
     depth: u32,
     label: &str,
 ) -> CodegenResult<()> {
+    if matches!(ty, ResolvedTy::Bytes) {
+        return emit_bytes_slot_drop(fn_ctx, slot_ptr, label);
+    }
     if let Some(symbol) = cow_heap_release_symbol(fn_ctx, ty) {
         let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
         let handle = fn_ctx
@@ -26151,6 +26619,71 @@ fn emit_heap_slot_drop<'ctx>(
     }
     if matches!(ty, ResolvedTy::Tuple(_) | ResolvedTy::Array(_, _)) {
         return emit_aggregate_recursive_drop(fn_ctx, slot_ptr, ty, depth, label);
+    }
+    if matches!(ty, ResolvedTy::Named { builtin: None, .. }) {
+        let record_layouts = codegen_record_layouts(fn_ctx);
+        let mut visited = HashSet::new();
+        let kind = hew_mir::classify_state_field_with_enum_layouts(
+            ty,
+            &record_layouts,
+            fn_ctx.enum_layouts,
+            &mut visited,
+        )
+        .map_err(|e| {
+            CodegenError::FailClosed(format!(
+                "aggregate-recursive drop: named leaf {ty:?} is not drop-classifiable: {e}"
+            ))
+        })?;
+        match kind {
+            StateFieldCloneKind::UserRecord { name } => {
+                let helper = get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &name);
+                if helper.count_basic_blocks() == 0 {
+                    let record_struct = record_struct_for(fn_ctx, ty)?;
+                    let field_kinds = classify_record_drop_fields_for_key(fn_ctx, &name)?;
+                    emit_record_drop_inplace_body(
+                        fn_ctx.ctx,
+                        fn_ctx.llvm_mod,
+                        &name,
+                        record_struct,
+                        &field_kinds,
+                    )?;
+                }
+                fn_ctx
+                    .builder
+                    .build_call(helper, &[slot_ptr.into()], &format!("{label}_record_drop"))
+                    .llvm_ctx_with(|| format!("{label} record drop call"))?;
+                return Ok(());
+            }
+            StateFieldCloneKind::Enum { name } => {
+                let helper = get_or_declare_enum_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &name);
+                if helper.count_basic_blocks() == 0 {
+                    let layout = fn_ctx.machine_layouts.get(&name).ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "aggregate-recursive drop: enum leaf `{name}` has no codegen layout"
+                        ))
+                    })?;
+                    let variant_kinds = classify_enum_drop_variants_for_key(fn_ctx, &name)?;
+                    emit_enum_drop_inplace_body(
+                        fn_ctx.ctx,
+                        fn_ctx.llvm_mod,
+                        &name,
+                        layout,
+                        &variant_kinds,
+                    )?;
+                }
+                fn_ctx
+                    .builder
+                    .build_call(helper, &[slot_ptr.into()], &format!("{label}_enum_drop"))
+                    .llvm_ctx_with(|| format!("{label} enum drop call"))?;
+                return Ok(());
+            }
+            other => {
+                return Err(CodegenError::FailClosed(format!(
+                    "aggregate-recursive drop: named leaf {ty:?} classified as {other:?}, \
+                     not a user record or enum"
+                )));
+            }
+        }
     }
     // Fix #2.1 — classify the remaining leaf fail-CLOSED instead of a blanket
     // `Ok(())`. Only PROVEN non-heap (bitcopy / zero-sized) leaves are a true
@@ -47367,9 +47900,9 @@ mod tests {
         );
     }
 
-    /// W5.011 Slice 1: `DropKind::AggregateRecursive` on a `(string, i64)`
-    /// tuple local must GEP the struct, drop the heap-owning `string` field
-    /// via `hew_string_drop`, and leave the `i64` field untouched.
+    /// `DropKind::AggregateRecursive` on a `(string, bytes, i64)` tuple local
+    /// must GEP the struct, drop the heap-owning `string` and `bytes` fields
+    /// through their matching helpers, and leave the `i64` field untouched.
     #[test]
     fn aggregate_recursive_tuple_drops_only_heap_field() {
         use hew_mir::{DropKind, ElabDrop};
@@ -47377,7 +47910,8 @@ mod tests {
         let m = ctx.create_module("agg_tuple_test");
         let harness = build_harness(&ctx, &[], &[]);
         let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
-        let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]);
+        let tuple_ty =
+            ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::Bytes, ResolvedTy::I64]);
         alloc_local(&mut fn_ctx, 0, tuple_ty.clone());
         let drop = ElabDrop {
             place: Place::Local(0),
@@ -47393,11 +47927,20 @@ mod tests {
             ir.contains("call void @hew_string_drop("),
             "tuple drop must release its string field via hew_string_drop; got:\n{ir}"
         );
+        assert!(
+            ir.contains("call void @hew_bytes_drop("),
+            "tuple drop must release its bytes field via hew_bytes_drop; got:\n{ir}"
+        );
         // Exactly one heap-owning field → exactly one release call.
         assert_eq!(
             ir.matches("call void @hew_string_drop(").count(),
             1,
             "the i64 field must not produce a drop call; got:\n{ir}"
+        );
+        assert_eq!(
+            ir.matches("call void @hew_bytes_drop(").count(),
+            1,
+            "the bytes field must produce one drop call; got:\n{ir}"
         );
         assert!(
             ir.contains("getelementptr"),
@@ -47575,17 +48118,16 @@ mod tests {
         }
     }
 
-    /// W5.011 P3 (Fix #2.1): the aggregate-recursive walk must NOT silently
-    /// no-op an unsupported heap-owning leaf. A `(Bytes,)` tuple — `Bytes`
-    /// is deliberately absent from the single-`ptr` release table — must
-    /// fail closed rather than skip the field's release.
+    /// The aggregate-recursive walk must NOT silently no-op an unsupported
+    /// heap-owning leaf. A cancellation token still has no aggregate-recursive
+    /// leaf release and must fail closed rather than skip the field's release.
     #[test]
     fn aggregate_recursive_unsupported_leaf_fails_closed() {
         let ctx = Context::create();
         let m = ctx.create_module("agg_unsupported_leaf_test");
         let harness = build_harness(&ctx, &[], &[]);
         let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
-        let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::Bytes]);
+        let tuple_ty = ResolvedTy::Tuple(vec![ResolvedTy::CancellationToken]);
         alloc_local(&mut fn_ctx, 0, tuple_ty.clone());
         let (slot, _) = place_pointer(&fn_ctx, Place::Local(0)).expect("slot");
         let err = emit_aggregate_recursive_drop(&fn_ctx, slot, &tuple_ty, 0, "agg_unsupported")

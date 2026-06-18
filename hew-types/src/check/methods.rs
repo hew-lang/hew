@@ -24,14 +24,15 @@ use crate::BuiltinType;
 ///
 /// Returns `None` for methods the owned runtime ops do not implement; the
 /// caller keeps those fail-closed. Mirrors the `_layout` family but routes to
-/// `hew_vec_*_owned`, which deep-clone on push/set, borrow on get, and move on
-/// pop, dropping each element exactly once via the descriptor `drop_fn`.
+/// `hew_vec_*_owned`, which deep-clone on push/set/clone, borrow on get, and
+/// move on pop, dropping each element exactly once via the descriptor `drop_fn`.
 fn owned_vec_runtime_symbol(method: &str) -> Option<&'static str> {
     match method {
         "push" => Some("hew_vec_push_owned"),
         "get" => Some("hew_vec_get_owned"),
         "set" => Some("hew_vec_set_owned"),
         "pop" => Some("hew_vec_pop_owned"),
+        "clone" => Some("hew_vec_clone_owned"),
         _ => None,
     }
 }
@@ -3928,9 +3929,9 @@ impl Checker {
             // RcFree, so the runtime can drop it deterministically) routes
             // through the `hew_vec_*_owned` ABI instead of failing closed. The
             // owned routing only covers the methods the owned runtime ops
-            // implement (`hew_vec_{push,get,set,pop}_owned`); `remove`/`clone`
-            // on owned elements remain fail-closed until their owned ops land.
-            if matches!(method, "push" | "get" | "set" | "pop")
+            // implement (`hew_vec_{push,get,set,pop,clone}_owned`); `remove`
+            // on owned elements remains fail-closed until its owned op lands.
+            if matches!(method, "push" | "get" | "set" | "pop" | "clone")
                 && self.vec_owned_element_admissible(elem_ty)
             {
                 if let Some(owned) = owned_vec_runtime_symbol(method) {
@@ -3994,6 +3995,27 @@ impl Checker {
     /// misleadingly blame `Copy` or name `hew_vec_new_with_layout` for an
     /// owned enum.
     pub(super) fn vec_element_rejection_reason(&self, elem_ty: &Ty) -> String {
+        if matches!(elem_ty, Ty::Tuple(_)) {
+            if !matches!(self.registry.rc_free_status(elem_ty), RcFreeStatus::RcFree) {
+                return "it transitively holds an `Rc`, whose per-element drop is not \
+                        deterministically tracked by the owned-element Vec runtime"
+                    .to_string();
+            }
+            if self.vec_element_contains_function(elem_ty, &mut HashSet::new()) {
+                return "it contains a function value, whose closure environment cannot be \
+                        cloned by the owned-element Vec runtime"
+                    .to_string();
+            }
+            if self.vec_element_contains_unowned_container(
+                elem_ty,
+                &HashSet::new(),
+                &mut HashSet::new(),
+            ) {
+                return "it contains a `Vec`/`HashMap`/`HashSet` field, which cannot be \
+                        cloned from inside a nested tuple element"
+                    .to_string();
+            }
+        }
         if let Ty::Named {
             name,
             builtin,
@@ -4158,18 +4180,20 @@ impl Checker {
 
     pub(super) fn vec_owned_element_admissible(&self, elem_ty: &Ty) -> bool {
         match elem_ty {
-            // Tuple element (W5.016 F2): a tuple with at least one owned
-            // (non-Copy) field routes through the synthesized
-            // `__hew_tuple_*_inplace` thunk. An all-Copy tuple is `Copy` and
-            // never reaches this admissibility check (it takes the BitCopy
-            // `_layout` path). A nested-tuple or container field has no thunk
-            // path — fail closed.
+            // Tuple element: a tuple with at least one owned (non-Copy) field
+            // routes through the synthesized `__hew_tuple_*_inplace` thunk. An
+            // all-Copy tuple is `Copy` and never reaches this admissibility
+            // check (it takes the BitCopy `_layout` path). Nested tuples recurse
+            // through the same authority; container and closure leaves still
+            // fail closed.
             Ty::Tuple(elems) => {
-                // RcFree + no nested-tuple / unowned-container field. A tuple
-                // has no self-recursion root, so the `roots` set is empty: any
+                // RcFree + no unowned-container field. A tuple has no
+                // self-recursion root, so the `roots` set is empty: any
                 // container field is unowned.
                 matches!(self.registry.rc_free_status(elem_ty), RcFreeStatus::RcFree)
-                    && elems.iter().all(|e| !matches!(e, Ty::Tuple(_)))
+                    && elems
+                        .iter()
+                        .all(|e| self.vec_tuple_owned_field_admissible(e))
                     && !self.vec_element_contains_unowned_container(
                         elem_ty,
                         &HashSet::new(),
@@ -4262,6 +4286,78 @@ impl Checker {
                     &mut HashSet::new(),
                 )
             }
+            _ => false,
+        }
+    }
+
+    fn vec_tuple_owned_field_admissible(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Tuple(elems) => {
+                matches!(self.registry.rc_free_status(ty), RcFreeStatus::RcFree)
+                    && elems
+                        .iter()
+                        .all(|elem| self.vec_tuple_owned_field_admissible(elem))
+            }
+            Ty::String | Ty::Bytes => true,
+            Ty::Named { builtin: None, .. } => {
+                crate::check::admissibility::primitive_copy_layout(ty, &self.type_defs).is_some()
+                    || self.vec_owned_element_admissible(ty)
+            }
+            Ty::Function { .. }
+            | Ty::Closure { .. }
+            | Ty::Array(_, _)
+            | Ty::Slice(_)
+            | Ty::Named {
+                builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
+                ..
+            } => false,
+            _ => crate::check::admissibility::primitive_copy_layout(ty, &self.type_defs).is_some(),
+        }
+    }
+
+    fn vec_element_contains_function(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+        match ty {
+            Ty::Function { .. } | Ty::Closure { .. } => true,
+            Ty::Tuple(elems) => elems
+                .iter()
+                .any(|elem| self.vec_element_contains_function(elem, visiting)),
+            Ty::Array(inner, _) | Ty::Slice(inner) => {
+                self.vec_element_contains_function(inner, visiting)
+            }
+            Ty::Named {
+                name,
+                builtin: None,
+                args,
+            } => {
+                if args
+                    .iter()
+                    .any(|arg| self.vec_element_contains_function(arg, visiting))
+                {
+                    return true;
+                }
+                if !visiting.insert(name.clone()) {
+                    return false;
+                }
+                let result = self.type_defs.get(name).is_some_and(|td| {
+                    td.fields
+                        .values()
+                        .any(|fty| self.vec_element_contains_function(fty, visiting))
+                        || td.variants.values().any(|variant| match variant {
+                            VariantDef::Unit => false,
+                            VariantDef::Tuple(tys) => tys
+                                .iter()
+                                .any(|t| self.vec_element_contains_function(t, visiting)),
+                            VariantDef::Struct(fields) => fields
+                                .iter()
+                                .any(|(_, t)| self.vec_element_contains_function(t, visiting)),
+                        })
+                });
+                visiting.remove(name);
+                result
+            }
+            Ty::Named { args, .. } => args
+                .iter()
+                .any(|arg| self.vec_element_contains_function(arg, visiting)),
             _ => false,
         }
     }

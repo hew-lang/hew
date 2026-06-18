@@ -1,0 +1,10 @@
+fn make_nested() -> ((string, i64), bool) {
+    (("hi", 7), true)
+}
+
+fn main() {
+    let t = make_nested();
+    let (inner, flag) = t;
+    let (s, n) = inner;
+    println(f"{s}:{n}:{flag}");
+}

@@ -1,0 +1,44 @@
+// cut-select-waitset — the `after` deadline arm fires the timeout branch.
+//
+// `Coordinator.race_deadline` runs a `select{}` whose single ask arm is a Slow
+// worker (sleeps 200ms) racing a short `after 20ms` deadline. The deadline wins:
+// the suspending select arms the deadline on the global timer wheel, suspends,
+// and the timer-fired wake resumes the coordinator into the AfterTimer winner
+// block — which cancels the still-pending Slow ask and runs the `after` body.
+//
+// This is the deadline-branch proof: a regression that drops the timer arm, or
+// fails to route the timer-fired wake to the AfterTimer winner block, prints the
+// wrong value (or hangs). The exact value (-7, the deadline body's result) is
+// asserted under both pools. HEW_WORKERS=1 is the worker-freeing edge: the lone
+// worker must suspend the coordinator on the deadline, not block on the 200ms
+// Slow reply.
+actor Slow {
+    receive fn compute(n: i64) -> i64 {
+        sleep_ms(200);
+        n
+    }
+}
+
+actor Coordinator {
+    let slow: LocalPid<Slow>;
+    receive fn race_deadline(n: i64) -> i64 {
+        let result = select {
+            reply from slow.compute(n) => reply,
+            after 20ms => -7,
+        };
+        result
+    }
+}
+
+fn main() {
+    let s = spawn Slow;
+    let c = spawn Coordinator(slow: s);
+    // The Slow arm sleeps 200ms; the 20ms deadline fires first. The select
+    // resumes into the AfterTimer winner block (cancelling the Slow ask) and
+    // binds the deadline body's value (-7).
+    let r = await c.race_deadline(5);
+    match r {
+        Ok(v) => println(f"deadline={v}"),
+        Err(_) => println("race failed"),
+    }
+}

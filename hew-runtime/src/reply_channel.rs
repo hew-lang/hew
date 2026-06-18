@@ -1114,6 +1114,103 @@ mod tests {
         );
     }
 
+    /// cut-select-waitset abandon-edge drop-safety. Mirrors the codegen abandon
+    /// arm of `emit_suspending_select_terminator`: a parked `select{}` whose
+    /// continuation is dropped before any arm fires (shutdown / parent-scope
+    /// cancel mid-select) must cancel the shared arbiter (no wake), deregister +
+    /// free EVERY arm's channel, and free the arbiter — each exactly once, no
+    /// double-free, no leak.
+    ///
+    /// The lifecycle this pins (identical to the emitted abandon arm for an
+    /// N-arm + deadline select):
+    /// 1. `hew_await_cancel_new` allocates the shared arbiter (refs = 1, the
+    ///    codegen frame ref).
+    /// 2. Per arm: `hew_reply_channel_new` + a retained observer ref +
+    ///    `hew_reply_channel_set_await_cancel(ch, reg)` (retains the arbiter)
+    ///    + `hew_reply_channel_set_parked_waiter(ch, self)`.
+    /// 3. `hew_await_cancel_schedule_deadline_ms` arms the deadline (retains the
+    ///    arbiter for the timer callback).
+    /// 4. Abandon: `hew_await_cancel_cancel(Cancelled, no_wake)` wins the
+    ///    one-shot transition and cancels the armed timer (releasing the timer
+    ///    ref); then each channel is cancelled + freed (each free releases the
+    ///    arbiter ref the channel took and the observer ref); then
+    ///    `hew_await_cancel_free` drops the codegen frame ref.
+    /// 5. The arbiter and every channel are reclaimed exactly once — the active
+    ///    channel count returns to baseline and a post-abandon wheel tick does
+    ///    not fire the cancelled deadline against the freed arbiter.
+    ///
+    /// Under `ASan`/`leaks` this proves single-free of the arbiter, every channel,
+    /// and the timer node, and the absence of a use-after-free wake on abandon.
+    #[test]
+    fn suspending_select_abandon_reclaims_arbiter_and_channels_once() {
+        let _guard = crate::runtime_test_guard();
+        let pre = active_channel_count();
+        // SAFETY: the test owns the wheel, arbiter, and channels for the whole
+        // lifecycle and drives each transition in order; all pointers are valid
+        // at each call.
+        unsafe {
+            let tw = crate::timer_wheel::hew_timer_wheel_new();
+
+            // (1) shared arbiter — no actor / cleanup / source (codegen does the
+            // per-arm deregister with full pointer context on the abandon edge).
+            let reg =
+                crate::await_cancel::hew_await_cancel_new(ptr::null_mut(), None, ptr::null_mut());
+
+            // (2) three arm channels, each carrying the SAME arbiter + a retained
+            // observer ref (the channel-poll / stream-poll / task-observe
+            // readiness reference the setup ramp takes).
+            let n = 3;
+            let mut chans = Vec::with_capacity(n);
+            for _ in 0..n {
+                let ch = hew_reply_channel_new();
+                hew_reply_channel_retain(ch); // the readiness-observer ref
+                hew_reply_channel_set_await_cancel(ch, reg);
+                hew_reply_channel_set_parked_waiter(ch, ptr::null_mut());
+                chans.push(ch);
+            }
+
+            // (3) arm the deadline on the shared arbiter.
+            let rc = crate::await_cancel::hew_await_cancel_schedule_deadline_ms(reg, tw, 2);
+            assert_eq!(rc, 0, "arming the select deadline must succeed");
+
+            // (4) ABANDON: cancel the arbiter (no wake) — wins the one-shot and
+            // cancels the timer — then deregister + free each channel (cancel
+            // before free), then free the codegen arbiter ref.
+            let won = crate::await_cancel::hew_await_cancel_cancel(
+                reg,
+                AwaitCancelStatus::Cancelled as i32,
+                0,
+            );
+            assert_eq!(won, 1, "abandon must win the one-shot terminal transition");
+            for &ch in &chans {
+                hew_reply_channel_cancel(ch);
+                hew_reply_channel_free(ch); // releases the channel's arbiter ref
+                hew_reply_channel_free(ch); // releases the readiness-observer ref
+            }
+            crate::await_cancel::hew_await_cancel_free(reg);
+
+            // (5) every channel is reclaimed exactly once.
+            assert_eq!(
+                active_channel_count(),
+                pre,
+                "abandoned select must release every arm channel exactly once"
+            );
+
+            // A post-abandon wheel tick must NOT fire the cancelled deadline — a
+            // fired callback here would be a use-after-free against the freed
+            // arbiter.
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let fired = crate::timer_wheel::hew_timer_wheel_tick(tw);
+            assert_eq!(
+                fired, 0,
+                "a cancelled select deadline must not fire — a non-zero count would \
+                 mean the callback ran against the freed arbiter"
+            );
+
+            crate::timer_wheel::hew_timer_wheel_free(tw);
+        }
+    }
+
     // NEW-6b regression: exactly-one-waker under the deadline-vs-reply split-brain
     // race. The reviewer's P1 was the loser-stale-wake: a reply that passes the
     // pre-publish `cancelled` check just before the timer's cleanup, then reaches

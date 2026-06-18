@@ -1,0 +1,59 @@
+// cut-select-waitset — the live non-blocking actor `select{}`.
+//
+// `Coordinator.race_two` runs a `select{}` over two actor-ask arms (plus a
+// safety-net `after` deadline) from INSIDE a handler. Before this lane the
+// select called `hew_select_first`, a busy-poll that PINNED the worker until an
+// arm became ready. Now the select registers each arm's readiness observer on a
+// shared await-cancel arbiter, arms the deadline on the global timer wheel, and
+// `coro.suspend`s — freeing the worker. The first arm to become ready wins the
+// arbiter and RESUMES the coordinator; the losing arm is cancelled.
+//
+// Running with HEW_WORKERS=1 is the worker-freeing proof: a single worker must
+// suspend the coordinator, run the two worker actors, then resume the
+// coordinator with the winner. A blocking `hew_select_first` would deadlock the
+// lone worker (it would spin on the readiness flags while the worker that must
+// run the askees is the very one it pins).
+//
+// `Fast` replies immediately (no sleep) and always wins; `Slow` sleeps 50ms and
+// always loses — its channel is cancelled on the winning edge. The `after 500ms`
+// arm is a safety net that must NOT fire under normal load (500ms >> 50ms).
+actor Fast {
+    let tag: i64;
+    receive fn compute(n: i64) -> i64 {
+        n + tag
+    }
+}
+
+actor Slow {
+    receive fn compute(n: i64) -> i64 {
+        sleep_ms(50);
+        n
+    }
+}
+
+actor Coordinator {
+    let fast: LocalPid<Fast>;
+    let slow: LocalPid<Slow>;
+    receive fn race_two(n: i64) -> i64 {
+        let winner = select {
+            reply from fast.compute(n) => reply,
+            reply from slow.compute(99) => reply,
+            after 500ms => -7,
+        };
+        winner
+    }
+}
+
+fn main() {
+    let f = spawn Fast(tag: 100);
+    let s = spawn Slow;
+    let c = spawn Coordinator(fast: f, slow: s);
+    // Fast.compute(7) = 7 + 100 = 107; it replies before Slow wakes, so the
+    // select binds 107. The Slow arm is the loser (cancelled); the deadline
+    // never fires.
+    let r = await c.race_two(7);
+    match r {
+        Ok(v) => println(f"winner={v}"),
+        Err(_) => println("race failed"),
+    }
+}

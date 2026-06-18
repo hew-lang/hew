@@ -3386,7 +3386,7 @@ impl Checker {
     /// Vec symbol router. The follow-up scalar/layout collapse removes this
     /// override; until then this is the authority-transfer seam from registry
     /// admission to per-element kernel selection.
-    fn record_resolved_vec_call(&mut self, method: &str, elem_ty: &Ty, span: &Span) {
+    pub(super) fn record_resolved_vec_call(&mut self, method: &str, elem_ty: &Ty, span: &Span) {
         let elem_ty = self.subst.resolve(elem_ty).materialize_literal_defaults();
         let receiver = TyPattern::App {
             ctor: "Vec".to_string(),

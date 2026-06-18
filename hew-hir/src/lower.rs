@@ -12409,6 +12409,33 @@ impl LowerCtx {
                         };
                     }
 
+                    if intent == IntentKind::Modify
+                        && matches!(&container.ty, ResolvedTy::Named { name, .. } if name == "Vec")
+                    {
+                        if let Some(resolved) =
+                            self.resolved_calls.get(&self.mk_key(&span)).cloned()
+                        {
+                            return HirExpr {
+                                node: self.ids.node(),
+                                site,
+                                value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
+                                ty: result_ty.clone(),
+                                intent,
+                                kind: HirExprKind::ResolvedImplCall {
+                                    receiver: Box::new(container),
+                                    impl_id: resolved.impl_id,
+                                    method_name: resolved.method_name,
+                                    target_symbol: resolved.target.symbol_name,
+                                    target_family: resolved.target.family,
+                                    type_args: resolved.type_args,
+                                    args: vec![index_expr],
+                                    ret_ty: result_ty.clone(),
+                                },
+                                span: span.clone(),
+                            };
+                        }
+                    }
+
                     // `m[k]` over a `HashMap<K, V>` reuses the `.get(k)` runtime
                     // ABI in READ position. The checker recorded a `ResolvedCall`
                     // to `hew_hashmap_get_layout` at this span (result type

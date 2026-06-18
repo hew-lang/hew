@@ -1407,6 +1407,9 @@ impl Checker {
                 if !Self::is_narrower_signed_int(&idx_resolved) {
                     self.check_against(&index.0, &index.1, &Ty::I64);
                 }
+                if matches!(ctx, IndexContext::AssignTarget) {
+                    self.record_resolved_vec_call("set", &args[0], span);
+                }
                 args[0].clone()
             }
             // `m[k]` over `HashMap<K, V>` reuses the existing `.get(k)` /

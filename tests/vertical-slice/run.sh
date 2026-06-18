@@ -1581,6 +1581,8 @@ run_accept_expect_stdout "vec_scalar_range_slice"
 run_accept_expect_stdout "vec_string_range_slice"
 run_accept_expect_stdout "vec_element_widths"
 run_accept_expect_trap "vec_element_width_oob_traps"
+run_accept_expect_status "vec_index_assign_round_trip" 24
+run_accept_expect_trap "vec_index_assign_oob_traps"
 run_accept_expect_stdout "slice_annotation_alias"
 
 # shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.

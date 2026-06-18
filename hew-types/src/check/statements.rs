@@ -821,6 +821,18 @@ impl Checker {
                 self.check_against(&value.0, &value.1, &target_ty);
             }
             Stmt::Expression((expr, es)) => {
+                if let Expr::MethodCall {
+                    receiver,
+                    method,
+                    args: _,
+                } = expr
+                {
+                    if method == "set" {
+                        if let Some(name) = Self::assignment_root_binding_name(&receiver.0) {
+                            self.env.mark_written(name);
+                        }
+                    }
+                }
                 self.synthesize(expr, es);
             }
             Stmt::If {

@@ -145,6 +145,13 @@ jobs:
       - name: Runtime poison-safe lint
         run: make runtime-poison-safe-lint
 
+      - name: Preflight↔CI parity self-test
+        # Assert that the dispatcher's fallback lane mirrors the CI build-and-test
+        # step list.  A new unconditional CI step not reflected in CI_REQUIRED_CHECKS
+        # or CI_BUILD_AND_TEST_STEPS fails here before it can silently skip in local
+        # preflights.
+        run: scripts/check-preflight-ci-parity.sh
+
   # ─────────────────────────────────────────────────────────────────────────
   # License gate — enforce the deny.toml allow-list so no copyleft or unknown
   # dep silently enters the shipping graph. Runs on every push/PR; fast (~5 s).

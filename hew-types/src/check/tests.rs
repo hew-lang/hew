@@ -13407,6 +13407,39 @@ fn unknown_trait_bound_reports_unknown_trait_not_missing_impl() {
     );
 }
 
+#[test]
+fn unbounded_generic_ordering_requires_partial_ord_bound() {
+    let source = r"
+        fn smaller<T>(a: T, b: T) -> T {
+            if a < b { a } else { b }
+        }
+
+        fn main() -> i64 {
+            smaller(3, 7)
+        }
+    ";
+
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("requires type parameter `T`")
+                && e.message.contains("`PartialOrd`")
+                && e.span.start < e.span.end
+        }),
+        "unbounded generic ordering should report a spanned PartialOrd-bound error; got: {:?}",
+        output.errors
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("IntCmp lhs is not an integer")),
+        "generic ordering must not leak the backend IntCmp diagnostic; got: {:?}",
+        output.errors
+    );
+}
+
 // -------------------------------------------------------------------------
 // E2 structural method-presence tests
 //

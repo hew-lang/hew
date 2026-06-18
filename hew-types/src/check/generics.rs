@@ -1067,10 +1067,9 @@ impl Checker {
         // `current_type_param_bounds` without setting `current_function`).
         for frame in self.current_type_param_bounds.iter().rev() {
             if let Some(bounds) = frame.bounds.get(param_name) {
-                if bounds
-                    .iter()
-                    .any(|b| b == trait_name || self.trait_extends(b, trait_name))
-                {
+                if bounds.iter().any(|b| {
+                    Self::bound_implies_trait(b, trait_name) || self.trait_extends(b, trait_name)
+                }) {
                     return true;
                 }
             }
@@ -1089,7 +1088,11 @@ impl Checker {
         };
         bounds
             .iter()
-            .any(|b| b == trait_name || self.trait_extends(b, trait_name))
+            .any(|b| Self::bound_implies_trait(b, trait_name) || self.trait_extends(b, trait_name))
+    }
+
+    fn bound_implies_trait(bound: &str, trait_name: &str) -> bool {
+        bound == trait_name || (bound == "Ord" && trait_name == "PartialOrd")
     }
 
     /// Check if a concrete type implements a trait (directly or via super-trait chain).

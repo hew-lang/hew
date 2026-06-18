@@ -817,6 +817,157 @@ pub unsafe extern "C" fn hew_task_completion_unobserve(
     i32::from(signal.unobserve(callback, ctx))
 }
 
+// ── Suspending await (cut-task-sleep) ────────────────────────────────────────
+//
+// These entries flip `await t` over a scope-owned child `Task<T>` from a
+// worker-blocking `hew_task_await_blocking` (a condvar) onto the read-slot /
+// `enqueue_resume` substrate when the caller carries an execution context. The
+// codegen suspend ramp calls `hew_task_await_suspend` to register the parked
+// continuation as a task-completion observer, suspends on TASK_AWAIT_SUSPEND,
+// and on the resume / immediate-ready edge reads the result through
+// `hew_task_get_result`. The task handle is BORROWED across the suspend (the
+// scope-join owns its free). The wake discipline mirrors `ChannelCore::wake`:
+// deposit a readiness status into the slot (a no-op + no wake if the abandon
+// edge cancelled it first) then `enqueue_resume` the parked actor.
+
+/// Codegen ABI: the await parked the continuation; the runtime wakes it via
+/// `enqueue_resume`. The caller MUST `coro.suspend`.
+pub const TASK_AWAIT_SUSPEND: i32 = 0;
+/// Codegen ABI: the task is already `Done`; the caller MUST NOT suspend and
+/// binds the result on the immediate edge.
+pub const TASK_AWAIT_READY: i32 = 1;
+
+/// One parked task-await waiter: the awaiting actor + its readiness slot. The
+/// task's completion observer owns one retained in-flight ref on `slot` and
+/// fires `wake` exactly once on `Done`.
+struct TaskAwaitWaiter {
+    /// The parked-continuation actor, woken via `enqueue_resume`. Raw and
+    /// possibly-stale: `enqueue_resume` re-validates liveness, never this code.
+    actor: *mut crate::actor::HewActor,
+    /// The readiness slot; the observer holds one retained ref while registered.
+    slot: *mut crate::read_slot::HewReadSlot,
+}
+
+/// Task-completion observer callback: deposit a Data readiness signal into the
+/// waiter's slot and wake the parked actor, then release the observer's
+/// in-flight slot ref and free the waiter box. Runs OUTSIDE the task lock
+/// (`TaskDoneSignal::notify_done` fires observers after releasing its lock).
+///
+/// # Safety
+///
+/// `ctx` must be the `*mut TaskAwaitWaiter` handed to `observe` by
+/// [`hew_task_await_suspend`]; it is consumed (boxed-freed) exactly once here.
+unsafe extern "C" fn task_await_wake(ctx: *mut c_void) {
+    if ctx.is_null() {
+        return;
+    }
+    // SAFETY: `ctx` is the waiter box `hew_task_await_suspend` leaked via
+    // `Box::into_raw`; the observer fires exactly once, so reclaiming it here is
+    // the single free.
+    let waiter = unsafe { Box::from_raw(ctx.cast::<TaskAwaitWaiter>()) };
+    // SAFETY: the observer holds an in-flight ref on the slot; depositing a
+    // terminal status is the documented reactor-deposit contract. A no-op + no
+    // wake if the abandon edge cancelled the slot first (the channel-core race
+    // guard).
+    let do_wake = unsafe {
+        crate::read_slot::read_slot_deposit_status(waiter.slot, crate::read_slot::ReadStatus::Data)
+    };
+    if do_wake {
+        // SAFETY: `enqueue_resume` re-validates `waiter.actor` under the registry
+        // lock; a freed actor drops the wake with no deref.
+        unsafe { crate::scheduler::enqueue_resume(waiter.actor, ptr::null_mut()) };
+    }
+    // Release the observer's in-flight ref (the single authority for it).
+    // SAFETY: the observer owned this ref; nothing else releases it.
+    unsafe { crate::read_slot::hew_read_slot_free(waiter.slot) };
+}
+
+/// Register a suspending `await t` over a child `Task<T>`.
+///
+/// Returns [`TASK_AWAIT_READY`] when the task is already `Done` (bind via
+/// `hew_task_get_result` on the immediate edge), or [`TASK_AWAIT_SUSPEND`]
+/// after parking the awaiting continuation as a task-completion observer. The
+/// caller MUST `coro.suspend` on SUSPEND and bind on READY / resume.
+///
+/// # Safety
+///
+/// - `scope` must be a valid scope pointer (part of the FFI contract; not
+///   dereferenced beyond the null guard).
+/// - `task` must be a live task owned by `scope`.
+/// - `actor` is the awaiting actor (`hew_actor_self`).
+/// - `slot` is a live read slot the caller created and holds the creator ref to.
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_await_suspend(
+    scope: *mut HewTaskScope,
+    task: *mut HewTask,
+    actor: *mut crate::actor::HewActor,
+    slot: *mut crate::read_slot::HewReadSlot,
+) -> i32 {
+    if scope.is_null() || task.is_null() || slot.is_null() {
+        crate::set_last_error("C-ABI guard failed: scope/task/slot null in hew_task_await_suspend");
+        // Fail closed: report READY so the caller binds immediately rather than
+        // parking forever; `hew_task_get_result` returns null for a non-done
+        // task, which the unit await ignores.
+        return TASK_AWAIT_READY;
+    }
+    // SAFETY: caller guarantees `task` is a live task owned by `scope`.
+    let t = unsafe { &mut *task };
+    if t.load_state() == HewTaskState::Done {
+        return TASK_AWAIT_READY;
+    }
+    // Park: the observer takes an in-flight ref so the wake cannot free the slot
+    // out from under the abandon edge.
+    // SAFETY: caller holds the creator ref, so the slot is live to retain.
+    unsafe { crate::read_slot::read_slot_retain(slot) };
+    let waiter = Box::into_raw(Box::new(TaskAwaitWaiter { actor, slot }));
+    let signal = t
+        .done_signal
+        .get_or_insert_with(|| Arc::new(TaskDoneSignal::new()));
+    // `observe` fires `task_await_wake` synchronously if the task became Done
+    // between our state check and here — which consumes the waiter box + ref and
+    // deposits readiness, so the SUSPEND we return still resumes immediately on
+    // the coro switch (the slot already carries Data). This is the same
+    // already-ready race the channel-recv park tolerates.
+    signal.observe(task_await_wake, waiter.cast::<c_void>());
+    TASK_AWAIT_SUSPEND
+}
+
+/// Detach an abandoned suspending awaiter (the codegen abandon edge). Cancels
+/// the read slot so a racing task `Done` observer drops its wake (the
+/// channel-core race guard) and releases the awaiter's creator ref on the slot.
+///
+/// The observer box + its retained in-flight slot ref are reclaimed when the
+/// task eventually completes (the scope-join always drives every child to
+/// completion or cancellation before the scope exits, so the observer always
+/// fires): `task_await_wake` sees the cancelled slot, deposits no wake, frees
+/// the box, and releases the in-flight ref.
+///
+/// # Safety
+///
+/// `scope`/`task` are part of the FFI contract (not dereferenced beyond null
+/// guards). `slot` is the awaiter's read slot; the caller holds the creator ref
+/// released here.
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_detach_await(
+    scope: *mut HewTaskScope,
+    task: *mut HewTask,
+    slot: *mut crate::read_slot::HewReadSlot,
+) {
+    let _ = (scope, task);
+    if slot.is_null() {
+        return;
+    }
+    // Cancel so a racing observer wake is suppressed (deposit_status returns
+    // false on a cancelled slot), then release the creator ref. The observer's
+    // own in-flight ref is released when it fires against the cancelled slot.
+    // SAFETY: caller holds the creator ref; cancel + free are the documented
+    // abandon sequence.
+    unsafe {
+        crate::read_slot::hew_read_slot_cancel(slot);
+        crate::read_slot::hew_read_slot_free(slot);
+    }
+}
+
 /// Set the task's result by deep-copying `result`.
 ///
 /// # Panics

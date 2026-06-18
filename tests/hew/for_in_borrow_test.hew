@@ -1,0 +1,132 @@
+//! Proving fixture for DF-16: for-in borrows the collection (does not consume it).
+//!
+//! Each test verifies that `for x in coll { … }` leaves `coll` alive and usable
+//! after the loop — the binding is NOT consumed.  Element values are asserted
+//! exactly so the test fails on uninitialised memory or wrong indices.
+
+import std::testing;
+
+// ── Vec<i64> ──────────────────────────────────────────────────────────────────
+#[test]
+fn test_vec_i64_for_in_borrows_collection() {
+    let v: Vec<i64> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+    var sum: i64 = 0;
+    for x in v {
+        sum = sum + x;
+    }
+    // Collection must still be alive after the loop.
+    testing.assert_eq(v.len(), 3);
+    testing.assert_eq(v.get(0), 10);
+    testing.assert_eq(v.get(1), 20);
+    testing.assert_eq(v.get(2), 30);
+    // Loop must have seen all elements.
+    testing.assert_eq(sum, 60);
+}
+
+#[test]
+fn test_vec_i64_second_loop_after_first() {
+    let v: Vec<i64> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    var first_sum: i64 = 0;
+    for x in v {
+        first_sum = first_sum + x;
+    }
+    // Second loop over the same collection — valid because for-in borrows.
+    var second_sum: i64 = 0;
+    for x in v {
+        second_sum = second_sum + x;
+    }
+    testing.assert_eq(first_sum, 6);
+    testing.assert_eq(second_sum, 6);
+    testing.assert_eq(v.len(), 3);
+}
+
+// ── Vec<string> ───────────────────────────────────────────────────────────────
+#[test]
+fn test_vec_string_for_in_borrows_collection() {
+    let v: Vec<string> = Vec::new();
+    v.push("alpha");
+    v.push("beta");
+    v.push("gamma");
+    var count: i64 = 0;
+    for s in v {
+        count = count + s.len();
+    }
+    // Collection must still be alive after the loop.
+    testing.assert_eq(v.len(), 3);
+    testing.assert_eq_str(v.get(0), "alpha");
+    testing.assert_eq_str(v.get(1), "beta");
+    testing.assert_eq_str(v.get(2), "gamma");
+    // alpha=5, beta=4, gamma=5 = 14
+    testing.assert_eq(count, 14);
+}
+
+// ── Vec<f64> ──────────────────────────────────────────────────────────────────
+#[test]
+fn test_vec_f64_for_in_borrows_collection() {
+    let v: Vec<f64> = Vec::new();
+    v.push(1.5);
+    v.push(2.5);
+    v.push(3.0);
+    var total: f64 = 0.0;
+    for x in v {
+        total = total + x;
+    }
+    // Collection must still be alive after the loop.
+    testing.assert_eq(v.len(), 3);
+    testing.assert_true(v.get(0) == 1.5);
+    testing.assert_true(v.get(1) == 2.5);
+    testing.assert_true(v.get(2) == 3.0);
+    testing.assert_true(total == 7.0);
+}
+
+// ── range 0..n ────────────────────────────────────────────────────────────────
+// Ranges use ForRange (not lower_for_iter_desugar) so were never affected by the
+// borrow bug.  Confirm they still produce correct element values.
+#[test]
+fn test_range_for_in_elements_and_count() {
+    let n: i64 = 5;
+    var sum: i64 = 0;
+    var count: i64 = 0;
+    for i in 0 .. n {
+        sum = sum + i;
+        count = count + 1;
+    }
+    testing.assert_eq(count, 5);
+    // 0+1+2+3+4 = 10
+    testing.assert_eq(sum, 10);
+}
+
+// ── Empty Vec — loop body does not execute ────────────────────────────────────
+#[test]
+fn test_empty_vec_for_in_borrows_collection() {
+    let v: Vec<i64> = Vec::new();
+    var count: i64 = 0;
+    for x in v {
+        count = count + x;
+    }
+    // Loop body never ran; collection still alive.
+    testing.assert_eq(v.len(), 0);
+    testing.assert_eq(count, 0);
+}
+
+// ── for-in then mutate the collection ─────────────────────────────────────────
+// Borrow semantics must allow mutation of the collection after the loop.
+#[test]
+fn test_vec_mutable_after_for_in() {
+    let v: Vec<i64> = Vec::new();
+    v.push(1);
+    v.push(2);
+    for x in v {
+        let _ = x;
+    }
+    // Push a new element after iterating — collection is still alive.
+    v.push(3);
+    testing.assert_eq(v.len(), 3);
+    testing.assert_eq(v.get(2), 3);
+}

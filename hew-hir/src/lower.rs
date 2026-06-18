@@ -16988,7 +16988,22 @@ impl LowerCtx {
                 Some(pattern.clone()),
             )
         };
-        let lowered_iterable = self.lower_expr(iterable, IntentKind::Consume);
+        // Lower the iterable with Read intent for inspection; the intent on the
+        // BindingRef is patched per arm below:
+        //
+        //  - Vec (borrow arm): intent → Capture.  Vec is a refcounted heap handle;
+        //    CowShare increments the refcount so the source binding stays Live after
+        //    the loop.  IntentKind::Capture is the "share without consuming" signal:
+        //    MIR recognises Capture+CowValue as a CowShare and does NOT emit
+        //    AggregateAlias for the VecIter struct init, leaving the source Live.
+        //
+        //  - Draining iterables (Generator, Receiver, Stream, VecIter, generic
+        //    IntoIterator/Iterator): intent → Consume.  The source is fully drained
+        //    so the binding must be Consumed.
+        //
+        // The intent field of the BindingRef is what the MIR dataflow checker reads
+        // to decide Consumed vs Live for the source collection binding.
+        let mut lowered_iterable = self.lower_expr(iterable, IntentKind::Read);
         let (iter_init, iter_ty, elem_ty, next_call) = match lowered_iterable.ty.clone() {
             ResolvedTy::Named {
                 name,
@@ -16996,6 +17011,11 @@ impl LowerCtx {
                 builtin: Some(BuiltinType::Vec),
                 ..
             } if name == "Vec" && args.len() == 1 => {
+                // Vec is a refcounted heap handle: sharing it (CowShare) leaves the
+                // source binding Live, so the collection is usable after the loop.
+                // Use Capture intent to signal "share, not move" to the MIR; the MIR
+                // alias_moved_owned_operand skips AggregateAlias for Capture+CowValue.
+                lowered_iterable.intent = IntentKind::Capture;
                 let elem_ty = args[0].clone();
                 (
                     self.make_vec_iter_init(lowered_iterable, elem_ty.clone(), iterable.1.clone()),
@@ -17009,12 +17029,17 @@ impl LowerCtx {
                 args,
                 builtin: None,
                 ..
-            } if name == "VecIter" && args.len() == 1 => (
-                lowered_iterable,
-                Self::resolved_vec_iter_ty(args[0].clone()),
-                args[0].clone(),
-                ForIterNextCall::BuiltinVecIter,
-            ),
+            } if name == "VecIter" && args.len() == 1 => {
+                // VecIter is already an iterator object; consuming it drives
+                // the cursor forward and the source binding is fully drained.
+                lowered_iterable.intent = IntentKind::Consume;
+                (
+                    lowered_iterable,
+                    Self::resolved_vec_iter_ty(args[0].clone()),
+                    args[0].clone(),
+                    ForIterNextCall::BuiltinVecIter,
+                )
+            }
             ResolvedTy::Named {
                 args,
                 builtin: Some(BuiltinType::Receiver),
@@ -17035,6 +17060,9 @@ impl LowerCtx {
                         "for await over unsupported Receiver<T> element type".into(),
                     );
                 }
+                // Receiver is an affine resource: `for await rx` drains and
+                // implicitly closes the channel; the source binding is consumed.
+                lowered_iterable.intent = IntentKind::Consume;
                 let iter_ty = lowered_iterable.ty.clone();
                 (
                     lowered_iterable,
@@ -17063,12 +17091,15 @@ impl LowerCtx {
                         "for await over unsupported Stream<T> element type".into(),
                     );
                 }
+                // Stream is an affine resource: `for await stream` drains it;
+                // the source binding is consumed.
                 // The layout-witness recv (`hew_stream_next_layout`) carries
                 // every describable element type; MIR's `lower_direct_call`
                 // suspendable-caller flip turns it into
                 // `Terminator::SuspendingStreamNext` in actor/task execution
                 // contexts, non-context callers keep the blocking call via
                 // the codegen `Terminator::Call` intercept.
+                lowered_iterable.intent = IntentKind::Consume;
                 let iter_ty = lowered_iterable.ty.clone();
                 (
                     lowered_iterable,
@@ -17087,6 +17118,8 @@ impl LowerCtx {
             } if !args.is_empty() => {
                 let elem_ty = args[0].clone();
                 let gen_ty = lowered_iterable.ty.clone();
+                // Generator is a linear resource: iterating consumes it.
+                lowered_iterable.intent = IntentKind::Consume;
                 (
                     lowered_iterable,
                     gen_ty,
@@ -17095,6 +17128,9 @@ impl LowerCtx {
                 )
             }
             other => {
+                // Generic IntoIterator/Iterator: the into_iter() call consumes
+                // the source, or a plain Iterator binding is drained.
+                lowered_iterable.intent = IntentKind::Consume;
                 if let Some(shape) =
                     self.generic_into_iter_init(lowered_iterable.clone(), &iterable.1)
                 {

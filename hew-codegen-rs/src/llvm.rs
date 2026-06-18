@@ -827,6 +827,8 @@ fn wasm_excluded_drop_symbol(spec: &hew_mir::DropFnSpec) -> Option<String> {
             D::DuplexClose | D::SendHalfClose | D::RecvHalfClose => Some(d.c_symbol().to_string()),
             D::StreamClose
             | D::SinkClose
+            | D::SenderClose
+            | D::ReceiverClose
             | D::LambdaActorHandleClose
             | D::CancellationTokenRelease => None,
         },

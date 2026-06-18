@@ -1725,11 +1725,12 @@ actor Inbox {
 ```
 
 Use `channel.new(capacity)` to build a bounded MPSC channel. `Sender<T>` is
-cloneable; close senders when production is complete. `await rx.recv()` returns
-`Option<T>`: `Some(value)` for a received item and `None` when the channel is
-closed. `rx.try_recv()` never suspends and returns `None` for both empty and
-closed. In `select`, write the sealed channel arm as `pat from rx.recv()` and
-match the bound `Option<T>`. Full examples:
+cloneable, and both channel handles are closed automatically at scope exit;
+call `.close()` only when you need to end production or reception before then.
+`await rx.recv()` returns `Option<T>`: `Some(value)` for a received item and
+`None` when the channel is closed. `rx.try_recv()` never suspends and returns
+`None` for both empty and closed. In `select`, write the sealed channel arm as
+`pat from rx.recv()` and match the bound `Option<T>`. Full examples:
 [`examples/channel/await_recv_actor.hew`](../examples/channel/await_recv_actor.hew)
 and [`examples/channel/select_recv.hew`](../examples/channel/select_recv.hew).
 

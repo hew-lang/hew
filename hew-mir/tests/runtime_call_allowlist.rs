@@ -97,8 +97,14 @@ fn pre_staged_families_are_disjoint_from_the_emitter_allowlist() {
 /// call-family side.)
 #[test]
 fn drop_descriptor_symbols_in_allowlist_or_pre_staged() {
-    let pre_staged: HashSet<&'static str> =
-        ["hew_stream_close", "hew_sink_close"].into_iter().collect();
+    let pre_staged: HashSet<&'static str> = [
+        "hew_stream_close",
+        "hew_sink_close",
+        "hew_channel_sender_close",
+        "hew_channel_receiver_close",
+    ]
+    .into_iter()
+    .collect();
     for d in all_runtime_drop_descriptors() {
         let sym = d.c_symbol();
         if pre_staged.contains(sym) {

@@ -1,0 +1,17 @@
+// platform-int-arith: signed isize shifts, exact values.
+// Right shift on a signed type is arithmetic (sign-preserving).
+fn main() -> i64 {
+    let one: isize = 1;
+    let four: isize = 4;
+    assert_eq((one << four) as i64, 16);
+
+    let v: isize = 256;
+    let three: isize = 3;
+    assert_eq((v >> three) as i64, 32);
+
+    // Arithmetic right shift preserves the sign bit.
+    let neg: isize = -256;
+    let two: isize = 2;
+    assert_eq((neg >> two) as i64, -64);
+    0
+}

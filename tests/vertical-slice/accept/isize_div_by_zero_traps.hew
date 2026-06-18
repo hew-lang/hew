@@ -1,0 +1,10 @@
+// platform-int-arith trap negative: isize division by zero must trap at
+// runtime (DivideByZero), not silently produce garbage. The compiled binary
+// exits 133 (SIGTRAP); run.sh asserts that exit code.
+fn main() -> i64 {
+    let a: isize = 100;
+    let z: isize = 0;
+    let q = a / z;
+    // Unreachable: the divide traps before this point.
+    q as i64
+}

@@ -1,0 +1,20 @@
+// platform-int-arith boundary: a shift by exactly width-1 is IN range and must
+// NOT trap. On a 64-bit target `1isize << 63` is i64::MIN; the binary exits 0.
+// Paired with isize_shift_oob_traps (shift by width traps).
+//
+// The expected value is computed as the parallel i64 shift `1i64 << 63` (also
+// i64::MIN) rather than a literal, because i64::MIN's magnitude overflows the
+// integer-literal lexer. The assertion is that the isize result reinterpreted
+// as i64 matches the i64 shift — i.e. isize `<< 63` lowers to the same width.
+fn main() -> i64 {
+    let one: isize = 1;
+    let w: isize = 63;
+    let s = one << w;
+
+    let one64: i64 = 1;
+    let w64: i64 = 63;
+    let expected = one64 << w64;
+
+    assert_eq(s as i64, expected);
+    0
+}

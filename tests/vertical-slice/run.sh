@@ -321,6 +321,24 @@ run_accept_expect_status "iter_manual_next_42" 42
 run_accept_expect_status "gen_next_stack_bounded" 0
 run_accept_expect_status "for_range_regression" 21
 
+# platform-int-arith (W60.040): isize/usize as first-class integers. Each
+# fixture asserts exact values via assert_eq/assert and exits 0 on success
+# (134 = SIGABRT on a wrong value). Covers div/rem, shifts (arithmetic vs
+# logical), add/sub/mul, comparisons, and literal coercion.
+run_accept_expect_status "isize_div_rem" 0
+run_accept_expect_status "usize_div_rem" 0
+run_accept_expect_status "isize_shift" 0
+run_accept_expect_status "usize_shift" 0
+run_accept_expect_status "isize_add_sub_mul" 0
+run_accept_expect_status "platform_int_compare" 0
+run_accept_expect_status "isize_literal_coerce" 0
+# Boundary: shift by width-1 is in range (exits 0, asserts i64::MIN).
+run_accept_expect_status "isize_shift_boundary" 0
+# Trap negatives: div-by-zero and shift-by-width trap at runtime (SIGTRAP,
+# exit 133), proving the fail-closed guards fire -- they do not produce garbage.
+run_accept_expect_status "isize_div_by_zero_traps" 133
+run_accept_expect_status "isize_shift_oob_traps" 133
+
 # defer: basic (no effect on return), executes (exit override), LIFO, block scope
 run_accept_expect_status "defer_basic" 7
 run_accept_expect_status "defer_executes" 42

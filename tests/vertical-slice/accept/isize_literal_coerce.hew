@@ -1,0 +1,10 @@
+// platform-int-arith: integer literals coerce into isize/usize annotations,
+// and a literal operand combines with a platform-sized value.
+fn main() -> i64 {
+    let a: isize = 100;
+    assert_eq((a + 1) as i64, 101);
+
+    let b: usize = 256;
+    assert_eq((b * 2) as i64, 512);
+    0
+}

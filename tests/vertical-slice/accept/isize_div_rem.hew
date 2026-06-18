@@ -1,0 +1,15 @@
+// platform-int-arith: signed isize division and remainder, exact values.
+// Aborts (134) on any mismatch; exits 0 when every value is correct.
+fn main() -> i64 {
+    let a: isize = 100;
+    let b: isize = 7;
+    assert_eq((a / b) as i64, 14);
+    assert_eq((a % b) as i64, 2);
+
+    // Signed semantics: negative numerator truncates toward zero, the
+    // remainder takes the sign of the dividend (distinct from usize).
+    let na: isize = -100;
+    assert_eq((na / b) as i64, -14);
+    assert_eq((na % b) as i64, -2);
+    0
+}

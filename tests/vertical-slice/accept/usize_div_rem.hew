@@ -1,0 +1,8 @@
+// platform-int-arith: unsigned usize division and remainder, exact values.
+fn main() -> i64 {
+    let a: usize = 100;
+    let b: usize = 7;
+    assert_eq((a / b) as i64, 14);
+    assert_eq((a % b) as i64, 2);
+    0
+}

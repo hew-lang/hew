@@ -1,0 +1,12 @@
+// platform-int-arith: unsigned usize shifts, exact values.
+// Right shift on an unsigned type is logical (zero-fill).
+fn main() -> i64 {
+    let one: usize = 1;
+    let ten: usize = 10;
+    assert_eq((one << ten) as i64, 1024);
+
+    let v: usize = 1024;
+    let five: usize = 5;
+    assert_eq((v >> five) as i64, 32);
+    0
+}

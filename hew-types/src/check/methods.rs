@@ -3607,9 +3607,11 @@ impl Checker {
             CollectionKind::HashMap => {
                 // Owned-vs-key_value validator split (deliberate per-arm asymmetry).
                 let validated = match method {
-                    "insert" | "get" | "remove" | "keys" | "values" => {
+                    "insert" | "get" | "remove" => {
                         self.validate_hashmap_owned_element_types(&cx.key, &cx.val, span)
                     }
+                    "keys" | "values" => self
+                        .validate_hashmap_projection_element_types(&cx.key, &cx.val, method, span),
                     _ => self.validate_hashmap_key_value_types(&cx.key, &cx.val, span),
                 };
                 if !validated {

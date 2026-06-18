@@ -845,6 +845,36 @@ impl Checker {
         true
     }
 
+    fn is_supported_hashmap_projection_element_type(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Bool
+            | Ty::Char
+            | Ty::I32
+            | Ty::U32
+            | Ty::I64
+            | Ty::U64
+            | Ty::F32
+            | Ty::F64
+            | Ty::String => true,
+            Ty::Named {
+                name,
+                builtin: None,
+                ..
+            } => {
+                let Some(type_def) = self.type_defs.get(name.as_str()).or_else(|| {
+                    name.split_once('.')
+                        .and_then(|(_, local)| self.type_defs.get(local))
+                }) else {
+                    return false;
+                };
+                matches!(type_def.kind, TypeDefKind::Record | TypeDefKind::Enum)
+                    && (primitive_copy_layout(ty, &self.type_defs).is_some()
+                        || self.registry.implements_marker(ty, MarkerTrait::Copy))
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn validate_hashmap_key_value_types(
         &mut self,
         key_ty: &Ty,
@@ -959,6 +989,59 @@ impl Checker {
     ) -> bool {
         self.reject_unsafe_hashmap_element_types(key_ty, val_ty, span)
             && self.validate_hashmap_key_value_types(key_ty, val_ty, span)
+    }
+
+    pub(super) fn validate_hashmap_projection_element_types(
+        &mut self,
+        key_ty: &Ty,
+        val_ty: &Ty,
+        method: &str,
+        span: &Span,
+    ) -> bool {
+        if !self.validate_hashmap_owned_element_types(key_ty, val_ty, span) {
+            return false;
+        }
+
+        let resolved_key = self.subst.resolve(key_ty).materialize_literal_defaults();
+        let resolved_val = self.subst.resolve(val_ty).materialize_literal_defaults();
+
+        if matches!(resolved_key, Ty::Error) || matches!(resolved_val, Ty::Error) {
+            return false;
+        }
+
+        if matches!(resolved_key, Ty::Var(_)) || matches!(resolved_val, Ty::Var(_)) {
+            return true;
+        }
+
+        if !self.is_supported_hashmap_projection_element_type(&resolved_val) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`HashMap<{}, {}>.{method}()` is not yet supported: projecting from a map with value type `{}` into an owned `Vec` is not lowered; supported projection value types are scalar primitives, `string`, and Copy record/enum types",
+                    resolved_key.user_facing(),
+                    resolved_val.user_facing(),
+                    resolved_val.user_facing()
+                ),
+            );
+            return false;
+        }
+
+        if method == "keys" && !self.is_supported_hashmap_projection_element_type(&resolved_key) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`HashMap<{}, {}>.keys()` is not yet supported: projecting key type `{}` into an owned `Vec` is not lowered; supported projection key types are scalar primitives, `string`, and Copy record/enum types",
+                    resolved_key.user_facing(),
+                    resolved_val.user_facing(),
+                    resolved_key.user_facing()
+                ),
+            );
+            return false;
+        }
+
+        true
     }
 
     pub(super) fn validate_hashset_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
@@ -2587,6 +2670,23 @@ mod tests {
         td
     }
 
+    fn make_enum(name: &str, variants: Vec<(&str, VariantDef)>) -> TypeDef {
+        TypeDef {
+            kind: TypeDefKind::Enum,
+            name: name.to_string(),
+            type_params: vec![],
+            fields: HashMap::new(),
+            field_order: vec![],
+            variants: variants
+                .into_iter()
+                .map(|(name, variant)| (name.to_string(), variant))
+                .collect(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            is_indirect: false,
+        }
+    }
+
     #[test]
     fn primitive_copy_layout_bool_is_1_1() {
         assert_eq!(
@@ -2655,6 +2755,103 @@ mod tests {
     fn primitive_copy_layout_string_returns_none() {
         // String is heap-managed; not a fixed-layout Copy type.
         assert_eq!(primitive_copy_layout(&Ty::String, &HashMap::new()), None);
+    }
+
+    #[test]
+    fn hashmap_projection_element_gate_accepts_lowered_scalars_and_string() {
+        let checker = Checker::new(ModuleRegistry::new(vec![]));
+        for ty in [
+            Ty::Bool,
+            Ty::Char,
+            Ty::I32,
+            Ty::U32,
+            Ty::I64,
+            Ty::U64,
+            Ty::F32,
+            Ty::F64,
+            Ty::String,
+        ] {
+            assert!(
+                checker.is_supported_hashmap_projection_element_type(&ty),
+                "expected `{}` to be admitted for HashMap projection",
+                ty.user_facing()
+            );
+        }
+    }
+
+    #[test]
+    fn hashmap_projection_element_gate_accepts_copy_record_and_enum() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.type_defs.insert(
+            "Point".to_string(),
+            make_record("Point", vec![("x", Ty::I64), ("y", Ty::I64)]),
+        );
+        checker.type_defs.insert(
+            "Direction".to_string(),
+            make_enum(
+                "Direction",
+                vec![
+                    ("North", VariantDef::Unit),
+                    ("Delta", VariantDef::Tuple(vec![Ty::I64])),
+                ],
+            ),
+        );
+        checker
+            .registry
+            .register_type("Direction".to_string(), vec![Ty::I64]);
+
+        for ty in [
+            Ty::normalize_named("Point".to_string(), vec![]),
+            Ty::normalize_named("Direction".to_string(), vec![]),
+        ] {
+            assert!(
+                checker.is_supported_hashmap_projection_element_type(&ty),
+                "expected `{}` to be admitted for HashMap projection",
+                ty.user_facing()
+            );
+        }
+    }
+
+    #[test]
+    fn hashmap_projection_element_gate_rejects_owned_aggregate_shapes() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.type_defs.insert(
+            "User".to_string(),
+            make_record("User", vec![("name", Ty::String), ("id", Ty::I64)]),
+        );
+        checker.type_defs.insert(
+            "Payload".to_string(),
+            make_enum(
+                "Payload",
+                vec![(
+                    "Chunk",
+                    VariantDef::Tuple(vec![Ty::Named {
+                        name: "Vec".to_string(),
+                        args: vec![Ty::I64],
+                        builtin: Some(BuiltinType::Vec),
+                    }]),
+                )],
+            ),
+        );
+        checker.registry.register_type(
+            "Payload".to_string(),
+            vec![Ty::Named {
+                name: "Vec".to_string(),
+                args: vec![Ty::I64],
+                builtin: Some(BuiltinType::Vec),
+            }],
+        );
+
+        let record_ty = Ty::normalize_named("User".to_string(), vec![]);
+        let enum_ty = Ty::normalize_named("Payload".to_string(), vec![]);
+        let vec_ty = Ty::Named {
+            name: "Vec".to_string(),
+            args: vec![Ty::I64],
+            builtin: Some(BuiltinType::Vec),
+        };
+        assert!(!checker.is_supported_hashmap_projection_element_type(&record_ty));
+        assert!(!checker.is_supported_hashmap_projection_element_type(&enum_ty));
+        assert!(!checker.is_supported_hashmap_projection_element_type(&vec_ty));
     }
 
     #[test]

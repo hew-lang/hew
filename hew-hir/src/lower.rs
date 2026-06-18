@@ -25164,7 +25164,6 @@ fn check_vec_index_element_type(
                 | ResolvedTy::U64
                 | ResolvedTy::F64
                 | ResolvedTy::String
-                | ResolvedTy::Named { .. }
         )
     } else {
         matches!(
@@ -25201,8 +25200,7 @@ fn check_vec_index_element_type(
             format!(
                 "Vec<{rendered}> range-slice (xs[a..b]) is not yet supported. \
                  Supported element types for Vec range-slicing are: \
-                 i32, u32, i64, u64, f64, String, and user-defined types \
-                 (records, enums, Duplex, etc.). \
+                 i32, u32, i64, u64, f64, and String. \
                  Vec<bool> and Vec<char> will be added in a future \
                  width-normalisation slice."
             ),

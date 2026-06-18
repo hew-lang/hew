@@ -1,0 +1,11 @@
+fn main() {
+    let xs: Vec<string> = Vec::new();
+    xs.push("red");
+    xs.push("green");
+    xs.push("blue");
+
+    let head = xs[0..2];
+    println(head.len());
+    println(head[0]);
+    println(head[1]);
+}

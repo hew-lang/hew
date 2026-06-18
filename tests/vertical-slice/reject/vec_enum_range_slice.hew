@@ -1,0 +1,8 @@
+enum Colour { Red; Green; }
+
+fn main() {
+    let colours: Vec<Colour> = Vec::new();
+    colours.push(Colour::Red);
+    let head = colours[0..1];
+    println(head.len());
+}

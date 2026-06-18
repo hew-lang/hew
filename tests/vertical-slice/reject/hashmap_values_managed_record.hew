@@ -1,0 +1,8 @@
+record User { name: string, id: i64 }
+
+fn main() {
+    let users: HashMap<i64, User> = HashMap::new();
+    users.insert(1, User { name: "alice", id: 1 });
+    let projected = users.values();
+    println(projected.len());
+}

@@ -436,6 +436,7 @@ pub enum RuntimeCallFamily {
     TaskScopeSetCurrent,
     TaskScopeSpawn,
     TaskSetEnv,
+    TaskSetResult,
     TaskSpawnThread,
 
     // --- Vec<T> ------------------------------------------------------------
@@ -655,6 +656,7 @@ impl RuntimeCallFamily {
             Self::TaskScopeSetCurrent => "hew_task_scope_set_current",
             Self::TaskScopeSpawn => "hew_task_scope_spawn",
             Self::TaskSetEnv => "hew_task_set_env",
+            Self::TaskSetResult => "hew_task_set_result",
             Self::TaskSpawnThread => "hew_task_spawn_thread",
             // Vec
             Self::VecGet(VecGetElem::Bool) => "hew_vec_get_bool",
@@ -888,6 +890,7 @@ impl RuntimeCallFamily {
             "hew_task_scope_set_current" => Self::TaskScopeSetCurrent,
             "hew_task_scope_spawn" => Self::TaskScopeSpawn,
             "hew_task_set_env" => Self::TaskSetEnv,
+            "hew_task_set_result" => Self::TaskSetResult,
             "hew_task_spawn_thread" => Self::TaskSpawnThread,
             // Vec
             "hew_vec_get_bool" => Self::VecGet(VecGetElem::Bool),
@@ -1116,6 +1119,7 @@ impl RuntimeCallFamily {
             | F::TaskScopeSetCurrent
             | F::TaskScopeSpawn
             | F::TaskSetEnv
+            | F::TaskSetResult
             | F::TaskSpawnThread
             | F::VecGet(_)
             | F::VecLen

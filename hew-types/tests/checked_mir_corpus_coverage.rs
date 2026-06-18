@@ -81,6 +81,7 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_task_get_result",
     "hew_task_scope_cancel_after_ns",
     "hew_task_set_env",
+    "hew_task_set_result",
     "hew_task_spawn_thread",
     "hew_vtable_dispatch_panic_on_oob",
     // -- Compiler-internal name: explicit user spelling rejected

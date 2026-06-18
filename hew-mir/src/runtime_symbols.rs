@@ -437,6 +437,13 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_task_scope_set_current",
     "hew_task_scope_spawn",
     "hew_task_set_env",
+    // `hew_task_set_result(task: *mut HewTask, result: *mut c_void, size: usize)
+    //  -> void` (`hew-runtime/src/task_scope.rs`). Deep-copies the value
+    // representation into a task-owned malloc buffer. Emitted by the codegen
+    // task wrapper to publish a value-returning task's body result before
+    // `hew_task_complete_threaded`; the awaiter reads it via
+    // `hew_task_get_result` on the resume edge. Part of value-task await.
+    "hew_task_set_result",
     // `hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void`
     // (`hew-runtime/src/task_scope.rs:368`). Spawns `task_fn(task)` on a
     // new OS thread. `TaskFn = unsafe extern "C" fn(*mut HewTask)`. The

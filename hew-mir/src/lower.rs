@@ -16169,7 +16169,14 @@ impl Builder {
             });
             return None;
         }
-        if !args.is_empty() || !matches!(ret_ty, ResolvedTy::Unit) {
+        // A no-argument callee returning unit OR a value `T` is supported: the
+        // task-entry adapter captures the body's return and the value channel
+        // publishes it (unit tasks publish nothing). Arg-bearing spawns still
+        // route through `lower_spawned_args_call_task`, which keeps its own
+        // unit-only restriction (a value+args spawn is a follow-on once the
+        // fork-env shim captures the return as well).
+        let _ = ret_ty;
+        if !args.is_empty() {
             for arg in args {
                 let _ = self.lower_value(arg);
             }
@@ -16179,7 +16186,7 @@ impl Builder {
                     site,
                 },
                 note: "cancellation-token task lowering currently supports only \
-                       no-argument functions returning unit; value/result task \
+                       no-argument functions; arg-bearing value/result task \
                        propagation remains fail-closed"
                     .to_string(),
             });
@@ -16218,7 +16225,7 @@ impl Builder {
         )
     }
 
-    fn ensure_task_entry_adapter(&mut self, callee_symbol: &str) -> String {
+    fn ensure_task_entry_adapter(&mut self, callee_symbol: &str, result_ty: &ResolvedTy) -> String {
         let adapter_symbol = Self::task_entry_adapter_symbol(callee_symbol);
         if !self
             .task_entry_adapter_symbols
@@ -16227,16 +16234,37 @@ impl Builder {
         {
             return adapter_symbol;
         }
-        let lowered = self.synthesize_task_entry_adapter(callee_symbol, &adapter_symbol);
+        let lowered = self.synthesize_task_entry_adapter(callee_symbol, &adapter_symbol, result_ty);
         self.generated_functions.push(lowered);
         adapter_symbol
     }
 
+    /// Synthesize the per-callee task-entry adapter (`__hew_task_entry_<fn>`,
+    /// `TaskEntry` call-conv). The adapter is the body the codegen task wrapper
+    /// invokes on the spawned worker; the wrapper publishes the adapter's return
+    /// value through `hew_task_set_result` and then `hew_task_complete_threaded`.
+    ///
+    /// For a value-returning task (`result_ty != ()`) the adapter calls the body
+    /// into a typed `dest` local and RETURNS it, so the wrapper captures the
+    /// child's `T` and writes it into the task result buffer. For a unit task
+    /// the adapter calls the body with `dest: None` and returns unit — the
+    /// wrapper publishes nothing.
     fn synthesize_task_entry_adapter(
         &self,
         callee_symbol: &str,
         adapter_symbol: &str,
+        result_ty: &ResolvedTy,
     ) -> LoweredFunction {
+        let is_value_task = !matches!(result_ty, ResolvedTy::Unit);
+        // Value task: the body call writes its `T` directly into the function
+        // return slot so `Terminator::Return` hands it back; the codegen wrapper
+        // then publishes that return value through `hew_task_set_result`. Unit
+        // task: discard the body result (`dest: None`).
+        let call_dest = if is_value_task {
+            Some(Place::ReturnSlot)
+        } else {
+            None
+        };
         let mut blocks = vec![
             BasicBlock {
                 id: 0,
@@ -16246,7 +16274,7 @@ impl Builder {
                     callee: callee_symbol.to_string(),
                     builtin: None,
                     args: vec![],
-                    dest: None,
+                    dest: call_dest,
                     next: 1,
                 },
             },
@@ -16259,14 +16287,15 @@ impl Builder {
         ];
         bracket_actor_handler_blocks(&mut blocks);
 
+        let adapter_return_ty = result_ty.clone();
         let thir = ThirFunction {
             name: adapter_symbol.to_string(),
-            return_ty: ResolvedTy::Unit,
+            return_ty: adapter_return_ty.clone(),
             statements: vec![],
         };
         let raw = RawMirFunction {
             name: adapter_symbol.to_string(),
-            return_ty: ResolvedTy::Unit,
+            return_ty: adapter_return_ty.clone(),
             call_conv: crate::model::FunctionCallConv::TaskEntry,
             params: vec![],
             locals: vec![],
@@ -16295,7 +16324,7 @@ impl Builder {
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
             name: adapter_symbol.to_string(),
-            return_ty: ResolvedTy::Unit,
+            return_ty: adapter_return_ty,
             blocks: raw.blocks.clone(),
             decisions: vec![],
             checks: dataflow_result.checks.clone(),
@@ -16390,7 +16419,7 @@ impl Builder {
         }
         let user_callee_symbol =
             self.direct_no_arg_unit_callee(callee, args, inner, site, "spawned call")?;
-        let callee_symbol = self.ensure_task_entry_adapter(&user_callee_symbol);
+        let callee_symbol = self.ensure_task_entry_adapter(&user_callee_symbol, inner);
 
         let task_place = self.alloc_local(task_ty.clone());
         self.push_runtime_call("hew_task_new", vec![], Some(task_place));
@@ -16903,25 +16932,7 @@ impl Builder {
         output_ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        if !matches!(output_ty, ResolvedTy::Unit) {
-            // Value-returning task await binds the child's `T` on the resume
-            // edge. The carrier's `result_dest` is wired, but the WRITE side of
-            // the value channel — the task-entry adapter capturing the body's
-            // return value into `hew_task_set_result` + result sizing — is a
-            // separate cross-layer slice. Until that lands, value task await
-            // remains fail-closed (never a miscompile).
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "await task result".to_string(),
-                    site,
-                },
-                note: "await lowering currently supports unit tasks only; value task \
-                       result propagation remains fail-closed pending the task-entry \
-                       result channel"
-                    .to_string(),
-            });
-            return None;
-        }
+        let is_value_task = !matches!(output_ty, ResolvedTy::Unit);
         let Some(task_place) = self.binding_locals.get(&binding_id).copied() else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::UnresolvedPlace {
@@ -16947,34 +16958,65 @@ impl Builder {
         self.mark_binding_moved(binding_id);
 
         // Suspendable-caller flip: in a caller that carries the execution
-        // context (actor handler / closure / task entry) the unit `await t`
-        // SUSPENDS on the child task's completion instead of blocking the worker
-        // in `hew_task_await_blocking` (a condvar). The completion observer
+        // context (actor handler / closure / task entry) `await t` SUSPENDS on
+        // the child task's completion instead of blocking the worker in
+        // `hew_task_await_blocking` (a condvar). The completion observer
         // (`hew_task_await_suspend`) re-enqueues the parked continuation on the
         // child's `Done`. A `FunctionCallConv::Default` caller (`main`, free fn)
         // has no parkable continuation and keeps the blocking call. Reuses the
         // same `carries_execution_context` discriminator as the recv/ask flips.
         if self.current_function_call_conv.carries_execution_context() {
             if let Some(scope_place) = self.current_task_scope {
+                // Value task: allocate the slot the child's `T` is read into on
+                // the resume edge (codegen reads `hew_task_get_result` into it,
+                // copying the result-buffer bytes at the `T` element width). A
+                // unit task binds nothing.
+                let result_dest = if is_value_task {
+                    Some(self.alloc_local(output_ty.clone()))
+                } else {
+                    None
+                };
                 let next = self.alloc_block();
                 // The carrier rides the multi-suspend epilogue, so `cleanup`
                 // reuses `next` exactly as the recv/ask carriers do.
                 self.finish_current_block(Terminator::SuspendingTaskAwait {
                     scope: scope_place,
                     task: task_place,
-                    // Unit task: nothing to bind on the resume edge.
-                    result_dest: None,
+                    result_dest,
                     resume: next,
                     cleanup: next,
                 });
                 self.start_block(next);
+                if let Some(result_dest) = result_dest {
+                    // The resume edge bound the child's `T` into `result_dest`.
+                    return Some(result_dest);
+                }
                 let unit_place = self.alloc_local(ResolvedTy::Unit);
                 self.push_instr(Instr::UnitLit { dest: unit_place });
                 return Some(unit_place);
             }
         }
 
-        // Contextless keep path: block the foreign thread on the condvar.
+        // Contextless keep path: a `FunctionCallConv::Default` caller has no
+        // parkable continuation and blocks the foreign thread on the condvar.
+        // Value tasks cannot reach this path: `lower_spawned_call_task` refuses
+        // to spawn from a Default-callconv caller, so a value `Task<T>` handle
+        // never exists in a contextless awaiter. Fail closed rather than emit a
+        // blocking read whose result-width copy was never proven on this path.
+        if is_value_task {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "await task result".to_string(),
+                    site,
+                },
+                note: "awaiting a value-returning task is only lowered from an \
+                       execution-context caller (actor handler / closure / task \
+                       entry); a `Task<T>` handle cannot reach a Default-callconv \
+                       awaiter because value tasks cannot be spawned there"
+                    .to_string(),
+            });
+            return None;
+        }
         self.push_runtime_call("hew_task_await_blocking", vec![task_place], None);
         let unit_place = self.alloc_local(ResolvedTy::Unit);
         self.push_instr(Instr::UnitLit { dest: unit_place });

@@ -1020,6 +1020,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::TaskGetResult
         | F::TaskNew
         | F::TaskSetEnv
+        | F::TaskSetResult
         | F::TaskSpawnThread
         | F::VecGet(_)
         | F::VecLen
@@ -2509,6 +2510,16 @@ fn intern_runtime_decl<'ctx>(
         // before calling hew_task_spawn_thread.
         "hew_task_new" => ptr_ty.fn_type(&[], false),
         "hew_task_complete_threaded" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        // hew_task_set_result(task: *mut HewTask, result: *mut c_void, size: usize)
+        //   -> void (`hew-runtime/src/task_scope.rs`). Deep-copies `size` bytes of
+        // the value representation at `result` into a malloc'd buffer the task
+        // owns until consumed; the codegen task wrapper calls it to publish a
+        // value-returning task's body result before `hew_task_complete_threaded`.
+        // `size` is target-correct `usize` (i32 on wasm32, i64 on native) to
+        // match the runtime's real C ABI.
+        "hew_task_set_result" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into(), size_ty.into()], false),
         "hew_task_get_error" => i32_ty.fn_type(&[ptr_ty.into()], false),
         "hew_task_get_env" => ptr_ty.fn_type(&[ptr_ty.into()], false),
         "hew_task_scope_new" => ptr_ty.fn_type(&[], false),
@@ -6057,13 +6068,6 @@ fn get_or_create_task_wrapper<'ctx>(
     })?;
     let (callee_value, callee_return_ty, callee_returns_unit) =
         callee_symbol_entry.real(callee_symbol, "SpawnTaskDirect")?;
-    if !callee_returns_unit || !matches!(callee_return_ty, BasicTypeEnum::IntType(_)) {
-        return Err(CodegenError::FailClosed(format!(
-            "SpawnTaskDirect callee `{callee_symbol}` must be unit-lowered to the i8 \
-             stand-in return type; got {:?}",
-            callee_return_ty
-        )));
-    }
 
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     if callee_value.get_nth_param(0).is_none() || callee_value.get_nth_param(1).is_some() {
@@ -6089,9 +6093,54 @@ fn get_or_create_task_wrapper<'ctx>(
     let task_param = wrapper.get_nth_param(1).ok_or_else(|| {
         CodegenError::FailClosed("task wrapper missing HewTask* parameter".into())
     })?;
-    builder
+    let body_call = builder
         .build_call(callee_value, &[ctx_param.into()], "task_body_call")
         .llvm_ctx("task wrapper body call")?;
+
+    // Value-returning task: publish the body's `T` result through the task's
+    // own result buffer BEFORE marking the task complete, so the awaiter's
+    // resume edge reads it via `hew_task_get_result`. The adapter
+    // (`__hew_task_entry_<fn>`, TaskEntry call-conv) returns its body's `T`; a
+    // unit task returns the i8 unit stand-in and publishes nothing.
+    //
+    // Drop-exactly-once: `hew_task_set_result` deep-copies `sizeof(T)` bytes of
+    // the value REPRESENTATION into a malloc buffer the task owns and frees
+    // (as raw bytes) at scope join. For a managed `T` (string/record) those
+    // bytes are the owning handle, MOVED out of the body's return slot here and
+    // MOVED out of the buffer into the awaiter's binding on resume — the buffer
+    // free never drops the handle, so it lives exactly once.
+    if !callee_returns_unit {
+        let result_val = body_call.try_as_basic_value().basic().ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "SpawnTaskDirect value-task callee `{callee_symbol}` returned void but \
+                 its MIR return type is non-unit"
+            ))
+        })?;
+        // Stack slot holding the value representation; `hew_task_set_result`
+        // copies `sizeof(T)` bytes from it into the task-owned result buffer.
+        let result_slot = builder
+            .build_alloca(callee_return_ty, "task_result_slot")
+            .llvm_ctx("task wrapper result slot alloca")?;
+        builder
+            .build_store(result_slot, result_val)
+            .llvm_ctx("task wrapper result store")?;
+        let (size, _align) = abi_size_align(callee_return_ty, Some(fn_ctx.target_data))?;
+        let size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
+        let size_val = size_ty.const_int(size, false);
+        let set_result = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            "hew_task_set_result",
+        )?;
+        builder
+            .build_call(
+                set_result,
+                &[task_param.into(), result_slot.into(), size_val.into()],
+                "hew_task_set_result_call",
+            )
+            .llvm_ctx("hew_task_set_result call")?;
+    }
 
     let complete = intern_runtime_decl(
         fn_ctx.ctx,
@@ -24685,6 +24734,12 @@ fn lower_call_runtime_abi(
         | F::TaskGetEnv
         | F::TaskGetError
         | F::TaskSetEnv
+        // `hew_task_set_result` is synthesized directly by the codegen task
+        // wrapper (`get_or_create_task_wrapper`), never emitted as an
+        // `Instr::CallRuntimeAbi` — so it has no MIR-ABI lowering arm here and
+        // fails closed if it ever reaches this dispatch, exactly like its
+        // sibling `TaskCompleteThreaded`.
+        | F::TaskSetResult
         | F::VtableDispatchPanicOnOob => {
             return Err(CodegenError::FailClosed(format!(
                 "Instr::CallRuntimeAbi(symbol={symbol:?}, family={:?}): codegen has no \
@@ -28312,9 +28367,8 @@ struct SuspendingTaskAwaitEmit {
     scope: Place,
     task: Place,
     /// `Some(slot)` reads the task result via `hew_task_get_result` on the bind
-    /// edge (value task); `None` for a unit task (nothing to bind). The
-    /// value-task result read is wired in a later slice; codegen fails closed if
-    /// it ever arrives here while value-task result propagation is unbuilt.
+    /// edge and copies it into the slot at the `T` element width (value task);
+    /// `None` for a unit task (nothing to bind).
     result_dest: Option<Place>,
     resume: u32,
     cleanup: u32,
@@ -31084,20 +31138,12 @@ fn emit_suspending_task_await_terminator<'ctx>(
             term.cleanup
         )));
     }
-    // The value-task result read (`hew_task_get_result` into `result_dest`) is a
-    // later slice; the WRITE side of the value channel (the task-entry adapter
-    // publishing the body return value) is unbuilt. Fail closed if a value-task
-    // carrier reaches here rather than reading an unpopulated result buffer.
-    if term.result_dest.is_some() {
-        return Err(CodegenError::FailClosed(
-            "SuspendingTaskAwait carries a result_dest but value-task result \
-             propagation is not yet wired (the task-entry result channel is a \
-             separate slice); the MIR producer must keep value task await \
-             fail-closed"
-                .into(),
-        ));
-    }
-
+    // A value-returning task carries `result_dest` — the slot the child's `T`
+    // is read into on the bind edge. The task body published its result through
+    // `hew_task_set_result` (the codegen task wrapper); on the resume /
+    // immediate-ready edge the task is `Done` and `hew_task_get_result` returns
+    // the result buffer, which the bind edge copies into `result_dest` at the
+    // `T` element width. A unit task carries `None` and binds nothing.
     let actor_self_fn = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
@@ -31221,9 +31267,46 @@ fn emit_suspending_task_await_terminator<'ctx>(
             Ok(())
         },
         || {
-            // Bind: already-done OR resumed. The task is `Done`; a unit task has
-            // nothing to bind. Release the creator ref, branch to the MIR resume.
-            // (Value-task result read lands with the task-entry result channel.)
+            // Bind: already-done OR resumed. The task is `Done`. For a value
+            // task, read the published result and copy it into `result_dest` at
+            // the `T` element width: `hew_task_get_result` returns the
+            // task-owned result buffer (the bytes `hew_task_set_result` deep-
+            // copied from the body's return); the load+store MOVES the value
+            // representation out of the buffer into the awaiter's binding slot.
+            // The task frees the buffer (as raw bytes) at scope join, so a
+            // managed handle lives exactly once — in `result_dest`.
+            if let Some(result_dest) = term.result_dest {
+                let get_result = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_task_get_result",
+                )?;
+                let result_buf = fn_ctx
+                    .builder
+                    .build_call(
+                        get_result,
+                        &[task_ptr.into()],
+                        "suspending_task_await_result",
+                    )
+                    .llvm_ctx("hew_task_get_result (bind) call")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("hew_task_get_result returned void".into())
+                    })?
+                    .into_pointer_value();
+                let (dest_ptr, dest_ty) = place_pointer(fn_ctx, result_dest)?;
+                let loaded = fn_ctx
+                    .builder
+                    .build_load(dest_ty, result_buf, "suspending_task_await_result_load")
+                    .llvm_ctx("value-task result load")?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, loaded)
+                    .llvm_ctx("value-task result store")?;
+            }
+            // Release the creator ref, branch to the MIR resume.
             fn_ctx
                 .builder
                 .build_call(slot_free, &[slot.into()], "suspending_task_await_bind_free")

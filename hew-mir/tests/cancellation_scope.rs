@@ -276,11 +276,12 @@ fn fork_nonunit_arg_bearing_callee_fails_closed() {
 }
 
 #[test]
-fn fork_value_task_statement_await_fails_closed() {
-    // Value resolution (`await x` for Task<i64>) has no result-propagation
-    // substrate yet — the task wrapper discards the callee return. The MIR
-    // await site must refuse (NotYetImplemented) rather than silently
-    // joining and dropping the value on the floor as if it were unit.
+fn fork_value_task_await_lowers_through_result_channel() {
+    // A no-arg value-returning `fork x = compute()` awaited from an
+    // execution-context handler lowers through the value-task result channel:
+    // the task body publishes its `i64` via `hew_task_set_result`, the await
+    // resume edge reads it via `hew_task_get_result`. The MIR await site must
+    // NOT refuse (no NotYetImplemented) — value resolution is wired.
     let source = r"
         fn compute() -> i64 {
             42
@@ -290,7 +291,8 @@ fn fork_value_task_statement_await_fails_closed() {
             receive fn drive() {
                 scope {
                     fork x = compute();
-                    await x;
+                    let v = await x;
+                    let _ = v;
                 };
             }
         }
@@ -303,11 +305,30 @@ fn fork_value_task_statement_await_fails_closed() {
     ";
     let mir = lower_clean_to_mir(source);
     assert!(
-        mir.diagnostics.iter().any(|d| d
+        !mir.diagnostics.iter().any(|d| d
             .note
             .contains("await lowering currently supports unit tasks only")),
-        "value-task await must fail closed at the MIR await site; diagnostics: {:#?}",
+        "value-task await must lower cleanly through the result channel; diagnostics: {:#?}",
         mir.diagnostics
+    );
+    // And the carrier must actually be emitted (no silent drop): a
+    // SuspendingTaskAwait terminator with a result_dest appears in the handler.
+    let has_value_carrier = mir
+        .raw_mir
+        .iter()
+        .flat_map(|func| &func.blocks)
+        .any(|block| {
+            matches!(
+                &block.terminator,
+                hew_mir::Terminator::SuspendingTaskAwait {
+                    result_dest: Some(_),
+                    ..
+                }
+            )
+        });
+    assert!(
+        has_value_carrier,
+        "value-task await must emit a SuspendingTaskAwait carrier carrying a result_dest"
     );
 }
 

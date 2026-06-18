@@ -676,27 +676,6 @@ pub enum HirDiagnosticKind {
         /// Checker-resolved result type.
         result_ty: String,
     },
-    /// Division (`/`) or modulo (`%`) on a platform-sized signed integer
-    /// (`isize`). The `signed-MIN / -1` trap guard requires emitting the
-    /// MIN constant for the target's pointer width, which the current MIR
-    /// pipeline cannot produce because it does not yet carry a
-    /// `TargetSpec`. Closed at HIR pre-pass per FC-P1-D (audit site
-    /// `hew-mir/src/lower.rs:5564`). When MIR gains target threading the
-    /// gate can be lifted. LESSONS `boundary-fail-closed`.
-    PlatformSizedDivRemUnsupported {
-        /// Source-form operator (`"/"` or `"%"`).
-        op: String,
-    },
-    /// Shift (`<<` / `>>`) on a platform-sized integer (`isize` / `usize`).
-    /// The out-of-range trap requires emitting the bit-width constant for
-    /// the target's pointer width, which the current MIR pipeline cannot
-    /// produce (no `TargetSpec`). Closed at HIR pre-pass per FC-P1-D
-    /// (audit site `hew-mir/src/lower.rs:5696`). LESSONS
-    /// `boundary-fail-closed`.
-    PlatformSizedShiftUnsupported {
-        /// Source-form operator (`"<<"` or `">>"`).
-        op: String,
-    },
     /// Call expression resolves to an item that has no MIR body and no
     /// runtime-ABI lowering. Lifted from MIR `hew-mir/src/lower.rs:4194`
     /// per the FC-P1-B audit so the diagnostic surfaces during HIR lowering

@@ -677,8 +677,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::ActorSendRequiresUnitHandler { .. } => "ActorSendRequiresUnitHandler",
         K::BinaryOperatorUnsupportedInMir { .. } => "BinaryOperatorUnsupportedInMir",
         K::UnaryOperatorUnsupportedInMir { .. } => "UnaryOperatorUnsupportedInMir",
-        K::PlatformSizedDivRemUnsupported { .. } => "PlatformSizedDivRemUnsupported",
-        K::PlatformSizedShiftUnsupported { .. } => "PlatformSizedShiftUnsupported",
         K::CallableUnsupportedInMir { .. } => "CallableUnsupportedInMir",
         K::IndirectCallUnsupported { .. } => "IndirectCallUnsupported",
         K::SupervisorSpawnArgsUnsupported { .. } => "SupervisorSpawnArgsUnsupported",

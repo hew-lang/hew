@@ -95,10 +95,16 @@ fn range_in_for_loop_accepted() {
     );
 }
 
-// ── Gate 2: div / mod on isize ───────────────────────────────────────────────
+// ── isize / usize div, mod, and shift are admitted (platform-int-arith) ──────
+//
+// MIR now threads the target pointer width and emits the correct per-target
+// signed-MIN and shift-range trap constants, so these operators lower
+// end-to-end. The former `PlatformSized{DivRem,Shift}Unsupported` HIR gates are
+// removed. These tests pin that the operators are accepted (no fatal HIR
+// diagnostic) — the inverse of the gates they replace.
 
 #[test]
-fn isize_divide_rejected() {
+fn isize_divide_accepted() {
     let output = typecheck_and_lower(
         r"
         fn op(x: isize, y: isize) -> isize {
@@ -107,18 +113,15 @@ fn isize_divide_rejected() {
         ",
     );
     assert!(
-        has_diag(&output, |k| matches!(
-            k,
-            HirDiagnosticKind::PlatformSizedDivRemUnsupported { op } if op == "/"
-        )),
-        "expected PlatformSizedDivRemUnsupported `/`, got: {:?}",
+        output.diagnostics.is_empty(),
+        "isize division must lower cleanly; diagnostics: {:?}",
         output.diagnostics
     );
-    assert!(output.into_result().is_err());
+    assert!(output.into_result().is_ok());
 }
 
 #[test]
-fn isize_modulo_rejected() {
+fn isize_modulo_accepted() {
     let output = typecheck_and_lower(
         r"
         fn op(x: isize, y: isize) -> isize {
@@ -127,14 +130,11 @@ fn isize_modulo_rejected() {
         ",
     );
     assert!(
-        has_diag(&output, |k| matches!(
-            k,
-            HirDiagnosticKind::PlatformSizedDivRemUnsupported { op } if op == "%"
-        )),
-        "expected PlatformSizedDivRemUnsupported `%`, got: {:?}",
+        output.diagnostics.is_empty(),
+        "isize modulo must lower cleanly; diagnostics: {:?}",
         output.diagnostics
     );
-    assert!(output.into_result().is_err());
+    assert!(output.into_result().is_ok());
 }
 
 #[test]
@@ -147,55 +147,44 @@ fn i64_divide_accepted() {
         ",
     );
     assert!(
-        !has_diag(&output, |k| matches!(
-            k,
-            HirDiagnosticKind::PlatformSizedDivRemUnsupported { .. }
-        )),
-        "i64 division must not be gated; diagnostics: {:?}",
+        output.diagnostics.is_empty(),
+        "i64 division must lower cleanly; diagnostics: {:?}",
         output.diagnostics
     );
 }
 
-// ── Gate 3: shift on isize / usize ───────────────────────────────────────────
-
 #[test]
-fn isize_shift_left_rejected() {
+fn isize_shift_left_accepted() {
     let output = typecheck_and_lower(
         r"
-        fn op(x: isize, n: i32) -> isize {
+        fn op(x: isize, n: isize) -> isize {
             x << n
         }
         ",
     );
     assert!(
-        has_diag(&output, |k| matches!(
-            k,
-            HirDiagnosticKind::PlatformSizedShiftUnsupported { op } if op == "<<"
-        )),
-        "expected PlatformSizedShiftUnsupported `<<`, got: {:?}",
+        output.diagnostics.is_empty(),
+        "isize shift-left must lower cleanly; diagnostics: {:?}",
         output.diagnostics
     );
-    assert!(output.into_result().is_err());
+    assert!(output.into_result().is_ok());
 }
 
 #[test]
-fn usize_shift_right_rejected() {
+fn usize_shift_right_accepted() {
     let output = typecheck_and_lower(
         r"
-        fn op(x: usize, n: i32) -> usize {
+        fn op(x: usize, n: usize) -> usize {
             x >> n
         }
         ",
     );
     assert!(
-        has_diag(&output, |k| matches!(
-            k,
-            HirDiagnosticKind::PlatformSizedShiftUnsupported { op } if op == ">>"
-        )),
-        "expected PlatformSizedShiftUnsupported `>>`, got: {:?}",
+        output.diagnostics.is_empty(),
+        "usize shift-right must lower cleanly; diagnostics: {:?}",
         output.diagnostics
     );
-    assert!(output.into_result().is_err());
+    assert!(output.into_result().is_ok());
 }
 
 #[test]
@@ -208,11 +197,8 @@ fn i32_shift_accepted() {
         ",
     );
     assert!(
-        !has_diag(&output, |k| matches!(
-            k,
-            HirDiagnosticKind::PlatformSizedShiftUnsupported { .. }
-        )),
-        "i32 shift must not be gated; diagnostics: {:?}",
+        output.diagnostics.is_empty(),
+        "i32 shift must lower cleanly; diagnostics: {:?}",
         output.diagnostics
     );
 }
@@ -227,19 +213,15 @@ fn comparison_on_isize_accepted() {
         ",
     );
     assert!(
-        !has_diag(&output, |k| matches!(
-            k,
-            HirDiagnosticKind::PlatformSizedDivRemUnsupported { .. }
-                | HirDiagnosticKind::PlatformSizedShiftUnsupported { .. }
-        )),
-        "comparison on isize must not trip div/shift gates; diagnostics: {:?}",
+        output.diagnostics.is_empty(),
+        "comparison on isize must lower cleanly; diagnostics: {:?}",
         output.diagnostics
     );
 }
 
 // Comparison-op coverage: `<=`, `>`, `>=` fall through `apply_binop_gates`
 // the same way `<` does. These are not in the gated set; the assertion is
-// "no gate diagnostic fires on the comparison itself". One per op.
+// "the comparison lowers cleanly". One per op.
 
 #[test]
 fn comparison_le_on_isize_accepted() {
@@ -251,13 +233,8 @@ fn comparison_le_on_isize_accepted() {
         ",
     );
     assert!(
-        !has_diag(&output, |k| matches!(
-            k,
-            HirDiagnosticKind::PlatformSizedDivRemUnsupported { .. }
-                | HirDiagnosticKind::PlatformSizedShiftUnsupported { .. }
-                | HirDiagnosticKind::BinaryOperatorUnsupportedInMir { .. }
-        )),
-        "<= on isize must not trip any binop gate; diagnostics: {:?}",
+        output.diagnostics.is_empty(),
+        "<= on isize must lower cleanly; diagnostics: {:?}",
         output.diagnostics
     );
 }
@@ -272,13 +249,8 @@ fn comparison_gt_on_isize_accepted() {
         ",
     );
     assert!(
-        !has_diag(&output, |k| matches!(
-            k,
-            HirDiagnosticKind::PlatformSizedDivRemUnsupported { .. }
-                | HirDiagnosticKind::PlatformSizedShiftUnsupported { .. }
-                | HirDiagnosticKind::BinaryOperatorUnsupportedInMir { .. }
-        )),
-        "> on isize must not trip any binop gate; diagnostics: {:?}",
+        output.diagnostics.is_empty(),
+        "> on isize must lower cleanly; diagnostics: {:?}",
         output.diagnostics
     );
 }
@@ -293,13 +265,8 @@ fn comparison_ge_on_isize_accepted() {
         ",
     );
     assert!(
-        !has_diag(&output, |k| matches!(
-            k,
-            HirDiagnosticKind::PlatformSizedDivRemUnsupported { .. }
-                | HirDiagnosticKind::PlatformSizedShiftUnsupported { .. }
-                | HirDiagnosticKind::BinaryOperatorUnsupportedInMir { .. }
-        )),
-        ">= on isize must not trip any binop gate; diagnostics: {:?}",
+        output.diagnostics.is_empty(),
+        ">= on isize must lower cleanly; diagnostics: {:?}",
         output.diagnostics
     );
 }
@@ -308,17 +275,13 @@ fn comparison_ge_on_isize_accepted() {
 
 #[test]
 fn binop_in_machine_transition_body_rejected() {
-    // `x / y` on isize inside a transition body must be caught by the
-    // FC-P1-D walker. The transition body is lowered via
-    // `lower_machine_expr_filtered` (lower.rs ~:4201) so a missed scan
-    // would surface at the MIR producer. `ident` returns isize so the
-    // checker types the operands as isize (machine fields use `this.field`,
-    // which is checker-supported in transition bodies but not exercised
-    // here — we want operand typing independent of state-binding mechanics).
+    // A gated binop inside a transition body must be caught by the FC-P1-D
+    // walker. The transition body is lowered via `lower_machine_expr_filtered`
+    // (lower.rs ~:4201) so a missed scan would surface at the MIR producer.
+    // Use Gate 1 (Range in value position) — the only remaining unconditional
+    // gate — as the cleanest probe that the walker visits transition bodies.
     let output = typecheck_and_lower(
         r"
-        fn ident(x: isize) -> isize { x }
-
         machine M {
             events {
                 Go;
@@ -329,7 +292,7 @@ fn binop_in_machine_transition_body_rejected() {
 
 
             on Go: A => B {
-                let _ = ident(0) / ident(0);
+                let _ = 1..10;
                 B { n: 0 }
             }
             on Go: B => A {
@@ -341,9 +304,9 @@ fn binop_in_machine_transition_body_rejected() {
     assert!(
         has_diag(&output, |k| matches!(
             k,
-            HirDiagnosticKind::PlatformSizedDivRemUnsupported { op } if op == "/"
+            HirDiagnosticKind::BinaryOperatorUnsupportedInMir { op } if op == ".."
         )),
-        "expected PlatformSizedDivRemUnsupported `/` from machine transition \
+        "expected BinaryOperatorUnsupportedInMir `..` from machine transition \
          body; diagnostics: {:?}",
         output.diagnostics
     );
@@ -428,10 +391,11 @@ fn binop_in_machine_state_exit_rejected() {
 #[test]
 fn binop_in_machine_transition_guard_rejected() {
     // `when` guard expression is lowered through the same expr surface as
-    // the body. A binop here must be caught.
+    // the body. A gated binop here must be caught. Use Gate 1 (Range in value
+    // position) as the probe — the isize/usize div/shift gates were lifted.
     let output = typecheck_and_lower(
         r"
-        fn ident(x: isize) -> isize { x }
+        fn in_range(r: Range<i64>) -> bool { true }
 
         machine M {
             events {
@@ -442,7 +406,7 @@ fn binop_in_machine_transition_guard_rejected() {
             state B { n: i32; }
 
 
-            on Go: A => B when (ident(0) >> 2) == ident(0) {
+            on Go: A => B when in_range(0..2) {
                 B { n: 0 }
             }
             on Go: A => B { B { n: 0 } }
@@ -453,9 +417,9 @@ fn binop_in_machine_transition_guard_rejected() {
     assert!(
         has_diag(&output, |k| matches!(
             k,
-            HirDiagnosticKind::PlatformSizedShiftUnsupported { op } if op == ">>"
+            HirDiagnosticKind::BinaryOperatorUnsupportedInMir { op } if op == ".."
         )),
-        "expected PlatformSizedShiftUnsupported `>>` from machine transition \
+        "expected BinaryOperatorUnsupportedInMir `..` from machine transition \
          guard; diagnostics: {:?}",
         output.diagnostics
     );

@@ -18235,7 +18235,11 @@ fn const_elem_witness_global<'ctx>(
 fn is_owned_vec_runtime_symbol(symbol: &str) -> bool {
     matches!(
         symbol,
-        "hew_vec_push_owned" | "hew_vec_get_owned" | "hew_vec_set_owned" | "hew_vec_pop_owned"
+        "hew_vec_push_owned"
+            | "hew_vec_get_owned"
+            | "hew_vec_set_owned"
+            | "hew_vec_pop_owned"
+            | "hew_vec_clone_owned"
     )
 }
 
@@ -18262,6 +18266,8 @@ fn owned_vec_fn_type<'ctx>(
             .fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false)),
         // i32 hew_vec_pop_owned(ptr vec, ptr out)
         "hew_vec_pop_owned" => Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
+        // ptr hew_vec_clone_owned(ptr vec)
+        "hew_vec_clone_owned" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         _ => Err(CodegenError::FailClosed(format!(
             "not an owned Vec runtime symbol: {symbol}"
         ))),
@@ -18283,12 +18289,13 @@ fn get_or_declare_owned_vec_runtime<'ctx>(
     ))
 }
 
-/// Lower an owned-element Vec direct call (`hew_vec_{push,get,set,pop}_owned`).
+/// Lower an owned-element Vec direct call (`hew_vec_{push,get,set,pop,clone}_owned`).
 ///
 /// Parallel to `lower_layout_vec_direct_call`, but the runtime reads the
 /// element descriptor from the handle (stamped at construction), so no
 /// descriptor pointer is passed per op. push/set deep-clone the element in,
-/// get borrows a pointer into the live buffer, pop moves the element out.
+/// clone deep-copies the whole Vec, get borrows a pointer into the live buffer,
+/// and pop moves the element out.
 fn lower_owned_vec_direct_call(
     fn_ctx: &FnCtx<'_, '_>,
     callee: &str,
@@ -18299,7 +18306,7 @@ fn lower_owned_vec_direct_call(
     let expected_arity = match callee {
         "hew_vec_push_owned" | "hew_vec_get_owned" => 2,
         "hew_vec_set_owned" => 3,
-        "hew_vec_pop_owned" => 1,
+        "hew_vec_pop_owned" | "hew_vec_clone_owned" => 1,
         _ => {
             return Err(CodegenError::FailClosed(format!(
                 "lower_owned_vec_direct_call called with non-owned Vec symbol `{callee}`"
@@ -18412,6 +18419,25 @@ fn lower_owned_vec_direct_call(
                     "hew_vec_pop_owned_call",
                 )
                 .llvm_ctx("hew_vec_pop_owned call")?;
+        }
+        "hew_vec_clone_owned" => {
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_clone_owned returns a Vec; producer must supply a dest".into(),
+                )
+            })?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[vec_ptr.into()], "hew_vec_clone_owned_call")
+                .llvm_ctx("hew_vec_clone_owned call")?;
+            let new_vec_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_vec_clone_owned returned void".into())
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, new_vec_ptr)
+                .llvm_ctx("hew_vec_clone_owned store")?;
         }
         _ => unreachable!("arity gate above restricts callee to the owned Vec family"),
     }

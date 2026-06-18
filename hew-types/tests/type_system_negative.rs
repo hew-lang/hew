@@ -2177,6 +2177,24 @@ fn vec_push_nested_owned_tuple_element_is_accepted() {
 }
 
 #[test]
+fn vec_clone_nested_owned_tuple_element_is_accepted() {
+    let output = typecheck(
+        r#"
+        fn main() {
+            let v: Vec<((string, i64), bool)> = Vec::new();
+            v.push((("a", 1), true));
+            let _copy = v.clone();
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "nested owned tuple Vec::clone must type-check, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn vec_push_nested_tuple_with_inner_vec_stays_rejected() {
     let output = typecheck(
         r#"
@@ -2506,12 +2524,7 @@ fn vec_clone_bitcopy_tuple_element_is_permitted() {
 }
 
 #[test]
-fn vec_clone_owning_record_element_is_layout_fail_closed() {
-    // Person has a string field → not Copy / LayoutManaged → the checker must
-    // fail closed.  For named types the construction gate (`Vec::new()` with a
-    // LayoutManaged element) fires before the clone gate, so either
-    // `hew_vec_new_with_layout` or `hew_vec_clone_layout` in the error message
-    // is correct evidence of the fail-closed boundary.
+fn vec_clone_owning_record_element_is_permitted() {
     let output = typecheck(
         r"
         type Person {
@@ -2525,20 +2538,14 @@ fn vec_clone_owning_record_element_is_layout_fail_closed() {
         ",
     );
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && (e.message.contains("hew_vec_clone_layout")
-                    || e.message.contains("hew_vec_new_with_layout"))),
-        "Expected layout fail-closed diagnostic for Vec<Person> (Owning), got: {:?}",
+        output.errors.is_empty(),
+        "Vec<Person>::clone must route through owned-element clone, got: {:?}",
         output.errors
     );
 }
 
 #[test]
-fn vec_clone_owning_tuple_element_is_layout_fail_closed() {
-    // (string, i64) contains a string → not Copy / LayoutManaged → clone must remain fail-closed.
+fn vec_clone_owning_tuple_element_is_permitted() {
     let output = typecheck(
         r"
         fn main() {
@@ -2548,12 +2555,8 @@ fn vec_clone_owning_tuple_element_is_layout_fail_closed() {
         ",
     );
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("hew_vec_clone_layout")),
-        "Expected layout fail-closed diagnostic for Vec<(string,i64)>::clone (Owning), got: {:?}",
+        output.errors.is_empty(),
+        "Vec<(string, i64)>::clone must route through owned-element clone, got: {:?}",
         output.errors
     );
 }

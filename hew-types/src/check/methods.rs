@@ -24,14 +24,15 @@ use crate::BuiltinType;
 ///
 /// Returns `None` for methods the owned runtime ops do not implement; the
 /// caller keeps those fail-closed. Mirrors the `_layout` family but routes to
-/// `hew_vec_*_owned`, which deep-clone on push/set, borrow on get, and move on
-/// pop, dropping each element exactly once via the descriptor `drop_fn`.
+/// `hew_vec_*_owned`, which deep-clone on push/set/clone, borrow on get, and
+/// move on pop, dropping each element exactly once via the descriptor `drop_fn`.
 fn owned_vec_runtime_symbol(method: &str) -> Option<&'static str> {
     match method {
         "push" => Some("hew_vec_push_owned"),
         "get" => Some("hew_vec_get_owned"),
         "set" => Some("hew_vec_set_owned"),
         "pop" => Some("hew_vec_pop_owned"),
+        "clone" => Some("hew_vec_clone_owned"),
         _ => None,
     }
 }
@@ -3928,9 +3929,9 @@ impl Checker {
             // RcFree, so the runtime can drop it deterministically) routes
             // through the `hew_vec_*_owned` ABI instead of failing closed. The
             // owned routing only covers the methods the owned runtime ops
-            // implement (`hew_vec_{push,get,set,pop}_owned`); `remove`/`clone`
-            // on owned elements remain fail-closed until their owned ops land.
-            if matches!(method, "push" | "get" | "set" | "pop")
+            // implement (`hew_vec_{push,get,set,pop,clone}_owned`); `remove`
+            // on owned elements remains fail-closed until its owned op lands.
+            if matches!(method, "push" | "get" | "set" | "pop" | "clone")
                 && self.vec_owned_element_admissible(elem_ty)
             {
                 if let Some(owned) = owned_vec_runtime_symbol(method) {

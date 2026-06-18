@@ -386,6 +386,10 @@ fn emit_module(
 /// `native_emission_triple()` default). `Some(triple)` emits the native object
 /// for an explicit, clang-compatible triple — on Darwin the deployment-target
 /// form — enabling cross-arch object/binary emission.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "all args are direct fields of EmitOptions; no grouping improves clarity"
+)]
 fn emit_module_with_triple(
     pipeline: &hew_mir::IrPipeline,
     module_name: &str,
@@ -432,6 +436,10 @@ fn emit_module_with_triple(
 /// "newer macOS version" warning fires — and the normalized triple elsewhere.
 /// Wasm emission does not use a native triple (codegen targets
 /// `wasm32-unknown-unknown` directly), so `None` is passed.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "all args are direct fields of EmitOptions; no grouping improves clarity"
+)]
 fn emit_module_for_target(
     pipeline: &hew_mir::IrPipeline,
     module_name: &str,
@@ -741,8 +749,16 @@ fn emit_obj_only(
         CompileEmitTarget::Native
     };
     // Emit objects only — never link (no freestanding wasm link either).
-    let artefacts =
-        emit_module_for_target(&pipeline, stem, out_dir, emit_target, target, false, false, None)?;
+    let artefacts = emit_module_for_target(
+        &pipeline,
+        stem,
+        out_dir,
+        emit_target,
+        target,
+        false,
+        false,
+        None,
+    )?;
     let produced = match emit_target {
         CompileEmitTarget::Native => artefacts.native_obj_path,
         CompileEmitTarget::Wasm => artefacts.wasm_obj_path,

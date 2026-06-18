@@ -519,7 +519,13 @@ fn emit_module_with_options(
             Some(triple) => triple.to_string(),
             None => native_emission_triple(),
         };
-        emit_object_in_process(pipeline, options.module_name, &triple_str, &obj_path, debug_input)?;
+        emit_object_in_process(
+            pipeline,
+            options.module_name,
+            &triple_str,
+            &obj_path,
+            debug_input,
+        )?;
         artefacts.native_obj_path = Some(obj_path);
     }
 
@@ -37340,15 +37346,14 @@ fn lower_function<'ctx>(
     // body line-by-line.
     let mut fn_subprogram: Option<inkwell::debug_info::DISubprogram<'ctx>> = None;
     let entry_debug_loc = match (debug, func.span) {
-        (Some(dctx), Some((start, _end))) if !has_suspend && dctx.line_index.contains(start as usize) => {
+        (Some(dctx), Some((start, _end)))
+            if !has_suspend && dctx.line_index.contains(start as usize) =>
+        {
             let line = dctx.line_index.line(start as usize);
             let column = dctx.line_index.column(start as usize);
-            let subroutine_ty = dctx.di_builder.create_subroutine_type(
-                dctx.file,
-                None,
-                &[],
-                DIFlags::PUBLIC,
-            );
+            let subroutine_ty =
+                dctx.di_builder
+                    .create_subroutine_type(dctx.file, None, &[], DIFlags::PUBLIC);
             let subprogram = dctx.di_builder.create_function(
                 dctx.compile_unit.as_debug_info_scope(),
                 &func.name,
@@ -48816,8 +48821,9 @@ mod tests {
         let pipeline = pipeline_with_coro_probe();
         let machine = target_machine_for_triple(triple)
             .unwrap_or_else(|e| panic!("target machine for {triple}: {e:?}"));
-        let module = build_module_for_target(&ctx, &pipeline, "coro_split_test", Some(&machine), None)
-            .unwrap_or_else(|e| panic!("coroutine module must build for {triple}: {e:?}"));
+        let module =
+            build_module_for_target(&ctx, &pipeline, "coro_split_test", Some(&machine), None)
+                .unwrap_or_else(|e| panic!("coroutine module must build for {triple}: {e:?}"));
         assert!(
             crate::coro::module_has_coroutines(&module),
             "{triple}: module must carry a coroutine before split"
@@ -48976,9 +48982,14 @@ mod tests {
         let pipeline = pipeline_with_two_suspends();
         let machine = target_machine_for_triple(triple)
             .unwrap_or_else(|e| panic!("target machine for {triple}: {e:?}"));
-        let module =
-            build_module_for_target(&ctx, &pipeline, "coro_multi_split_test", Some(&machine), None)
-                .unwrap_or_else(|e| panic!("two-suspend module must build for {triple}: {e:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "coro_multi_split_test",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|e| panic!("two-suspend module must build for {triple}: {e:?}"));
         assert!(
             crate::coro::module_has_coroutines(&module),
             "{triple}: module must carry a coroutine before split"
@@ -49865,9 +49876,14 @@ mod tests {
         );
         let machine = target_machine_for_triple(triple)
             .unwrap_or_else(|e| panic!("target machine for {triple}: {e:?}"));
-        let module =
-            build_module_for_target(&ctx, &pipeline, "parity_dispatch_test", Some(&machine), None)
-                .unwrap_or_else(|e| panic!("dispatch-drive module must build for {triple}: {e:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "parity_dispatch_test",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|e| panic!("dispatch-drive module must build for {triple}: {e:?}"));
         assert!(
             crate::coro::module_has_coroutines(&module),
             "{triple}: the driven handler must be a coroutine before split"
@@ -49976,9 +49992,14 @@ fn main() {
         let pipeline = pipeline_from_await_source();
         let machine = target_machine_for_triple(triple)
             .unwrap_or_else(|e| panic!("target machine for {triple}: {e:?}"));
-        let module =
-            build_module_for_target(&ctx, &pipeline, "suspending_ask_split_test", Some(&machine), None)
-                .unwrap_or_else(|e| panic!("{triple}: SuspendingAsk module must build: {e:?}"));
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "suspending_ask_split_test",
+            Some(&machine),
+            None,
+        )
+        .unwrap_or_else(|e| panic!("{triple}: SuspendingAsk module must build: {e:?}"));
         assert!(
             crate::coro::module_has_coroutines(&module),
             "{triple}: the awaiting handler must be a coroutine before split"
@@ -50195,9 +50216,14 @@ fn main() {
         let ctx = Context::create();
         let wasm_machine =
             target_machine_for_triple("wasm32-unknown-unknown").expect("wasm32 target machine");
-        let wasm_mod =
-            build_module_for_target(&ctx, &pipeline, "malloc_width_wasm32", Some(&wasm_machine), None)
-                .expect("wasm32 codec-thunk module must build without LLVM verifier error");
+        let wasm_mod = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "malloc_width_wasm32",
+            Some(&wasm_machine),
+            None,
+        )
+        .expect("wasm32 codec-thunk module must build without LLVM verifier error");
         let wasm_ir = wasm_mod.print_to_string().to_string();
 
         // The deserialize thunk must call `malloc` with an i32 argument on wasm32.

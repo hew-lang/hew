@@ -15,7 +15,11 @@ use hew_types::Checker;
 /// Parse → typecheck → HIR-lower → raw/elaborated MIR.
 fn pipeline_with_tc(source: &str) -> IrPipeline {
     let parsed = hew_parser::parse(source);
-    assert!(parsed.errors.is_empty(), "parse errors: {:#?}", parsed.errors);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let tc_output = checker.check_program(&parsed.program);
     let output = lower_program(

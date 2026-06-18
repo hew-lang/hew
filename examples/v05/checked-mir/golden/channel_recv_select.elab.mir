@@ -1355,9 +1355,10 @@ ElaboratedMirFunction {
             },
         ),
         (
-            Select {
+            Suspend {
                 block: 13,
-                next: 22,
+                resume: 22,
+                cleanup: 22,
             },
             DropPlan {
                 drops: [],
@@ -1411,9 +1412,25 @@ ElaboratedMirFunction {
             },
         ),
         (
+            Cancel {
+                block: 18,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
             Goto {
                 block: 19,
                 target: 13,
+            },
+            DropPlan {
+                drops: [],
+            },
+        ),
+        (
+            Cancel {
+                block: 19,
             },
             DropPlan {
                 drops: [],

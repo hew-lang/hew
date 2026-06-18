@@ -138,6 +138,33 @@ fn multiple_awaits_in_one_handler_resume_correctly_under_both_pools() {
     run_await_example_both_pools("await_multi", "two=84\nthree=126\nloop=168\n");
 }
 
+#[test]
+fn select_in_handler_binds_first_ready_arm_under_both_pools() {
+    // cut-select-waitset: a `select{}` inside an actor handler suspends the
+    // racing continuation on a readiness waitset instead of busy-polling the
+    // worker in `hew_select_first`. `Fast.compute(7)` (7 + 100) replies
+    // immediately and wins; the `Slow` arm (sleeps 50ms) is the loser
+    // (cancelled); the `after 500ms` safety net never fires. The single-worker
+    // run is the worker-freeing proof: a blocking `hew_select_first` would
+    // deadlock the lone worker (it would spin on the readiness flags while
+    // pinning the very worker that must run the askees). The exact value (107)
+    // proves the winner arm bound correctly under a real suspend/resume.
+    run_await_example_both_pools("select_suspend_race", "winner=107\n");
+}
+
+#[test]
+fn select_after_deadline_fires_timeout_branch_under_both_pools() {
+    // cut-select-waitset: the `after` deadline arm fires the timeout branch. The
+    // only ask arm is `Slow` (sleeps 200ms); the 20ms deadline wins. The
+    // suspending select arms the deadline on the global timer wheel, suspends,
+    // and the timer-fired wake resumes the coordinator into the AfterTimer
+    // winner block — which cancels the still-pending Slow ask and runs the
+    // `after` body. The exact value (-7) proves the deadline branch routed
+    // correctly under both pools; a dropped timer arm or mis-routed timer wake
+    // would print the wrong value or hang.
+    run_await_example_both_pools("select_suspend_deadline", "deadline=-7\n");
+}
+
 /// Run an `examples/net/<name>.hew` fixture via `hew run`, optionally setting
 /// `HEW_WORKERS`, and assert it exits 0 with exactly `expected_stdout`. The net
 /// fixtures are self-contained: `main` runs the TCP server and the actor runs

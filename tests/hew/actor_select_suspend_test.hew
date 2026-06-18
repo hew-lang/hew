@@ -1,0 +1,105 @@
+//! Cooperative `select{}` inside an actor handler suspends the coroutine on a
+//! readiness waitset instead of blocking the M:N worker in `hew_select_first`.
+//!
+//! Before this lane a `select{}` in an actor receive-fn called `hew_select_first`
+//! — a busy-poll loop (`std::thread::sleep(1ms)`) over the per-arm readiness
+//! flags that PINNED the OS worker for the whole wait. The `SuspendingSelect`
+//! carrier reroutes an execution-context `select` onto the coro suspend point: a
+//! shared await-cancel arbiter over each arm's readiness observer + a timer-wheel
+//! deadline for the `after` arm. The first arm to become ready (or the deadline)
+//! wins the arbiter, resumes the handler, and the losers are cancelled. A free-fn
+//! / `fn main` keeps the blocking call (no parkable coroutine).
+//!
+//! These assertions pin EXACT bound values (not `> 0`): the handler must resume
+//! with the winning arm's value, the deadline arm must bind its body's value, and
+//! the loser must not corrupt the winner. A regression that mis-routes the resume
+//! edge, picks the wrong winner, or drops the frame fails the exact value. The
+//! suspend-not-block interleave proof (which needs `HEW_WORKERS=1` to be
+//! deterministic) is the hew-cli `await_e2e` suite's job; here the ratchet runs
+//! with the default worker count and pins functional correctness.
+
+import std::testing;
+
+actor Fast {
+    let tag: i64;
+    receive fn compute(n: i64) -> i64 {
+        return n + tag;
+    }
+}
+
+actor Slow {
+    receive fn compute(n: i64) -> i64 {
+        sleep_ms(60);
+        return n;
+    }
+}
+
+actor Coordinator {
+    let fast: LocalPid<Fast>;
+    let slow: LocalPid<Slow>;
+    receive fn race_two(n: i64) -> i64 {
+        let winner = select {
+            reply from fast.compute(n) => reply,
+            reply from slow.compute(99) => reply,
+            after 500ms => -7,
+        };
+        return winner;
+    }
+    receive fn race_deadline(n: i64) -> i64 {
+        let result = select {
+            reply from slow.compute(n) => reply,
+            after 20ms => -7,
+        };
+        return result;
+    }
+}
+
+#[test]
+fn select_binds_first_ready_arm_in_handler() {
+    let f = spawn Fast(tag: 100);
+    let s = spawn Slow;
+    let c = spawn Coordinator(fast: f, slow: s);
+    // Fast replies immediately (7 + 100 = 107) before Slow wakes; the select
+    // resumes with the Fast arm's value. The exact value (107) proves the
+    // winner arm bound correctly and the Slow loser did not overwrite it.
+    match await c.race_two(7) {
+        Ok(v) => testing.assert_eq(v, 107),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn select_after_deadline_fires_timeout_branch_in_handler() {
+    let f = spawn Fast(tag: 0);
+    let s = spawn Slow;
+    let c = spawn Coordinator(fast: f, slow: s);
+    // The only ask arm is Slow (sleeps 60ms); the 20ms deadline fires first.
+    // The select resumes into the AfterTimer winner block (cancelling the
+    // pending Slow ask) and binds the deadline body's value (-7).
+    match await c.race_deadline(5) {
+        Ok(v) => testing.assert_eq(v, -7),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn many_coordinators_each_select_then_resume() {
+    // Several independent coordinators each suspend on their own select and
+    // resume with their own winner. On a cooperative suspend these park
+    // concurrently; the exact per-coordinator value (n + 100) proves none lost
+    // its frame or resumed another's.
+    let f = spawn Fast(tag: 100);
+    let s = spawn Slow;
+    let a = spawn Coordinator(fast: f, slow: s);
+    let b = spawn Coordinator(fast: f, slow: s);
+    let ra = await a.race_two(1);
+    let rb = await b.race_two(2);
+    match ra {
+        Ok(va) => testing.assert_eq(va, 101),
+        Err(_) => testing.assert_true(false),
+    }
+    match rb {
+        Ok(vb) => testing.assert_eq(vb, 102),
+        Err(_) => testing.assert_true(false),
+    }
+}

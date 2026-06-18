@@ -454,6 +454,7 @@ stable = [
   "hew_routing_table_new",
   "hew_seconds",
   "hew_select_first",
+  "hew_select_ready_index",
   "hew_semaphore_acquire",
   "hew_semaphore_acquire_timeout",
   "hew_semaphore_count",

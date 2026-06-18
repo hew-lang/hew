@@ -11908,6 +11908,7 @@ impl Builder {
                     | Terminator::SuspendingSleep { .. }
                     | Terminator::SuspendingScopeDeadline { .. }
                     | Terminator::Select { .. }
+                    | Terminator::SuspendingSelect { .. }
                     | Terminator::Join { .. } => false,
                 }
             }
@@ -18902,10 +18903,33 @@ impl Builder {
         }
 
         // Seal the originating block with the select terminator.
-        self.finish_current_block(Terminator::Select {
-            arms: mir_arms,
-            next: join_bb,
-        });
+        //
+        // Suspendable-caller flip: in a caller that carries the execution
+        // context (actor handler / closure / task entry) the `select{}`
+        // SUSPENDS on the first-ready of its arms instead of busy-polling the
+        // worker in `hew_select_first`. The `SuspendingSelect` carrier rides the
+        // SAME `arms` payload (identical per-arm body blocks + bindings) but
+        // codegen builds the readiness waitset + arms the deadline on the global
+        // timer wheel + `coro.suspend`s, resuming on the first-ready wake and
+        // cancelling the losers. `cleanup` reuses `join_bb` (the resume edge)
+        // exactly as the recv / ask / sleep carriers do — the coro `cleanup`
+        // outline is the abandon teardown owner, not this MIR block. A
+        // `FunctionCallConv::Default` caller (`main`, free fn) has no parkable
+        // continuation and keeps the blocking `Terminator::Select` /
+        // `hew_select_first` path. Reuses the same `carries_execution_context`
+        // discriminator as the recv / ask / await / sleep flips.
+        if self.current_function_call_conv.carries_execution_context() {
+            self.finish_current_block(Terminator::SuspendingSelect {
+                arms: mir_arms,
+                resume: join_bb,
+                cleanup: join_bb,
+            });
+        } else {
+            self.finish_current_block(Terminator::Select {
+                arms: mir_arms,
+                next: join_bb,
+            });
+        }
 
         // Per-arm body blocks. Each lowers the arm body; the body's
         // BindingRef (for ActorAsk arms with a binding) resolves
@@ -23702,6 +23726,12 @@ fn validate_cross_block_split_consume(
             }
             | Terminator::SuspendingSleep {
                 resume, cleanup, ..
+            }
+            // The suspending select's default suspend-return edge exits the
+            // function; resume (winner-scan join) + cleanup (abandon) are the
+            // in-CFG edges (resume == cleanup == the select join).
+            | Terminator::SuspendingSelect {
+                resume, cleanup, ..
             } => {
                 emit(*resume);
                 emit(*cleanup);
@@ -23770,6 +23800,9 @@ fn validate_cross_block_split_consume(
                 resume, cleanup, ..
             }
             | Terminator::SuspendingSleep {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingSelect {
                 resume, cleanup, ..
             } => vec![*resume, *cleanup],
             Terminator::SuspendingScopeDeadline {
@@ -24390,6 +24423,7 @@ pub fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
             | Terminator::SuspendingTaskAwait { .. }
             | Terminator::SuspendingSleep { .. }
             | Terminator::SuspendingScopeDeadline { .. }
+            | Terminator::SuspendingSelect { .. }
     )
 }
 
@@ -24480,7 +24514,9 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
         Terminator::SuspendingScopeDeadline {
             scope, duration_ms, ..
         } => vec![*scope, *duration_ms],
-        Terminator::Select { arms, .. } => {
+        // The suspending select carries the identical `arms` payload, so its
+        // per-arm source operands are read the same way as the blocking select.
+        Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
             let mut places = Vec::new();
             for arm in arms {
                 match &arm.kind {
@@ -24749,9 +24785,11 @@ fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
         | Terminator::SuspendingStreamSend { value, .. } => place_refs_local(*value, local),
         Terminator::RemoteAsk { value, .. }
         | Terminator::SuspendingRemoteAsk { value, .. } => place_refs_local(*value, local),
-        Terminator::Select { .. } => terminator_source_places(term)
-            .into_iter()
-            .any(|p| place_refs_local(p, local)),
+        Terminator::Select { .. } | Terminator::SuspendingSelect { .. } => {
+            terminator_source_places(term)
+                .into_iter()
+                .any(|p| place_refs_local(p, local))
+        }
         Terminator::Join { .. } => terminator_source_places(term)
             .into_iter()
             .any(|p| place_refs_local(p, local)),
@@ -28357,7 +28395,11 @@ fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<
         Terminator::Send { value, .. }
         | Terminator::Ask { value, .. }
         | Terminator::RemoteAsk { value, .. } => vec![*value],
-        Terminator::Select { arms, .. } => {
+        // The suspending select transfers each ActorAsk arm's `value` payload
+        // into its actor message queue exactly as the blocking select does
+        // (the readiness waitset still issues the ask); poison each owned
+        // payload identically.
+        Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
             let mut places = Vec::new();
             for arm in arms {
                 if let SelectArmKind::ActorAsk { value, .. } = &arm.kind {
@@ -30565,6 +30607,19 @@ fn enumerate_exits(
             // already covered by the successors walker; the drop plan keys off the
             // resume/cleanup coro edges exactly like the other suspend carriers.
             | Terminator::SuspendingScopeDeadline {
+                resume, cleanup, ..
+            }
+            // `SuspendingSelect` is a suspend point with the select drop posture:
+            // the per-arm reply channels + readiness registrations + the shared
+            // await-cancel arbiter ride the coro frame across the park. The
+            // per-arm LOSER cleanup (win path) runs at the codegen resume-edge
+            // dispatch site exactly as `Terminator::Select`'s does; the abandon
+            // edge deregisters EVERY observer + cancels the timer + frees the
+            // arbiter (the single-teardown owner). The function-wide DropPlan is
+            // intentionally empty — both the select-loser cleanup and the
+            // suspend-frame teardown are codegen-owned, never a function-exit
+            // LIFO drop.
+            | Terminator::SuspendingSelect {
                 resume, cleanup, ..
             } => (
                 ExitPath::Suspend {

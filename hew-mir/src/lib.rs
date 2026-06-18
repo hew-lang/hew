@@ -8,7 +8,6 @@
 pub mod closure_env;
 pub mod dataflow;
 pub mod dyn_vtable_registry;
-pub mod gen_state;
 pub mod lower;
 pub mod model;
 pub mod runtime_call;

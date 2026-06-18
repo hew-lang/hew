@@ -4586,69 +4586,6 @@ struct LoweredFunction {
     gen_state_layouts: Vec<crate::model::GenStateLayout>,
 }
 
-/// Wrap a drop-in-state shim `RawMirFunction` in a stub `LoweredFunction`.
-///
-/// DEAD as of the generator→coro reroute: `lower_gen_block` no longer runs
-/// `gen_state::synthesise`, so no drop-shim is produced and this wrapper has no
-/// caller. It is retained (rather than deleted here) only so the `gen_state.rs`
-/// removal stays a single self-contained deletion — the next stage deletes
-/// `gen_state.rs` (RC14) and this dead wrapper together.
-#[allow(
-    dead_code,
-    reason = "removed with gen_state.rs in the RC14 deletion stage"
-)]
-fn stub_lowered_for_drop_shim(raw: RawMirFunction) -> LoweredFunction {
-    let name = raw.name.clone();
-    let return_ty = raw.return_ty.clone();
-    let thir = ThirFunction {
-        name: name.clone(),
-        return_ty: return_ty.clone(),
-        statements: Vec::new(),
-    };
-    let checked = CheckedMirFunction {
-        name: name.clone(),
-        return_ty: return_ty.clone(),
-        blocks: raw.blocks.clone(),
-        decisions: Vec::new(),
-        checks: Vec::new(),
-        cooperate_sites: Vec::new(),
-    };
-    // The placeholder body is a single Trap block (id 0). Mirror it
-    // in the elaborated view with a single Normal block and no drops;
-    // S4 will replace both raw + elaborated together when it
-    // regenerates the cascade-on-tag shim from `drop_tables`.
-    let elab_block = ElabBlock {
-        id: 0,
-        kind: BlockKind::Normal,
-        drops: Vec::new(),
-        successor: None,
-    };
-    let elaborated = ElaboratedMirFunction {
-        name,
-        return_ty,
-        statements: Vec::new(),
-        decisions: Vec::new(),
-        blocks: vec![elab_block],
-        // `ExitPath::Return` is the conventional empty-drop-plan exit
-        // even though the Trap terminator does not actually return —
-        // codegen does not consume `drop_plans` for Trap-only blocks,
-        // so any non-empty plan would be the wrong signal.
-        drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
-        coroutine: None,
-        lambda_captures: Vec::new(),
-    };
-    LoweredFunction {
-        thir,
-        raw,
-        checked,
-        elaborated,
-        diagnostics: Vec::new(),
-        generated: Vec::new(),
-        record_layouts: Vec::new(),
-        gen_state_layouts: Vec::new(),
-    }
-}
-
 /// Insert execution-context carrier markers into a context-bearing CFG.
 ///
 /// The entry block starts with `EnterContext`; every terminal block (`Return`
@@ -30017,9 +29954,10 @@ fn enumerate_exits(
                 DropPlan::default(),
             ),
             // Generator construction is a synchronous call into the runtime
-            // (`hew_gen_ctx_create`) with a single `next` continuation. Model it
-            // as an `ExitPath::Call` so the call-exit handling applies; the
-            // constructed handle's own drop is scheduled at scope exit by the
+            // (the coro companion alloc + the gen-body ramp call) with a single
+            // `next` continuation. Model it as an `ExitPath::Call` so the
+            // call-exit handling applies; the constructed value's own drop
+            // (`hew_gen_coro_destroy`) is scheduled at scope exit by the
             // enclosing function's LIFO drop plan, not here.
             Terminator::MakeGenerator {
                 dest: _,
@@ -30029,7 +29967,7 @@ fn enumerate_exits(
             } => (
                 ExitPath::Call {
                     block: block_id,
-                    callee: "hew_gen_ctx_create".to_string(),
+                    callee: "hew_cont_frame_alloc".to_string(),
                     next: *next,
                 },
                 DropPlan::default(),

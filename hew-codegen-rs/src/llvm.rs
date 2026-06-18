@@ -2569,59 +2569,13 @@ fn intern_runtime_decl<'ctx>(
         // `Terminator::Yield` arm of the gen-body lowering. The body fn must
         // declare its `ctx` parameter as `Local(1)` (per the lower_gen_block
         // contract); the codegen arm loads the pointer from that slot.
-        // `value` is the address of the yielded value's slot (taken via
-        // `actor_payload_ptr_size`); `size` is its byte length. The runtime
-        // copies `size` bytes by value, so the lifetime of the original slot
-        // ends at the call and the caller may keep using the slot afterwards.
-        "hew_gen_yield" => ctx
-            .bool_type()
-            .fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false),
         // hew_cancel_token_is_requested(token: *mut HewCancellationToken) -> i32
         // (`hew-runtime/src/task_scope.rs:272`). Returns nonzero when the token
-        // (or any ancestor) has been signalled. Codegen emits this from both
-        // `Terminator::Yield` and the checker-authoritative
-        // `Instr::CancellationTokenIsCancelled` expression observation. Both
-        // paths borrow the handle; ownership remains with the source local and
-        // its existing drop path.
+        // (or any ancestor) has been signalled. Codegen emits this from the
+        // checker-authoritative `Instr::CancellationTokenIsCancelled` expression
+        // observation. The path borrows the handle; ownership remains with the
+        // source local and its existing drop path.
         "hew_cancel_token_is_requested" => i32_ty.fn_type(&[ptr_ty.into()], false),
-        // hew_gen_ctx_parent_cancel_token(ctx: *mut HewGenCtx) -> *mut HewCancellationToken
-        // (`hew-runtime/src/generator.rs`). Returns the borrowed
-        // `parent_cancel_token` snapshot captured by `hew_gen_ctx_create`
-        // from the consumer thread's `HewExecutionContext::cancel_token`.
-        // The pointer is borrowed (the gen-ctx owns the retain); callers
-        // MUST NOT release it. Null is returned both for a null `ctx`
-        // (cabi_guard) and when no enclosing execution context was
-        // installed at create time. Codegen emits this from the
-        // `Terminator::Yield` arm as the operand source for the
-        // cancel-observation `hew_cancel_token_is_requested` call — the
-        // load-bearing swap that promotes the generators substrate always-emit seam
-        // from a const-null observer to a live parent-scope observer.
-        "hew_gen_ctx_parent_cancel_token" => ptr_ty.fn_type(&[ptr_ty.into()], false),
-        // hew_gen_ctx_create(body_fn: extern "C" fn(*mut c_void, *mut HewGenCtx),
-        //                    body_arg: *mut c_void, arg_size: usize) -> *mut HewGenCtx
-        // (`hew-runtime/src/generator.rs:132`). Spawns the generator thread and
-        // returns the context handle stored in the `Generator<Y,R>` value slot.
-        // Codegen emits this at the gen-block / gen-fn construction site, passing
-        // the address of the synthesised `__hew_gen_body_*` function and a null /
-        // zero-size body arg (capture-free generators today). The returned handle
-        // is released by `hew_gen_free` on the generator value's drop path.
-        "hew_gen_ctx_create" => {
-            ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), i64_ty.into()], false)
-        }
-        // hew_gen_next(ctx: *mut HewGenCtx, out_size: *mut usize) -> *mut c_void
-        // (`hew-runtime/src/generator.rs:341`). Resumes the generator and returns
-        // an owned heap pointer to the next yielded value (caller frees with
-        // `hew_free`/`libc::free`), writing the byte length through `out_size`;
-        // null = generator done. Codegen emits this from the `.next()` consumption
-        // path, unboxing the result into `Option<Yield>`.
-        "hew_gen_next" => ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        // hew_gen_free(ctx: *mut HewGenCtx) -> void
-        // (`hew-runtime/src/generator.rs:414`). Cancels (if running), joins the
-        // generator thread, drains unconsumed yields, and frees the context. The
-        // sole release path for the `Generator<Y,R>` handle; codegen emits it on
-        // every scope-exit / drop path of the generator value, null-after-free so
-        // a double drop is a no-op (the runtime also null-guards).
-        "hew_gen_free" => ctx.void_type().fn_type(&[ptr_ty.into()], false),
         // ── W5.005 (F1b): memory-intrinsic floor allocator (hew-runtime/src/mem.rs) ──
         // hew_alloc(size: u64, align: u64) -> *mut u8 (`mem.rs:113`). Returns
         // null on an invalid `(size, align)` layout; aborts on genuine OOM.

@@ -90,26 +90,6 @@ pub enum VecSliceElem {
     Str,
 }
 
-/// Numeric width discriminator for `Option<T>` / `Result<T, E>` unwrap
-/// runtime helpers (`hew_option_unwrap_*`, `hew_result_unwrap_*`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
-pub enum NumericElem {
-    #[default]
-    F64,
-    I32,
-    I64,
-}
-
-/// Integer width discriminator for the `unwrap_or` family
-/// (`hew_result_unwrap_or_*` is i32/i64 only today; `hew_option_unwrap_or_*`
-/// is f64/i32/i64).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
-pub enum IntegerElem {
-    #[default]
-    I32,
-    I64,
-}
-
 /// Element-kind discriminator for the Sink write families
 /// (`hew_sink_write_bytes` vs `hew_sink_write_string`). Stream/channel
 /// recv retired their per-element symbols in favour of the
@@ -346,12 +326,6 @@ pub enum RuntimeCallFamily {
     ObserveSeries,
     ObserveBarrier,
 
-    // --- Option<T> helpers --------------------------------------------------
-    OptionIsNone,
-    OptionIsSome,
-    OptionUnwrap(NumericElem),
-    OptionUnwrapOr(NumericElem),
-
     // --- Rc allocation for task-owned closure environments ------------------
     RcNew,
 
@@ -393,12 +367,6 @@ pub enum RuntimeCallFamily {
     /// and from `ReplyChannelFree` (handle-level cleanup).
     ReplyPayloadFree,
     ReplyWait,
-
-    // --- Result<T, E> helpers ----------------------------------------------
-    ResultIsErr,
-    ResultIsOk,
-    ResultUnwrap(NumericElem),
-    ResultUnwrapOr(IntegerElem),
 
     // --- Select winner-picker ----------------------------------------------
     SelectFirst,
@@ -618,15 +586,6 @@ impl RuntimeCallFamily {
             Self::ObserveScrape => "hew_observe_scrape",
             Self::ObserveSeries => "hew_observe_series",
             Self::ObserveBarrier => "hew_observe_barrier",
-            // Option helpers
-            Self::OptionIsNone => "hew_option_is_none",
-            Self::OptionIsSome => "hew_option_is_some",
-            Self::OptionUnwrap(NumericElem::F64) => "hew_option_unwrap_f64",
-            Self::OptionUnwrap(NumericElem::I32) => "hew_option_unwrap_i32",
-            Self::OptionUnwrap(NumericElem::I64) => "hew_option_unwrap_i64",
-            Self::OptionUnwrapOr(NumericElem::F64) => "hew_option_unwrap_or_f64",
-            Self::OptionUnwrapOr(NumericElem::I32) => "hew_option_unwrap_or_i32",
-            Self::OptionUnwrapOr(NumericElem::I64) => "hew_option_unwrap_or_i64",
             // Rc
             Self::RcNew => "hew_rc_new",
             // RecvHalf
@@ -645,14 +604,6 @@ impl RuntimeCallFamily {
             Self::ReplyChannelNew => "hew_reply_channel_new",
             Self::ReplyPayloadFree => "hew_reply_payload_free",
             Self::ReplyWait => "hew_reply_wait",
-            // Result helpers
-            Self::ResultIsErr => "hew_result_is_err",
-            Self::ResultIsOk => "hew_result_is_ok",
-            Self::ResultUnwrap(NumericElem::F64) => "hew_result_unwrap_f64",
-            Self::ResultUnwrap(NumericElem::I32) => "hew_result_unwrap_i32",
-            Self::ResultUnwrap(NumericElem::I64) => "hew_result_unwrap_i64",
-            Self::ResultUnwrapOr(IntegerElem::I32) => "hew_result_unwrap_or_i32",
-            Self::ResultUnwrapOr(IntegerElem::I64) => "hew_result_unwrap_or_i64",
             // Select
             Self::SelectFirst => "hew_select_first",
             // SendHalf
@@ -863,15 +814,6 @@ impl RuntimeCallFamily {
             "hew_observe_scrape" => Self::ObserveScrape,
             "hew_observe_series" => Self::ObserveSeries,
             "hew_observe_barrier" => Self::ObserveBarrier,
-            // Option helpers
-            "hew_option_is_none" => Self::OptionIsNone,
-            "hew_option_is_some" => Self::OptionIsSome,
-            "hew_option_unwrap_f64" => Self::OptionUnwrap(NumericElem::F64),
-            "hew_option_unwrap_i32" => Self::OptionUnwrap(NumericElem::I32),
-            "hew_option_unwrap_i64" => Self::OptionUnwrap(NumericElem::I64),
-            "hew_option_unwrap_or_f64" => Self::OptionUnwrapOr(NumericElem::F64),
-            "hew_option_unwrap_or_i32" => Self::OptionUnwrapOr(NumericElem::I32),
-            "hew_option_unwrap_or_i64" => Self::OptionUnwrapOr(NumericElem::I64),
             // Rc
             "hew_rc_new" => Self::RcNew,
             // RecvHalf
@@ -890,14 +832,6 @@ impl RuntimeCallFamily {
             "hew_reply_channel_new" => Self::ReplyChannelNew,
             "hew_reply_payload_free" => Self::ReplyPayloadFree,
             "hew_reply_wait" => Self::ReplyWait,
-            // Result helpers
-            "hew_result_is_err" => Self::ResultIsErr,
-            "hew_result_is_ok" => Self::ResultIsOk,
-            "hew_result_unwrap_f64" => Self::ResultUnwrap(NumericElem::F64),
-            "hew_result_unwrap_i32" => Self::ResultUnwrap(NumericElem::I32),
-            "hew_result_unwrap_i64" => Self::ResultUnwrap(NumericElem::I64),
-            "hew_result_unwrap_or_i32" => Self::ResultUnwrapOr(IntegerElem::I32),
-            "hew_result_unwrap_or_i64" => Self::ResultUnwrapOr(IntegerElem::I64),
             // Select
             "hew_select_first" => Self::SelectFirst,
             // SendHalf
@@ -1124,10 +1058,6 @@ impl RuntimeCallFamily {
             | F::ObserveScrape
             | F::ObserveSeries
             | F::ObserveBarrier
-            | F::OptionIsNone
-            | F::OptionIsSome
-            | F::OptionUnwrap(_)
-            | F::OptionUnwrapOr(_)
             | F::RcNew
             | F::RecvHalfRecv
             | F::RecvHalfTryRecv
@@ -1141,10 +1071,6 @@ impl RuntimeCallFamily {
             | F::ReplyChannelNew
             | F::ReplyPayloadFree
             | F::ReplyWait
-            | F::ResultIsErr
-            | F::ResultIsOk
-            | F::ResultUnwrap(_)
-            | F::ResultUnwrapOr(_)
             | F::SelectFirst
             | F::SendHalfSend
             | F::SendHalfTrySend
@@ -1486,10 +1412,6 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
     for repr in F::iter() {
         match repr {
             F::MathIntrinsic(_) => out.extend(MathIntrinsic::iter().map(F::MathIntrinsic)),
-            F::OptionUnwrap(_) => out.extend(NumericElem::iter().map(F::OptionUnwrap)),
-            F::OptionUnwrapOr(_) => out.extend(NumericElem::iter().map(F::OptionUnwrapOr)),
-            F::ResultUnwrap(_) => out.extend(NumericElem::iter().map(F::ResultUnwrap)),
-            F::ResultUnwrapOr(_) => out.extend(IntegerElem::iter().map(F::ResultUnwrapOr)),
             F::SinkWrite(_) => out.extend(StreamElementKind::iter().map(F::SinkWrite)),
             F::SinkTryWrite(_) => out.extend(StreamElementKind::iter().map(F::SinkTryWrite)),
             F::VecGet(_) => out.extend(VecGetElem::iter().map(F::VecGet)),

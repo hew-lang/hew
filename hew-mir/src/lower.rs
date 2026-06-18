@@ -17124,23 +17124,6 @@ impl Builder {
             | "hew_metric_histogram_record" => {
                 self.lower_metric_runtime_call(symbol, hir_args, site, context)
             }
-            "hew_option_is_none"
-            | "hew_option_is_some"
-            | "hew_option_unwrap_f64"
-            | "hew_option_unwrap_i32"
-            | "hew_option_unwrap_i64"
-            | "hew_option_unwrap_or_f64"
-            | "hew_option_unwrap_or_i32"
-            | "hew_option_unwrap_or_i64"
-            | "hew_result_is_err"
-            | "hew_result_is_ok"
-            | "hew_result_unwrap_f64"
-            | "hew_result_unwrap_i32"
-            | "hew_result_unwrap_i64"
-            | "hew_result_unwrap_or_i32"
-            | "hew_result_unwrap_or_i64" => {
-                self.lower_option_result_runtime_call(symbol, hir_args, site, context)
-            }
             "hew_duration_nanos"
             | "hew_duration_micros"
             | "hew_duration_millis"
@@ -17422,71 +17405,13 @@ impl Builder {
         dest
     }
 
-    fn lower_option_result_runtime_call(
-        &mut self,
-        symbol: &str,
-        hir_args: &[hew_hir::HirExpr],
-        site: hew_hir::SiteId,
-        context: RuntimeCallContext,
-    ) -> Option<Place> {
-        let expected_arity = if symbol.contains("_unwrap_or_") { 2 } else { 1 };
-        if hir_args.len() != expected_arity {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!("runtime call `{symbol}` arity"),
-                    site,
-                },
-                note: format!(
-                    "`{symbol}` expects {expected_arity} argument(s), got {}",
-                    hir_args.len()
-                ),
-            });
-            return None;
-        }
-
-        let mut args = Vec::with_capacity(hir_args.len());
-        for arg in hir_args {
-            let place = self.lower_value(arg)?;
-            args.push(place);
-        }
-
-        let return_ty = if symbol.ends_with("_is_none")
-            || symbol.ends_with("_is_some")
-            || symbol.ends_with("_is_err")
-            || symbol.ends_with("_is_ok")
-        {
-            ResolvedTy::Bool
-        } else if symbol.ends_with("_i32") {
-            ResolvedTy::I32
-        } else if symbol.ends_with("_i64") {
-            ResolvedTy::I64
-        } else if symbol.ends_with("_f64") {
-            ResolvedTy::F64
-        } else {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!("runtime call `{symbol}` return type"),
-                    site,
-                },
-                note: format!("cannot infer return type for Option/Result runtime call `{symbol}`"),
-            });
-            return None;
-        };
-
-        let dest =
-            (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(return_ty));
-        self.push_runtime_call(symbol, args, dest);
-        dest
-    }
-
     /// Lower the `impl duration` receiver methods declared in
     /// `std/builtins.hew` (`#[extern_symbol(hew_duration_*)]`).
     ///
     /// Every symbol takes a single i64-backed `duration` receiver. The
     /// conversion/predicate symbols return `i64`; `hew_duration_is_zero`
     /// returns the C `i32` boolean (`1`/`0`) that codegen narrows to `i1` at
-    /// the call boundary — declared `Bool` here exactly like the
-    /// `hew_option_is_*` predicates, with no explicit cast.
+    /// the call boundary, with no explicit cast.
     fn lower_duration_runtime_call(
         &mut self,
         symbol: &str,

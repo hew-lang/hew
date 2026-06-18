@@ -45,9 +45,9 @@ pub use check::{
     HashSetMethod, ImplDef, ImplId, ImplRegistry, LookupError, MachineMethodKind, MathGenericOp,
     MethodCallReceiverKind, MethodCallRewrite, MethodTarget, MethodTargetFamily,
     NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
-    PatternKind, PayloadBinding, PayloadVariantPattern, ResolvedCall, RuntimeAbi, SpanKey,
-    TyPattern, TypeCheckOutput, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod,
-    WidthCastKind, WidthCastLowering, WireCodecDirection,
+    OptionResultMethod, PatternKind, PayloadBinding, PayloadVariantPattern, ResolvedCall,
+    RuntimeAbi, SpanKey, TyPattern, TypeCheckOutput, VariantDef, VariantMatch, VecHigherOrderOp,
+    VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection,
 };
 pub use error::TypeError;
 pub use extern_symbol::{
@@ -65,9 +65,8 @@ pub use lowering_facts::{
 };
 pub use resolved_ty::{BoundaryError, ResolvedTraitBound, ResolvedTy};
 pub use runtime_call::{
-    AsyncSuspendKind, DescriptorError, IntegerElem, MathIntrinsic, NumericElem,
-    RuntimeCallDescriptor, RuntimeCallFamily, RuntimeDropDescriptor, StreamElementKind, VecGetElem,
-    VecSliceElem,
+    AsyncSuspendKind, DescriptorError, MathIntrinsic, RuntimeCallDescriptor, RuntimeCallFamily,
+    RuntimeDropDescriptor, StreamElementKind, VecGetElem, VecSliceElem,
 };
 pub use runtime_calling_convention::RuntimeCallingConvention;
 pub use ty::{TraitObjectBound, Ty};

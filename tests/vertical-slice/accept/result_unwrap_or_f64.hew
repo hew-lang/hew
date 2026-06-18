@@ -1,0 +1,7 @@
+fn main() {
+    let ok: Result<f64, i64> = Ok(1.5);
+    let err: Result<f64, i64> = Err(2);
+    let a = ok.unwrap_or(0.0);
+    let b = err.unwrap_or(9.5);
+    println(f"{a}-{b}");
+}

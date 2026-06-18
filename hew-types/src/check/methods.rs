@@ -1392,44 +1392,6 @@ impl Checker {
         true
     }
 
-    fn option_result_runtime_symbol_exists(
-        receiver_type_name: &str,
-        method: &str,
-        symbol: &str,
-    ) -> bool {
-        match receiver_type_name {
-            "Option" => matches!(
-                (method, symbol),
-                ("is_some", "hew_option_is_some")
-                    | ("is_none", "hew_option_is_none")
-                    | (
-                        "unwrap",
-                        "hew_option_unwrap_i32" | "hew_option_unwrap_i64" | "hew_option_unwrap_f64",
-                    )
-                    | (
-                        "unwrap_or",
-                        "hew_option_unwrap_or_i32"
-                            | "hew_option_unwrap_or_i64"
-                            | "hew_option_unwrap_or_f64",
-                    )
-            ),
-            "Result" => matches!(
-                (method, symbol),
-                ("is_ok", "hew_result_is_ok")
-                    | ("is_err", "hew_result_is_err")
-                    | (
-                        "unwrap",
-                        "hew_result_unwrap_i32" | "hew_result_unwrap_i64" | "hew_result_unwrap_f64",
-                    )
-                    | (
-                        "unwrap_or",
-                        "hew_result_unwrap_or_i32" | "hew_result_unwrap_or_i64"
-                    )
-            ),
-            _ => true,
-        }
-    }
-
     fn record_named_extern_symbol_rewrite_if_any(
         &mut self,
         receiver_type_name: &str,
@@ -1442,22 +1404,6 @@ impl Checker {
             return false;
         };
         if spec.template.is_monomorphic() {
-            if !Self::option_result_runtime_symbol_exists(
-                receiver_type_name,
-                method,
-                &spec.template.raw,
-            ) {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    format!(
-                        "cannot lower {receiver_type_name}::{method}: runtime symbol `{}` \
-                         is not supported for this receiver",
-                        spec.template.raw
-                    ),
-                );
-                return false;
-            }
             self.record_extern_symbol_method_call_rewrite(span, spec.template.raw.clone());
             return true;
         }
@@ -1505,18 +1451,62 @@ impl Checker {
                 return false;
             }
         };
-        if !Self::option_result_runtime_symbol_exists(receiver_type_name, method, &expanded) {
+        self.record_extern_symbol_method_call_rewrite(span, expanded);
+        true
+    }
+
+    fn record_builtin_option_result_method_rewrite_if_any(
+        &mut self,
+        receiver_type_name: &str,
+        type_args: &[Ty],
+        method: &str,
+        span: &Span,
+    ) -> bool {
+        use crate::check::OptionResultMethod as M;
+        use MethodCallRewrite::BuiltinOptionResult;
+
+        let Some(marker) = (match (receiver_type_name, method) {
+            ("Option", "is_some") => Some(M::OptionIsSome),
+            ("Option", "is_none") => Some(M::OptionIsNone),
+            ("Option", "unwrap") => Some(M::OptionUnwrap),
+            ("Option", "unwrap_or") => Some(M::OptionUnwrapOr),
+            ("Result", "is_ok") => Some(M::ResultIsOk),
+            ("Result", "is_err") => Some(M::ResultIsErr),
+            ("Result", "unwrap") => Some(M::ResultUnwrap),
+            ("Result", "unwrap_or") => Some(M::ResultUnwrapOr),
+            _ => None,
+        }) else {
+            return false;
+        };
+
+        let expected_args = if receiver_type_name == "Option" { 1 } else { 2 };
+        if type_args.len() != expected_args {
+            if type_args
+                .iter()
+                .any(|ty| matches!(ty, Ty::Error | Ty::Var(_)))
+            {
+                return true;
+            }
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "cannot lower {receiver_type_name}::{method}: runtime symbol `{expanded}` \
-                     is not supported for this receiver"
+                    "cannot lower {receiver_type_name}::{method}: expected {expected_args} \
+                     receiver type argument(s), found {}",
+                    type_args.len()
                 ),
             );
-            return false;
+            return true;
         }
-        self.record_extern_symbol_method_call_rewrite(span, expanded);
+
+        if type_args.iter().any(|ty| {
+            let resolved = self.subst.resolve(ty);
+            matches!(resolved, Ty::Error | Ty::Var(_))
+        }) {
+            return true;
+        }
+
+        self.record_method_call_rewrite(span, BuiltinOptionResult { method: marker });
         true
     }
 
@@ -6655,6 +6645,9 @@ impl Checker {
                         self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
                     }
                     self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                    self.record_builtin_option_result_method_rewrite_if_any(
+                        name, type_args, method, span,
+                    );
                     self.record_named_extern_symbol_rewrite_if_any(
                         name, type_args, method, &sig, span,
                     );

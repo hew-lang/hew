@@ -1,0 +1,7 @@
+fn main() {
+    let opt: Option<i64> = Some(7);
+    let res: Result<i64, i64> = Ok(7);
+    if opt.is_some() && res.is_ok() {
+        println(f"{opt.unwrap()}-{res.unwrap()}");
+    }
+}

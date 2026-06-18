@@ -268,15 +268,6 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_observe_read_u64",
     "hew_observe_scrape",
     "hew_observe_series",
-    // --- Option<T> runtime helpers ------------------------------------------
-    "hew_option_is_none",
-    "hew_option_is_some",
-    "hew_option_unwrap_f64",
-    "hew_option_unwrap_i32",
-    "hew_option_unwrap_i64",
-    "hew_option_unwrap_or_f64",
-    "hew_option_unwrap_or_i32",
-    "hew_option_unwrap_or_i64",
     // --- Rc allocation for task-owned closure environments --------------------
     "hew_rc_new",
     // --- RecvHalf<T> ---------------------------------------------
@@ -359,14 +350,6 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // arrives; returns the reply pointer (caller frees with libc::free)
     // or null on orphaned-ask. Does NOT consume the channel ref.
     "hew_reply_wait",
-    // --- Result<T, E> runtime helpers ---------------------------------------
-    "hew_result_is_err",
-    "hew_result_is_ok",
-    "hew_result_unwrap_f64",
-    "hew_result_unwrap_i32",
-    "hew_result_unwrap_i64",
-    "hew_result_unwrap_or_i32",
-    "hew_result_unwrap_or_i64",
     // --- Select winner-picker -----------------------------------
     // `hew_select_first(channels, count, timeout_ms) -> i32`
     // (`hew-runtime/src/reply_channel.rs:484`). Polls multiple reply

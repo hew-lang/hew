@@ -25,8 +25,8 @@ use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, ChildKind, ChildSlot,
     ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ExecutionContextReader, ImplId,
     LoweringFact, MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily,
-    NumericMethodLowering, PatternKind, ResolvedTy, SpanKey, Ty, TyPattern, TypeCheckOutput,
-    WireCodecDirection,
+    NumericMethodLowering, OptionResultMethod, PatternKind, ResolvedTy, SpanKey, Ty, TyPattern,
+    TypeCheckOutput, WireCodecDirection,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -7646,17 +7646,14 @@ impl LowerCtx {
         // failure site. Trait impls (`impl MyTrait for Vec<T>`) are not
         // covered here — orphan-rule policing is a separate concern.
         //
-        // Exception: declarative receiver FFI. An inherent impl on a builtin
-        // nominal whose methods ALL carry `#[extern_symbol(...)]` (the
-        // `impl<T> Option<T>` / `impl<T, E> Result<T, E>` blocks in
-        // `std/option.hew` / `std/result.hew`) is the registration *source*
-        // the checker consumes via `register_compiled_stdlib_receiver_impls`.
-        // Every receiver call site is rewritten by the checker to the
-        // expanded runtime symbol, so there is nothing for HIR to lower:
-        // the panic-stub bodies must never become callable
-        // `<SelfType>::<method>` functions (that would stand up a parallel
-        // dispatch surface beside the builtin enums' dedicated layouts).
-        // Skip the block as already-consumed metadata.
+        // Exception: builtin receiver metadata. The `impl<T> Option<T>` /
+        // `impl<T, E> Result<T, E>` blocks in `std/option.hew` /
+        // `std/result.hew` declare the user-facing methods whose call sites are
+        // consumed by checker side-tables (`BuiltinOptionResult`) and lowered to
+        // generic-enum matches. Their panic-stub bodies must never become
+        // callable `<SelfType>::<method>` functions. Older declarative receiver
+        // FFI blocks with all-`#[extern_symbol]` methods are also metadata-only.
+        // Skip these blocks as already-consumed metadata.
         if decl.trait_bound.is_none() && hew_types::lookup_builtin_type(self_type_name).is_some() {
             let declared_resource_close_impl = self
                 .type_classes
@@ -7676,7 +7673,17 @@ impl LowerCtx {
                         .methods
                         .iter()
                         .all(|m| m.attributes.iter().any(|a| a.name == "extern_symbol"));
-                if all_methods_are_extern_symbol_ffi {
+                let all_methods_are_option_result_markers =
+                    matches!(self_type_name.as_str(), "Option" | "Result")
+                        && !decl.methods.is_empty()
+                        && decl.methods.iter().all(|m| {
+                            matches!(
+                                (self_type_name.as_str(), m.name.as_str()),
+                                ("Option", "is_some" | "is_none" | "unwrap" | "unwrap_or")
+                                    | ("Result", "is_ok" | "is_err" | "unwrap" | "unwrap_or")
+                            )
+                        });
+                if all_methods_are_extern_symbol_ffi || all_methods_are_option_result_markers {
                     return;
                 }
                 self.diagnostics.push(HirDiagnostic::new(
@@ -17073,6 +17080,9 @@ impl LowerCtx {
                 direction,
                 value_ty,
             }) => self.lower_wire_codec(receiver, args, direction, value_ty, span),
+            Some(MethodCallRewrite::BuiltinOptionResult { method }) => {
+                self.lower_builtin_option_result_method(method, receiver, args, span)
+            }
             Some(MethodCallRewrite::RemoteActorAsk) => {
                 self.try_register_enum_instantiation(&span);
                 if args.len() != 2 {
@@ -17854,6 +17864,308 @@ impl LowerCtx {
             },
             span: span.clone(),
         }
+    }
+
+    fn synthetic_bool(&mut self, value: bool, span: &std::ops::Range<usize>) -> HirExpr {
+        self.make_expr(
+            HirExprKind::Literal(HirLiteral::Bool(value)),
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        )
+    }
+
+    fn option_result_method_arity(method: OptionResultMethod) -> usize {
+        match method {
+            OptionResultMethod::OptionUnwrapOr | OptionResultMethod::ResultUnwrapOr => 1,
+            OptionResultMethod::OptionIsSome
+            | OptionResultMethod::OptionIsNone
+            | OptionResultMethod::OptionUnwrap
+            | OptionResultMethod::ResultIsOk
+            | OptionResultMethod::ResultIsErr
+            | OptionResultMethod::ResultUnwrap => 0,
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the eight closed Option/Result methods share one synthetic-match builder; splitting would obscure the marker-to-arm mapping"
+    )]
+    fn lower_builtin_option_result_method(
+        &mut self,
+        method: OptionResultMethod,
+        receiver: &Spanned<Expr>,
+        args: &[hew_parser::ast::CallArg],
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let expected_args = Self::option_result_method_arity(method);
+        if args.len() != expected_args {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "Option/Result builtin method".to_string(),
+                    reason: format!(
+                        "checker marker {:?} expected {expected_args} argument(s), found {}",
+                        method,
+                        args.len()
+                    ),
+                },
+                span.clone(),
+                "builtin Option/Result method lowering received an invalid argument count",
+            ));
+            return (
+                HirExprKind::Unsupported("invalid Option/Result method arity".into()),
+                ResolvedTy::Unit,
+            );
+        }
+
+        let ret_ty = self
+            .expr_types
+            .get(&self.mk_key(&span))
+            .cloned()
+            .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
+            .unwrap_or_else(|| {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "Option/Result builtin method".to_string(),
+                        reason: "missing or poisoned checker result type".to_string(),
+                    },
+                    span.clone(),
+                    "builtin Option/Result method lowering requires the checker result type",
+                ));
+                ResolvedTy::Unit
+            });
+
+        let receiver_intent = match method {
+            OptionResultMethod::OptionUnwrap
+            | OptionResultMethod::OptionUnwrapOr
+            | OptionResultMethod::ResultUnwrap
+            | OptionResultMethod::ResultUnwrapOr => IntentKind::Consume,
+            OptionResultMethod::OptionIsSome
+            | OptionResultMethod::OptionIsNone
+            | OptionResultMethod::ResultIsOk
+            | OptionResultMethod::ResultIsErr => IntentKind::Read,
+        };
+        let scrutinee = self.lower_expr(receiver, receiver_intent);
+        self.try_register_enum_instantiation_ty(&scrutinee.ty, &span);
+
+        let variant = |this: &mut Self,
+                       type_name: &str,
+                       variant_name: &str|
+         -> Option<HirMatchArmPredicate> {
+            this.builtin_variant_predicate(type_name, variant_name, &span)
+                .map(|(predicate, _)| predicate)
+        };
+
+        let arms = match method {
+            OptionResultMethod::OptionIsSome => {
+                let Some(some) = variant(self, "Option", "Some") else {
+                    return self.unsupported_postfix_try(&span, "Option::Some predicate");
+                };
+                let Some(none) = variant(self, "Option", "None") else {
+                    return self.unsupported_postfix_try(&span, "Option::None predicate");
+                };
+                vec![
+                    HirMatchArm {
+                        predicate: some,
+                        bindings: Vec::new(),
+                        payload_predicates: Vec::new(),
+                        payload_variant_predicates: Vec::new(),
+                        guard: None,
+                        body: self.synthetic_bool(true, &span),
+                        span: span.clone(),
+                    },
+                    HirMatchArm {
+                        predicate: none,
+                        bindings: Vec::new(),
+                        payload_predicates: Vec::new(),
+                        payload_variant_predicates: Vec::new(),
+                        guard: None,
+                        body: self.synthetic_bool(false, &span),
+                        span: span.clone(),
+                    },
+                ]
+            }
+            OptionResultMethod::OptionIsNone => {
+                let Some(some) = variant(self, "Option", "Some") else {
+                    return self.unsupported_postfix_try(&span, "Option::Some predicate");
+                };
+                let Some(none) = variant(self, "Option", "None") else {
+                    return self.unsupported_postfix_try(&span, "Option::None predicate");
+                };
+                vec![
+                    HirMatchArm {
+                        predicate: some,
+                        bindings: Vec::new(),
+                        payload_predicates: Vec::new(),
+                        payload_variant_predicates: Vec::new(),
+                        guard: None,
+                        body: self.synthetic_bool(false, &span),
+                        span: span.clone(),
+                    },
+                    HirMatchArm {
+                        predicate: none,
+                        bindings: Vec::new(),
+                        payload_predicates: Vec::new(),
+                        payload_variant_predicates: Vec::new(),
+                        guard: None,
+                        body: self.synthetic_bool(true, &span),
+                        span: span.clone(),
+                    },
+                ]
+            }
+            OptionResultMethod::ResultIsOk => {
+                let Some(ok) = variant(self, "Result", "Ok") else {
+                    return self.unsupported_postfix_try(&span, "Result::Ok predicate");
+                };
+                let Some(err) = variant(self, "Result", "Err") else {
+                    return self.unsupported_postfix_try(&span, "Result::Err predicate");
+                };
+                vec![
+                    HirMatchArm {
+                        predicate: ok,
+                        bindings: Vec::new(),
+                        payload_predicates: Vec::new(),
+                        payload_variant_predicates: Vec::new(),
+                        guard: None,
+                        body: self.synthetic_bool(true, &span),
+                        span: span.clone(),
+                    },
+                    HirMatchArm {
+                        predicate: err,
+                        bindings: Vec::new(),
+                        payload_predicates: Vec::new(),
+                        payload_variant_predicates: Vec::new(),
+                        guard: None,
+                        body: self.synthetic_bool(false, &span),
+                        span: span.clone(),
+                    },
+                ]
+            }
+            OptionResultMethod::ResultIsErr => {
+                let Some(ok) = variant(self, "Result", "Ok") else {
+                    return self.unsupported_postfix_try(&span, "Result::Ok predicate");
+                };
+                let Some(err) = variant(self, "Result", "Err") else {
+                    return self.unsupported_postfix_try(&span, "Result::Err predicate");
+                };
+                vec![
+                    HirMatchArm {
+                        predicate: ok,
+                        bindings: Vec::new(),
+                        payload_predicates: Vec::new(),
+                        payload_variant_predicates: Vec::new(),
+                        guard: None,
+                        body: self.synthetic_bool(false, &span),
+                        span: span.clone(),
+                    },
+                    HirMatchArm {
+                        predicate: err,
+                        bindings: Vec::new(),
+                        payload_predicates: Vec::new(),
+                        payload_variant_predicates: Vec::new(),
+                        guard: None,
+                        body: self.synthetic_bool(true, &span),
+                        span: span.clone(),
+                    },
+                ]
+            }
+            OptionResultMethod::OptionUnwrap | OptionResultMethod::ResultUnwrap => {
+                let (type_name, variant_name, binding_name) = match method {
+                    OptionResultMethod::OptionUnwrap => ("Option", "Some", "__option_unwrap_value"),
+                    OptionResultMethod::ResultUnwrap => ("Result", "Ok", "__result_unwrap_value"),
+                    _ => unreachable!("handled by outer match"),
+                };
+                let Some(payload_predicate) = variant(self, type_name, variant_name) else {
+                    return self.unsupported_postfix_try(
+                        &span,
+                        format!("{type_name}::{variant_name} predicate"),
+                    );
+                };
+                let payload_binding = self.ids.binding();
+                vec![HirMatchArm {
+                    predicate: payload_predicate,
+                    bindings: vec![HirMatchArmBinding {
+                        binding: payload_binding,
+                        field_idx: 0,
+                        name: binding_name.to_string(),
+                        ty: ret_ty.clone(),
+                    }],
+                    payload_predicates: Vec::new(),
+                    payload_variant_predicates: Vec::new(),
+                    guard: None,
+                    body: self.synthetic_binding_ref(
+                        binding_name,
+                        payload_binding,
+                        ret_ty.clone(),
+                        &span,
+                    ),
+                    span: span.clone(),
+                }]
+            }
+            OptionResultMethod::OptionUnwrapOr | OptionResultMethod::ResultUnwrapOr => {
+                let (type_name, payload_variant, empty_variant, binding_name) = match method {
+                    OptionResultMethod::OptionUnwrapOr => {
+                        ("Option", "Some", "None", "__option_unwrap_or_value")
+                    }
+                    OptionResultMethod::ResultUnwrapOr => {
+                        ("Result", "Ok", "Err", "__result_unwrap_or_value")
+                    }
+                    _ => unreachable!("handled by outer match"),
+                };
+                let Some(payload_predicate) = variant(self, type_name, payload_variant) else {
+                    return self.unsupported_postfix_try(
+                        &span,
+                        format!("{type_name}::{payload_variant} predicate"),
+                    );
+                };
+                let Some(empty_predicate) = variant(self, type_name, empty_variant) else {
+                    return self.unsupported_postfix_try(
+                        &span,
+                        format!("{type_name}::{empty_variant} predicate"),
+                    );
+                };
+                let payload_binding = self.ids.binding();
+                let fallback = self.lower_expr(args[0].expr(), IntentKind::Consume);
+                vec![
+                    HirMatchArm {
+                        predicate: payload_predicate,
+                        bindings: vec![HirMatchArmBinding {
+                            binding: payload_binding,
+                            field_idx: 0,
+                            name: binding_name.to_string(),
+                            ty: ret_ty.clone(),
+                        }],
+                        payload_predicates: Vec::new(),
+                        payload_variant_predicates: Vec::new(),
+                        guard: None,
+                        body: self.synthetic_binding_ref(
+                            binding_name,
+                            payload_binding,
+                            ret_ty.clone(),
+                            &span,
+                        ),
+                        span: span.clone(),
+                    },
+                    HirMatchArm {
+                        predicate: empty_predicate,
+                        bindings: Vec::new(),
+                        payload_predicates: Vec::new(),
+                        payload_variant_predicates: Vec::new(),
+                        guard: None,
+                        body: fallback,
+                        span: span.clone(),
+                    },
+                ]
+            }
+        };
+
+        (
+            HirExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+            ret_ty,
+        )
     }
 
     fn synthetic_variant_ctor(

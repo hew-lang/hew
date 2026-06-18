@@ -1085,16 +1085,18 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
          `is_ok` with a different return type; got: {:#?}",
         output.errors
     );
-    // The `is_ok` call must lower to the builtin runtime symbol, never the user
-    // `Result::is_ok` method key. A user-method rewrite here is the ill-typed
-    // call codegen-front would reject.
+    // The `is_ok` call must lower to the builtin structured marker, never the
+    // user `Result::is_ok` method key. A user-method rewrite here is the
+    // ill-typed call codegen-front would reject.
     assert!(
         output.method_call_rewrites.values().any(|rewrite| matches!(
             rewrite,
-            MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "hew_result_is_ok"
+            MethodCallRewrite::BuiltinOptionResult {
+                method: OptionResultMethod::ResultIsOk
+            }
         )),
         "`r.is_ok()` on a builtin Result receiver must lower to \
-         `hew_result_is_ok`; got: {:#?}",
+         the structured ResultIsOk marker; got: {:#?}",
         output.method_call_rewrites
     );
     assert!(

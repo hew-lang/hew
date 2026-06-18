@@ -58,9 +58,9 @@ pub use self::types::{
     ClosureEscapeRule, DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey,
     ExecutionContextReader, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
     MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
-    NumericSignedness, NumericWidth, PatternKind, PayloadBinding, PayloadVariantPattern, SpanKey,
-    StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch, VecHigherOrderOp,
-    WidthCastKind, WidthCastLowering, WireCodecDirection,
+    NumericSignedness, NumericWidth, OptionResultMethod, PatternKind, PayloadBinding,
+    PayloadVariantPattern, SpanKey, StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
+    VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,

@@ -15,7 +15,7 @@
 # continuously guarded.  Do NOT remove entries to make the gate green if the
 # regression still fails — fix the underlying compiler instead.
 #
-# Total: 5 known-failing entries (5 intentional-trap/abort fixtures).
+# Total: 6 known-failing entries (6 intentional-trap/abort fixtures).
 #
 # Intentional aborts/traps: fixtures in tests/vertical-slice/accept/ that are
 # designed to trap or abort at runtime as their correctness proof.  Listed here
@@ -29,4 +29,5 @@ string_slice_oob_panics.hew  # intentional abort: out-of-bounds string slice cal
 # Arch-dependent trap signals: SIGILL (132) on x86_64 Linux, SIGTRAP (133) on aarch64/macOS.
 isize_div_by_zero_traps.hew  # intentional trap: isize / 0 → DivideByZero signal (SIGILL x86_64 / SIGTRAP aarch64)
 isize_shift_oob_traps.hew    # intentional trap: isize << 64 → ShiftOutOfRange signal (SIGILL x86_64 / SIGTRAP aarch64)
+option_unwrap_none_aborts.hew  # intentional abort: None unwrap traps deterministically — x86_64 SIGILL/132 or aarch64 SIGTRAP/133 — via the generic unmatched-arm path
 

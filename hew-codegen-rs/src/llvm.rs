@@ -31275,6 +31275,27 @@ fn emit_suspending_task_await_terminator<'ctx>(
             // representation out of the buffer into the awaiter's binding slot.
             // The task frees the buffer (as raw bytes) at scope join, so a
             // managed handle lives exactly once — in `result_dest`.
+            //
+            // Null-buffer guard: `hew_task_get_result` returns `t.result`, which
+            // is NULL whenever the task reached `Done` WITHOUT publishing a result
+            // — i.e. a `Done(Cancelled)` task whose body never ran to
+            // `hew_task_set_result` (the runtime documents this null contract on
+            // `hew_task_await_suspend`). On a null buffer the bind edge copies
+            // nothing rather than dereferencing null: the awaiter is being torn
+            // down by the same scope cancel, so the binding is never observed —
+            // exactly the unit-task discipline. Mirrors the suspending-ask bind
+            // edge, which null-checks `reply_ptr` before the load.
+            //
+            // WHY a guard for a path the current surface cannot reach: no v0.6
+            // user construct cancels a sibling task while another value-awaits in
+            // the same scope (the empty-body `scope … after(d)` deadline arms but
+            // joins the forked task rather than preempting its await — verified),
+            // so this branch is presently unexercised. It honours the runtime's
+            // explicit null-return contract so the value path is correct the day a
+            // cancelling-await surface lands (await-cancel deadline on the task, a
+            // failing-sibling scope-cancel), rather than shipping a latent null
+            // deref behind a future feature. WHEN obsolete: never — the runtime
+            // contract permits a null result buffer regardless of surface.
             if let Some(result_dest) = term.result_dest {
                 let get_result = intern_runtime_decl(
                     fn_ctx.ctx,
@@ -31296,6 +31317,23 @@ fn emit_suspending_task_await_terminator<'ctx>(
                         CodegenError::FailClosed("hew_task_get_result returned void".into())
                     })?
                     .into_pointer_value();
+                let copy_bb = fn_ctx
+                    .ctx
+                    .append_basic_block(parent, "suspending_task_await_result_copy");
+                let bind_join_bb = fn_ctx
+                    .ctx
+                    .append_basic_block(parent, "suspending_task_await_result_join");
+                let result_is_null = fn_ctx
+                    .builder
+                    .build_is_null(result_buf, "suspending_task_await_result_is_null")
+                    .llvm_ctx("value-task result null compare")?;
+                // null (cancelled / no result) → skip copy; non-null → copy.
+                fn_ctx
+                    .builder
+                    .build_conditional_branch(result_is_null, bind_join_bb, copy_bb)
+                    .llvm_ctx("value-task result null branch")?;
+
+                fn_ctx.builder.position_at_end(copy_bb);
                 let (dest_ptr, dest_ty) = place_pointer(fn_ctx, result_dest)?;
                 let loaded = fn_ctx
                     .builder
@@ -31305,6 +31343,12 @@ fn emit_suspending_task_await_terminator<'ctx>(
                     .builder
                     .build_store(dest_ptr, loaded)
                     .llvm_ctx("value-task result store")?;
+                fn_ctx
+                    .builder
+                    .build_unconditional_branch(bind_join_bb)
+                    .llvm_ctx("value-task result copy -> join br")?;
+
+                fn_ctx.builder.position_at_end(bind_join_bb);
             }
             // Release the creator ref, branch to the MIR resume.
             fn_ctx

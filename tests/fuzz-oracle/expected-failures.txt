@@ -14,7 +14,7 @@
 # vertical-slice fixture (or update an existing one) so the behaviour is
 # continuously guarded.  Do NOT remove entries to make the gate green if the
 # regression still fails — fix the underlying compiler instead.
-# W60.039 moved payload-enum equality fixtures to vertical-slice/accept; no
+# Payload-enum and record equality fixtures now live in vertical-slice/accept; no
 # fuzz-oracle regression entries remain for that surface.
 #
 # Positive collection-literal fixtures such as map_literal_string_keys.hew,

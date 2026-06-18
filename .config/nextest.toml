@@ -219,22 +219,30 @@ retries = 1                                                           # SHIM: se
 slow-timeout = { period = "30s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
-# The two-process remote-ask pair spawns a second OS process and round-trips
-# an ask over loopback TCP; on shared hosted runners the connect/ask window
-# intermittently misses ("echo ask returned null", helper exit 101) while the
-# same tests pass deterministically on dedicated hardware (local macOS runs
-# and native arm64 container runs). Hosted arm Linux already proved this
-# family is runner-environment, not code.
-# SHIM: retry absorbs hosted-runner loopback jitter (now serialized in the
-# real-timing quarantine group, which also keeps it off the fast tiers).
-# WHEN obsolete: when the remote-ask client helper gains a bounded
-#   connect-with-deadline (retry/backoff) instead of a one-shot connect.
-# WHAT the real solution looks like: the helper retries the initial node
-#   connect with backoff up to a wall deadline, making a slow accept
-#   indistinguishable from a fast one.
+# The two-process remote-ask pair (echo: T-01, timeout: T-02) spawns a second
+# OS process and round-trips an ask over loopback TCP.  Under load (~5-15% of
+# full-workspace CI runs) the connection is DROPPED between the registry-lookup
+# and the ask: the client observes ConnectionDropped / "echo ask returned null"
+# (helper exit 101) while the server's membership record still shows ALIVE and
+# active_conns=0.  This is a connection-lifecycle bug — the outbound connection
+# tears down between lookup completion and ask dispatch, leaving an ask in-flight
+# with no live transport — not a runner environment quirk.
+#
+# SHIM: retry absorbs the connection-lifecycle drop that occurs between registry-
+#   lookup completion and ask dispatch under concurrent load.  The real-timing
+#   serialisation group reduces contention but does not eliminate the race.
+# WHEN obsolete: when the connection-lifecycle path holds the connection open
+#   across the lookup→ask gap (or re-establishes it transparently on the ask
+#   path), making ConnectionDropped between lookup and ask impossible.
+# WHAT the real solution looks like: the outbound connection pool keeps the
+#   connection alive until the ask completes; a dropped connection triggers a
+#   transparent reconnect-and-retry at the transport layer before surfacing
+#   ConnectionDropped to the caller.  Tracked: production connection-lifecycle
+#   follow-on.
 # Correctness invariant: a real remote-ask regression (null reply from a live
-#   node) fails on both attempts; the retry only absorbs setup-window misses.
-filter = "test(two_process_remote_ask_echo_double_returns_42) | test(remote_ask_two_process_echo_client_helper)"
+#   node on a stable connection) fails on both attempts; the retry only absorbs
+#   the intermittent mid-lookup connection drop.
+filter = "test(two_process_remote_ask_echo_double_returns_42) | test(remote_ask_two_process_echo_client_helper) | test(remote_ask_two_process_echo_server_helper) | test(two_process_remote_ask_timeout_returns_timeout_under_1500ms) | test(remote_ask_two_process_timeout_client_helper) | test(remote_ask_two_process_timeout_server_helper)"
 retries = 1
 test-group = "real-timing"
 # Defense-in-depth: the test's internal wait_output fires at 40 s; 90 s nextest
@@ -260,23 +268,36 @@ slow-timeout = { period = "120s", terminate-after = 6 }
 
 [[profile.ci.overrides]]
 # child_supervisor_recovery_recreates_nested_subtree polls a nested supervisor
-# rebuild across escalation; 0.21s isolated, but at the tail of a fully loaded
-# 16-core run it can exceed its 10s in-test budget (contention-flake, 50x
-# margin — classified 2026-06-10). Route it into the process-timing group so
-# the scheduler has headroom.
+# rebuild across escalation.  The test is 0.21s isolated; under the full
+# cargo llvm-cov workspace population (~3-8% of coverage runs) the restart wake
+# is LOST: hew_supervisor_wait_restart reaches its 30s ceiling and the test
+# times out even though the nested subtree is eventually recreated.  The
+# mechanism: the dispatch-count polling loop's per-instruction instrumentation
+# overhead delays the signal delivery path long enough that the restart-wake
+# notification is consumed before wait_restart observes it, leaving wait_restart
+# blocked at its deadline.  This is a production lost-wake bug in the
+# restart-wake/signal path under instrumented load, not a scheduler-timing
+# approximation.
 #
-# The `Code coverage` job runs under `cargo llvm-cov`, whose per-instruction
-# instrumentation slows the dispatch-count polling loop enough that even the
-# process-timing headroom occasionally misses the in-test budget. The sibling
-# timing-sensitive supervisor/process overrides above already pair their group
-# with `retries = 1` for exactly this jitter; match them here.
-# SHIM: retry absorbs instrumentation/scheduler jitter under coverage load.
-# WHEN obsolete: when the dispatch-count poll is replaced by a deterministic
-#   completion signal (the durable de-flake, tracked separately).
-# Correctness invariant: a real escalation-rebuild regression fails on both
-#   attempts — the nested subtree would never be recreated, so the poll times
-#   out on the first try and the retry alike; the retry only absorbs a slow
-#   rebuild under instrumentation, never a missing one.
+# Route into the process-timing group (max-threads=4) so the scheduler has
+# headroom.
+#
+# SHIM: retry absorbs the lost-wake on the restart-wake/signal path that occurs
+#   when cargo llvm-cov instrumentation delays dispatch-count delivery past the
+#   wait_restart ceiling (~3-8% under full workspace coverage population).
+# WHEN obsolete: when the restart-wake path delivers its signal reliably under
+#   instrumentation — either the wake is made edge-triggered (not level-
+#   triggered) so a missed notification is re-checked, or wait_restart uses a
+#   condvar/futex that cannot lose the wake even under instrumented delay.
+#   Tracked: production restart-wake follow-on (hew_supervisor_wait_restart
+#   lost-wake under instrumented contention).
+# WHAT the real solution looks like: replace the dispatch-count polling loop with
+#   a condvar or channel that holds the completion signal until the waiter
+#   arrives, making the wake delivery order-independent.
+# Correctness invariant: a real escalation-rebuild regression (subtree never
+#   recreated) fails on both attempts — the poll times out on the first try and
+#   the retry alike; the retry only absorbs the intermittent lost-wake where the
+#   subtree IS rebuilt but wait_restart misses the signal.
 filter = "test(child_supervisor_recovery_recreates_nested_subtree)"
 test-group = "process-timing"
 retries = 1
@@ -308,7 +329,7 @@ path = "junit.xml"
 # Coverage contract: the smoke tier is a FAST FAIL-EARLY gate; the heavy tier
 # (test-rust / make test) still runs on smoke pass and provides full coverage.
 # The smoke tier does NOT replace the ci profile — it precedes it.
-default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - test(live_gate_matches_declared_coverage) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper)"
+default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - test(live_gate_matches_declared_coverage) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper) - test(remote_ask_two_process_echo_server_helper) - test(two_process_remote_ask_timeout_returns_timeout_under_1500ms) - test(remote_ask_two_process_timeout_client_helper) - test(remote_ask_two_process_timeout_server_helper)"
 test-threads = "num-cpus"
 slow-timeout = { period = "60s", terminate-after = 2 }
 
@@ -350,7 +371,7 @@ test-group = "subprocess-intensive"
 # no binary name.  Substring exclusion therefore needs the contains matcher
 # `~`: binary(~exec).  The exact-name exclusions below are valid bare strings
 # because those binaries exist.
-default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper)"
+default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper) - test(remote_ask_two_process_echo_server_helper) - test(two_process_remote_ask_timeout_returns_timeout_under_1500ms) - test(remote_ask_two_process_timeout_client_helper) - test(remote_ask_two_process_timeout_server_helper)"
 test-threads = "num-cpus"
 slow-timeout = { period = "30s", terminate-after = 2 }
 

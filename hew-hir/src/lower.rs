@@ -10767,9 +10767,8 @@ impl LowerCtx {
                 // misread as a range adapter.
                 let peeled = Self::peel_range_adapter_chain(&iterable.0);
                 let kind = match (peeled, &pattern.0) {
-                    (Some(spec), pat)
-                        if spec.step_before_rev
-                            && matches!(pat, Pattern::Identifier(_) | Pattern::Wildcard) =>
+                    (Some(spec), Pattern::Identifier(_) | Pattern::Wildcard)
+                        if spec.step_before_rev =>
                     {
                         let binding_name = match &pattern.0 {
                             Pattern::Identifier(var_name) => var_name.clone(),
@@ -10807,9 +10806,7 @@ impl LowerCtx {
                                 .into(),
                         )
                     }
-                    (Some(spec), pat)
-                        if matches!(pat, Pattern::Identifier(_) | Pattern::Wildcard) =>
-                    {
+                    (Some(spec), Pattern::Identifier(_) | Pattern::Wildcard) => {
                         let binding_name = match &pattern.0 {
                             Pattern::Identifier(var_name) => var_name.clone(),
                             Pattern::Wildcard => {

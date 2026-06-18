@@ -7365,7 +7365,9 @@ impl LowerCtx {
                 let builtin = match ty {
                     ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => "to_string_i32",
                     ResolvedTy::I64 | ResolvedTy::Isize => "to_string_i64",
-                    ResolvedTy::U8 | ResolvedTy::U16 | ResolvedTy::U32 => "to_string_u32",
+                    ResolvedTy::U8 => "to_string_u8",
+                    ResolvedTy::U16 => "to_string_u16",
+                    ResolvedTy::U32 => "to_string_u32",
                     ResolvedTy::U64 | ResolvedTy::Usize => "to_string_u64",
                     ResolvedTy::F32 | ResolvedTy::F64 => "to_string_f64",
                     ResolvedTy::Bool => "to_string_bool",

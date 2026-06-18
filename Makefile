@@ -6,6 +6,7 @@
 #   build/
 #     bin/hew              — compiler driver (Rust)
 #     bin/adze             — package manager (Rust)
+#     bin/hew-observe      — TUI actor observer (Rust)
 #     lib/libhew.a         — combined library: runtime + all stdlib packages
 #     lib/wasm32-wasip1/*.a — WASM runtime + focused wire stdlib archives
 #     std/*.hew            — standard library stubs
@@ -20,6 +21,7 @@
 #   make publish-docs — build stdlib docs + print wrangler deploy command (operator runs wrangler)
 #   make hew          — just the compiler driver
 #   make adze         — just the package manager
+#   make observe      — just the TUI observer (hew-observe)
 #   make runtime      — just libhew_runtime.a
 #   make stdlib       — all stdlib packages + combine into libhew.a
 #   make wasm-runtime — WASM runtime + wire JSON/YAML/TOML archives
@@ -60,7 +62,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew adze runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
+.PHONY: all build bootstrap install-hooks hew adze observe runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
 .PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
@@ -109,7 +111,7 @@ FUZZ_SMOKE_SECONDS ?= 45
 
 # ── Default target ──────────────────────────────────────────────────────────
 
-all: hew adze runtime stdlib wasm-runtime assemble
+all: hew adze observe runtime stdlib wasm-runtime assemble
 
 # Convenience alias — rebuilds all debug artifacts including libhew.a.
 # Equivalent to `make all`; exists so that `make build` behaves as expected.
@@ -124,6 +126,12 @@ hew:
 # Build the adze package manager (debug)
 adze:
 	cargo build -p adze-cli
+
+# Build the TUI actor observer (debug).
+# hew-observe is a sibling binary: `hew observe` delegates to it when it is
+# present next to the running hew binary or on PATH (see exec_sibling_binary).
+observe:
+	cargo build -p hew-observe
 
 # Build the runtime static library (debug)
 runtime:
@@ -376,6 +384,8 @@ assemble: | hew adze runtime stdlib wasm-runtime
 	@ln -sfn ../../$(DEBUG_DIR)/hew                $(BUILD_DIR)/bin/hew
 	@# Package manager
 	@ln -sfn ../../$(DEBUG_DIR)/adze               $(BUILD_DIR)/bin/adze
+	@# TUI actor observer (sibling binary — `hew observe` delegates here)
+	@ln -sfn ../../$(DEBUG_DIR)/hew-observe        $(BUILD_DIR)/bin/hew-observe
 	@# Combined Hew library (runtime + all stdlib packages)
 	@ln -sfn ../../$(DEBUG_DIR)/libhew.a           $(BUILD_DIR)/lib/libhew.a
 	@# WASM runtime + focused wire stdlib archives (symlink if built)
@@ -426,6 +436,7 @@ release:
 	$(RELEASE_PREP)
 	$(RELEASE_ENV) cargo build -p hew-cli --release
 	$(RELEASE_ENV) cargo build -p adze-cli --release
+	$(RELEASE_ENV) cargo build -p hew-observe --release
 	$(RELEASE_ENV) cargo build -p hew-lib --release
 	$(RELEASE_ENV) cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 	$(RELEASE_ENV) cargo build -p hew-std --target wasm32-wasip1 --release
@@ -454,6 +465,7 @@ assemble-release:
 	@mkdir -p $(BUILD_DIR)/bin $(BUILD_DIR)/lib $(BUILD_DIR)/std
 	@ln -sfn ../../$(RELEASE_DIR)/hew              $(BUILD_DIR)/bin/hew
 	@ln -sfn ../../$(RELEASE_DIR)/adze             $(BUILD_DIR)/bin/adze
+	@ln -sfn ../../$(RELEASE_DIR)/hew-observe      $(BUILD_DIR)/bin/hew-observe
 	@# Combined Hew library (runtime + all stdlib packages)
 	@ln -sfn ../../$(RELEASE_DIR)/libhew.a         $(BUILD_DIR)/lib/libhew.a
 	@for lib in libhew_runtime.a libhew_std.a; do \
@@ -1029,6 +1041,7 @@ install: install-check
 	install -d $(DESTDIR)$(PREFIX)/completions
 	install -m 755 $(RELEASE_DIR)/hew                $(DESTDIR)$(PREFIX)/bin/hew
 	install -m 755 $(RELEASE_DIR)/adze               $(DESTDIR)$(PREFIX)/bin/adze
+	install -m 755 $(RELEASE_DIR)/hew-observe        $(DESTDIR)$(PREFIX)/bin/hew-observe
 	install -m 644 $(RELEASE_DIR)/libhew.a           $(DESTDIR)$(PREFIX)/lib/libhew.a
 	@for lib in libhew_runtime.a libhew_std.a; do \
 		if [ -f $(WASM_RELEASE_DIR)/$$lib ]; then \
@@ -1066,6 +1079,10 @@ install: install-check
 install-check:
 	@test -f $(RELEASE_DIR)/hew \
 		|| { echo "Error: release hew not built. Run 'make release' first."; exit 1; }
+	@test -f $(RELEASE_DIR)/adze \
+		|| { echo "Error: release adze not built. Run 'make release' first."; exit 1; }
+	@test -f $(RELEASE_DIR)/hew-observe \
+		|| { echo "Error: release hew-observe not built. Run 'make release' first."; exit 1; }
 	@test -f $(RELEASE_DIR)/libhew.a \
 		|| { echo "Error: libhew.a not built. Run 'make release' first."; exit 1; }
 	@test -f $(WASM_RELEASE_DIR)/libhew_runtime.a \

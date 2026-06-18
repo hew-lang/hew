@@ -822,7 +822,7 @@ RawMirFunction {
                     ),
                 },
             ],
-            terminator: Select {
+            terminator: SuspendingSelect {
                 arms: [
                     SelectArm {
                         kind: ChannelRecv {
@@ -848,7 +848,8 @@ RawMirFunction {
                         binding: None,
                     },
                 ],
-                next: 22,
+                resume: 22,
+                cleanup: 22,
             },
         },
         BasicBlock {

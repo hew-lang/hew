@@ -133,18 +133,10 @@ ElaboratedMirFunction {
     ],
     drop_plans: [
         (
-            Call {
+            Suspend {
                 block: 0,
-                callee: "sleep_ms",
-                next: 1,
-            },
-            DropPlan {
-                drops: [],
-            },
-        ),
-        (
-            Cancel {
-                block: 0,
+                resume: 1,
+                cleanup: 1,
             },
             DropPlan {
                 drops: [],

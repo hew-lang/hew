@@ -107,16 +107,12 @@ RawMirFunction {
                     value: 50,
                 },
             ],
-            terminator: Call {
-                callee: "sleep_ms",
-                builtin: None,
-                args: [
-                    Local(
-                        1,
-                    ),
-                ],
-                dest: None,
-                next: 1,
+            terminator: SuspendingSleep {
+                duration_ms: Local(
+                    1,
+                ),
+                resume: 1,
+                cleanup: 1,
             },
         },
         BasicBlock {

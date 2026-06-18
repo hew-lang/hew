@@ -412,10 +412,14 @@ jobs:
         # build — has exhausted the runner disk at the LLVM install step
         # (System.IO.IOException: No space left on device). Mirror the same
         # preinstalled-toolchain purge the Linux build job carries (PR #1995).
+        # jvm (~1.5 GB) and julia (~0.5 GB) are present on ubuntu-24.04 but were
+        # missing from this step; adding them recovers ~2 GB before LLVM install.
         if: env.RUN_CODE_PATH == 'true'
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          sudo rm -rf /usr/lib/jvm || true
+          sudo rm -rf /usr/local/julia* || true
           sudo docker system prune -af >/dev/null 2>&1 || true
           df -h /
 
@@ -447,6 +451,14 @@ jobs:
         # (arm64-runner helper-exit-101 quirk specific to that runner family).
         # Adding an x86_64 exclude would be a category error and would silently
         # remove coverage of a real cross-process path.
+        #
+        # line-tables-only: target/llvm-cov-target/ is the dominant disk cost
+        # in this job. Full debug info (~3–4× larger) is not needed for coverage
+        # reporting and is the same mitigation the Linux build job applies at
+        # ci.yml:300. Without it, the instrumented target dir alone can exceed
+        # the runner's remaining free space after the jvm/julia/LLVM purges.
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
         run: >
           cargo llvm-cov nextest
           --workspace --exclude hew-wasm

@@ -12667,7 +12667,12 @@ fn lower_instruction(
             // Load the coro handle (field 0).
             let handle_ptr = fn_ctx
                 .builder
-                .build_struct_gep(companion_ty, companion, 0, "gen_next_handle_ptr")
+                .build_struct_gep(
+                    companion_ty,
+                    companion,
+                    GEN_COMPANION_HANDLE_FIELD,
+                    "gen_next_handle_ptr",
+                )
                 .map_err(|e| {
                     CodegenError::FailClosed(format!("gen next handle GEP failed: {e:?}"))
                 })?;
@@ -12676,10 +12681,29 @@ fn lower_instruction(
                 .build_load(ptr_ty, handle_ptr, "gen_next_handle")
                 .llvm_ctx("gen next handle load")?
                 .into_pointer_value();
-            // The `started` gate (field 2).
+            // The `pending` flag (field 4): set to 0 once a value is consumed (or
+            // the body is done) so the scope-exit destroy does not double-drop a
+            // value the consumer now owns.
+            let pending_ptr = fn_ctx
+                .builder
+                .build_struct_gep(
+                    companion_ty,
+                    companion,
+                    GEN_COMPANION_PENDING_FIELD,
+                    "gen_next_pending_ptr",
+                )
+                .map_err(|e| {
+                    CodegenError::FailClosed(format!("gen next pending GEP failed: {e:?}"))
+                })?;
+            // The `started` gate (field 3).
             let started_ptr = fn_ctx
                 .builder
-                .build_struct_gep(companion_ty, companion, 2, "gen_next_started_ptr")
+                .build_struct_gep(
+                    companion_ty,
+                    companion,
+                    GEN_COMPANION_STARTED_FIELD,
+                    "gen_next_started_ptr",
+                )
                 .map_err(|e| {
                     CodegenError::FailClosed(format!("gen next started GEP failed: {e:?}"))
                 })?;
@@ -12782,12 +12806,19 @@ fn lower_instruction(
                 .build_conditional_branch(done, none_bb, some_bb)
                 .llvm_ctx("gen next done branch")?;
 
-            // ── None: generator is done. Write tag 1; leave payload undef. ──
+            // ── None: generator is done. Write tag 1; leave payload undef. The
+            // body ran off its end through the final suspend, so `out_value`
+            // holds no live value — clear `pending` so the scope-exit destroy
+            // does not try to drop a stale slot. ──
             fn_ctx.builder.position_at_end(none_bb);
             fn_ctx
                 .builder
                 .build_store(tag_ptr, tag_int.const_int(1, false))
                 .llvm_ctx("gen next None tag store")?;
+            fn_ctx
+                .builder
+                .build_store(pending_ptr, i8_ty.const_zero())
+                .llvm_ctx("gen next None pending clear")?;
             fn_ctx
                 .builder
                 .build_unconditional_branch(cont_bb)
@@ -12798,7 +12829,12 @@ fn lower_instruction(
             fn_ctx.builder.position_at_end(some_bb);
             let out_value_ptr = fn_ctx
                 .builder
-                .build_struct_gep(companion_ty, companion, 3, "gen_next_out_ptr")
+                .build_struct_gep(
+                    companion_ty,
+                    companion,
+                    GEN_COMPANION_OUT_VALUE_FIELD,
+                    "gen_next_out_ptr",
+                )
                 .map_err(|e| {
                     CodegenError::FailClosed(format!("gen next out-value GEP failed: {e:?}"))
                 })?;
@@ -12814,12 +12850,20 @@ fn lower_instruction(
                 .builder
                 .build_store(payload_ptr, yielded)
                 .llvm_ctx("gen next Some payload store")?;
-            // Mark started: the value just read is now owned by the consumer
-            // (moved by-value into the Option payload); the body retains no copy.
-            // The next `.next()` will resume to overwrite `out_value` with the
-            // following yield. There is no per-yield heap free here (unlike the
-            // thread path, which deep-copied each yield to a fresh heap block) —
-            // the value rides the companion out-slot by-value.
+            // The value just read is now owned by the consumer (moved by-value
+            // into the Option payload); the body retains no copy and the
+            // companion's `out_value` is now a stale BIT-COPY. Clear `pending` so
+            // the scope-exit destroy does NOT typed-drop it (that would
+            // double-free the consumer's value). The next `.next()` resume will
+            // overwrite `out_value` with the following yield and re-set `pending`.
+            fn_ctx
+                .builder
+                .build_store(pending_ptr, i8_ty.const_zero())
+                .llvm_ctx("gen next Some pending clear")?;
+            // Mark started: every later `.next()` resumes before reading. There
+            // is no per-yield heap free here (unlike the thread path, which
+            // deep-copied each yield to a fresh heap block) — the value rides the
+            // companion out-slot by-value.
             fn_ctx
                 .builder
                 .build_store(started_ptr, i8_ty.const_int(1, false))
@@ -32955,9 +32999,22 @@ fn emit_enum_variant_literal(
     Ok(())
 }
 
+/// The companion struct field ordinals — kept in lock-step with the runtime
+/// `hew_gen_coro_destroy` byte-offset reads (`hew-runtime/src/cont.rs`). The
+/// three leading `ptr` fields (handle, env, out-drop thunk) and the two trailing
+/// `i8` flags (started, pending) sit at fixed offsets the runtime computes from
+/// the target pointer width; only `Y out_value` has a `Y`-dependent offset, and
+/// the runtime never touches it directly (it dispatches through the thunk).
+const GEN_COMPANION_HANDLE_FIELD: u32 = 0;
+const GEN_COMPANION_ENV_FIELD: u32 = 1;
+const GEN_COMPANION_OUT_DROP_THUNK_FIELD: u32 = 2;
+const GEN_COMPANION_STARTED_FIELD: u32 = 3;
+const GEN_COMPANION_PENDING_FIELD: u32 = 4;
+const GEN_COMPANION_OUT_VALUE_FIELD: u32 = 5;
+
 /// The yield type `Y` and the coro-companion struct
-/// `{ ptr handle, i8 started, ptr env, Y out }` for a `Generator<Y, R>` /
-/// `AsyncGenerator<Y>` place.
+/// `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending, Y out }`
+/// for a `Generator<Y, R>` / `AsyncGenerator<Y>` place.
 ///
 /// A generator value on the coro substrate is a heap **companion** the
 /// `Generator<Y, R>` slot points at:
@@ -32967,14 +33024,26 @@ fn emit_enum_variant_literal(
 ///   capture-free generator). The body reads its free variables through this
 ///   pointer; it is heap-owned (not the caller's stack record) so it stays valid
 ///   across every suspend, when the constructing frame has long returned.
-/// - field 2 `started` — `i8` lazy-resume gate (0 until the first value is
+/// - field 2 `out_drop_thunk` — `ptr` to the per-`Y` `void(ptr companion)` typed
+///   out-drop thunk, or null when `Y` is `BitCopy` (nothing to drop). The runtime
+///   destroy calls it (passing this companion) IFF `pending != 0`; the thunk GEPs
+///   to `out_value` and runs the typed drop for `Y` exactly once.
+/// - field 3 `started` — `i8` lazy-resume gate (0 until the first value is
 ///   consumed; see below),
-/// - field 3 `out_value` — `Y`, the value channel the body publishes each
+/// - field 4 `pending` — `i8` un-consumed-yield flag. 1 while `out_value` holds
+///   an owned value the consumer has not yet moved out (a `yield` is a MOVE, so
+///   the companion is that value's sole owner until a `.next()` reads it); 0 once
+///   consumed, or when the body completed without leaving a value pending. The
+///   runtime destroy drops `out_value` only when this is non-zero — dropping a
+///   consumed (`pending == 0`) value would double-free the consumer's copy.
+/// - field 5 `out_value` — `Y`, the value channel the body publishes each
 ///   yield into and the consumer reads.
 ///
-/// `handle` and `env` are the first two `ptr` fields (offsets 0 and 8) so the
-/// runtime `hew_gen_coro_destroy` can read them at fixed offsets without knowing
-/// `Y`.
+/// `handle`, `env`, and `out_drop_thunk` are the first three `ptr` fields
+/// (offsets 0, `ptr_width`, `2*ptr_width`) and `started` / `pending` follow at
+/// `3*ptr_width` / `3*ptr_width+1`, so the runtime `hew_gen_coro_destroy` reads
+/// them all at fixed offsets without knowing `Y`. Only `out_value`'s offset
+/// depends on `Y`, and the runtime never reads it directly.
 ///
 /// The companion is heap-allocated at `MakeGenerator` and freed at the
 /// generator's drop (after `hew_cont_destroy`), so a `Generator` value is
@@ -33029,15 +33098,146 @@ fn generator_coro_companion_ty<'ctx>(
     };
     let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
     let i8_ty = fn_ctx.ctx.i8_type();
-    // `{ ptr handle, ptr env, i8 started, Y out_value }`. The two `ptr` fields
-    // lead (offsets 0, 8) so the runtime destroy reads them without knowing `Y`.
+    // `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending, Y out }`.
+    // The three `ptr` fields lead so the runtime destroy reads them (and the two
+    // trailing flag bytes) at pointer-width-derived offsets without knowing `Y`.
     // Unpacked (natural alignment) so the out-value's load/store honour `Y`'s
-    // alignment.
+    // alignment; the two `i8` flags pack immediately after the three pointers
+    // (offsets `3*ptr_width`, `3*ptr_width+1`), matching the runtime's reads.
     let companion = fn_ctx.ctx.struct_type(
-        &[ptr_ty.into(), ptr_ty.into(), i8_ty.into(), yield_llvm],
+        &[
+            ptr_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+            i8_ty.into(),
+            i8_ty.into(),
+            yield_llvm,
+        ],
         false,
     );
     Ok((yield_llvm, companion))
+}
+
+/// Synthesise (or fetch) the per-`Y` typed out-drop thunk for a generator
+/// companion, or `None` when `Y` is `BitCopy` (nothing to drop).
+///
+/// A `yield` is lowered as a MOVE — the body publishes its value into the
+/// companion `out_value` slot and never drops it — so a generator dropped while
+/// an owned yielded value is still un-consumed is that value's SOLE owner. The
+/// generic runtime `hew_gen_coro_destroy` cannot type-drop `out_value` without
+/// knowing `Y`, so codegen plants this `void(ptr companion)` thunk in the
+/// companion; the runtime calls it (passing the companion) IFF the `pending`
+/// flag is set. The thunk GEPs to the companion's `out_value` field and runs the
+/// typed drop for `Y` exactly once (via [`emit_heap_slot_drop`], which the
+/// scope-exit drop path uses for the same value type).
+///
+/// Returns:
+/// - `None` when `Y` owns no heap (`BitCopy`: scalars, bitcopy records/enums) —
+///   the companion stores a null thunk and the runtime skips the drop.
+/// - `Some(thunk)` for an owned `Y` whose typed drop `emit_heap_slot_drop`
+///   expresses (`String`, `Vec<_>`, `HashMap`, `HashSet`, owned tuples/arrays).
+/// - Fails closed for an owned `Y` whose typed drop is not yet expressible as a
+///   single slot-drop (e.g. a directly-yielded owned user record/enum) rather
+///   than silently leaking it — the same fail-closed posture
+///   `emit_heap_slot_drop` takes for an un-wired leaf.
+///
+/// Keyed on the generator body function name (`__hew_gen_body_*`, unique per
+/// generator and already deterministic), so re-emitting the same body reuses
+/// one thunk. The thunk uses internal linkage (module-private).
+fn gen_companion_out_drop_thunk<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    gen_place: Place,
+    body_fn: &str,
+    companion_ty: inkwell::types::StructType<'ctx>,
+) -> CodegenResult<Option<FunctionValue<'ctx>>> {
+    let gen_ty = place_resolved_ty(fn_ctx, gen_place)?;
+    let ResolvedTy::Named {
+        builtin: Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
+        args,
+        ..
+    } = gen_ty
+    else {
+        return Err(CodegenError::FailClosed(format!(
+            "generator out-drop thunk requested for non-generator place {gen_place:?} \
+             (resolved {gen_ty:?})"
+        )));
+    };
+    let yield_ty = args
+        .first()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(
+                "Generator<Y, R> type carries no yield type argument for the out-drop \
+                 thunk — the checker must have populated the yield type"
+                    .into(),
+            )
+        })?
+        .clone();
+    // A `Generator<Never, R>` never yields a value; its out-channel is the `i8`
+    // stand-in (never written), so there is nothing to drop.
+    if matches!(yield_ty, ResolvedTy::Never) {
+        return Ok(None);
+    }
+    // BitCopy `Y` owns no heap → no thunk; the runtime skips the drop on null.
+    if !resolved_ty_contains_heap_leaf(fn_ctx, &yield_ty, &mut HashSet::new()) {
+        return Ok(None);
+    }
+
+    // Owned `Y`: synthesise (or reuse) the `void(ptr companion)` thunk keyed on
+    // the body function name. Internal linkage — module-private.
+    let thunk_name = format!("__hew_gen_out_drop_{body_fn}");
+    if let Some(existing) = fn_ctx.llvm_mod.get_function(&thunk_name) {
+        return Ok(Some(existing));
+    }
+    let void_ptr_fn_ty = fn_ctx.ctx.void_type().fn_type(
+        &[fn_ctx.ctx.ptr_type(AddressSpace::default()).into()],
+        false,
+    );
+    let thunk = fn_ctx
+        .llvm_mod
+        .add_function(&thunk_name, void_ptr_fn_ty, Some(Linkage::Internal));
+    let entry = fn_ctx.ctx.append_basic_block(thunk, "entry");
+
+    // Emit the thunk body with the shared module-level codegen state, saving and
+    // restoring the builder's insertion point so the surrounding MakeGenerator
+    // emission continues where it left off.
+    let saved_block = fn_ctx.builder.get_insert_block();
+    fn_ctx.builder.position_at_end(entry);
+    let companion_param = thunk
+        .get_nth_param(0)
+        .ok_or_else(|| {
+            CodegenError::FailClosed("gen out-drop thunk missing companion param".into())
+        })?
+        .into_pointer_value();
+    let out_value_ptr = fn_ctx
+        .builder
+        .build_struct_gep(
+            companion_ty,
+            companion_param,
+            GEN_COMPANION_OUT_VALUE_FIELD,
+            "gen_out_drop_value_ptr",
+        )
+        .map_err(|e| {
+            CodegenError::FailClosed(format!("gen out-drop thunk out-value GEP failed: {e:?}"))
+        })?;
+    // Drop the un-consumed owned value at the out-value slot by its type. Fails
+    // closed for an owned `Y` whose typed drop is not yet wired. On error the
+    // builder is restored before propagating so the caller's emission is sane.
+    if let Err(e) = emit_heap_slot_drop(fn_ctx, out_value_ptr, &yield_ty, 0, "gen_out_drop") {
+        if let Some(block) = saved_block {
+            fn_ctx.builder.position_at_end(block);
+        }
+        return Err(e);
+    }
+    // Terminate the thunk (the builder is still positioned at `entry`, after the
+    // drop's straight-line emission).
+    fn_ctx
+        .builder
+        .build_return(None)
+        .llvm_ctx("gen out-drop thunk ret")?;
+    if let Some(block) = saved_block {
+        fn_ctx.builder.position_at_end(block);
+    }
+    Ok(Some(thunk))
 }
 
 fn lower_terminator<'ctx>(
@@ -34101,13 +34301,14 @@ fn lower_terminator<'ctx>(
             }
 
             // ── 1. Heap-allocate the companion via `hew_cont_frame_alloc`. ──
-            // The companion `{ ptr handle, i8 started, Y out_value }` is allocated
-            // through the SAME size-headered allocator the coro frame uses, so its
-            // scope-exit drop (`hew_gen_coro_destroy` → `hew_cont_frame_free`) is
-            // symmetric without separate size bookkeeping. `hew_cont_frame_alloc`
-            // 16-byte-aligns every block, which covers `Y`'s alignment for every
-            // Hew scalar / pointer / aggregate (the same invariant the coro frame
-            // itself relies on, `cont.rs` FRAME_ALIGN).
+            // The companion `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started,
+            // i8 pending, Y out_value }` is allocated through the SAME
+            // size-headered allocator the coro frame uses, so its scope-exit drop
+            // (`hew_gen_coro_destroy` → `hew_cont_frame_free`) is symmetric without
+            // separate size bookkeeping. `hew_cont_frame_alloc` 16-byte-aligns
+            // every block, which covers `Y`'s alignment for every Hew scalar /
+            // pointer / aggregate (the same invariant the coro frame itself relies
+            // on, `cont.rs` FRAME_ALIGN).
             let (_yield_llvm, companion_ty) = generator_coro_companion_ty(fn_ctx, *dest)?;
             let companion_size = companion_ty.size_of().ok_or_else(|| {
                 CodegenError::FailClosed(
@@ -34131,11 +34332,16 @@ fn lower_terminator<'ctx>(
                 })?
                 .into_pointer_value();
 
-            // ── 2. Init the `started` gate (field 2) to 0: the consumer's first
+            // ── 2. Init the `started` gate (field 3) to 0: the consumer's first
             // `.next()` reads the pre-positioned first value WITHOUT resuming.
             let started_ptr = fn_ctx
                 .builder
-                .build_struct_gep(companion_ty, companion, 2, "gen_companion_started_ptr")
+                .build_struct_gep(
+                    companion_ty,
+                    companion,
+                    GEN_COMPANION_STARTED_FIELD,
+                    "gen_companion_started_ptr",
+                )
                 .map_err(|e| {
                     CodegenError::FailClosed(format!("gen companion started GEP failed: {e:?}"))
                 })?;
@@ -34143,6 +34349,40 @@ fn lower_terminator<'ctx>(
                 .builder
                 .build_store(started_ptr, fn_ctx.ctx.i8_type().const_zero())
                 .llvm_ctx("gen companion started init")?;
+
+            // ── 2b. Plant the per-`Y` typed out-drop thunk (field 2). Null when
+            // `Y` is `BitCopy` (nothing to drop). The runtime destroy calls it
+            // (passing this companion) IFF `pending != 0`, so a generator dropped
+            // while an owned yielded value is still un-consumed releases it
+            // exactly once instead of leaking. Fails closed for an owned `Y`
+            // whose typed drop is not yet expressible as a single thunk. ──
+            let out_drop_thunk =
+                gen_companion_out_drop_thunk(fn_ctx, *dest, body_fn, companion_ty)?;
+            let thunk_ptr = fn_ctx
+                .builder
+                .build_struct_gep(
+                    companion_ty,
+                    companion,
+                    GEN_COMPANION_OUT_DROP_THUNK_FIELD,
+                    "gen_companion_out_drop_thunk_ptr",
+                )
+                .map_err(|e| {
+                    CodegenError::FailClosed(format!(
+                        "gen companion out-drop-thunk GEP failed: {e:?}"
+                    ))
+                })?;
+            let thunk_value: BasicValueEnum = match out_drop_thunk {
+                Some(thunk_fn) => thunk_fn.as_global_value().as_pointer_value().into(),
+                None => fn_ctx
+                    .ctx
+                    .ptr_type(AddressSpace::default())
+                    .const_null()
+                    .into(),
+            };
+            fn_ctx
+                .builder
+                .build_store(thunk_ptr, thunk_value)
+                .llvm_ctx("gen companion out-drop-thunk store")?;
 
             // ── 3. Heap-copy the capture env (field 1) and assemble ramp args. ──
             // The body reads its free variables through the env pointer ACROSS
@@ -34155,13 +34395,23 @@ fn lower_terminator<'ctx>(
             // memcpy + flat free is sound — no per-field clone or drop.
             let env_field_ptr = fn_ctx
                 .builder
-                .build_struct_gep(companion_ty, companion, 1, "gen_companion_env_ptr")
+                .build_struct_gep(
+                    companion_ty,
+                    companion,
+                    GEN_COMPANION_ENV_FIELD,
+                    "gen_companion_env_ptr",
+                )
                 .map_err(|e| {
                     CodegenError::FailClosed(format!("gen companion env GEP failed: {e:?}"))
                 })?;
             let out_value_ptr = fn_ctx
                 .builder
-                .build_struct_gep(companion_ty, companion, 3, "gen_companion_out_ptr")
+                .build_struct_gep(
+                    companion_ty,
+                    companion,
+                    GEN_COMPANION_OUT_VALUE_FIELD,
+                    "gen_companion_out_ptr",
+                )
                 .map_err(|e| {
                     CodegenError::FailClosed(format!("gen companion out-value GEP failed: {e:?}"))
                 })?;
@@ -34243,7 +34493,12 @@ fn lower_terminator<'ctx>(
             // ── 3. Store the handle into `companion.handle` (field 0). ──
             let handle_ptr = fn_ctx
                 .builder
-                .build_struct_gep(companion_ty, companion, 0, "gen_companion_handle_ptr")
+                .build_struct_gep(
+                    companion_ty,
+                    companion,
+                    GEN_COMPANION_HANDLE_FIELD,
+                    "gen_companion_handle_ptr",
+                )
                 .map_err(|e| {
                     CodegenError::FailClosed(format!("gen companion handle GEP failed: {e:?}"))
                 })?;
@@ -34251,6 +34506,62 @@ fn lower_terminator<'ctx>(
                 .builder
                 .build_store(handle_ptr, gen_handle)
                 .llvm_ctx("gen companion handle store")?;
+
+            // ── 3b. Init the `pending` flag (field 4). The ramp pre-ran the body
+            // to its first `yield` (or to completion). If the body suspended at a
+            // yield (`!hew_cont_done(handle)`), the value it published into
+            // `out_value` is a live, un-consumed owned value the companion now
+            // SOLELY owns (a `yield` is a MOVE; the body never drops it). Set
+            // `pending = 1` so a drop before the first `.next()` releases it via
+            // the typed thunk instead of leaking. A body that ran to completion
+            // without yielding leaves nothing pending (`pending = 0`); the
+            // checker rejects a truly no-yield generator, so in practice the
+            // pre-run always suspends at the first yield, but deriving `pending`
+            // from `done` keeps the flag honest for any body shape. ──
+            let done_fn = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_cont_done",
+            )?;
+            let done_after_ramp = fn_ctx
+                .builder
+                .build_call(done_fn, &[gen_handle.into()], "gen_companion_ramp_done")
+                .llvm_ctx("gen companion post-ramp hew_cont_done call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_cont_done returned void".into()))?
+                .into_int_value();
+            // pending = (done == 0) ? 1 : 0, narrowed to i8.
+            let i8_ty = fn_ctx.ctx.i8_type();
+            let not_done = fn_ctx
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::EQ,
+                    done_after_ramp,
+                    done_after_ramp.get_type().const_zero(),
+                    "gen_companion_pending_bit",
+                )
+                .llvm_ctx("gen companion pending compare")?;
+            let pending_init = fn_ctx
+                .builder
+                .build_int_z_extend_or_bit_cast(not_done, i8_ty, "gen_companion_pending_i8")
+                .llvm_ctx("gen companion pending zext")?;
+            let pending_ptr = fn_ctx
+                .builder
+                .build_struct_gep(
+                    companion_ty,
+                    companion,
+                    GEN_COMPANION_PENDING_FIELD,
+                    "gen_companion_pending_ptr",
+                )
+                .map_err(|e| {
+                    CodegenError::FailClosed(format!("gen companion pending GEP failed: {e:?}"))
+                })?;
+            fn_ctx
+                .builder
+                .build_store(pending_ptr, pending_init)
+                .llvm_ctx("gen companion pending init")?;
 
             // ── 4. Store the companion ptr into the `Generator<Y, R>` slot. ──
             let (dest_slot, _dest_ty) = place_pointer(fn_ctx, *dest)?;

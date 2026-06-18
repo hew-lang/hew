@@ -303,10 +303,12 @@ pub unsafe extern "C" fn hew_cont_destroy(handle: *mut c_void) {
 }
 
 /// Destroy a generator's coro **companion** — the heap block a `Generator<Y, R>`
-/// value points at, laid out `{ ptr coro_handle, ptr env, i8 started, Y out }`
-/// and allocated by codegen via [`hew_cont_frame_alloc`]. The two leading `ptr`
-/// fields (handle at offset 0, env at offset 8) are read here at fixed offsets
-/// without knowing `Y`.
+/// value points at, laid out
+/// `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending, Y out }`
+/// and allocated by codegen via [`hew_cont_frame_alloc`]. The three leading
+/// `ptr` fields (handle at offset 0, env at offset `ptr_width`, out-drop thunk
+/// at offset `2 * ptr_width`) and the two `i8` flags that follow them are read
+/// here at fixed offsets without knowing `Y`.
 ///
 /// This is the SOLE teardown owner of a generator value, called exactly once at
 /// the generator's scope-exit drop (or early drop while suspended). It:
@@ -314,16 +316,28 @@ pub unsafe extern "C" fn hew_cont_destroy(handle: *mut c_void) {
 ///      coro `cleanup` outline drops every value the body still owns in its
 ///      frame (a value suspended mid-iteration, a cross-yield-live owned local),
 ///      then frees the coro frame. Exactly the single-owner destroy discipline.
-///   2. reads the heap env at offset 8 and frees it via [`hew_cont_frame_free`]
-///      (null for a capture-free generator → no-op). The env holds only
-///      plain-copyable captures (`gen_env_capture_admissible` rejects
-///      owned/opaque), so a flat free with no per-field drop is sound.
-///   3. frees the companion block via [`hew_cont_frame_free`] (the symmetric
-///      partner of the `hew_cont_frame_alloc` codegen used). The companion's
-///      `out_value` field is a stale BIT-COPY of the last value the consumer
-///      already moved out by-value (into its `Option<Y>` payload); it is NOT
-///      dropped here — doing so would double-free the value the consumer owns.
-///      The live values live in the coro frame, dropped in step 1.
+///   2. reads the heap env at offset `ptr_width` and frees it via
+///      [`hew_cont_frame_free`] (null for a capture-free generator → no-op). The
+///      env holds only plain-copyable captures (`gen_env_capture_admissible`
+///      rejects owned/opaque), so a flat free with no per-field drop is sound.
+///   3. **typed-drops the `out` value IFF it is a live, UN-consumed owned value.**
+///      A `yield` is lowered as a MOVE: the body publishes the value into the
+///      companion `out` slot and never drops it, so until a `.next()` reads it
+///      out (moving it into the consumer's `Option<Y>` payload) the companion is
+///      the SOLE owner of that value. Codegen sets the `pending` flag to 1 when
+///      such a value is live in `out`, and clears it to 0 the moment a `.next()`
+///      consumes it. A generator constructed and dropped before its first
+///      `.next()` (or otherwise dropped while a yielded value is pending) would
+///      LEAK that owned `out` value if we did nothing — destroy must drop it.
+///      When `pending != 0` and the codegen planted a non-null `out_drop_thunk`
+///      (null when `Y` is `BitCopy` — nothing to drop), this calls
+///      `out_drop_thunk(companion)`; the per-`Y` thunk GEPs to the `out` field
+///      and runs the typed drop for `Y` exactly once. When `pending == 0` the
+///      `out` slot is either a stale BIT-COPY of an already-consumed value (the
+///      consumer owns the moved-out copy) or never-written, so it is NOT dropped
+///      — doing so would double-free the consumer's value.
+///   4. frees the companion block via [`hew_cont_frame_free`] (the symmetric
+///      partner of the `hew_cont_frame_alloc` codegen used).
 ///
 /// Null-safe (a never-constructed / already-dropped generator). After this the
 /// companion, its env, and its coro frame are dangling.
@@ -331,10 +345,11 @@ pub unsafe extern "C" fn hew_cont_destroy(handle: *mut c_void) {
 /// # Safety
 ///
 /// `companion`, if non-null, MUST be a generator companion block from
-/// `hew_cont_frame_alloc` whose offset-0 word is a live (or null) coro handle
-/// and offset-8 word is a live (or null) env block (also from
-/// `hew_cont_frame_alloc`), not yet destroyed. Called exactly once per generator
-/// value.
+/// `hew_cont_frame_alloc` whose offset-0 word is a live (or null) coro handle,
+/// offset-`ptr_width` word is a live (or null) env block (also from
+/// `hew_cont_frame_alloc`), offset-`2*ptr_width` word is a `void(ptr)` typed
+/// out-drop thunk (or null), followed by the `started` / `pending` flag bytes —
+/// not yet destroyed. Called exactly once per generator value.
 #[no_mangle]
 pub unsafe extern "C" fn hew_gen_coro_destroy(companion: *mut c_void) {
     if companion.is_null() {
@@ -352,7 +367,7 @@ pub unsafe extern "C" fn hew_gen_coro_destroy(companion: *mut c_void) {
     // offset matches the companion layout the codegen emits on this target.
     let ptr_width = core::mem::size_of::<*mut c_void>();
     // SAFETY: offset ptr_width (one pointer past handle) is within the companion
-    // block (it has at least the two leading pointer fields), so advancing the
+    // block (it has at least the three leading pointer fields), so advancing the
     // base by one pointer width lands at the env-pointer field.
     let env_slot = unsafe { companion.cast::<u8>().add(ptr_width) };
     // SAFETY: the env field is a `*mut c_void` written by the MakeGenerator
@@ -361,6 +376,41 @@ pub unsafe extern "C" fn hew_gen_coro_destroy(companion: *mut c_void) {
     let env = unsafe { ptr::read_unaligned(env_slot.cast::<*mut c_void>()) };
     // SAFETY: env came from hew_cont_frame_alloc (or is null); symmetric free.
     unsafe { hew_cont_frame_free(env) };
+
+    // Typed-drop the `out` value IFF it is a live, un-consumed owned value.
+    // `pending` is the byte immediately after the three leading pointer fields
+    // and the `started` byte: offset `3 * ptr_width + 1`. The codegen lays the
+    // companion out so this byte holds 1 while an owned yielded value is live in
+    // `out` and 0 once a `.next()` has moved it out (or for a value the body
+    // never yielded). The `out_drop_thunk` is the THIRD pointer field
+    // (offset `2 * ptr_width`), null when `Y` is `BitCopy` (nothing to drop).
+    // SAFETY: offset 3*ptr_width+1 is within the companion (after handle, env,
+    // thunk pointers and the `started` byte), so advancing the base lands at the
+    // `pending` flag byte.
+    let pending_slot = unsafe { companion.cast::<u8>().add(ptr_width.saturating_mul(3) + 1) };
+    // SAFETY: pending_slot points at the in-bounds `pending` flag byte the
+    // MakeGenerator codegen wrote; a single-byte `read` is sound.
+    let pending = unsafe { ptr::read(pending_slot) };
+    if pending != 0 {
+        // SAFETY: offset 2*ptr_width is the out-drop thunk pointer field, within
+        // the three leading pointer fields the codegen always emits.
+        let thunk_slot = unsafe { companion.cast::<u8>().add(ptr_width.saturating_mul(2)) };
+        // SAFETY: the thunk field is a `void(ptr)` fn-ptr written by the
+        // MakeGenerator codegen (or null). `read_unaligned` is sound regardless
+        // of the byte-offset cast's static alignment (the field is pointer-aligned).
+        let thunk = unsafe {
+            ptr::read_unaligned(thunk_slot.cast::<Option<unsafe extern "C" fn(*mut c_void)>>())
+        };
+        if let Some(thunk) = thunk {
+            // SAFETY: the thunk is the codegen-synthesised per-`Y` out-drop
+            // thunk; it GEPs to the `out` field of THIS companion and runs the
+            // typed drop for the un-consumed owned value exactly once. The value
+            // is solely-owned (a moved-but-never-read yield), so this is the only
+            // drop edge — no double-free.
+            unsafe { thunk(companion) };
+        }
+    }
+
     // SAFETY: companion came from hew_cont_frame_alloc; this is its symmetric
     // free (reads the size header hew_cont_frame_alloc stored).
     unsafe { hew_cont_frame_free(companion) };
@@ -521,5 +571,125 @@ mod tests {
                 "poll reports Ready once done"
             );
         }
+    }
+
+    // ── Generator companion typed out-drop dispatch (the leak fix) ─────────────
+    //
+    // The companion the codegen emits is laid out
+    // `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started, i8 pending, Y out }`.
+    // `hew_gen_coro_destroy` reads the three leading pointers + the two flag
+    // bytes at fixed (pointer-width-derived) offsets and, when `pending != 0`
+    // and the thunk is non-null, calls `thunk(companion)` to typed-drop the
+    // un-consumed owned `out` value exactly once. These tests model that block
+    // directly (no LLVM) and assert the dispatch fires exactly when pending,
+    // never when consumed, and exactly once.
+
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    // Separate counters per test so the dispatch tests stay isolated under
+    // nextest's parallel execution (a shared counter would race).
+    static PENDING_DROP_CALLS: AtomicU32 = AtomicU32::new(0);
+    static CONSUMED_DROP_CALLS: AtomicU32 = AtomicU32::new(0);
+
+    /// Stand-in for a codegen-emitted typed out-drop thunk: bumps the
+    /// pending-path counter. A real thunk GEPs to the companion's `out` field and
+    /// runs `Y`'s drop; the dispatch contract this pins is "called once iff pending".
+    unsafe extern "C" fn pending_counting_thunk(_companion: *mut c_void) {
+        PENDING_DROP_CALLS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Stand-in thunk for the consumed-path test (bumps a distinct counter).
+    unsafe extern "C" fn consumed_counting_thunk(_companion: *mut c_void) {
+        CONSUMED_DROP_CALLS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Build a minimal companion block matching the codegen layout, with a null
+    /// coro handle + null env (so handle/env teardown are no-ops) and the given
+    /// `pending` flag + out-drop thunk. Returns the companion pointer (owned by
+    /// `hew_cont_frame_alloc`, freed by `hew_gen_coro_destroy`).
+    unsafe fn make_companion(
+        pending: u8,
+        thunk: Option<unsafe extern "C" fn(*mut c_void)>,
+    ) -> *mut c_void {
+        let ptr_width = core::mem::size_of::<*mut c_void>();
+        // Three pointers + two flag bytes is the only region the runtime reads;
+        // size the block generously past that so the flag/thunk writes are in
+        // bounds (the real `out` field follows but the runtime never reads it).
+        let size = (ptr_width * 4) as u64;
+        // SAFETY: hew_cont_frame_alloc is safe for any size and returns a block
+        // freed by hew_gen_coro_destroy below.
+        let companion = unsafe { hew_cont_frame_alloc(size) };
+        assert!(!companion.is_null());
+        // SAFETY: every write below targets an in-bounds field of the companion
+        // block just allocated (handle @0, env @ptr_width, thunk @2*ptr_width,
+        // started @3*ptr_width, pending @3*ptr_width+1), matching the codegen
+        // layout the runtime destroy reads.
+        unsafe {
+            ptr::write(companion.cast::<*mut c_void>(), ptr::null_mut());
+            ptr::write_unaligned(
+                companion.cast::<u8>().add(ptr_width).cast::<*mut c_void>(),
+                ptr::null_mut(),
+            );
+            // out_drop_thunk @2*ptr_width.
+            ptr::write_unaligned(
+                companion
+                    .cast::<u8>()
+                    .add(ptr_width * 2)
+                    .cast::<Option<unsafe extern "C" fn(*mut c_void)>>(),
+                thunk,
+            );
+            // started @3*ptr_width (irrelevant to destroy), pending @3*ptr_width+1.
+            ptr::write(companion.cast::<u8>().add(ptr_width * 3), 0u8);
+            ptr::write(companion.cast::<u8>().add(ptr_width * 3 + 1), pending);
+        }
+        companion
+    }
+
+    /// A companion dropped with `pending == 1` and a non-null thunk runs the
+    /// typed out-drop EXACTLY once — the leak fix for an un-consumed owned yield.
+    #[test]
+    fn destroy_runs_out_drop_thunk_exactly_once_when_pending() {
+        PENDING_DROP_CALLS.store(0, Ordering::SeqCst);
+        // SAFETY: companion is a well-formed block from make_companion; destroy
+        // is its sole teardown owner.
+        unsafe {
+            let companion = make_companion(1, Some(pending_counting_thunk));
+            hew_gen_coro_destroy(companion);
+        }
+        assert_eq!(
+            PENDING_DROP_CALLS.load(Ordering::SeqCst),
+            1,
+            "a pending un-consumed owned yield must be typed-dropped exactly once"
+        );
+    }
+
+    /// A companion dropped with `pending == 0` (the value was consumed by a
+    /// `.next()`, or never yielded) must NOT run the thunk — dropping a consumed
+    /// value would double-free the copy the consumer now owns.
+    #[test]
+    fn destroy_skips_out_drop_thunk_when_not_pending() {
+        CONSUMED_DROP_CALLS.store(0, Ordering::SeqCst);
+        // SAFETY: companion is a well-formed block from make_companion.
+        unsafe {
+            let companion = make_companion(0, Some(consumed_counting_thunk));
+            hew_gen_coro_destroy(companion);
+        }
+        assert_eq!(
+            CONSUMED_DROP_CALLS.load(Ordering::SeqCst),
+            0,
+            "a consumed (pending == 0) out value must NOT be re-dropped"
+        );
+    }
+
+    /// A `BitCopy` `Y` plants a null thunk; destroy with pending set must be a
+    /// no-op on the drop side (nothing to free) and not deref a null thunk.
+    #[test]
+    fn destroy_null_thunk_pending_is_noop_drop() {
+        // SAFETY: companion has a null thunk; destroy must skip the call.
+        unsafe {
+            let companion = make_companion(1, None);
+            hew_gen_coro_destroy(companion);
+        }
+        // No crash, no double-free; reaching here is the assertion.
     }
 }

@@ -286,6 +286,10 @@ if "${HEW}" compile \
   exit 1
 fi
 grep -q "spawned closure captures non-Send value 'r'" "${reject_output}"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/var_by_value_param_noncopy.hew" \
+  "by-value parameter" \
+  "mutable by-value aggregate param"
 
 run_accept_expect_status "assert_eq" 0
 run_accept_expect_status "assert_ne" 0

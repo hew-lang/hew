@@ -651,7 +651,8 @@ impl Checker {
         // Bind params — only the first parameter can be the receiver
         for (i, p) in fd.params.iter().enumerate() {
             let mut ty = self.resolve_type_expr(&p.ty);
-            if i == 0 && self.is_receiver_param(p) {
+            let is_receiver = i == 0 && self.is_receiver_param(p);
+            if is_receiver {
                 if let Some((self_name, self_args)) = &self.current_self_type {
                     // When the impl target is a primitive (e.g. `impl string`,
                     // `impl bool`), bind the receiver to the canonical `Ty`
@@ -674,6 +675,26 @@ impl Checker {
                         }
                     };
                 }
+            }
+            let resolved_param_ty = self.subst.resolve(&ty);
+            if p.is_mutable
+                && !is_receiver
+                && Self::is_non_copy_aggregate_param_type(&resolved_param_ty)
+            {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::MutabilityError,
+                    &p.ty.1,
+                    format!(
+                        "`var {}` on a by-value parameter of type `{}` has no caller-visible \
+                         effect",
+                        p.name,
+                        resolved_param_ty.user_facing()
+                    ),
+                    vec![
+                        "return the modified value to the caller".to_string(),
+                        "move the mutation into an actor or a mutable receiver method".to_string(),
+                    ],
+                );
             }
             // If inside an actor, check that params don't shadow actor fields
             if in_actor {
@@ -1872,6 +1893,15 @@ fn ty_is_supervisor_init_bitcopy_scalar(ty: &Ty) -> bool {
             | Ty::Bool
             | Ty::Char
     )
+}
+
+impl Checker {
+    fn is_non_copy_aggregate_param_type(ty: &Ty) -> bool {
+        match ty {
+            Ty::Named { builtin: None, .. } | Ty::Tuple(_) | Ty::Array(_, _) => !ty.is_copy(),
+            _ => false,
+        }
+    }
 }
 
 fn supervisor_local_pid_target(ty: &Ty) -> Option<&str> {

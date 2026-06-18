@@ -269,13 +269,13 @@ fn vec_index_diag_for_elem(out: &hew_hir::LowerOutput, elem: &str) -> bool {
 
 #[test]
 fn vec_index_in_machine_transition_body_rejected() {
-    // Vec<f32> scalar-indexed inside a transition body must trip the gate.
+    // Vec<isize> scalar-indexed inside a transition body must trip the gate.
     // Transition bodies are type-checked (registration.rs ~ check_against),
     // so `tc.expr_types` carries the container type at the indexing site.
-    // f32 is a still-unsupported element type (no hew_vec_get_f32 getter).
+    // isize is still unsupported until target-width threading reaches MIR.
     let out = lower(
         r"
-        fn make_f32s() -> Vec<f32> { [] }
+        fn make_isizes() -> Vec<isize> { [] }
 
         machine M {
             events {
@@ -286,8 +286,8 @@ fn vec_index_in_machine_transition_body_rejected() {
             state Idle;
             state Done;
             on Go: Idle => Done {
-                let xs: Vec<f32> = make_f32s();
-                let _: f32 = xs[0];
+                let xs: Vec<isize> = make_isizes();
+                let _: isize = xs[0];
                 Done
             }
             on Go: Done => Done;
@@ -298,8 +298,8 @@ fn vec_index_in_machine_transition_body_rejected() {
     );
 
     assert!(
-        vec_index_diag_for_elem(&out, "f32"),
-        "expected VecIndexElementTypeUnsupported(f32) inside transition body; got diagnostics: {:#?}",
+        vec_index_diag_for_elem(&out, "isize"),
+        "expected VecIndexElementTypeUnsupported(isize) inside transition body; got diagnostics: {:#?}",
         out.diagnostics
     );
     assert!(
@@ -310,14 +310,13 @@ fn vec_index_in_machine_transition_body_rejected() {
 
 #[test]
 fn vec_index_in_machine_transition_guard_rejected() {
-    // Vec<f32> scalar-indexed inside a transition `when` guard must trip
+    // Vec<isize> scalar-indexed inside a transition `when` guard must trip
     // the gate. Guards are type-checked against `Ty::Bool`
     // (registration.rs:2663 check_against), so `tc.expr_types` carries
-    // the container type at the indexing site. f32 is a still-unsupported
-    // element type (no hew_vec_get_f32 getter).
+    // the container type at the indexing site. isize remains fail-closed.
     let out = lower(
         r"
-        fn make_f32s() -> Vec<f32> { [] }
+        fn make_isizes() -> Vec<isize> { [] }
 
         machine M {
             events {
@@ -327,7 +326,7 @@ fn vec_index_in_machine_transition_guard_rejected() {
 
             state Idle;
             state Done;
-            on Go: Idle => Done when make_f32s()[0] == 0.0 { Done }
+            on Go: Idle => Done when make_isizes()[0] == 0 { Done }
             on Go: Done => Done;
             on Reset: Done => Idle;
             on Reset: Idle => Idle;
@@ -336,8 +335,8 @@ fn vec_index_in_machine_transition_guard_rejected() {
     );
 
     assert!(
-        vec_index_diag_for_elem(&out, "f32"),
-        "expected VecIndexElementTypeUnsupported(f32) inside transition guard; got diagnostics: {:#?}",
+        vec_index_diag_for_elem(&out, "isize"),
+        "expected VecIndexElementTypeUnsupported(isize) inside transition guard; got diagnostics: {:#?}",
         out.diagnostics
     );
     assert!(

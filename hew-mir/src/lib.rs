@@ -55,8 +55,8 @@ pub use model::{
     FunctionCallConv, GenStateDropTable, GenStateLayout, GenStateLiveLocal, Instr, IntArithOp,
     IntSignedness, IrPipeline, JoinBranch, LambdaActorShape, LambdaCapture, LambdaEnvFieldDrop,
     MachineLayout, MachineVariantLayout, MirCheck, MirConst, MirConstValue, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, PolymorphicMirFunction, RawMirFunction, RecordLayout,
-    RegexLiteral, RuntimeCall, SelectArm, SelectArmKind, SendAliasMode, Strategy,
+    MirDiagnosticKind, MirStatement, Place, PointerWidth, PolymorphicMirFunction, RawMirFunction,
+    RecordLayout, RegexLiteral, RuntimeCall, SelectArm, SelectArmKind, SendAliasMode, Strategy,
     SupervisorChildLayout, SupervisorLayout, Terminator, ThirFunction, TraitObjectStorage,
     TrapKind, WitnessOperand,
 };

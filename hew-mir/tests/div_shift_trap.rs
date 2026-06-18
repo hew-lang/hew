@@ -14,7 +14,7 @@
 //!   canonical widths. Unsigned types have no signed-MIN/-1 trap block;
 //!   the test asserts that only one trap block (`DivideByZero`) is present.
 
-use hew_mir::{BasicBlock, Instr, IntSignedness, IrPipeline, Terminator, TrapKind};
+use hew_mir::{BasicBlock, Instr, IntSignedness, IrPipeline, PointerWidth, Terminator, TrapKind};
 
 fn pipeline(source: &str) -> IrPipeline {
     use hew_hir::{lower_program, verify_hir, ResolutionCtx};
@@ -391,39 +391,163 @@ fn div_continuation_block_is_branch_else_target() {
 }
 
 // ---------------------------------------------------------------------------
-// isize / usize: shift emits NotYetImplemented (platform-sized width unknown)
+// isize / usize: platform-sized div/shift now lower with target-width guards
 // ---------------------------------------------------------------------------
+//
+// Before platform-int-arith, isize/usize div/shift fail-closed at MIR with a
+// NotYetImplemented diagnostic because the trap-guard constant (signed-MIN,
+// shift-width) was not knowable. They now thread the target pointer width.
+// These tests assert the trap edges ARE emitted and that the width-bearing
+// constant is the correct per-target value — the soundness boundary.
 
-#[test]
-fn shl_isize_emits_not_yet_implemented() {
-    let p = pipeline("fn main() -> isize { let a: isize = 1; let b: isize = 2; a << b }");
-    // Must have a NotYetImplemented diagnostic — not a clean pipeline.
+/// Lower `source` with an explicit target pointer width. Mirrors `pipeline`
+/// but routes through `lower_hir_module_with_facts` so the isize/usize width
+/// guards resolve to the requested width (the cross-compile soundness path).
+fn pipeline_with_width(source: &str, width: PointerWidth) -> IrPipeline {
+    use hew_hir::{lower_program, verify_hir, ResolutionCtx};
+    use hew_types::TypeCheckOutput;
+
+    let parsed = hew_parser::parse(source);
     assert!(
-        !p.diagnostics.is_empty(),
-        "shl on isize should emit a NotYetImplemented diagnostic \
-         (platform-sized shift range not knowable at MIR time)"
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
     );
+    let output = lower_program(
+        &parsed.program,
+        &TypeCheckOutput::default(),
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "HIR diagnostics: {:?}",
+        output.diagnostics
+    );
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "HIR verify: {verify:?}");
+    hew_mir::lower_hir_module_with_facts(&output.module, &std::collections::HashMap::new(), width)
+}
+
+/// Return the set of `Instr::ConstI64` values emitted in the function.
+fn const_i64_values(blocks: &[BasicBlock]) -> Vec<i64> {
+    blocks
+        .iter()
+        .flat_map(|b| b.instructions.iter())
+        .filter_map(|instr| match instr {
+            Instr::ConstI64 { value, .. } => Some(*value),
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
-fn shr_usize_emits_not_yet_implemented() {
-    let p = pipeline("fn main() -> usize { let a: usize = 8; let b: usize = 1; a >> b }");
-    assert!(
-        !p.diagnostics.is_empty(),
-        "shr on usize should emit a NotYetImplemented diagnostic"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// isize: signed div emits NotYetImplemented (MIN not knowable)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn div_isize_emits_not_yet_implemented() {
+fn div_isize_lowers_with_signed_min_trap() {
     let p = pipeline("fn main() -> isize { let a: isize = 10; let b: isize = 2; a / b }");
     assert!(
-        !p.diagnostics.is_empty(),
-        "div on isize should emit a NotYetImplemented diagnostic \
-         (signed MIN/-1 check requires known bit-width)"
+        p.diagnostics.is_empty(),
+        "isize div must lower cleanly: {:?}",
+        p.diagnostics
+    );
+    let func = &p.raw_mir[0];
+    assert_eq!(sole_div_rem(&func.blocks), IntSignedness::Signed);
+    assert_trap_edge(&func.blocks, TrapKind::DivideByZero);
+    assert_trap_edge(&func.blocks, TrapKind::SignedMinDivNegOne);
+}
+
+#[test]
+fn div_usize_lowers_unsigned_no_signed_min_trap() {
+    let p = pipeline("fn main() -> usize { let a: usize = 10; let b: usize = 2; a / b }");
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    let func = &p.raw_mir[0];
+    assert_eq!(sole_div_rem(&func.blocks), IntSignedness::Unsigned);
+    assert_trap_edge(&func.blocks, TrapKind::DivideByZero);
+    assert_no_trap(&func.blocks, TrapKind::SignedMinDivNegOne);
+}
+
+#[test]
+fn shl_isize_lowers_with_shift_out_of_range_trap() {
+    let p = pipeline("fn main() -> isize { let a: isize = 1; let b: isize = 2; a << b }");
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    let func = &p.raw_mir[0];
+    assert_trap_edge(&func.blocks, TrapKind::ShiftOutOfRange);
+}
+
+#[test]
+fn shr_usize_lowers_with_shift_out_of_range_trap() {
+    let p = pipeline("fn main() -> usize { let a: usize = 8; let b: usize = 1; a >> b }");
+    assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
+    let func = &p.raw_mir[0];
+    assert_eq!(sole_shift(&func.blocks), Some(IntSignedness::Unsigned));
+    assert_trap_edge(&func.blocks, TrapKind::ShiftOutOfRange);
+}
+
+// ── Width-correctness: the trap constant follows the TARGET pointer width ────
+//
+// The load-bearing cross-compile soundness check: a width-64 host must still
+// emit a width-32 shift bound and i32::MIN signed-MIN when lowering for a
+// 32-bit (wasm32) target, and width-64 / i64::MIN for a 64-bit target. A
+// host-`cfg!`-derived width would emit the host's 64 into the wasm32 module.
+
+#[test]
+fn shift_isize_width_const_follows_target_pointer_width() {
+    // 64-bit target: the shift-range bound constant must be 64.
+    let p64 = pipeline_with_width(
+        "fn main() -> usize { let a: usize = 1; let b: usize = 2; a << b }",
+        PointerWidth::Bits64,
+    );
+    assert!(p64.diagnostics.is_empty(), "{:?}", p64.diagnostics);
+    assert!(
+        const_i64_values(&p64.raw_mir[0].blocks).contains(&64),
+        "64-bit usize shift must emit a width-64 range bound; consts: {:?}",
+        const_i64_values(&p64.raw_mir[0].blocks)
+    );
+
+    // 32-bit (wasm32) target: the SAME source lowered for wasm32 must emit a
+    // width-32 bound, NOT the host's 64 — the cross-compile soundness check.
+    let p32 = pipeline_with_width(
+        "fn main() -> usize { let a: usize = 1; let b: usize = 2; a << b }",
+        PointerWidth::Bits32,
+    );
+    assert!(p32.diagnostics.is_empty(), "{:?}", p32.diagnostics);
+    let consts32 = const_i64_values(&p32.raw_mir[0].blocks);
+    assert!(
+        consts32.contains(&32),
+        "32-bit usize shift must emit a width-32 range bound; consts: {consts32:?}"
+    );
+    assert!(
+        !consts32.contains(&64),
+        "32-bit usize shift must NOT emit a width-64 bound (host-width leak); consts: {consts32:?}"
+    );
+}
+
+#[test]
+fn div_isize_signed_min_const_follows_target_pointer_width() {
+    // 64-bit isize div: signed-MIN constant must be i64::MIN.
+    let p64 = pipeline_with_width(
+        "fn main() -> isize { let a: isize = 10; let b: isize = 2; a / b }",
+        PointerWidth::Bits64,
+    );
+    assert!(p64.diagnostics.is_empty(), "{:?}", p64.diagnostics);
+    assert!(
+        const_i64_values(&p64.raw_mir[0].blocks).contains(&i64::MIN),
+        "64-bit isize div must emit i64::MIN as the signed-MIN guard; consts: {:?}",
+        const_i64_values(&p64.raw_mir[0].blocks)
+    );
+
+    // 32-bit isize div: signed-MIN constant must be i32::MIN, NOT i64::MIN.
+    let p32 = pipeline_with_width(
+        "fn main() -> isize { let a: isize = 10; let b: isize = 2; a / b }",
+        PointerWidth::Bits32,
+    );
+    assert!(p32.diagnostics.is_empty(), "{:?}", p32.diagnostics);
+    let consts32 = const_i64_values(&p32.raw_mir[0].blocks);
+    assert!(
+        consts32.contains(&i64::from(i32::MIN)),
+        "32-bit isize div must emit i32::MIN as the signed-MIN guard; consts: {consts32:?}"
+    );
+    assert!(
+        !consts32.contains(&i64::MIN),
+        "32-bit isize div must NOT emit i64::MIN (host-width leak); consts: {consts32:?}"
     );
 }

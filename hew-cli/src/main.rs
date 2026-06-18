@@ -178,8 +178,11 @@ fn lower_file_to_mir(
         return Err(());
     }
 
-    let mut pipeline =
-        hew_mir::lower_hir_module_with_facts(&lower_output.module, &tco.actor_send_aliasing);
+    let mut pipeline = hew_mir::lower_hir_module_with_facts(
+        &lower_output.module,
+        &tco.actor_send_aliasing,
+        mir_pointer_width(&target),
+    );
     // Route checker-authored layout facts onto the pipeline.
     pipeline.attach_lowering_facts(&tco);
     if render_pipeline_mir_diagnostics(
@@ -251,8 +254,11 @@ fn lower_file_to_mir_for_target(
         return Err(());
     }
 
-    let mut pipeline =
-        hew_mir::lower_hir_module_with_facts(&lower_output.module, &tco.actor_send_aliasing);
+    let mut pipeline = hew_mir::lower_hir_module_with_facts(
+        &lower_output.module,
+        &tco.actor_send_aliasing,
+        mir_pointer_width(target),
+    );
     pipeline.attach_lowering_facts(&tco);
     if render_pipeline_mir_diagnostics(
         &state.program,
@@ -273,6 +279,19 @@ fn hir_target_arch(target: &target::TargetSpec) -> hew_hir::TargetArch {
         target::TargetArch::Aarch64 => hew_hir::TargetArch::Aarch64,
         target::TargetArch::X86_64 => hew_hir::TargetArch::X86_64,
         target::TargetArch::Wasm32 => hew_hir::TargetArch::Wasm32,
+    }
+}
+
+/// Map the compile target to the MIR pointer width so the `isize`/`usize`
+/// div/rem and shift trap guards emit the correct per-target constant.
+///
+/// Derived from the requested `--target` (`Wasm32` is the only 32-bit target;
+/// `Aarch64`/`X86_64` are 64-bit), NOT from a host `cfg!` — a cross-compile to
+/// wasm32 on a 64-bit host must emit width-32 guards, not the host's width.
+fn mir_pointer_width(target: &target::TargetSpec) -> hew_mir::PointerWidth {
+    match target.arch() {
+        target::TargetArch::Wasm32 => hew_mir::PointerWidth::Bits32,
+        target::TargetArch::Aarch64 | target::TargetArch::X86_64 => hew_mir::PointerWidth::Bits64,
     }
 }
 
@@ -338,8 +357,11 @@ fn run_check_deep_gates(
         return Err(());
     }
 
-    let mut pipeline =
-        hew_mir::lower_hir_module_with_facts(&lower_output.module, &tco.actor_send_aliasing);
+    let mut pipeline = hew_mir::lower_hir_module_with_facts(
+        &lower_output.module,
+        &tco.actor_send_aliasing,
+        mir_pointer_width(target),
+    );
     // Clone checker-authored layout-fact lifecycle into the pipeline
     // (see the matching invocation in `check_command`).
     pipeline.attach_lowering_facts(tco);
@@ -540,12 +562,11 @@ pub(crate) fn compile_native_from_program(
         hir_target_arch(&target),
     );
     let mut hir_diagnostics = lower_output.diagnostics;
-    let verifier_diags = hew_hir::verify_hir(&lower_output.module);
-    for diag in verifier_diags {
-        let already_present = hir_diagnostics
+    for diag in hew_hir::verify_hir(&lower_output.module) {
+        if !hir_diagnostics
             .iter()
-            .any(|d| d.kind == diag.kind && d.span == diag.span);
-        if !already_present {
+            .any(|d| d.kind == diag.kind && d.span == diag.span)
+        {
             hir_diagnostics.push(diag);
         }
     }
@@ -560,8 +581,11 @@ pub(crate) fn compile_native_from_program(
         return Err(());
     }
 
-    let mut pipeline =
-        hew_mir::lower_hir_module_with_facts(&lower_output.module, &tco.actor_send_aliasing);
+    let mut pipeline = hew_mir::lower_hir_module_with_facts(
+        &lower_output.module,
+        &tco.actor_send_aliasing,
+        mir_pointer_width(&target),
+    );
     // Route checker-authored layout facts onto the pipeline.
     pipeline.attach_lowering_facts(&tco);
     if render_pipeline_mir_diagnostics(

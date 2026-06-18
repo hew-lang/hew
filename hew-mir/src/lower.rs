@@ -34,8 +34,8 @@ use crate::model::{
     DecisionFact, DropKind, DropPlan, ElabBlock, ElabDrop, ElaboratedMirFunction, ExitPath,
     FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch,
     LambdaCapture, MirCheck, MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind,
-    MirStatement, Place, RawMirFunction, SelectArm, SelectArmKind, Strategy, Terminator,
-    ThirFunction, TraitObjectStorage, TrapKind,
+    MirStatement, Place, PointerWidth, RawMirFunction, SelectArm, SelectArmKind, Strategy,
+    Terminator, ThirFunction, TraitObjectStorage, TrapKind,
 };
 
 type TaskEntryAdapterSymbols = Rc<RefCell<HashSet<String>>>;
@@ -126,32 +126,25 @@ fn numeric_method_signedness(signedness: NumericSignedness) -> IntSignedness {
     }
 }
 
-/// Return the statically known bit-width for a concrete integer type.
+/// Return the bit-width for a concrete integer type.
 ///
-/// `Isize` / `Usize` are platform-sized (32-bit on WASM32, 64-bit on
-/// native) — their width is NOT knowable at MIR construction time.
-/// Returns `None` for platform-sized types and all non-integer types.
-/// Callers that require a static width (shift-range check, signed-MIN
-/// constant emission) must fail-closed (`NotYetImplemented`) when this
-/// returns `None`.
+/// `ptr_width` is the target pointer width threaded onto the builder
+/// (`Builder::pointer_width`, derived from `TargetArch`). The platform-sized
+/// `Isize`/`Usize` arms resolve to `ptr_width.bits()` (32 on wasm32, 64 on
+/// native) so the shift-out-of-range bound matches the LLVM integer width
+/// codegen emits for the type. Returns `None` only for non-integer types.
 ///
-/// WHY-ISIZE-NONE: the shift-range bound `(count as unsigned) >= W`
-/// requires `W` to be a compile-time constant in the generated
-/// `Instr::ConstI64`. On `isize`/`usize` the correct constant is
-/// target-dependent (32 vs 64); emitting the wrong constant would
-/// silently admit out-of-range shifts on one target. Fail-closed is
-/// the right answer for the v0.5 integer spine.
-/// WHEN-OBSOLETE: when MIR carries target-info (pointer-width in
-/// `IrPipeline` or a `TargetSpec` passed to the builder), re-wire to
-/// emit the correct per-target constant and remove this `None` arm.
-fn integer_bit_width(ty: &ResolvedTy) -> Option<i64> {
+/// The width MUST come from `ptr_width` (target-derived), never a host
+/// `cfg!(target_pointer_width)`: a cross-compile would otherwise emit the
+/// host width into a different-width target — a fail-open shift guard.
+fn integer_bit_width(ty: &ResolvedTy, ptr_width: PointerWidth) -> Option<i64> {
     match ty {
         ResolvedTy::I8 | ResolvedTy::U8 => Some(8),
         ResolvedTy::I16 | ResolvedTy::U16 => Some(16),
         ResolvedTy::I32 | ResolvedTy::U32 => Some(32),
         ResolvedTy::I64 | ResolvedTy::U64 => Some(64),
-        // Isize / Usize are platform-sized (see doc comment) and all
-        // other types are non-integer — both arms return None.
+        ResolvedTy::Isize | ResolvedTy::Usize => Some(ptr_width.bits()),
+        // Non-integer types have no bit-width.
         _ => None,
     }
 }
@@ -181,17 +174,18 @@ fn unary_op_label(op: UnaryOp) -> &'static str {
 /// as an `i64`. Used to emit the `lhs == iN::MIN` constant in the
 /// signed-MIN/-1 trap check for `/` and `%`.
 ///
-/// Returns `None` for unsigned types, `Isize` (platform-sized), and
-/// all non-integer types. Callers must fail-closed when this returns
-/// `None`.
-fn signed_min_value(ty: &ResolvedTy) -> Option<i64> {
+/// `ptr_width` (target-derived, see [`integer_bit_width`]) resolves the
+/// platform-sized `Isize` MIN to `i32::MIN`/`i64::MIN` by width. Returns `None`
+/// for unsigned types (no MIN check) and non-integer types. Callers must
+/// fail-closed when this returns `None`.
+fn signed_min_value(ty: &ResolvedTy, ptr_width: PointerWidth) -> Option<i64> {
     match ty {
         ResolvedTy::I8 => Some(i64::from(i8::MIN)),
         ResolvedTy::I16 => Some(i64::from(i16::MIN)),
         ResolvedTy::I32 => Some(i64::from(i32::MIN)),
         ResolvedTy::I64 => Some(i64::MIN),
-        // Isize: platform-sized, not knowable at MIR time.
-        // Unsigned types: no MIN check needed.
+        ResolvedTy::Isize => Some(ptr_width.isize_min()),
+        // Unsigned types (including Usize): no MIN check needed.
         _ => None,
     }
 }
@@ -754,7 +748,7 @@ pub fn build_const_descriptors(module: &HirModule) -> (Vec<MirConst>, Vec<MirDia
               and module_fn_names construction"
 )]
 pub fn lower_hir_module(module: &HirModule) -> IrPipeline {
-    lower_hir_module_with_facts(module, &HashMap::new())
+    lower_hir_module_with_facts(module, &HashMap::new(), PointerWidth::default())
 }
 
 /// Collapse a per-module-indexed `actor_send_aliasing` map to the `module_idx
@@ -801,6 +795,12 @@ fn collapse_actor_send_aliasing_to_idx0(
 /// `lower_hir_module` is the backward-compatible wrapper that passes an
 /// empty map and is used by all existing tests; it remains correct because
 /// `Copy` is the safe fallback for every send site.
+///
+/// `pointer_width` is the target pointer width (32 on wasm32, 64 native),
+/// derived from the compile target so the `isize`/`usize` div/rem signed-MIN
+/// and shift-range trap guards emit the correct per-target constant. The CLI
+/// passes the `--target`-derived width; the host-defaulting `lower_hir_module`
+/// wrapper passes `PointerWidth::default()` (`Bits64`).
 #[must_use]
 #[allow(
     clippy::too_many_lines,
@@ -817,6 +817,7 @@ fn collapse_actor_send_aliasing_to_idx0(
 pub fn lower_hir_module_with_facts(
     module: &HirModule,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
+    pointer_width: PointerWidth,
 ) -> IrPipeline {
     // The checker stamps `actor_send_aliasing` with a per-module `SpanKey`
     // index (0 = root, N = N-th non-root module), but MIR looks each send up
@@ -1893,6 +1894,7 @@ pub fn lower_hir_module_with_facts(
                         &module.call_site_type_args,
                         &module.supervisor_child_slots,
                         actor_send_aliasing,
+                        pointer_width,
                         crate::model::FunctionCallConv::Default,
                         task_entry_adapter_symbols.clone(),
                     );
@@ -1940,6 +1942,7 @@ pub fn lower_hir_module_with_facts(
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     actor_send_aliasing,
+                    pointer_width,
                     crate::model::FunctionCallConv::Default,
                     task_entry_adapter_symbols.clone(),
                 );
@@ -1979,6 +1982,7 @@ pub fn lower_hir_module_with_facts(
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     actor_send_aliasing,
+                    pointer_width,
                     &mut emitted_actor_handler_symbols,
                     &task_entry_adapter_symbols,
                     &mut diagnostics,
@@ -2022,6 +2026,7 @@ pub fn lower_hir_module_with_facts(
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     actor_send_aliasing,
+                    pointer_width,
                     &mut emitted_actor_handler_symbols,
                     &task_entry_adapter_symbols,
                     &mut diagnostics,
@@ -2096,6 +2101,7 @@ pub fn lower_hir_module_with_facts(
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     actor_send_aliasing,
+                    pointer_width,
                 );
                 thir.push(lowered.thir);
                 raw_mir.push(lowered.raw);
@@ -2160,6 +2166,7 @@ pub fn lower_hir_module_with_facts(
             &module.call_site_type_args,
             &module.supervisor_child_slots,
             actor_send_aliasing,
+            pointer_width,
             crate::model::FunctionCallConv::Default,
             task_entry_adapter_symbols.clone(),
         );
@@ -2310,6 +2317,7 @@ fn lower_actor_receive_handlers(
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
+    pointer_width: PointerWidth,
     emitted_symbols: &mut HashMap<String, String>,
     task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
@@ -2407,6 +2415,7 @@ fn lower_actor_receive_handlers(
             call_site_type_args,
             supervisor_child_slots,
             actor_send_aliasing,
+            pointer_width,
             crate::model::FunctionCallConv::ActorHandler,
             task_entry_adapter_symbols.clone(),
         ));
@@ -2432,6 +2441,7 @@ fn lower_actor_body_handlers(
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
+    pointer_width: PointerWidth,
     emitted_symbols: &mut HashMap<String, String>,
     task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
@@ -2452,6 +2462,7 @@ fn lower_actor_body_handlers(
             call_site_type_args,
             supervisor_child_slots,
             actor_send_aliasing,
+            pointer_width,
             emitted_symbols,
             task_entry_adapter_symbols,
             diagnostics,
@@ -2472,6 +2483,7 @@ fn lower_actor_body_handlers(
         call_site_type_args,
         supervisor_child_slots,
         actor_send_aliasing,
+        pointer_width,
         emitted_symbols,
         task_entry_adapter_symbols,
         diagnostics,
@@ -2489,6 +2501,7 @@ fn lower_actor_body_handlers(
         call_site_type_args,
         supervisor_child_slots,
         actor_send_aliasing,
+        pointer_width,
         emitted_symbols,
         task_entry_adapter_symbols,
         diagnostics,
@@ -2514,6 +2527,7 @@ fn lower_actor_init_handler(
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
+    pointer_width: PointerWidth,
     emitted_symbols: &mut HashMap<String, String>,
     task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
@@ -2564,6 +2578,7 @@ fn lower_actor_init_handler(
         call_site_type_args,
         supervisor_child_slots,
         actor_send_aliasing,
+        pointer_width,
         crate::model::FunctionCallConv::ActorHandler,
         task_entry_adapter_symbols.clone(),
     ))
@@ -2590,6 +2605,7 @@ fn lower_actor_lifecycle_handlers(
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
+    pointer_width: PointerWidth,
     emitted_symbols: &mut HashMap<String, String>,
     task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
@@ -2645,6 +2661,7 @@ fn lower_actor_lifecycle_handlers(
                     call_site_type_args,
                     supervisor_child_slots,
                     actor_send_aliasing,
+                    pointer_width,
                     crate::model::FunctionCallConv::ActorHandler,
                     task_entry_adapter_symbols.clone(),
                 ));
@@ -2691,6 +2708,7 @@ fn lower_actor_lifecycle_handlers(
                     call_site_type_args,
                     supervisor_child_slots,
                     actor_send_aliasing,
+                    pointer_width,
                     crate::model::FunctionCallConv::ActorHandler,
                     task_entry_adapter_symbols.clone(),
                 ));
@@ -2875,6 +2893,7 @@ fn lower_actor_lifecycle_handlers(
                     call_site_type_args,
                     supervisor_child_slots,
                     actor_send_aliasing,
+                    pointer_width,
                     crate::model::FunctionCallConv::ActorHandler,
                     task_entry_adapter_symbols.clone(),
                 ));
@@ -3038,6 +3057,7 @@ fn synthesize_machine_step_fn(
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
+    pointer_width: PointerWidth,
 ) -> LoweredFunction {
     let emit_name = mangle_machine_step(&md.name);
 
@@ -3085,6 +3105,7 @@ fn synthesize_machine_step_fn(
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
         actor_send_aliasing: actor_send_aliasing.clone(),
+        pointer_width,
         current_function_symbol: emit_name.clone(),
         ..Builder::default()
     };
@@ -3863,6 +3884,7 @@ fn lower_supervisor_bootstrap(
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
+    pointer_width: PointerWidth,
     emitted_symbols: &mut HashMap<String, String>,
     task_entry_adapter_symbols: &TaskEntryAdapterSymbols,
     diagnostics: &mut Vec<MirDiagnostic>,
@@ -4110,6 +4132,7 @@ fn lower_supervisor_bootstrap(
         call_site_type_args,
         supervisor_child_slots,
         actor_send_aliasing,
+        pointer_width,
         // `FunctionCallConv::Default`: codegen replaces the bootstrap body
         // wholesale with the `hew_supervisor_*` call sequence (S-D.3), so
         // the body never reads an execution context. The synthetic call
@@ -4628,6 +4651,7 @@ fn lower_function(
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
+    pointer_width: PointerWidth,
     call_conv: crate::model::FunctionCallConv,
     task_entry_adapter_symbols: TaskEntryAdapterSymbols,
 ) -> LoweredFunction {
@@ -4669,6 +4693,7 @@ fn lower_function(
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
         actor_send_aliasing: actor_send_aliasing.clone(),
+        pointer_width,
         current_function_symbol: emit_name.clone(),
         current_function_call_conv: call_conv,
         task_entry_adapter_symbols,
@@ -5852,6 +5877,13 @@ struct Builder {
     /// is moved out whole by `finish_current_block` / `finalize_blocks`).
     /// Transferred into `RawMirFunction::instr_spans` at function finalisation.
     instr_spans: HashMap<(u32, u32), (u32, u32)>,
+    /// Target pointer width (32 on wasm32, 64 native), threaded from the
+    /// compile target so the `isize`/`usize` div/rem signed-MIN and shift-range
+    /// trap guards emit the correct per-target constant. Derived from
+    /// `TargetArch`, never a host `cfg!` (a cross-compile would otherwise emit
+    /// host-width guards — a fail-open hole). Defaults to `Bits64` (every native
+    /// target); the host-defaulting `lower_hir_module` wrapper keeps the default.
+    pointer_width: PointerWidth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -10678,19 +10710,21 @@ impl Builder {
 
         // ── signed-MIN / -1 check (signed types only) ───────────────
         if signed == IntSignedness::Signed {
-            let Some(min_val) = signed_min_value(ty) else {
-                // isize: platform-sized, MIN not knowable at MIR time.
-                // Fail closed rather than emit an incorrect guard.
+            // `signed_min_value` resolves every signed integer type, including
+            // the platform-sized `Isize` (via the target pointer width). A
+            // `None` here means a signed-classified type with no MIN — an
+            // upstream classification bug — so we fail closed rather than emit
+            // a div/rem path with no signed-MIN/-1 guard.
+            let Some(min_val) = signed_min_value(ty, self.pointer_width) else {
                 self.locals.pop();
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::NotYetImplemented {
-                        construct: format!("binary operator `{op}` on `isize`"),
+                        construct: format!("binary operator `{op}` on signed type `{ty:?}`"),
                         site,
                     },
-                    note: "signed-MIN/-1 trap for `isize` requires target-width \
-                           information not available at MIR construction time. \
-                           WHEN-OBSOLETE: when IrPipeline carries a TargetSpec, \
-                           re-wire to emit the correct per-target MIN constant."
+                    note: "signed-MIN/-1 trap requires a known signed minimum; \
+                           integer_signedness classified this type as signed but \
+                           signed_min_value has no arm for it."
                         .to_string(),
                 });
                 return None;
@@ -10811,18 +10845,21 @@ impl Builder {
             return None;
         };
 
-        let Some(width) = integer_bit_width(ty) else {
-            // isize / usize: width not knowable at MIR time.
+        // `integer_bit_width` resolves every integer width, including the
+        // platform-sized `Isize`/`Usize` via the target pointer width. A `None`
+        // here means a type that `integer_signedness` classified as an integer
+        // but `integer_bit_width` has no arm for — an upstream bug — so we fail
+        // closed rather than emit a shift with no out-of-range guard.
+        let Some(width) = integer_bit_width(ty, self.pointer_width) else {
             self.locals.pop();
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!("binary operator `{op}` on `isize`/`usize`"),
+                    construct: format!("binary operator `{op}` on integer type `{ty:?}`"),
                     site,
                 },
-                note: "shift-range trap for `isize`/`usize` requires target-width \
-                       information not available at MIR construction time. \
-                       WHEN-OBSOLETE: when IrPipeline carries a TargetSpec, \
-                       re-wire to emit the correct per-target width constant."
+                note: "shift-range trap requires a known bit-width; \
+                       integer_signedness classified this type as an integer but \
+                       integer_bit_width has no arm for it."
                     .to_string(),
             });
             return None;
@@ -14474,7 +14511,7 @@ impl Builder {
         // type is not a concrete integer (e.g. unconstrained literal range
         // `0..8` that was never narrowed by use — those still default to i64).
         let elem_ty = self.subst_ty(&binding.ty);
-        let counter_ty = if integer_bit_width(&elem_ty).is_some() {
+        let counter_ty = if integer_bit_width(&elem_ty, self.pointer_width).is_some() {
             elem_ty.clone()
         } else {
             ResolvedTy::I64
@@ -16203,6 +16240,7 @@ impl Builder {
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
             actor_send_aliasing: self.actor_send_aliasing.clone(),
+            pointer_width: self.pointer_width,
             current_function_symbol: shim_name.to_string(),
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
@@ -19879,6 +19917,10 @@ impl Builder {
             supervisor_child_slots: self.supervisor_child_slots.clone(),
             actor_send_aliasing: self.actor_send_aliasing.clone(),
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
+            // Child builders (closure shims, lambda-actor bodies, gen bodies)
+            // inherit the parent's target pointer width so an isize/usize
+            // div/shift lowered inside a closure emits the same per-target guard.
+            pointer_width: self.pointer_width,
             ..Builder::default()
         }
     }
@@ -20057,6 +20099,7 @@ impl Builder {
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
             actor_send_aliasing: self.actor_send_aliasing.clone(),
+            pointer_width: self.pointer_width,
             current_function_symbol: shim_name.to_string(),
             current_function_call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
@@ -21121,6 +21164,7 @@ impl Builder {
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
             actor_send_aliasing: self.actor_send_aliasing.clone(),
+            pointer_width: self.pointer_width,
             current_function_symbol: body_name.clone(),
             current_function_call_conv: crate::model::FunctionCallConv::Default,
             task_entry_adapter_symbols: self.task_entry_adapter_symbols.clone(),
@@ -30171,6 +30215,7 @@ mod slice3_invariants {
                 &HashMap::new(),
                 &HashMap::new(),
                 &HashMap::new(),
+                PointerWidth::Bits64,
                 crate::model::FunctionCallConv::ActorHandler,
                 TaskEntryAdapterSymbols::default(),
             );

@@ -9354,7 +9354,7 @@ impl Builder {
                 let mut arg_places = vec![receiver_place];
                 for arg in args {
                     arg_places.push(self.lower_value(arg)?);
-                    if builtin_method_arg_is_move_ingress(target_family) {
+                    if builtin_method_arg_is_move_ingress(*target_family) {
                         self.consume_moved_builtin_method_arg(arg);
                     }
                     if is_array_literal_push {
@@ -29733,7 +29733,7 @@ fn ty_is_closure_pair_vec(ty: &ResolvedTy) -> bool {
     )
 }
 
-fn builtin_method_arg_is_move_ingress(family: &hew_types::MethodTargetFamily) -> bool {
+fn builtin_method_arg_is_move_ingress(family: hew_types::MethodTargetFamily) -> bool {
     matches!(
         family,
         hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::Insert)

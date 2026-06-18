@@ -1,0 +1,28 @@
+// Exercises structural equality and inequality on payload-bearing enums.
+enum Shape {
+    Circle(i64);
+    Rect(i64, i64);
+    Empty;
+}
+
+fn main() {
+    let c1: Shape = Shape::Circle(3);
+    let c2: Shape = Shape::Circle(3);
+    let r1: Shape = Shape::Rect(3, 3);
+
+    let some1: Option<i64> = Some(1);
+    let some1b: Option<i64> = Some(1);
+    let some2: Option<i64> = Some(2);
+
+    let ok7: Result<i64, i64> = Ok(7);
+    let ok7b: Result<i64, i64> = Ok(7);
+    let err7: Result<i64, i64> = Err(7);
+
+    println(c1 == c2);
+    println(c1 == r1);
+    println(some1 == some1b);
+    println(some1 != some2);
+    println(some1 == some2);
+    println(ok7 == ok7b);
+    println(ok7 == err7);
+}

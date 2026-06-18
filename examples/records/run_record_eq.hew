@@ -1,0 +1,17 @@
+// Exercises structural equality and inequality on nested value records.
+type Point { x: i64, y: i64 }
+type Line { a: Point, b: Point }
+
+fn main() {
+    let p1 = Point { x: 1, y: 2 };
+    let p2 = Point { x: 1, y: 2 };
+    let p3 = Point { x: 1, y: 9 };
+
+    let l1 = Line { a: p1, b: p3 };
+    let l2 = Line { a: p2, b: Point { x: 1, y: 9 } };
+
+    println(p1 == p2);
+    println(p1 == p3);
+    println(l1 == l2);
+    println(l1 != l2);
+}

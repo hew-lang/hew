@@ -1306,8 +1306,8 @@ impl std::error::Error for DescriptorError {}
 /// Closed-set descriptor for compiler-known runtime drop entries. Mirrors
 /// the `runtime_drop_symbol` table in `hew-codegen-rs/src/llvm.rs:18352`
 /// (today: `Duplex::close`, `Stream::close`, `Sink::close`,
-/// `LambdaActorHandle::close`, `SendHalf::close | RecvHalf::close`,
-/// `CancellationToken::release`).
+/// `Sender::close`, `Receiver::close`, `LambdaActorHandle::close`,
+/// `SendHalf::close | RecvHalf::close`, `CancellationToken::release`).
 ///
 /// `non_exhaustive` is INTENTIONALLY OMITTED — same exhaustiveness
 /// argument as [`RuntimeCallFamily`]. The codegen-internal "literal
@@ -1325,6 +1325,10 @@ pub enum RuntimeDropDescriptor {
     StreamClose,
     /// `Sink::close` → `hew_sink_close`.
     SinkClose,
+    /// `Sender::close` → `hew_channel_sender_close`.
+    SenderClose,
+    /// `Receiver::close` → `hew_channel_receiver_close`.
+    ReceiverClose,
     /// `LambdaActorHandle::close` → `hew_lambda_actor_release`. NB the
     /// type-class seeding calls the method "close" but the runtime
     /// C-ABI symbol is "release"; an explicit table entry is required.
@@ -1353,6 +1357,8 @@ impl RuntimeDropDescriptor {
             Self::DuplexClose => "hew_duplex_close",
             Self::StreamClose => "hew_stream_close",
             Self::SinkClose => "hew_sink_close",
+            Self::SenderClose => "hew_channel_sender_close",
+            Self::ReceiverClose => "hew_channel_receiver_close",
             Self::LambdaActorHandleClose => "hew_lambda_actor_release",
             Self::SendHalfClose | Self::RecvHalfClose => "hew_duplex_close_half",
             Self::CancellationTokenRelease => "hew_cancel_token_release",
@@ -1370,6 +1376,8 @@ impl RuntimeDropDescriptor {
             Self::DuplexClose => "Duplex::close",
             Self::StreamClose => "Stream::close",
             Self::SinkClose => "Sink::close",
+            Self::SenderClose => "Sender::close",
+            Self::ReceiverClose => "Receiver::close",
             Self::LambdaActorHandleClose => "LambdaActorHandle::close",
             Self::SendHalfClose => "SendHalf::close",
             Self::RecvHalfClose => "RecvHalf::close",
@@ -1390,6 +1398,8 @@ impl RuntimeDropDescriptor {
             "Duplex::close" => Some(Self::DuplexClose),
             "Stream::close" => Some(Self::StreamClose),
             "Sink::close" => Some(Self::SinkClose),
+            "Sender::close" => Some(Self::SenderClose),
+            "Receiver::close" => Some(Self::ReceiverClose),
             "LambdaActorHandle::close" => Some(Self::LambdaActorHandleClose),
             "SendHalf::close" => Some(Self::SendHalfClose),
             "RecvHalf::close" => Some(Self::RecvHalfClose),
@@ -1447,11 +1457,13 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
 /// See the bijection / parity tests; same coverage discipline as
 /// [`all_runtime_call_families`].
 #[must_use]
-pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 7] {
+pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 9] {
     [
         RuntimeDropDescriptor::DuplexClose,
         RuntimeDropDescriptor::StreamClose,
         RuntimeDropDescriptor::SinkClose,
+        RuntimeDropDescriptor::SenderClose,
+        RuntimeDropDescriptor::ReceiverClose,
         RuntimeDropDescriptor::LambdaActorHandleClose,
         RuntimeDropDescriptor::SendHalfClose,
         RuntimeDropDescriptor::RecvHalfClose,
@@ -1753,6 +1765,8 @@ mod tests {
             ("Duplex::close", "hew_duplex_close"),
             ("Stream::close", "hew_stream_close"),
             ("Sink::close", "hew_sink_close"),
+            ("Sender::close", "hew_channel_sender_close"),
+            ("Receiver::close", "hew_channel_receiver_close"),
             ("LambdaActorHandle::close", "hew_lambda_actor_release"),
             ("SendHalf::close", "hew_duplex_close_half"),
             ("RecvHalf::close", "hew_duplex_close_half"),

@@ -1,0 +1,14 @@
+// MIR-corpus fixture: Sender/Receiver scope-exit auto-close.
+//
+// The function intentionally does not call tx.close() or rx.close(); the
+// elaborated MIR must emit scope-exit channel close drops for both handles.
+import std::channel::channel;
+
+fn main() {
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);
+    tx.send("ready");
+    match rx.try_recv() {
+        Some(msg) => println(msg),
+        None => println("empty"),
+    }
+}

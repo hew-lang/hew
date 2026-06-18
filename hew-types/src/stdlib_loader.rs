@@ -600,7 +600,15 @@ fn type_expr_to_ty_with_params(
             )),
             *size,
         ),
-        TypeExpr::Slice(_) | TypeExpr::Infer => Ty::Error,
+        TypeExpr::Slice(element) => Ty::normalize_named(
+            "Vec".to_string(),
+            vec![type_expr_to_ty_with_params(
+                &element.0,
+                module_short,
+                type_params,
+            )],
+        ),
+        TypeExpr::Infer => Ty::Error,
         TypeExpr::Function {
             params,
             return_type,

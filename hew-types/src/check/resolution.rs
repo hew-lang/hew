@@ -1547,20 +1547,10 @@ impl Checker {
                 Box::new(self.resolve_type_expr_tracking_holes(element, hole_vars)),
                 *size,
             ),
-            TypeExpr::Slice(_) => {
-                if self
-                    .unsupported_slice_spans
-                    .insert(SpanKey::in_module(&te.1, self.current_module_idx))
-                {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        &te.1,
-                        "`[T]` slice annotations are not supported; slice type composite lowering is not yet implemented"
-                            .to_string(),
-                    );
-                }
-                Ty::Error
-            }
+            TypeExpr::Slice(element) => Ty::normalize_named(
+                "Vec".to_string(),
+                vec![self.resolve_type_expr_tracking_holes(element, hole_vars)],
+            ),
             TypeExpr::Function {
                 params,
                 return_type,

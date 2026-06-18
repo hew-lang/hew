@@ -1,11 +1,13 @@
 // Regression guard for `Vec<Record>::contains` on equality-eligible Copy records.
-type Point { x: i64, y: i64 }
+type Point {
+    x: i64;
+    y: i64;
+}
 
 fn main() {
     let points: Vec<Point> = Vec::new();
     points.push(Point { x: 1, y: 2 });
     points.push(Point { x: 3, y: 4 });
-
     println(points.contains(Point { x: 1, y: 2 }));
     println(points.contains(Point { x: 9, y: 9 }));
 }

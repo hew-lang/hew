@@ -194,6 +194,11 @@ retries = 1
 filter = "test(bounded_child_timeout_kills_grandchild_process_group)"
 test-group = "real-timing"
 retries = 1                                                           # SHIM: see comment above; remove when pipe-handshake de-flake lands
+# Defense-in-depth: the test's internal wait_with_timeout fires at 1 s; 90 s
+# nextest kill (30 s × 3) bounds a wedged test that bypasses that guard.
+# Does NOT cover A1 (worker/disk death) or A2 (process-wide starvation) —
+# those defeat per-test timeouts entirely; see task #47 / supervisor.rs / channel.rs.
+slow-timeout = { period = "30s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
 # The two-process remote-ask pair spawns a second OS process and round-trips
@@ -214,6 +219,11 @@ retries = 1                                                           # SHIM: se
 filter = "test(two_process_remote_ask_echo_double_returns_42) | test(remote_ask_two_process_echo_client_helper)"
 retries = 1
 test-group = "real-timing"
+# Defense-in-depth: the test's internal wait_output fires at 40 s; 90 s nextest
+# kill (30 s × 3) bounds a wedged test that bypasses that guard.
+# Does NOT cover A1 (worker/disk death) or A2 (process-wide starvation) —
+# those defeat per-test timeouts entirely; see task #47 / supervisor.rs / channel.rs.
+slow-timeout = { period = "30s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
 # tcp_stream_backing_records_error_on_reset is a real loopback-TCP timing test:

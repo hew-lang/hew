@@ -49,7 +49,7 @@ fn pipeline_const_42() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
         thir: Vec::new(),
@@ -99,7 +99,7 @@ fn pipeline_unsupported_array_return() -> IrPipeline {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
     IrPipeline {
         thir: Vec::new(),

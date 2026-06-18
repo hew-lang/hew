@@ -353,7 +353,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         }],
         checked_mir: vec![CheckedMirFunction {
             name: "bad_fn".into(),

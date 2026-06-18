@@ -98,7 +98,7 @@ fn impl_method_stub(name: &str, ret: ResolvedTy) -> RawMirFunction {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     }
 }
 
@@ -497,7 +497,7 @@ fn coercion_site_and_vtable_definition_share_same_symbol() {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
     let inst = vtable_instance(0, "Speak", ResolvedTy::I64, vec![]);
     let vtable_sym = mangle_dyn_vtable_symbol(0, "Speak", &ResolvedTy::I64);

@@ -43146,7 +43146,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -43535,7 +43535,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let main = RawMirFunction {
             name: "main".to_string(),
@@ -43577,7 +43577,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -43658,7 +43658,7 @@ mod tests {
 
                 lambda_actor_user_param_locals: Vec::new(),
                 span: None,
-                instr_spans: ::std::collections::HashMap::new(),
+                instr_spans: ::std::collections::BTreeMap::new(),
             }],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
@@ -43786,7 +43786,7 @@ mod tests {
 
                 lambda_actor_user_param_locals: Vec::new(),
                 span: None,
-                instr_spans: ::std::collections::HashMap::new(),
+                instr_spans: ::std::collections::BTreeMap::new(),
             }],
             checked_mir: Vec::new(),
             elaborated_mir: Vec::new(),
@@ -43888,7 +43888,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -44022,7 +44022,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -44150,7 +44150,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -44230,7 +44230,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -44304,7 +44304,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -44581,7 +44581,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -44790,7 +44790,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -45494,7 +45494,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
 
         let pipeline = IrPipeline {
@@ -45584,7 +45584,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -45699,7 +45699,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         // The enclosing function: allocate a Generator-typed local, construct it
         // via MakeGenerator, then return.
@@ -45734,7 +45734,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -45816,7 +45816,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -45908,7 +45908,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let layout = GenStateLayout {
             function_name: body_name.to_string(),
@@ -46398,7 +46398,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         assert_eq!(
@@ -46540,7 +46540,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -46604,7 +46604,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -46667,7 +46667,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
@@ -46725,7 +46725,7 @@ mod tests {
             await_deadline_ns: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
 
         let cases = [
@@ -48608,7 +48608,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = IrPipeline {
             thir: vec![],
@@ -48756,7 +48756,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = IrPipeline {
             thir: vec![],
@@ -49108,7 +49108,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let elab = ElaboratedMirFunction {
             name: "frame_owned_drop_with_drop_fn".to_string(),
@@ -49312,7 +49312,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         // Minimal stub actor: no state fields, no handlers, no clone/drop
         // symbols.  The trampoline emits a vacuous dispatch switch; the
@@ -49560,7 +49560,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -49750,7 +49750,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         IrPipeline {
             thir: Vec::new(),
@@ -49937,7 +49937,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = IrPipeline {
             thir: Vec::new(),
@@ -50048,7 +50048,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         }
     }
 
@@ -50075,7 +50075,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         }
     }
 
@@ -50104,7 +50104,7 @@ mod tests {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let mut raw_mir = vec![main];
         let mut handler_layouts = Vec::with_capacity(handlers.len());
@@ -51014,7 +51014,7 @@ fn main() {
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
-            instr_spans: ::std::collections::HashMap::new(),
+            instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline =
             pipeline_with_actor_handlers("MallocWidthActor", vec![(handler_layout, handler_fn)]);

@@ -191,7 +191,7 @@ fn caller_with_dispatch(
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     }
 }
 
@@ -392,7 +392,7 @@ fn call_trait_method_fails_closed_when_receiver_not_fat_pointer() {
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
-        instr_spans: ::std::collections::HashMap::new(),
+        instr_spans: ::std::collections::BTreeMap::new(),
     };
     let p = empty_pipeline(vec![bogus]);
     let err = try_emit(&p).expect_err("non-fat-pointer receiver must fail closed");

@@ -1148,10 +1148,61 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     let installed_prev = crate::execution_context::set_current_context(&raw mut resume_context);
     debug_assert_eq!(installed_prev, prev_context);
 
+    // Crash recovery for the RESUME re-entry. The resumed continuation runs the
+    // REST of a suspended handler — code that can `panic()` / hard-trap exactly
+    // like a fresh dispatch (e.g. a handler that `sleep_ms`-suspends, resumes,
+    // then crashes; or one that crashes after an `await` resumes). The fresh
+    // dispatch path wraps its handler in a `sigsetjmp` frame (`activate_actor`),
+    // but the resume drive had none: a trap here unwound past the worker frame
+    // and downed the whole process instead of crashing only this actor. Install
+    // the same recovery point in THIS stack frame (so the `jmp_buf` stays valid
+    // for the resume) and route a trap to the crash branch below — fail-closed,
+    // matching the actor-isolation contract `signal.rs` documents.
+    //
+    // SAFETY: `actor` is owned by this frame (Running CAS held) and stays valid
+    // through the resume. No message node backs a resume, so pass null `msg`
+    // (`prepare_dispatch_recovery` records `msg_type = 0` for it).
+    let jmp_buf_ptr =
+        unsafe { crate::signal::prepare_dispatch_recovery(actor, std::ptr::null_mut()) };
+    let is_normal_path = if jmp_buf_ptr.is_null() {
+        true
+    } else {
+        // SAFETY: `jmp_buf_ptr` is non-null (checked) and valid per-thread.
+        let ret = unsafe { crate::signal::sigsetjmp(jmp_buf_ptr, 1) };
+        if ret == 0 {
+            crate::signal::mark_recovery_active();
+            true
+        } else {
+            false
+        }
+    };
+
+    if !is_normal_path {
+        // A `panic()` / hard trap fired inside the resumed continuation and
+        // longjmped back to the `sigsetjmp` above. The C stack (including the
+        // `.resume` outline) is unwound; the coroutine never reached its next
+        // suspend, so its tag is stuck at `Resuming` and the frame is live.
+        // Recover exactly as the fresh-dispatch crash branch does, plus reclaim
+        // the crash-abandoned coroutine frame (which `destroy_parked` refuses
+        // for a `Resuming` tag — that refusal protects a LIVE resume, but this
+        // one is provably dead).
+        //
+        // SAFETY: reached immediately after `sigsetjmp` returned non-zero on
+        // this worker thread. `actor` is owned by this frame (Running CAS held);
+        // `resume_context` is the live stack local installed above, still the
+        // current execution context.
+        unsafe { resume_crash_recovery(actor, &raw mut resume_context) };
+        return;
+    }
+
     crate::observe::record_coroutine_resume();
     // SAFETY: the parked handle is the executor-owned frame; `resume_park`
     // enforces FG2/FG4 internally (refuses a null slot or non-Parked tag).
     let poll = unsafe { crate::coro_exec::resume_park(a) };
+
+    // Dispatch's resume step completed without a trap — clear the recovery point
+    // so a later stale signal can't jump to this dead frame.
+    crate::signal::clear_dispatch_recovery();
 
     // Restore the prior context now that the resume step (resume + poll, and any
     // body-side reply deposit it performed) has run. On a Ready completion the
@@ -1224,6 +1275,131 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
             }
             settle_after_activation(actor, 0);
         }
+    }
+}
+
+/// Crash recovery for a trap raised inside a RESUMED continuation.
+///
+/// Reached only when [`resume_suspended_activation`]'s `sigsetjmp` returns
+/// non-zero — a `panic()` / hard trap fired inside the resumed handler and
+/// longjmped back. Mirrors the fresh-dispatch crash branch in [`activate_actor`]
+/// (lock release → swap unwind → reply routing → `Crashing` CAS → arena reset →
+/// late crash-reply → terminal `Crashed`), with the resume-specific differences:
+///   * the reply channel is read from the resume's installed context
+///     (`resume_context`, carrying the handler's stashed reply channel), not a
+///     mailbox node — a resume has no `msg` to free;
+///   * the crash-abandoned coroutine frame (tag stuck at `Resuming` because the
+///     longjmp skipped the settle) is reclaimed via
+///     [`crate::coro_exec::abandon_resuming_after_crash`] BEFORE the actor frees,
+///     since `destroy_parked` refuses a `Resuming` tag.
+///
+/// # Safety
+///
+/// Called immediately after `sigsetjmp` returned non-zero on this worker thread.
+/// `actor` is owned by this frame (Running CAS held). `resume_context` is the
+/// still-installed dispatch context (a live stack local in the caller frame);
+/// the prior context is restored via `restore_current_context_after_dispatch`,
+/// which walks `resume_context`'s `prev_context`.
+unsafe fn resume_crash_recovery(actor: *mut HewActor, resume_context: *mut HewExecutionContext) {
+    // SAFETY: caller owns `actor` via the Running CAS.
+    let a = unsafe { &*actor };
+    let actor_arena = a.arena;
+
+    // Generated dispatch wrappers acquire the actor-state lock before the
+    // handler body; the longjmp bypassed their cleanup edges, so release any
+    // guard this dispatch held before the crash path notifies supervisors.
+    // SAFETY: `actor` is the actor this frame is resuming; the release helper
+    // tolerates an unheld/unregistered lock.
+    unsafe {
+        let _ = crate::actor::hew_actor_state_lock_release_after_panic(actor);
+    }
+
+    // A child suspending-closure call that trapped/longjmped inside the resume
+    // bypassed the driver's swap-pop and driver-channel teardown. Restore the
+    // outer reply routing and tear those channels down BEFORE reading the reply
+    // channel below (mirrors the fresh-dispatch crash branch).
+    crate::execution_context::reply_channel_swap_unwind();
+
+    // Capture the crashed resume's reply-channel state from the still-installed
+    // resume context (carrying the handler's stashed reply channel) before
+    // restoring the previous context.
+    let reply_consumed = current_reply_channel_consumed_on(resume_context);
+    let crash_reply = clear_reply_channel_on(resume_context);
+    restore_current_context_after_dispatch();
+
+    // The resume's reply channel was a snapshot of the actor's stashed slot;
+    // clear that slot + the stashed cancel token so a re-armed actor does not
+    // reuse the freed channel/token (the crashed activation is terminal).
+    a.suspended_reply_channel
+        .store(std::ptr::null_mut(), Ordering::Release);
+    clear_suspended_cancel_token(a);
+
+    // Transition `Running → Crashing` (accepting `Stopping` too, as a pending
+    // self-stop is dominated by the crash) BEFORE any publication so a waiter in
+    // `hew_actor_free` cannot observe the actor terminal and free the arena out
+    // from under this worker. Fails only if already terminal / a state this
+    // worker did not set.
+    let took_crashing = loop {
+        let cur = a.actor_state.load(Ordering::Acquire);
+        if cur != HewActorState::Running as i32 && cur != HewActorState::Stopping as i32 {
+            break false;
+        }
+        if a.actor_state
+            .compare_exchange(
+                cur,
+                HewActorState::Crashing as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            break true;
+        }
+    };
+
+    // Reclaim the crash-abandoned coroutine frame (tag stuck at `Resuming`)
+    // exactly once, while `Crashing` keeps the actor non-quiescent so the box
+    // stays alive. Frees the frame block WITHOUT running the `coro.destroy`
+    // cleanup outline — the coroutine was RUNNING (between suspend points) when
+    // it trapped, so re-running the last suspend's cleanup would double-free the
+    // registrations its resume edge already released. Frame-owned Hew heap values
+    // are arena-backed and reclaimed by the arena reset below.
+    // SAFETY: the longjmp killed the resume, so no concurrent resume/destroy can
+    // run; this worker owns the actor exclusively.
+    let _ = unsafe { crate::coro_exec::abandon_resuming_after_crash(a) };
+
+    // Per-activation arena cleanup BEFORE publishing terminal `Crashed`.
+    if took_crashing && !actor_arena.is_null() {
+        // SAFETY: arena was created at spawn; the crash discards all in-flight
+        // data, and `Crashing` prevents `hew_actor_free` from reclaiming it
+        // ahead of us.
+        unsafe { crate::arena::hew_arena_reset(actor_arena) };
+    }
+
+    // If the handler did not already deposit its reply, send the empty crash
+    // fallback so the waiting `hew_actor_ask` caller resolves to `Err` rather
+    // than deadlocking. Done before publishing `Crashed` so the channel-count
+    // invariant is observable as soon as the actor is terminal.
+    if !reply_consumed && !crash_reply.is_null() {
+        // SAFETY: `crash_reply` is a valid `HewReplyChannel` pointer.
+        unsafe {
+            let _ = crate::reply_channel::hew_reply(crash_reply.cast(), std::ptr::null_mut(), 0);
+        }
+    }
+
+    // Publish terminal `Crashed` and run supervisor / link / monitor
+    // notifications. `handle_crash_recovery` invokes `hew_actor_trap` which
+    // CAS-transitions `Crashing → Crashed`.
+    if took_crashing {
+        // SAFETY: called immediately after `sigsetjmp` returned non-zero on this
+        // worker; per-activation cleanup (frame reclaim, arena reset, late
+        // crash-reply) has already run.
+        unsafe { crate::signal::handle_crash_recovery() };
+    } else {
+        // An external trap already published a terminal state during the resume;
+        // do not re-run `handle_crash_recovery` (it would walk a possibly-freed
+        // `current_actor`). Just invalidate the jmp_buf.
+        crate::signal::clear_dispatch_recovery();
     }
 }
 

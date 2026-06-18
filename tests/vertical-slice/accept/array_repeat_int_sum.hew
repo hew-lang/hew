@@ -1,0 +1,17 @@
+fn main() -> i64 {
+    let xs = [7; 3];
+    if xs.len() != 3 {
+        return 70;
+    }
+    if xs[0] != 7 {
+        return 71;
+    }
+    var sum: i64 = 0;
+    for x in xs {
+        sum = sum + x;
+    }
+    if sum != 21 {
+        return 72;
+    }
+    0
+}

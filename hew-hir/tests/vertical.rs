@@ -278,11 +278,109 @@ fn empty_map_literal_lowers_to_bare_hashmap_new() {
 }
 
 #[test]
+fn array_repeat_copy_lowers_to_vec_push_loop() {
+    let output = lower("fn f() { let t = [7; 3]; }");
+    assert!(
+        output.diagnostics.is_empty(),
+        "array repeat should lower through Vec push loop without diagnostics: {:?}",
+        output.diagnostics
+    );
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "{verify:?}");
+
+    let func = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(func) => Some(func),
+            _ => None,
+        })
+        .expect("fixture lowers one function");
+    let Some(HirStmtKind::Let(_, Some(init))) = func.body.statements.first().map(|stmt| &stmt.kind)
+    else {
+        panic!("expected first statement to be a let with an array-repeat initializer");
+    };
+    let HirExprKind::Block(block) = &init.kind else {
+        panic!(
+            "array repeat should lower to a synthetic block, got {:?}",
+            init.kind
+        );
+    };
+    assert_eq!(init.ty.user_facing().to_string(), "Vec<i64>");
+    assert_eq!(block.statements.len(), 4);
+    let HirStmtKind::Expr(hew_hir::HirExpr {
+        kind: HirExprKind::ForRange { body, .. },
+        ..
+    }) = &block.statements[3].kind
+    else {
+        panic!("array repeat should emit a for-range loop");
+    };
+    assert!(
+        body.statements.iter().any(|stmt| matches!(
+            &stmt.kind,
+            HirStmtKind::Expr(hew_hir::HirExpr {
+                kind: HirExprKind::ResolvedImplCall {
+                    method_name,
+                    target_symbol,
+                    ..
+                },
+                ..
+            }) if method_name == "push" && target_symbol == "hew_vec_push_i64"
+        )),
+        "for-range body should push i64 values into the result Vec"
+    );
+}
+
+#[test]
+fn array_repeat_runtime_count_lowers() {
+    let output = lower("fn f(n: i64) { let t = [7; n]; }");
+    assert!(
+        output.diagnostics.is_empty(),
+        "array repeat runtime count should lower without diagnostics: {:?}",
+        output.diagnostics
+    );
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "{verify:?}");
+
+    let func = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(func) => Some(func),
+            _ => None,
+        })
+        .expect("fixture lowers one function");
+    let Some(HirStmtKind::Let(_, Some(init))) = func.body.statements.first().map(|stmt| &stmt.kind)
+    else {
+        panic!("expected first statement to be a let with an array-repeat initializer");
+    };
+    let HirExprKind::Block(block) = &init.kind else {
+        panic!(
+            "array repeat should lower to a synthetic block, got {:?}",
+            init.kind
+        );
+    };
+    let HirStmtKind::Expr(hew_hir::HirExpr {
+        kind: HirExprKind::ForRange { end, .. },
+        ..
+    }) = &block.statements[3].kind
+    else {
+        panic!("array repeat should emit a for-range loop");
+    };
+    assert!(matches!(
+        &end.kind,
+        HirExprKind::BindingRef { name, .. } if name.starts_with("__hew_repeat_count_")
+    ));
+}
+
+#[test]
 fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
     // Defense-in-depth: verify_hir emits NotYetImplemented for any Unsupported
     // HIR node it finds, even when the lowerer already emitted the diagnostic.
-    // Array repeat remains outside this slice and exercises the `_` catch-all.
-    let output = lower("fn f() { let t = [1; 2]; }");
+    // Owned-element array repeat remains fail-closed pending clone semantics.
+    let output = lower("fn f() { let t = [\"x\"; 2]; }");
     // The lowerer already emits NotYetImplemented for the unsupported expression.
     assert!(
         output
@@ -304,7 +402,7 @@ fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
 
 #[test]
 fn verifier_diagnostic_retains_item_source_module() {
-    let mut output = lower("fn f() { let t = [1; 2]; }");
+    let mut output = lower("fn f() { let t = [\"x\"; 2]; }");
     let func_id = output
         .module
         .items
@@ -323,7 +421,7 @@ fn verifier_diagnostic_retains_item_source_module() {
     let diagnostic = verify
         .iter()
         .find(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
-        .expect("verifier should flag unsupported array-repeat node");
+        .expect("verifier should flag unsupported owned array-repeat node");
     assert_eq!(diagnostic.source_module.as_deref(), Some("dep"));
 }
 

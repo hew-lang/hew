@@ -370,6 +370,8 @@ run_accept_expect_status "exit_42" 42
 run_accept_expect_status "for_vec_sum_42" 42
 run_accept_expect_stdout "vec_string_for_each"
 run_accept_expect_status "array_literal_int_sum" 6
+run_accept_expect_status "array_repeat_int_sum" 0
+run_accept_expect_status "array_repeat_runtime_count" 0
 run_accept_expect_status "map_literal_string_keys" 0
 run_accept_expect_status "map_literal_empty_annotated" 0
 run_accept_expect_stdout "array_literal_float_sum"

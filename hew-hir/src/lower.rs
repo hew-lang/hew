@@ -12531,6 +12531,7 @@ impl LowerCtx {
             Expr::InterpolatedString(parts) => self.lower_interpolated_string(parts, span.clone()),
             Expr::Tuple(elems) => self.lower_tuple_literal(elems, &span),
             Expr::Array(elems) => self.lower_array_literal(elems, &span),
+            Expr::ArrayRepeat { value, count } => self.lower_array_repeat(value, count, &span),
             Expr::MapLiteral { entries } => self.lower_map_literal(entries, &span),
             Expr::Cast { expr: value, ty } => self.lower_numeric_cast_expr(value, ty, &span),
             Expr::IfLet {
@@ -12646,7 +12647,7 @@ impl LowerCtx {
                     }
                 }
             }
-            _ => {
+            Expr::Range { .. } => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
                     HirExprKind::Unsupported("unsupported expression".into()),
@@ -14508,6 +14509,155 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         }
+
+        (
+            HirExprKind::Block(HirBlock {
+                node: self.ids.node(),
+                scope: block_scope,
+                statements,
+                tail: Some(Box::new(tail)),
+                ty: vec_ty.clone(),
+                span: span.clone(),
+            }),
+            vec_ty,
+        )
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "array-repeat desugaring is a single ownership-sensitive expansion; splitting would obscure temp binding lifetimes"
+    )]
+    fn lower_array_repeat(
+        &mut self,
+        value: &Spanned<Expr>,
+        count: &Spanned<Expr>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let Some((vec_ty, elem_ty)) = self.array_literal_vec_ty(span) else {
+            return (
+                HirExprKind::Unsupported("array-repeat missing checker element type".into()),
+                ResolvedTy::Unit,
+            );
+        };
+
+        if ValueClass::of_ty(&elem_ty, &self.type_classes) != ValueClass::BitCopy {
+            self.unsupported(
+                span.clone(),
+                "array-repeat of owned element pending semantics ratification",
+                "collection-literals",
+            );
+            return (
+                HirExprKind::Unsupported(
+                    "array-repeat of owned element pending semantics ratification".into(),
+                ),
+                vec_ty,
+            );
+        }
+
+        let block_scope = self.ids.scope();
+        self.push_scope();
+        let mut statements = Vec::new();
+
+        let vec_name = format!("__hew_repeat_{}", self.ids.binding().0);
+        let vec_binding = self.bind(vec_name.clone(), vec_ty.clone(), false, span.clone());
+        let vec_id = vec_binding.id;
+        statements.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(
+                vec_binding,
+                Some(self.make_vec_new_expr(vec_ty.clone(), span.clone())),
+            ),
+            span: span.clone(),
+        });
+
+        let lowered_value = self.lower_expr(value, IntentKind::Read);
+        let value_name = format!("__hew_repeat_value_{}", self.ids.binding().0);
+        let value_binding = self.bind(value_name.clone(), elem_ty.clone(), false, value.1.clone());
+        let value_id = value_binding.id;
+        statements.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(value_binding, Some(lowered_value)),
+            span: value.1.clone(),
+        });
+
+        let lowered_count = self.lower_expr(count, IntentKind::Read);
+        let count_name = format!("__hew_repeat_count_{}", self.ids.binding().0);
+        let count_binding = self.bind(count_name.clone(), ResolvedTy::I64, false, count.1.clone());
+        let count_id = count_binding.id;
+        statements.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(count_binding, Some(lowered_count)),
+            span: count.1.clone(),
+        });
+
+        let i_name = format!("__hew_repeat_i_{}", self.ids.binding().0);
+        let i_binding = self.bind(i_name, ResolvedTy::I64, false, span.clone());
+        let start = self.make_i64_literal(0, span.clone());
+        let end = self.make_binding_ref(
+            count_name,
+            count_id,
+            ResolvedTy::I64,
+            IntentKind::Read,
+            count.1.clone(),
+        );
+        let step = self.make_i64_literal(1, span.clone());
+        let vec_ref = self.make_binding_ref(
+            vec_name.clone(),
+            vec_id,
+            vec_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let value_ref = self.make_binding_ref(
+            value_name,
+            value_id,
+            elem_ty.clone(),
+            IntentKind::Read,
+            value.1.clone(),
+        );
+        let Some(push_expr) = self.make_vec_push_expr(vec_ref, value_ref, &elem_ty, span.clone())
+        else {
+            self.pop_scope();
+            return (
+                HirExprKind::Unsupported("array-repeat element type has no Vec push ABI".into()),
+                ResolvedTy::Unit,
+            );
+        };
+        let push_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(push_expr),
+            span: span.clone(),
+        };
+        let body = self.make_unit_block(vec![push_stmt], None, ResolvedTy::Unit, span.clone());
+        let for_expr = self.make_expr(
+            HirExprKind::ForRange {
+                label: None,
+                binding: i_binding,
+                start: Box::new(start),
+                end: Box::new(end),
+                inclusive: false,
+                step: Box::new(step),
+                descending: false,
+                body,
+            },
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        );
+        statements.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(for_expr),
+            span: span.clone(),
+        });
+
+        let tail = self.make_binding_ref(
+            vec_name,
+            vec_id,
+            vec_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        self.pop_scope();
 
         (
             HirExprKind::Block(HirBlock {

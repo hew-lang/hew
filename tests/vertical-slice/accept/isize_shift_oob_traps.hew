@@ -1,0 +1,15 @@
+// platform-int-arith trap negative: a shift whose count equals the type's
+// bit-width is out of range and must trap (ShiftOutOfRange). On a 64-bit
+// target `isize` is 64-bit, so `1 << 64` traps. The binary exits with a
+// trap signal: 132 (SIGILL) on x86_64 Linux, 133 (SIGTRAP) on aarch64/macOS.
+// run.sh's run_accept_expect_trap accepts either.
+// (The in-range boundary `1 << 63` is exercised by `isize_shift_boundary`,
+// which exits 0. The 32-bit width boundary is pinned by the MIR width-parity
+// unit tests in hew-mir/tests/div_shift_trap.rs.)
+fn main() -> i64 {
+    let one: isize = 1;
+    let w: isize = 64;
+    let s = one << w;
+    // Unreachable: the shift traps before this point.
+    s as i64
+}

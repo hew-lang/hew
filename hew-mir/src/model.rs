@@ -56,6 +56,48 @@ impl Default for SendAliasMode {
     }
 }
 
+/// Target pointer width threaded into MIR lowering so the `isize`/`usize`
+/// trap-guard constants (signed-MIN/-1 for `/` `%`, shift-out-of-range bound
+/// for `<<` `>>`) are emitted at the width the target actually uses.
+///
+/// The width MUST be derived from the compile target (`TargetArch`), never from
+/// a host `cfg!(target_pointer_width)`: a cross-compile (e.g. `--target wasm32`
+/// on a 64-bit host) would otherwise emit width-64 guards into a 32-bit module,
+/// silently admitting out-of-range shifts and the wrong signed-MIN trap — a
+/// fail-open soundness hole. `Bits64` is the default because every native
+/// target Hew supports (`X86_64`/`Aarch64`/`Other`) is 64-bit; only `Wasm32`
+/// is 32-bit. The host-defaulting `lower_hir_module` test wrapper keeps `Bits64`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PointerWidth {
+    /// 32-bit pointers (wasm32): `isize` == `i32` range, `usize` == `u32` range.
+    Bits32,
+    /// 64-bit pointers (every native target): `isize` == `i64`, `usize` == `u64`.
+    #[default]
+    Bits64,
+}
+
+impl PointerWidth {
+    /// The pointer width in bits — the shift-out-of-range bound and the LLVM
+    /// integer width codegen emits for `isize`/`usize`.
+    #[must_use]
+    pub fn bits(self) -> i64 {
+        match self {
+            PointerWidth::Bits32 => 32,
+            PointerWidth::Bits64 => 64,
+        }
+    }
+
+    /// The signed minimum value for `isize` at this width, as the `i64` constant
+    /// the signed-MIN/-1 div/rem trap compares against.
+    #[must_use]
+    pub fn isize_min(self) -> i64 {
+        match self {
+            PointerWidth::Bits32 => i64::from(i32::MIN),
+            PointerWidth::Bits64 => i64::MIN,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct IrPipeline {
     pub thir: Vec<ThirFunction>,

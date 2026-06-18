@@ -511,10 +511,6 @@ impl LowerOutput {
     ///   returns a non-unit type (must use `.ask()` + `await` instead).
     /// - [`HirDiagnosticKind::BinaryOperatorUnsupportedInMir`] — value-position
     ///   range operator (FC-P1-D).
-    /// - [`HirDiagnosticKind::PlatformSizedDivRemUnsupported`] — div/mod on
-    ///   `isize` (FC-P1-D).
-    /// - [`HirDiagnosticKind::PlatformSizedShiftUnsupported`] — shift on
-    ///   `isize`/`usize` (FC-P1-D).
     /// - [`HirDiagnosticKind::CallableUnsupportedInMir`] — a call expression
     ///   resolves to an item with no MIR body or runtime-ABI lowering.
     /// - [`HirDiagnosticKind::IndirectCallUnsupported`] — a call expression
@@ -569,8 +565,6 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
                     | crate::HirDiagnosticKind::ActorSendRequiresUnitHandler { .. }
                     | crate::HirDiagnosticKind::BinaryOperatorUnsupportedInMir { .. }
-                    | crate::HirDiagnosticKind::PlatformSizedDivRemUnsupported { .. }
-                    | crate::HirDiagnosticKind::PlatformSizedShiftUnsupported { .. }
                     | crate::HirDiagnosticKind::CallableUnsupportedInMir { .. }
                     | crate::HirDiagnosticKind::IndirectCallUnsupported { .. }
                     | crate::HirDiagnosticKind::SupervisorSpawnArgsUnsupported { .. }
@@ -23220,16 +23214,17 @@ fn check_actor_send_method_call(
 /// `isize`/`usize` predicates can resolve operand types.
 struct BinopGateCtx<'a> {
     diagnostics: &'a mut Vec<HirDiagnostic>,
-    expr_types: &'a HashMap<SpanKey, Ty>,
 }
 
 /// FC-P1-D entry point. Scans every user expression body in `program` for
 /// binary operators that the MIR backend cannot lower today and emits the
-/// corresponding fatal HIR diagnostic. Three closed gates:
+/// corresponding fatal HIR diagnostic. One closed gate remains:
 ///
 /// 1. `..` / `..=` in value position (MIR site `:5336`).
-/// 2. `/` / `%` on `isize` (MIR site `:5564`).
-/// 3. `<<` / `>>` on `isize`/`usize` (MIR site `:5696`).
+///
+/// (The former `isize`/`usize` div/rem and shift gates are gone: MIR now
+/// threads the target pointer width and emits the correct per-target trap
+/// constants, so those operators lower end-to-end.)
 ///
 /// Walker shape mirrors `check_wasm_blocking_recv_gate` / `scan_*_for_
 /// blocking_recv`. Range gate is exempted when the binary expression is the
@@ -23237,7 +23232,6 @@ struct BinopGateCtx<'a> {
 fn check_binary_operator_gates(ctx: &mut LowerCtx, program: &Program) {
     let mut gate_ctx = BinopGateCtx {
         diagnostics: &mut ctx.diagnostics,
-        expr_types: &ctx.expr_types,
     };
     for (item, _span) in &program.items {
         match item {
@@ -23628,14 +23622,20 @@ fn scan_expr_for_binop_gates(
     }
 }
 
-/// Apply the three FC-P1-D gates to a single `Expr::Binary` node.
+/// Apply the FC-P1-D binop gates to a single `Expr::Binary` node.
 ///
 /// Exhaustive over `BinaryOp` so future operator additions surface as
 /// compile errors here. WHEN-ADDING-BINOP: extend this match to gate or
 /// explicitly admit the new operator.
+///
+/// `isize`/`usize` `/` `%` `<<` `>>` are admitted: MIR threads the target
+/// pointer width (`PointerWidth`) and emits the correct per-target signed-MIN
+/// and shift-range trap constants, so the old `PlatformSized{DivRem,Shift}`
+/// gates here are removed (they were dead code — the checker already admitted
+/// these operands as concrete integers).
 fn apply_binop_gates(
     op: BinaryOp,
-    left: &Spanned<Expr>,
+    _left: &Spanned<Expr>,
     _right: &Spanned<Expr>,
     binop_span: &Span,
     in_for_iterable: bool,
@@ -23658,46 +23658,18 @@ fn apply_binop_gates(
                 ));
             }
         }
-        // Gate 2: div/mod on isize.
-        BinaryOp::Divide | BinaryOp::Modulo => {
-            if operand_is_isize(left, ctx.expr_types) {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::PlatformSizedDivRemUnsupported {
-                        op: format!("{op}"),
-                    },
-                    binop_span.clone(),
-                    format!(
-                        "binary operator `{op}` on `isize` requires the target's \
-                         pointer-width MIN constant, which the MIR pipeline does \
-                         not yet thread. Use `i32` or `i64` for explicit-width \
-                         division. LESSONS `boundary-fail-closed`."
-                    ),
-                ));
-            }
-        }
-        // Gate 3: shift on isize/usize.
-        BinaryOp::Shl | BinaryOp::Shr => {
-            if operand_is_platform_sized_int(left, ctx.expr_types) {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::PlatformSizedShiftUnsupported {
-                        op: format!("{op}"),
-                    },
-                    binop_span.clone(),
-                    format!(
-                        "binary operator `{op}` on `isize`/`usize` requires the \
-                         target's pointer-width bit-count constant, which the MIR \
-                         pipeline does not yet thread. Use `i32`/`i64`/`u32`/`u64` \
-                         for explicit-width shifts. LESSONS `boundary-fail-closed`."
-                    ),
-                ));
-            }
-        }
         // MIR-supported operators (admitted). Listed explicitly so adding a
         // new BinaryOp variant elsewhere triggers a non-exhaustive-match
-        // compile error here.
+        // compile error here. Divide/Modulo/Shl/Shr are admitted for every
+        // integer width including platform-sized isize/usize — MIR emits the
+        // target-width trap guards.
         BinaryOp::Add
         | BinaryOp::Subtract
         | BinaryOp::Multiply
+        | BinaryOp::Divide
+        | BinaryOp::Modulo
+        | BinaryOp::Shl
+        | BinaryOp::Shr
         | BinaryOp::Equal
         | BinaryOp::NotEqual
         | BinaryOp::Less
@@ -23713,31 +23685,6 @@ fn apply_binop_gates(
         | BinaryOp::WrappingSub
         | BinaryOp::WrappingMul => {}
     }
-}
-
-/// True iff the operand's checker-resolved type is `Ty::Isize`. Returns
-/// false when the type is missing from `expr_types` (defense-in-depth:
-/// MIR's own gate at `:5564` remains as a backstop, so under-rejection
-/// here does not lose safety).
-fn operand_is_isize(operand: &Spanned<Expr>, expr_types: &HashMap<SpanKey, Ty>) -> bool {
-    // These gates scan root-program AST items only (module_idx = 0).
-    matches!(
-        expr_types.get(&SpanKey::in_module(&operand.1, 0)),
-        Some(Ty::Isize)
-    )
-}
-
-/// True iff the operand's checker-resolved type is `Ty::Isize` or
-/// `Ty::Usize`. Same defense-in-depth note as `operand_is_isize`.
-fn operand_is_platform_sized_int(
-    operand: &Spanned<Expr>,
-    expr_types: &HashMap<SpanKey, Ty>,
-) -> bool {
-    // These gates scan root-program AST items only (module_idx = 0).
-    matches!(
-        expr_types.get(&SpanKey::in_module(&operand.1, 0)),
-        Some(Ty::Isize | Ty::Usize)
-    )
 }
 
 // ── FC-P1-B: Call-shape gates (HIR-level) ───────────────────────────────────

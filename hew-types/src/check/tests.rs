@@ -1,3 +1,4 @@
+use super::coerce::common_integer_type;
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -11176,57 +11177,205 @@ fn literal_coercion_float_to_f32() {
     assert_eq!(ty, Ty::F32);
 }
 
+/// Native pointer width for fixed-width helper tests where the platform-sized
+/// arms are not exercised (the value is irrelevant to a fixed-width arm).
+const PTR_WIDTH_64: u8 = 64;
+const PTR_WIDTH_32: u8 = 32;
+
 #[test]
 fn literal_coercion_integer_fits_i8() {
-    assert!(integer_fits_type(127, &Ty::I8));
-    assert!(integer_fits_type(-128, &Ty::I8));
-    assert!(!integer_fits_type(128, &Ty::I8));
-    assert!(!integer_fits_type(-129, &Ty::I8));
+    assert!(integer_fits_type(127, &Ty::I8, PTR_WIDTH_64));
+    assert!(integer_fits_type(-128, &Ty::I8, PTR_WIDTH_64));
+    assert!(!integer_fits_type(128, &Ty::I8, PTR_WIDTH_64));
+    assert!(!integer_fits_type(-129, &Ty::I8, PTR_WIDTH_64));
 }
 
 #[test]
 fn literal_coercion_integer_fits_u8() {
-    assert!(integer_fits_type(0, &Ty::U8));
-    assert!(integer_fits_type(255, &Ty::U8));
-    assert!(!integer_fits_type(256, &Ty::U8));
-    assert!(!integer_fits_type(-1, &Ty::U8));
+    assert!(integer_fits_type(0, &Ty::U8, PTR_WIDTH_64));
+    assert!(integer_fits_type(255, &Ty::U8, PTR_WIDTH_64));
+    assert!(!integer_fits_type(256, &Ty::U8, PTR_WIDTH_64));
+    assert!(!integer_fits_type(-1, &Ty::U8, PTR_WIDTH_64));
 }
 
 #[test]
 fn literal_coercion_integer_fits_i16() {
-    assert!(integer_fits_type(32767, &Ty::I16));
-    assert!(integer_fits_type(-32768, &Ty::I16));
-    assert!(!integer_fits_type(32768, &Ty::I16));
+    assert!(integer_fits_type(32767, &Ty::I16, PTR_WIDTH_64));
+    assert!(integer_fits_type(-32768, &Ty::I16, PTR_WIDTH_64));
+    assert!(!integer_fits_type(32768, &Ty::I16, PTR_WIDTH_64));
 }
 
 #[test]
 fn literal_coercion_integer_fits_u16() {
-    assert!(integer_fits_type(65535, &Ty::U16));
-    assert!(!integer_fits_type(65536, &Ty::U16));
+    assert!(integer_fits_type(65535, &Ty::U16, PTR_WIDTH_64));
+    assert!(!integer_fits_type(65536, &Ty::U16, PTR_WIDTH_64));
 }
 
 #[test]
 fn literal_coercion_integer_fits_i32() {
-    assert!(integer_fits_type(2_147_483_647, &Ty::I32));
-    assert!(integer_fits_type(-2_147_483_648, &Ty::I32));
-    assert!(!integer_fits_type(2_147_483_648, &Ty::I32));
+    assert!(integer_fits_type(2_147_483_647, &Ty::I32, PTR_WIDTH_64));
+    assert!(integer_fits_type(-2_147_483_648, &Ty::I32, PTR_WIDTH_64));
+    assert!(!integer_fits_type(2_147_483_648, &Ty::I32, PTR_WIDTH_64));
 }
 
 #[test]
 fn literal_coercion_integer_fits_u32() {
-    assert!(integer_fits_type(4_294_967_295, &Ty::U32));
-    assert!(!integer_fits_type(4_294_967_296, &Ty::U32));
-    assert!(!integer_fits_type(-1, &Ty::U32));
+    assert!(integer_fits_type(4_294_967_295, &Ty::U32, PTR_WIDTH_64));
+    assert!(!integer_fits_type(4_294_967_296, &Ty::U32, PTR_WIDTH_64));
+    assert!(!integer_fits_type(-1, &Ty::U32, PTR_WIDTH_64));
 }
 
 #[test]
 fn literal_coercion_integer_fits_u64() {
     // i64 max fits in u64
-    assert!(integer_fits_type(i64::MAX, &Ty::U64));
+    assert!(integer_fits_type(i64::MAX, &Ty::U64, PTR_WIDTH_64));
     // 0 fits
-    assert!(integer_fits_type(0, &Ty::U64));
+    assert!(integer_fits_type(0, &Ty::U64, PTR_WIDTH_64));
     // Negative doesn't fit
-    assert!(!integer_fits_type(-1, &Ty::U64));
+    assert!(!integer_fits_type(-1, &Ty::U64, PTR_WIDTH_64));
+}
+
+#[test]
+fn integer_type_info_isize_usize_resolve_target_width() {
+    // 64-bit target: isize = 64-bit signed, usize = 64-bit unsigned.
+    let isize64 = integer_type_info(&Ty::Isize, PTR_WIDTH_64).expect("isize is an integer");
+    assert_eq!(isize64.width, 64);
+    assert!(isize64.signed);
+    let usize64 = integer_type_info(&Ty::Usize, PTR_WIDTH_64).expect("usize is an integer");
+    assert_eq!(usize64.width, 64);
+    assert!(!usize64.signed);
+
+    // 32-bit (wasm32) target: width follows the pointer width.
+    let isize32 = integer_type_info(&Ty::Isize, PTR_WIDTH_32).expect("isize is an integer");
+    assert_eq!(isize32.width, 32);
+    assert!(isize32.signed);
+    let usize32 = integer_type_info(&Ty::Usize, PTR_WIDTH_32).expect("usize is an integer");
+    assert_eq!(usize32.width, 32);
+    assert!(!usize32.signed);
+}
+
+#[test]
+fn common_integer_type_platform_sized_combine_only_with_self() {
+    // Same platform type combines to itself.
+    assert_eq!(
+        common_integer_type(&Ty::Isize, &Ty::Isize, PTR_WIDTH_64),
+        Some(Ty::Isize)
+    );
+    assert_eq!(
+        common_integer_type(&Ty::Usize, &Ty::Usize, PTR_WIDTH_64),
+        Some(Ty::Usize)
+    );
+    // Platform type + IntLiteral resolves to the platform type.
+    assert_eq!(
+        common_integer_type(&Ty::Isize, &Ty::IntLiteral, PTR_WIDTH_64),
+        Some(Ty::Isize)
+    );
+    assert_eq!(
+        common_integer_type(&Ty::IntLiteral, &Ty::Usize, PTR_WIDTH_64),
+        Some(Ty::Usize)
+    );
+    // Mixed sign and mixed platform-vs-fixed are rejected (no implicit coerce),
+    // even when the fixed type has the same width (i64 == 64-bit isize).
+    assert_eq!(
+        common_integer_type(&Ty::Isize, &Ty::Usize, PTR_WIDTH_64),
+        None
+    );
+    assert_eq!(
+        common_integer_type(&Ty::Isize, &Ty::I64, PTR_WIDTH_64),
+        None
+    );
+    assert_eq!(
+        common_integer_type(&Ty::I64, &Ty::Isize, PTR_WIDTH_64),
+        None
+    );
+    assert_eq!(
+        common_integer_type(&Ty::Usize, &Ty::U64, PTR_WIDTH_64),
+        None
+    );
+    assert_eq!(
+        common_integer_type(&Ty::Isize, &Ty::I32, PTR_WIDTH_64),
+        None
+    );
+}
+
+#[test]
+fn common_integer_type_fixed_width_unchanged_by_isize_arms() {
+    // Adding the platform arms must not change fixed-width selection.
+    assert_eq!(
+        common_integer_type(&Ty::I32, &Ty::I64, PTR_WIDTH_64),
+        Some(Ty::I64)
+    );
+    assert_eq!(
+        common_integer_type(&Ty::I64, &Ty::I32, PTR_WIDTH_64),
+        Some(Ty::I64)
+    );
+    assert_eq!(
+        common_integer_type(&Ty::U8, &Ty::U32, PTR_WIDTH_64),
+        Some(Ty::U32)
+    );
+    assert_eq!(common_integer_type(&Ty::I32, &Ty::U32, PTR_WIDTH_64), None);
+    assert_eq!(
+        common_integer_type(&Ty::IntLiteral, &Ty::I32, PTR_WIDTH_64),
+        Some(Ty::I32)
+    );
+}
+
+#[test]
+fn integer_fits_type_isize_usize_boundary() {
+    // 64-bit isize: any i64 fits; usize: non-negative fits (u64 range).
+    assert!(integer_fits_type(i64::MAX, &Ty::Isize, PTR_WIDTH_64));
+    assert!(integer_fits_type(i64::MIN, &Ty::Isize, PTR_WIDTH_64));
+    assert!(integer_fits_type(0, &Ty::Usize, PTR_WIDTH_64));
+    assert!(integer_fits_type(i64::MAX, &Ty::Usize, PTR_WIDTH_64));
+    assert!(!integer_fits_type(-1, &Ty::Usize, PTR_WIDTH_64));
+
+    // 32-bit isize: bounds shrink to i32; usize to u32.
+    assert!(integer_fits_type(
+        i64::from(i32::MAX),
+        &Ty::Isize,
+        PTR_WIDTH_32
+    ));
+    assert!(integer_fits_type(
+        i64::from(i32::MIN),
+        &Ty::Isize,
+        PTR_WIDTH_32
+    ));
+    assert!(!integer_fits_type(
+        i64::from(i32::MAX) + 1,
+        &Ty::Isize,
+        PTR_WIDTH_32
+    ));
+    assert!(integer_fits_type(
+        i64::from(u32::MAX),
+        &Ty::Usize,
+        PTR_WIDTH_32
+    ));
+    assert!(!integer_fits_type(
+        i64::from(u32::MAX) + 1,
+        &Ty::Usize,
+        PTR_WIDTH_32
+    ));
+    assert!(!integer_fits_type(-1, &Ty::Usize, PTR_WIDTH_32));
+}
+
+#[test]
+fn integer_type_range_isize_usize_follows_width() {
+    assert_eq!(
+        integer_type_range(&Ty::Isize, PTR_WIDTH_64),
+        Some((i128::from(i64::MIN), i128::from(i64::MAX)))
+    );
+    assert_eq!(
+        integer_type_range(&Ty::Usize, PTR_WIDTH_64),
+        Some((0, i128::from(u64::MAX)))
+    );
+    assert_eq!(
+        integer_type_range(&Ty::Isize, PTR_WIDTH_32),
+        Some((i128::from(i32::MIN), i128::from(i32::MAX)))
+    );
+    assert_eq!(
+        integer_type_range(&Ty::Usize, PTR_WIDTH_32),
+        Some((0, i128::from(u32::MAX)))
+    );
 }
 
 // ── Array literal → Vec type coercion tests ──────────────────────

@@ -8,7 +8,9 @@
 //!   - Missing-entry default: absent entry → `Copy` (fail-closed)
 
 use hew_hir::{lower_program, ResolutionCtx};
-use hew_mir::{lower_hir_module, lower_hir_module_with_facts, SendAliasMode, Terminator};
+use hew_mir::{
+    lower_hir_module, lower_hir_module_with_facts, PointerWidth, SendAliasMode, Terminator,
+};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::{ActorSendAliasing, Checker};
 
@@ -105,7 +107,11 @@ fn lower_hir_module_all_sends_copy() {
 #[test]
 fn lower_hir_module_with_facts_empty_map_gives_copy() {
     let (hir, _tco) = lower_checked_with_tco(SEND_SOURCE);
-    let pipeline = lower_hir_module_with_facts(&hir.module, &std::collections::HashMap::new());
+    let pipeline = lower_hir_module_with_facts(
+        &hir.module,
+        &std::collections::HashMap::new(),
+        PointerWidth::Bits64,
+    );
     assert!(
         pipeline.diagnostics.is_empty(),
         "MIR diagnostics: {:?}",
@@ -145,7 +151,7 @@ fn lower_hir_module_with_facts_alias_entry_propagates() {
     // (If the source has no sends, the test is trivially correct but uninformative.)
     if aliased_map.is_empty() {
         // Fall back: still verify the pipeline compiles cleanly.
-        let pipeline = lower_hir_module_with_facts(&hir.module, &aliased_map);
+        let pipeline = lower_hir_module_with_facts(&hir.module, &aliased_map, PointerWidth::Bits64);
         assert!(
             pipeline.diagnostics.is_empty(),
             "{:?}",
@@ -154,7 +160,7 @@ fn lower_hir_module_with_facts_alias_entry_propagates() {
         return;
     }
 
-    let pipeline = lower_hir_module_with_facts(&hir.module, &aliased_map);
+    let pipeline = lower_hir_module_with_facts(&hir.module, &aliased_map, PointerWidth::Bits64);
     assert!(
         pipeline.diagnostics.is_empty(),
         "MIR diagnostics: {:?}",

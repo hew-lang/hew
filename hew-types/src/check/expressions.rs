@@ -670,7 +670,7 @@ impl Checker {
         right: &Spanned<Expr>,
         right_ty: &Ty,
     ) {
-        if integer_type_info(common_ty).is_some() {
+        if integer_type_info(common_ty, self.pointer_width()).is_some() {
             self.expect_type(common_ty, left_ty, &left.1);
             self.expect_type(common_ty, right_ty, &right.1);
             self.record_concrete_integer_operand(common_ty, left, left_ty);
@@ -690,9 +690,13 @@ impl Checker {
         }
     }
 
-    fn concrete_integer_float_mismatch(left: &Ty, right: &Ty) -> bool {
-        (integer_type_info(left).is_some() && right.is_float() && !right.is_float_literal())
-            || (integer_type_info(right).is_some() && left.is_float() && !left.is_float_literal())
+    fn concrete_integer_float_mismatch(left: &Ty, right: &Ty, ptr_width: u8) -> bool {
+        (integer_type_info(left, ptr_width).is_some()
+            && right.is_float()
+            && !right.is_float_literal())
+            || (integer_type_info(right, ptr_width).is_some()
+                && left.is_float()
+                && !left.is_float_literal())
     }
 
     fn expect_inferable_literal_binding(&mut self, name: &str, expected: &Ty, span: &Span) {
@@ -719,7 +723,9 @@ impl Checker {
                 let end_resolved = self.subst.resolve(&end_ty);
 
                 if start_resolved.is_integer() && end_resolved.is_integer() {
-                    if let Some(common_ty) = common_integer_type(&start_resolved, &end_resolved) {
+                    if let Some(common_ty) =
+                        common_integer_type(&start_resolved, &end_resolved, self.pointer_width())
+                    {
                         Ty::range(common_ty)
                     } else {
                         self.report_error(
@@ -2235,7 +2241,10 @@ impl Checker {
             (expr, ty) if is_integer_literal(expr) && ty.is_integer() => {
                 if !expected.is_numeric_literal() {
                     if let Some(value) = extract_integer_literal_value(expr) {
-                        if value < 0 && !integer_type_info(expected).is_some_and(|i| i.signed) {
+                        let ptr_width = self.pointer_width();
+                        if value < 0
+                            && !integer_type_info(expected, ptr_width).is_some_and(|i| i.signed)
+                        {
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,
                                 span,
@@ -2246,8 +2255,9 @@ impl Checker {
                             );
                             return Ty::Error;
                         }
-                        if !integer_fits_type(value, expected) {
-                            let (lo, hi) = integer_type_range(expected).unwrap_or((0, 0));
+                        if !integer_fits_type(value, expected, ptr_width) {
+                            let (lo, hi) =
+                                integer_type_range(expected, ptr_width).unwrap_or((0, 0));
                             self.report_error(
                                 TypeErrorKind::InvalidOperation,
                                 span,
@@ -2355,8 +2365,10 @@ impl Checker {
                     match (&cv, expected) {
                         (ConstValue::Integer(value), ty) if ty.is_integer() => {
                             if !expected.is_numeric_literal() {
+                                let ptr_width = self.pointer_width();
                                 if *value < 0
-                                    && !integer_type_info(expected).is_some_and(|i| i.signed)
+                                    && !integer_type_info(expected, ptr_width)
+                                        .is_some_and(|i| i.signed)
                                 {
                                     self.report_error(
                                         TypeErrorKind::InvalidOperation,
@@ -2368,8 +2380,9 @@ impl Checker {
                                     );
                                     return Ty::Error;
                                 }
-                                if !integer_fits_type(*value, expected) {
-                                    let (lo, hi) = integer_type_range(expected).unwrap_or((0, 0));
+                                if !integer_fits_type(*value, expected, ptr_width) {
+                                    let (lo, hi) =
+                                        integer_type_range(expected, ptr_width).unwrap_or((0, 0));
                                     self.report_error(
                                         TypeErrorKind::InvalidOperation,
                                         span,
@@ -3084,7 +3097,9 @@ impl Checker {
             // no float. Both operands must be integer types of the same width.
             BinaryOp::WrappingAdd | BinaryOp::WrappingSub | BinaryOp::WrappingMul => {
                 if left_resolved.is_integer() && right_resolved.is_integer() {
-                    if let Some(common_ty) = common_integer_type(&left_resolved, &right_resolved) {
+                    if let Some(common_ty) =
+                        common_integer_type(&left_resolved, &right_resolved, self.pointer_width())
+                    {
                         self.expect_concrete_integer_operands(
                             &common_ty, left, &left_ty, right, &right_ty,
                         );
@@ -3139,7 +3154,9 @@ impl Checker {
                     );
                 }
                 if left_resolved.is_integer() && right_resolved.is_integer() {
-                    if let Some(common_ty) = common_integer_type(&left_resolved, &right_resolved) {
+                    if let Some(common_ty) =
+                        common_integer_type(&left_resolved, &right_resolved, self.pointer_width())
+                    {
                         self.expect_concrete_integer_operands(
                             &common_ty, left, &left_ty, right, &right_ty,
                         );
@@ -3157,7 +3174,11 @@ impl Checker {
                         Ty::Error
                     }
                 } else if left_resolved.is_numeric() && right_resolved.is_numeric() {
-                    if Self::concrete_integer_float_mismatch(&left_resolved, &right_resolved) {
+                    if Self::concrete_integer_float_mismatch(
+                        &left_resolved,
+                        &right_resolved,
+                        self.pointer_width(),
+                    ) {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
                             &left.1,
@@ -3169,7 +3190,9 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    if let Some(common_ty) = common_numeric_type(&left_resolved, &right_resolved) {
+                    if let Some(common_ty) =
+                        common_numeric_type(&left_resolved, &right_resolved, self.pointer_width())
+                    {
                         common_ty
                     } else {
                         self.report_error(
@@ -3219,7 +3242,9 @@ impl Checker {
             | BinaryOp::Shl
             | BinaryOp::Shr => {
                 if left_resolved.is_integer() && right_resolved.is_integer() {
-                    if let Some(common_ty) = common_integer_type(&left_resolved, &right_resolved) {
+                    if let Some(common_ty) =
+                        common_integer_type(&left_resolved, &right_resolved, self.pointer_width())
+                    {
                         self.expect_concrete_integer_operands(
                             &common_ty, left, &left_ty, right, &right_ty,
                         );
@@ -3264,7 +3289,9 @@ impl Checker {
             | BinaryOp::Greater
             | BinaryOp::GreaterEqual => {
                 if left_resolved.is_integer() && right_resolved.is_integer() {
-                    if let Some(common_ty) = common_integer_type(&left_resolved, &right_resolved) {
+                    if let Some(common_ty) =
+                        common_integer_type(&left_resolved, &right_resolved, self.pointer_width())
+                    {
                         self.expect_concrete_integer_operands(
                             &common_ty, left, &left_ty, right, &right_ty,
                         );
@@ -3280,7 +3307,11 @@ impl Checker {
                         );
                     }
                 } else if left_resolved.is_numeric() && right_resolved.is_numeric() {
-                    if Self::concrete_integer_float_mismatch(&left_resolved, &right_resolved) {
+                    if Self::concrete_integer_float_mismatch(
+                        &left_resolved,
+                        &right_resolved,
+                        self.pointer_width(),
+                    ) {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
                             &left.1,
@@ -3292,7 +3323,9 @@ impl Checker {
                         );
                         return Ty::Bool;
                     }
-                    if common_numeric_type(&left_resolved, &right_resolved).is_none() {
+                    if common_numeric_type(&left_resolved, &right_resolved, self.pointer_width())
+                        .is_none()
+                    {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
                             &left.1,
@@ -3328,7 +3361,9 @@ impl Checker {
             }
             BinaryOp::Range | BinaryOp::RangeInclusive => {
                 if left_resolved.is_integer() && right_resolved.is_integer() {
-                    if let Some(common_ty) = common_integer_type(&left_resolved, &right_resolved) {
+                    if let Some(common_ty) =
+                        common_integer_type(&left_resolved, &right_resolved, self.pointer_width())
+                    {
                         // When both bounds are integer literals (e.g. `0..8`),
                         // use a fresh type variable so the element type can be
                         // inferred from context (e.g. how the loop variable is

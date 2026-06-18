@@ -2871,6 +2871,26 @@ impl Checker {
         self.wasm_target = true;
     }
 
+    /// Target pointer width in bits: 32 on `wasm32`, 64 on every native target.
+    ///
+    /// Derived from the target the compile was invoked with (`wasm_target` is
+    /// set from `FrontendOptions::enable_wasm_target` = `--target wasm32`), NOT
+    /// from a host `cfg!(target_pointer_width)` — so `isize`/`usize`
+    /// classification and literal-fit ranges stay correct when cross-compiling.
+    /// `TargetArch` has only one 32-bit variant (`Wasm32`); the remaining native
+    /// variants are all 64-bit, so the wasm flag is a faithful pointer-width
+    /// proxy for the checker. Used by the integer-classification helpers
+    /// (`integer_type_info` / `integer_type_range` / `integer_fits_type` /
+    /// `common_integer_type`).
+    #[must_use]
+    pub(super) fn pointer_width(&self) -> u8 {
+        if self.wasm_target {
+            32
+        } else {
+            64
+        }
+    }
+
     /// Mark the program under check as a synthetic `hew eval` REPL fragment,
     /// suppressing the whole-program completeness lints. See
     /// [`Checker::repl_fragment`].

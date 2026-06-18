@@ -4,16 +4,39 @@
 )]
 use super::*;
 
-pub(super) fn common_integer_type(a: &Ty, b: &Ty) -> Option<Ty> {
+/// Resolve the common integer type for two operands, or `None` when they cannot
+/// implicitly combine.
+///
+/// `ptr_width` (32 on `wasm32`, 64 native) is forwarded to
+/// [`integer_type_info`]; it is only consulted for diagnostics / width queries
+/// and never changes the fixed-width outcome.
+///
+/// Platform-sized `Isize`/`Usize` are handled by exact-type arms, NOT by the
+/// fixed-width "pick the wider" rule. On a 64-bit target `isize` is 64-bit
+/// signed exactly like `i64`, but Hew keeps them distinct: `isize` combines
+/// only with `isize` (and `IntLiteral`), `usize` only with `usize`. Falling
+/// into the width comparison would wrongly admit `isize op i64` — implicit
+/// cross-width/cross-platform coercion stays a checker error (explicit `as`
+/// required).
+pub(super) fn common_integer_type(a: &Ty, b: &Ty, ptr_width: u8) -> Option<Ty> {
     match (a, b) {
         (Ty::IntLiteral, Ty::IntLiteral) => return Some(Ty::IntLiteral),
-        (Ty::IntLiteral, ty) | (ty, Ty::IntLiteral) if integer_type_info(ty).is_some() => {
+        (Ty::IntLiteral, ty) | (ty, Ty::IntLiteral)
+            if integer_type_info(ty, ptr_width).is_some() =>
+        {
             return Some(ty.clone());
         }
+        // Platform-sized integers combine only with themselves: `isize` with
+        // `isize`, `usize` with `usize`. Any other partner (including the
+        // same-width fixed type `i64`/`u64`) is rejected here so the
+        // width-comparison fallthrough below cannot silently fuse them.
+        (Ty::Isize, Ty::Isize) => return Some(Ty::Isize),
+        (Ty::Usize, Ty::Usize) => return Some(Ty::Usize),
+        (Ty::Isize | Ty::Usize, _) | (_, Ty::Isize | Ty::Usize) => return None,
         _ => {}
     }
-    let a_info = integer_type_info(a)?;
-    let b_info = integer_type_info(b)?;
+    let a_info = integer_type_info(a, ptr_width)?;
+    let b_info = integer_type_info(b, ptr_width)?;
     if a_info.signed != b_info.signed {
         return None;
     }
@@ -24,7 +47,7 @@ pub(super) fn common_integer_type(a: &Ty, b: &Ty) -> Option<Ty> {
     }
 }
 
-pub(super) fn common_numeric_type(a: &Ty, b: &Ty) -> Option<Ty> {
+pub(super) fn common_numeric_type(a: &Ty, b: &Ty, ptr_width: u8) -> Option<Ty> {
     if a.is_float() && b.is_float() {
         if *a == Ty::F64 || *b == Ty::F64 {
             Some(Ty::F64)
@@ -46,7 +69,7 @@ pub(super) fn common_numeric_type(a: &Ty, b: &Ty) -> Option<Ty> {
             Some(b.clone())
         }
     } else {
-        common_integer_type(a, b)
+        common_integer_type(a, b, ptr_width)
     }
 }
 
@@ -290,7 +313,9 @@ impl Checker {
         let then_resolved = self.subst.resolve(then_ty);
         let else_resolved = self.subst.resolve(else_ty);
         if then_resolved.is_numeric() && else_resolved.is_numeric() {
-            if let Some(common_ty) = common_numeric_type(&then_resolved, &else_resolved) {
+            if let Some(common_ty) =
+                common_numeric_type(&then_resolved, &else_resolved, self.pointer_width())
+            {
                 return common_ty;
             }
         }

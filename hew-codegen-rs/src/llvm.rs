@@ -196,6 +196,15 @@ impl std::fmt::Display for CodegenError {
                         "the suspending channel-receive substrate",
                         "WASM-TODO(#1451)",
                     )
+                } else if symbol == "hew_gen_coro_destroy" {
+                    // Generator carrier (`Terminator::Yield` / `MakeGenerator`):
+                    // builds onto the coro substrate but the coro-frame teardown
+                    // traps on wasm32, so generators are fenced fail-closed at
+                    // compile until the teardown is proven under the wasm runtime.
+                    (
+                        "the generator substrate",
+                        "WASM-TODO(#1758): generator wasm coro-frame teardown not yet proven",
+                    )
                 } else {
                     ("a native-only runtime substrate", "WASM-TODO(#1451)")
                 };
@@ -594,6 +603,14 @@ fn validate_codegen_front_with_name(pipeline: &IrPipeline, module_name: &str) ->
     Ok(())
 }
 
+/// Sentinel symbol the wasm-exclusion scan returns for a generator carrier
+/// `Terminator::Yield` or `MakeGenerator`. It is not a real runtime gap: the
+/// generator coro substrate emits `hew_cont_*`, which ARE wasm-clean. The
+/// coro-frame TEARDOWN traps on wasm32, so the scan refuses the whole generator
+/// at compile. The `CodegenError::Display` arm maps this sentinel to a
+/// "generator substrate" diagnostic. WASM-TODO(#1758).
+const WASM_GENERATOR_UNSUPPORTED_SYMBOL: &str = "hew_gen_coro_destroy";
+
 /// Return the first WASM-excluded substrate symbol found in `pipeline`'s
 /// instruction stream, or `None` if none is present.
 ///
@@ -711,13 +728,22 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
             if let Terminator::SuspendingChannelRecv { .. } = &block.terminator {
                 return Some("hew_channel_await_recv".to_string());
             }
-            // Generators are wasm-parity-clean: `Terminator::Yield` /
-            // `MakeGenerator` lower to the `llvm.coro.*` + `hew_cont_*`
-            // continuation substrate (the same one the await family uses), which
-            // imports no host malloc / asyncify and runs in-module on wasm32
-            // (#1758 closed). There is therefore NO generator wasm-exclusion
-            // gate — a generator program builds and runs on wasm32 like any other
-            // coroutine.
+            // Generators on wasm32 build onto the `llvm.coro.*` + `hew_cont_*`
+            // continuation substrate, but the coro-frame TEARDOWN path is not yet
+            // proven on the wasm runtime: `hew_gen_coro_destroy` →
+            // `hew_cont_frame_free` traps under the wasm harness. A program that
+            // BUILDS for wasm32 then traps in teardown is strictly worse than a
+            // compile-time refusal (it violates the fail-closed tenet, Tenet 5 /
+            // LESSONS P0 `boundary-fail-closed`), so generators are fenced
+            // fail-closed at COMPILE on wasm32 — both the construction
+            // (`MakeGenerator`) and the suspension (`Yield`) carrier surface the
+            // same structured `WasmUnsupportedSubstrate` diagnostic — until the
+            // teardown is fixed AND a committed wasm32 RUN proof (build + execute
+            // + correct stdout) is green. The native coro path is unaffected.
+            // WASM-TODO(#1758): wasm32 generator coro-frame teardown parity.
+            if let Terminator::Yield { .. } | Terminator::MakeGenerator { .. } = &block.terminator {
+                return Some(WASM_GENERATOR_UNSUPPORTED_SYMBOL.to_string());
+            }
             // Lambda-actor construction emits `hew_lambda_actor_new`. The
             // whole `hew-runtime/src/lambda_actor.rs` module is gated
             // `#![cfg(not(target_arch = "wasm32"))]`, so a lambda-actor
@@ -46305,12 +46331,14 @@ mod tests {
         );
     }
 
-    /// Generators are WASM-PARITY-CLEAN: a `Terminator::Yield`-carrying body
-    /// lowers to the `llvm.coro.*` continuation substrate (no native-only
-    /// `hew_gen_*` symbols), so the wasm-exclusion scan must NOT flag it (#1758
-    /// closed). This is the inverse of the deleted native-only gate.
+    /// Generators are fenced FAIL-CLOSED on wasm32 at compile: a
+    /// `Terminator::Yield`-carrying body builds onto the coro substrate, but the
+    /// coro-frame teardown traps on wasm32, so the wasm-exclusion scan MUST flag
+    /// it with the generator-substrate sentinel rather than letting it build and
+    /// trap at runtime (Tenet 5 / LESSONS P0 `boundary-fail-closed`).
+    /// WASM-TODO(#1758): wasm32 generator coro-frame teardown parity.
     #[test]
-    fn wasm_exclusion_scan_does_not_flag_generator_yield() {
+    fn wasm_exclusion_scan_flags_generator_yield_fail_closed() {
         let ptr_ty = ResolvedTy::Pointer {
             is_mutable: true,
             pointee: Box::new(ResolvedTy::Unit),
@@ -46351,10 +46379,64 @@ mod tests {
         };
         let pipeline = raw_mir_only_pipeline(body);
         assert_eq!(
-            uses_wasm_excluded_symbol(&pipeline),
-            None,
-            "a generator (Terminator::Yield) body lowers to the wasm-clean coro \
-             substrate and must NOT be flagged as WASM-excluded (#1758)"
+            uses_wasm_excluded_symbol(&pipeline).as_deref(),
+            Some(WASM_GENERATOR_UNSUPPORTED_SYMBOL),
+            "a generator (Terminator::Yield) body must be fenced fail-closed on \
+             wasm32 at compile until the coro-frame teardown is proven (#1758)"
+        );
+    }
+
+    /// The construction carrier is fenced too: a `Terminator::MakeGenerator`
+    /// site must surface the same generator-substrate sentinel on wasm32, so a
+    /// generator-constructing program is refused at compile rather than building
+    /// and trapping in teardown. WASM-TODO(#1758).
+    #[test]
+    fn wasm_exclusion_scan_flags_make_generator_fail_closed() {
+        let gen_ty = ResolvedTy::Named {
+            name: "Generator".to_string(),
+            args: vec![ResolvedTy::I64, ResolvedTy::Unit],
+            builtin: Some(hew_types::BuiltinType::Generator),
+            is_opaque: false,
+        };
+        let body = RawMirFunction {
+            name: "make_gen_wasm_excl_test".to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: FunctionCallConv::Default,
+            params: Vec::new(),
+            locals: vec![gen_ty],
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::MakeGenerator {
+                        dest: Place::Local(0),
+                        body_fn: "__hew_gen_body_make_gen_wasm_excl_test_0".to_string(),
+                        next: 1,
+                        env: None,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                },
+            ],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
+
+            lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::HashMap::new(),
+        };
+        let pipeline = raw_mir_only_pipeline(body);
+        assert_eq!(
+            uses_wasm_excluded_symbol(&pipeline).as_deref(),
+            Some(WASM_GENERATOR_UNSUPPORTED_SYMBOL),
+            "a generator construction (Terminator::MakeGenerator) must be fenced \
+             fail-closed on wasm32 at compile (#1758)"
         );
     }
 

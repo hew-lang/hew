@@ -407,4 +407,67 @@ mod tests {
         // SAFETY: release the test's final registration reference.
         unsafe { hew_await_cancel_free(reg) };
     }
+
+    /// Suspending-sleep abandon edge drop-safety. Mirrors the codegen abandon
+    /// arm of `emit_suspending_sleep_terminator`: a parked cooperative
+    /// `sleep_ms` whose continuation is dropped before the timer fires must
+    /// cancel the armed deadline (so the wake never lands on a torn-down
+    /// continuation) and reclaim BOTH the `HewAwaitCancel` registration and the
+    /// timer-wheel entry exactly once.
+    ///
+    /// The lifecycle this pins (identical to the emitted sleep ramp):
+    /// 1. `hew_await_cancel_new` allocates the registration (refs = 1).
+    /// 2. `hew_await_cancel_schedule_deadline_ms` arms a wheel deadline,
+    ///    retaining a second ref for the timer callback (refs = 2) and
+    ///    allocating the timer entry node.
+    /// 3. Abandon: `hew_await_cancel_cancel(Cancelled, no_wake)` wins the
+    ///    one-shot transition, cancels the armed timer (marking the entry so it
+    ///    cannot fire), and releases the timer's retained ref (refs = 1).
+    /// 4. `hew_await_cancel_free` drops the last ref (refs = 0 → box freed).
+    /// 5. Ticking the wheel past the deadline collects the cancelled entry and
+    ///    frees its node WITHOUT firing the callback — so the callback never
+    ///    dereferences the already-freed registration.
+    ///
+    /// Under `ASan` this proves single-free of the registration and the timer
+    /// node and the absence of a use-after-free wake. The `no_wake` cancel matches the
+    /// codegen abandon arm, which passes wake = 0 because the continuation is
+    /// being destroyed.
+    #[test]
+    fn suspending_sleep_abandon_reclaims_registration_and_timer_entry_once() {
+        // SAFETY: the test owns the wheel and registration for the whole
+        // lifecycle and drives each transition in order; all pointers are valid
+        // at each call.
+        unsafe {
+            let tw = crate::timer_wheel::hew_timer_wheel_new();
+
+            // (1) + (2): the sleep ramp's `hew_await_cancel_new` +
+            // `schedule_deadline_ms`. A short delay so a post-cancel tick lands
+            // past the deadline. No actor / cleanup / source — a sleep owns no
+            // read slot or channel registration to tear down (the wheel cancel
+            // is the whole teardown).
+            let reg = hew_await_cancel_new(ptr::null_mut(), None, ptr::null_mut());
+            let rc = hew_await_cancel_schedule_deadline_ms(reg, tw, 2);
+            assert_eq!(rc, 0, "arming the sleep deadline must succeed");
+
+            // (3): the codegen abandon arm — Cancelled status, no wake.
+            let won = hew_await_cancel_cancel(reg, AwaitCancelStatus::Cancelled as i32, 0);
+            assert_eq!(won, 1, "abandon must win the one-shot terminal transition");
+
+            // (4): release the codegen-held registration ref.
+            hew_await_cancel_free(reg);
+
+            // (5): advance the wheel past the deadline. The cancelled entry must
+            // be reclaimed without firing — a fired callback here would be a
+            // use-after-free against the freed registration.
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let fired = crate::timer_wheel::hew_timer_wheel_tick(tw);
+            assert_eq!(
+                fired, 0,
+                "a cancelled sleep deadline must not fire — a non-zero count would \
+                 mean the callback ran against the freed registration"
+            );
+
+            crate::timer_wheel::hew_timer_wheel_free(tw);
+        }
+    }
 }

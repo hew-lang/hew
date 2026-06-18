@@ -3882,4 +3882,83 @@ mod tests {
             hew_task_scope_destroy(scope);
         }
     }
+
+    /// Abandon drop-safety: a parked `await t` whose continuation is dropped
+    /// (`hew_task_detach_await`) before the task completes must still reclaim its
+    /// `TaskAwaitWaiter` box and the observer's in-flight slot ref exactly once
+    /// when the task later reaches `Done` and `task_await_wake` fires against the
+    /// cancelled slot.
+    ///
+    /// The ladder this test pins:
+    /// 1. `hew_task_await_suspend` retains the slot (creator ref + observer
+    ///    in-flight ref = 2) and registers the waiter as a completion observer.
+    /// 2. `hew_task_detach_await` cancels the slot and releases the creator ref
+    ///    (refs = 1: only the observer's in-flight ref remains). It does NOT free
+    ///    the waiter box — the still-registered observer owns that teardown.
+    /// 3. Driving the task to `Done` fires `task_await_wake`, which boxes-frees
+    ///    the waiter, sees the cancelled slot (no wake, no enqueue against a torn
+    ///    -down continuation), and releases the in-flight ref (refs = 0 → slot
+    ///    freed).
+    ///
+    /// Under `ASan` this proves single-free of both the waiter box and the slot
+    /// on the abandon path; the explicit ref-ladder assertions give the test
+    /// teeth without a sanitizer (a leaked observer ref would leave refs at 1 and
+    /// a double-release would underflow the refcount debug assert).
+    #[test]
+    fn detach_await_reclaims_waiter_box_and_slot_ref_once_on_later_done() {
+        // SAFETY: the test owns every scope/task/slot pointer exclusively and
+        // drives the lifecycle in order; all are valid at each call.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let task = hew_task_new();
+            hew_task_scope_spawn(scope, task);
+
+            let slot = crate::read_slot::hew_read_slot_new();
+            assert_eq!(
+                crate::read_slot::read_slot_refs_for_test(slot),
+                1,
+                "fresh slot must carry exactly the creator ref"
+            );
+
+            // Park the awaiter with a null actor: `enqueue_resume` re-validates
+            // liveness and a cancelled slot suppresses the wake anyway, so no
+            // actor is needed to exercise the abandon teardown.
+            let ret = hew_task_await_suspend(scope, task, ptr::null_mut(), slot);
+            assert_eq!(
+                ret, TASK_AWAIT_SUSPEND,
+                "a not-yet-Done task must park the awaiter"
+            );
+            assert_eq!(
+                crate::read_slot::read_slot_refs_for_test(slot),
+                2,
+                "suspend must retain the observer's in-flight ref atop the creator ref"
+            );
+
+            // Abandon edge: cancel + release the creator ref. The observer's
+            // in-flight ref must survive so the later wake has a live slot.
+            hew_task_detach_await(scope, task, slot);
+            assert_eq!(
+                crate::read_slot::read_slot_refs_for_test(slot),
+                1,
+                "detach must release only the creator ref, leaving the in-flight ref"
+            );
+
+            // Drive the task to Done. This fires `task_await_wake`, which frees
+            // the waiter box, observes the cancelled slot (no wake), and releases
+            // the in-flight ref — dropping the slot to zero and freeing it. ASan
+            // flags any double-free of the box or slot here; a missed release
+            // would instead leak the slot (caught by leak detection).
+            hew_task_complete_threaded(task);
+            assert_eq!(
+                (*task).load_state(),
+                HewTaskState::Done,
+                "completing the task must transition it to Done"
+            );
+
+            // The slot is freed by now (refs reached 0 in the wake); reading its
+            // refcount would be a use-after-free, so we do not touch `slot` again.
+            (*scope).completed_count += 1;
+            hew_task_scope_destroy(scope);
+        }
+    }
 }

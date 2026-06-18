@@ -375,7 +375,9 @@ impl StateFieldCloneKind {
             // and alias its sole-owner environment; closure-pair Vecs ride the
             // dedicated `hew_vec_free_closure_pairs` release, not the managed
             // witness), and the element/key/value kind is itself supported.
-            StateFieldCloneKind::Vec { elem } | StateFieldCloneKind::HashSet { elem } => {
+            StateFieldCloneKind::Vec { elem }
+            | StateFieldCloneKind::HashSet { elem }
+            | StateFieldCloneKind::Array { elem, .. } => {
                 !self.contains_opaque_handle()
                     && !self.contains_closure_pair()
                     && elem.supports_value_class_drop_spine()
@@ -386,11 +388,6 @@ impl StateFieldCloneKind {
                     && elems
                         .iter()
                         .all(StateFieldCloneKind::supports_value_class_drop_spine)
-            }
-            StateFieldCloneKind::Array { elem, .. } => {
-                !self.contains_opaque_handle()
-                    && !self.contains_closure_pair()
-                    && elem.supports_value_class_drop_spine()
             }
             StateFieldCloneKind::HashMap { key, val } => {
                 !self.contains_opaque_handle()

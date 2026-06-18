@@ -1,0 +1,16 @@
+fn main() -> i64 {
+    let scores = {"alice": 10, "bob": 20};
+    if scores.len() != 2 {
+        return 70;
+    }
+    if !scores.contains_key("alice") {
+        return 71;
+    }
+    if !scores.contains_key("bob") {
+        return 72;
+    }
+    if scores.contains_key("carol") {
+        return 73;
+    }
+    0
+}

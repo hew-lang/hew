@@ -1,0 +1,7 @@
+fn main() -> i64 {
+    let m: HashMap<string, i64> = {};
+    if m.len() != 0 {
+        return 70;
+    }
+    0
+}

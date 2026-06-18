@@ -89,6 +89,34 @@ run_accept_expect_stdout() {
   diff -u "${ROOT}/tests/vertical-slice/accept/${fixture}.expected" "${stdout_output}"
 }
 
+# Run a fixture that is expected to terminate via a hardware trap. Accepts exit
+# code 132 (SIGILL+128 on x86_64 Linux: `ud2`) or 133 (SIGTRAP+128 on
+# aarch64/macOS: `brk #1`) — both are valid trap-signal encodings of
+# `llvm.trap` depending on the platform's code-generation target. Any other
+# exit code (including 0) is a failure: it means the trap guard did not fire.
+run_accept_expect_trap() {
+  local fixture="$1"
+  echo "RUN ${fixture}"
+  compile_accept "${fixture}"
+  local bin="${ROOT}/.tmp/compile-out/${fixture}"
+  local status=0
+  # shellcheck disable=SC2016  # $1/$2/$3 are positional args to inner bash -c; single quotes deliberate.
+  if "${TIMEOUT}" --kill-after=5s 30s bash -c '"$1" >"$2" 2>"$3"' _ "${bin}" "${stdout_output}" "${stderr_output}" 2>/dev/null; then
+    status=0
+  else
+    status=$?
+  fi
+  # 132 = SIGILL+128 (x86_64 Linux ud2); 133 = SIGTRAP+128 (aarch64/macOS brk #1).
+  if [[ "${status}" -ne 132 && "${status}" -ne 133 ]]; then
+    echo "expected ${fixture} to exit with a trap signal (132 or 133), got ${status}" >&2
+    cat "${accept_output}" >&2
+    cat "${stdout_output}" >&2
+    cat "${stderr_output}" >&2
+    exit 1
+  fi
+  echo "PASS ${fixture}"
+}
+
 run_accept_expect_status_and_stdout() {
   local fixture="$1"
   local expected_status="$2"
@@ -334,10 +362,12 @@ run_accept_expect_status "platform_int_compare" 0
 run_accept_expect_status "isize_literal_coerce" 0
 # Boundary: shift by width-1 is in range (exits 0, asserts i64::MIN).
 run_accept_expect_status "isize_shift_boundary" 0
-# Trap negatives: div-by-zero and shift-by-width trap at runtime (SIGTRAP,
-# exit 133), proving the fail-closed guards fire -- they do not produce garbage.
-run_accept_expect_status "isize_div_by_zero_traps" 133
-run_accept_expect_status "isize_shift_oob_traps" 133
+# Trap negatives: div-by-zero and shift-by-width trap at runtime, proving the
+# fail-closed guards fire -- they do not produce garbage. The trap signal is
+# arch-dependent (SIGILL/132 on x86_64 Linux; SIGTRAP/133 on aarch64/macOS);
+# run_accept_expect_trap accepts either.
+run_accept_expect_trap "isize_div_by_zero_traps"
+run_accept_expect_trap "isize_shift_oob_traps"
 
 # defer: basic (no effect on return), executes (exit override), LIFO, block scope
 run_accept_expect_status "defer_basic" 7

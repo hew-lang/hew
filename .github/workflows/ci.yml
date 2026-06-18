@@ -432,6 +432,13 @@ jobs:
         with:
           version: ${{ env.LLVM_VERSION }}
 
+      - name: Disk space before coverage build
+        # Baseline snapshot before the instrumented build writes
+        # target/llvm-cov-target/. Confirms whether disk was already marginal
+        # entering the build, independently of the build itself.
+        if: env.RUN_CODE_PATH == 'true'
+        run: df -h /
+
       - name: Run tests with coverage
         if: env.RUN_CODE_PATH == 'true'
         # Default features include "full" (encryption + profiler + quic),
@@ -457,14 +464,52 @@ jobs:
         # reporting and is the same mitigation the Linux build job applies at
         # ci.yml:300. Without it, the instrumented target dir alone can exceed
         # the runner's remaining free space after the jvm/julia/LLVM purges.
+        #
+        # Diagnostics (observability, not a fix):
+        #   - stdbuf -oL -eL: line-buffer stdout/stderr so per-test progress and
+        #     SLOW warnings are flushed immediately; a silent hang still shows the
+        #     last test that started, confirming/refuting a wedged-test hypothesis.
+        #   - --status-level pass --final-status-level slow: emit each test result
+        #     as it completes and mark slow tests at summary; a hang reveals the
+        #     last test that ran before the process stalled.
+        #   - timeout 1800: hard-kill at 30 min (comfortably above a healthy
+        #     ~16-22 min run) so a hang fails fast with a clear marker rather than
+        #     burning the full 6h job limit.
+        #   - Periodic df-monitor: a background loop prints disk usage every 30 s;
+        #     an ENOSPC becomes visible in the log instead of causing a silent kill.
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
-        run: >
-          cargo llvm-cov nextest
-          --workspace --exclude hew-wasm
-          --profile ci
-          -E 'not test(eval_wasm) and not binary(wasi_run_e2e)'
-          --lcov --output-path lcov.info
+        run: |
+          # Start periodic disk monitor (every 30 s) before the build begins so
+          # disk consumption during compilation is also captured.
+          ( while true; do
+              echo "[disk] $(date -u +%H:%M:%S) $(df -h / | tail -1)";
+              sleep 30;
+            done ) &
+          DISK_MON_PID=$!
+
+          timeout 1800 \
+            stdbuf -oL -eL \
+            cargo llvm-cov nextest \
+            --workspace --exclude hew-wasm \
+            --profile ci \
+            -E 'not test(eval_wasm) and not binary(wasi_run_e2e)' \
+            --status-level pass \
+            --final-status-level slow \
+            --lcov --output-path lcov.info
+          COV_EXIT=$?
+
+          kill "$DISK_MON_PID" 2>/dev/null || true
+          wait "$DISK_MON_PID" 2>/dev/null || true
+
+          echo "[disk] post-coverage $(date -u +%H:%M:%S) $(df -h / | tail -1)"
+
+          if [ "$COV_EXIT" -eq 124 ]; then
+            echo "ERROR: coverage timed out after 30 min (timeout exit 124)"
+            df -h /
+            exit 1
+          fi
+          exit "$COV_EXIT"
 
       - name: Generate HTML report
         if: env.RUN_CODE_PATH == 'true'

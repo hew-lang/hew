@@ -1,0 +1,18 @@
+enum Score {
+    High(i64);
+    Low(i64);
+}
+
+fn is_never() -> bool {
+    1 == 2
+}
+
+fn main() {
+    let s: Score = Low(5);
+    match s {
+        High(n) if n > 90 => println("excellent"),
+        _ if is_never() => println("never"),
+        _ => panic("fallback"),
+    }
+    return;
+}

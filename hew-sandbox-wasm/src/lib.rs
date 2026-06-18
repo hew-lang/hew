@@ -59,6 +59,8 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // uses `canonicalComparable` which serialises the enum tag + empty payload
     // to JSON for equality testing. Admitted by the checker in #1987.
     "fieldless_enum_eq",
+    "match_guard_parity",
+    "match_guard_catch_all_fallthrough",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";
@@ -538,6 +540,119 @@ fn main() {
             .iter()
             .flat_map(|function| &function.blocks)
             .any(|block| block.terminator.op == "br_if"));
+    }
+
+    #[test]
+    fn match_arm_guard_gates_arm_body() {
+        set_test_hewpath();
+        let source = r#"
+enum Score { High(i64); Low(i64); Zero; }
+
+fn classify(s: Score) -> string {
+    match s {
+        High(n) if n > 90 => "excellent",
+        High(_) => "good",
+        Low(n) if n < 10 => "very low",
+        Low(_) => "low",
+        Zero => "zero",
+    }
+}
+
+fn main() {
+    println(classify(High(95)));
+    println(classify(High(70)));
+    println(classify(Low(5)));
+    println(classify(Low(40)));
+    println(classify(Zero));
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let classify = bytecode
+            .functions
+            .iter()
+            .find(|function| function.name.contains("classify"))
+            .expect("classify function should be emitted");
+        let guard_blocks = classify
+            .blocks
+            .iter()
+            .filter(|block| block.id.contains("match_guard_"))
+            .count();
+        assert_eq!(
+            guard_blocks, 2,
+            "guarded arms must lower to explicit guard blocks: {:#?}",
+            classify.blocks
+        );
+        let br_if_count = classify
+            .blocks
+            .iter()
+            .filter(|block| block.terminator.op == "br_if")
+            .count();
+        assert!(
+            br_if_count > 5,
+            "guarded match must branch for arm guards as well as arm patterns: {:#?}",
+            classify.blocks
+        );
+    }
+
+    #[test]
+    fn guarded_catch_all_guard_failure_falls_through_to_next_check() {
+        set_test_hewpath();
+        let source = r#"
+enum Score { High(i64); Low(i64); }
+
+fn classify(s: Score) -> string {
+    match s {
+        High(n) if n > 90 => "excellent",
+        _ if false => "never",
+        _ => "fallback",
+    }
+}
+
+fn main() {
+    println(classify(Low(5)));
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let classify = bytecode
+            .functions
+            .iter()
+            .find(|function| function.name.contains("classify"))
+            .expect("classify function should be emitted");
+        let guard_block = classify
+            .blocks
+            .iter()
+            .find(|block| block.id.contains("match_guard_1"))
+            .expect("guarded catch-all arm should emit a guard block");
+
+        assert_ne!(
+            guard_block.terminator.else_target.as_deref(),
+            Some(guard_block.id.as_str()),
+            "guard failure must not loop back to the same guard block: {:#?}",
+            classify.blocks
+        );
+        assert!(
+            guard_block
+                .terminator
+                .else_target
+                .as_deref()
+                .is_some_and(|target| target.contains("match_check_2")),
+            "guard failure must fall through to the next check block: {:#?}",
+            classify.blocks
+        );
     }
 
     #[test]

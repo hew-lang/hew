@@ -1,0 +1,7 @@
+fn main() -> i64 {
+    var count: i64 = 0;
+    for _ in 0..3 {
+        count = count + 1;
+    }
+    return count;
+}

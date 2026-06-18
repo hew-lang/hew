@@ -1,0 +1,15 @@
+type Counter {
+    count: i64,
+    label: string,
+}
+
+fn bump(var c: Counter) -> Counter {
+    c.count = c.count + 1;
+    return c;
+}
+
+fn main() -> i64 {
+    let c = Counter { count: 0, label: "counter" };
+    let updated = bump(c);
+    return updated.count;
+}

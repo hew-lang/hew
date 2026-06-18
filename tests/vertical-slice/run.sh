@@ -286,6 +286,10 @@ if "${HEW}" compile \
   exit 1
 fi
 grep -q "spawned closure captures non-Send value 'r'" "${reject_output}"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/var_by_value_param_noncopy.hew" \
+  "by-value parameter" \
+  "mutable by-value aggregate param"
 
 run_accept_expect_status "assert_eq" 0
 run_accept_expect_status "assert_ne" 0
@@ -1585,6 +1589,8 @@ run_accept_expect_stdout "vec_scalar_range_slice"
 run_accept_expect_stdout "vec_string_range_slice"
 run_accept_expect_stdout "vec_element_widths"
 run_accept_expect_trap "vec_element_width_oob_traps"
+run_accept_expect_status "vec_index_assign_round_trip" 24
+run_accept_expect_trap "vec_index_assign_oob_traps"
 run_accept_expect_stdout "slice_annotation_alias"
 
 # shellcheck disable=SC2016  # backtick-containing diagnostic strings; not shell expansion.
@@ -1672,6 +1678,7 @@ run_accept_expect_status "vec_string_index_use_loop" 14
 # bounds-checked lower_vec_index path, dispatching to hew_vec_get_i64. Exit 22
 # = xs[1] + xs[2] - xs[0] (20 + 12 - 10).
 run_accept_expect_status "vec_i64_index" 22
+run_accept_expect_status "for_wildcard_range" 3
 
 # Reject: scalar index on Vec<isize> is fail-closed until platform-sized
 # element widths have target-width-aware MIR dispatch.

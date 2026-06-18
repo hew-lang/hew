@@ -650,31 +650,8 @@ impl Checker {
 
         // Bind params — only the first parameter can be the receiver
         for (i, p) in fd.params.iter().enumerate() {
-            let mut ty = self.resolve_type_expr(&p.ty);
-            if i == 0 && self.is_receiver_param(p) {
-                if let Some((self_name, self_args)) = &self.current_self_type {
-                    // When the impl target is a primitive (e.g. `impl string`,
-                    // `impl bool`), bind the receiver to the canonical `Ty`
-                    // primitive so the body type-checks against `Ty::String`
-                    // rather than `Ty::Named { name: "string" }`.  Without
-                    // this, `s.method()` calls on the receiver inside the
-                    // body would not route through the primitive dispatch
-                    // arms in methods.rs.
-                    ty = if self_args.is_empty() {
-                        Ty::from_name(self_name).unwrap_or_else(|| Ty::Named {
-                            builtin: None,
-                            name: self_name.clone(),
-                            args: self_args.clone(),
-                        })
-                    } else {
-                        Ty::Named {
-                            builtin: None,
-                            name: self_name.clone(),
-                            args: self_args.clone(),
-                        }
-                    };
-                }
-            }
+            let (ty, is_receiver) = self.resolve_param_binding_ty(i, p);
+            self.reject_ineffective_mutable_value_param(p, &ty, is_receiver);
             // If inside an actor, check that params don't shadow actor fields
             if in_actor {
                 self.check_shadowing(&p.name, &p.ty.1);
@@ -1872,6 +1849,76 @@ fn ty_is_supervisor_init_bitcopy_scalar(ty: &Ty) -> bool {
             | Ty::Bool
             | Ty::Char
     )
+}
+
+impl Checker {
+    fn resolve_param_binding_ty(&mut self, index: usize, param: &Param) -> (Ty, bool) {
+        let ty = self.resolve_type_expr(&param.ty);
+        let is_receiver = index == 0 && self.is_receiver_param(param);
+        if !is_receiver {
+            return (ty, false);
+        }
+        let Some((self_name, self_args)) = &self.current_self_type else {
+            return (ty, true);
+        };
+
+        // Primitive receivers bind to canonical primitives so in-body method
+        // calls route through primitive dispatch instead of nominal lookup.
+        let receiver_ty = if self_args.is_empty() {
+            Ty::from_name(self_name).unwrap_or_else(|| Ty::Named {
+                builtin: None,
+                name: self_name.clone(),
+                args: self_args.clone(),
+            })
+        } else {
+            Ty::Named {
+                builtin: None,
+                name: self_name.clone(),
+                args: self_args.clone(),
+            }
+        };
+        (receiver_ty, true)
+    }
+
+    fn reject_ineffective_mutable_value_param(
+        &mut self,
+        param: &Param,
+        ty: &Ty,
+        is_receiver: bool,
+    ) {
+        let resolved_param_ty = self.subst.resolve(ty);
+        if !param.is_mutable
+            || is_receiver
+            || !self.is_non_copy_aggregate_param_type(&resolved_param_ty)
+        {
+            return;
+        }
+        self.report_error_with_suggestions(
+            TypeErrorKind::MutabilityError,
+            &param.ty.1,
+            format!(
+                "`var {}` on a by-value parameter of type `{}` has no caller-visible effect",
+                param.name,
+                resolved_param_ty.user_facing()
+            ),
+            vec![
+                "return the modified value to the caller".to_string(),
+                "move the mutation into an actor or a mutable receiver method".to_string(),
+            ],
+        );
+    }
+
+    fn is_non_copy_aggregate_param_type(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Named {
+                builtin: None,
+                name,
+                ..
+            } => self.lookup_type_def(name).is_some() && !self.vec_element_has_copy_layout(ty),
+            Ty::Tuple(_) | Ty::Array(_, _) => !ty.is_copy(),
+            _ => false,
+        }
+    }
 }
 
 fn supervisor_local_pid_target(ty: &Ty) -> Option<&str> {

@@ -7739,6 +7739,116 @@ impl Builder {
             return;
         }
         match &target.kind {
+            HirExprKind::ResolvedImplCall {
+                receiver,
+                method_name,
+                target_symbol,
+                target_family,
+                type_args,
+                args,
+                ..
+            } if matches!(
+                target_family,
+                hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Set)
+            ) =>
+            {
+                if type_args.len() != 1 {
+                    unreachable!(
+                        "vec `.{method_name}` resolved to family {target_family:?} with {} \
+                         type_args; Vec impls are registered with one element type",
+                        type_args.len()
+                    );
+                }
+                let Some(receiver_place) = self.lower_value(receiver) else {
+                    return;
+                };
+                let Some(index_arg) = args.first() else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: "checker-resolved Vec set target has no index argument"
+                                .to_string(),
+                        },
+                        note: "Vec index assignment lowering requires exactly one index argument"
+                            .to_string(),
+                    });
+                    return;
+                };
+                if args.len() != 1 {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: format!(
+                                "checker-resolved Vec set target has {} index arguments",
+                                args.len()
+                            ),
+                        },
+                        note: "Vec index assignment lowering requires exactly one index argument"
+                            .to_string(),
+                    });
+                    return;
+                }
+                let Some(raw_index_place) = self.lower_value(index_arg) else {
+                    return;
+                };
+                let index_place = if let Place::Local(raw_id) = raw_index_place {
+                    let raw_ty = self.locals[raw_id as usize].clone();
+                    match raw_ty {
+                        ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => {
+                            let wide_place = self.alloc_local(ResolvedTy::I64);
+                            self.push_instr(Instr::NumericCast {
+                                dest: wide_place,
+                                src: raw_index_place,
+                                from_ty: raw_ty,
+                                to_ty: ResolvedTy::I64,
+                            });
+                            wide_place
+                        }
+                        _ => raw_index_place,
+                    }
+                } else {
+                    raw_index_place
+                };
+                let len_place = self.alloc_local(ResolvedTy::I64);
+                self.push_instr(Instr::CallRuntimeAbi(
+                    crate::model::RuntimeCall::new(
+                        "hew_vec_len",
+                        vec![receiver_place],
+                        Some(len_place),
+                    )
+                    .expect("hew_vec_len is an allowlisted runtime symbol"),
+                ));
+                let oob_flag = self.alloc_local(ResolvedTy::Bool);
+                self.push_instr(Instr::IntCmp {
+                    dest: oob_flag,
+                    pred: CmpPred::UnsignedGreaterEq,
+                    lhs: index_place,
+                    rhs: len_place,
+                });
+                let trap_bb = self.alloc_block();
+                let cont_bb = self.alloc_block();
+                self.finish_current_block(Terminator::Branch {
+                    cond: oob_flag,
+                    then_target: trap_bb,
+                    else_target: cont_bb,
+                });
+                self.start_block(trap_bb);
+                self.finish_current_block(Terminator::Trap {
+                    kind: TrapKind::IndexOutOfBounds,
+                });
+                self.start_block(cont_bb);
+                self.enforce_closure_pair_ingress(value);
+                let arg_places = vec![receiver_place, index_place, src];
+                let next = self.alloc_block();
+                let builtin =
+                    hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(target_symbol);
+                self.finish_current_block(Terminator::Call {
+                    callee: target_symbol.clone(),
+                    builtin,
+                    args: arg_places,
+                    dest: None,
+                    next,
+                });
+                self.start_block(next);
+            }
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Binding(binding),
                 name,
@@ -7839,6 +7949,41 @@ impl Builder {
                     src,
                 });
             }
+            // `xs[i] = v` over a `Vec<T>` lowers to the same runtime call that
+            // `xs.set(i, v)` emits.
+            HirExprKind::Index { container, index } if matches!(&self.subst_ty(&container.ty), ResolvedTy::Named { name, .. } if name == "Vec") =>
+            {
+                let Some(vec_place) = self.lower_value(container) else {
+                    return;
+                };
+                let Some(index_place) = self.lower_value(index) else {
+                    return;
+                };
+                let Some(symbol) =
+                    runtime_symbol_for_call_expr(target).map(|(symbol, _, _)| symbol)
+                else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::UnsupportedNode {
+                            reason: "Vec index assignment reached MIR without a resolved Vec set \
+                                     runtime call"
+                                .to_string(),
+                        },
+                        note: "checker must record the Vec set call at the index target span"
+                            .to_string(),
+                    });
+                    return;
+                };
+                let next = self.alloc_block();
+                let builtin = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(&symbol);
+                self.finish_current_block(Terminator::Call {
+                    callee: symbol,
+                    builtin,
+                    args: vec![vec_place, index_place, src],
+                    dest: None,
+                    next,
+                });
+                self.start_block(next);
+            }
             // `m[k] = v` over a `HashMap<K, V>` lowers to the same
             // `hew_hashmap_insert_layout(map, key, val)` runtime call that
             // `m.insert(k, v)` emits, discarding the returned `bool` (the
@@ -7871,7 +8016,7 @@ impl Builder {
             _ => self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::UnsupportedNode {
                     reason: "only local bindings, record fields, actor state fields, and \
-                         HashMap index targets are assignable in MIR slice 4"
+                         Vec/HashMap index targets are assignable in MIR slice 4"
                         .to_string(),
                 },
                 note: "assignment target did not lower to a writable place".to_string(),

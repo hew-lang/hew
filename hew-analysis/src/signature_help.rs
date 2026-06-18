@@ -216,6 +216,7 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             numeric_method_lowerings: HashMap::new(),
+            width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
@@ -247,6 +248,19 @@ mod tests {
         let mut fn_sigs = HashMap::new();
         fn_sigs.insert(name.to_string(), sig);
         make_tc_with_fn_sigs(fn_sigs)
+    }
+
+    /// Build a `TypeCheckOutput` with specific `fn_sigs`, `type_defs`, and
+    /// `expr_types`; all other fields are defaulted via `make_tc_with_fn_sigs`.
+    fn make_tc_with_fields(
+        fn_sigs: HashMap<String, FnSig>,
+        type_defs: HashMap<String, hew_types::check::TypeDef>,
+        expr_types: HashMap<hew_types::check::SpanKey, Ty>,
+    ) -> TypeCheckOutput {
+        let mut tc = make_tc_with_fn_sigs(fn_sigs);
+        tc.type_defs = type_defs;
+        tc.expr_types = expr_types;
+        tc
     }
 
     #[test]
@@ -374,6 +388,7 @@ fn probe(mat: Matcher, s: string) {
     fn module_qualified_function_sig_help_prefers_exact_dotted_name_over_receiver_method_fallback()
     {
         let source = "channel.new(";
+
         let mut fn_sigs = HashMap::new();
         fn_sigs.insert(
             "channel.new".to_string(),
@@ -423,51 +438,7 @@ fn probe(mat: Matcher, s: string) {
             },
         );
 
-        let tc = TypeCheckOutput {
-            expr_types,
-            resolved_expr_types: HashMap::new(),
-            is_type_patterns: HashMap::new(),
-            assign_target_kinds: HashMap::new(),
-            assign_target_shapes: HashMap::new(),
-            errors: vec![],
-            warnings: vec![],
-            type_defs,
-            internal_builtin_enum_names: std::collections::HashSet::new(),
-            fn_sigs,
-            handle_bearing_structs: std::collections::HashSet::new(),
-            method_call_consumes_receiver: HashSet::new(),
-            cycle_capable_actors: HashSet::new(),
-            user_modules: HashSet::new(),
-            call_type_args: HashMap::new(),
-            record_init_type_args: HashMap::new(),
-            intrinsic_declarations: HashMap::new(),
-            stack_hints: Vec::new(),
-            actor_send_aliasing: HashMap::new(),
-            actor_handler_state_guards: HashMap::new(),
-            actor_max_heap: HashMap::new(),
-            supervisor_child_slots: HashMap::new(),
-            dyn_trait_coercions: HashMap::new(),
-            dyn_trait_method_calls: HashMap::new(),
-            closure_capture_facts: std::collections::HashMap::new(),
-            closure_escape_facts: std::collections::HashMap::new(),
-            method_call_receiver_kinds: HashMap::new(),
-            lowering_facts: HashMap::new(),
-            method_call_rewrites: HashMap::new(),
-            numeric_method_lowerings: HashMap::new(),
-            actor_method_dispatch: HashMap::new(),
-            actor_protocol_descriptors: HashMap::new(),
-            machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: std::collections::HashSet::new(),
-            tail_ok_coercions: std::collections::HashSet::new(),
-            pattern_resolutions: HashMap::new(),
-            lang_items: hew_types::LangItemRegistry::new(),
-            hashmap_layout_facts: HashMap::new(),
-            hashset_layout_facts: HashMap::new(),
-            actor_spawn_type_args: HashMap::new(),
-            resolved_calls: HashMap::new(),
-            user_clone_record_seeds: vec![],
-        };
+        let tc = make_tc_with_fields(fn_sigs, type_defs, expr_types);
 
         let result = build_signature_help(source, &tc, source.len());
         assert!(
@@ -482,6 +453,7 @@ fn probe(mat: Matcher, s: string) {
     #[test]
     fn method_call_sig_help_does_not_fall_back_to_unrelated_top_level_function() {
         let source = "value.foo(";
+
         let mut fn_sigs = HashMap::new();
         fn_sigs.insert(
             "foo".to_string(),
@@ -523,51 +495,7 @@ fn probe(mat: Matcher, s: string) {
             },
         );
 
-        let tc = TypeCheckOutput {
-            expr_types,
-            resolved_expr_types: HashMap::new(),
-            is_type_patterns: HashMap::new(),
-            assign_target_kinds: HashMap::new(),
-            assign_target_shapes: HashMap::new(),
-            errors: vec![],
-            warnings: vec![],
-            type_defs,
-            internal_builtin_enum_names: std::collections::HashSet::new(),
-            fn_sigs,
-            handle_bearing_structs: std::collections::HashSet::new(),
-            method_call_consumes_receiver: HashSet::new(),
-            cycle_capable_actors: HashSet::new(),
-            user_modules: HashSet::new(),
-            call_type_args: HashMap::new(),
-            record_init_type_args: HashMap::new(),
-            intrinsic_declarations: HashMap::new(),
-            stack_hints: Vec::new(),
-            actor_send_aliasing: HashMap::new(),
-            actor_handler_state_guards: HashMap::new(),
-            actor_max_heap: HashMap::new(),
-            supervisor_child_slots: HashMap::new(),
-            dyn_trait_coercions: HashMap::new(),
-            dyn_trait_method_calls: HashMap::new(),
-            closure_capture_facts: std::collections::HashMap::new(),
-            closure_escape_facts: std::collections::HashMap::new(),
-            method_call_receiver_kinds: HashMap::new(),
-            lowering_facts: HashMap::new(),
-            method_call_rewrites: HashMap::new(),
-            numeric_method_lowerings: HashMap::new(),
-            actor_method_dispatch: HashMap::new(),
-            actor_protocol_descriptors: HashMap::new(),
-            machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: std::collections::HashSet::new(),
-            tail_ok_coercions: std::collections::HashSet::new(),
-            pattern_resolutions: HashMap::new(),
-            lang_items: hew_types::LangItemRegistry::new(),
-            hashmap_layout_facts: HashMap::new(),
-            hashset_layout_facts: HashMap::new(),
-            actor_spawn_type_args: HashMap::new(),
-            resolved_calls: HashMap::new(),
-            user_clone_record_seeds: vec![],
-        };
+        let tc = make_tc_with_fields(fn_sigs, type_defs, expr_types);
 
         let result = build_signature_help(source, &tc, source.len());
         assert!(

@@ -60,7 +60,7 @@ pub use self::types::{
     MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
     NumericSignedness, NumericWidth, PatternKind, PayloadBinding, PayloadVariantPattern, SpanKey,
     StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef, VariantMatch, VecHigherOrderOp,
-    WireCodecDirection,
+    WidthCastKind, WidthCastLowering, WireCodecDirection,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -624,6 +624,7 @@ impl Checker {
             // `TypeCheckOutput::resolved_calls`.
             resolved_calls: std::mem::take(&mut self.resolved_calls),
             numeric_method_lowerings: std::mem::take(&mut self.numeric_method_lowerings),
+            width_cast_lowerings: std::mem::take(&mut self.width_cast_lowerings),
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
             conn_await_reads: std::mem::take(&mut self.conn_await_reads),

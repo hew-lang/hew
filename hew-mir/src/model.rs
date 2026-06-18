@@ -3646,6 +3646,17 @@ pub enum Instr {
         from_ty: ResolvedTy,
         to_ty: ResolvedTy,
     },
+    /// Integer-to-integer saturating width conversion: `.saturating_as_<W>()`.
+    ///
+    /// `src` is clamped to `[W::MIN, W::MAX]` before narrowing. Both
+    /// `from_ty` and `to_ty` are checker-admitted integers. Codegen lowers
+    /// this to a compare-and-select clamp sequence followed by a truncation.
+    SaturatingWidthCast {
+        dest: Place,
+        src: Place,
+        from_ty: ResolvedTy,
+        to_ty: ResolvedTy,
+    },
     /// Call into a `hew_*` runtime-ABI entry by name. The carried
     /// `symbol` names a `#[no_mangle] extern "C" fn` exported by
     /// `hew-runtime/` (the M2 substrate set is listed in

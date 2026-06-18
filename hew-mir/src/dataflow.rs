@@ -668,7 +668,9 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
         Instr::BoolNot { dest, operand }
         | Instr::FloatNeg { dest, operand, .. }
         | Instr::IntBitNot { dest, operand } => (vec![*operand], vec![*dest]),
-        Instr::NumericCast { dest, src, .. } => (vec![*src], vec![*dest]),
+        Instr::NumericCast { dest, src, .. } | Instr::SaturatingWidthCast { dest, src, .. } => {
+            (vec![*src], vec![*dest])
+        }
         Instr::IntNegChecked {
             dest,
             operand,

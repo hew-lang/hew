@@ -425,6 +425,20 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             .expect("write to string");
             dump_expr(out, value, indent + 4);
         }
+        HirExprKind::SaturatingWidthCast {
+            value,
+            from_ty,
+            to_ty,
+        } => {
+            writeln!(
+                out,
+                "{pad}  saturating-width-cast {} -> {}",
+                from_ty.user_facing(),
+                to_ty.user_facing()
+            )
+            .expect("write to string");
+            dump_expr(out, value, indent + 4);
+        }
         HirExprKind::Call { callee, args } => {
             writeln!(out, "{pad}  call").expect("write to string");
             dump_expr(out, callee, indent + 4);

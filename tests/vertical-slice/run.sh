@@ -448,6 +448,7 @@ expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/user_impl_drop_unsupported.hew" \
     '`impl Drop` is not supported (its `drop` method would not run)' \
     "user impl Drop"
+# shellcheck disable=SC2016  # backticks in strings are Hew diagnostic syntax, not subshell
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/const_ref_forward.hew" \
     'undefined variable `A`' \
@@ -2578,3 +2579,8 @@ if grep -q 'has no binding' "${reject_output}"; then
   cat "${reject_output}" >&2
   exit 1
 fi
+
+# .wrapping_as_<W> and .saturating_as_<W> width-conversion methods.
+# Tests exact values: wrapping narrowing/widening/sign-change and
+# saturating clamp to [W::MIN, W::MAX].
+run_check_run_expect_stdout wrapping_saturating_as_cast

@@ -1206,6 +1206,11 @@ fn walk_expr(
             value,
             from_ty,
             to_ty,
+        }
+        | HirExprKind::SaturatingWidthCast {
+            value,
+            from_ty,
+            to_ty,
         } => {
             visit_ty(
                 from_ty,

@@ -484,7 +484,9 @@ fn walk_expr(
         HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
             walk_expr(operand, subst, residual_domain, disc);
         }
-        HirExprKind::NumericCast { value, .. } | HirExprKind::CoerceToDynTrait { value, .. } => {
+        HirExprKind::NumericCast { value, .. }
+        | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::CoerceToDynTrait { value, .. } => {
             walk_expr(value, subst, residual_domain, disc);
         }
         HirExprKind::TupleLiteral { elements } => {

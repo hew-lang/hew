@@ -12348,6 +12348,222 @@ fn lower_numeric_cast(
     Ok(())
 }
 
+/// Saturating integer-to-integer width conversion.
+///
+/// Both `from_ty` and `to_ty` must be checker-admitted integers.
+/// The source value is clamped to `[to_ty::MIN, to_ty::MAX]` before
+/// the narrowing (or widening) cast.
+///
+/// Algorithm overview:
+///
+/// - **Widening** (`src_bits < dest_bits`): every source value is already
+///   representable in the wider target — no clamping needed.  Just extend
+///   (sext for signed sources, zext for unsigned sources).
+///
+/// - **Same-width** (`src_bits == dest_bits`) or **Narrowing**
+///   (`src_bits > dest_bits`): the target bounds fit in the source-width
+///   type, so work entirely in the source integer type.  Emit two
+///   `cmp + select` pairs to clamp, then truncate / bit-cast as needed.
+///
+///   Bounds computation:
+///   - Signed target  k bits: MIN = -(2^(k-1)),  MAX = 2^(k-1) - 1
+///   - Unsigned target k bits: MIN = 0,           MAX = 2^k - 1
+///
+///   Represented as constants in the *source* integer type; they fit
+///   because src_bits >= dest_bits in this path.
+///
+///   Comparisons use the *source* signedness (we are asking "does the
+///   source value fall outside the target range?").
+fn lower_saturating_width_cast(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest: Place,
+    src: Place,
+    from_ty: &ResolvedTy,
+    to_ty: &ResolvedTy,
+) -> CodegenResult<()> {
+    if !from_ty.is_integer() || !to_ty.is_integer() {
+        return Err(CodegenError::FailClosed(format!(
+            "SaturatingWidthCast requires integer types; got {} → {}",
+            from_ty.user_facing(),
+            to_ty.user_facing()
+        )));
+    }
+
+    let (src_ptr, src_storage) = place_pointer(fn_ctx, src)?;
+    let (dest_ptr, dest_storage) = place_pointer(fn_ctx, dest)?;
+    let src_int_ty = expect_int_type(src_storage, "saturating width cast source")?;
+    let dest_int_ty = expect_int_type(dest_storage, "saturating width cast dest")?;
+
+    let expected_src = primitive_to_llvm(fn_ctx.ctx, from_ty)?;
+    let expected_dest = primitive_to_llvm(fn_ctx.ctx, to_ty)?;
+    if src_storage != expected_src {
+        return Err(CodegenError::FailClosed(format!(
+            "SaturatingWidthCast source storage {src_storage:?} disagrees with from_ty {}",
+            from_ty.user_facing()
+        )));
+    }
+    if dest_storage != expected_dest {
+        return Err(CodegenError::FailClosed(format!(
+            "SaturatingWidthCast dest storage {dest_storage:?} disagrees with to_ty {}",
+            to_ty.user_facing()
+        )));
+    }
+
+    let src_v = fn_ctx
+        .builder
+        .build_load(src_int_ty, src_ptr, "sat_wcast_src")
+        .llvm_ctx("saturating width cast source load")?
+        .into_int_value();
+
+    let src_bits = src_int_ty.get_bit_width();
+    let dest_bits = dest_int_ty.get_bit_width();
+    let to_signed = to_ty.is_signed_integer();
+    let from_signed = from_ty.is_signed_integer();
+
+    let result: BasicValueEnum<'_> = if src_bits < dest_bits {
+        // Widening: every source value fits in the target — no clamping.
+        // Extend using source signedness (sext for signed, zext for unsigned).
+        if from_signed {
+            fn_ctx
+                .builder
+                .build_int_s_extend(src_v, dest_int_ty, "sat_wcast_sext")
+                .llvm_ctx("saturating width cast sign extend")?
+                .into()
+        } else {
+            fn_ctx
+                .builder
+                .build_int_z_extend(src_v, dest_int_ty, "sat_wcast_zext")
+                .llvm_ctx("saturating width cast zero extend")?
+                .into()
+        }
+    } else if src_bits == dest_bits && from_signed != to_signed {
+        // Same-width sign change: the target range is NOT a subset of the source
+        // range when interpreted in the source signedness, so we cannot compute
+        // clamping bounds in the source type.  Each direction needs only ONE clamp:
+        //
+        //   signed → unsigned (e.g. i32 → u32):
+        //     Target range [0, 2^k - 1].  Every non-negative source value fits
+        //     exactly; negative source values clamp to 0.  No upper clamp is
+        //     needed because 2^k - 1 is not representable as a signed k-bit value.
+        //     Emit: max(src, 0) via SGT + select, then let the store bitcast.
+        //
+        //   unsigned → signed (e.g. u32 → i32):
+        //     Target range [-(2^(k-1)), 2^(k-1)-1].  Source is always >= 0 so no
+        //     lower clamp is needed.  Clamp high at 2^(k-1)-1 using UGT so the
+        //     comparison sees the unsigned magnitude correctly.
+        //     Emit: min(src, 2^(k-1)-1) via UGT + select, then let the store bitcast.
+        if from_signed {
+            // signed → unsigned: clamp low at 0 only.
+            let zero = src_int_ty.const_zero();
+            let below_zero = fn_ctx
+                .builder
+                .build_int_compare(IntPredicate::SLT, src_v, zero, "sat_swcast_below_zero")
+                .llvm_ctx("saturating same-width sign cast below-zero compare")?;
+            fn_ctx
+                .builder
+                .build_select(below_zero, zero, src_v, "sat_swcast_clamped")
+                .llvm_ctx("saturating same-width sign cast clamp low select")?
+                .into_int_value()
+                .into()
+        } else {
+            // unsigned → signed: clamp high at 2^(k-1)-1 only.
+            // The constant is representable as an unsigned k-bit value.
+            let signed_max_val: u64 = (1_u64 << (dest_bits - 1)) - 1;
+            let signed_max = src_int_ty.const_int(signed_max_val, false);
+            let above_max = fn_ctx
+                .builder
+                .build_int_compare(IntPredicate::UGT, src_v, signed_max, "sat_swcast_above_max")
+                .llvm_ctx("saturating same-width sign cast above-max compare")?;
+            fn_ctx
+                .builder
+                .build_select(above_max, signed_max, src_v, "sat_swcast_clamped")
+                .llvm_ctx("saturating same-width sign cast clamp high select")?
+                .into_int_value()
+                .into()
+        }
+    } else {
+        // Narrowing (src_bits > dest_bits): clamp in the source integer type, then
+        // truncate.  The target bounds always fit in the source type here because
+        // src_bits > dest_bits.
+        let (min_const, max_const) = if to_signed {
+            // Signed target k bits: MIN = -(2^(k-1)), MAX = 2^(k-1) - 1
+            let min_val: i64 = -1_i64 << (dest_bits - 1);
+            let max_val: i64 = (1_i64 << (dest_bits - 1)) - 1;
+            (
+                src_int_ty.const_int(min_val as u64, true),
+                src_int_ty.const_int(max_val as u64, true),
+            )
+        } else {
+            // Unsigned target k bits: MIN = 0, MAX = 2^k - 1
+            // dest_bits < src_bits <= 64, so the shift is safe.
+            let max_val: u64 = (1_u64 << dest_bits) - 1;
+            (
+                src_int_ty.const_zero(),
+                src_int_ty.const_int(max_val, false),
+            )
+        };
+
+        // Clamp below: if src < min → use min.
+        // Compare using source signedness.
+        let below_min = if from_signed {
+            fn_ctx
+                .builder
+                .build_int_compare(IntPredicate::SLT, src_v, min_const, "sat_wcast_below_min")
+                .llvm_ctx("saturating width cast below-min compare")?
+        } else {
+            fn_ctx
+                .builder
+                .build_int_compare(IntPredicate::ULT, src_v, min_const, "sat_wcast_below_min")
+                .llvm_ctx("saturating width cast below-min compare")?
+        };
+        let clamped_low = fn_ctx
+            .builder
+            .build_select(below_min, min_const, src_v, "sat_wcast_clamp_low")
+            .llvm_ctx("saturating width cast clamp low select")?
+            .into_int_value();
+
+        // Clamp above: if clamped_low > max → use max.
+        let above_max = if from_signed {
+            fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::SGT,
+                    clamped_low,
+                    max_const,
+                    "sat_wcast_above_max",
+                )
+                .llvm_ctx("saturating width cast above-max compare")?
+        } else {
+            fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::UGT,
+                    clamped_low,
+                    max_const,
+                    "sat_wcast_above_max",
+                )
+                .llvm_ctx("saturating width cast above-max compare")?
+        };
+        let clamped = fn_ctx
+            .builder
+            .build_select(above_max, max_const, clamped_low, "sat_wcast_clamped")
+            .llvm_ctx("saturating width cast clamp high select")?
+            .into_int_value();
+
+        fn_ctx
+            .builder
+            .build_int_truncate(clamped, dest_int_ty, "sat_wcast_trunc")
+            .llvm_ctx("saturating width cast truncate")?
+            .into()
+    };
+
+    fn_ctx
+        .builder
+        .build_store(dest_ptr, result)
+        .llvm_ctx("saturating width cast store")?;
+    Ok(())
+}
+
 fn lower_instruction(
     fn_ctx: &FnCtx<'_, '_>,
     instr: &Instr,
@@ -13735,6 +13951,15 @@ fn lower_instruction(
             to_ty,
         } => {
             lower_numeric_cast(fn_ctx, *dest, *src, from_ty, to_ty)?;
+            let _ = ctx;
+        }
+        Instr::SaturatingWidthCast {
+            dest,
+            src,
+            from_ty,
+            to_ty,
+        } => {
+            lower_saturating_width_cast(fn_ctx, *dest, *src, from_ty, to_ty)?;
             let _ = ctx;
         }
         Instr::Move { dest, src } => {

@@ -1,0 +1,63 @@
+//! Regression coverage for compiler-derived structural equality.
+
+import std::testing;
+
+type Point { x: i64; y: i64; }
+type Line { a: Point; b: Point; }
+
+enum Shape {
+    Circle(i64);
+    Rect(i64, i64);
+    Empty;
+}
+
+#[test]
+fn record_equality_is_field_wise_and_recursive() {
+    let p1 = Point { x: 1, y: 2 };
+    let p2 = Point { x: 1, y: 2 };
+    let p3 = Point { x: 1, y: 9 };
+    let l1 = Line { a: p1, b: p3 };
+    let l2 = Line { a: p2, b: Point { x: 1, y: 9 } };
+
+    testing.assert_true(p1 == p2);
+    testing.assert_false(p1 == p3);
+    testing.assert_true(l1 == l2);
+    testing.assert_false(l1 != l2);
+}
+
+#[test]
+fn payload_enum_equality_compares_tags_and_payloads() {
+    let c1: Shape = Shape::Circle(3);
+    let c2: Shape = Shape::Circle(3);
+    let c3: Shape = Shape::Circle(4);
+    let r1: Shape = Shape::Rect(3, 3);
+
+    testing.assert_true(c1 == c2);
+    testing.assert_false(c1 == c3);
+    testing.assert_false(c1 == r1);
+    testing.assert_true(c1 != r1);
+}
+
+#[test]
+fn builtin_payload_enum_equality_compares_payloads() {
+    let a: Option<i64> = Some(1);
+    let b: Option<i64> = Some(1);
+    let c: Option<i64> = Some(2);
+    let ok: Result<i64, i64> = Ok(7);
+    let err: Result<i64, i64> = Err(7);
+
+    testing.assert_true(a == b);
+    testing.assert_false(a == c);
+    testing.assert_false(ok == err);
+    testing.assert_true(ok != err);
+}
+
+#[test]
+fn vec_contains_copy_record_stays_structural() {
+    let points: Vec<Point> = Vec::new();
+    points.push(Point { x: 1, y: 2 });
+    points.push(Point { x: 3, y: 4 });
+
+    testing.assert_true(points.contains(Point { x: 1, y: 2 }));
+    testing.assert_false(points.contains(Point { x: 9, y: 9 }));
+}

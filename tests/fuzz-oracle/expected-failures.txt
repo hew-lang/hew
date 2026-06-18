@@ -14,6 +14,8 @@
 # vertical-slice fixture (or update an existing one) so the behaviour is
 # continuously guarded.  Do NOT remove entries to make the gate green if the
 # regression still fails — fix the underlying compiler instead.
+# W60.039 moved payload-enum equality fixtures to vertical-slice/accept; no
+# fuzz-oracle regression entries remain for that surface.
 #
 # Positive collection-literal fixtures such as map_literal_string_keys.hew,
 # map_literal_empty_annotated.hew, array_repeat_int_sum.hew, and
@@ -34,4 +36,3 @@ string_slice_oob_panics.hew  # intentional abort: out-of-bounds string slice cal
 isize_div_by_zero_traps.hew  # intentional trap: isize / 0 → DivideByZero signal (SIGILL x86_64 / SIGTRAP aarch64)
 isize_shift_oob_traps.hew    # intentional trap: isize << 64 → ShiftOutOfRange signal (SIGILL x86_64 / SIGTRAP aarch64)
 option_unwrap_none_aborts.hew  # intentional abort: None unwrap traps deterministically — x86_64 SIGILL/132 or aarch64 SIGTRAP/133 — via the generic unmatched-arm path
-

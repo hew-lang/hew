@@ -14,11 +14,16 @@
 # --ci-required so there is a single source of truth: update the
 # CI_REQUIRED_CHECKS array in ci-preflight-dispatcher.sh, not here.
 #
-# The CI_BUILD_AND_TEST_STEPS list below is the maintained mirror of the
-# unconditional steps in ci.yml's build-and-test job.  Update it when ci.yml
-# adds, removes, or renames a step so CI's lint job catches the drift immediately.
-# (Parsing ci.yml directly is not used because multi-line >- run: blocks make
-# regex extraction unreliable; a maintained list is safer and equally auditable.)
+# The CI build-and-test step list is parsed directly from .github/workflows/ci.yml
+# using a comment-marked block (>>> CI-PARITY-STEPS … <<< CI-PARITY-STEPS).
+# Within that block, steps are identified by:
+#   - A single-line `run: <cmd>` value, OR
+#   - A `# parity-cmd: <cmd>` annotation on a `run: >-` line (used when the
+#     actual run: value is a multi-line YAML block whose canonical local command
+#     differs from the CI command text, e.g. cargo nextest → make test).
+#
+# Adding a new step inside the marked block that is NOT in CI_REQUIRED_CHECKS
+# fails this self-test (and therefore the lint CI job), blocking the merge.
 #
 # Usage:
 #   scripts/check-preflight-ci-parity.sh              # check only
@@ -28,27 +33,73 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DISPATCHER="$REPO_ROOT/scripts/ci-preflight-dispatcher.sh"
+CI_YML="$REPO_ROOT/.github/workflows/ci.yml"
 VERBOSE=0
 [[ "${1:-}" == "--verbose" ]] && VERBOSE=1
 
-# ── CI build-and-test step list (maintained mirror of ci.yml build-and-test job) ─
-# Each entry is the `make`/`cargo` command that the step runs, matched as a
-# substring against CI_REQUIRED_CHECKS patterns.  Update this list when ci.yml's
-# build-and-test sequence changes.  The assertion below verifies every step here
-# has a matching entry in CI_REQUIRED_CHECKS, so a new unconditional CI step that
-# isn't mirrored locally fails this script (and therefore the lint CI job).
-#
-# Source of truth: .github/workflows/ci.yml, job build-and-test (Linux),
-# steps with `if: env.RUN_CODE_PATH == 'true'` and a `run:` key.
-# Last synced: 2026-06-18 (ci.yml at the time of this script's introduction).
-CI_BUILD_AND_TEST_STEPS=(
-    "make test-vertical-slice"
-    "make test-pkg-import"
-    "make fuzz-oracle"
-    "make test-hew-ratchet"
-    "make test-stdlib-ratchet"
-    "make sandbox-parity"
-)
+# ── Parse CI build-and-test steps from the marked block in ci.yml ─────────────
+# Extract commands from the >>> CI-PARITY-STEPS … <<< CI-PARITY-STEPS block.
+# Two extraction rules:
+#   1. `run: >-  # parity-cmd: <cmd>` → extract <cmd> (multi-line run: override)
+#   2. `run: <cmd>` (single-line, no >-) → extract <cmd>
+declare -a CI_BUILD_AND_TEST_STEPS
+in_block=0
+while IFS= read -r line; do
+    # The start marker is a comment line ending with ">>> CI-PARITY-STEPS".
+    # Match conservatively: the trimmed line must be "# >>> CI-PARITY-STEPS".
+    trimmed="${line#"${line%%[! ]*}"}"  # strip leading whitespace
+    if [[ "$trimmed" == '# >>> CI-PARITY-STEPS' ]]; then
+        in_block=1
+        continue
+    fi
+    # The end marker is a comment line that IS "# <<< CI-PARITY-STEPS".
+    # (The description comment on the next line mentions <<< as text; the
+    # actual marker is a standalone comment, so require exact match.)
+    if [[ "$trimmed" == '# <<< CI-PARITY-STEPS' ]]; then
+        in_block=0
+        continue
+    fi
+    if [[ "$in_block" == 0 ]]; then
+        continue
+    fi
+    # Rule 1: parity-cmd annotation on a run: >- or run: > line.
+    # Pattern: `run: >...  # parity-cmd: <cmd>`
+    if [[ "$line" =~ run:[[:space:]]*..*"# parity-cmd:"[[:space:]]*(.+)$ ]]; then
+        cmd="${BASH_REMATCH[1]}"
+        cmd="${cmd#"${cmd%%[! ]*}"}"  # trim leading spaces
+        cmd="${cmd%"${cmd##*[! ]}"}"  # trim trailing spaces
+        CI_BUILD_AND_TEST_STEPS+=("$cmd")
+        continue
+    fi
+    # Rule 2: single-line run: value.
+    # Skip lines whose run: value starts with > or | (multi-line block markers).
+    if [[ "$line" =~ ^[[:space:]]+run:[[:space:]]+(.+)$ ]]; then
+        cmd="${BASH_REMATCH[1]}"
+        cmd="${cmd#"${cmd%%[! ]*}"}"   # trim leading spaces
+        cmd="${cmd%"${cmd##*[! ]}"}"   # trim trailing spaces
+        # Skip YAML block scalars (>-, >|, |-, ||, etc.)
+        case "$cmd" in
+            '>'*|'|'*) continue ;;
+        esac
+        CI_BUILD_AND_TEST_STEPS+=("$cmd")
+        continue
+    fi
+done < "$CI_YML"
+
+if (( ${#CI_BUILD_AND_TEST_STEPS[@]} == 0 )); then
+    echo "error: no steps found in the CI-PARITY-STEPS block in $CI_YML" >&2
+    echo "       Ensure the block markers '>>> CI-PARITY-STEPS' and '<<< CI-PARITY-STEPS'" >&2
+    echo "       exist in .github/workflows/ci.yml around the build-and-test gating steps." >&2
+    exit 1
+fi
+
+if (( VERBOSE == 1 )); then
+    echo "==> CI build-and-test steps (parsed from CI-PARITY-STEPS block in ci.yml):"
+    for step in "${CI_BUILD_AND_TEST_STEPS[@]}"; do
+        echo "  - $step"
+    done
+    echo ""
+fi
 
 # ── CI-required checks (derived from dispatcher --ci-required) ─────────────────
 # The authoritative list lives in CI_REQUIRED_CHECKS inside ci-preflight-dispatcher.sh.
@@ -61,7 +112,7 @@ while IFS=$'\t' read -r label pattern; do
     [[ -n "$label" && -n "$pattern" ]] || continue
     CI_CHECKS_LABEL[i]="$label"
     CI_CHECKS_PATTERN[i]="$pattern"
-    (( i++ ))
+    i=$(( i + 1 ))
 done < <("$DISPATCHER" --ci-required)
 CI_CHECKS_COUNT=$i
 
@@ -97,11 +148,11 @@ for (( j=0; j<CI_CHECKS_COUNT; j++ )); do
         if (( VERBOSE == 1 )); then
             echo "  ok  [$label]: '$pattern' found"
         fi
-        (( pass++ ))
+        (( ++pass ))
     else
         echo "  FAIL [$label]: '$pattern' not found in fallback lane"
         echo "       CI requires this check; add it to the dispatcher's fallback lane."
-        (( fail++ ))
+        (( ++fail ))
     fi
 done
 
@@ -119,11 +170,10 @@ fi
 echo "     Local preflight fallback lane covers all CI-required checks."
 
 # ── Subset assertion: every CI build-and-test step maps to CI_REQUIRED_CHECKS ─
-# Assert that every command in CI_BUILD_AND_TEST_STEPS has at least one matching
-# pattern in CI_REQUIRED_CHECKS (the dispatcher array).  If a new unconditional
-# step is added to ci.yml without adding it to both CI_BUILD_AND_TEST_STEPS here
-# and CI_REQUIRED_CHECKS in the dispatcher, this check fails and the lint job
-# blocks the merge — preventing the structural drift that caused #2023/#2025/#2026.
+# Assert that every command parsed from the CI-PARITY-STEPS block has at least
+# one matching pattern in CI_REQUIRED_CHECKS.  This is the structural drift
+# detector: a new unconditional step added inside the block without updating
+# CI_REQUIRED_CHECKS fails here, blocking the merge via the lint CI job.
 echo ""
 echo "==> CI build-and-test steps ⊆ CI_REQUIRED_CHECKS:"
 subset_pass=0
@@ -140,12 +190,13 @@ for step_cmd in "${CI_BUILD_AND_TEST_STEPS[@]}"; do
         if (( VERBOSE == 1 )); then
             echo "  ok  CI step '$step_cmd' mapped in CI_REQUIRED_CHECKS"
         fi
-        (( subset_pass++ ))
+        (( ++subset_pass ))
     else
         echo "  FAIL CI step '$step_cmd' has no matching pattern in CI_REQUIRED_CHECKS."
-        echo "       Add it to both CI_BUILD_AND_TEST_STEPS (this script) and"
-        echo "       CI_REQUIRED_CHECKS in scripts/ci-preflight-dispatcher.sh."
-        (( subset_fail++ ))
+        echo "       Add the step's local command to CI_REQUIRED_CHECKS in"
+        echo "       scripts/ci-preflight-dispatcher.sh, OR add a '# parity-cmd: <local-cmd>'"
+        echo "       annotation on the step's run: line in .github/workflows/ci.yml."
+        (( ++subset_fail ))
     fi
 done
 echo "==> CI step coverage: $subset_pass/${#CI_BUILD_AND_TEST_STEPS[@]} steps mapped."
@@ -158,3 +209,86 @@ if (( subset_fail > 0 )); then
 fi
 
 echo "     All CI build-and-test steps are mirrored in CI_REQUIRED_CHECKS."
+
+# ── GAP-2: lane→gate assertions ────────────────────────────────────────────────
+# For path classes that must run specific gates, assert the dispatcher dry-run
+# for a representative path in that class actually includes the required gate.
+#
+# Classes covered:
+#   trap-fixture paths  → must include make fuzz-oracle
+#   vertical-slice paths → must include make fuzz-oracle (fuzz-oracle reads accept fixtures)
+#   checker-strictness (hew-hir/hew-mir) → must include make fuzz-oracle
+#   runtime paths → must include make fuzz-oracle
+echo ""
+echo "==> GAP-2: lane→gate assertions:"
+gap_pass=0
+gap_fail=0
+
+_assert_lane_includes() {
+    local description="$1"
+    local required_gate="$2"
+    shift 2
+    local path_args=("$@")
+
+    local dry_out
+    dry_out=$("$DISPATCHER" --dry-run -- "${path_args[@]}" 2>&1)
+    local cmds
+    cmds=$(printf '%s\n' "$dry_out" | awk '/^Commands:/{found=1; next} found && /^  - /{cmd=substr($0,5); sub(/  \(budget:[^)]*\)$/, "", cmd); print cmd} found && /^(Dry run:|Commands: none)/{found=0}')
+
+    if printf '%s\n' "$cmds" | grep -qF "$required_gate"; then
+        if (( VERBOSE == 1 )); then
+            echo "  ok  [$description]: '$required_gate' present"
+        fi
+        (( ++gap_pass ))
+    else
+        local selected_lane
+        selected_lane=$(printf '%s\n' "$dry_out" | awk '/^Selected profile:/{print $NF; exit}')
+        echo "  FAIL [$description]: '$required_gate' missing from lane '$selected_lane'"
+        echo "       Path(s): ${path_args[*]}"
+        echo "       Dispatcher output:"
+        printf '%s\n' "$dry_out" | sed 's/^/         /'
+        (( ++gap_fail ))
+    fi
+}
+
+# trap-fixture paths: MIR bounds/trap lowering changes must reach fuzz-oracle.
+_assert_lane_includes \
+    "trap-fixture (hew-mir/src/lower.rs)" \
+    "make fuzz-oracle" \
+    "hew-mir/src/lower.rs"
+
+# fuzz-oracle corpus directly: must reach fuzz-oracle.
+_assert_lane_includes \
+    "fuzz-oracle corpus (tests/fuzz-oracle/some_test.hew)" \
+    "make fuzz-oracle" \
+    "tests/fuzz-oracle/some_test.hew"
+
+# vertical-slice/accept fixtures: fuzz-oracle reads these, so the gate must run.
+_assert_lane_includes \
+    "vertical-slice accept fixture" \
+    "make fuzz-oracle" \
+    "tests/vertical-slice/accept/some_fixture.hew"
+
+# checker-strictness (hew-hir): HIR changes must reach fuzz-oracle.
+_assert_lane_includes \
+    "checker-strictness (hew-hir/src/lib.rs)" \
+    "make fuzz-oracle" \
+    "hew-hir/src/lib.rs"
+
+# runtime path: runtime changes must reach fuzz-oracle.
+_assert_lane_includes \
+    "runtime path (hew-runtime/src/lib.rs)" \
+    "make fuzz-oracle" \
+    "hew-runtime/src/lib.rs"
+
+echo "==> GAP-2 lane→gate: $gap_pass assertions passed."
+
+if (( gap_fail > 0 )); then
+    echo ""
+    echo "FAIL: $gap_fail lane→gate assertion(s) failed."
+    echo "      A path class that requires a specific gate is routed to a lane that omits it."
+    echo "      Update the dispatcher lane for the failing path class to include the gate."
+    exit 1
+fi
+
+echo "     All lane→gate assertions pass."

@@ -649,6 +649,9 @@ case "$LANE" in
         add_command "cargo clippy --workspace --tests -- -D warnings"
         add_command "make test-vertical-slice"
         add_command "make test-pkg-import"
+        # fuzz-oracle reads the vertical-slice/accept fixtures: a fixture change
+        # that skips fuzz-oracle misses the trap signal-code ratchet (#2025).
+        add_command "make fuzz-oracle"
         ;;
     observe)
         add_command "cargo fmt --all -- --check"
@@ -760,7 +763,7 @@ if (( needs_sandbox_parity == 1 )); then
     add_command "make sandbox-parity"
 fi
 
-if (( needs_trap_fixtures == 1 )) && [[ "$LANE" != "fallback" && "$LANE" != "compiler-pipeline" && "$LANE" != "types" && "$LANE" != "runtime-net" ]]; then
+if (( needs_trap_fixtures == 1 )) && [[ "$LANE" != "fallback" && "$LANE" != "compiler-pipeline" && "$LANE" != "types" && "$LANE" != "runtime-net" && "$LANE" != "vertical-slice" ]]; then
     # MIR bounds/trap lowering or fuzz-oracle corpus changed in a lane that does
     # not already include fuzz-oracle.  Append it so the trap signal-code ratchet
     # runs before push regardless of the primary lane selected.

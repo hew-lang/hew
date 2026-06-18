@@ -11,4 +11,10 @@
 #
 # Format: <test_function_name>  # <root_cause>; converging lane: <lane>
 #
-# Total: 0 unique failing test function names.
+# Total: 2 unique failing test function names.
+
+# Non-empty `scope { } after(d) { body }` timeout bodies are rejected at HIR
+# (DeadlineBodyUnsupported) until the SuspendingScopeDeadline carrier lowers
+# the timeout body as the timer-fired edge. Removed when that lands.
+deadline_body_runs_when_timeout_wins  # non-empty after(...) body NYI; converging lane: cut-task-sleep-suspend
+deadline_body_skipped_when_work_finishes_first  # non-empty after(...) body NYI; converging lane: cut-task-sleep-suspend

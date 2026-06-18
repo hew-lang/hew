@@ -1,0 +1,79 @@
+//! Non-empty `scope { } after(d) { body }` timeout bodies run when the deadline
+//! wins and are skipped when the scoped work finishes first.
+//!
+//! Before this lane a non-empty `after(...)` body was rejected
+//! (`DeadlineBodyUnsupported` at HIR, NYI at MIR) and the deadline itself spawned
+//! one OS thread per scope. The `SuspendingScopeDeadline` carrier lowers the
+//! timeout body as the timer-fired edge through the global timer wheel, in an
+//! execution context, with no per-deadline thread.
+//!
+//! The assertions pin the EXACT branch taken: a deadline that fires runs the
+//! body (observable state mutation), and a scope whose work completes before the
+//! deadline does NOT run the body. A regression that runs the body on the
+//! success path, or skips it on the timeout path, fails the exact value.
+
+import std::testing;
+
+actor Deadliner {
+    var fired: i64 = 0;
+
+    // The scoped child sleeps a fixed long duration; the deadline is short, so
+    // the deadline wins and the body runs (fired = 7). The scoped child is a
+    // zero-arg unit fork-block (the supported anonymous form), so this fixture
+    // exercises only the `SuspendingScopeDeadline` carrier, not the value-task
+    // await path.
+    receive fn run_timeout_wins() -> i64 {
+        scope {
+            fork {
+                nap_long();
+            };
+            after(20) {
+                fired = 7;
+            };
+        };
+        return fired;
+    }
+
+    // The scoped child sleeps a short duration and the deadline is long, so the
+    // scope completes before the deadline and the body is skipped (fired = 0).
+    receive fn run_work_wins() -> i64 {
+        scope {
+            fork {
+                nap_short();
+            };
+            after(200) {
+                fired = 7;
+            };
+        };
+        return fired;
+    }
+}
+
+fn nap_long() {
+    sleep_ms(100);
+}
+
+fn nap_short() {
+    sleep_ms(10);
+}
+
+#[test]
+fn deadline_body_runs_when_timeout_wins() {
+    let d = spawn Deadliner(fired: 0);
+    // Work takes 100ms, deadline is 20ms → the deadline wins and the body runs.
+    match await d.run_timeout_wins() {
+        Ok(v) => testing.assert_eq(v, 7),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn deadline_body_skipped_when_work_finishes_first() {
+    let d = spawn Deadliner(fired: 0);
+    // Work takes 10ms, deadline is 200ms → the scope completes first and the
+    // body is skipped, so `fired` stays 0.
+    match await d.run_work_wins() {
+        Ok(v) => testing.assert_eq(v, 0),
+        Err(_) => testing.assert_true(false),
+    }
+}

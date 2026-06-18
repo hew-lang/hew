@@ -728,6 +728,34 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
             if let Terminator::SuspendingChannelRecv { .. } = &block.terminator {
                 return Some("hew_channel_await_recv".to_string());
             }
+            // cut-task-sleep worker-free `await t` carrier: emits
+            // `hew_task_await_suspend`, which rides the native-only read-slot /
+            // `enqueue_resume` substrate (`cfg(not(target_arch = "wasm32"))`).
+            // Surface the structured fail-closed diagnostic for any direct-MIR
+            // task-await carrier rather than letting wasm-ld discover the dangling
+            // reference. WASM-TODO(#1758): wasm32 coro-frame teardown parity.
+            if let Terminator::SuspendingTaskAwait { .. } = &block.terminator {
+                return Some("hew_task_await_suspend".to_string());
+            }
+            // cut-task-sleep cooperative `sleep_ms` carrier: arms a global
+            // timer-wheel deadline via `hew_await_cancel_schedule_deadline_ms`
+            // (the wheel ticker thread is native-only). Fail closed at compile on
+            // wasm32 — the wasm sleep path keeps the message-boundary park
+            // (`hew_sleep_ms` → `scheduler_wasm::request_sleep`), which the
+            // contextless keep path on wasm preserves; an execution-context
+            // suspend carrier reaching a wasm build is refused here rather than
+            // emitting a dangling reference. WASM-TODO(#1758).
+            if let Terminator::SuspendingSleep { .. } = &block.terminator {
+                return Some("hew_await_cancel_schedule_deadline_ms".to_string());
+            }
+            // cut-task-sleep scope-deadline carrier (staged): the non-empty
+            // after(...) body suspends on the native-only timer wheel + join
+            // arbiter. Refused at compile on wasm32 for the same reason; today the
+            // MIR producer keeps non-empty after bodies fail-closed, so this is
+            // belt-and-braces. WASM-TODO(#1758).
+            if let Terminator::SuspendingScopeDeadline { .. } = &block.terminator {
+                return Some("hew_await_cancel_schedule_deadline_ms".to_string());
+            }
             // Generators on wasm32 build onto the `llvm.coro.*` + `hew_cont_*`
             // continuation substrate, but the coro-frame TEARDOWN path is not yet
             // proven on the wasm runtime: `hew_gen_coro_destroy` →
@@ -2512,6 +2540,26 @@ fn intern_runtime_decl<'ctx>(
             &[ptr_ty.into(), ptr_ty.into(), ptr_ty.into(), ptr_ty.into()],
             false,
         ),
+        // hew_task_await_suspend(scope: *mut HewTaskScope, task: *mut HewTask,
+        //                        actor: *mut HewActor, slot: *mut HewReadSlot)
+        //   -> i32 (`hew-runtime/src/task_scope.rs`). Registers the parked
+        // continuation as a task-completion observer (or binds immediately when
+        // the task is already Done). The observer callback wakes the actor via
+        // `enqueue_resume`. Returns TASK_AWAIT_READY (1) when the bind can
+        // proceed immediately, or TASK_AWAIT_SUSPEND (0) after parking. The
+        // task-completion analogue of `hew_channel_await_recv`.
+        "hew_task_await_suspend" => i32_ty.fn_type(
+            &[ptr_ty.into(), ptr_ty.into(), ptr_ty.into(), ptr_ty.into()],
+            false,
+        ),
+        // hew_task_detach_await(scope: *mut HewTaskScope, task: *mut HewTask,
+        //                       slot: *mut HewReadSlot) -> void
+        // (`hew-runtime/src/task_scope.rs`). The abandon edge: detaches the
+        // completion observer registered by `hew_task_await_suspend` so a
+        // racing `Done` drops its wake against a freed continuation.
+        "hew_task_detach_await" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false),
         // hew_task_free(task: *mut HewTask) -> void
         // (`hew-runtime/src/task_scope.rs:237`). Frees the Box-allocated
         // HewTask and its result buffer. Called by the scope teardown path
@@ -28234,6 +28282,44 @@ struct SuspendingCallClosureEmit<'a> {
     cleanup: u32,
 }
 
+/// Carrier for [`emit_suspending_task_await_terminator`] — the suspending
+/// `await t` ramp (`Terminator::SuspendingTaskAwait`).
+struct SuspendingTaskAwaitEmit {
+    scope: Place,
+    task: Place,
+    /// `Some(slot)` reads the task result via `hew_task_get_result` on the bind
+    /// edge (value task); `None` for a unit task (nothing to bind). The
+    /// value-task result read is wired in a later slice; codegen fails closed if
+    /// it ever arrives here while value-task result propagation is unbuilt.
+    result_dest: Option<Place>,
+    resume: u32,
+    cleanup: u32,
+}
+
+/// Carrier for [`emit_suspending_sleep_terminator`] — the suspending
+/// `sleep_ms(d)` ramp (`Terminator::SuspendingSleep`).
+struct SuspendingSleepEmit {
+    duration_ms: Place,
+    resume: u32,
+    cleanup: u32,
+}
+
+/// Carrier for [`emit_suspending_scope_deadline_terminator`] — the suspending
+/// `scope { } after(d) { body }` ramp (`Terminator::SuspendingScopeDeadline`).
+#[allow(
+    dead_code,
+    reason = "the scope-deadline ramp is staged: the carrier + dispatch are in \
+              place but the emit body is fail-closed until the join-await \
+              arbiter lands; the fields document the future ramp's inputs"
+)]
+struct SuspendingScopeDeadlineEmit {
+    scope: Place,
+    duration_ms: Place,
+    timeout_body_block: u32,
+    resume: u32,
+    cleanup: u32,
+}
+
 #[allow(
     clippy::too_many_arguments,
     reason = "suspend-point lowering is parameterized by the shared coroutine \
@@ -30919,6 +31005,462 @@ fn emit_suspending_channel_recv_terminator<'ctx>(
         .llvm_ctx("suspending channel-recv bind -> resume br")?;
 
     Ok(())
+}
+
+/// Emit the caller-side non-blocking `await t` over a scope-owned child
+/// `Task<T>` (`Terminator::SuspendingTaskAwait`). The task-completion analogue
+/// of [`emit_suspending_channel_recv_terminator`].
+///
+/// Shape (the suspending task-await ramp):
+/// ```text
+///   self  = hew_actor_self()                       ; the parked-cont actor
+///   scope = <load scope token>                     ; pointer-shaped (opaque)
+///   task  = <load task handle>                     ; pointer-shaped (opaque)
+///   slot  = hew_read_slot_new()
+///   rc    = hew_task_await_suspend(scope, task, self, slot)
+///   br (rc == 0) -> do_suspend, bind               ; 0 = parked, 1 = already-done
+/// do_suspend:                                       ; coro.suspend (non-final)
+///   switch coro.suspend [default -> return handle, 0 -> bind, 1 -> abandon]
+/// abandon:                                          ; parked cont destroyed
+///   hew_task_detach_await(scope, task, slot); br shared cleanup
+/// bind:                                             ; already-done OR resumed
+///   (value task) result = hew_task_get_result(task); store -> result_dest
+///   hew_read_slot_free(slot)                        ; release the creator ref
+///   br resume_bb
+/// ```
+/// The task is BORROWED across the suspend (the scope-join owns its free). On
+/// resume the task is `Done` and `hew_task_get_result` deep-reads its result —
+/// the value channel is the task's own result buffer, NOT the gen out-pointer.
+/// Slot refs mirror the channel-recv ramp: `new` (+1 creator);
+/// `hew_task_await_suspend` takes the observer's in-flight ref only on the park
+/// path; the single `hew_read_slot_free` on the bind edge releases the creator
+/// ref. The abandon edge cancels + detaches before the creator-ref free so a
+/// racing task `Done` drops its wake against a freed continuation.
+fn emit_suspending_task_await_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    term: SuspendingTaskAwaitEmit,
+) -> CodegenResult<()> {
+    let coro = fn_ctx.coro.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "Terminator::SuspendingTaskAwait reached codegen but the function \
+             carries no coro prologue state — lower_function must detect the \
+             suspend carrier (has_suspend) and emit the prologue before the body"
+                .into(),
+        )
+    })?;
+    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SuspendingTaskAwait resume target bb{} not found",
+            term.resume
+        ))
+    })?;
+    if !fn_ctx.blocks.contains_key(&term.cleanup) {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingTaskAwait cleanup target bb{} not found",
+            term.cleanup
+        )));
+    }
+    // The value-task result read (`hew_task_get_result` into `result_dest`) is a
+    // later slice; the WRITE side of the value channel (the task-entry adapter
+    // publishing the body return value) is unbuilt. Fail closed if a value-task
+    // carrier reaches here rather than reading an unpopulated result buffer.
+    if term.result_dest.is_some() {
+        return Err(CodegenError::FailClosed(
+            "SuspendingTaskAwait carries a result_dest but value-task result \
+             propagation is not yet wired (the task-entry result channel is a \
+             separate slice); the MIR producer must keep value task await \
+             fail-closed"
+                .into(),
+        ));
+    }
+
+    let actor_self_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_self",
+    )?;
+    let self_actor = fn_ctx
+        .builder
+        .build_call(actor_self_fn, &[], "suspending_task_await_self")
+        .llvm_ctx("hew_actor_self call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
+        .into_pointer_value();
+    let scope_ptr = load_duplex_handle(fn_ctx, term.scope, "suspending_task_await scope")?;
+    let task_ptr = load_duplex_handle(fn_ctx, term.task, "suspending_task_await task")?;
+
+    let slot_new = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_new",
+    )?;
+    let slot = fn_ctx
+        .builder
+        .build_call(slot_new, &[], "suspending_task_await_slot")
+        .llvm_ctx("hew_read_slot_new call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
+        .into_pointer_value();
+
+    let await_suspend = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_await_suspend",
+    )?;
+    let rc = fn_ctx
+        .builder
+        .build_call(
+            await_suspend,
+            &[
+                scope_ptr.into(),
+                task_ptr.into(),
+                self_actor.into(),
+                slot.into(),
+            ],
+            "suspending_task_await_register",
+        )
+        .llvm_ctx("hew_task_await_suspend call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_task_await_suspend returned void".into()))?
+        .into_int_value();
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::Llvm("suspending task-await block has no parent function".into())
+        })?;
+    let do_suspend_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_task_await_suspend");
+    let bind_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_task_await_bind");
+    // rc == 0 (TASK_AWAIT_SUSPEND) → park; else (READY) bind immediately.
+    let is_suspend = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            rc,
+            rc.get_type().const_zero(),
+            "suspending_task_await_is_suspend",
+        )
+        .llvm_ctx("suspending task-await suspend compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_suspend, do_suspend_bb, bind_bb)
+        .llvm_ctx("suspending task-await register branch")?;
+
+    let slot_free = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_free",
+    )?;
+    let detach_await = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_detach_await",
+    )?;
+
+    // ── do_suspend: park the continuation (non-final). Default → return the coro
+    // handle to the trampoline; case 0 → bind; case 1 → abandon teardown. ──────
+    fn_ctx.builder.position_at_end(do_suspend_bb);
+    emit_suspend_point(
+        fn_ctx,
+        coro,
+        parent,
+        bind_bb,
+        "suspending_task_await",
+        "suspending_task_await_abandon_cleanup",
+        "suspending task-await abandon -> shared cleanup br",
+        || {
+            // Abandon: detach the observer (cancel the slot so a racing Done
+            // drops its wake) + release the creator ref. The observer's own
+            // in-flight ref is released when it fires against the cancelled slot.
+            fn_ctx
+                .builder
+                .build_call(
+                    detach_await,
+                    &[scope_ptr.into(), task_ptr.into(), slot.into()],
+                    "suspending_task_await_abandon_detach",
+                )
+                .llvm_ctx("hew_task_detach_await (abandon) call")?;
+            Ok(())
+        },
+        || {
+            // Bind: already-done OR resumed. The task is `Done`; a unit task has
+            // nothing to bind. Release the creator ref, branch to the MIR resume.
+            // (Value-task result read lands with the task-entry result channel.)
+            fn_ctx
+                .builder
+                .build_call(slot_free, &[slot.into()], "suspending_task_await_bind_free")
+                .llvm_ctx("hew_read_slot_free (bind) call")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(resume_bb)
+                .llvm_ctx("suspending task-await bind -> resume br")?;
+            Ok(())
+        },
+    )
+}
+
+/// Emit the caller-side cooperative `sleep_ms(d)` (`Terminator::SuspendingSleep`).
+/// The timer-readiness analogue of [`emit_suspending_task_await_terminator`]:
+/// instead of `std::thread::sleep` pinning the worker, arm an await-cancel
+/// deadline on the process-global timer wheel carrying the parked actor, suspend
+/// (freeing the worker), and resume when the timer fires (`enqueue_resume`).
+///
+/// Shape (the suspending sleep ramp):
+/// ```text
+///   self = hew_actor_self()                  ; the parked-cont actor
+///   d    = <load duration_ms>                ; i64
+///   reg  = hew_await_cancel_new(self, null, null)
+///   tw   = hew_global_timer_wheel()
+///   rc   = hew_await_cancel_schedule_deadline_ms(reg, tw, d)
+///   br (rc == 0) -> do_suspend, bind         ; 0 = armed, else = arm failed
+/// do_suspend:                                ; coro.suspend (non-final)
+///   switch coro.suspend [default -> return handle, 0 -> bind, 1 -> abandon]
+/// abandon:                                   ; parked cont destroyed
+///   hew_await_cancel_cancel(reg, Cancelled, 0); hew_await_cancel_free(reg)
+///   br shared cleanup
+/// bind:                                      ; timer fired (or arm failed)
+///   hew_await_cancel_complete(reg); hew_await_cancel_free(reg)
+///   br resume_bb
+/// ```
+/// `sleep` is unit, so the resume edge binds nothing. The deadline-fire path
+/// (`await_cancel_finish(TimedOut)`) calls `enqueue_resume(self, null)` — the
+/// SAME wake the `await x | after d` deadline already proves. If the arm fails
+/// (wheel/ticker unavailable) the bind edge proceeds immediately — a fail-safe
+/// zero-length sleep, never a hang of the timer subsystem.
+fn emit_suspending_sleep_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    term: SuspendingSleepEmit,
+) -> CodegenResult<()> {
+    let coro = fn_ctx.coro.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "Terminator::SuspendingSleep reached codegen but the function carries \
+             no coro prologue state — lower_function must detect the suspend \
+             carrier (has_suspend) and emit the prologue before the body"
+                .into(),
+        )
+    })?;
+    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SuspendingSleep resume target bb{} not found",
+            term.resume
+        ))
+    })?;
+    if !fn_ctx.blocks.contains_key(&term.cleanup) {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingSleep cleanup target bb{} not found",
+            term.cleanup
+        )));
+    }
+
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let actor_self_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_self",
+    )?;
+    let self_actor = fn_ctx
+        .builder
+        .build_call(actor_self_fn, &[], "suspending_sleep_self")
+        .llvm_ctx("hew_actor_self call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
+        .into_pointer_value();
+    let duration = load_place_as_basic(fn_ctx, term.duration_ms, "suspending_sleep_duration")?
+        .into_int_value();
+
+    let null_ptr = fn_ctx
+        .ctx
+        .ptr_type(inkwell::AddressSpace::default())
+        .const_null();
+    let cancel_new = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_new",
+    )?;
+    // A pure timer→enqueue_resume registration: no cleanup source (sleep owns no
+    // read slot / channel registration to tear down — the wheel cancel on the
+    // abandon edge is the whole teardown).
+    let reg = fn_ctx
+        .builder
+        .build_call(
+            cancel_new,
+            &[self_actor.into(), null_ptr.into(), null_ptr.into()],
+            "suspending_sleep_reg",
+        )
+        .llvm_ctx("hew_await_cancel_new call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
+        .into_pointer_value();
+
+    let tw_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_global_timer_wheel",
+    )?;
+    let tw = fn_ctx
+        .builder
+        .build_call(tw_fn, &[], "suspending_sleep_tw")
+        .llvm_ctx("hew_global_timer_wheel call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_global_timer_wheel returned void".into()))?
+        .into_pointer_value();
+    let schedule = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_schedule_deadline_ms",
+    )?;
+    let sched_rc = fn_ctx
+        .builder
+        .build_call(
+            schedule,
+            &[reg.into(), tw.into(), duration.into()],
+            "suspending_sleep_schedule",
+        )
+        .llvm_ctx("hew_await_cancel_schedule_deadline_ms call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_await_cancel_schedule_deadline_ms returned void".into())
+        })?
+        .into_int_value();
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::Llvm("suspending sleep block has no parent function".into())
+        })?;
+    let do_suspend_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_sleep_suspend");
+    let bind_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_sleep_bind");
+    // rc == 0 (armed) → park; else (arm failed) bind immediately (fail-safe).
+    let armed = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            sched_rc,
+            sched_rc.get_type().const_zero(),
+            "suspending_sleep_armed",
+        )
+        .llvm_ctx("suspending sleep armed compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(armed, do_suspend_bb, bind_bb)
+        .llvm_ctx("suspending sleep arm branch")?;
+
+    let reg_complete = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_complete",
+    )?;
+    let reg_cancel = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_cancel",
+    )?;
+    let reg_free = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_free",
+    )?;
+
+    fn_ctx.builder.position_at_end(do_suspend_bb);
+    emit_suspend_point(
+        fn_ctx,
+        coro,
+        parent,
+        bind_bb,
+        "suspending_sleep",
+        "suspending_sleep_abandon_cleanup",
+        "suspending sleep abandon -> shared cleanup br",
+        || {
+            // Abandon: cancel the scheduled deadline (a racing fire drops its
+            // wake) WITHOUT waking, then release the registration.
+            let cancelled_status = i32_ty.const_int(2, false); // Cancelled
+            let no_wake = i32_ty.const_zero();
+            fn_ctx
+                .builder
+                .build_call(
+                    reg_cancel,
+                    &[reg.into(), cancelled_status.into(), no_wake.into()],
+                    "suspending_sleep_abandon_cancel",
+                )
+                .llvm_ctx("hew_await_cancel_cancel (sleep abandon) call")?;
+            fn_ctx
+                .builder
+                .build_call(reg_free, &[reg.into()], "suspending_sleep_abandon_free")
+                .llvm_ctx("hew_await_cancel_free (sleep abandon) call")?;
+            Ok(())
+        },
+        || {
+            // Bind: the timer fired (or the arm failed → immediate). Settle the
+            // arbiter and release the registration. `sleep` is unit — nothing to
+            // bind.
+            fn_ctx
+                .builder
+                .build_call(reg_complete, &[reg.into()], "suspending_sleep_complete")
+                .llvm_ctx("hew_await_cancel_complete call")?;
+            fn_ctx
+                .builder
+                .build_call(reg_free, &[reg.into()], "suspending_sleep_bind_free")
+                .llvm_ctx("hew_await_cancel_free (sleep bind) call")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(resume_bb)
+                .llvm_ctx("suspending sleep bind -> resume br")?;
+            Ok(())
+        },
+    )
+}
+
+/// `scope { } after(d) { body }` with a NON-EMPTY timeout body
+/// (`Terminator::SuspendingScopeDeadline`).
+///
+/// The carrier, MIR lowering, and CFG/drop walkers are in place; the codegen
+/// ramp is staged as a follow-up. Unlike the single-task await, the suspending
+/// scope-deadline must arbitrate the scope-wide join (all children done) against
+/// the timer deadline and route the deadline-won edge to the lowered `after(...)`
+/// body — a multi-child join-await barrier over the existing scope-join +
+/// `hew_task_scope_cancel` model. Until that ramp lands, the MIR producer keeps
+/// the non-empty `after(...)` body fail-closed (the HIR `DeadlineBodyUnsupported`
+/// gate), so this terminator is never emitted; reaching codegen is a producer
+/// bug, surfaced as a named fail-closed error rather than a miscompile.
+fn emit_suspending_scope_deadline_terminator(
+    _fn_ctx: &FnCtx<'_, '_>,
+    _term: SuspendingScopeDeadlineEmit,
+) -> CodegenResult<()> {
+    Err(CodegenError::FailClosed(
+        "Terminator::SuspendingScopeDeadline reached codegen but the non-empty          scope-deadline ramp is not yet wired; the MIR producer must keep          non-empty after(...) bodies fail-closed until the join-await arbiter          lands"
+            .into(),
+    ))
 }
 
 /// The element type of a recv dest local's checker-resolved `Option<T>` slot.
@@ -36027,6 +36569,50 @@ fn lower_terminator<'ctx>(
                 "coro",
             )?;
         }
+        Terminator::SuspendingTaskAwait {
+            scope,
+            task,
+            result_dest,
+            resume,
+            cleanup,
+        } => emit_suspending_task_await_terminator(
+            fn_ctx,
+            SuspendingTaskAwaitEmit {
+                scope: *scope,
+                task: *task,
+                result_dest: *result_dest,
+                resume: *resume,
+                cleanup: *cleanup,
+            },
+        )?,
+        Terminator::SuspendingSleep {
+            duration_ms,
+            resume,
+            cleanup,
+        } => emit_suspending_sleep_terminator(
+            fn_ctx,
+            SuspendingSleepEmit {
+                duration_ms: *duration_ms,
+                resume: *resume,
+                cleanup: *cleanup,
+            },
+        )?,
+        Terminator::SuspendingScopeDeadline {
+            scope,
+            duration_ms,
+            timeout_body_block,
+            resume,
+            cleanup,
+        } => emit_suspending_scope_deadline_terminator(
+            fn_ctx,
+            SuspendingScopeDeadlineEmit {
+                scope: *scope,
+                duration_ms: *duration_ms,
+                timeout_body_block: *timeout_body_block,
+                resume: *resume,
+                cleanup: *cleanup,
+            },
+        )?,
     }
     Ok(())
 }
@@ -38074,6 +38660,9 @@ fn is_coroutine_function(func: &RawMirFunction) -> bool {
                     | Terminator::SuspendingAccept { .. }
                     | Terminator::SuspendingChannelRecv { .. }
                     | Terminator::SuspendingRemoteAsk { .. }
+                    | Terminator::SuspendingTaskAwait { .. }
+                    | Terminator::SuspendingSleep { .. }
+                    | Terminator::SuspendingScopeDeadline { .. }
             )
         })
 }
@@ -40725,6 +41314,9 @@ fn build_module_for_target<'ctx>(
                                     | Terminator::SuspendingAccept { .. }
                                     | Terminator::SuspendingChannelRecv { .. }
                                     | Terminator::SuspendingRemoteAsk { .. }
+                                    | Terminator::SuspendingTaskAwait { .. }
+                                    | Terminator::SuspendingSleep { .. }
+                                    | Terminator::SuspendingScopeDeadline { .. }
                             )
                         })
                     })
@@ -47226,6 +47818,121 @@ mod tests {
             found, "hew_stream_await_next",
             "WASM exclusion scan must surface `hew_stream_await_next` for a \
              `Terminator::SuspendingStreamNext` carrier; got `{found}`"
+        );
+    }
+
+    /// cut-task-sleep wasm fail-closed: a direct-MIR `Terminator::SuspendingTaskAwait`
+    /// carrier (the worker-free `await t` lowering) emits `hew_task_await_suspend`,
+    /// part of the native-only read-slot / `enqueue_resume` substrate. The
+    /// wasm-exclusion scan must fail closed rather than emit a dangling reference.
+    /// LESSONS P0 `boundary-fail-closed`.
+    #[test]
+    fn wasm_exclusion_scan_flags_suspending_task_await() {
+        let ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        let body = RawMirFunction {
+            name: "suspending_task_await_wasm_excl_test".to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::SuspendingTaskAwait {
+                        scope: Place::Local(0),
+                        task: Place::Local(1),
+                        result_dest: None,
+                        resume: 1,
+                        cleanup: 2,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                },
+                BasicBlock {
+                    id: 2,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                },
+            ],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
+            lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::BTreeMap::new(),
+        };
+        let pipeline = raw_mir_only_pipeline(body);
+        let found = uses_wasm_excluded_symbol(&pipeline)
+            .expect("a SuspendingTaskAwait carrier must be flagged as WASM-excluded");
+        assert_eq!(
+            found, "hew_task_await_suspend",
+            "WASM exclusion scan must surface `hew_task_await_suspend` for a \
+             `Terminator::SuspendingTaskAwait` carrier; got `{found}`"
+        );
+    }
+
+    /// cut-task-sleep wasm fail-closed: a direct-MIR `Terminator::SuspendingSleep`
+    /// carrier (the cooperative `sleep_ms` lowering) arms a native-only timer-wheel
+    /// deadline via `hew_await_cancel_schedule_deadline_ms`. The wasm-exclusion
+    /// scan must fail closed; the wasm sleep keep path (message-boundary park) is
+    /// preserved on the contextless path. LESSONS P0 `boundary-fail-closed`.
+    #[test]
+    fn wasm_exclusion_scan_flags_suspending_sleep() {
+        let i64_ty = ResolvedTy::I64;
+        let body = RawMirFunction {
+            name: "suspending_sleep_wasm_excl_test".to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![i64_ty],
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::SuspendingSleep {
+                        duration_ms: Place::Local(0),
+                        resume: 1,
+                        cleanup: 2,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                },
+                BasicBlock {
+                    id: 2,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                },
+            ],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
+            lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::BTreeMap::new(),
+        };
+        let pipeline = raw_mir_only_pipeline(body);
+        let found = uses_wasm_excluded_symbol(&pipeline)
+            .expect("a SuspendingSleep carrier must be flagged as WASM-excluded");
+        assert_eq!(
+            found, "hew_await_cancel_schedule_deadline_ms",
+            "WASM exclusion scan must surface `hew_await_cancel_schedule_deadline_ms` \
+             for a `Terminator::SuspendingSleep` carrier; got `{found}`"
         );
     }
 

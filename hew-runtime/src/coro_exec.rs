@@ -347,6 +347,73 @@ pub unsafe fn destroy_parked(a: &HewActor) -> ExecGuard {
     ExecGuard::Ok
 }
 
+/// Reclaim a continuation abandoned mid-resume by a crash longjmp.
+///
+/// When a Hew `panic()` / hard trap fires inside the `.resume` outline, the
+/// scheduler's crash-recovery `siglongjmp` unwinds the C stack back to the
+/// worker frame WITHOUT running the coroutine's suspend/settle machinery, so
+/// the tag is left at `Resuming` (set by [`begin_resume`]) and the slot still
+/// holds the frame. This transitions `Resuming → Destroyed`, nulls the slot, and
+/// reclaims the frame's HEAP BLOCK directly via [`cont::hew_cont_frame_free`].
+///
+/// It deliberately does NOT run [`cont::hew_cont_destroy`] (the `coro.destroy`
+/// cleanup outline). The crash interrupted the body BETWEEN suspend points — the
+/// coroutine is RUNNING, not cleanly suspended — and `coro.destroy` on a running
+/// coroutine is undefined: it would run the cleanup keyed to the LAST suspend
+/// point, whose own resume (`bind`) edge already released that suspend's
+/// registrations. For `sleep_ms`, the bind edge calls
+/// `hew_await_cancel_complete` + `hew_await_cancel_free`; re-running the abandon
+/// cleanup would double-free that registration (surfaced under
+/// `MallocGuardEdges` + the `await cancel release on released registration`
+/// debug-assert). Frame-owned Hew heap values are arena-backed and reclaimed by
+/// the crash path's `hew_arena_reset`, so freeing only the frame box is the
+/// complete, crash-correct reclamation — matching the fresh-dispatch crash
+/// branch, which likewise abandons in-flight frame state and resets the arena.
+///
+/// This is DISTINCT from [`destroy_parked`], which REFUSES a `Resuming` tag to
+/// protect a LIVE concurrent resume (FG2 — see
+/// `fg2_destroy_refused_in_resuming_window_with_real_free`). The crash edge has
+/// the opposite invariant: the resume is provably dead (the longjmp killed it)
+/// and the worker owns the actor exclusively (Running CAS held), so there is no
+/// concurrent resume to UAF. Without this, the actor-free path's
+/// `has_live_parked_cont` + `destroy_parked` would find the tag `Resuming`,
+/// REFUSE, spin the quiescence wait to its deadline, and leak the frame box.
+///
+/// Returns `Ok` when this call reclaimed the frame; `Refused` if the tag was not
+/// `Resuming` (no crash-abandoned frame — the normal settle already moved it to
+/// `Parked`/`Done`, handled by the standard paths).
+///
+/// # Safety
+///
+/// `a` must be a live `HewActor` the caller owns exclusively (the crash-recovery
+/// worker frame). Caller guarantees no concurrent resume/destroy can run. The
+/// parked handle (if any) is a `coro.begin` frame from [`cont::hew_cont_frame_alloc`]
+/// — actor-handler coroutines suspend across scheduler boundaries, so their
+/// frame is always heap-allocated (LLVM cannot elide a frame that outlives the
+/// activation stack).
+#[must_use]
+pub unsafe fn abandon_resuming_after_crash(a: &HewActor) -> ExecGuard {
+    // Win the single `Resuming → Destroyed` transition. Refuse any other tag:
+    // a non-`Resuming` tag means the resume settled normally (no crash-abandoned
+    // frame) and the standard `destroy_parked`/free paths own teardown.
+    if !cas_tag(a, ContTag::Resuming, ContTag::Destroyed).is_ok() {
+        return ExecGuard::Refused;
+    }
+    // Read + null the slot in the same critical section as the Destroyed
+    // transition (we are the sole winner) so no later activation reads the freed
+    // handle. Swap to null BEFORE reclaiming the frame.
+    let handle = a.suspended_cont.swap(ptr::null_mut(), Ordering::AcqRel);
+    // SAFETY: we won the single `Resuming -> Destroyed` CAS, so we are the sole
+    // owner of this teardown; `handle` (if non-null) is the heap-allocated
+    // `coro.begin` frame the crashed resume left running. `hew_cont_frame_free`
+    // tolerates a null handle as a no-op. We free the block WITHOUT running the
+    // cleanup outline (see the doc comment): the coroutine was running, not
+    // suspended, so `coro.destroy` would double-free the last suspend's
+    // already-released registrations.
+    unsafe { cont::hew_cont_frame_free(handle) };
+    ExecGuard::Ok
+}
+
 /// Whether the actor currently has a live (non-`Empty`, non-`Destroyed`)
 /// parked continuation — used by teardown paths to decide whether the free
 /// path must destroy a parked frame before reclaiming the box (R7).

@@ -68,11 +68,18 @@ static HANDLER_NAME_REGISTRY: PoisonSafe<Option<HashMap<(usize, i32), String>>> 
 
 /// Register a Hew type name for a dispatch function.
 ///
-/// Must be called once per actor type, before spawning any instance of that
-/// type.  Subsequent registrations for the same `dispatch_fn` key are ignored.
+/// First registration for a `dispatch_fn` key wins; later registrations for the
+/// same key drop their `type_name` without leaking. The accepted name is
+/// promoted to `&'static str` by leaking it exactly once — only when this call
+/// actually inserts — so the table holds at most one leaked string per type for
+/// the process lifetime, never one per call.
 ///
-/// `type_name` must be a `'static` string (a literal baked into the binary).
-pub fn register_dispatch_type(dispatch_fn: Option<HewDispatchFn>, type_name: &'static str) {
+/// `type_name` is taken by value so the leak decision happens under the table
+/// lock: a losing concurrent registration frees its `String` instead of
+/// orphaning a `Box::leak`'d copy. Before this took ownership the caller leaked
+/// on every call (one orphaned string per spawn of an already-registered type),
+/// which a repeated-spawn corpus surfaced under `LeakSanitizer`.
+pub fn register_dispatch_type(dispatch_fn: Option<HewDispatchFn>, type_name: String) {
     let key = dispatch_fn.map_or(0, |f| f as usize);
     if key == 0 {
         return;
@@ -81,7 +88,9 @@ pub fn register_dispatch_type(dispatch_fn: Option<HewDispatchFn>, type_name: &'s
         guard
             .get_or_insert_with(HashMap::new)
             .entry(key)
-            .or_insert(type_name);
+            // Leak only on insert: the vacant arm promotes the owned name to
+            // `&'static str`; the occupied arm drops `type_name` (no leak).
+            .or_insert_with(|| Box::leak(type_name.into_boxed_str()));
     });
 }
 
@@ -460,7 +469,7 @@ mod tests {
         let _lock = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        register_dispatch_type(Some(fake_dispatch_b), "MyCounter");
+        register_dispatch_type(Some(fake_dispatch_b), "MyCounter".to_owned());
         let name = lookup_dispatch_type(Some(fake_dispatch_b));
         assert_eq!(name, "MyCounter");
     }
@@ -498,9 +507,10 @@ mod tests {
         let _lock = TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        register_dispatch_type(Some(fake_dispatch_c), "TypeA");
-        // Attempt to overwrite with "TypeB" — should be silently ignored.
-        register_dispatch_type(Some(fake_dispatch_c), "TypeB");
+        register_dispatch_type(Some(fake_dispatch_c), "TypeA".to_owned());
+        // Attempt to overwrite with "TypeB" — should be silently ignored and the
+        // losing `String` dropped (freed), not leaked.
+        register_dispatch_type(Some(fake_dispatch_c), "TypeB".to_owned());
         let name = lookup_dispatch_type(Some(fake_dispatch_c));
         assert_eq!(name, "TypeA");
     }
@@ -514,7 +524,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Register a known type.
-        register_dispatch_type(Some(fake_dispatch_d), "MyWidget");
+        register_dispatch_type(Some(fake_dispatch_d), "MyWidget".to_owned());
         assert_eq!(
             lookup_dispatch_type(Some(fake_dispatch_d)),
             "MyWidget",
@@ -568,7 +578,7 @@ mod tests {
         });
 
         // Register the dispatch type for the fake actor.
-        register_dispatch_type(Some(fake_dispatch_e), "ProfiledActor");
+        register_dispatch_type(Some(fake_dispatch_e), "ProfiledActor".to_owned());
 
         // Build a minimal HewActor on the heap.  All fields are zero-initialized
         // (atomics initialised to 0, pointers to null).  `mailbox` is null so
@@ -645,7 +655,7 @@ mod tests {
             }
         });
 
-        register_dispatch_type(Some(fake_dispatch_e), "CooperativeActor");
+        register_dispatch_type(Some(fake_dispatch_e), "CooperativeActor".to_owned());
 
         // SAFETY: zero-init of a #[repr(C)] HewActor is sound — every atomic
         // field has a valid zero pattern and every pointer field is null.

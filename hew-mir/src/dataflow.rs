@@ -455,7 +455,23 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
             }
             | Terminator::SuspendingRemoteAsk {
                 resume, cleanup, ..
+            }
+            | Terminator::SuspendingTaskAwait {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingSleep {
+                resume, cleanup, ..
             } => {
+                emit_edge(*resume);
+                emit_edge(*cleanup);
+            }
+            Terminator::SuspendingScopeDeadline {
+                timeout_body_block,
+                resume,
+                cleanup,
+                ..
+            } => {
+                emit_edge(*timeout_body_block);
                 emit_edge(*resume);
                 emit_edge(*cleanup);
             }
@@ -518,7 +534,22 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
         }
         | Terminator::SuspendingRemoteAsk {
             resume, cleanup, ..
+        }
+        | Terminator::SuspendingTaskAwait {
+            resume, cleanup, ..
+        }
+        | Terminator::SuspendingSleep {
+            resume, cleanup, ..
         } => vec![*resume, *cleanup],
+        // The scope-deadline ramp's timeout-body block (deadline edge) is a real
+        // runtime successor alongside resume (join + body convergence) and
+        // cleanup; mirror `build_preds` exactly.
+        Terminator::SuspendingScopeDeadline {
+            timeout_body_block,
+            resume,
+            cleanup,
+            ..
+        } => vec![*timeout_body_block, *resume, *cleanup],
     }
 }
 

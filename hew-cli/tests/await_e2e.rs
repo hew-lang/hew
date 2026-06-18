@@ -101,6 +101,30 @@ fn fork_after_await_spawns_through_live_resume_context_under_both_pools() {
 }
 
 #[test]
+fn crash_after_sleep_resume_routes_reply_to_outer_under_both_pools() {
+    // Crash-recovery regression for the resume re-entry: a handler that
+    // `sleep_ms`-suspends twice, then `panic()`s, crashes while running as a
+    // RESUMED continuation (driven on the scheduler resume edge, not the
+    // fresh-dispatch frame). The resume edge must install the same `sigsetjmp`
+    // crash-recovery frame the fresh dispatch does — otherwise the trap unwinds
+    // past the worker frame and downs the whole process instead of crashing only
+    // this actor. Post-fix the crash routes to the actor, the outer
+    // `await reader.go(0)` resolves to `Err` (the empty crash fallback), and the
+    // program completes under both pools.
+    //
+    // The two sleeps also pin the frame-reclamation edge: the crash-abandoned
+    // coroutine frame (whose `sleep` resume edges already released their
+    // await-cancel registrations) is reclaimed by freeing the frame block
+    // WITHOUT re-running the `coro.destroy` cleanup outline — re-running it would
+    // double-free the already-released registration (surfaced under
+    // `MallocGuardEdges`).
+    run_await_example_both_pools(
+        "await_crash_after_sleep_resume",
+        "reader-crash-fallback\nmain-done\n",
+    );
+}
+
+#[test]
 fn multiple_awaits_in_one_handler_resume_correctly_under_both_pools() {
     // Multi-suspend support: a single handler body may `await` more than once.
     // `Coordinator.two` awaits twice (84), `three` awaits three times (126), and

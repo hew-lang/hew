@@ -11756,6 +11756,9 @@ impl Builder {
                     | Terminator::SuspendingAccept { .. }
                     | Terminator::SuspendingChannelRecv { .. }
                     | Terminator::SuspendingRemoteAsk { .. }
+                    | Terminator::SuspendingTaskAwait { .. }
+                    | Terminator::SuspendingSleep { .. }
+                    | Terminator::SuspendingScopeDeadline { .. }
                     | Terminator::Select { .. }
                     | Terminator::Join { .. } => false,
                 }
@@ -16752,13 +16755,20 @@ impl Builder {
         site: hew_hir::SiteId,
     ) -> Option<Place> {
         if !matches!(output_ty, ResolvedTy::Unit) {
+            // Value-returning task await binds the child's `T` on the resume
+            // edge. The carrier's `result_dest` is wired, but the WRITE side of
+            // the value channel — the task-entry adapter capturing the body's
+            // return value into `hew_task_set_result` + result sizing — is a
+            // separate cross-layer slice. Until that lands, value task await
+            // remains fail-closed (never a miscompile).
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "await task result".to_string(),
                     site,
                 },
                 note: "await lowering currently supports unit tasks only; value task \
-                       cancellation/result propagation remains fail-closed"
+                       result propagation remains fail-closed pending the task-entry \
+                       result channel"
                     .to_string(),
             });
             return None;
@@ -16786,6 +16796,36 @@ impl Builder {
             intent: IntentKind::Consume,
         });
         self.mark_binding_moved(binding_id);
+
+        // Suspendable-caller flip: in a caller that carries the execution
+        // context (actor handler / closure / task entry) the unit `await t`
+        // SUSPENDS on the child task's completion instead of blocking the worker
+        // in `hew_task_await_blocking` (a condvar). The completion observer
+        // (`hew_task_await_suspend`) re-enqueues the parked continuation on the
+        // child's `Done`. A `FunctionCallConv::Default` caller (`main`, free fn)
+        // has no parkable continuation and keeps the blocking call. Reuses the
+        // same `carries_execution_context` discriminator as the recv/ask flips.
+        if self.current_function_call_conv.carries_execution_context() {
+            if let Some(scope_place) = self.current_task_scope {
+                let next = self.alloc_block();
+                // The carrier rides the multi-suspend epilogue, so `cleanup`
+                // reuses `next` exactly as the recv/ask carriers do.
+                self.finish_current_block(Terminator::SuspendingTaskAwait {
+                    scope: scope_place,
+                    task: task_place,
+                    // Unit task: nothing to bind on the resume edge.
+                    result_dest: None,
+                    resume: next,
+                    cleanup: next,
+                });
+                self.start_block(next);
+                let unit_place = self.alloc_local(ResolvedTy::Unit);
+                self.push_instr(Instr::UnitLit { dest: unit_place });
+                return Some(unit_place);
+            }
+        }
+
+        // Contextless keep path: block the foreign thread on the condvar.
         self.push_runtime_call("hew_task_await_blocking", vec![task_place], None);
         let unit_place = self.alloc_local(ResolvedTy::Unit);
         self.push_instr(Instr::UnitLit { dest: unit_place });
@@ -17205,6 +17245,33 @@ impl Builder {
                 self.finish_current_block(Terminator::SuspendingStreamSend {
                     sink: *sink,
                     value: *value,
+                    resume: next,
+                    cleanup: next,
+                });
+                self.start_block(next);
+                return dest;
+            }
+        }
+
+        // Suspendable-caller flip: native `sleep_ms(d)` blocks the worker in
+        // `hew_sleep_ms` (a `std::thread::sleep`). In a caller that carries the
+        // execution context, the sleep SUSPENDS on a timer-wheel deadline instead
+        // — emit `Terminator::SuspendingSleep`. A `FunctionCallConv::Default`
+        // caller (`main`, free fn) has no parkable continuation and keeps the
+        // blocking call. `sleep_ms` is a `RuntimeFfiShim` with no
+        // `RuntimeCallFamily`, so it is identified by its resolved callee name
+        // (the FFI-shim boundary) rather than a builtin family — `lower_direct_call`
+        // receives the bare catalog name `sleep_ms`, which `module_fn_names`
+        // carries alongside the `hew_sleep_ms` symbol.
+        if (callee_symbol == "sleep_ms" || callee_symbol == "hew_sleep_ms")
+            && self.current_function_call_conv.carries_execution_context()
+        {
+            if let [duration_ms] = arg_places.as_slice() {
+                let next = self.alloc_block();
+                // The carrier rides the multi-suspend epilogue, so `cleanup`
+                // reuses `next` exactly as the recv/ask carriers do.
+                self.finish_current_block(Terminator::SuspendingSleep {
+                    duration_ms: *duration_ms,
                     resume: next,
                     cleanup: next,
                 });
@@ -23414,7 +23481,23 @@ fn validate_cross_block_split_consume(
             }
             | Terminator::SuspendingRemoteAsk {
                 resume, cleanup, ..
+            }
+            | Terminator::SuspendingTaskAwait {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingSleep {
+                resume, cleanup, ..
             } => {
+                emit(*resume);
+                emit(*cleanup);
+            }
+            Terminator::SuspendingScopeDeadline {
+                timeout_body_block,
+                resume,
+                cleanup,
+                ..
+            } => {
+                emit(*timeout_body_block);
                 emit(*resume);
                 emit(*cleanup);
             }
@@ -23467,7 +23550,19 @@ fn validate_cross_block_split_consume(
             }
             | Terminator::SuspendingRemoteAsk {
                 resume, cleanup, ..
+            }
+            | Terminator::SuspendingTaskAwait {
+                resume, cleanup, ..
+            }
+            | Terminator::SuspendingSleep {
+                resume, cleanup, ..
             } => vec![*resume, *cleanup],
+            Terminator::SuspendingScopeDeadline {
+                timeout_body_block,
+                resume,
+                cleanup,
+                ..
+            } => vec![*timeout_body_block, *resume, *cleanup],
         }
     };
 
@@ -24077,6 +24172,9 @@ pub fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
             | Terminator::SuspendingAccept { .. }
             | Terminator::SuspendingChannelRecv { .. }
             | Terminator::SuspendingRemoteAsk { .. }
+            | Terminator::SuspendingTaskAwait { .. }
+            | Terminator::SuspendingSleep { .. }
+            | Terminator::SuspendingScopeDeadline { .. }
     )
 }
 
@@ -24154,6 +24252,19 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
             timeout_ms,
             ..
         } => vec![*actor, *value, *timeout_ms],
+        // `SuspendingTaskAwait` reads `scope` (the observer registration is
+        // scope-scoped) + `task` (the await source); `result_dest` is a write
+        // slot bound on the resume edge, not a source.
+        Terminator::SuspendingTaskAwait { scope, task, .. } => vec![*scope, *task],
+        // `SuspendingSleep` reads `duration_ms` (the deadline source); the resume
+        // edge binds nothing (`sleep` is unit).
+        Terminator::SuspendingSleep { duration_ms, .. } => vec![*duration_ms],
+        // `SuspendingScopeDeadline` reads `scope` (the children it joins/cancels)
+        // + `duration_ms` (the deadline source); the timeout body block is a CFG
+        // edge, not an operand.
+        Terminator::SuspendingScopeDeadline {
+            scope, duration_ms, ..
+        } => vec![*scope, *duration_ms],
         Terminator::Select { arms, .. } => {
             let mut places = Vec::new();
             for arm in arms {
@@ -24397,6 +24508,13 @@ fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
         // `Call`/`Instr::Call*`); the closure callee does not retain a fresh
         // yielded value, so this terminator never escapes `local`.
         | Terminator::SuspendingCallClosure { .. }
+        // `SuspendingTaskAwait` carries `scope` + `task` (handle reads),
+        // `SuspendingSleep` a `duration_ms` scalar, and
+        // `SuspendingScopeDeadline` `scope` + `duration_ms` — none is a
+        // generator-yielded `local`, so none escapes one.
+        | Terminator::SuspendingTaskAwait { .. }
+        | Terminator::SuspendingSleep { .. }
+        | Terminator::SuspendingScopeDeadline { .. }
         | Terminator::MakeGenerator { .. } => false,
         // Lambda-actor construction: body/state-drop are static symbols,
         // but the capture env (when present) escapes into the actor's
@@ -28072,7 +28190,18 @@ fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<
         Terminator::SuspendingRead { .. }
         | Terminator::SuspendingAccept { .. }
         | Terminator::SuspendingStreamNext { .. }
-        | Terminator::SuspendingChannelRecv { .. } => Vec::new(),
+        | Terminator::SuspendingChannelRecv { .. }
+        // `SuspendingTaskAwait` BORROWS `task` (the scope-join owns its free) +
+        // `scope` for the result read-back; `SuspendingSleep` /
+        // `SuspendingScopeDeadline` carry only a duration scalar + the scope
+        // handle. None moves an owned value into a sink the fixpoint cannot
+        // model — the linear `await t` consume is recorded by the
+        // `MirStatement::Use{Consume}` in lowering, not by terminator-escape —
+        // so they poison nothing here. Kept explicit so a future variant forces
+        // a compile-time escape-poison decision.
+        | Terminator::SuspendingTaskAwait { .. }
+        | Terminator::SuspendingSleep { .. }
+        | Terminator::SuspendingScopeDeadline { .. } => Vec::new(),
         // Control-flow / non-transferring terminators escape nothing.
         Terminator::Return
         | Terminator::Goto { .. }
@@ -30186,6 +30315,33 @@ fn enumerate_exits(
             // `coro.destroy` (the abandon edge additionally cancels the pending
             // reply entry), never at the suspend site.
             | Terminator::SuspendingRemoteAsk {
+                resume, cleanup, ..
+            }
+            // `SuspendingTaskAwait` has the identical drop posture: the read slot
+            // + the live-across-suspend child task (borrowed; scope-owned) ride
+            // the coro frame, dropped exactly once by the `cleanup` outline on
+            // `coro.destroy` (the abandon edge additionally detaches the
+            // completion observer + cancels/frees the slot), never at the suspend
+            // site.
+            | Terminator::SuspendingTaskAwait {
+                resume, cleanup, ..
+            }
+            // `SuspendingSleep` has the identical drop posture: the live-across-
+            // suspend frame state rides the coro frame, dropped exactly once by
+            // the `cleanup` outline on `coro.destroy` (the abandon edge
+            // additionally cancels the scheduled deadline so a racing fire drops
+            // its wake), never at the suspend site.
+            | Terminator::SuspendingSleep {
+                resume, cleanup, ..
+            }
+            // `SuspendingScopeDeadline` has the same suspend drop posture: the
+            // frame-owned values are dropped exactly once by the `cleanup`
+            // outline; the scoped children's drops are owned by the scope-join /
+            // scope-cancel codegen, not the function-wide DropPlan. The
+            // `timeout_body_block` deadline edge is a regular in-CFG successor
+            // already covered by the successors walker; the drop plan keys off the
+            // resume/cleanup coro edges exactly like the other suspend carriers.
+            | Terminator::SuspendingScopeDeadline {
                 resume, cleanup, ..
             } => (
                 ExitPath::Suspend {

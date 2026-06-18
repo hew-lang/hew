@@ -1,0 +1,63 @@
+//! Awaiting a unit-returning child task inside an actor handler suspends the
+//! coroutine instead of blocking the worker on a condvar.
+//!
+//! Before this lane `await t` for a `Task<()>` lowered to
+//! `hew_task_await_blocking`, a `Condvar::wait_while` that pinned the OS worker
+//! until the child completed. The `SuspendingTaskAwait` carrier reroutes an
+//! execution-context unit `await t` onto the coro suspend point + the task
+//! completion observer (`enqueue_resume` on the child's `Done`), freeing the
+//! worker. A `fn main` / free-fn caller keeps the blocking condvar path.
+//!
+//! The assertions pin EXACT post-resume state: the handler must resume after
+//! the child completes and the observable mutation (a state field the child's
+//! work effects through the scope) must be exactly what the resumed body
+//! computed. The value-returning task await (binding the child's `T`) is a
+//! separate follow-on; this fixture covers only the unit reroute.
+
+import std::testing;
+
+actor Worker {
+    var ticks: i64 = 0;
+
+    // A unit child task: the scope joins it; awaiting it suspends until it is
+    // done. The handler increments after the await resumes.
+    receive fn run() -> i64 {
+        var out: i64 = 0;
+        scope {
+            fork t = nap_unit();
+            await t;
+            out = 1;
+        };
+        ticks = ticks + out;
+        return ticks;
+    }
+}
+
+fn nap_unit() {
+    sleep_ms(15);
+}
+
+#[test]
+fn unit_task_await_resumes_after_child_done() {
+    let w = spawn Worker(ticks: 0);
+    // The child naps 15ms; `await t` suspends until it is Done, then the body
+    // sets out = 1 and increments ticks. Exact value 1 proves the await resumed
+    // exactly once after the child completed.
+    match await w.run() {
+        Ok(n) => testing.assert_eq(n, 1),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn repeated_unit_task_await_each_resumes() {
+    let w = spawn Worker(ticks: 0);
+    // Two sequential handler calls, each spawning + awaiting a unit child. The
+    // accumulated exact value (2) proves both awaits resumed and neither lost
+    // its frame nor double-resumed.
+    let _ = await w.run();
+    match await w.run() {
+        Ok(n) => testing.assert_eq(n, 2),
+        Err(_) => testing.assert_true(false),
+    }
+}

@@ -2250,7 +2250,31 @@ impl BasicBlock {
             // in-CFG successors.
             | Terminator::SuspendingRemoteAsk {
                 resume, cleanup, ..
+            }
+            // The suspending task-await ramp parks the awaiting continuation on
+            // the child task's completion exactly like the channel-recv ramp:
+            // the default edge exits to the executor; resume + cleanup are the
+            // in-CFG successors.
+            | Terminator::SuspendingTaskAwait {
+                resume, cleanup, ..
+            }
+            // The suspending sleep ramp parks the continuation on a timer-wheel
+            // deadline: the default edge exits to the executor; resume + cleanup
+            // are the in-CFG successors.
+            | Terminator::SuspendingSleep {
+                resume, cleanup, ..
             } => vec![*resume, *cleanup],
+            // The suspending scope-deadline ramp parks the continuation on the
+            // race between the scope join and a timer deadline. The default edge
+            // exits to the executor; the timeout-body block (deadline edge),
+            // resume (join edge + body convergence), and cleanup (abandon) are
+            // all in-CFG successors.
+            Terminator::SuspendingScopeDeadline {
+                timeout_body_block,
+                resume,
+                cleanup,
+                ..
+            } => vec![*timeout_body_block, *resume, *cleanup],
         }
     }
 }
@@ -2983,6 +3007,119 @@ pub enum Terminator {
         /// `true` marks the terminal suspend (`coro.suspend(i1 true)`): after it
         /// `coro.done` is true and the executor reclaims the frame.
         is_final: bool,
+    },
+    /// Non-blocking `await t` over a scope-owned child `Task<T>` from a
+    /// SUSPENDABLE caller (cut-task-sleep). The task-completion analogue of
+    /// [`Terminator::SuspendingChannelRecv`]: instead of blocking an OS worker
+    /// in `hew_task_await_blocking` (a `Condvar::wait_while`), codegen lowers
+    /// this as a `coro.suspend` source — it creates a read slot, registers the
+    /// parked continuation + the slot as a task-completion observer
+    /// (`hew_task_await_suspend`), suspends (freeing the worker), and on the
+    /// resume / immediate-ready edge reads the task result through
+    /// `hew_task_get_result` (the deep-read the task owns until consumed), NOT
+    /// the generator `hew_cont_poll` out-pointer. The result travels through the
+    /// task's own result buffer held across the suspend (NOT a terminator
+    /// operand), exactly as `SuspendingChannelRecv`'s item travels through its
+    /// channel queue — which is why the resume binding lives ON the terminator.
+    ///
+    /// Carries the same SUSPEND carrier the codegen boundary reads for
+    /// `has_suspend` / `is_coroutine`: any function whose CFG contains this
+    /// terminator is lowered as a `presplitcoroutine`. Emitted ONLY when the
+    /// lowering function carries the execution context
+    /// (`FunctionCallConv::carries_execution_context` — actor handler / closure
+    /// / task entry); a `FunctionCallConv::Default` caller (`main`, free fns)
+    /// runs on a foreign thread with no parkable continuation and keeps the
+    /// blocking `hew_task_await_blocking` call.
+    SuspendingTaskAwait {
+        /// The scope token owning `task` — passed to `hew_task_await_suspend`
+        /// (the observer registration is scope-scoped) and read on resume.
+        scope: Place,
+        /// The child task handle being awaited (the receiver of `await t`).
+        /// Read by codegen to register the completion observer and to read the
+        /// result on resume. BORROWED for registration + result-read; the
+        /// scope-join owns the task's free.
+        task: Place,
+        /// `Some(slot)` is the local the task's result is read into on the
+        /// resume edge (for a value-returning `Task<T>`, `T != Unit`). `None`
+        /// for a unit-returning task — the await is a pure "wait until Done"
+        /// with nothing to bind. Identical role to
+        /// [`Terminator::SuspendingChannelRecv::result_dest`].
+        result_dest: Option<Place>,
+        /// Block reached on the coro switch resume / immediate-ready edge
+        /// (case 0) — the body continues here after `enqueue_resume` woke the
+        /// parked continuation and the result (if any) is bound. This is the
+        /// `next` block of the original await.
+        resume: u32,
+        /// Block reached on the coro switch cleanup edge (case 1) — the frame's
+        /// teardown when the parked continuation is abandoned (`coro.destroy`);
+        /// the observer registration is detached and the slot freed there.
+        cleanup: u32,
+    },
+    /// Non-blocking `sleep_ms(d)` / `sleep(d)` from a SUSPENDABLE caller
+    /// (cut-task-sleep). The timer-readiness analogue of
+    /// [`Terminator::SuspendingTaskAwait`]: instead of blocking an OS worker in
+    /// `hew_sleep_ms` (a `std::thread::sleep`), codegen lowers this as a
+    /// `coro.suspend` source — it arms a deadline on the process-global timer
+    /// wheel (`hew_global_timer_wheel` + `hew_await_cancel_schedule_deadline_ms`)
+    /// carrying the parked continuation, suspends (freeing the worker), and on
+    /// the timer-fired resume edge continues the body. `sleep` is unit, so the
+    /// resume edge binds nothing.
+    ///
+    /// Carries the same SUSPEND carrier the codegen boundary reads for
+    /// `has_suspend` / `is_coroutine`. Emitted ONLY when the lowering function
+    /// carries the execution context
+    /// (`FunctionCallConv::carries_execution_context`); a
+    /// `FunctionCallConv::Default` caller keeps the blocking `hew_sleep_ms` FFI
+    /// call (no parkable coroutine).
+    SuspendingSleep {
+        /// The sleep duration in milliseconds. Read by codegen and passed to
+        /// the timer-wheel deadline schedule.
+        duration_ms: Place,
+        /// Block reached on the coro switch resume edge (case 0) — the body
+        /// continues here after the timer fired and `enqueue_resume` woke the
+        /// parked continuation. `sleep` is unit, so nothing is bound.
+        resume: u32,
+        /// Block reached on the coro switch cleanup edge (case 1) — the frame's
+        /// teardown when the parked continuation is abandoned (`coro.destroy`);
+        /// the scheduled deadline is cancelled there so a racing fire drops its
+        /// wake.
+        cleanup: u32,
+    },
+    /// Scope-deadline `scope { ... } after(d) { body }` with a NON-EMPTY timeout
+    /// body, from a SUSPENDABLE caller (cut-task-sleep). The structured-deadline
+    /// sibling of [`Terminator::SuspendingSleep`]: codegen arms a deadline on the
+    /// process-global timer wheel carrying the parked continuation, the scope's
+    /// children run, and the FIRST of {all children joined, deadline fired} wins.
+    /// The join-wins resume edge runs the scope-complete path; the deadline-wins
+    /// edge cancels the remaining children and routes to `timeout_body_block`
+    /// (the lowered `after(...)` body), then converges on `resume`.
+    ///
+    /// Carries the same SUSPEND carrier the codegen boundary reads for
+    /// `has_suspend` / `is_coroutine`. Emitted ONLY when the lowering function
+    /// carries the execution context
+    /// (`FunctionCallConv::carries_execution_context`); a contextless caller
+    /// keeps the legacy per-deadline-thread `hew_task_scope_cancel_after_ns`
+    /// path, and an EMPTY `after(...)` body keeps that path on both call-convs
+    /// (no body to route to).
+    SuspendingScopeDeadline {
+        /// The scope token whose children the deadline races. Read by codegen to
+        /// join the children and to arm the scope-cancel on the timeout edge.
+        scope: Place,
+        /// The deadline duration in milliseconds. Read by codegen and passed to
+        /// the timer-wheel deadline schedule.
+        duration_ms: Place,
+        /// Block reached on the deadline-fired edge — the lowered `after(...)`
+        /// body. Control flows from here to `resume` once the body completes.
+        timeout_body_block: u32,
+        /// Block reached on the coro switch resume edge (case 0) — the
+        /// scope-complete path when all children joined before the deadline, and
+        /// the convergence point the `timeout_body_block` falls through to.
+        resume: u32,
+        /// Block reached on the coro switch cleanup edge (case 1) — the frame's
+        /// teardown when the parked continuation is abandoned (`coro.destroy`);
+        /// the scheduled deadline is cancelled and the remaining children
+        /// detached there.
+        cleanup: u32,
     },
 }
 

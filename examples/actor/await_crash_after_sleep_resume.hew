@@ -1,0 +1,38 @@
+// Crash-recovery regression for a handler that crashes AFTER suspending.
+//
+// `Reader.go` is an ASK handler that `sleep_ms`-suspends TWICE (two timer-wheel
+// park/resume cycles), then `panic()`s. The panic fires while the handler runs
+// as a RESUMED continuation — the rest of a suspended handler, driven on the
+// scheduler's resume re-entry, not the fresh-dispatch frame.
+//
+// The resume re-entry must install the same crash-recovery `sigsetjmp` frame the
+// fresh dispatch does: without it the trap unwound past the worker frame and
+// downed the whole process. With it, the crash routes to the actor (not the
+// runtime), the outer `await reader.go(0)` resolves to `Err` (the empty crash
+// fallback), and the program completes.
+//
+// The two sleeps also pin the frame-reclamation edge: the crash-abandoned coro
+// frame (whose `sleep` resume edges already released their await-cancel
+// registrations) must be reclaimed WITHOUT re-running the cleanup outline, or
+// the registration double-frees. `trigger` is a runtime value so the panic is
+// not statically unreachable ahead of the suspends.
+actor Reader {
+    receive fn go(trigger: i64) -> i64 {
+        sleep_ms(50);
+        sleep_ms(50);
+        if trigger >= 0 {
+            panic("reader crashed after sleep resume");
+        }
+        7
+    }
+}
+
+fn main() {
+    let reader = spawn Reader;
+    let r = await reader.go(0);
+    match r {
+        Ok(v) => println(f"reader-returned: {v}"),
+        Err(_) => println("reader-crash-fallback"),
+    }
+    println("main-done");
+}

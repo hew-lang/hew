@@ -1,0 +1,8 @@
+// Vec<[T; N]> elements are fail-closed at the type checker: codegen cannot
+// lower array/composite Vec elements yet (Cluster 2 deferred).  A copy-layout
+// array ([i64; 2]) must be rejected with a spanned diagnostic rather than
+// admitted and then failing with an unspanned codegen error.
+fn main() -> i64 {
+    let v: Vec<[i64; 2]> = Vec::new();
+    v.len()
+}

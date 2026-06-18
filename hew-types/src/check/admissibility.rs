@@ -1291,15 +1291,18 @@ impl Checker {
             return false;
         }
 
+        // Reject ANY Vec element that contains a structural array, regardless of
+        // whether the array has a copy layout.  Codegen cannot lower array/composite
+        // Vec elements yet (Cluster 2 deferred).  Admitting a copy-layout array
+        // (e.g. [i64; 2]) here only defers the failure to an unspanned codegen
+        // error — fail closed at the checker instead so the user sees a source span.
         let mut visiting = HashSet::new();
-        if self.vec_element_contains_structural_array(resolved, &mut visiting)
-            && !self.vec_element_has_copy_layout(resolved)
-        {
+        if self.vec_element_contains_structural_array(resolved, &mut visiting) {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "Vec<{}> is not supported; vec lowering does not support heap-bearing array element types yet",
+                    "Vec<{}> is not supported; vec lowering does not support array element types yet",
                     resolved.user_facing()
                 ),
             );
@@ -3515,6 +3518,34 @@ mod tests {
         assert!(
             checker.hashset_layout_facts.is_empty(),
             "I64 element must NOT produce a HashSetLoweringFact (uses scalar path)"
+        );
+    }
+
+    #[test]
+    fn vec_array_element_rejected_at_checker_not_codegen() {
+        // Regression guard: Vec<[i64; 2]> has a copy layout, but codegen cannot
+        // lower array/composite Vec elements (Cluster 2 deferred).  Before this
+        // fix the `&& !has_copy_layout` exception caused copy-layout arrays to
+        // slip through the type checker and fail with an unspanned codegen error.
+        // The checker must produce a spanned error regardless of copy layout.
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 10..24;
+        let array_i64_2 = Ty::Array(Box::new(Ty::I64), 2);
+        let result = checker.validate_vec_element_type(&array_i64_2, &span);
+        assert!(
+            !result,
+            "Vec<[i64; 2]> element must be rejected at the checker"
+        );
+        assert!(
+            !checker.errors.is_empty(),
+            "Vec<[i64; 2]> element must emit a checker error; errors: {:?}",
+            checker.errors
+        );
+        // The error must carry the source span.
+        let err = &checker.errors[0];
+        assert_eq!(
+            err.span.start, 10,
+            "checker error must carry the source span start; err: {err:?}"
         );
     }
 }

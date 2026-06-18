@@ -115,7 +115,7 @@ fn main() {\n\
 \x20   var i: i64 = 0;\n\
 \x20   while i < 3 {\n\
 \x20       let m: HashMap<string, i64> = HashMap::new();\n\
-\x20       m.insert(key, i * 7);\n\
+\x20       m.insert(clone key, i * 7);\n\
 \x20       rows.push(m);\n\
 \x20       i = i + 1;\n\
 \x20   }\n\

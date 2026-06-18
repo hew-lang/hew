@@ -9499,6 +9499,9 @@ impl Builder {
                 let mut arg_places = vec![receiver_place];
                 for arg in args {
                     arg_places.push(self.lower_value(arg)?);
+                    if builtin_method_arg_is_move_ingress(*target_family) {
+                        self.consume_moved_builtin_method_arg(arg);
+                    }
                     if is_array_literal_push {
                         self.alias_moved_owned_operand(arg);
                     }
@@ -22216,6 +22219,52 @@ impl Builder {
         });
     }
 
+    /// Emit a `MirStatement::Use(Consume)` for a managed-type binding that is
+    /// moved into a builtin aggregate method (HashMap/HashSet insert).
+    ///
+    /// WHY: A vacant `HashMap.insert` / `HashSet.insert` call moves the
+    /// caller's key into the slot (`!existed` path in the runtime). Without
+    /// this consume the scope-exit drop would run *after* the runtime has
+    /// already taken ownership — a double-free. The static consume suppresses
+    /// that scope-exit drop, making the vacant-insert path sound.
+    ///
+    /// LIMITATION (known bounded leak — see issue #2033): on an overwrite
+    /// (`existed` path), the runtime reuses the stored key in place and the
+    /// caller's duplicate key is NOT consumed by the runtime. The static
+    /// consume still suppresses the scope-exit drop, so the caller's duplicate
+    /// leaks (one allocation per colliding insert, no UB). This is a strict
+    /// improvement over the prior double-free. The fix is a Stage-C
+    /// conditional-drop materializer: branch on the `existed` return from
+    /// `hew_hashmap_insert_layout` / `hew_hashset_insert_layout`
+    /// (`hew-codegen-rs/src/llvm.rs:21305`) and emit a drop for the caller's
+    /// duplicate on the overwrite path. See the conditional-key-consume
+    /// contract comment in `hew-runtime/src/hashmap.rs:995-1010`.
+    ///
+    /// WHEN obsolete: once the Stage-C materializer is implemented and the
+    /// codegen branches on `existed`, this function's unconditional consume is
+    /// narrowed to the vacant-insert path only; the overwrite path materialises
+    /// its own drop instead.
+    fn consume_moved_builtin_method_arg(&mut self, operand: &HirExpr) {
+        let HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Binding(id),
+        } = &operand.kind
+        else {
+            return;
+        };
+        let ty = self.subst_ty(&operand.ty);
+        if !self.aggregate_ingress_moves_binding_ty(&ty) {
+            return;
+        }
+        self.statements.push(MirStatement::Use {
+            binding: *id,
+            name: name.clone(),
+            site: operand.site,
+            ty,
+            intent: IntentKind::Consume,
+        });
+    }
+
     /// True when a `Let` RHS produces a named-function pair whose `env_ptr`
     /// is null by construction: a direct `Item`-resolved fn reference
     /// (`let f = double;`), a rebind of an already-exempt binding, or either
@@ -29851,6 +29900,14 @@ fn ty_is_closure_pair_vec(ty: &ResolvedTy) -> bool {
             args,
             ..
         } if args.first().is_some_and(ty_is_closure_pair)
+    )
+}
+
+fn builtin_method_arg_is_move_ingress(family: hew_types::MethodTargetFamily) -> bool {
+    matches!(
+        family,
+        hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::Insert)
+            | hew_types::MethodTargetFamily::HashSet(hew_types::HashSetMethod::Insert)
     )
 }
 

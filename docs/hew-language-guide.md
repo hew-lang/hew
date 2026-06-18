@@ -496,7 +496,12 @@ fn main() {
 }
 ```
 
-Inside a single actor and in free functions, pass values freely and keep using them. Do not defensively `.clone()` for ordinary fn calls. The move boundary is only at an actor send.
+Inside a single actor and in free functions, ordinary function calls do not move
+their arguments, so you can keep using those values afterward. Ownership-sink
+operations still move managed values: for example, `HashSet.insert(x)` and
+`HashMap.insert(k, v)` take ownership of managed string keys/elements/values. If
+you need to keep using the original after such an insert, pass `clone x` (or
+`x.clone()`) into the collection.
 
 ### .clone() produces an independent copy
 
@@ -1725,11 +1730,12 @@ actor Inbox {
 ```
 
 Use `channel.new(capacity)` to build a bounded MPSC channel. `Sender<T>` is
-cloneable; close senders when production is complete. `await rx.recv()` returns
-`Option<T>`: `Some(value)` for a received item and `None` when the channel is
-closed. `rx.try_recv()` never suspends and returns `None` for both empty and
-closed. In `select`, write the sealed channel arm as `pat from rx.recv()` and
-match the bound `Option<T>`. Full examples:
+cloneable, and both channel handles are closed automatically at scope exit;
+call `.close()` only when you need to end production or reception before then.
+`await rx.recv()` returns `Option<T>`: `Some(value)` for a received item and
+`None` when the channel is closed. `rx.try_recv()` never suspends and returns
+`None` for both empty and closed. In `select`, write the sealed channel arm as
+`pat from rx.recv()` and match the bound `Option<T>`. Full examples:
 [`examples/channel/await_recv_actor.hew`](../examples/channel/await_recv_actor.hew)
 and [`examples/channel/select_recv.hew`](../examples/channel/select_recv.hew).
 

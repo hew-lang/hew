@@ -190,6 +190,8 @@ impl BuiltinType {
             Self::Duplex
             | Self::Sink
             | Self::Stream
+            | Self::Sender
+            | Self::Receiver
             | Self::LocalPid
             | Self::RemotePid
             | Self::HewActor
@@ -213,6 +215,8 @@ impl BuiltinType {
             Self::Duplex
             | Self::Sink
             | Self::Stream
+            | Self::Sender
+            | Self::Receiver
             | Self::HewActor
             | Self::HewDuplex
             | Self::HewSendHalf
@@ -419,6 +423,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "single builtin fact table")]
     fn handle_and_project_cap_facts_are_registered() {
         let expected = [
             (
@@ -447,6 +452,22 @@ mod tests {
                 Some(BuiltinHandleFamily::ActorPid),
                 1,
                 &[BuiltinTypeRole::ActorDispatchRemote][..],
+            ),
+            (
+                BuiltinType::Sender,
+                BuiltinTypeMarker::Resource,
+                Some("close"),
+                None,
+                1,
+                &[][..],
+            ),
+            (
+                BuiltinType::Receiver,
+                BuiltinTypeMarker::Resource,
+                Some("close"),
+                None,
+                1,
+                &[][..],
             ),
             (
                 BuiltinType::HewActor,

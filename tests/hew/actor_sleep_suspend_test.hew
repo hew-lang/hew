@@ -1,0 +1,83 @@
+//! Cooperative `sleep_ms` inside an actor handler suspends the coroutine
+//! instead of blocking the M:N worker.
+//!
+//! Before this lane `sleep_ms` in an actor receive-fn called
+//! `std::thread::sleep` and pinned the OS worker for the whole duration. The
+//! `SuspendingSleep` carrier reroutes an execution-context `sleep_ms` onto the
+//! coro suspend point + the global timer wheel, freeing the worker. A free-fn /
+//! `fn main` keeps the blocking call (no parkable coroutine).
+//!
+//! These assertions pin EXACT post-resume values (not `> 0`): the handler must
+//! resume correctly after the timer fires and the per-handler state must be
+//! exactly what the resumed body computed. A regression that mis-routes the
+//! resume edge, double-resumes, or drops the frame fails the exact value, not
+//! just a crash. The suspend-not-block interleave proof (which needs
+//! `HEW_WORKERS=1` to be deterministic) is a separate manual validation gate,
+//! not asserted here where the ratchet runs with the default worker count.
+
+import std::testing;
+
+actor Sleeper {
+    var done: i64 = 0;
+    receive fn nap(ms: i64) -> i64 {
+        sleep_ms(ms);
+        done = done + 1;
+        return done;
+    }
+    receive fn nap_twice(ms: i64) -> i64 {
+        sleep_ms(ms);
+        done = done + 1;
+        sleep_ms(ms);
+        done = done + 10;
+        return done;
+    }
+}
+
+#[test]
+fn sleep_returns_after_duration_in_handler() {
+    let s = spawn Sleeper(done: 0);
+    // The handler sleeps 20ms then increments; the value proves the handler
+    // resumed correctly after the timer fired (exact value 1, not >= 1).
+    match await s.nap(20) {
+        Ok(n) => testing.assert_eq(n, 1),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn two_sleeps_in_one_handler_resume_in_order() {
+    let s = spawn Sleeper(done: 0);
+    // A second suspend point in the same coroutine frame: the body sleeps,
+    // does +1, sleeps again, does +10. The exact result (11) proves BOTH
+    // suspend points resumed in order through one persistent frame — a
+    // multi-suspend frame correctness check, not just a single-suspend pass.
+    match await s.nap_twice(15) {
+        Ok(n) => testing.assert_eq(n, 11),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn many_handlers_each_sleep_then_resume() {
+    // Several independent sleepers each suspend and resume. On a cooperative
+    // suspend these all park concurrently and resume; the exact per-handler
+    // value (1) proves none lost its frame or resumed another's.
+    let a = spawn Sleeper(done: 0);
+    let b = spawn Sleeper(done: 0);
+    let c = spawn Sleeper(done: 0);
+    let ra = await a.nap(10);
+    let rb = await b.nap(10);
+    let rc = await c.nap(10);
+    match ra {
+        Ok(na) => testing.assert_eq(na, 1),
+        Err(_) => testing.assert_true(false),
+    }
+    match rb {
+        Ok(nb) => testing.assert_eq(nb, 1),
+        Err(_) => testing.assert_true(false),
+    }
+    match rc {
+        Ok(nc) => testing.assert_eq(nc, 1),
+        Err(_) => testing.assert_true(false),
+    }
+}

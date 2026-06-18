@@ -112,6 +112,18 @@ pub enum StateFieldCloneKind {
     /// (`hew-runtime/src/bytes.rs:238,254`.)
     Bytes,
 
+    /// Anonymous tuple value embedded inside another aggregate. Each element
+    /// carries its own clone/drop kind so codegen can recurse structurally
+    /// without re-deriving the shape from LLVM layout alone.
+    Tuple { elems: Vec<StateFieldCloneKind> },
+
+    /// Fixed-size array value embedded inside another aggregate. The element
+    /// kind is shared by every slot.
+    Array {
+        elem: Box<StateFieldCloneKind>,
+        len: u64,
+    },
+
     /// `Vec<T>` — actor-state clone/drop routes through the layout-managed
     /// witness pair `hew_vec_clone_managed` / `hew_vec_free_managed`, derived
     /// by codegen from `collection_layout_witness` (the sole clone/drop symbol
@@ -237,6 +249,10 @@ impl StateFieldCloneKind {
             StateFieldCloneKind::Vec { elem } | StateFieldCloneKind::HashSet { elem } => {
                 elem.contains_opaque_handle()
             }
+            StateFieldCloneKind::Tuple { elems } => elems
+                .iter()
+                .any(StateFieldCloneKind::contains_opaque_handle),
+            StateFieldCloneKind::Array { elem, .. } => elem.contains_opaque_handle(),
             StateFieldCloneKind::HashMap { key, val } => {
                 key.contains_opaque_handle() || val.contains_opaque_handle()
             }
@@ -273,6 +289,10 @@ impl StateFieldCloneKind {
             StateFieldCloneKind::Vec { elem } | StateFieldCloneKind::HashSet { elem } => {
                 elem.contains_closure_pair()
             }
+            StateFieldCloneKind::Tuple { elems } => {
+                elems.iter().any(StateFieldCloneKind::contains_closure_pair)
+            }
+            StateFieldCloneKind::Array { elem, .. } => elem.contains_closure_pair(),
             StateFieldCloneKind::HashMap { key, val } => {
                 key.contains_closure_pair() || val.contains_closure_pair()
             }
@@ -356,6 +376,18 @@ impl StateFieldCloneKind {
             // dedicated `hew_vec_free_closure_pairs` release, not the managed
             // witness), and the element/key/value kind is itself supported.
             StateFieldCloneKind::Vec { elem } | StateFieldCloneKind::HashSet { elem } => {
+                !self.contains_opaque_handle()
+                    && !self.contains_closure_pair()
+                    && elem.supports_value_class_drop_spine()
+            }
+            StateFieldCloneKind::Tuple { elems } => {
+                !self.contains_opaque_handle()
+                    && !self.contains_closure_pair()
+                    && elems
+                        .iter()
+                        .all(StateFieldCloneKind::supports_value_class_drop_spine)
+            }
+            StateFieldCloneKind::Array { elem, .. } => {
                 !self.contains_opaque_handle()
                     && !self.contains_closure_pair()
                     && elem.supports_value_class_drop_spine()
@@ -620,6 +652,8 @@ pub fn classify_owned_string_record_fields(
             StateFieldCloneKind::BitCopy { .. } => {}
             StateFieldCloneKind::String => has_string = true,
             StateFieldCloneKind::Bytes
+            | StateFieldCloneKind::Tuple { .. }
+            | StateFieldCloneKind::Array { .. }
             | StateFieldCloneKind::Vec { .. }
             | StateFieldCloneKind::HashMap { .. }
             | StateFieldCloneKind::HashSet { .. }
@@ -745,6 +779,47 @@ fn classify_state_field_full_impl(
         // --- Owned-heap primitives ------------------------------------
         ResolvedTy::String => Ok(StateFieldCloneKind::String),
         ResolvedTy::Bytes => Ok(StateFieldCloneKind::Bytes),
+        ResolvedTy::Tuple(elems) => {
+            let kinds = elems
+                .iter()
+                .map(|elem| {
+                    classify_state_field_full_impl(
+                        elem,
+                        record_layouts,
+                        enum_layouts,
+                        opaque_handle_names,
+                        visited,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if kinds
+                .iter()
+                .any(|kind| kind.contains_opaque_handle() || kind.contains_closure_pair())
+            {
+                return Err(ClassificationError::Unsupported {
+                    rendered: format!("{ty:?}"),
+                });
+            }
+            Ok(StateFieldCloneKind::Tuple { elems: kinds })
+        }
+        ResolvedTy::Array(elem, len) => {
+            let elem_kind = classify_state_field_full_impl(
+                elem,
+                record_layouts,
+                enum_layouts,
+                opaque_handle_names,
+                visited,
+            )?;
+            if elem_kind.contains_opaque_handle() || elem_kind.contains_closure_pair() {
+                return Err(ClassificationError::Unsupported {
+                    rendered: format!("{ty:?}"),
+                });
+            }
+            Ok(StateFieldCloneKind::Array {
+                elem: Box::new(elem_kind),
+                len: *len,
+            })
+        }
         // --- Container / handle / record / enum arms -----------------
         ResolvedTy::Named {
             name,
@@ -795,8 +870,6 @@ fn classify_state_field_full_impl(
         ResolvedTy::Pointer { .. }
         | ResolvedTy::Borrow { .. }
         | ResolvedTy::TraitObject { .. }
-        | ResolvedTy::Tuple(_)
-        | ResolvedTy::Array(..)
         | ResolvedTy::Slice(_)
         | ResolvedTy::Task(_)
         | ResolvedTy::TypeParam { .. } => Err(ClassificationError::Unsupported {
@@ -2533,6 +2606,70 @@ mod tests {
     }
 
     #[test]
+    fn nested_tuple_and_array_fields_classify_recursively() {
+        let mut v = HashSet::new();
+        let ty = ResolvedTy::Tuple(vec![
+            ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]),
+            ResolvedTy::Bool,
+        ]);
+        let result = classify_state_field_full(&ty, &no_records(), &[], &[], &mut v).unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::Tuple {
+                elems: vec![
+                    StateFieldCloneKind::Tuple {
+                        elems: vec![
+                            StateFieldCloneKind::String,
+                            StateFieldCloneKind::BitCopy { size_bytes: 8 },
+                        ],
+                    },
+                    StateFieldCloneKind::BitCopy { size_bytes: 1 },
+                ],
+            },
+        );
+
+        let mut v = HashSet::new();
+        let result = classify_state_field_full(
+            &ResolvedTy::Array(Box::new(ResolvedTy::Bytes), 3),
+            &no_records(),
+            &[],
+            &[],
+            &mut v,
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            StateFieldCloneKind::Array {
+                elem: Box::new(StateFieldCloneKind::Bytes),
+                len: 3,
+            },
+        );
+    }
+
+    #[test]
+    fn nested_aggregate_classifier_rejects_uncloneable_leaves() {
+        let mut v = HashSet::new();
+        let closure_tuple = ResolvedTy::Tuple(vec![
+            ResolvedTy::Tuple(vec![ResolvedTy::Function {
+                params: vec![],
+                ret: Box::new(ResolvedTy::I64),
+            }]),
+            ResolvedTy::Bool,
+        ]);
+        assert!(matches!(
+            classify_state_field_full(&closure_tuple, &no_records(), &[], &[], &mut v),
+            Err(ClassificationError::Unsupported { .. })
+        ));
+
+        let mut v = HashSet::new();
+        let opaque_array = ResolvedTy::Array(Box::new(named_opaque("Value", vec![])), 2);
+        assert!(matches!(
+            classify_state_field_full(&opaque_array, &no_records(), &[], &[], &mut v),
+            Err(ClassificationError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
     fn contains_opaque_handle_kind_backstop() {
         // The codegen backstop `collection_layout_witness` consults this kind-
         // level mirror. A bare opaque is opaque; a container nesting one is too;
@@ -2556,9 +2693,31 @@ mod tests {
             }),
         }
         .contains_opaque_handle());
+        assert!(StateFieldCloneKind::Tuple {
+            elems: vec![
+                StateFieldCloneKind::Bytes,
+                StateFieldCloneKind::HashSet {
+                    elem: Box::new(StateFieldCloneKind::OpaqueHandle {
+                        name: "Value".to_string(),
+                    }),
+                },
+            ],
+        }
+        .contains_opaque_handle());
+        assert!(StateFieldCloneKind::Array {
+            elem: Box::new(StateFieldCloneKind::OpaqueHandle {
+                name: "Value".to_string(),
+            }),
+            len: 4,
+        }
+        .contains_opaque_handle());
         // Negative: a clean Vec<string> carries no opaque.
         assert!(!StateFieldCloneKind::Vec {
             elem: Box::new(StateFieldCloneKind::String),
+        }
+        .contains_opaque_handle());
+        assert!(!StateFieldCloneKind::Tuple {
+            elems: vec![StateFieldCloneKind::String, StateFieldCloneKind::Bytes],
         }
         .contains_opaque_handle());
     }
@@ -2586,6 +2745,16 @@ mod tests {
         assert!(StateFieldCloneKind::HashMap {
             key: Box::new(StateFieldCloneKind::String),
             val: Box::new(StateFieldCloneKind::Bytes),
+        }
+        .supports_value_class_drop_spine());
+        assert!(StateFieldCloneKind::Tuple {
+            elems: vec![
+                StateFieldCloneKind::String,
+                StateFieldCloneKind::Array {
+                    elem: Box::new(StateFieldCloneKind::Bytes),
+                    len: 2,
+                },
+            ],
         }
         .supports_value_class_drop_spine());
 
@@ -2623,6 +2792,13 @@ mod tests {
             elem: Box::new(StateFieldCloneKind::OpaqueHandle {
                 name: "json.Value".to_string(),
             }),
+        }
+        .supports_value_class_drop_spine());
+        assert!(!StateFieldCloneKind::Array {
+            elem: Box::new(StateFieldCloneKind::OpaqueHandle {
+                name: "json.Value".to_string(),
+            }),
+            len: 1,
         }
         .supports_value_class_drop_spine());
     }

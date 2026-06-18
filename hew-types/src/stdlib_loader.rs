@@ -1415,7 +1415,7 @@ mod tests {
     }
 
     #[test]
-    fn slice_type_exprs_fail_closed_in_loader() {
+    fn slice_type_exprs_alias_to_vec_in_loader() {
         use hew_parser::ast::TypeExpr;
 
         let texpr = TypeExpr::Slice(Box::new((
@@ -1428,13 +1428,13 @@ mod tests {
 
         assert_eq!(
             type_expr_to_ty(&texpr, "mymod"),
-            Ty::Error,
-            "slice annotations must not become Ty::Slice in registry-loaded signatures"
+            Ty::normalize_named("Vec".to_string(), vec![Ty::I32]),
+            "slice annotations must alias to Vec<T> in registry-loaded signatures"
         );
     }
 
     #[test]
-    fn module_info_tracks_public_slice_signatures_as_unsupported() {
+    fn module_info_accepts_public_slice_signatures_as_vec_aliases() {
         let result = parse("pub fn take(xs: [i32]) {}\n");
         assert!(
             result.errors.is_empty(),
@@ -1445,13 +1445,13 @@ mod tests {
         let info = extract_module_info(&result.program, "widgets");
         assert_eq!(
             info.unsupported_type_signatures,
-            vec!["public function `take`".to_string()],
-            "slice-bearing public signatures should be marked unsupported"
+            Vec::<String>::new(),
+            "slice-bearing public signatures should be accepted as Vec aliases"
         );
         assert_eq!(
             info.wrapper_fns[0].params,
-            vec![Ty::Error],
-            "unsupported slice parameter should fail closed inside the loaded signature"
+            vec![Ty::normalize_named("Vec".to_string(), vec![Ty::I32])],
+            "slice parameter should be loaded as a Vec alias"
         );
     }
 

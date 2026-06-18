@@ -1,0 +1,122 @@
+//! Correctness fixtures for unsigned integer ordering comparisons.
+//!
+//! Pins that `< <= > >=` emit unsigned LLVM predicates for unsigned
+//! operands.  The canonical wrong-answer case: a signed `icmp sgt` on
+//! 0xFFFF_FFFF_FFFF_FFFFu64 treats it as -1 (negative), so
+//! `big > 1u64` returns `false` instead of the correct `true`.
+//!
+//! High-bit-set values are constructed via `(-1) as u64` because Hew
+//! integer literals are capped at i64::MAX (no unsigned literal suffix).
+
+import std::testing;
+
+// ── u64: high-bit-set operands ───────────────────────────────────────
+#[test]
+fn test_u64_max_greater_than_one() {
+    let big: u64 = (-1) as u64; // 0xFFFF_FFFF_FFFF_FFFF
+    let small: u64 = 1;
+    testing.assert_true(big > small);
+}
+
+#[test]
+fn test_u64_one_less_than_max() {
+    let big: u64 = (-1) as u64;
+    let small: u64 = 1;
+    testing.assert_true(small < big);
+}
+
+#[test]
+fn test_u64_max_greater_eq_max() {
+    let big: u64 = (-1) as u64;
+    let also_big: u64 = (-1) as u64;
+    testing.assert_true(big >= also_big);
+}
+
+#[test]
+fn test_u64_one_less_eq_max() {
+    let big: u64 = (-1) as u64;
+    let small: u64 = 1;
+    testing.assert_true(small <= big);
+}
+
+#[test]
+fn test_u64_high_bit_set_greater_than_one() {
+    // 0x8000_0000_0000_0000 = i64::MIN reinterpreted as unsigned.
+    // Signed icmp sgt would treat this as negative; unsigned icmp ugt gives true.
+    let hi: u64 = (-9223372036854775807 - 1) as u64; // i64::MIN as u64
+    let small: u64 = 1;
+    testing.assert_true(hi > small);
+    testing.assert_false(hi < small);
+    testing.assert_true(small < hi);
+    testing.assert_false(small > hi);
+}
+
+// ── u32: high-bit-set operands ───────────────────────────────────────
+#[test]
+fn test_u32_high_bit_greater_than_one() {
+    let big: u32 = (-1) as u32; // 0xFFFF_FFFF
+    let small: u32 = 1;
+    testing.assert_true(big > small);
+    testing.assert_true(small < big);
+    testing.assert_false(big < small);
+}
+
+#[test]
+fn test_u32_boundary_ordering() {
+    let a: u32 = 0x80000000; // 2^31, high bit set
+    let b: u32 = 0x7FFFFFFF; // 2^31 - 1
+    testing.assert_true(a > b);
+    testing.assert_true(b < a);
+    testing.assert_true(a >= b);
+    testing.assert_true(b <= a);
+}
+
+// ── u8: high-bit-set operands ────────────────────────────────────────
+#[test]
+fn test_u8_high_bit_greater_than_one() {
+    let big: u8 = (-1) as u8; // 0xFF
+    let small: u8 = 1;
+    testing.assert_true(big > small);
+    testing.assert_true(small < big);
+    testing.assert_false(big < small);
+    testing.assert_false(small > big);
+}
+
+#[test]
+fn test_u8_0x80_greater_than_0x7f() {
+    let a: u8 = 0x80;
+    let b: u8 = 0x7F;
+    testing.assert_true(a > b);
+    testing.assert_true(b < a);
+    testing.assert_true(a >= b);
+    testing.assert_true(b <= a);
+}
+
+// ── i64: signed ordering must be unchanged (non-regression) ──────────
+#[test]
+fn test_i64_negative_less_than_positive() {
+    let neg: i64 = -1;
+    let pos: i64 = 1;
+    testing.assert_true(neg < pos);
+    testing.assert_true(pos > neg);
+    testing.assert_false(neg > pos);
+    testing.assert_false(pos < neg);
+}
+
+#[test]
+fn test_i64_min_less_than_max() {
+    let min_val: i64 = -9223372036854775807 - 1; // i64::MIN
+    let max_val: i64 = 9223372036854775807; // i64::MAX
+    testing.assert_true(min_val < max_val);
+    testing.assert_true(max_val > min_val);
+    testing.assert_true(min_val <= max_val);
+    testing.assert_true(max_val >= min_val);
+}
+
+#[test]
+fn test_i64_negative_one_greater_than_min() {
+    let neg_one: i64 = -1;
+    let min_val: i64 = -9223372036854775807 - 1;
+    testing.assert_true(neg_one > min_val);
+    testing.assert_true(min_val < neg_one);
+}

@@ -155,6 +155,16 @@ fn collect_match_payload_predicates(ctx: &LowerCtx, pattern: &Pattern) -> Vec<Hi
     }
 }
 
+fn constructor_payload_aggregate_subpatterns(pattern: &Pattern) -> bool {
+    let Pattern::Constructor { patterns, .. } = pattern else {
+        return false;
+    };
+    patterns.iter().any(|(sub_pat, _)| {
+        matches!(sub_pat, Pattern::Struct { .. })
+            || matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
+    })
+}
+
 fn literal_to_hir(lit: &Literal) -> (HirLiteral, ResolvedTy) {
     match lit {
         Literal::Integer { value, .. } => (HirLiteral::Integer(*value), ResolvedTy::I64),
@@ -20282,6 +20292,8 @@ impl LowerCtx {
             }
 
             let payload_predicates = collect_match_payload_predicates(self, &arm.pattern.0);
+            let has_payload_aggregate_subpatterns =
+                constructor_payload_aggregate_subpatterns(&arm.pattern.0);
 
             // Nested constructor subpatterns only make sense on an
             // EnumVariant arm; anything else is a checker contract violation
@@ -20306,6 +20318,7 @@ impl LowerCtx {
             // bindings are materialised below).
             let needs_scope = !binding_specs.is_empty()
                 || !resolution.payload_variant_patterns.is_empty()
+                || has_payload_aggregate_subpatterns
                 || matches!(predicate, HirMatchArmPredicate::Binding { .. });
             if needs_scope {
                 self.push_scope();
@@ -20341,6 +20354,100 @@ impl LowerCtx {
                 });
             }
 
+            let mut body_prelude = Vec::new();
+            if let Pattern::Constructor { name, patterns } = &arm.pattern.0 {
+                let field_tys = self
+                    .lookup_variant_ctor(name)
+                    .map(|(type_name, _, kind)| match kind {
+                        HirVariantKind::Tuple(field_tys) => {
+                            let scrutinee_args = match &scrutinee_hir.ty {
+                                ResolvedTy::Named { args, .. } => args.as_slice(),
+                                _ => &[],
+                            };
+                            let type_params = self
+                                .enum_type_params
+                                .get(&type_name)
+                                .cloned()
+                                .unwrap_or_default();
+                            if type_params.len() == scrutinee_args.len() {
+                                field_tys
+                                    .iter()
+                                    .map(|ty| {
+                                        substitute_type_params(ty, &type_params, scrutinee_args)
+                                    })
+                                    .collect()
+                            } else {
+                                field_tys.clone()
+                            }
+                        }
+                        HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
+                    })
+                    .unwrap_or_default();
+                for (field_idx, (sub_pat, sub_span)) in patterns.iter().enumerate() {
+                    if !matches!(sub_pat, Pattern::Struct { .. })
+                        && !matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
+                    {
+                        continue;
+                    }
+                    let Some(field_ty) = field_tys.get(field_idx).cloned() else {
+                        continue;
+                    };
+                    let Ok(field_idx_u32) = u32::try_from(field_idx) else {
+                        self.unsupported(
+                            sub_span.clone(),
+                            "payload aggregate field index exceeds u32::MAX",
+                            "match-expression-substrate",
+                        );
+                        binding_error = true;
+                        continue;
+                    };
+                    let temp_name = format!("__payload_{}_{}", field_idx, self.ids.binding().0);
+                    let bound =
+                        self.bind(temp_name.clone(), field_ty.clone(), false, sub_span.clone());
+                    let temp_id = bound.id;
+                    bindings.push(HirMatchArmBinding {
+                        binding: temp_id,
+                        field_idx: field_idx_u32,
+                        name: temp_name.clone(),
+                        ty: field_ty.clone(),
+                    });
+                    let temp_ref = self.binding_ref_expr(
+                        temp_name,
+                        temp_id,
+                        field_ty.clone(),
+                        sub_span.clone(),
+                    );
+                    self.lower_pattern_value_into_stmts(
+                        &(sub_pat.clone(), sub_span.clone()),
+                        temp_ref,
+                        field_ty,
+                        &mut body_prelude,
+                        sub_span.clone(),
+                    );
+                }
+            }
+            if binding_error {
+                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                if needs_scope {
+                    self.pop_scope();
+                }
+                rejected = true;
+                continue;
+            }
+            if !body_prelude.is_empty() && arm.guard.is_some() {
+                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.unsupported(
+                    pattern_span.clone(),
+                    "guarded match arm with nested aggregate payload destructure",
+                    "match-expression-substrate",
+                );
+                if needs_scope {
+                    self.pop_scope();
+                }
+                rejected = true;
+                continue;
+            }
+
             // Materialise nested constructor predicate trees. Their inner
             // bindings are registered in the same arm scope as the payload
             // bindings above, so guard/body references resolve through them.
@@ -20372,7 +20479,27 @@ impl LowerCtx {
                 .as_ref()
                 .map(|guard_spanned| self.lower_expr(guard_spanned, IntentKind::Read));
 
-            let body_hir = self.lower_expr(&arm.body, IntentKind::Read);
+            let mut body_hir = self.lower_expr(&arm.body, IntentKind::Read);
+            if !body_prelude.is_empty() {
+                let body_ty = body_hir.ty.clone();
+                let body_span = arm.pattern.1.start..arm.body.1.end;
+                body_hir = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: body_ty.clone(),
+                    value_class: ValueClass::of_ty(&body_ty, &self.type_classes),
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::Block(HirBlock {
+                        node: self.ids.node(),
+                        scope: self.ids.scope(),
+                        statements: body_prelude,
+                        tail: Some(Box::new(body_hir)),
+                        ty: body_ty,
+                        span: body_span.clone(),
+                    }),
+                    span: body_span,
+                };
+            }
 
             if needs_scope {
                 self.pop_scope();

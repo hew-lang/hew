@@ -24333,9 +24333,9 @@ fn main() -> i64 {
     assert_eq!(inner_ok.bindings[0].field_idx, 0);
 }
 
-/// Tuple destructure inside tuple-variant payload position must be rejected.
+/// Tuple destructure inside tuple-variant payload position is admitted for HIR lowering.
 #[test]
-fn constructor_payload_tuple_destructure_emits_unsupported_diagnostic() {
+fn constructor_payload_tuple_destructure_is_accepted() {
     let output = check_source(
         r"
 enum Pair { Both((i64, i64)); None }
@@ -24343,16 +24343,17 @@ fn main() -> i64 {
     let p = Pair::Both((1, 2));
     match p {
         Pair::Both((a, b)) => a,
+        Pair::Both(_) => 0,
         Pair::None => 0,
     }
 }",
     );
     assert!(
-        output.errors.iter().any(|e| matches!(
+        !output.errors.iter().any(|e| matches!(
             &e.kind,
             crate::error::TypeErrorKind::UnsupportedPayloadSubpattern { .. }
         )),
-        "expected UnsupportedPayloadSubpattern error for tuple-in-payload; got errors: {:#?}",
+        "tuple-in-payload must not emit UnsupportedPayloadSubpattern; got errors: {:#?}",
         output.errors
     );
 }

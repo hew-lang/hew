@@ -1,0 +1,17 @@
+fn main() {
+    let hit: Option<(i64, i64)> = Some((3, 4));
+    let a = match hit {
+        Some((x, y)) => x + y,
+        Some(_) => 99,
+        None => 0,
+    };
+    println(a);
+
+    let miss: Option<(i64, i64)> = None;
+    let b = match miss {
+        Some((x, y)) => x + y,
+        Some(_) => 99,
+        None => 9,
+    };
+    println(b);
+}

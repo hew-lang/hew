@@ -112,8 +112,11 @@ fn binding_name_for_pattern(pattern: &Pattern) -> Option<String> {
 /// Returns `Some(label)` for unsupported forms that must be rejected.
 fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static str> {
     match pattern {
-        // Plain binding, wildcard, and literal predicates are supported.
-        Pattern::Wildcard | Pattern::Literal(_) => None,
+        // Plain binding, wildcard, literal predicates, and aggregate
+        // destructures are supported.
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Struct { .. } | Pattern::Tuple(_) => {
+            None
+        }
         Pattern::Identifier(name) => {
             let is_constructor_like =
                 name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
@@ -127,14 +130,6 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
             }
         }
         Pattern::Constructor { .. } => Some("nested constructor"),
-        Pattern::Struct { .. } => Some("struct destructure"),
-        // An empty tuple `()` is the unit type — it has only one value and
-        // acts as a wildcard (no predicate is needed to test it).  Allow it
-        // so that `Ok(())` / `Err(())` patterns remain legal.
-        // Non-empty tuples introduce sub-bindings that the substrate does not
-        // yet lower; those remain unsupported.
-        Pattern::Tuple(pats) if pats.is_empty() => None,
-        Pattern::Tuple(_) => Some("tuple destructure"),
         Pattern::Or(_, _) => Some("or-pattern"),
         // Regex literals are only legal as top-level match-arm predicates
         // (scrutinee must be `string`). A regex in payload subpattern

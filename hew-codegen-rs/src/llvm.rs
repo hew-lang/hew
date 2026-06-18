@@ -48817,6 +48817,87 @@ mod tests {
         );
     }
 
+    /// NEW-8 wasm fail-closed: a `Terminator::SuspendingSelect` carrier emits
+    /// `hew_await_cancel_schedule_deadline_ms` (via the `AfterTimer` arm
+    /// deadline-wheel path), part of the native-only timer substrate.  The
+    /// wasm-exclusion scan must fail closed with a structured
+    /// `WasmUnsupportedSubstrate("hew_await_cancel_schedule_deadline_ms")`
+    /// rather than a linker error on wasm32.  Mirrors the per-carrier convention
+    /// of the sleep / channel-recv / stream-next / task-await sibling tests.
+    /// LESSONS P0 `boundary-fail-closed`.
+    #[test]
+    fn wasm_exclusion_scan_flags_suspending_select() {
+        let i64_ty = ResolvedTy::I64;
+        let ptr_ty = ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        };
+        // Minimal two-arm select: one ChannelRecv + one AfterTimer.  The
+        // exclusion scan keys on terminator shape, not arm count or arm kind, so
+        // any SuspendingSelect must be refused on wasm32.
+        let body = RawMirFunction {
+            name: "suspending_select_wasm_excl_test".to_string(),
+            return_ty: ResolvedTy::Unit,
+            call_conv: hew_mir::FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ptr_ty, i64_ty],
+            blocks: vec![
+                BasicBlock {
+                    id: 0,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::SuspendingSelect {
+                        arms: vec![
+                            hew_mir::SelectArm {
+                                kind: hew_mir::SelectArmKind::ChannelRecv {
+                                    receiver: Place::Local(0),
+                                    elem_ty: ResolvedTy::String,
+                                },
+                                body_block: 1,
+                                binding: None,
+                            },
+                            hew_mir::SelectArm {
+                                kind: hew_mir::SelectArmKind::AfterTimer {
+                                    duration: Place::Local(1),
+                                },
+                                body_block: 1,
+                                binding: None,
+                            },
+                        ],
+                        resume: 1,
+                        cleanup: 2,
+                    },
+                },
+                BasicBlock {
+                    id: 1,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                },
+                BasicBlock {
+                    id: 2,
+                    statements: Vec::new(),
+                    instructions: Vec::new(),
+                    terminator: Terminator::Return,
+                },
+            ],
+            decisions: Vec::new(),
+            intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
+            lambda_actor_user_param_locals: Vec::new(),
+            span: None,
+            instr_spans: ::std::collections::BTreeMap::new(),
+        };
+        let pipeline = raw_mir_only_pipeline(body);
+        let found = uses_wasm_excluded_symbol(&pipeline)
+            .expect("a SuspendingSelect carrier must be flagged as WASM-excluded");
+        assert_eq!(
+            found, "hew_await_cancel_schedule_deadline_ms",
+            "WASM exclusion scan must surface `hew_await_cancel_schedule_deadline_ms` \
+             for a `Terminator::SuspendingSelect` carrier; got `{found}`"
+        );
+    }
+
     /// Widened-carrier wasm fail-closed: the exclusion scan keys on terminator
     /// SHAPE, not the element field, so a recv carrier whose `elem_ty` is a
     /// record (the widened `Stream<MyRecord>` / `Receiver<MyRecord>` form) must

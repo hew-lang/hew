@@ -2,13 +2,14 @@
 //!
 //! Exercises the full pipeline: checker `.next()` rewrite → HIR `GeneratorNext`
 //! → MIR `Instr::GeneratorNext` + `Terminator::MakeGenerator` → codegen
-//! (`hew_gen_ctx_create`, `hew_gen_next` + Option unbox, `hew_gen_free` on drop)
-//! → thread-based runtime → native execution. These are value oracles: they
-//! assert the printed value, not exit-0.
+//! (the `llvm.coro.*` continuation substrate: a coro-ramp body, `hew_cont_*`
+//! resume/done driving the Option unbox, and `hew_gen_coro_destroy` on drop)
+//! → native execution. These are value oracles: they assert the printed value,
+//! not exit-0.
 //!
-//! The cross-yield-live-local case is the grounding probe for whether the
-//! thread-based runtime alone preserves a local across a suspension (it does):
-//! `let k = 10; yield 1; yield k` must yield `10` on the second `.next()`.
+//! The cross-yield-live-local case is the grounding probe for whether the coro
+//! frame preserves a local across a suspension (it does): `let k = 10; yield 1;
+//! yield k` must yield `10` on the second `.next()`.
 
 #![cfg(not(target_arch = "wasm32"))]
 #![cfg(unix)]
@@ -162,7 +163,7 @@ fn main() {
 }
 
 /// Repeated `.next()` calls advance generator state and surface `None` at
-/// exhaustion. Drives the generator to completion so `hew_gen_free` runs on a
+/// exhaustion. Drives the generator to completion so `hew_gen_coro_destroy` runs on a
 /// fully-consumed generator (drop on the exhausted handle must not double-free).
 #[test]
 fn gen_repeated_next_advances_then_none() {
@@ -281,9 +282,9 @@ fn gen_cross_yield_live_local_is_preserved() {
 /// Compile `source` with `--dump-mir <stage>` and return the dump.
 ///
 /// Inline `Instr::Drop`s (the consumer-side yielded-value release and the
-/// per-scope-exit `hew_gen_free`) live in the instruction stream, dumped by the
+/// per-scope-exit `hew_gen_coro_destroy`) live in the instruction stream, dumped by the
 /// `checked` stage. The composite member drops (the tuple's `TupleInPlace` and
-/// its `hew_gen_free` thunk) live in the `drop_plans`, dumped by `elab`. Each
+/// its `hew_gen_coro_destroy` thunk) live in the `drop_plans`, dumped by `elab`. Each
 /// test picks the stage that carries its release symbol.
 fn dump_mir(repo: &Path, stem: &str, stage: &str, source: &str) -> String {
     let dir = std::env::temp_dir().join(format!("hew-gen-leak-{}-{stem}", std::process::id()));
@@ -382,7 +383,7 @@ fn count_release_calls_in_module(ir: &str, symbol: &str) -> usize {
 /// Leak 1 (consumer side): `for v in lists()` over a `Vec<i64>` yield must
 /// release each yielded Vec in the loop body — exactly one `hew_vec_free` and
 /// (since the generator is consumed to completion + dropped on loop exit) one
-/// `hew_gen_free`. Before the fix there was no `hew_vec_free` and the yielded
+/// `hew_gen_coro_destroy`. Before the fix there was no `hew_vec_free` and the yielded
 /// buffers leaked (verified: 2 leaks → 0 under `leaks --atExit`).
 #[test]
 fn for_in_vec_yield_releases_each_yielded_vec() {
@@ -404,8 +405,8 @@ fn main() {
          none found in MIR:\n{dump}"
     );
     assert!(
-        dump.contains("hew_gen_free"),
-        "the generator handle must still be released with hew_gen_free:\n{dump}"
+        dump.contains("hew_gen_coro_destroy"),
+        "the generator handle must still be released with hew_gen_coro_destroy:\n{dump}"
     );
     // Runtime negative-control: 3 + 2 element lengths summed.
     let stdout = run_hew_source(&repo, "leak1_vec_run", source);
@@ -453,7 +454,7 @@ fn main() {
 /// Leak 2: a generator embedded in a returned tuple must be freed by the
 /// caller's tuple member-drop. `ty_contains_heap_owning` now classifies a
 /// `(Generator<i64,()>, i64)` as heap-owning, so the caller emits a
-/// `TupleInPlace` drop whose thunk recurses to `hew_gen_free` (verified
+/// `TupleInPlace` drop whose thunk recurses to `hew_gen_coro_destroy` (verified
 /// leak-clean for the otherwise value-class-dependent i64 case).
 #[test]
 fn generator_in_returned_tuple_is_freed_by_caller() {
@@ -477,7 +478,7 @@ fn main() {
         "the (Generator, i64) tuple must earn a TupleInPlace member-drop:\n{dump}"
     );
     // The codegen proof: the synthesized `__hew_tuple_drop_inplace_*` thunk
-    // recurses to `hew_gen_free` for the generator member (the thunk body is
+    // recurses to `hew_gen_coro_destroy` for the generator member (the thunk body is
     // emitted in LLVM IR, not the MIR dump). COUNT, not presence: the generator
     // is read only by `.1`, never extracted, so the tuple thunk's single call is
     // the ONLY release — a duplicate (the Defect 1 double-free) would show as a
@@ -488,13 +489,13 @@ fn main() {
         "the (Generator, i64) tuple must synthesize a drop-in-place thunk; IR:\n{ir}"
     );
     assert_eq!(
-        count_release_calls_in_module(&ir, "hew_gen_free"),
+        count_release_calls_in_module(&ir, "hew_gen_coro_destroy"),
         1,
         "the generator ctx must be freed exactly once (the tuple thunk's single \
          recursing call); a duplicate is a masked double-free; IR:\n{ir}"
     );
     assert_eq!(
-        count_main_release_calls(&ir, "hew_gen_free"),
+        count_main_release_calls(&ir, "hew_gen_coro_destroy"),
         0,
         "main must not also free the tuple's generator member directly (it is \
          freed by the tuple drop thunk); IR:\n{ir}"
@@ -509,7 +510,7 @@ fn main() {
 /// Leak 3: `for n in count()` nested inside a `while` must free one generator
 /// context per OUTER iteration, on the block-scope-exit edge — not accumulate
 /// one leaked context + thread per iteration. The fix emits a per-scope-exit
-/// `hew_gen_free`; verified 23 leaks → 0 under `leaks --atExit`.
+/// `hew_gen_coro_destroy`; verified 23 leaks → 0 under `leaks --atExit`.
 #[test]
 fn for_in_generator_nested_in_loop_frees_each_iteration() {
     let repo = repo_root();
@@ -529,8 +530,8 @@ fn main() {
 ";
     let dump = dump_mir(&repo, "leak3_nested", "checked", source);
     assert!(
-        dump.contains("hew_gen_free"),
-        "the nested for-iter generator must be released with hew_gen_free on the \
+        dump.contains("hew_gen_coro_destroy"),
+        "the nested for-iter generator must be released with hew_gen_coro_destroy on the \
          enclosing loop's re-entry edge:\n{dump}"
     );
     let stdout = run_hew_source(&repo, "leak3_nested_run", source);
@@ -542,7 +543,7 @@ fn main() {
 
 /// A generator created but never iterated inside a loop (`let g = count()` in a
 /// `while`) must still free the context per iteration via the same
-/// per-scope-exit `hew_gen_free` (verified leak-clean).
+/// per-scope-exit `hew_gen_coro_destroy` (verified leak-clean).
 #[test]
 fn unconsumed_generator_in_loop_is_freed_each_iteration() {
     let repo = repo_root();
@@ -559,8 +560,8 @@ fn main() {
 ";
     let dump = dump_mir(&repo, "leak3_unconsumed", "checked", source);
     assert!(
-        dump.contains("hew_gen_free"),
-        "the created-but-unconsumed generator must be released with hew_gen_free \
+        dump.contains("hew_gen_coro_destroy"),
+        "the created-but-unconsumed generator must be released with hew_gen_coro_destroy \
          each iteration:\n{dump}"
     );
     let stdout = run_hew_source(&repo, "leak3_unconsumed_run", source);
@@ -573,7 +574,7 @@ fn main() {
 /// for-in early `break`: must run cleanly and free BOTH the generator context
 /// AND the break-iteration's yielded value on the break edge. The break edge
 /// gets an inline `hew_vec_free` for the iteration's yielded Vec (the value-side
-/// companion to the handle release) plus the `hew_gen_free` handle release —
+/// companion to the handle release) plus the `hew_gen_coro_destroy` handle release —
 /// verified 2 leaks → 0 under `leaks --atExit`.
 #[test]
 fn for_in_generator_early_break_runs_clean() {
@@ -593,7 +594,7 @@ fn main() {
 ";
     let dump = dump_mir(&repo, "leak_break", "checked", source);
     assert!(
-        dump.contains("hew_gen_free"),
+        dump.contains("hew_gen_coro_destroy"),
         "the generator must be freed on the break/exit path:\n{dump}"
     );
     assert!(
@@ -651,7 +652,7 @@ fn main() {
 /// non-break iterations' Vecs at the body-end — the break edge and the
 /// fall-through body-end are mutually exclusive CFG paths, so `@main` carries
 /// exactly TWO `hew_vec_free` sites (one per path) and exactly ONE
-/// `hew_gen_free` (the handle, freed once on loop exit). A double-free would
+/// `hew_gen_coro_destroy` (the handle, freed once on loop exit). A double-free would
 /// show as extra call sites; the value-leak (pre-fix) showed as only the
 /// body-end site with the break iteration leaking.
 #[test]
@@ -679,7 +680,7 @@ fn main() {
          IR:\n{ir}"
     );
     assert_eq!(
-        count_main_release_calls(&ir, "hew_gen_free"),
+        count_main_release_calls(&ir, "hew_gen_coro_destroy"),
         1,
         "the generator handle must be freed exactly once on loop exit; IR:\n{ir}"
     );
@@ -687,11 +688,11 @@ fn main() {
 
 /// Defect 1 (hard double-free): a generator extracted out of a live tuple via a
 /// standalone `let g = pair.0` binding must free its context EXACTLY ONCE. The
-/// extracted binding's standalone `hew_gen_free` is the sole owner; the tuple's
+/// extracted binding's standalone `hew_gen_coro_destroy` is the sole owner; the tuple's
 /// `TupleInPlace` member-drop MUST be excluded so it does not free the same
 /// aliased ctx a second time. Count-based oracle: a presence check passes even
 /// on the double-free (the runtime null-guard masks the second free), so the
-/// module must carry exactly ONE `hew_gen_free` call site.
+/// module must carry exactly ONE `hew_gen_coro_destroy` call site.
 #[test]
 fn generator_extracted_from_tuple_is_freed_exactly_once() {
     let repo = repo_root();
@@ -710,7 +711,7 @@ fn main() {
 ";
     let ir = emit_llvm_ir(&repo, "defect1_extract_ir", source);
     assert_eq!(
-        count_release_calls_in_module(&ir, "hew_gen_free"),
+        count_release_calls_in_module(&ir, "hew_gen_coro_destroy"),
         1,
         "extracting g = pair.0 must free the ctx exactly once (the standalone \
          binding's drop); the tuple member-drop must be excluded; IR:\n{ir}"
@@ -742,7 +743,7 @@ fn main() {
 ";
     let ir = emit_llvm_ir(&repo, "defect1_destruct_ir", source);
     assert_eq!(
-        count_release_calls_in_module(&ir, "hew_gen_free"),
+        count_release_calls_in_module(&ir, "hew_gen_coro_destroy"),
         1,
         "destructured g must free the ctx exactly once; IR:\n{ir}"
     );
@@ -755,7 +756,7 @@ fn main() {
 
 /// Defect 1: a generator extracted from a tuple THEN consumed by for-in
 /// (`let g = pair.0; for n in g`) is released by the for-iter binding's
-/// per-loop-exit `hew_gen_free`; the still-live tuple's member-drop must be
+/// per-loop-exit `hew_gen_coro_destroy`; the still-live tuple's member-drop must be
 /// excluded so the aliased ctx is not freed a second time.
 #[test]
 fn generator_extracted_then_consumed_is_freed_exactly_once() {
@@ -779,7 +780,7 @@ fn main() {
 ";
     let ir = emit_llvm_ir(&repo, "defect1_extract_consume_ir", source);
     assert_eq!(
-        count_release_calls_in_module(&ir, "hew_gen_free"),
+        count_release_calls_in_module(&ir, "hew_gen_coro_destroy"),
         1,
         "extract-then-for-in must free the ctx exactly once (the for-iter \
          binding's release); the tuple member-drop must be excluded; IR:\n{ir}"
@@ -794,10 +795,10 @@ fn main() {
 /// W3.053: a generator created LOCALLY, moved into a local tuple, and consumed
 /// out of that tuple's field by for-in (`let g = count(); let packed = (g, 99);
 /// for n in packed.0`). The for-in iterator binding takes ownership of the
-/// generator field and releases it via its per-loop-exit `hew_gen_free`; both the
+/// generator field and releases it via its per-loop-exit `hew_gen_coro_destroy`; both the
 /// source `g` binding's standalone drop AND the local tuple's `TupleInPlace`
 /// member-drop must be excluded so the same aliased ctx is not freed again.
-/// Before the fix this emitted seven `hew_gen_free` call sites and SIGSEGV'd
+/// Before the fix this emitted seven `hew_gen_coro_destroy` call sites and SIGSEGV'd
 /// (exit 139); after, exactly one. Count-based oracle (the runtime null-guard
 /// masks extra frees, so a presence check would pass on the over-free).
 #[test]
@@ -817,7 +818,7 @@ fn main() {
 ";
     let ir = emit_llvm_ir(&repo, "w3053_local_tuple_forin_ir", source);
     assert_eq!(
-        count_release_calls_in_module(&ir, "hew_gen_free"),
+        count_release_calls_in_module(&ir, "hew_gen_coro_destroy"),
         1,
         "for-in over a local tuple's generator field must free the ctx exactly \
          once (the for-iter binding's release); the source binding and the tuple \
@@ -853,7 +854,7 @@ fn main() {
 ";
     let ir = emit_llvm_ir(&repo, "w3053_bind_then_forin_ir", source);
     assert_eq!(
-        count_release_calls_in_module(&ir, "hew_gen_free"),
+        count_release_calls_in_module(&ir, "hew_gen_coro_destroy"),
         1,
         "bind-then-for-in over a local tuple's generator field must free the ctx \
          exactly once; IR:\n{ir}"
@@ -870,7 +871,7 @@ fn main() {
 /// (`let g = pair.0; let repacked = (g, 99); for n in repacked.0`). The value
 /// flow crosses two aggregates (the returned `pair`, the local `repacked`) and a
 /// rebind before reaching the for-iter consumer; the exclusion must follow the
-/// handle through both so still exactly one `hew_gen_free` fires.
+/// handle through both so still exactly one `hew_gen_coro_destroy` fires.
 #[test]
 fn generator_extracted_then_restored_into_local_aggregate_is_freed_exactly_once() {
     let repo = repo_root();
@@ -894,7 +895,7 @@ fn main() {
 ";
     let ir = emit_llvm_ir(&repo, "w3053_extract_then_restore_ir", source);
     assert_eq!(
-        count_release_calls_in_module(&ir, "hew_gen_free"),
+        count_release_calls_in_module(&ir, "hew_gen_coro_destroy"),
         1,
         "extract-then-restore-then-for-in must free the ctx exactly once across \
          both aggregates; IR:\n{ir}"
@@ -910,7 +911,7 @@ fn main() {
 /// generator field is NEVER extracted (`let repacked = (g, 99);
 /// println(repacked.1)`) keeps the source binding's OWN standalone drop as the
 /// sole free. The field-precise exclusion must NOT fire here (no extraction
-/// consumer), so still exactly one `hew_gen_free` — proving the fix does not
+/// consumer), so still exactly one `hew_gen_coro_destroy` — proving the fix does not
 /// over-exclude the no-consume sibling into a leak.
 #[test]
 fn generator_in_local_tuple_not_extracted_keeps_source_drop() {
@@ -931,7 +932,7 @@ fn main() {
 ";
     let ir = emit_llvm_ir(&repo, "w3053_no_consume_ir", source);
     assert_eq!(
-        count_release_calls_in_module(&ir, "hew_gen_free"),
+        count_release_calls_in_module(&ir, "hew_gen_coro_destroy"),
         1,
         "no extraction consumer: the source binding's own drop is the sole free; \
          the field-precise exclusion must NOT fire (no leak, no double-free); \
@@ -949,7 +950,7 @@ fn main() {
 /// field (`let h = Holder { inner: g, tag: 7 }; for n in h.inner`). Exercises the
 /// `RecordInit` / `RecordFieldLoad` arms of the consumed-member derivation (the
 /// tuple cases above exercise `TupleConstruct` / `TupleFieldLoad`). Still exactly
-/// one `hew_gen_free`: the for-iter binding's release.
+/// one `hew_gen_coro_destroy`: the for-iter binding's release.
 #[test]
 fn generator_in_local_record_consumed_by_for_in_is_freed_exactly_once() {
     let repo = repo_root();
@@ -972,7 +973,7 @@ fn main() {
 ";
     let ir = emit_llvm_ir(&repo, "w3053_local_record_forin_ir", source);
     assert_eq!(
-        count_release_calls_in_module(&ir, "hew_gen_free"),
+        count_release_calls_in_module(&ir, "hew_gen_coro_destroy"),
         1,
         "for-in over a local record's generator field must free the ctx exactly \
          once; the source binding and the record member-drop must both be \

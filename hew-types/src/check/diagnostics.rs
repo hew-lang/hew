@@ -591,13 +591,9 @@ impl Checker {
     /// Validate top-level `if let` / `while let` patterns against current
     /// codegen support, and reject only unsupported kinds.
     ///
-    /// Currently supported at the top level: `Constructor`, `Struct`, `Tuple`,
-    /// `Or`, `Wildcard`, and `Identifier` (this method returns `false` for
-    /// these, i.e., no rejection).
-    ///
-    /// `Literal` patterns still require emit-side work; reject them here so the
-    /// compiler fails closed with a clear diagnostic rather than silently
-    /// producing broken IR.
+    /// Currently supported at the top level: `Literal`, `Constructor`,
+    /// `Struct`, `Tuple`, `Or`, `Wildcard`, and `Identifier` (this method
+    /// returns `false` for these, i.e., no rejection).
     ///
     /// Returns `true` only when a pattern is rejected (and an error is emitted).
     pub(super) fn reject_unsupported_iflet_pattern(
@@ -606,10 +602,10 @@ impl Checker {
         span: &Span,
     ) -> bool {
         let kind_name = match pattern {
-            Pattern::Literal(_) => "literal",
             Pattern::Regex { .. } => "regex",
             Pattern::Wildcard
             | Pattern::Identifier(_)
+            | Pattern::Literal(_)
             | Pattern::Constructor { .. }
             | Pattern::Struct { .. }
             | Pattern::Tuple(_)

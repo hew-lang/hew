@@ -8298,6 +8298,16 @@ impl<'src> Parser<'src> {
                     return None;
                 }
             }
+            Some(Token::Float(s)) => {
+                let cleaned: String = s.chars().filter(|c| *c != '_').collect();
+                if let Ok(val) = cleaned.parse::<f64>() {
+                    self.advance();
+                    Pattern::Literal(Literal::Float(val))
+                } else {
+                    self.error_invalid_literal(format!("invalid float literal '{s}'"));
+                    return None;
+                }
+            }
             Some(Token::StringLit(s)) => {
                 let inner = unquote_str(s);
                 let tok_start = self.peek_span().start;

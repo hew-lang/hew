@@ -4584,9 +4584,9 @@ fn typecheck_string_literal_with_catchall_is_exhaustive() {
 }
 
 #[test]
-fn typecheck_float_literal_pattern_errors() {
+fn typecheck_float_literal_pattern_is_accepted() {
     let (errors, _) = parse_and_check(concat!(
-        "fn main() {\n",
+        "fn main() -> i64 {\n",
         "    let x: f64 = -1.0;\n",
         "    match x {\n",
         "        -1.0 => 10,\n",
@@ -4595,12 +4595,10 @@ fn typecheck_float_literal_pattern_errors() {
         "}\n",
     ));
     assert!(
-        errors.iter().any(|e| {
-            matches!(e.kind, TypeErrorKind::InvalidOperation)
-                && e.message
-                    .contains("float literal patterns are not supported")
-        }),
-        "expected float literal pattern rejection, got: {errors:?}"
+        !errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::InvalidOperation)),
+        "float literal pattern must not emit InvalidOperation, got: {errors:?}"
     );
 }
 
@@ -19645,10 +19643,9 @@ mod supervisor_child_slot_tests {
 
 // ── if-let / while-let pattern contract ──────────────────────────────────
 //
-// These tests verify that the checker rejects Struct, Tuple, Or, and
-// Literal patterns at the top level of `if let` / `while let`, because
-// codegen has no support for them.  Constructor, Wildcard, and Identifier
-// are the only allowed patterns.
+// These tests verify that the checker admits the top-level `if let` /
+// `while let` patterns HIR lowering supports and keeps unsupported forms
+// fail-closed.
 #[cfg(test)]
 mod iflet_whilelet_pattern_contract {
     use super::*;
@@ -19665,12 +19662,13 @@ mod iflet_whilelet_pattern_contract {
     }
 
     #[test]
-    fn iflet_stmt_literal_pattern_is_rejected() {
+    fn iflet_stmt_literal_pattern_is_accepted() {
         let errors = check_iflet_whilelet(r"fn foo(x: i64) { if let 1 = x { 0 } }");
         assert!(
-            errors.iter().any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("literal")),
-            "expected InvalidOperation for literal if-let pattern; got: {errors:?}",
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "literal if-let pattern must not emit InvalidOperation; got: {errors:?}",
         );
     }
 
@@ -19733,12 +19731,13 @@ mod iflet_whilelet_pattern_contract {
     }
 
     #[test]
-    fn whilelet_stmt_literal_pattern_is_rejected() {
+    fn whilelet_stmt_literal_pattern_is_accepted() {
         let errors = check_iflet_whilelet(r"fn foo(x: i64) { while let 1 = x { break; } }");
         assert!(
-            errors.iter().any(|e| e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("literal")),
-            "expected InvalidOperation for literal while-let pattern; got: {errors:?}",
+            !errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::InvalidOperation),
+            "literal while-let pattern must not emit InvalidOperation; got: {errors:?}",
         );
     }
 
@@ -24332,9 +24331,9 @@ fn main() -> i64 {
     assert_eq!(inner_ok.bindings[0].field_idx, 0);
 }
 
-/// Tuple destructure inside tuple-variant payload position must be rejected.
+/// Tuple destructure inside tuple-variant payload position is admitted for HIR lowering.
 #[test]
-fn constructor_payload_tuple_destructure_emits_unsupported_diagnostic() {
+fn constructor_payload_tuple_destructure_is_accepted() {
     let output = check_source(
         r"
 enum Pair { Both((i64, i64)); None }
@@ -24342,16 +24341,17 @@ fn main() -> i64 {
     let p = Pair::Both((1, 2));
     match p {
         Pair::Both((a, b)) => a,
+        Pair::Both(_) => 0,
         Pair::None => 0,
     }
 }",
     );
     assert!(
-        output.errors.iter().any(|e| matches!(
+        !output.errors.iter().any(|e| matches!(
             &e.kind,
             crate::error::TypeErrorKind::UnsupportedPayloadSubpattern { .. }
         )),
-        "expected UnsupportedPayloadSubpattern error for tuple-in-payload; got errors: {:#?}",
+        "tuple-in-payload must not emit UnsupportedPayloadSubpattern; got errors: {:#?}",
         output.errors
     );
 }

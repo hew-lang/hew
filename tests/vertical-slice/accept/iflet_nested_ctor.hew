@@ -1,0 +1,18 @@
+fn main() {
+    let first: Result<Option<i64>, string> = Ok(Some(7));
+    if let Ok(Some(x)) = first {
+        println(x);
+    }
+
+    let second: Result<Option<i64>, string> = Ok(None);
+    if let Ok(Some(y)) = second {
+        println(y);
+    }
+
+    let third: Result<Option<i64>, string> = Err("bad");
+    if let Ok(Some(z)) = third {
+        println(z);
+    }
+
+    println(8);
+}

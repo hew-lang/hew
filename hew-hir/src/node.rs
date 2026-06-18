@@ -1961,6 +1961,8 @@ pub enum HirExprKind {
         /// lowering to emit `Move { src: Place::MachineVariant }` at body
         /// entry — identical to a `Match` arm's payload handling.
         bindings: Vec<HirMatchArmBinding>,
+        /// Nested constructor checks that must pass before the loop body runs.
+        payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
         /// Loop body.
         body: HirBlock,
     },
@@ -1990,6 +1992,8 @@ pub enum HirExprKind {
         variant_idx: u32,
         /// Payload bindings introduced by the pattern; bound for `body` only.
         bindings: Vec<HirMatchArmBinding>,
+        /// Nested constructor checks that must pass before the then-branch runs.
+        payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
         /// Then-branch body (executed when the pattern matches).
         body: HirBlock,
         /// Optional else-branch body; `None` when there is no `else` clause.

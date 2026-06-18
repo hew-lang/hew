@@ -749,7 +749,8 @@ impl Verifier {
             (HirLiteral::Integer(_), ty) => {
                 ty.is_integer() && !matches!(ty, ResolvedTy::Isize | ResolvedTy::Usize)
             }
-            (HirLiteral::Bool(_), ResolvedTy::Bool)
+            (HirLiteral::Float(_), ResolvedTy::F32 | ResolvedTy::F64)
+            | (HirLiteral::Bool(_), ResolvedTy::Bool)
             | (HirLiteral::Char(_), ResolvedTy::Char)
             | (HirLiteral::String(_), ResolvedTy::String) => true,
             _ => false,
@@ -763,7 +764,7 @@ impl Verifier {
                     owning_pass: "match-literal".to_string(),
                 },
                 span,
-                "literal match predicates are currently limited to i64, bool, char, and string",
+                "literal match predicates are currently limited to integers, floats, bool, char, and string",
             ));
         }
     }

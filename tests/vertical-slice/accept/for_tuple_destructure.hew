@@ -1,0 +1,16 @@
+fn main() {
+    let pairs: Vec<(i64, i64)> = [(1, 2), (3, 4)];
+    var sum: i64 = 0;
+    for (a, b) in pairs {
+        sum = sum + a + b;
+    }
+    println(sum);
+
+    let named: Vec<(string, i64)> = [("red", 5), ("blue", 6)];
+    var owned_sum: i64 = 0;
+    for (name, value) in named {
+        println(name);
+        owned_sum = owned_sum + value;
+    }
+    println(owned_sum);
+}

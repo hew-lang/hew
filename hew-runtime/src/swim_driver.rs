@@ -28,13 +28,13 @@
 //! injected at driver-start time rather than calling `Instant::now()` /
 //! `thread::sleep` directly.  The production implementation delegates to the
 //! real OS clock (zero behaviour change).  When simulated time is active
-//! (`SIMTIME_ENABLED`) the sim implementation reads / advances `SIMTIME_MS`
-//! so the driver ticks at simulated speed: `sleep_ms` advances the virtual
-//! clock instead of parking the thread, and the test drives time forward by
-//! calling [`crate::deterministic::hew_simtime_advance_ms`].  This eliminates
-//! the race that caused false-DEAD verdicts under load: the ticker thread is
-//! never descheduled past a real suspect timeout because wall time is
-//! irrelevant.
+//! (`SIMTIME_ENABLED`) the sim implementation reads `SIMTIME_MS` for `now_ms`
+//! and performs a real 1 ms OS sleep for `sleep_ms`.  The test drives sim time
+//! forward by calling [`crate::deterministic::hew_simtime_advance_ms`].
+//! The 1 ms real sleep (rather than `yield_now`) surrenders the OS timeslice
+//! unconditionally, giving the TCP connection-reader thread time to refresh
+//! `last_seen_ms` even under heavy instrumentation overhead (e.g. llvm-cov's
+//! ~3-5× slowdown), preventing false-DEAD verdicts for live peers.
 //!
 //! # Concurrency / lifetime contract
 //!
@@ -69,9 +69,9 @@ use crate::lifetime::PoisonSafe;
 ///
 /// The thread sleeps in slices of this size and checks the stop flag between
 /// slices, so shutdown latency is bounded by one slice rather than one
-/// (potentially second-long) protocol period.  Under simulated time this
-/// constant is unused: `MonoClock::sim().sleep_ms` advances the virtual clock
-/// by the requested amount without parking the thread.
+/// (potentially second-long) protocol period.  Under simulated time the loop
+/// uses a fixed 1 ms real sleep instead (see `sim_sleep_ms`) — this constant
+/// is only relevant for the real-time production path.
 const TICK_SLICE_MS: u64 = 20;
 
 // ── MonoClock seam ─────────────────────────────────────────────────────────
@@ -82,17 +82,17 @@ const TICK_SLICE_MS: u64 = 20;
 /// - [`MonoClock::real`]: delegates to the OS (`Instant` + `thread::sleep`).
 ///   This is the production path; behaviour is identical to the previous
 ///   direct calls.
-/// - [`MonoClock::sim`]: reads / advances `SIMTIME_MS` from
-///   [`crate::deterministic`].  `sleep_ms` advances the virtual clock instead
-///   of parking the OS thread, so the loop ticks as fast as the CPU allows
-///   and time only progresses when the test explicitly advances it.
+/// - [`MonoClock::sim`]: reads `SIMTIME_MS` from [`crate::deterministic`]
+///   for `now_ms`; `sleep_ms` performs a real 1 ms OS sleep so the TCP
+///   connection-reader thread gets a scheduler timeslice.  Sim time only
+///   advances when the test calls `hew_simtime_advance_ms`.
 ///
 /// WHY fn pointers instead of a trait object: the driver loop is `unsafe` and
 /// FFI-adjacent; keeping the seam as a plain `Copy` struct of function pointers
 /// avoids vtable indirection and matches the style of this module.
-/// WHEN sim becomes obsolete: never — it is the principled replacement for the
-/// `HEW_SWIM_TEST_TIME_SCALE` band-aid (originally prescribed in the
-/// `hew_node.rs` comment above `SwimTimingEnv::fast()` and now implemented).
+/// WHEN sim becomes obsolete: never — this is the principled sim-clock seam
+/// for SWIM driver tests; it eliminates wall-time sensitivity under any
+/// instrumentation overhead.
 /// WHAT the real solution is: this struct IS the real solution for Stage 1.
 #[derive(Clone, Copy)]
 pub(crate) struct MonoClock {
@@ -131,13 +131,24 @@ fn sim_now_ms() -> u64 {
 fn sim_sleep_ms(_ms: u64) {
     // In sim mode the test controls time: hew_simtime_advance_ms is called by
     // the test harness to push the virtual clock forward.  The driver loop just
-    // checks now_ms against its next-period target after each "sleep" — here a
-    // cooperative yield so other threads (the TCP connection reader that updates
-    // last_seen_ms from hew_now_ms()) get CPU time between driver iterations.
+    // checks now_ms against its next-period target after each "sleep".
+    //
+    // WHY a real 1 ms sleep instead of yield_now(): the driver is NOT
+    // time-sensitive in sim mode (sim time only advances when the test calls
+    // hew_simtime_advance_ms), so a 1 ms real pause costs nothing
+    // correctness-wise.  yield_now() is non-blocking — under coverage
+    // instrumentation (~3-5× per-instruction slowdown) the driver re-enters
+    // immediately, consuming all OS scheduler quanta and starving the TCP
+    // connection-reader thread that calls hew_now_ms() to refresh last_seen_ms.
+    // The starvation causes last_seen_ms to go stale, which makes the alive-peer
+    // test fail with a false SUSPECT→DEAD verdict.  A 1 ms sleep surrenders the
+    // OS timeslice unconditionally, eliminating the starvation under any
+    // instrumentation overhead.
+    //
     // Advancing simtime from inside the driver would race last_seen updates and
     // cause false-DEAD verdicts for live nodes (the bug this seam was built to
-    // prevent).
-    std::thread::yield_now();
+    // prevent) — so we only sleep real time, never advance sim time here.
+    std::thread::sleep(std::time::Duration::from_millis(1));
 }
 
 impl MonoClock {
@@ -149,7 +160,7 @@ impl MonoClock {
         }
     }
 
-    /// Simulated clock: reads / advances `SIMTIME_MS`; no thread parking.
+    /// Simulated clock: reads `SIMTIME_MS` for now; real 1 ms sleep for `sleep_ms`.
     pub(crate) const fn sim() -> Self {
         Self {
             now_ms: sim_now_ms,
@@ -280,8 +291,8 @@ pub(crate) unsafe fn stop_swim_driver(node: *mut HewNode) {
 }
 
 /// The ticker loop: run one protocol period every `protocol_period_ms`,
-/// checking the stop flag every `TICK_SLICE_MS` (real) or in tight spin
-/// (simulated, since `clock.sleep_ms` just advances the virtual clock).
+/// checking the stop flag every `TICK_SLICE_MS` (real) or every 1 ms
+/// (simulated — see `sim_sleep_ms` for why a real OS sleep is used there).
 fn run_driver_loop(node: NodePtr, stop: &Arc<AtomicBool>, clock: MonoClock) {
     // Read the protocol period once from the cluster config; it does not change
     // for a node's lifetime. Fall back to a 1 s default if the cluster is not

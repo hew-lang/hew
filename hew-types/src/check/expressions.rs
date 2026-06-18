@@ -3520,9 +3520,7 @@ impl Checker {
         {
             return Some(name.clone());
         }
-        let Some(fn_name) = self.current_function.as_ref() else {
-            return None;
-        };
+        let fn_name = self.current_function.as_ref()?;
         self.fn_sigs.get(fn_name).and_then(|sig| {
             sig.type_params
                 .iter()

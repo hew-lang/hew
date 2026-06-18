@@ -15129,7 +15129,8 @@ fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
         checker
             .errors
             .iter()
-            .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied),
+            .any(|error| error.kind == TypeErrorKind::UndefinedType
+                && error.message.contains("unknown trait `MissingTrait`")),
         "expected cyclic trait hierarchy bound check to fail with a diagnostic; got {:?}",
         checker.errors
     );

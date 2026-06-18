@@ -1413,9 +1413,13 @@ expect_check_fail_contains \
 # gen_lazy_interleave proves LAZY per-resume side-effect interleaving (effects
 # fire one-per-resume, never eager-drained); gen_mid_iteration_drop proves a
 # generator dropped while suspended releases its frame cleanly and does not run
-# the unconsumed yields' effects.
+# the unconsumed yields' effects; gen_drop_before_first_next proves a generator
+# constructed and dropped before its first `.next()` releases the pre-positioned
+# (un-consumed) first yield — the behavioural side of the leak fix (the memory
+# proof is the ASan/LSan gate's matching teeth fixture).
 run_accept_expect_stdout "gen_lazy_interleave"
 run_accept_expect_stdout "gen_mid_iteration_drop"
+run_accept_expect_stdout "gen_drop_before_first_next"
 
 # ---------------------------------------------------------------------------
 # Sink<T> / Stream<T> Wire-capability admissibility gate

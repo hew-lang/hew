@@ -37887,6 +37887,43 @@ fn emit_select_arm_setup<'ctx>(
             .build_store(slot, ch_val)
             .llvm_ctx("ch slot store")?;
 
+        // Suspending path: attach the shared arbiter + parked actor to this
+        // arm's channel BEFORE arming its readiness source (the ask / poll /
+        // observe below). The readiness arms (`hew_channel_poll`,
+        // `hew_stream_poll`) wait on a foreign park thread that fires
+        // `signal_ready` the instant the source is already readable — for a
+        // channel whose item was queued + sink closed before the select, that
+        // fire happens synchronously inside the arming call. If `caller_actor`
+        // were still null at that fire (the attach done afterward, as it was),
+        // `publish_reply_from_sender_ref` takes the condvar wake path
+        // (`cond.notify_one()`) — but the suspending caller parks on the
+        // coroutine, never on the condvar, so the wake is silently lost and the
+        // actor parks forever (empty output, clean exit). macOS schedules the
+        // park thread fast enough to win that race the vast majority of the
+        // time; Linux usually loses it, hence the platform-specific flake.
+        // Setting the parked waiter first routes any immediate fire through
+        // `enqueue_resume` (recorded as `pending_wake` while still Running and
+        // drained by the suspend edge — the FG3 two-phase park), so the wake is
+        // never lost regardless of park-thread timing.
+        if let Some((reg, self_actor)) = arbiter {
+            fn_ctx
+                .builder
+                .build_call(
+                    set_await_cancel,
+                    &[ch_val.into(), reg.into()],
+                    &format!("select_set_await_cancel_{slot_idx}"),
+                )
+                .llvm_ctx("hew_reply_channel_set_await_cancel call")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    set_parked_waiter,
+                    &[ch_val.into(), self_actor.into()],
+                    &format!("select_set_parked_waiter_{slot_idx}"),
+                )
+                .llvm_ctx("hew_reply_channel_set_parked_waiter call")?;
+        }
+
         let (status, current_has_retained_observer) = match &arms[arm_idx].kind {
             SelectArmKind::ActorAsk {
                 actor,
@@ -38283,34 +38320,15 @@ fn emit_select_arm_setup<'ctx>(
         // unreachable, which is the same supervisor-visible failure).
         emit_select_setup_failure_trap(fn_ctx)?;
 
-        // Setup OK: this arm's channel is live + observing. On the suspending
-        // path, attach the shared arbiter + parked actor so the FIRST arm to
-        // fire wins the one-shot CAS and re-enqueues the parked continuation
-        // (the N-source generalisation of the `await x | after d` waker).
+        // Setup OK: this arm's channel is live + observing. The shared arbiter +
+        // parked actor were attached BEFORE the readiness source was armed
+        // (above), so the FIRST arm to fire — including a synchronous fire
+        // during the arming call for an already-ready source — wins the
+        // one-shot CAS and re-enqueues the parked continuation through
+        // `enqueue_resume` (the N-source generalisation of the `await x |
+        // after d` waker). Nothing left to do here but fall through to the next
+        // arm's setup.
         fn_ctx.builder.position_at_end(setup_ok_bb);
-        if let Some((reg, self_actor)) = arbiter {
-            let arm_ch = fn_ctx
-                .builder
-                .build_load(ptr_ty, slot, &format!("select_arbiter_ch_load_{slot_idx}"))
-                .llvm_ctx("arbiter attach ch load")?
-                .into_pointer_value();
-            fn_ctx
-                .builder
-                .build_call(
-                    set_await_cancel,
-                    &[arm_ch.into(), reg.into()],
-                    &format!("select_set_await_cancel_{slot_idx}"),
-                )
-                .llvm_ctx("hew_reply_channel_set_await_cancel call")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    set_parked_waiter,
-                    &[arm_ch.into(), self_actor.into()],
-                    &format!("select_set_parked_waiter_{slot_idx}"),
-                )
-                .llvm_ctx("hew_reply_channel_set_parked_waiter call")?;
-        }
     }
 
     Ok(())

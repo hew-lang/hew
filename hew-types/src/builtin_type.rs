@@ -423,6 +423,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "single builtin fact table")]
     fn handle_and_project_cap_facts_are_registered() {
         let expected = [
             (

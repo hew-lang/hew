@@ -15,6 +15,10 @@
 # continuously guarded.  Do NOT remove entries to make the gate green if the
 # regression still fails — fix the underlying compiler instead.
 #
+# Positive collection-literal fixtures such as map_literal_string_keys.hew,
+# map_literal_empty_annotated.hew, array_repeat_int_sum.hew, and
+# array_repeat_runtime_count.hew are intentionally absent: they must pass.
+#
 # Total: 6 known-failing entries (6 intentional-trap/abort fixtures).
 #
 # Intentional aborts/traps: fixtures in tests/vertical-slice/accept/ that are

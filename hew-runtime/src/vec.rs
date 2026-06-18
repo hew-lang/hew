@@ -375,6 +375,50 @@ pub unsafe extern "C" fn hew_vec_new_bool() -> *mut HewVec {
     }
 }
 
+/// Create a new `HewVec` for `i8` elements.
+///
+/// # Safety
+///
+/// The returned pointer must eventually be freed with [`hew_vec_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_new_i8() -> *mut HewVec {
+    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with a valid element size.
+    unsafe { hew_vec_new_with_elem_size(1) }
+}
+
+/// Create a new `HewVec` for `u8` elements.
+///
+/// # Safety
+///
+/// The returned pointer must eventually be freed with [`hew_vec_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_new_u8() -> *mut HewVec {
+    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with a valid element size.
+    unsafe { hew_vec_new_with_elem_size(1) }
+}
+
+/// Create a new `HewVec` for `i16` elements.
+///
+/// # Safety
+///
+/// The returned pointer must eventually be freed with [`hew_vec_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_new_i16() -> *mut HewVec {
+    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with a valid element size.
+    unsafe { hew_vec_new_with_elem_size(2) }
+}
+
+/// Create a new `HewVec` for `u16` elements.
+///
+/// # Safety
+///
+/// The returned pointer must eventually be freed with [`hew_vec_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_new_u16() -> *mut HewVec {
+    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with a valid element size.
+    unsafe { hew_vec_new_with_elem_size(2) }
+}
+
 /// Create a new `HewVec` for string (`*const c_char`) elements.
 ///
 /// # Safety
@@ -425,6 +469,17 @@ pub unsafe extern "C" fn hew_vec_new_f64() -> *mut HewVec {
     unsafe {
         hew_vec_new_with_elem_size(core::mem::size_of::<f64>() as i64)
     }
+}
+
+/// Create a new `HewVec` for `f32` elements.
+///
+/// # Safety
+///
+/// The returned pointer must eventually be freed with [`hew_vec_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_new_f32() -> *mut HewVec {
+    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with a valid element size.
+    unsafe { hew_vec_new_with_elem_size(4) }
 }
 
 /// Create a new `HewVec` for pointer-sized elements (e.g. `ActorRef`, handles).
@@ -676,6 +731,10 @@ macro_rules! vec_push_primitive {
 
 vec_push_primitive!(hew_vec_push_i32, i32);
 vec_push_primitive!(hew_vec_push_bool, bool);
+vec_push_primitive!(hew_vec_push_i8, i8);
+vec_push_primitive!(hew_vec_push_u8, u8);
+vec_push_primitive!(hew_vec_push_i16, i16);
+vec_push_primitive!(hew_vec_push_u16, u16);
 vec_push_primitive!(hew_vec_push_i64, i64);
 
 /// Push a string onto the vec. The element is **copied in** (VWT `copy` from
@@ -708,6 +767,7 @@ pub unsafe extern "C" fn hew_vec_push_str(v: *mut HewVec, val: *const c_char) {
 }
 
 vec_push_primitive!(hew_vec_push_f64, f64);
+vec_push_primitive!(hew_vec_push_f32, f32);
 vec_push_primitive!(hew_vec_push_ptr, *mut c_void);
 
 // ---------------------------------------------------------------------------
@@ -737,6 +797,10 @@ macro_rules! vec_get_primitive {
 
 vec_get_primitive!(hew_vec_get_i32, i32);
 vec_get_primitive!(hew_vec_get_bool, bool);
+vec_get_primitive!(hew_vec_get_i8, i8);
+vec_get_primitive!(hew_vec_get_u8, u8);
+vec_get_primitive!(hew_vec_get_i16, i16);
+vec_get_primitive!(hew_vec_get_u16, u16);
 vec_get_primitive!(hew_vec_get_i64, i64);
 
 /// Get a string pointer at `index`. Aborts if out of bounds.
@@ -764,6 +828,7 @@ pub unsafe extern "C" fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c
 }
 
 vec_get_primitive!(hew_vec_get_f64, f64);
+vec_get_primitive!(hew_vec_get_f32, f32);
 
 /// Abort when `hew_vec_get_ptr` is called on a vec whose `elem_size` is not
 /// pointer-sized. This indicates a misroute: a value-record (`BitCopy`)
@@ -940,6 +1005,57 @@ pub unsafe extern "C" fn hew_vec_slice_range_f64(
     }
 }
 
+/// Allocate a new `HewVec` populated from `v[start..end)` by byte-copying
+/// elements at the source vec's element stride. Only plain, non-layout element
+/// vecs may use this entry; ownership-aware vecs keep their typed slice paths.
+///
+/// # Safety
+///
+/// `v` must be a valid plain `HewVec` pointer. The returned pointer must be
+/// freed via [`hew_vec_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_slice_range_bytesize(
+    v: *mut HewVec,
+    start: i64,
+    end: i64,
+) -> *mut HewVec {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        if (*v).elem_kind != ElemKind::Plain
+            || !(*v).layout.is_null()
+            || !(*v).elem_layout.is_null()
+        {
+            abort_layout_aware_operation();
+        }
+        let (start_u, end_u) = check_slice_bounds(v, start, end);
+        let elem_size = (*v).elem_size;
+        let count = end_u - start_u;
+        let out = hew_vec_new_with_elem_size(i64::try_from(elem_size).unwrap_or_else(|_| {
+            let msg = b"PANIC: Vec element size overflow\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        }));
+        if count == 0 {
+            return out;
+        }
+        ensure_cap(out, count);
+        let byte_count = count.checked_mul(elem_size).unwrap_or_else(|| {
+            let msg = b"PANIC: Vec slice byte count overflow\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        });
+        let start_byte = start_u.checked_mul(elem_size).unwrap_or_else(|| {
+            let msg = b"PANIC: Vec slice start offset overflow\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        });
+        let src = (*v).data.add(start_byte);
+        core::ptr::copy_nonoverlapping(src, (*out).data, byte_count);
+        (*out).len = count;
+        out
+    }
+}
+
 /// Allocate a new `HewVec` populated from `v[start..end)` for pointer-sized
 /// elements (handles, named heap types). The element pointers are byte-
 /// copied verbatim; the result vec does not duplicate or refcount them.
@@ -1045,6 +1161,32 @@ pub unsafe extern "C" fn hew_vec_set_bool(v: *mut HewVec, index: i64, val: bool)
     }
 }
 
+macro_rules! vec_set_primitive {
+    ($name:ident, $ty:ty) => {
+        /// Set a primitive value at `index`. Aborts if out of bounds.
+        ///
+        /// # Safety
+        ///
+        /// `v` must be a valid `HewVec` pointer whose element storage matches this symbol's type.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(v: *mut HewVec, index: i64, val: $ty) {
+            // SAFETY: caller guarantees `v` is valid.
+            unsafe {
+                let index = index as usize;
+                if index >= (*v).len {
+                    abort_oob(index, (*v).len);
+                }
+                (*v).data.cast::<$ty>().add(index).write(val);
+            }
+        }
+    };
+}
+
+vec_set_primitive!(hew_vec_set_i8, i8);
+vec_set_primitive!(hew_vec_set_u8, u8);
+vec_set_primitive!(hew_vec_set_i16, i16);
+vec_set_primitive!(hew_vec_set_u16, u16);
+
 /// Set an `i64` at `index`. Aborts if out of bounds.
 ///
 /// # Safety
@@ -1106,6 +1248,8 @@ pub unsafe extern "C" fn hew_vec_set_f64(v: *mut HewVec, index: i64, val: f64) {
     }
 }
 
+vec_set_primitive!(hew_vec_set_f32, f32);
+
 // ---------------------------------------------------------------------------
 // Pop
 // ---------------------------------------------------------------------------
@@ -1152,6 +1296,10 @@ macro_rules! vec_pop_primitive {
 
 vec_pop_primitive!(hew_vec_pop_i32, i32);
 vec_pop_primitive!(hew_vec_pop_bool, bool);
+vec_pop_primitive!(hew_vec_pop_i8, i8);
+vec_pop_primitive!(hew_vec_pop_u8, u8);
+vec_pop_primitive!(hew_vec_pop_i16, i16);
+vec_pop_primitive!(hew_vec_pop_u16, u16);
 vec_pop_primitive!(hew_vec_pop_i64, i64);
 
 /// Pop the last string pointer. The caller now owns the returned pointer.
@@ -1173,6 +1321,7 @@ pub unsafe extern "C" fn hew_vec_pop_str(v: *mut HewVec) -> *const c_char {
 }
 
 vec_pop_primitive!(hew_vec_pop_f64, f64);
+vec_pop_primitive!(hew_vec_pop_f32, f32);
 vec_pop_primitive!(hew_vec_pop_ptr, *mut c_void, ptr::null_mut());
 
 // ---------------------------------------------------------------------------
@@ -2682,7 +2831,12 @@ mod tests {
             let vecs = [
                 hew_vec_new(),
                 hew_vec_new_bool(),
+                hew_vec_new_i8(),
+                hew_vec_new_u8(),
+                hew_vec_new_i16(),
+                hew_vec_new_u16(),
                 hew_vec_new_i64(),
+                hew_vec_new_f32(),
                 hew_vec_new_f64(),
                 hew_vec_new_str(),
                 hew_vec_new_ptr(),
@@ -2720,6 +2874,70 @@ mod tests {
             assert!(hew_vec_pop_bool(v));
             assert_eq!(hew_vec_len(v), 2);
             hew_vec_free(v);
+        }
+    }
+
+    #[test]
+    fn narrow_width_vecs_round_trip_exact_values() {
+        // SAFETY: FFI calls use valid vec pointers returned by typed constructors.
+        unsafe {
+            let i8s = hew_vec_new_i8();
+            hew_vec_push_i8(i8s, -128);
+            hew_vec_push_i8(i8s, -1);
+            hew_vec_push_i8(i8s, 127);
+            assert_eq!((*i8s).elem_size, 1);
+            assert_eq!(hew_vec_get_i8(i8s, 0), -128);
+            assert_eq!(hew_vec_get_i8(i8s, 1), -1);
+            hew_vec_set_i8(i8s, 1, 42);
+            assert_eq!(hew_vec_get_i8(i8s, 1), 42);
+            assert_eq!(hew_vec_pop_i8(i8s), 127);
+            hew_vec_free(i8s);
+
+            let u8s = hew_vec_new_u8();
+            hew_vec_push_u8(u8s, 0);
+            hew_vec_push_u8(u8s, 200);
+            hew_vec_push_u8(u8s, u8::MAX);
+            assert_eq!((*u8s).elem_size, 1);
+            assert_eq!(hew_vec_get_u8(u8s, 1), 200);
+            hew_vec_set_u8(u8s, 0, 255);
+            assert_eq!(hew_vec_get_u8(u8s, 0), 255);
+            assert_eq!(hew_vec_pop_u8(u8s), u8::MAX);
+            hew_vec_free(u8s);
+
+            let i16s = hew_vec_new_i16();
+            hew_vec_push_i16(i16s, -32_768);
+            hew_vec_push_i16(i16s, -1234);
+            hew_vec_push_i16(i16s, 32_767);
+            assert_eq!((*i16s).elem_size, 2);
+            assert_eq!(hew_vec_get_i16(i16s, 0), -32_768);
+            assert_eq!(hew_vec_get_i16(i16s, 1), -1234);
+            hew_vec_set_i16(i16s, 1, 1234);
+            assert_eq!(hew_vec_get_i16(i16s, 1), 1234);
+            assert_eq!(hew_vec_pop_i16(i16s), 32_767);
+            hew_vec_free(i16s);
+
+            let u16s = hew_vec_new_u16();
+            hew_vec_push_u16(u16s, 0);
+            hew_vec_push_u16(u16s, 50_000);
+            hew_vec_push_u16(u16s, u16::MAX);
+            assert_eq!((*u16s).elem_size, 2);
+            assert_eq!(hew_vec_get_u16(u16s, 1), 50_000);
+            hew_vec_set_u16(u16s, 0, 65_535);
+            assert_eq!(hew_vec_get_u16(u16s, 0), 65_535);
+            assert_eq!(hew_vec_pop_u16(u16s), u16::MAX);
+            hew_vec_free(u16s);
+
+            let f32s = hew_vec_new_f32();
+            hew_vec_push_f32(f32s, -1.5);
+            hew_vec_push_f32(f32s, 2.5);
+            hew_vec_push_f32(f32s, 3.25);
+            assert_eq!((*f32s).elem_size, 4);
+            assert!((hew_vec_get_f32(f32s, 0) - -1.5).abs() < f32::EPSILON);
+            assert!((hew_vec_get_f32(f32s, 1) - 2.5).abs() < f32::EPSILON);
+            hew_vec_set_f32(f32s, 1, 4.5);
+            assert!((hew_vec_get_f32(f32s, 1) - 4.5).abs() < f32::EPSILON);
+            assert!((hew_vec_pop_f32(f32s) - 3.25).abs() < f32::EPSILON);
+            hew_vec_free(f32s);
         }
     }
 
@@ -3238,6 +3456,61 @@ mod tests {
     // ------------------------------------------------------------------
     // Range-slice (C-3): hew_vec_slice_range_T
     // ------------------------------------------------------------------
+
+    #[test]
+    fn slice_range_bytesize_preserves_one_two_and_four_byte_elements() {
+        // SAFETY: FFI calls use valid plain vec pointers returned by typed constructors.
+        unsafe {
+            let i8s = hew_vec_new_i8();
+            hew_vec_push_i8(i8s, -5);
+            hew_vec_push_i8(i8s, -1);
+            hew_vec_push_i8(i8s, 7);
+            let i8_sub = hew_vec_slice_range_bytesize(i8s, 1, 3);
+            assert_eq!((*i8_sub).elem_size, 1);
+            assert_eq!(hew_vec_len(i8_sub), 2);
+            assert_eq!(hew_vec_get_i8(i8_sub, 0), -1);
+            assert_eq!(hew_vec_get_i8(i8_sub, 1), 7);
+            hew_vec_free(i8_sub);
+            hew_vec_free(i8s);
+
+            let u16s = hew_vec_new_u16();
+            hew_vec_push_u16(u16s, 10);
+            hew_vec_push_u16(u16s, 50_000);
+            hew_vec_push_u16(u16s, 65_535);
+            let u16_sub = hew_vec_slice_range_bytesize(u16s, 0, 2);
+            assert_eq!((*u16_sub).elem_size, 2);
+            assert_eq!(hew_vec_len(u16_sub), 2);
+            assert_eq!(hew_vec_get_u16(u16_sub, 0), 10);
+            assert_eq!(hew_vec_get_u16(u16_sub, 1), 50_000);
+            hew_vec_free(u16_sub);
+            hew_vec_free(u16s);
+
+            let f32s = hew_vec_new_f32();
+            hew_vec_push_f32(f32s, 1.25);
+            hew_vec_push_f32(f32s, 2.5);
+            hew_vec_push_f32(f32s, 4.75);
+            let f32_sub = hew_vec_slice_range_bytesize(f32s, 1, 2);
+            assert_eq!((*f32_sub).elem_size, 4);
+            assert_eq!(hew_vec_len(f32_sub), 1);
+            assert!((hew_vec_get_f32(f32_sub, 0) - 2.5).abs() < f32::EPSILON);
+            hew_vec_free(f32_sub);
+            hew_vec_free(f32s);
+        }
+    }
+
+    #[test]
+    fn slice_range_bytesize_empty_keeps_element_stride() {
+        // SAFETY: FFI calls use valid plain vec pointers returned by typed constructors.
+        unsafe {
+            let v = hew_vec_new_i16();
+            hew_vec_push_i16(v, 12);
+            let sub = hew_vec_slice_range_bytesize(v, 1, 1);
+            assert_eq!(hew_vec_len(sub), 0);
+            assert_eq!((*sub).elem_size, 2);
+            hew_vec_free(sub);
+            hew_vec_free(v);
+        }
+    }
 
     #[test]
     fn slice_range_i64_returns_fresh_vec_with_subrange_elements() {

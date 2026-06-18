@@ -21055,6 +21055,7 @@ impl LowerCtx {
                                     callee,
                                     args,
                                     task_ty: task_ty.clone(),
+                                    bound: true,
                                 },
                                 span: child_expr.1.clone(),
                             };
@@ -21177,6 +21178,7 @@ impl LowerCtx {
                 callee,
                 args,
                 task_ty,
+                bound: false,
             },
             span,
         }

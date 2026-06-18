@@ -1,0 +1,16 @@
+type Rec {
+    s: string;
+}
+
+fn main() {
+    let xs: Vec<((Rec, i64), bool)> = Vec::new();
+    xs.push(((Rec { s: "hi" }, 21), true));
+    xs.push(((Rec { s: "bye" }, 22), false));
+
+    let ys = xs.clone();
+    xs.set(0, ((Rec { s: "changed" }, 99), true));
+
+    let first = ys.get(0);
+    let second = ys.get(1);
+    println(f"{ys.len()}:{((first.0).0).s}:{(first.0).1}:{first.1}:{((second.0).0).s}:{(second.0).1}:{second.1}");
+}

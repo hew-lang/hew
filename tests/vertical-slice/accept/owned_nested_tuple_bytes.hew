@@ -1,0 +1,16 @@
+extern "C" {
+    fn hew_bytes_from_str(s: string) -> bytes;
+}
+
+fn main() {
+    let xs: Vec<((bytes, i64), bool)> = Vec::new();
+    let a: bytes = unsafe { hew_bytes_from_str("ab") };
+    let b: bytes = unsafe { hew_bytes_from_str("cd") };
+    xs.push(((a, 11), true));
+    xs.push(((b, 12), false));
+
+    let ys = xs.clone();
+    let first = ys.get(0);
+    let second = ys.get(1);
+    println(f"{ys.len()}:{(first.0).0.to_string()}:{(first.0).1}:{first.1}:{(second.0).0.to_string()}:{(second.0).1}:{second.1}");
+}

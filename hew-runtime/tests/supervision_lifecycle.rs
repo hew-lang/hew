@@ -44,19 +44,24 @@ use hew_runtime::supervisor::{
 };
 use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor, TestSupervisor};
 
-// Windows scheduler resolution (15 ms default) combined with the full parallel
-// test suite means actor/supervisor round-trips can take longer than on
-// POSIX platforms.  Use a wider assertion window for timing-sensitive tests.
-#[cfg(windows)]
+// HANG CEILING, not expected duration. These bound the logical-event waits
+// (`wait_for_down_count`, `wait_restart`, `wait_for_circuit_state`) — each
+// returns the instant its event lands, so a fast quiet run pays ~0.2s and only a
+// genuine never-arriving event reaches the ceiling. The supervisor crash/restart
+// dispatch runs on worker threads that are starved under `cargo llvm-cov`
+// instrumentation + full-workspace parallelism: a 5s ceiling false-fired ~8% on
+// the circuit-OPEN wait under coverage (the 2nd crash's dispatch lagged past 5s
+// but DID complete). 30s is contention headroom matching the sibling
+// `child_supervisor_recovery_recreates_nested_subtree` waits (ffi_boundary.rs);
+// it is NOT a timing bet — widening a logical-event ceiling to absorb genuine
+// scheduler starvation is the determinism fix, not flake padding (a real
+// regression — no restart, no circuit transition — still fails at the ceiling).
+// Windows' 15ms scheduler resolution + the full parallel suite already needed
+// this headroom; coverage instrumentation needs it on every platform.
 const SUPERVISOR_TIMEOUT: Duration = Duration::from_secs(30);
-#[cfg(not(windows))]
-const SUPERVISOR_TIMEOUT: Duration = Duration::from_secs(5);
 /// Same value as [`SUPERVISOR_TIMEOUT`] expressed in milliseconds for
 /// `hew_supervisor_wait_restart`'s `timeout_ms` parameter.
-#[cfg(windows)]
 const SUPERVISOR_TIMEOUT_MS: u64 = 30_000;
-#[cfg(not(windows))]
-const SUPERVISOR_TIMEOUT_MS: u64 = 5_000;
 
 /// Global lock to serialize all tests in this file.
 ///
@@ -263,6 +268,30 @@ fn wait_for_circuit_state(
     }
 }
 
+/// Block until the global crash log holds at least `expected` entries, or the
+/// hang ceiling elapses. Returns the observed count.
+///
+/// Why this exists (the determinism contract): the crash log is pushed on the
+/// crashing worker thread (`signal.rs` `handle_crash_recovery_impl`) AFTER the
+/// supervisor/monitor trap notification fires. So observing a monitor DOWN
+/// signal — or even the circuit-breaker OPEN transition — does NOT imply the
+/// crash report has been appended yet; those run on the supervisor-dispatch
+/// path, which is unordered with respect to the worker's `push_crash_report`.
+/// Reading `hew_crash_log_count()` the instant DOWN is seen is a causality bug
+/// that fast-fails under load. This is a LOGICAL-EVENT wait (returns the moment
+/// the count is reached); the ceiling is a hang guard, never a jitter window.
+fn wait_for_crash_count(expected: i32, timeout: Duration) -> i32 {
+    let deadline = Instant::now() + timeout;
+    loop {
+        // SAFETY: hew_crash_log_count reads the global crash log under its lock.
+        let count = unsafe { hew_crash_log_count() };
+        if count >= expected || Instant::now() >= deadline {
+            return count;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn cstr(s: &str) -> CString {
     CString::new(s).expect("CString::new failed")
 }
@@ -456,7 +485,13 @@ fn circuit_breaker_trips_on_repeated_crashes() {
             }
         }
 
-        let final_crash_count = hew_crash_log_count();
+        // The two crashes were fully processed (both DOWNs observed, the restart
+        // and the circuit-OPEN transition both confirmed above). The crash-log
+        // pushes happen on the crashing worker threads, unordered w.r.t. those
+        // supervisor-side signals — so wait for the LOGICAL event "two new crash
+        // reports landed" rather than reading the count the instant the last
+        // DOWN was seen (which races the worker's push and fast-fails under load).
+        let final_crash_count = wait_for_crash_count(crashes_before + 2, SUPERVISOR_TIMEOUT);
         let _state = hew_supervisor_get_child_circuit_state(sup.as_ptr(), 0);
         assert!(
             final_crash_count >= crashes_before + 2,

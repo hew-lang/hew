@@ -3292,7 +3292,12 @@ mod rc_arc_tests {
     fn rc_create_clone_drop() {
         unsafe {
             let val: i32 = 42;
-            let rc = hew_rc_new((&raw const val).cast(), size_of::<i32>(), None);
+            let rc = hew_rc_new(
+                (&raw const val).cast(),
+                size_of::<i32>(),
+                align_of::<i32>(),
+                None,
+            );
             assert!(!rc.is_null());
             assert_eq!(hew_rc_count(rc), 1);
 
@@ -3320,7 +3325,12 @@ mod rc_arc_tests {
     fn rc_is_unique() {
         unsafe {
             let val: i32 = 7;
-            let rc = hew_rc_new((&raw const val).cast(), size_of::<i32>(), None);
+            let rc = hew_rc_new(
+                (&raw const val).cast(),
+                size_of::<i32>(),
+                align_of::<i32>(),
+                None,
+            );
             assert_eq!(hew_rc_is_unique(rc), 1);
 
             let rc2 = hew_rc_clone(rc);
@@ -3337,7 +3347,12 @@ mod rc_arc_tests {
     fn arc_create_clone_drop_threaded() {
         unsafe {
             let val: i32 = 100;
-            let arc = hew_arc_new((&raw const val).cast(), size_of::<i32>(), None);
+            let arc = hew_arc_new(
+                (&raw const val).cast(),
+                size_of::<i32>(),
+                align_of::<i32>(),
+                None,
+            );
             assert!(!arc.is_null());
             assert_eq!(hew_arc_count(arc), 1);
 

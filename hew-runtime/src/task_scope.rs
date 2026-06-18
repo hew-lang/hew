@@ -2221,7 +2221,7 @@ mod tests {
             let task = hew_task_new();
             hew_task_set_env(
                 task,
-                crate::rc::hew_rc_new(ptr::null(), 0, Some(count_env_drop)).cast(),
+                crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(count_env_drop)).cast(),
             );
             hew_task_scope_spawn(scope, task);
 
@@ -2283,7 +2283,7 @@ mod tests {
             let t_ready = hew_task_new();
             hew_task_set_env(
                 t_ready,
-                crate::rc::hew_rc_new(ptr::null(), 0, Some(count_env_drop)).cast(),
+                crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(count_env_drop)).cast(),
             );
             hew_task_set_cancel_cleanup_fn(t_ready, Some(resource_cleanup));
             hew_task_scope_spawn(scope, t_ready);
@@ -2292,7 +2292,7 @@ mod tests {
             let t_suspended = hew_task_new();
             hew_task_set_env(
                 t_suspended,
-                crate::rc::hew_rc_new(ptr::null(), 0, Some(count_env_drop)).cast(),
+                crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(count_env_drop)).cast(),
             );
             hew_task_set_cancel_cleanup_fn(t_suspended, Some(resource_cleanup));
             hew_task_scope_spawn(scope, t_suspended);
@@ -2343,7 +2343,7 @@ mod tests {
             // env_ptr with a non-null pointer so cleanup_fn is invoked.
             hew_task_set_env(
                 task,
-                crate::rc::hew_rc_new(ptr::null(), 0, Some(noop_drop)).cast(),
+                crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(noop_drop)).cast(),
             );
             hew_task_scope_spawn(scope, task);
 
@@ -2381,7 +2381,7 @@ mod tests {
             hew_task_set_cancel_cleanup_fn(task, Some(resource_cleanup_double));
             hew_task_set_env(
                 task,
-                crate::rc::hew_rc_new(ptr::null(), 0, Some(noop_drop2)).cast(),
+                crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(noop_drop2)).cast(),
             );
             hew_task_scope_spawn(scope, task);
 
@@ -2433,7 +2433,7 @@ mod tests {
             hew_task_set_cancel_cleanup_fn(task, Some(panicking_cleanup));
             hew_task_set_env(
                 task,
-                crate::rc::hew_rc_new(ptr::null(), 0, Some(noop_drop_panic)).cast(),
+                crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(noop_drop_panic)).cast(),
             );
             hew_task_scope_spawn(scope, task);
 
@@ -2573,11 +2573,11 @@ mod tests {
 
             hew_task_set_env(
                 running_task,
-                crate::rc::hew_rc_new(ptr::null(), 0, Some(count_env_drop)).cast(),
+                crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(count_env_drop)).cast(),
             );
             hew_task_set_env(
                 cancelled_task,
-                crate::rc::hew_rc_new(ptr::null(), 0, Some(count_env_drop)).cast(),
+                crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(count_env_drop)).cast(),
             );
 
             hew_task_scope_spawn(scope, running_task);
@@ -2671,7 +2671,7 @@ mod tests {
             let task = hew_task_new();
             hew_task_set_env(
                 task,
-                crate::rc::hew_rc_new(ptr::null(), 0, Some(count_env_drop)).cast(),
+                crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(count_env_drop)).cast(),
             );
             hew_task_scope_spawn(scope, task);
             hew_task_spawn_thread(task, done_then_linger);
@@ -3348,7 +3348,7 @@ mod tests {
                 // has freed each task allocation.
                 hew_task_set_env(
                     t,
-                    crate::rc::hew_rc_new(ptr::null(), 0, Some(count_env_drop_n)).cast(),
+                    crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(count_env_drop_n)).cast(),
                 );
                 hew_task_scope_spawn(scope, t);
                 hew_task_spawn_thread(t, blocking_worker_n);
@@ -3429,7 +3429,7 @@ mod tests {
             let task = hew_task_new();
             hew_task_set_env(
                 task,
-                crate::rc::hew_rc_new(ptr::null(), 0, Some(count_env_drop)).cast(),
+                crate::rc::hew_rc_new(ptr::null(), 0, 0, Some(count_env_drop)).cast(),
             );
             hew_task_scope_spawn(scope, task);
             hew_task_spawn_thread(task, blocking_worker);

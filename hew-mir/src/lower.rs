@@ -4586,72 +4586,6 @@ struct LoweredFunction {
     gen_state_layouts: Vec<crate::model::GenStateLayout>,
 }
 
-/// Wrap a S3b2 drop-in-state shim `RawMirFunction` in a stub
-/// `LoweredFunction` so it surfaces through `lower_hir_module`'s
-/// generated-functions sweep. The shim's body is the fail-closed
-/// Trap-only placeholder produced by
-/// `gen_state::build_drop_shim_function`; the checked / elaborated
-/// views mirror that single-block shape with no diagnostics and an
-/// empty drop plan.
-///
-/// S4 regenerates the function from `GenStateLayout.drop_tables`, at
-/// which point the full check / elaborate / dataflow pass runs
-/// against the regenerated body. The stub views are only needed for
-/// the time window between MIR emission and S4 landing so that
-/// `lower_hir_module`'s `(thir, raw, checked, elaborated)` zip stays
-/// consistent.
-fn stub_lowered_for_drop_shim(raw: RawMirFunction) -> LoweredFunction {
-    let name = raw.name.clone();
-    let return_ty = raw.return_ty.clone();
-    let thir = ThirFunction {
-        name: name.clone(),
-        return_ty: return_ty.clone(),
-        statements: Vec::new(),
-    };
-    let checked = CheckedMirFunction {
-        name: name.clone(),
-        return_ty: return_ty.clone(),
-        blocks: raw.blocks.clone(),
-        decisions: Vec::new(),
-        checks: Vec::new(),
-        cooperate_sites: Vec::new(),
-    };
-    // The placeholder body is a single Trap block (id 0). Mirror it
-    // in the elaborated view with a single Normal block and no drops;
-    // S4 will replace both raw + elaborated together when it
-    // regenerates the cascade-on-tag shim from `drop_tables`.
-    let elab_block = ElabBlock {
-        id: 0,
-        kind: BlockKind::Normal,
-        drops: Vec::new(),
-        successor: None,
-    };
-    let elaborated = ElaboratedMirFunction {
-        name,
-        return_ty,
-        statements: Vec::new(),
-        decisions: Vec::new(),
-        blocks: vec![elab_block],
-        // `ExitPath::Return` is the conventional empty-drop-plan exit
-        // even though the Trap terminator does not actually return —
-        // codegen does not consume `drop_plans` for Trap-only blocks,
-        // so any non-empty plan would be the wrong signal.
-        drop_plans: vec![(ExitPath::Return { block: 0 }, DropPlan::default())],
-        coroutine: None,
-        lambda_captures: Vec::new(),
-    };
-    LoweredFunction {
-        thir,
-        raw,
-        checked,
-        elaborated,
-        diagnostics: Vec::new(),
-        generated: Vec::new(),
-        record_layouts: Vec::new(),
-        gen_state_layouts: Vec::new(),
-    }
-}
-
 /// Insert execution-context carrier markers into a context-bearing CFG.
 ///
 /// The entry block starts with `EnterContext`; every terminal block (`Return`
@@ -6371,7 +6305,7 @@ impl Builder {
             self.push_instr(Instr::Drop {
                 place,
                 ty,
-                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_free")),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_coro_destroy")),
             });
         }
     }
@@ -6471,7 +6405,7 @@ impl Builder {
             self.push_instr(Instr::Drop {
                 place,
                 ty,
-                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_free")),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_coro_destroy")),
             });
         }
     }
@@ -11890,7 +11824,7 @@ impl Builder {
                 builtin:
                     Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
                 ..
-            } => Some("hew_gen_free"),
+            } => Some("hew_gen_coro_destroy"),
             _ => None,
         }
     }
@@ -21384,39 +21318,49 @@ impl Builder {
             ..Builder::default()
         };
 
-        // Prepend the thread-based generator runtime parameters:
-        //   Local(0) — `*mut c_void` body-argument pointer (unused by simple
-        //              capture-free gen blocks; reserved so the LLVM signature
-        //              matches `hew_gen_ctx_create`'s `body_fn` contract
-        //              `extern "C" fn(*mut c_void, *mut HewGenCtx)`).
-        //   Local(1) — `*mut HewGenCtx` runtime context pointer. Loaded by
-        //              the codegen `Terminator::Yield` arm to invoke
-        //              `hew_gen_yield(ctx, &value, sizeof(value))`.
-        // Subsequent user-statement local allocations naturally start at
-        // Local(2) because `alloc_local` indexes from `locals.len()`.
-        let gen_ctx_ptr_ty = ResolvedTy::Pointer {
+        // Prepend the coroutine-ramp parameters. The generator body is lowered
+        // as an `llvm.coro.*` switched-resume coroutine ramp (the same substrate
+        // the await-family uses, `hew-codegen-rs/src/coro.rs`); its leading
+        // formal parameters are:
+        //   Local(0) — `out_ptr: *mut Y`. The value channel. Before every
+        //              `yield` the codegen `Terminator::Yield` arm stores the
+        //              yielded value to `*out_ptr`; the consumer
+        //              (`Instr::GeneratorNext`) reads it back from the same slot
+        //              after each resume. This is the explicit out-pointer the
+        //              `HewCont` substrate threads through the frame (cont.rs),
+        //              NOT the forbidden non-null `coro.id` promise.
+        //   Local(1) — `env_ptr: *const Env` (ONLY when the body has captures).
+        //              The capture env record; the body reads each captured free
+        //              variable through it via `ClosureEnvFieldLoad`. A
+        //              capture-free generator has no env param — its single
+        //              leading param is `out_ptr`.
+        // Subsequent user-statement local allocations naturally start after the
+        // leading params because `alloc_local` indexes from `locals.len()`.
+        let gen_ptr_ty = ResolvedTy::Pointer {
             is_mutable: true,
             pointee: Box::new(ResolvedTy::Unit),
         };
-        body_builder.locals.push(gen_ctx_ptr_ty.clone());
-        body_builder.locals.push(gen_ctx_ptr_ty.clone());
+        // Local(0): the out-pointer (always present).
+        body_builder.locals.push(gen_ptr_ty.clone());
+        let has_env = env_ty.is_some();
+        if has_env {
+            // Local(1): the capture-env pointer (only when captures materialised).
+            body_builder.locals.push(gen_ptr_ty.clone());
+        }
 
         // Register each materialised capture as a body-side env-field source:
         // the body's `BindingRef`s to a captured binding (a `gen fn` param or a
         // `gen { }` captured outer local) lower to `ClosureEnvFieldLoad` through
-        // `Local(0)` — the body-arg pointer, which IS the deep-copied env
-        // pointer when captures are present. Mirrors the lambda-actor-body env
-        // discipline (`lower_spawn_lambda_actor`): loads are read-only views
-        // into the env; the env copy is owned and freed by the runtime when the
-        // body thread ends. Only present when every capture materialised into a
-        // BitCopy env field above; otherwise the env was not built and the body
-        // reads fail closed at `UnresolvedPlace`.
+        // `Local(1)` — the env pointer (out_ptr occupies Local(0)). Mirrors the
+        // lambda-actor-body env discipline: loads are read-only views into the
+        // env. The coro frame is single-owner (no body thread), so the env copy
+        // lifetime is bounded by the frame, not a runtime thread.
         if let Some(env_resolved_ty) = &env_ty {
             for (idx, capture) in captures.iter().enumerate() {
                 body_builder.capture_env_sources.insert(
                     capture.binding,
                     CaptureEnvSource {
-                        env: Place::Local(0),
+                        env: Place::Local(1),
                         env_ty: env_resolved_ty.clone(),
                         field_offset: FieldOffset(
                             u32::try_from(idx).expect("gen capture count exceeds u32::MAX"),
@@ -21451,45 +21395,16 @@ impl Builder {
         // S5 maps to `None` on the Iterator impl side).
         let raw_blocks = body_builder.finalize_blocks(Terminator::Return);
 
-        // S3b cross-yield liveness + state-record synthesis pass. Runs on
-        // the sealed gen-body CFG; mutates the block list to insert
-        // bookend Move instructions around every yield/resume boundary
-        // and appends a synthetic state-record local at the end of the
-        // body's locals vector. Records a `GenStateLayout` on the
-        // enclosing builder so `lower_hir_module` surfaces it in the
-        // `IrPipeline.gen_state_layouts` vec.
-        let (blocks, body_locals_with_state, gen_state_layout_opt, drop_shim_opt) =
-            match crate::gen_state::synthesise(
-                &body_name,
-                raw_blocks.clone(),
-                body_builder.locals.clone(),
-            ) {
-                Some(synth) => (
-                    synth.blocks,
-                    synth.locals,
-                    Some(synth.layout),
-                    Some(synth.drop_shim),
-                ),
-                None => (raw_blocks, body_builder.locals.clone(), None, None),
-            };
-        if let Some(layout) = gen_state_layout_opt.clone() {
-            self.gen_state_layouts.push(layout);
-        }
-        // S3b2 drop-in-state shim. We surface it as a sibling
-        // `LoweredFunction` alongside the body so it reaches
-        // `IrPipeline.raw_mir` via the same generated-functions sweep
-        // that surfaces the body itself. The shim's checked /
-        // elaborated views are stub-shaped (no diagnostics, single
-        // Normal block, empty drop plan) because the body is a
-        // fail-closed Trap-only placeholder — S4 regenerates the
-        // shim's MIR from `GenStateLayout.drop_tables` and at that
-        // time the full check / elaborate pass runs against the
-        // regenerated body. See `gen_state::build_drop_shim_function`
-        // for the S3b2 / S4 split rationale.
-        if let Some(shim_raw) = drop_shim_opt {
-            self.generated_functions
-                .push(stub_lowered_for_drop_shim(shim_raw));
-        }
+        // Cross-suspend state is owned by LLVM's CoroSplit. The generator body
+        // lowers to an `llvm.coro.*` switched-resume coroutine; CoroSplit
+        // automatically spills every local live across a `coro.suspend` into the
+        // single heap frame and re-derives the drop manifest from the `cleanup`
+        // outline. There is therefore NO separate cross-yield-liveness /
+        // state-record synthesis pass: the prior `gen_state::synthesise` machinery
+        // (the spike-era stand-in for the never-landed hand-rolled state machine)
+        // is subsumed by the coro frame and removed (RC14).
+        let blocks = raw_blocks;
+        let body_locals_with_state = body_builder.locals.clone();
 
         // Build the THIR/raw/checked/elaborated triple for the body function.
         let thir_stmts: Vec<MirStatement> = blocks
@@ -21502,37 +21417,33 @@ impl Builder {
             statements: thir_stmts,
         };
 
-        // The gen-body function's parameter is the generator state record
-        // (the state-record local synthesised by `gen_state::synthesise`
-        // sits at the END of `body_locals_with_state`; S4 will lift it
-        // into the formal parameter list when the state-machine prologue
-        // lands). The param list stays empty here so the raw function is
-        // self-consistent at the MIR level.
+        // The gen-body coroutine ramp's formal parameters mirror the leading
+        // locals prepended above: `params[0]` is the out-pointer (`*mut Y`, the
+        // value channel) and — only when the body has captures — `params[1]` is
+        // the capture-env pointer. The `Terminator::Yield` codegen arm loads
+        // `Local(0)` to store the yielded value before each `coro.suspend`; the
+        // body reads env fields through `Local(1)` via `ClosureEnvFieldLoad`.
         //
-        // WHY FunctionCallConv::Default: S4 adds GeneratorNext convention
-        // when the state-machine switch-prologue lands. Using Default here
-        // keeps hew-codegen-rs compiling (it sees Unsupported("Terminator::Yield")
-        // before reaching the call-conv check). S4 replaces this.
+        // WHY FunctionCallConv::Default: the body IS a coroutine ramp, detected
+        // by codegen's `is_coroutine`/`has_suspend` carrier scan (it carries
+        // `Terminator::Yield`), which overrides the LLVM return type to the
+        // `coro.begin` handle (`ptr`) regardless of the call conv. No dedicated
+        // call conv is needed; the carrier presence is the signal.
+        let mut gen_body_params = vec![ResolvedTy::Pointer {
+            is_mutable: true,
+            pointee: Box::new(ResolvedTy::Unit),
+        }];
+        if has_env {
+            gen_body_params.push(ResolvedTy::Pointer {
+                is_mutable: true,
+                pointee: Box::new(ResolvedTy::Unit),
+            });
+        }
         let raw = RawMirFunction {
             name: body_name.clone(),
             return_ty: return_ty.clone(),
             call_conv: crate::model::FunctionCallConv::Default,
-            // Two leading pointer parameters matching the runtime contract for
-            // `hew_gen_ctx_create`'s `body_fn` (`extern "C" fn(*mut c_void,
-            // *mut HewGenCtx)`): `params[0]` is the body-argument copy,
-            // `params[1]` is the runtime context pointer. The codegen
-            // `Terminator::Yield` arm loads `Local(1)` to invoke
-            // `hew_gen_yield(ctx, &value, sizeof(value))`.
-            params: vec![
-                ResolvedTy::Pointer {
-                    is_mutable: true,
-                    pointee: Box::new(ResolvedTy::Unit),
-                },
-                ResolvedTy::Pointer {
-                    is_mutable: true,
-                    pointee: Box::new(ResolvedTy::Unit),
-                },
-            ],
+            params: gen_body_params,
             locals: body_locals_with_state.clone(),
             blocks: blocks.clone(),
             decisions: body_builder.decisions.clone(),
@@ -28489,13 +28400,15 @@ fn drop_kind_for(
                 drop_fn: "hew_bytes_drop",
             }
         }
-        // A `Generator<Y, R>` / `AsyncGenerator<Y>` owned local holds a
-        // `*mut HewGenCtx` handle (shared `Place::Local` storage, discriminated
-        // by the builtin type). Its sole release is `hew_gen_free`, which
-        // cancels-if-running, joins the generator thread, drains unconsumed
-        // yields, and frees the context. CowHeap is the self-describing
-        // load-pointer / call-symbol / null-store release the codegen drop arm
-        // uses — null-after-free guards a double `hew_gen_free`
+        // A `Generator<Y, R>` / `AsyncGenerator<Y>` owned local holds the heap
+        // companion `{ ptr handle, ptr env, ptr out_drop_thunk, i8 started,
+        // i8 pending, Y out }` (shared `Place::Local` storage, discriminated by
+        // the builtin type). Its sole release is `hew_gen_coro_destroy`, which
+        // destroys the coro frame (running its `cleanup` outline over every value
+        // the body still owns), typed-drops an un-consumed pending out-value via
+        // the planted thunk, then frees the companion. CowHeap is the
+        // self-describing load-pointer / call-symbol / null-store release the
+        // codegen drop arm uses — null-after-free guards a double destroy
         // (raii-null-after-move), and the runtime null-guards as defence.
         Place::Local(_) | Place::ReturnSlot
             if matches!(
@@ -28507,7 +28420,7 @@ fn drop_kind_for(
             ) =>
         {
             DropKind::CowHeap {
-                drop_fn: "hew_gen_free",
+                drop_fn: "hew_gen_coro_destroy",
             }
         }
         // A local `HashMap<K, V>` / `HashSet<E>` owned binding holds a single
@@ -30042,9 +29955,10 @@ fn enumerate_exits(
                 DropPlan::default(),
             ),
             // Generator construction is a synchronous call into the runtime
-            // (`hew_gen_ctx_create`) with a single `next` continuation. Model it
-            // as an `ExitPath::Call` so the call-exit handling applies; the
-            // constructed handle's own drop is scheduled at scope exit by the
+            // (the coro companion alloc + the gen-body ramp call) with a single
+            // `next` continuation. Model it as an `ExitPath::Call` so the
+            // call-exit handling applies; the constructed value's own drop
+            // (`hew_gen_coro_destroy`) is scheduled at scope exit by the
             // enclosing function's LIFO drop plan, not here.
             Terminator::MakeGenerator {
                 dest: _,
@@ -30054,7 +29968,7 @@ fn enumerate_exits(
             } => (
                 ExitPath::Call {
                     block: block_id,
-                    callee: "hew_gen_ctx_create".to_string(),
+                    callee: "hew_cont_frame_alloc".to_string(),
                     next: *next,
                 },
                 DropPlan::default(),
@@ -32893,7 +32807,7 @@ mod w3053_aggregate_handle_double_free_gate {
             Instr::Drop {
                 place: Place::Local(10),
                 ty: generator_ty(),
-                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_free")),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_coro_destroy")),
             },
         ];
         let owned = vec![
@@ -33019,7 +32933,7 @@ mod w3053_aggregate_handle_double_free_gate {
             Instr::Drop {
                 place: Place::Local(6),
                 ty: generator_ty(),
-                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_free")),
+                drop_fn: Some(crate::model::DropFnSpec::Release("hew_gen_coro_destroy")),
             },
         ];
         let owned = vec![

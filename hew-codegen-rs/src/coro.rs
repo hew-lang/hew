@@ -515,6 +515,19 @@ pub fn module_has_coroutines(llvm_mod: &LlvmModule<'_>) -> bool {
 /// pipeline), so they are run explicitly here.
 pub fn run_coro_passes(llvm_mod: &LlvmModule<'_>, machine: &TargetMachine) -> CodegenResult<()> {
     let options = inkwell::passes::PassBuilderOptions::create();
+    // `globaldce` runs FIRST to remove unreachable internal functions. This is
+    // load-bearing for coroutines: CoroSplit is a CGSCC pass that visits only
+    // functions reachable in the call graph, so a `presplitcoroutine` body that
+    // is never called (a generator in a dead `fn`, e.g. the `hew test`
+    // "compile every test, run one" model that leaves the other tests' generator
+    // bodies dead) is SKIPPED by the split pass. Its raw `llvm.coro.*`
+    // intrinsics then reach instruction selection un-lowered → `LLVM ERROR: Do
+    // not know how to promote this operator!`. `globaldce` deletes the dead
+    // coroutine body entirely before the split pass, so only live coroutines —
+    // which CoroSplit does process — survive to the backend. `globaldce` only
+    // removes internal/private globals with no remaining uses, so it never drops
+    // an exported or referenced function.
+    //
     // `coro-split` is a CGSCC pass: under the new pass manager it MUST be
     // wrapped in the `cgscc(...)` adaptor or it runs at module scope as a
     // no-op — the `presplitcoroutine` body then reaches the backend un-split
@@ -523,7 +536,7 @@ pub fn run_coro_passes(llvm_mod: &LlvmModule<'_>, machine: &TargetMachine) -> Co
     // split pass needs the explicit CGSCC nesting.
     llvm_mod
         .run_passes(
-            "coro-early,cgscc(coro-split),coro-cleanup",
+            "globaldce,coro-early,cgscc(coro-split),coro-cleanup",
             machine,
             options,
         )

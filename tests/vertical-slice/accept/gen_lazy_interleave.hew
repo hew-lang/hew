@@ -1,0 +1,25 @@
+// Proving-gate fixture: LAZY side-effect interleaving — the headline
+// behavioural contract of the generator->coro substrate unification.
+//
+// The generator body prints a marker BEFORE each yield; the consumer prints a
+// marker on each resume. Effects MUST interleave one-per-resume:
+//
+//     gen:a -> main:got -> gen:b -> main:got -> gen:c
+//
+// An EAGER drain (the failure mode the coro reroute must not introduce) would
+// print every gen marker first (gen:a gen:b gen:c) then both consumer markers.
+// The exact stdout order in gen_lazy_interleave.expected is the oracle; it is
+// captured against the current thread-based runtime and is frozen across the
+// thread->coro migration.
+fn main() {
+    let g = gen {
+        println("gen:a");
+        yield 1;
+        println("gen:b");
+        yield 2;
+        println("gen:c");
+    };
+    for v in g {
+        println("main:got");
+    }
+}

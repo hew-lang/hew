@@ -1,0 +1,21 @@
+// Proving-gate fixture (leak fix): CONSTRUCT-AND-DROP BEFORE FIRST `.next()`.
+//
+// Construction pre-runs the generator body to its FIRST `yield`, which MOVES the
+// owned "first-A" string into the companion out-slot with the value UN-consumed.
+// The generator binding is then dropped at scope exit WITHOUT any `.next()`, so
+// the companion is that string's sole owner. The scope-exit destroy must
+// typed-drop the pending out value exactly once (no leak under LSan, no
+// double-free under ASan) — before the fix this string leaked.
+//
+// Observable behaviour: the body runs to (and stops at) its first yield during
+// construction, so "gen:first" prints; "gen:second" never prints (the body is
+// suspended before it and is never resumed). "done" prints after the drop.
+fn main() {
+    let g = gen {
+        println("gen:first");
+        yield "first" + "-A";
+        println("gen:second");
+        yield "second" + "-B";
+    };
+    println("done");
+}

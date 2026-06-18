@@ -691,8 +691,6 @@ pub mod deterministic;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod env;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod generator;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod link;
 pub mod metrics;
 #[cfg(not(target_arch = "wasm32"))]

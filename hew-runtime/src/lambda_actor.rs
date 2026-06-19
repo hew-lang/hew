@@ -73,8 +73,12 @@
 
 use std::mem::ManuallyDrop;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Weak};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::LazyLock;
+use std::sync::{Arc, Mutex as StdMutex, Weak};
+use std::thread::JoinHandle;
 
 use crate::duplex::{HewDuplex, HewRecvHalf, HewSendHalf, RecvError, SendError};
 use crate::reply_channel::{
@@ -244,29 +248,56 @@ pub unsafe extern "C" fn hew_lambda_body_alloc_reply_buf(len: usize) -> *mut u8 
     Box::into_raw(boxed).cast::<u8>()
 }
 
-// ── Process-wide drain registry ────────────────────────────────────────────
+// ── Per-runtime drain registry ─────────────────────────────────────────────
 
-/// Count of currently-running lambda-actor dispatch threads. Bumped at
-/// `HewLambdaActor::new` BEFORE spawn; decremented inside the dispatch
-/// thread by the `LambdaDispatchGuard` Drop impl AFTER `dispatch_loop`
-/// returns (covering both natural exit on `Closed` and panic-unwind).
+/// Fallback dispatch counter for lambda-only compiled programs that never
+/// install a scheduler runtime.
+static FALLBACK_LAMBDA_DISPATCH: LazyLock<crate::lifetime::live_actors::LiveActors> =
+    LazyLock::new(crate::lifetime::live_actors::LiveActors::new);
+
+/// Count of currently-running lambda-actor dispatch threads. Bumped in the
+/// spawning runtime's `RuntimeInner.live_actors` when one is installed, or in
+/// [`FALLBACK_LAMBDA_DISPATCH`] for lambda-only programs that never call
+/// `hew_sched_init`, at `HewLambdaActor::new` BEFORE spawn; decremented inside
+/// the dispatch thread by the `LambdaDispatchGuard` Drop impl AFTER
+/// `dispatch_loop` returns (covering both natural exit on `Closed` and
+/// panic-unwind).
 ///
 /// Used by [`hew_lambda_drain_all`] so a non-actor-using `main` can block
 /// until every spawned lambda actor has drained its mailbox before the
 /// process exits. Mirrors the role `hew_shutdown_wait` plays for
 /// scheduler workers, but for lambda actors which run on their own
 /// dedicated OS threads (not the work-stealing scheduler).
-static ACTIVE_LAMBDA_DISPATCH: AtomicUsize = AtomicUsize::new(0);
+fn active_lambda_dispatch() -> &'static crate::lifetime::live_actors::LiveActors {
+    crate::runtime::rt_current_opt().map_or(&FALLBACK_LAMBDA_DISPATCH, |rt| &rt.live_actors)
+}
 
-/// RAII guard that decrements [`ACTIVE_LAMBDA_DISPATCH`] on drop. Lives
+/// Resolve the lambda dispatch counter for drain probes.
+///
+/// `hew_lambda_drain_all` is emitted in process-exit epilogues and can run after
+/// scheduler cleanup has detached the runtime, and lambda-only compiled
+/// programs can spawn dispatch threads without ever installing a scheduler
+/// runtime. The old process-global counter covered both cases; after
+/// deglobalization, the fallback counter preserves that no-runtime behaviour
+/// while runtime-backed programs still isolate their dispatch counts per
+/// `RuntimeInner`.
+fn active_lambda_dispatch_for_drain() -> &'static crate::lifetime::live_actors::LiveActors {
+    active_lambda_dispatch()
+}
+
+/// RAII guard that decrements the spawning runtime's lambda dispatch counter on
+/// drop. Lives
 /// on the dispatch thread's stack so the decrement is unconditional —
 /// `dispatch_loop` returning normally OR a body panic that unwinds the
 /// dispatch thread both run this Drop.
-struct LambdaDispatchGuard;
+struct LambdaDispatchGuard {
+    live_actors: &'static crate::lifetime::live_actors::LiveActors,
+}
 
 impl Drop for LambdaDispatchGuard {
     fn drop(&mut self) {
-        ACTIVE_LAMBDA_DISPATCH.fetch_sub(1, Ordering::AcqRel);
+        self.live_actors
+            .lambda_dispatch_fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -302,7 +333,8 @@ pub extern "C" fn hew_lambda_drain_all(timeout_ms: i64) -> i32 {
     let mut backoff = std::time::Duration::from_micros(100);
     let max_backoff = std::time::Duration::from_millis(16);
     loop {
-        if ACTIVE_LAMBDA_DISPATCH.load(Ordering::Acquire) == 0 {
+        let active_lambda_dispatch = active_lambda_dispatch_for_drain();
+        if active_lambda_dispatch.lambda_dispatch_load(Ordering::Acquire) == 0 {
             return 0;
         }
         let now = std::time::Instant::now();
@@ -321,15 +353,10 @@ pub extern "C" fn hew_lambda_drain_all(timeout_ms: i64) -> i32 {
 /// Internal shared state. Shared between the dispatch thread (via
 /// `Arc`) and the weak-ref upgrade path.
 ///
-/// `mailbox_in` (the send half) lives in `HewLambdaActor` wrapped in
-/// `Arc<HewSendHalf>`. When the last `HewLambdaActor` clone drops, the
-/// `Arc<HewSendHalf>` drops, `HewSendHalf::drop` calls `release_sender`,
-/// closing the send side of the queue. The dispatch thread's `recv` then
-/// returns `RecvError::Closed` and the loop exits naturally.
-///
-/// Separating `mailbox_in` from `LambdaActorInner` is the key invariant
-/// that allows the dispatch thread to hold `Arc<LambdaActorInner>` without
-/// preventing the mailbox from closing when external handles are released.
+/// `mailbox_in` (the send half) lives in [`LambdaActorLifecycle`], not here.
+/// Separating it from `LambdaActorInner` lets the dispatch thread hold
+/// `Arc<LambdaActorInner>` without keeping the mailbox open after external
+/// handles are released.
 pub struct LambdaActorInner {
     /// Recv-half retained from the body-side pair endpoint. The
     /// body-dispatch loop drains messages here.
@@ -486,23 +513,75 @@ impl Drop for LambdaActorInner {
 
 // ── Strong / Weak handles ──────────────────────────────────────────────────
 
+#[derive(Debug)]
+struct LambdaActorLifecycle {
+    /// Closed before joining the dispatch thread when the last external strong
+    /// handle drops.
+    mailbox_in: ManuallyDrop<HewSendHalf>,
+    dispatch_thread: StdMutex<Option<JoinHandle<()>>>,
+}
+
+impl LambdaActorLifecycle {
+    fn new(mailbox_in: HewSendHalf, dispatch_thread: JoinHandle<()>) -> Self {
+        Self {
+            mailbox_in: ManuallyDrop::new(mailbox_in),
+            dispatch_thread: StdMutex::new(Some(dispatch_thread)),
+        }
+    }
+
+    fn send(&self, msg: Vec<u8>) -> SendError {
+        self.mailbox_in.send(msg)
+    }
+}
+
+impl Drop for LambdaActorLifecycle {
+    fn drop(&mut self) {
+        // Close the mailbox first so the dispatch thread's blocking recv()
+        // observes Closed after draining buffered messages.
+        // SAFETY: `LambdaActorLifecycle::drop` runs exactly once, when the
+        // last `Arc<LambdaActorLifecycle>` is dropped. Dropping `mailbox_in` is
+        // the close-before-join primitive: it closes the mailbox so the
+        // dispatch thread's `recv()` returns `Closed` and the loop exits,
+        // enabling the join below. `mailbox_in` is never accessed after this.
+        unsafe { ManuallyDrop::drop(&mut self.mailbox_in) };
+
+        let handle = self
+            .dispatch_thread
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(handle) = handle {
+            if handle.thread().id() == std::thread::current().id() {
+                return;
+            }
+            if handle.join().is_err() {
+                crate::set_last_error(
+                    "hew_lambda_actor_release: dispatch thread panicked during teardown"
+                        .to_string(),
+                );
+            }
+        }
+    }
+}
+
 /// Strong lambda-actor handle. Holding a `HewLambdaActor` keeps the
 /// actor alive. When the last strong handle drops:
-/// 1. The `Arc<HewSendHalf>` drops → `HewSendHalf::drop` releases the
-///    sender-cap → the queue's send side closes.
-/// 2. The dispatch thread's next `recv` returns `RecvError::Closed`.
-/// 3. The dispatch thread exits, dropping its `Arc<LambdaActorInner>`.
+/// 1. The handle's `Arc<LambdaActorInner>` drops before lifecycle teardown.
+/// 2. `LambdaActorLifecycle::drop` closes the send half.
+/// 3. The dispatch thread drains the mailbox, exits, and drops its
+///    `Arc<LambdaActorInner>`.
 /// 4. `LambdaActorInner::drop` calls `state_drop(state)`.
-/// 5. Any `HewLambdaActorWeak::upgrade` returns `None` from this point.
-#[derive(Debug, Clone)]
+/// 5. The releasing thread joins the dispatch thread before freeing the C-ABI
+///    wrapper.
+#[derive(Debug)]
 pub struct HewLambdaActor {
-    /// Shared send half. `Arc` ownership so that all clones of this
-    /// handle share a single `HewSendHalf` that closes when the last
-    /// clone drops.
-    mailbox_in: Arc<HewSendHalf>,
     /// Shared inner state. Used for the stopped-flag and weak-ref
     /// upgrade target.
     inner: Arc<LambdaActorInner>,
+    /// Shared external lifecycle. The dispatch thread never holds this Arc, so
+    /// the final external release closes the mailbox and joins the dispatch
+    /// thread before returning.
+    lifecycle: Arc<LambdaActorLifecycle>,
 }
 
 impl HewLambdaActor {
@@ -525,10 +604,6 @@ impl HewLambdaActor {
         let (inner_val, mailbox_in) =
             LambdaActorInner::new(mailbox_capacity, shape, body_fn, state, state_drop);
         let inner = Arc::new(inner_val);
-        // Wrap mailbox_in in Arc so all clones share one send-half.
-        // When the Arc's strong count drops to zero, HewSendHalf::drop
-        // closes the queue and the dispatch thread's recv returns Closed.
-        let mailbox_in = Arc::new(mailbox_in);
         // Drain registry: increment BEFORE spawn so a probe between spawn
         // and increment cannot observe count=0 with a live thread. The
         // counter is decremented by the dispatch closure's `_guard` Drop
@@ -541,7 +616,7 @@ impl HewLambdaActor {
         //     Arc strong count; if this is the last ref,
         //     `LambdaActorInner::drop` runs and invokes `state_drop(state)`)
         //     and THEN `_guard` drops (decrementing the dispatch counter).
-        //   - Therefore: when `ACTIVE_LAMBDA_DISPATCH` reaches 0, all
+        //   - Therefore: when this runtime's lambda dispatch counter reaches 0, all
         //     captured user state has already been freed via state_drop.
         //   - If `dispatch_inner` were captured by the closure (instead of
         //     moved into a body-local AFTER `_guard`), it would drop with
@@ -549,18 +624,19 @@ impl HewLambdaActor {
         //     where `hew_lambda_drain_all` returns counter=0 but
         //     state_drop has not yet run. Security-review fix 2026-06-08:
         //     drain ≠ join, but drain MUST mean state-drop-has-run.
-        ACTIVE_LAMBDA_DISPATCH.fetch_add(1, Ordering::AcqRel);
+        let live_actors = active_lambda_dispatch();
+        live_actors.lambda_dispatch_fetch_add(1, Ordering::AcqRel);
         // Spawn the dispatch thread. It holds a strong Arc reference to
         // keep LambdaActorInner alive while the loop runs. The thread
-        // exits when recv returns Closed (i.e., when all external
-        // Arc<HewSendHalf> clones drop).
+        // exits when recv returns Closed (i.e., when the final external
+        // lifecycle closes the send half).
         let dispatch_inner = Arc::clone(&inner);
         let spawn_result = std::thread::Builder::new()
             .name("hew-lambda-dispatch".to_string())
             .spawn(move || {
                 // Drop-order discipline (see comment above): `_guard`
                 // declared FIRST so it drops LAST (after `inner`).
-                let _guard = LambdaDispatchGuard;
+                let _guard = LambdaDispatchGuard { live_actors };
                 // Move the captured Arc into a body-local declared AFTER
                 // `_guard`. Body-locals drop in reverse declaration order,
                 // so `inner` drops BEFORE `_guard` — triggering
@@ -570,17 +646,18 @@ impl HewLambdaActor {
                 dispatch_loop(&inner);
                 // (implicit drops at body end:
                 //    1. `inner` → Arc strong-count drop → state_drop
-                //    2. `_guard` → ACTIVE_LAMBDA_DISPATCH.fetch_sub
+                //    2. `_guard` → runtime lambda dispatch counter fetch_sub
                 // — so drain-all observes counter==0 only AFTER
                 // state_drop has run on this dispatch thread.)
             });
-        if spawn_result.is_err() {
+        let Ok(dispatch_thread) = spawn_result else {
             // Spawn failed: roll back the counter so a later drain-all
             // doesn't wait for a thread that never started.
-            ACTIVE_LAMBDA_DISPATCH.fetch_sub(1, Ordering::AcqRel);
+            live_actors.lambda_dispatch_fetch_sub(1, Ordering::AcqRel);
             return None;
-        }
-        Some(Self { mailbox_in, inner })
+        };
+        let lifecycle = Arc::new(LambdaActorLifecycle::new(mailbox_in, dispatch_thread));
+        Some(Self { inner, lifecycle })
     }
 
     /// Send a message envelope. Failure modes:
@@ -592,7 +669,7 @@ impl HewLambdaActor {
         if self.inner.is_stopped() {
             return SendError::ActorStopped;
         }
-        self.mailbox_in.send(msg)
+        self.lifecycle.send(msg)
     }
 
     /// Downgrade to a weak handle. The weak handle does NOT keep the
@@ -602,14 +679,17 @@ impl HewLambdaActor {
     pub fn downgrade(&self) -> HewLambdaActorWeak {
         HewLambdaActorWeak {
             inner: Arc::downgrade(&self.inner),
-            mailbox_in: Arc::downgrade(&self.mailbox_in),
+            lifecycle: Arc::downgrade(&self.lifecycle),
         }
     }
 
     /// Refcount-bump clone of the strong handle.
     #[must_use = "the clone bumps the actor's external refcount; drop releases it"]
     pub fn clone_handle(&self) -> Self {
-        self.clone()
+        Self {
+            inner: Arc::clone(&self.inner),
+            lifecycle: Arc::clone(&self.lifecycle),
+        }
     }
 }
 
@@ -621,22 +701,21 @@ impl HewLambdaActor {
 pub struct HewLambdaActorWeak {
     /// Weak reference to the inner state.
     inner: Weak<LambdaActorInner>,
-    /// Weak reference to the shared send half. Upgrading both is
-    /// atomic from the perspective of the lifecycle invariant: if
-    /// `mailbox_in` can be upgraded, the actor is still alive.
-    mailbox_in: Weak<HewSendHalf>,
+    /// Weak reference to the shared external lifecycle. The dispatch thread
+    /// never owns this, so failed upgrade means no external strong handle remains.
+    lifecycle: Weak<LambdaActorLifecycle>,
 }
 
 impl HewLambdaActorWeak {
     /// Try to upgrade to a strong handle. Returns `None` if the
-    /// external strong refcount has reached zero (i.e., the
-    /// `Arc<HewSendHalf>` has been released).
+    /// external strong refcount has reached zero (i.e., the lifecycle has
+    /// been released).
     #[must_use]
     pub fn upgrade(&self) -> Option<HewLambdaActor> {
-        // Both must succeed; if mailbox_in is gone the actor is stopped.
-        let mailbox_in = self.mailbox_in.upgrade()?;
+        // Both must succeed; if lifecycle is gone the actor is stopped.
+        let lifecycle = self.lifecycle.upgrade()?;
         let inner = self.inner.upgrade()?;
-        Some(HewLambdaActor { mailbox_in, inner })
+        Some(HewLambdaActor { inner, lifecycle })
     }
 
     /// Attempt a self-send through the weak handle. Upgrades just
@@ -1068,7 +1147,8 @@ pub unsafe extern "C" fn hew_lambda_actor_clone(
     // Released-flag guard: cloning a released handle would bump the Arc
     // strong count on a ManuallyDrop-dropped inner — UB. Consult the flag
     // before touching inner. See hew_lambda_actor_send for addr_of! rationale.
-    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; caller guarantees the
+    // wrapper has not been released yet.
     let released = unsafe { &*ptr::addr_of!((*actor).released) };
     if released.load(Ordering::Acquire) {
         crate::set_last_error("hew_lambda_actor_clone: handle already released".to_string());
@@ -1120,8 +1200,7 @@ pub unsafe extern "C" fn hew_lambda_actor_send(
     // from native FFI callers. Concurrent release-during-send is still a
     // caller contract violation — this guard does not serialise them.
     // SAFETY: `released` is the first field of #[repr(C)] HewLambdaActorHandle;
-    // addr_of! projects without materialising &mut *actor. The outer wrapper is
-    // never freed (intentional leak — see wrapper-struct design comment).
+    // addr_of! projects without materialising &mut *actor.
     let released = unsafe { &*ptr::addr_of!((*actor).released) };
     if released.load(Ordering::Acquire) {
         crate::set_last_error("hew_lambda_actor_send: handle already released".to_string());
@@ -1151,7 +1230,7 @@ pub unsafe extern "C" fn hew_lambda_actor_send(
     // identical (caller-supplied valid pointer, shared borrow of inner only,
     // Arc-protected internal state is Sync).
     // `(*actor).inner` = ManuallyDrop<HewLambdaActor> (deref → HewLambdaActor);
-    // `.inner` = Arc<LambdaActorInner>; `.mailbox_in` = Arc<HewSendHalf>.
+    // `.inner` = Arc<LambdaActorInner>; `.lifecycle` owns the shared send half.
     // SAFETY: (*actor).inner is ManuallyDrop<HewLambdaActor>; take an
     // explicit shared ref to avoid the implicit-autoref lint.
     let actor_ref = unsafe { &(*actor).inner };
@@ -1159,7 +1238,7 @@ pub unsafe extern "C" fn hew_lambda_actor_send(
     if stopped {
         return SendError::ActorStopped as i32;
     }
-    let res = actor_ref.mailbox_in.send(payload);
+    let res = actor_ref.lifecycle.send(payload);
     res as i32
 }
 
@@ -1215,7 +1294,8 @@ pub unsafe extern "C" fn hew_lambda_actor_ask(
     }
 
     // Released-flag guard.
-    // SAFETY: addr_of! projection; outer wrapper never freed.
+    // SAFETY: addr_of! projection; caller guarantees the wrapper has not been
+    // released yet.
     let released = unsafe { &*ptr::addr_of!((*actor).released) };
     if released.load(Ordering::Acquire) {
         crate::set_last_error("hew_lambda_actor_ask: handle already released".to_string());
@@ -1268,7 +1348,7 @@ pub unsafe extern "C" fn hew_lambda_actor_ask(
         }
         return SendError::ActorStopped as i32;
     }
-    let send_res = actor_ref.mailbox_in.send(envelope);
+    let send_res = actor_ref.lifecycle.send(envelope);
     if send_res != SendError::Ok {
         // Send failed; release both refs.
         // SAFETY: envelope was not consumed (send failed); two refs remain.
@@ -1382,10 +1462,9 @@ pub unsafe extern "C" fn hew_lambda_actor_release(actor: *mut HewLambdaActorHand
     // FFI caller is concurrently inside this function on this pointer.
     let h = unsafe { &mut *actor };
     // SAFETY: first release — inner HewLambdaActor is still valid.
-    // ManuallyDrop::drop decrements the Arc strong count (and triggers
-    // LambdaActorInner Drop if it reaches zero, which closes the
-    // HewDuplex and joins the dispatch thread via the dispatch-loop's
-    // observable end-of-state path).
+    // ManuallyDrop::drop drops `inner` first, then the lifecycle. If this is
+    // the last external strong handle, lifecycle drop closes the mailbox and
+    // joins the dispatch thread before this release returns.
     unsafe { ManuallyDrop::drop(&mut h.inner) };
     crate::tracing::record_channel_event(actor as u64, crate::tracing::SPAN_LAMBDA_RELEASED);
     // SAFETY: (wrapper-free phase) actor was allocated by `Box::into_raw`
@@ -1417,7 +1496,8 @@ pub unsafe extern "C" fn hew_lambda_actor_downgrade(
     // Released-flag guard: downgrading a released handle would call downgrade
     // on a ManuallyDrop-dropped HewLambdaActor — UB. See
     // hew_lambda_actor_send for addr_of! rationale.
-    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; caller guarantees the
+    // wrapper has not been released yet.
     let released = unsafe { &*ptr::addr_of!((*actor).released) };
     if released.load(Ordering::Acquire) {
         crate::set_last_error("hew_lambda_actor_downgrade: handle already released".to_string());
@@ -1451,7 +1531,8 @@ pub unsafe extern "C" fn hew_lambda_actor_weak_send(
     }
     // Released-flag guard: see hew_lambda_actor_send for rationale; mirrored
     // here for the weak-handle wrapper.
-    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; caller guarantees the
+    // wrapper has not been released yet.
     let released = unsafe { &*ptr::addr_of!((*weak).released) };
     if released.load(Ordering::Acquire) {
         crate::set_last_error("hew_lambda_actor_weak_send: handle already released".to_string());
@@ -1498,7 +1579,8 @@ pub unsafe extern "C" fn hew_lambda_actor_weak_clone(
     // Released-flag guard: cloning a dropped weak handle would call clone
     // on a ManuallyDrop-dropped HewLambdaActorWeak — UB. See
     // hew_lambda_actor_send for addr_of! rationale.
-    // SAFETY: addr_of! projection on #[repr(C)] handle; outer wrapper never freed.
+    // SAFETY: addr_of! projection on #[repr(C)] handle; caller guarantees the
+    // wrapper has not been released yet.
     let released = unsafe { &*ptr::addr_of!((*weak).released) };
     if released.load(Ordering::Acquire) {
         crate::set_last_error("hew_lambda_actor_weak_clone: handle already released".to_string());
@@ -1564,6 +1646,77 @@ mod tests {
     use super::*;
 
     // ── Shared test helpers ────────────────────────────────────────────────
+
+    struct LambdaTestGuard {
+        _enter: crate::runtime::EnterGuard,
+        _rt: Box<crate::runtime::RuntimeInner>,
+    }
+
+    fn guard() -> LambdaTestGuard {
+        let rt = Box::new(crate::runtime::RuntimeInner::new(
+            crate::scheduler::worker_less_scheduler(),
+        ));
+        // SAFETY: the guard owns `rt` and drops `_enter` before it, so the
+        // entered runtime outlives the thread-local selection that names it.
+        let enter = unsafe { crate::runtime::enter(&rt) };
+        LambdaTestGuard {
+            _enter: enter,
+            _rt: rt,
+        }
+    }
+
+    #[test]
+    fn drain_all_treats_missing_runtime_as_no_active_lambda_dispatch() {
+        let _lock = crate::scheduler::SchedTestLock::acquire();
+        assert!(
+            crate::runtime::rt_default().is_none(),
+            "test requires the runtime slot to be empty"
+        );
+
+        assert_eq!(hew_lambda_drain_all(1), 0);
+    }
+
+    static NO_RUNTIME_TELL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C-unwind" fn no_runtime_counting_tell_body(
+        _state: *mut core::ffi::c_void,
+        _msg: *const u8,
+        _msg_len: usize,
+        reply_out: *mut *mut u8,
+        reply_len_out: *mut usize,
+    ) -> i32 {
+        NO_RUNTIME_TELL_COUNT.fetch_add(1, Ordering::AcqRel);
+        unsafe {
+            *reply_out = ptr::null_mut();
+            *reply_len_out = 0;
+        }
+        0
+    }
+
+    #[test]
+    fn lambda_actor_without_runtime_uses_fallback_dispatch_counter() {
+        let _lock = crate::scheduler::SchedTestLock::acquire();
+        assert!(
+            crate::runtime::rt_default().is_none(),
+            "test requires the runtime slot to be empty"
+        );
+        NO_RUNTIME_TELL_COUNT.store(0, Ordering::Release);
+
+        let actor = HewLambdaActor::new(
+            2,
+            LambdaShape::Tell,
+            no_runtime_counting_tell_body,
+            ptr::null_mut(),
+            noop_state_drop,
+        )
+        .expect("spawn lambda actor without scheduler runtime");
+
+        assert_eq!(actor.send(b"hello".to_vec()), SendError::Ok);
+        drop(actor);
+
+        assert_eq!(hew_lambda_drain_all(2_000), 0);
+        assert_eq!(NO_RUNTIME_TELL_COUNT.load(Ordering::Acquire), 1);
+    }
 
     /// No-op state-drop callback for tests that don't need cleanup.
     unsafe extern "C-unwind" fn noop_state_drop(_state: *mut core::ffi::c_void) {}
@@ -1693,6 +1846,35 @@ mod tests {
         42 // non-zero → actor stops
     }
 
+    struct SlowReleaseState {
+        started: Arc<AtomicBool>,
+        finished: Arc<AtomicBool>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    unsafe extern "C-unwind" fn slow_release_body(
+        state: *mut core::ffi::c_void,
+        _msg: *const u8,
+        _msg_len: usize,
+        reply_out: *mut *mut u8,
+        reply_len_out: *mut usize,
+    ) -> i32 {
+        let state = unsafe { &*(state.cast::<SlowReleaseState>()) };
+        state.started.store(true, Ord::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        state.finished.store(true, Ord::SeqCst);
+        unsafe {
+            *reply_out = ptr::null_mut();
+            *reply_len_out = 0;
+        }
+        0
+    }
+
+    unsafe extern "C-unwind" fn slow_release_state_drop(state: *mut core::ffi::c_void) {
+        let state = unsafe { Box::from_raw(state.cast::<SlowReleaseState>()) };
+        state.dropped.store(true, Ord::SeqCst);
+    }
+
     /// State-drop callback that increments a shared counter. Cast
     /// `Arc<AtomicUsize>` pointer to `*mut c_void` via `Arc::into_raw`.
     unsafe extern "C-unwind" fn counting_state_drop(state: *mut core::ffi::c_void) {
@@ -1715,6 +1897,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
 
+        let _guard = crate::runtime_test_guard();
         let received: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
         let received_clone = Arc::clone(&received);
 
@@ -1745,6 +1928,7 @@ mod tests {
 
     #[test]
     fn weak_upgrade_succeeds_while_strong_alive() {
+        let _guard = crate::runtime_test_guard();
         let a = HewLambdaActor::new(
             2,
             LambdaShape::Tell,
@@ -1776,6 +1960,7 @@ mod tests {
 
     #[test]
     fn weak_upgrade_fails_after_strong_drops() {
+        let _guard = crate::runtime_test_guard();
         let a = HewLambdaActor::new(
             2,
             LambdaShape::Tell,
@@ -1794,6 +1979,7 @@ mod tests {
 
     #[test]
     fn weak_does_not_keep_actor_alive() {
+        let _guard = crate::runtime_test_guard();
         let a = HewLambdaActor::new(
             2,
             LambdaShape::Tell,
@@ -1804,21 +1990,20 @@ mod tests {
         .expect("spawn");
         let w = a.downgrade();
         // `inner` Arc: external handle + dispatch thread = 2 strong refs.
-        // `mailbox_in` Arc: only the external handle = 1 strong ref.
-        // (The dispatch thread does NOT hold a mailbox_in reference —
-        // that's the key invariant ensuring the queue closes when the
-        // external handle drops.)
-        assert_eq!(Arc::strong_count(&a.mailbox_in), 1);
+        // `lifecycle` Arc: only external handles = 1 strong ref. The dispatch
+        // thread does NOT hold it; final external release closes the mailbox.
+        assert_eq!(Arc::strong_count(&a.lifecycle), 1);
         assert_eq!(Arc::strong_count(&a.inner), 2);
         drop(a);
-        // When `a` drops: Arc<HewSendHalf> strong count → 0 → queue closes
-        // → dispatch thread's recv returns Closed → thread exits.
+        // When `a` drops: lifecycle strong count → 0 → queue closes → dispatch
+        // thread's recv returns Closed → release joins the thread.
         std::thread::sleep(std::time::Duration::from_millis(50));
         assert!(w.upgrade().is_none());
     }
 
     #[test]
     fn multiple_strong_handles_keep_actor_alive() {
+        let _guard = crate::runtime_test_guard();
         let a = HewLambdaActor::new(
             2,
             LambdaShape::Tell,
@@ -1857,6 +2042,7 @@ mod tests {
 
     #[test]
     fn cabi_new_send_release_tell() {
+        let _guard = crate::runtime_test_guard();
         let a = new_tell_cabi(4);
         assert!(!a.is_null());
         let msg = b"abi";
@@ -1870,6 +2056,7 @@ mod tests {
 
     #[test]
     fn cabi_new_rejects_invalid_shape() {
+        let _guard = guard();
         // SAFETY: args valid except shape discriminant.
         let a = unsafe {
             hew_lambda_actor_new(
@@ -1885,6 +2072,7 @@ mod tests {
 
     #[test]
     fn cabi_new_rejects_zero_capacity() {
+        let _guard = guard();
         // SAFETY: args valid except capacity.
         let a = unsafe {
             hew_lambda_actor_new(
@@ -1915,6 +2103,7 @@ mod tests {
 
     #[test]
     fn cabi_weak_send_returns_actor_stopped_after_release() {
+        let _guard = crate::runtime_test_guard();
         let a = new_tell_cabi(4);
         // SAFETY: a non-null.
         let w = unsafe { hew_lambda_actor_downgrade(a) };
@@ -1934,6 +2123,7 @@ mod tests {
 
     #[test]
     fn cabi_weak_send_succeeds_while_strong_alive() {
+        let _guard = crate::runtime_test_guard();
         let a = new_tell_cabi(4);
         // SAFETY: a non-null.
         let w = unsafe { hew_lambda_actor_downgrade(a) };
@@ -1970,6 +2160,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
         use std::time::Duration;
 
+        let _guard = crate::runtime_test_guard();
         let received: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
         let received_clone = Arc::clone(&received);
         let state_ptr = Box::into_raw(Box::new(received_clone)).cast::<core::ffi::c_void>();
@@ -2063,6 +2254,7 @@ mod tests {
     fn body_panic_marks_actor_stopped() {
         use std::time::Duration;
 
+        let _guard = crate::runtime_test_guard();
         let actor = unsafe {
             hew_lambda_actor_new(
                 4,
@@ -2086,6 +2278,7 @@ mod tests {
     /// Non-zero body return marks actor stopped.
     #[test]
     fn nonzero_body_return_marks_actor_stopped() {
+        let _guard = crate::runtime_test_guard();
         let actor = unsafe {
             hew_lambda_actor_new(
                 4,
@@ -2271,6 +2464,7 @@ mod tests {
     fn state_drop_called_exactly_once() {
         use std::time::Duration;
 
+        let _guard = crate::runtime_test_guard();
         let counter = Arc::new(AtomicUsize::new(0));
         // Arc::into_raw keeps one reference; counting_state_drop reconstructs
         // and drops the Arc (decrement), which is fine because the test also
@@ -2297,11 +2491,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn release_waits_for_inflight_body_and_state_drop() {
+        let _guard = crate::runtime_test_guard();
+        let started = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let state = Box::new(SlowReleaseState {
+            started: Arc::clone(&started),
+            finished: Arc::clone(&finished),
+            dropped: Arc::clone(&dropped),
+        });
+        let state_raw = Box::into_raw(state).cast::<core::ffi::c_void>();
+
+        let actor = unsafe {
+            hew_lambda_actor_new(
+                4,
+                LambdaShape::Tell as i32,
+                Some(slow_release_body),
+                state_raw,
+                Some(slow_release_state_drop),
+            )
+        };
+        assert!(!actor.is_null());
+
+        let msg = b"slow";
+        assert_eq!(
+            unsafe { hew_lambda_actor_send(actor, msg.as_ptr(), msg.len()) },
+            SendError::Ok as i32
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !started.load(Ord::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "slow body must start before release"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            !finished.load(Ord::SeqCst),
+            "test must release while body is still running"
+        );
+
+        assert_eq!(
+            unsafe { hew_lambda_actor_release(actor) },
+            SendError::Ok as i32
+        );
+        assert!(
+            finished.load(Ord::SeqCst),
+            "release must join the in-flight body before returning"
+        );
+        assert!(
+            dropped.load(Ord::SeqCst),
+            "release must wait until state_drop has run"
+        );
+    }
+
     /// Regression test for B4 (security review 2026-06-08):
     /// `hew_lambda_drain_all` must return only AFTER all dispatch threads'
     /// captured state has been torn down via `state_drop`. Prior to the
     /// drop-order fix in `HewLambdaActor::new`'s spawn closure, the
-    /// `LambdaDispatchGuard` decremented `ACTIVE_LAMBDA_DISPATCH` BEFORE
+    /// `LambdaDispatchGuard` decremented the drain counter BEFORE
     /// the captured `Arc<LambdaActorInner>` dropped, so drain could
     /// observe `count == 0` while `state_drop` had not yet run.
     ///
@@ -2313,9 +2564,9 @@ mod tests {
         const ITERS: usize = 25;
         const BATCH: usize = 8;
 
-        // `hew_lambda_drain_all` reads the process-wide ACTIVE_LAMBDA_DISPATCH
-        // counter. Any concurrent test spawning lambda actors will inflate
-        // that counter mid-drain and stall this assertion at non-zero.
+        // `hew_lambda_drain_all` reads this runtime's lambda dispatch counter.
+        // The runtime test guard keeps the existing default-runtime behaviour
+        // while the counter itself is now isolated from private runtimes.
         let _guard = crate::runtime_test_guard();
 
         for iter in 0..ITERS {
@@ -2344,7 +2595,7 @@ mod tests {
                 let rc = unsafe { hew_lambda_actor_release(actor) };
                 assert_eq!(rc, SendError::Ok as i32);
             }
-            // Drain: returns 0 when ACTIVE_LAMBDA_DISPATCH reaches 0.
+            // Drain: returns 0 when this runtime's lambda dispatch counter reaches 0.
             let rc = hew_lambda_drain_all(2_000);
             assert_eq!(rc, 0, "iter {iter}: drain must succeed (timeout 0)");
             // Post-drain invariant: state_drop has fired for every actor.
@@ -2353,6 +2604,51 @@ mod tests {
                 fired, BATCH,
                 "iter {iter}: drain returned 0 but state_drop fired {fired}/{BATCH} times \
                  (drop-order race: guard decrements counter before Arc drops)"
+            );
+        }
+    }
+
+    #[test]
+    fn independent_runtimes_drain_only_their_lambda_dispatch_threads() {
+        let rt_a = Box::new(crate::runtime::RuntimeInner::new(
+            crate::scheduler::worker_less_scheduler(),
+        ));
+        let rt_b = Box::new(crate::runtime::RuntimeInner::new(
+            crate::scheduler::worker_less_scheduler(),
+        ));
+
+        let actor_b = {
+            // SAFETY: rt_b lives until the actor is dropped and drained below.
+            let _enter = unsafe { crate::runtime::enter(&rt_b) };
+            HewLambdaActor::new(
+                1,
+                LambdaShape::Tell,
+                noop_tell_body,
+                ptr::null_mut(),
+                noop_state_drop,
+            )
+            .expect("spawn runtime B lambda actor")
+        };
+
+        {
+            // SAFETY: rt_a lives for the whole entered scope.
+            let _enter = unsafe { crate::runtime::enter(&rt_a) };
+            assert_eq!(
+                hew_lambda_drain_all(1),
+                0,
+                "runtime A drain must ignore runtime B's live lambda actor"
+            );
+        }
+
+        drop(actor_b);
+
+        {
+            // SAFETY: rt_b lives for the whole entered scope.
+            let _enter = unsafe { crate::runtime::enter(&rt_b) };
+            assert_eq!(
+                hew_lambda_drain_all(2_000),
+                0,
+                "runtime B drain observes its own lambda actor exit"
             );
         }
     }
@@ -2430,6 +2726,7 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 
+        let _guard = crate::runtime_test_guard();
         let actor = HewLambdaActor::new(
             1,
             LambdaShape::Tell,

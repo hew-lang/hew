@@ -28,6 +28,7 @@ use hew_runtime::lambda_actor::{
     hew_lambda_actor_downgrade, hew_lambda_actor_new, hew_lambda_actor_release,
     hew_lambda_actor_weak_drop, hew_lambda_actor_weak_send, LambdaShape,
 };
+use hew_runtime::scheduler::hew_sched_init;
 
 /// Helper: synchronous recv that returns the bytes (copying out of the
 /// runtime-owned buffer before freeing it).
@@ -211,6 +212,8 @@ unsafe extern "C-unwind" fn noop_state_drop(_state: *mut std::ffi::c_void) {}
 
 #[test]
 fn lambda_self_send_fib_stop_after_external_release() {
+    hew_sched_init();
+
     // SAFETY: noop_tell_body / noop_state_drop are valid extern "C" fn ptrs;
     // state is null (noop body ignores it); capacity > 0.
     let actor = unsafe {

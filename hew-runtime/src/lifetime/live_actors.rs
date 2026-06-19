@@ -26,11 +26,12 @@
 //! 16-shard `LiveActors` reduces hot-path contention.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::actor::HewActor;
 use crate::lifetime::poison_safe::PoisonSafe;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::runtime::rt_current;
+use crate::runtime::{rt_current, rt_current_opt};
 
 /// Opaque wrapper around `*mut HewActor` that makes it `Send`.
 ///
@@ -45,9 +46,10 @@ unsafe impl Send for ActorPtr {}
 
 /// Runtime-owned actor-liveness state.
 ///
-/// Was the `LIVE_ACTORS` + `DEFERRED_TEARDOWN_THREADS` globals; now a field of
-/// `RuntimeInner`. Dropping it drops the (normally empty after cleanup) map and
-/// any still-pending teardown join handles.
+/// Was the `LIVE_ACTORS` + `DEFERRED_TEARDOWN_THREADS` +
+/// `lambda_actor::ACTIVE_LAMBDA_DISPATCH` globals; now a field of
+/// `RuntimeInner`. Dropping it drops the (normally empty after cleanup) map, any
+/// still-pending teardown join handles, and the lambda drain counter.
 ///
 /// Native only: the WASM runtime is single-threaded and has no `RuntimeInner`,
 /// so it backs the registry with a module-private static (`LIVE_ACTORS_WASM`)
@@ -62,6 +64,9 @@ pub(crate) struct LiveActors {
     /// they still reference, or the sweep races an in-flight teardown into a
     /// use-after-free / double-free.
     deferred_teardown_threads: PoisonSafe<Vec<std::thread::JoinHandle<()>>>,
+    /// Count of currently-running lambda-actor dispatch threads owned by this
+    /// runtime. Used by `hew_lambda_drain_all`.
+    active_lambda_dispatch: AtomicUsize,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -71,7 +76,20 @@ impl LiveActors {
         Self {
             map: PoisonSafe::new(None),
             deferred_teardown_threads: PoisonSafe::new(Vec::new()),
+            active_lambda_dispatch: AtomicUsize::new(0),
         }
+    }
+
+    pub(crate) fn lambda_dispatch_fetch_add(&self, value: usize, ordering: Ordering) -> usize {
+        self.active_lambda_dispatch.fetch_add(value, ordering)
+    }
+
+    pub(crate) fn lambda_dispatch_fetch_sub(&self, value: usize, ordering: Ordering) -> usize {
+        self.active_lambda_dispatch.fetch_sub(value, ordering)
+    }
+
+    pub(crate) fn lambda_dispatch_load(&self, ordering: Ordering) -> usize {
+        self.active_lambda_dispatch.load(ordering)
     }
 }
 
@@ -89,6 +107,29 @@ static LIVE_ACTORS_WASM: PoisonSafe<Option<HashMap<u64, ActorPtr>>> = PoisonSafe
 #[cfg(not(target_arch = "wasm32"))]
 fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R) -> R {
     rt_current().live_actors.map.access(f)
+}
+
+/// Run `f` with mutable access to the current runtime's live-actor map, if one
+/// is installed.
+///
+/// The liveness probe/read surface is reachable from trap/teardown paths that
+/// also support manually-constructed actors with no runtime installed. When the
+/// map was a process-global static, those probes observed an empty map and
+/// returned "not live"; after deglobalization they must keep that read-only
+/// default while registration/removal paths continue to fail closed through
+/// [`with_live_actors`].
+#[cfg(not(target_arch = "wasm32"))]
+fn with_live_actors_opt<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R) -> Option<R> {
+    rt_current_opt().map(|rt| rt.live_actors.map.access(f))
+}
+
+/// Run `f` with mutable access to the WASM runtime's live-actor map.
+///
+/// WASM still uses a module-private static, so the optional native resolver is
+/// always present there.
+#[cfg(target_arch = "wasm32")]
+fn with_live_actors_opt<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R) -> Option<R> {
+    Some(with_live_actors(f))
 }
 
 /// Run `f` with mutable access to the WASM runtime's live-actor map.
@@ -120,7 +161,7 @@ pub(crate) unsafe fn track_actor(actor: *mut HewActor) {
 pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
     // SAFETY: caller guarantees `actor` is valid and not yet freed.
     let id = unsafe { (*actor).id };
-    with_live_actors(|map| {
+    with_live_actors_opt(|map| {
         if let Some(m) = map.as_mut() {
             if let std::collections::hash_map::Entry::Occupied(entry) = m.entry(id) {
                 if entry.get().0 == actor {
@@ -131,13 +172,14 @@ pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
         }
         false
     })
+    .unwrap_or(false)
 }
 
 /// Remove and return the actor tracked under `actor_id` if it still matches `expected`.
 // live on not(wasm32) — drain_quiesced_actor; dead on wasm32; caller actor.rs:2716
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn take_actor_by_id(actor_id: u64, expected: *mut HewActor) -> Option<*mut HewActor> {
-    with_live_actors(|map| {
+    with_live_actors_opt(|map| {
         let tracked = map.as_mut()?.remove(&actor_id)?;
         if tracked.0 == expected {
             Some(tracked.0)
@@ -147,6 +189,7 @@ pub(crate) fn take_actor_by_id(actor_id: u64, expected: *mut HewActor) -> Option
             None
         }
     })
+    .flatten()
 }
 
 /// Check whether an actor pointer is still live.
@@ -160,7 +203,7 @@ pub(crate) fn with_live_actor<R>(
     actor: *mut HewActor,
     f: impl FnOnce(&HewActor) -> R,
 ) -> Option<R> {
-    with_live_actors(|map| {
+    with_live_actors_opt(|map| {
         if map
             .as_ref()
             .is_some_and(|m| m.values().any(|ptr| ptr.0 == actor))
@@ -172,6 +215,7 @@ pub(crate) fn with_live_actor<R>(
             None
         }
     })
+    .flatten()
 }
 
 /// Check whether an actor ID still maps to the expected live actor pointer.
@@ -185,7 +229,7 @@ pub(crate) fn with_live_actor_by_id<R>(
     expected: *mut HewActor,
     f: impl FnOnce(&HewActor) -> R,
 ) -> Option<R> {
-    with_live_actors(|map| {
+    with_live_actors_opt(|map| {
         if map
             .as_ref()
             .and_then(|m| m.get(&actor_id))
@@ -198,6 +242,7 @@ pub(crate) fn with_live_actor_by_id<R>(
             None
         }
     })
+    .flatten()
 }
 
 /// Look up an actor by ID and return a copy of its raw pointer if live.
@@ -214,11 +259,12 @@ pub(crate) fn with_live_actor_by_id<R>(
 // live on not(wasm32) — hew_actor_send_by_id / hew_actor_ask_by_id / hew_node; dead on wasm32
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
-    with_live_actors(|map| {
+    with_live_actors_opt(|map| {
         map.as_ref()
             .and_then(|m| m.get(&actor_id).map(|ptr| ptr.0))
             .filter(|ptr| !ptr.is_null())
     })
+    .flatten()
 }
 
 /// Check whether an actor pointer is still live (tracked and not yet freed).
@@ -258,10 +304,11 @@ pub(crate) fn is_actor_live_with_id(actor_id: u64, expected: *mut HewActor) -> b
 /// Returns the drained map so the caller can free each actor.
 /// Called by `actor::cleanup_all_actors` after worker threads have stopped.
 pub(crate) fn drain_all_for_cleanup() -> HashMap<u64, ActorPtr> {
-    with_live_actors(|map| match map.as_mut() {
+    with_live_actors_opt(|map| match map.as_mut() {
         Some(m) => std::mem::take(m),
         None => HashMap::new(),
     })
+    .unwrap_or_default()
 }
 
 // ── Deferred teardown threads ───────────────────────────────────────────────
@@ -276,7 +323,8 @@ pub(crate) fn push_deferred_teardown_thread(handle: std::thread::JoinHandle<()>)
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn drain_deferred_teardown_threads() {
-    let threads = &rt_current().live_actors.deferred_teardown_threads;
+    let Some(rt) = rt_current_opt() else { return };
+    let threads = &rt.live_actors.deferred_teardown_threads;
     loop {
         let handles = threads.access(|threads| {
             if threads.is_empty() {
@@ -291,5 +339,28 @@ pub(crate) fn drain_deferred_teardown_threads() {
                 eprintln!("hew: warning: deferred teardown thread panicked");
             }
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn liveness_reads_treat_missing_runtime_as_empty_registry() {
+        let _lock = crate::scheduler::SchedTestLock::acquire();
+        assert!(
+            crate::runtime::rt_default().is_none(),
+            "test requires the runtime slot to be empty"
+        );
+
+        let actor = std::ptr::dangling_mut::<HewActor>();
+        assert_eq!(with_live_actor(actor, |_| unreachable!()), None);
+        assert_eq!(with_live_actor_by_id(42, actor, |_| unreachable!()), None);
+        assert_eq!(get_actor_ptr_by_id(42), None);
+        assert!(!is_actor_live(actor));
+        assert!(!is_actor_live_with_id(42, actor));
+        assert!(drain_all_for_cleanup().is_empty());
+        drain_deferred_teardown_threads();
     }
 }

@@ -7,6 +7,7 @@
 
 pub mod closure_env;
 pub mod dataflow;
+pub mod dump;
 pub mod dyn_vtable_registry;
 pub mod lower;
 pub mod model;
@@ -40,6 +41,7 @@ pub fn drop_kind_for_test(
 ) -> DropKind {
     lower::drop_kind_for_test_only(place, ty, dyn_storage)
 }
+pub use dump::{dump_mir, DumpStage};
 pub use hew_hir::sanitize_for_symbol;
 pub use model::{
     call_arg_source_escapes, callee_param_is_borrow, container_ingress_is_copy_in,

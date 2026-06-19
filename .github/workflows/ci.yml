@@ -22,82 +22,32 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
-  # Path change detection — skip heavy jobs for doc-only changes
+  # Path change detection — gates Windows/macOS and playground jobs
   # ─────────────────────────────────────────────────────────────────────────
   changes:
     name: Detect changes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      # linux_correctness drives the full Linux correctness gate (the real,
-      # non-instrumented suites). platform_smoke drives the Windows/macOS
-      # build+smoke required checks; platform_full additionally promotes those
-      # platform jobs to the full workspace nextest when a change can touch
-      # native linking / ABI / toolchain. playground drives the browser WASM
-      # job. Docs-only changes trip NONE of these → every required job no-ops.
-      #
-      # FAIL-SAFE: linux_correctness is derived by NEGATION of docs_only —
-      # it is 'true' for ANY change that is not exclusively docs. This means
-      # release scripts, Makefile, installer configs, .github operational files,
-      # packaging, and any new/unrecognised file all trip correctness by default.
-      # The only safe skip is a change set composed ENTIRELY of the docs allowlist
-      # (docs/**, *.md, LICENSE*, NOTICE, CHANGELOG, etc.). Mixed PRs that contain
-      # even one non-docs file also run correctness. docs_only uses
-      # predicate-quantifier: every in a separate step (docs-gate) to enforce
-      # the ALL-files-must-match invariant; the other filters use the default
-      # `some` semantics in the filter step and are unaffected.
-      linux_correctness: ${{ steps.gate.outputs.linux_correctness }}
+      # platform_smoke drives the Windows/macOS build+smoke required checks;
+      # platform_full additionally promotes those platform jobs to the full
+      # workspace nextest when a change can touch native linking / ABI /
+      # toolchain. playground drives the browser WASM job.
+      # Build & test (Linux) runs unconditionally on every push/PR.
       platform_smoke: ${{ steps.filter.outputs.platform_smoke }}
       platform_full: ${{ steps.filter.outputs.platform_full }}
       playground: ${{ steps.filter.outputs.playground }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
-      # docs_only detection: uses predicate-quantifier: every so the filter is
-      # true ONLY when ALL changed files match the docs allowlist. A mixed PR
-      # (docs + any code/operational file) produces false, which correctly trips
-      # linux_correctness below. This step MUST be separate from the `filter`
-      # step below — predicate-quantifier applies to the entire step, so mixing
-      # docs_only (needs `every`) with the other filters (need the default `some`)
-      # would corrupt platform_smoke/platform_full/playground semantics.
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
-        id: docs-gate
-        with:
-          predicate-quantifier: every
-          filters: |
-            # docs_only is true IFF EVERY changed file matches this allowlist.
-            # Files provably incapable of affecting build, test, or runtime
-            # behaviour. Anything not listed here (Makefile, release/install
-            # scripts, .github operational files, packaging configs, .rs, etc.)
-            # causes docs_only=false, which trips linux_correctness below.
-            docs_only:
-              - 'docs/**'
-              - '**/*.md'
-              - 'LICENSE'
-              - 'LICENSE-*'
-              - 'NOTICE'
-              - 'CHANGELOG'
-              - 'CHANGELOG.*'
-              - '.github/CODEOWNERS'
-              - '.github/FUNDING.yml'
-              - '.github/ISSUE_TEMPLATE/**'
-              - '.github/PULL_REQUEST_TEMPLATE/**'
-              - '.github/PULL_REQUEST_TEMPLATE.md'
-
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
         id: filter
         with:
-          # Platform/playground path gates. These use the default
-          # predicate-quantifier: some (filter is true when ANY changed file
-          # matches), which is the correct semantics for positive allowlists.
-          # linux_correctness is derived separately from docs-gate above via
-          # inversion of docs_only.
           filters: |
             # Rule 4 (platform parity, weak set): any Rust change or CI/toolchain
-            # change runs the platform build + smoke on Windows/macOS. Same broad
-            # surface as linux_correctness — a Rust change anywhere can change
-            # native linking, paths, or process behaviour, so platform build/link
-            # coverage stays fail-closed.
+            # change runs the platform build + smoke on Windows/macOS. A Rust change
+            # anywhere can change native linking, paths, or process behaviour, so
+            # platform build/link coverage stays fail-closed.
             platform_smoke:
               - '**/*.rs'
               - 'tests/**'
@@ -158,28 +108,6 @@ jobs:
               - 'Cargo.lock'
               - 'Makefile'
               - '.github/workflows/ci.yml'
-
-      # Derive linux_correctness by inverting docs_only.
-      # Invariant: ANY change that is not exclusively documentation must run
-      # the full Linux correctness gate. This catches release scripts, Makefile,
-      # .github operational files, installer/packaging configs, and any new or
-      # unrecognised file — all of which would be silent no-ops under a positive
-      # allowlist that has not been updated to include them.
-      #
-      # docs_only (from docs-gate above) is 'true' only when EVERY changed file
-      # matches the docs allowlist (predicate-quantifier: every).  A mixed PR
-      # (docs + any operational/code file) sets docs_only to 'false', which
-      # trips linux_correctness here.
-      - name: Derive linux_correctness (invert docs_only)
-        id: gate
-        run: |
-          if [[ "${{ steps.docs-gate.outputs.docs_only }}" == "true" ]]; then
-            echo "linux_correctness=false" >> "$GITHUB_OUTPUT"
-            echo "Change set is exclusively docs — Linux correctness gate will no-op."
-          else
-            echo "linux_correctness=true" >> "$GITHUB_OUTPUT"
-            echo "Non-docs change detected — Linux correctness gate will run."
-          fi
 
   # ─────────────────────────────────────────────────────────────────────────
   # Lint — fast feedback on code quality (always runs, ~1.5 min)
@@ -318,18 +246,10 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test:
     name: Build & test (Linux)
-    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      RUN_CODE_PATH: ${{ needs.changes.outputs.linux_correctness }}
     steps:
-      - name: No-op for docs-only changes
-        if: env.RUN_CODE_PATH != 'true'
-        run: echo "No code changes detected; skipping heavy Linux CI while satisfying the required check."
-
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        if: env.RUN_CODE_PATH == 'true'
 
       - name: Free runner disk
         # This job runs a release build (hew-runtime + hew-lsp), a wasm32 build,
@@ -338,7 +258,6 @@ jobs:
         # disk-marginal; the runner process itself died of ENOSPC twice (after
         # all tests passed, and again mid-test-step — see PR #1994). Mirror the
         # same preinstalled-toolchain purge release-gate already carries.
-        if: env.RUN_CODE_PATH == 'true'
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
@@ -346,39 +265,32 @@ jobs:
           df -h /
 
       - name: Install build tools
-        if: env.RUN_CODE_PATH == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
-        if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-llvm
         with:
           version: ${{ env.LLVM_VERSION }}
 
       - uses: ./.github/actions/setup-rust-build
-        if: env.RUN_CODE_PATH == 'true'
         with:
           tools: nextest
           cache-shared-key: build-test-linux
 
       - name: Build Rust runtime and frontend (release)
-        if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-runtime -p hew-lsp --release
 
       - name: Smoke test hew-lsp
-        if: env.RUN_CODE_PATH == 'true'
         run: ./target/release/hew-lsp --version
 
       - name: Build WASM runtime
-        if: env.RUN_CODE_PATH == 'true'
         run: |
           rustup target add wasm32-wasip1
           cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 
       - name: Install wasmtime
-        if: env.RUN_CODE_PATH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -391,7 +303,6 @@ jobs:
           "./${WASMTIME_DIR}/wasmtime" --version
 
       - name: Run WASM runtime actual-target libtests
-        if: env.RUN_CODE_PATH == 'true'
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run
         run: cargo test -p hew-runtime --target wasm32-wasip1 --no-default-features --lib
@@ -412,7 +323,6 @@ jobs:
       # maintained CI_BUILD_AND_TEST_STEPS list in the parity script is now
       # derived from here instead of a hand-maintained copy.
       - name: Run Rust workspace tests
-        if: env.RUN_CODE_PATH == 'true'
         # line-tables-only: the release build + wasm build + full debug
         # workspace nextest run together leave the runner disk-marginal
         # (ENOSPC twice on this exact job — see PR #1994). Full debug info
@@ -426,15 +336,12 @@ jobs:
           --profile ci
 
       - name: Run vertical-slice end-to-end oracle
-        if: env.RUN_CODE_PATH == 'true'
         run: make test-vertical-slice
 
       - name: Run cross-module package-import oracle
-        if: env.RUN_CODE_PATH == 'true'
         run: make test-pkg-import
 
       - name: Run fuzz-to-run completeness oracle (ratcheted)
-        if: env.RUN_CODE_PATH == 'true'
         # Compiles and runs every checker-valid program in the regressions
         # corpus and the vertical-slice accept fixtures.  Known failures are
         # tracked in tests/fuzz-oracle/expected-failures.txt (ratchet contract:
@@ -444,7 +351,6 @@ jobs:
         run: make fuzz-oracle
 
       - name: Run Hew language test suite (ratcheted)
-        if: env.RUN_CODE_PATH == 'true'
         # Runs tests/hew/ through scripts/hew-suite-ratchet.sh.
         # Known failures are tracked in scripts/hew-suite-expected-failures.txt;
         # any unexpected failure OR unexpected pass (ratchet forward) exits 1.
@@ -453,13 +359,11 @@ jobs:
         run: make test-hew-ratchet
 
       - name: Run stdlib type-check suite (ratcheted)
-        if: env.RUN_CODE_PATH == 'true'
         # Type-checks every std/*.hew file through scripts/stdlib-ratchet.sh.
         # Known failures tracked in scripts/stdlib-expected-failures.txt.
         run: make test-stdlib-ratchet
 
       - name: Setup Node.js for sandbox parity
-        if: env.RUN_CODE_PATH == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: 24
@@ -467,12 +371,11 @@ jobs:
           cache-dependency-path: hew-sandbox-vm/package-lock.json
 
       - name: Run sandbox VM parity
-        if: env.RUN_CODE_PATH == 'true'
         run: make sandbox-parity
       # <<< CI-PARITY-STEPS
 
       - name: Upload test reports
-        if: always() && env.RUN_CODE_PATH == 'true'
+        if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
           report_paths: target/nextest/ci/junit.xml

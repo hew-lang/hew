@@ -304,7 +304,12 @@ struct InboundAskGuard(Arc<AtomicUsize>);
 impl Drop for InboundAskGuard {
     fn drop(&mut self) {
         INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
-        self.0.fetch_sub(1, Ordering::AcqRel);
+        // SeqCst (matching the spawn-gate protocol in `node_inbound_router` and
+        // the drain in `drain_inbound_ask_workers`): this decrement is the
+        // signal the Phase-1 drain waits on. A worker only reaches here after
+        // `handle_inbound_ask` has flushed its reply, so when the drain observes
+        // the counter hit zero, every counted worker's reply has been sent.
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -397,6 +402,27 @@ static INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK: std::sync::LazyLock<TestGate> =
     std::sync::LazyLock::new(TestGate::default);
 #[cfg(test)]
 static NODE_STOP_BEFORE_CONNMGR_FREE_HOOK: std::sync::LazyLock<TestGate> =
+    std::sync::LazyLock::new(TestGate::default);
+/// Fires in `node_inbound_router` AFTER the per-manager counter increment and
+/// BEFORE the spawn-gate re-check. Lets a test wedge a router exactly in the
+/// Dekker window: counter already incremented, gate not yet re-read. A
+/// concurrent `hew_node_stop` drain that closes the gate and then loads the
+/// counter MUST observe this worker (count ≥ 1) and wait — proving the atomic
+/// gate/counter protocol.
+#[cfg(test)]
+static INBOUND_ROUTER_AFTER_INCREMENT_HOOK: std::sync::LazyLock<TestGate> =
+    std::sync::LazyLock::new(TestGate::default);
+/// Fires at the TOP of `handle_inbound_ask`, BEFORE the up-front feature-flags
+/// capture acquires the `CURRENT_NODE` read lock. Lets a test wedge an uncounted
+/// straggler worker (one driven directly, past the drain ceiling) so a
+/// concurrent `hew_node_stop` on THAT worker's node can complete teardown —
+/// including freeing the node's `conn_mgr` — while the worker is parked. On
+/// release, the worker evaluates the capture's barrier: the fix returns `None`
+/// via this node's `shutdown_started` flag instead of dereferencing the freed
+/// `conn_mgr`. Proves the capture is safe for a SECONDARY node whose teardown
+/// does not zero the global `CURRENT_NODE`.
+#[cfg(test)]
+static INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK: std::sync::LazyLock<TestGate> =
     std::sync::LazyLock::new(TestGate::default);
 
 // ---------------------------------------------------------------------------
@@ -1077,18 +1103,9 @@ unsafe extern "C" fn node_inbound_router(
             INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
             return;
         };
-        // Close the spawn window: if node teardown has already called
-        // hew_connmgr_mark_stopping, the worker would bail immediately inside
-        // handle_inbound_ask without sending a reply, and conn_mgr may be on the
-        // verge of being freed.  Bail here so no new workers are created once
-        // the STOPPING flag is visible.
-        if shutdown_started.load(Ordering::Acquire) {
-            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
-            return;
-        }
-        // Acquire the per-manager active counter. This tracks workers for THIS
-        // conn_mgr specifically, allowing hew_node_stop to drain only its own
-        // workers (not workers from other nodes in multi-node test setups).
+        // Acquire the per-manager active counter and the spawn-gate flag. The
+        // counter tracks workers for THIS conn_mgr specifically, so hew_node_stop
+        // drains only its own workers (not another node's in a multi-node test).
         // SAFETY: conn_mgr is live for the duration of this router call.
         let Some(per_mgr_active) =
             (unsafe { connection::hew_connmgr_inbound_ask_active(conn_mgr) })
@@ -1096,7 +1113,54 @@ unsafe extern "C" fn node_inbound_router(
             INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
             return;
         };
-        per_mgr_active.fetch_add(1, Ordering::AcqRel);
+        // SAFETY: conn_mgr is live for the duration of this router call.
+        let Some(spawn_gate) =
+            (unsafe { connection::hew_connmgr_inbound_spawn_closed_flag(conn_mgr) })
+        else {
+            per_mgr_active.fetch_sub(1, Ordering::SeqCst);
+            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+            return;
+        };
+        // ── ATOMIC spawn-gate + counter protocol (close the teardown race) ───
+        //
+        // The spawn-gate check and the counter increment MUST be atomic with
+        // respect to `hew_node_stop`'s Phase-1 drain, or a worker can pass the
+        // gate, then have the drain close the gate and observe a zero counter,
+        // then increment + spawn AFTER the drain finished — reaching Phase 2 and
+        // abandoning its reply (the production reply-abandon race this fix
+        // closes). We make it atomic with the increment-then-recheck (Dekker)
+        // pattern under SeqCst:
+        //
+        //   router: per_mgr_active.fetch_add(1, SeqCst); gate.load(SeqCst)
+        //   drain : gate.store(true, SeqCst);            per_mgr_active.load(SeqCst)
+        //
+        // SeqCst on BOTH sides (not AcqRel — that permits the store/load on the
+        // two distinct atomics to reorder) gives a single total order in which
+        // at least one thread observes the other's store. So either the drain
+        // sees count ≥ 1 and waits for this worker, OR this router sees the gate
+        // closed and bails before spawning. It is impossible for the router to
+        // see the gate open AND the drain to see count 0 — i.e. a worker that
+        // passes this gate is guaranteed visible to a concurrent drain, and a
+        // worker counted-out by the drain cannot spawn.
+        //
+        // Two signals close the window:
+        //   • `inbound_spawn_closed` — set FIRST by `hew_node_stop`, before its
+        //     drain, so already-running `handle_inbound_ask` threads still flush
+        //     their replies while NEW workers are turned away here.
+        //   • `reconnect_shutdown` — set in Phase 2 (`hew_connmgr_mark_stopping`
+        //     / `hew_connmgr_free`); a worker spawned past it would bail inside
+        //     `handle_inbound_ask` with conn_mgr on the verge of being freed.
+        per_mgr_active.fetch_add(1, Ordering::SeqCst);
+        // Test seam: wedge a router in the Dekker window (incremented, gate not
+        // yet re-read) so a test can prove a concurrent drain always observes
+        // this worker. No-op in production (Disabled mode).
+        #[cfg(test)]
+        INBOUND_ROUTER_AFTER_INCREMENT_HOOK.hit();
+        if spawn_gate.load(Ordering::SeqCst) || shutdown_started.load(Ordering::SeqCst) {
+            per_mgr_active.fetch_sub(1, Ordering::SeqCst);
+            INBOUND_ASK_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+            return;
+        }
         // Construct the guard *before* spawning so both counter decrements are
         // covered regardless of whether spawn succeeds:
         //   • spawn succeeds: guard moves into the closure; Drop runs when the
@@ -1187,6 +1251,54 @@ fn handle_inbound_ask(
     conn_mgr: SendConnMgr,
     shutdown_started: Arc<AtomicBool>,
 ) {
+    // Test seam: wedge a straggler worker at the top of the handler, BEFORE the
+    // feature-flags capture acquires the CURRENT_NODE read lock, so a test can
+    // let a concurrent secondary-node stop free `conn_mgr` while we are parked
+    // here. No-op in production (Disabled mode).
+    #[cfg(test)]
+    INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.hit();
+
+    // Capture the peer's negotiated feature flags ONCE, up front, under the
+    // SAME barrier that protects `send_reply_envelope` / `send_rejection_reply`:
+    // the CURRENT_NODE read lock AND THIS manager's `shutdown_started`
+    // (`reconnect_shutdown`) flag. The three fail-closed error paths below
+    // (decode failure, actor error, encode failure) need these flags to decide
+    // whether the peer understands the ask-rejection sentinel. Reading them at
+    // each error site dereferenced `conn_mgr` OUTSIDE any barrier: if the 5s
+    // Phase-1 drain ceiling expired and Phase 2 freed `conn_mgr`, a straggler
+    // dereferenced freed memory (use-after-free). The flags are negotiated once
+    // at handshake and never change for the connection's life, so a single
+    // guarded read at the top is equivalent to reading at each site.
+    //
+    // `*guard == 0` alone is INSUFFICIENT for a SECONDARY node. `hew_node_stop`
+    // zeroes CURRENT_NODE only for the node that owns it (`*guard == this node`);
+    // stopping a secondary node in a multi-node runtime leaves CURRENT_NODE
+    // pointing at a DIFFERENT (still-running) node, so `*guard != 0` and the
+    // old check passed — then `feature_flags_for_node` dereferenced the
+    // secondary node's ALREADY-FREED `conn_mgr`. What IS set per-node is
+    // `reconnect_shutdown`: `hew_node_stop` calls `mark_stopping` on the
+    // stopping node's own `conn_mgr` (regardless of CURRENT_NODE) INSIDE the
+    // CURRENT_NODE write lock, before Phase 2 frees it. `shutdown_started` is a
+    // clone of exactly that flag (captured in `node_inbound_router`). So the
+    // pairing is the same as `send_reply_envelope`:
+    //   • if this read holds the read lock first, stop's write lock blocks until
+    //     we release it → `conn_mgr` is valid for the `feature_flags_for_node`
+    //     call (which happens inside the closure, under the read lock);
+    //   • if stop took the write lock first, it set this node's
+    //     `shutdown_started = true` before releasing; we then observe that flag
+    //     here and return `None` (a straggler past the drain ceiling) WITHOUT
+    //     touching the soon-to-be-freed manager. The error paths skip the
+    //     rejection send, fail-closed.
+    let peer_flags: Option<u32> = with_current_node_read(|guard| {
+        if *guard == 0 || shutdown_started.load(Ordering::Acquire) {
+            return None;
+        }
+        // SAFETY: the CURRENT_NODE read lock held here blocks `hew_node_stop`'s
+        // write-lock teardown, and `shutdown_started` was observed false under
+        // that lock, so this node's `conn_mgr` cannot be freed for this read.
+        Some(unsafe { connection::hew_connmgr_feature_flags_for_node(conn_mgr.0, source_node_id) })
+    });
+
     // Reconstruct the request value into THIS node's address space before the
     // local ask — the inbound `payload` is the serialized wire form, not the
     // in-memory struct. Feeding it raw to the handler would dereference
@@ -1202,11 +1314,9 @@ fn handle_inbound_ask(
         if value.is_null() {
             // No codec or decode failure — fail closed: send a rejection (if the
             // peer understands it) and do not deliver garbage to the handler.
-            // SAFETY: conn_mgr is live for the duration of the inbound ask handler.
-            let peer_flags = unsafe {
-                connection::hew_connmgr_feature_flags_for_node(conn_mgr.0, source_node_id)
-            };
-            if connection::supports_ask_rejection(peer_flags) {
+            // `peer_flags` was captured up front under the CURRENT_NODE barrier;
+            // `None` means a straggler past the drain ceiling, so we skip the send.
+            if peer_flags.is_some_and(connection::supports_ask_rejection) {
                 send_rejection_reply(
                     source_node_id,
                     request_id,
@@ -1243,11 +1353,9 @@ fn handle_inbound_ask(
         if ask_err != AskError::None as i32 {
             #[cfg(test)]
             INBOUND_ASK_ERROR_FEATURE_FLAGS_HOOK.hit();
-            // SAFETY: conn_mgr is live for the duration of the inbound ask handler.
-            let peer_flags = unsafe {
-                connection::hew_connmgr_feature_flags_for_node(conn_mgr.0, source_node_id)
-            };
-            if connection::supports_ask_rejection(peer_flags) {
+            // `peer_flags` was captured up front under the CURRENT_NODE barrier;
+            // `None` means a straggler past the drain ceiling, so we skip the send.
+            if peer_flags.is_some_and(connection::supports_ask_rejection) {
                 let ask_error = ask_error_from_code(ask_err).unwrap_or(AskError::ActorStopped);
                 send_rejection_reply(
                     source_node_id,
@@ -1288,11 +1396,9 @@ fn handle_inbound_ask(
                 // No reply codec registered — fail closed: send a rejection so
                 // the originating ask fails with a typed error instead of timing
                 // out on raw/absent bytes.
-                // SAFETY: conn_mgr is live for the duration of the inbound ask.
-                let peer_flags = unsafe {
-                    connection::hew_connmgr_feature_flags_for_node(conn_mgr.0, source_node_id)
-                };
-                if connection::supports_ask_rejection(peer_flags) {
+                // `peer_flags` was captured up front under the CURRENT_NODE
+                // barrier; `None` means a straggler past the drain ceiling.
+                if peer_flags.is_some_and(connection::supports_ask_rejection) {
                     send_rejection_reply(
                         source_node_id,
                         request_id,
@@ -1877,6 +1983,43 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     0
 }
 
+/// Wait for this manager's in-flight inbound-ask worker threads to drain to
+/// zero, with a 5-second ceiling.
+///
+/// Each worker spawned by [`node_inbound_router`] increments the per-manager
+/// counter and decrements it (via `InboundAskGuard`) when `handle_inbound_ask`
+/// returns — i.e. after its reply has been written to the wire. Draining the
+/// counter therefore guarantees every already-computed reply has flushed before
+/// the caller proceeds to the `CURRENT_NODE` teardown barrier and frees
+/// `conn_mgr`. The per-manager counter (not the process-global
+/// `INBOUND_ASK_ACTIVE`) is used so stopping one node in a multi-node test does
+/// not wait on another node's workers.
+///
+/// The ceiling bounds a misbehaving actor dispatch; in practice well-behaved
+/// nodes drain in microseconds. A worker still running after the ceiling is
+/// caught by the downstream `CURRENT_NODE == 0` / `reconnect_shutdown` barrier
+/// (it bails without touching the soon-to-be-freed manager).
+fn drain_inbound_ask_workers(inbound_active: Option<&Arc<AtomicUsize>>) {
+    const MAX_DRAIN: std::time::Duration = std::time::Duration::from_secs(5);
+    const POLL: std::time::Duration = std::time::Duration::from_millis(1);
+    let Some(active) = inbound_active else {
+        return;
+    };
+    let deadline = std::time::Instant::now() + MAX_DRAIN;
+    // SeqCst (matching `node_inbound_router`'s gate protocol): the caller stored
+    // `inbound_spawn_closed = true` with SeqCst BEFORE this drain. This SeqCst
+    // load is the drain side of the Dekker pairing — it cannot observe a zero
+    // counter while a router that saw the gate open is still between its
+    // increment and spawning. Once it reads zero, no further worker can spawn
+    // (all routers now see the gate closed and bail), so the count stays zero.
+    while active.load(Ordering::SeqCst) > 0 {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        thread::sleep(POLL);
+    }
+}
+
 /// Stop the node runtime.
 ///
 /// # Safety
@@ -1901,14 +2044,56 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         }
 
         node.state.store(NODE_STATE_STOPPING, Ordering::Release);
+
+        // ── Phase 1: close the inbound-ask spawn gate, then DRAIN in-flight
+        // reply sends BEFORE the CURRENT_NODE teardown barrier ───────────────
+        //
+        // `hew_connmgr_close_inbound_spawn` flips a flag that
+        // `node_inbound_router` checks before spawning: no NEW inbound-ask
+        // worker starts once it is set. Workers ALREADY past that gate are
+        // mid-`handle_inbound_ask` — they have computed (or are computing) a
+        // reply and are about to write it to the wire in `send_reply_envelope`.
+        //
+        // We drain those existing workers to zero HERE — while `CURRENT_NODE`
+        // still points at this node and `reconnect_shutdown` is still false —
+        // so their already-earned replies flush to the asking node instead of
+        // being abandoned. The drain MUST run before the barrier below, which
+        // sets `mark_stopping` (→ `reconnect_shutdown`) and zeroes
+        // `CURRENT_NODE`; either of those makes `send_reply_envelope` bail.
+        //
+        // Previously the barrier ran first, so a worker that reached
+        // `send_reply_envelope` after it saw `CURRENT_NODE == 0` (or the
+        // shutdown flag) and silently dropped its computed reply, surfacing a
+        // spurious `ConnectionDropped` to the caller as the connection then
+        // closed under the in-flight ask.
+        //
+        // Draining before the barrier is safe: the spawn gate guarantees the
+        // counter only decreases, so the wait terminates; and `conn_mgr` is not
+        // freed until well below. The 5-second ceiling bounds a misbehaving
+        // dispatch — a worker still in flight after the ceiling hits the
+        // `CURRENT_NODE == 0` / `reconnect_shutdown` guard below and bails
+        // (fail-closed), exactly as before.
+        let inbound_active_arc = if node.conn_mgr.is_null() {
+            None
+        } else {
+            // SAFETY: node owns this connection manager until teardown completes.
+            unsafe { connection::hew_connmgr_close_inbound_spawn(node.conn_mgr) };
+            // SAFETY: conn_mgr is valid here and remains live until after the drain.
+            unsafe { connection::hew_connmgr_inbound_ask_active(node.conn_mgr) }
+        };
+        drain_inbound_ask_workers(inbound_active_arc.as_ref());
+
         {
-            // Setting CURRENT_NODE to zero acts as a lifetime barrier for
-            // ask-handler threads spawned by `node_inbound_router`. Those
-            // threads acquire the CURRENT_NODE read lock in `send_reply_envelope`
-            // and bail out immediately if the value is 0. The write lock here
-            // blocks until every concurrent read-lock-holder (i.e. every
-            // in-flight reply send) has completed, so `conn_mgr` cannot be freed
-            // while any such thread is still running for the current node.
+            // Setting CURRENT_NODE to zero acts as a lifetime barrier for any
+            // ask-handler thread that slipped past the drain ceiling above.
+            // Those threads acquire the CURRENT_NODE read lock in
+            // `send_reply_envelope` and bail out immediately if the value is 0.
+            // The write lock here blocks until every concurrent read-lock-holder
+            // (i.e. every in-flight reply send) has completed, so `conn_mgr`
+            // cannot be freed while any such thread is still running for the
+            // current node. `mark_stopping` (→ `reconnect_shutdown`) is set here
+            // too, completing the teardown signal for reconnect workers and the
+            // straggler bail.
             with_current_node(|guard| {
                 if !node.conn_mgr.is_null() {
                     // SAFETY: node owns this connection manager until teardown completes.
@@ -1946,46 +2131,14 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         // serialization above prevents concurrent actor cleanup from racing this teardown.
         unsafe { unregister_local_names_for_node(node) };
 
-        // Capture the per-manager active counter before draining. We hold the Arc
-        // so the AtomicUsize remains alive across the wait and until conn_mgr is
-        // freed.
-        let inbound_active_arc = if node.conn_mgr.is_null() {
-            None
-        } else {
-            // SAFETY: conn_mgr is valid here and remains live until after the drain.
-            unsafe { connection::hew_connmgr_inbound_ask_active(node.conn_mgr) }
-        };
-
-        // Postcondition: drain this conn_mgr's inbound-ask workers before freeing
-        // the manager itself.
-        //
-        // Every worker spawned by `node_inbound_router` holds a `SendConnMgr` raw
-        // pointer for the lifetime of `handle_inbound_ask`. The workers bail safely
-        // once teardown starts because `shutdown_started=true` closes the inbound
-        // spawn gate, but we still must not free conn_mgr while any worker thread
-        // holds that pointer. We drain the per-manager counter (not the global
-        // INBOUND_ASK_ACTIVE) so that stopping one node in a multi-node test does
-        // not wait for workers on a different node's manager.
-        //
-        // 5-second ceiling prevents a misbehaving actor dispatch from hanging stop
-        // indefinitely; in practice well-behaved nodes drain in microseconds.
-        if let Some(active) = inbound_active_arc {
-            const MAX_DRAIN: std::time::Duration = std::time::Duration::from_secs(5);
-            const POLL: std::time::Duration = std::time::Duration::from_millis(1);
-            let deadline = std::time::Instant::now() + MAX_DRAIN;
-            while active.load(Ordering::Acquire) > 0 {
-                if std::time::Instant::now() >= deadline {
-                    break;
-                }
-                thread::sleep(POLL);
-            }
-        }
-
         if !node.conn_mgr.is_null() {
             #[cfg(test)]
             NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.hit();
             // SAFETY: valid manager pointer from hew_connmgr_new; all inbound ask
-            // workers that could still hold it have drained above.
+            // workers that could still hold it were drained in Phase 1 (above the
+            // CURRENT_NODE barrier). Any straggler past the drain ceiling bails at
+            // the `CURRENT_NODE == 0` / `reconnect_shutdown` guard before touching
+            // conn_mgr, so the free is race-free.
             unsafe { connection::hew_connmgr_free(node.conn_mgr) };
             node.conn_mgr = ptr::null_mut();
         }
@@ -7348,6 +7501,263 @@ mod tests {
             let _ = crate::actor::hew_actor_free(actor);
             assert_eq!(hew_node_stop(node1.as_ptr()), 0);
         }
+        crate::registry::hew_registry_clear();
+    }
+
+    /// Pins the ATOMIC spawn-gate + counter protocol in `node_inbound_router`:
+    /// a worker that has incremented the per-manager counter (passed the gate's
+    /// increment edge) is ALWAYS observed by a concurrent `hew_node_stop` drain,
+    /// so `conn_mgr` is never freed (Phase 2) while that worker is live.
+    ///
+    /// Without the increment-then-recheck protocol the router checked the gate
+    /// BEFORE incrementing, so a router could pass the check, have the drain
+    /// close the gate and observe a zero counter, then increment + spawn AFTER
+    /// the drain finished — reaching teardown and abandoning its reply / touching
+    /// freed memory. This test wedges a router in the exact Dekker window
+    /// (counter incremented, gate not yet re-read) and proves the drain blocks
+    /// for it.
+    #[test]
+    fn node_stop_drain_waits_for_router_wedged_after_counter_increment() {
+        struct HookResetGuard;
+        impl Drop for HookResetGuard {
+            fn drop(&mut self) {
+                INBOUND_ROUTER_AFTER_INCREMENT_HOOK.release();
+                INBOUND_ROUTER_AFTER_INCREMENT_HOOK.reset();
+                NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.release();
+                NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.reset();
+            }
+        }
+
+        let _guard = crate::runtime_test_guard();
+        let _hook_reset = HookResetGuard;
+        crate::registry::hew_registry_clear();
+
+        // Block a router that reaches the post-increment point; observe (do not
+        // block) when stop reaches the conn_mgr free.
+        INBOUND_ROUTER_AFTER_INCREMENT_HOOK.arm(true);
+        NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.arm(false);
+
+        let (node, _port) = start_tcp_test_listener_node(361);
+
+        // SAFETY: node just started; conn_mgr is live here.
+        let per_mgr_active =
+            unsafe { connection::hew_connmgr_inbound_ask_active((*node.as_ptr()).conn_mgr) }
+                .expect("conn_mgr must expose inbound_ask_active");
+
+        // Drive a router on a background thread with an ask-shaped message. It
+        // increments the per-manager counter, then blocks at the post-increment
+        // hook BEFORE the gate re-check — the precise Dekker window.
+        // SAFETY: node is live here; we read its conn_mgr pointer as an integer
+        // to ferry it across the thread boundary (it stays valid until join).
+        let conn_mgr_addr = unsafe { (*node.as_ptr()).conn_mgr } as usize;
+        let router_handle = thread::spawn(move || {
+            // SAFETY: conn_mgr stays live until this test frees it after join.
+            unsafe {
+                node_inbound_router(
+                    0,
+                    1,
+                    ptr::null_mut(),
+                    0,
+                    /*request_id=*/ 1,
+                    /*source_node_id=*/ 1,
+                    conn_mgr_addr as *mut connection::HewConnMgr,
+                );
+            }
+        });
+
+        assert!(
+            INBOUND_ROUTER_AFTER_INCREMENT_HOOK.wait_for_enter(Duration::from_secs(1)),
+            "router never reached the post-increment hook"
+        );
+        assert_eq!(
+            per_mgr_active.load(Ordering::SeqCst),
+            1,
+            "router must have incremented the per-manager counter before the gate re-check"
+        );
+
+        // Start stop on another thread. It closes the spawn gate (SeqCst) and
+        // drains; the drain MUST block on the wedged router's increment.
+        let node_ptr = node.as_ptr() as usize;
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+        let stop_handle = thread::spawn(move || {
+            // SAFETY: node stays valid until this stop thread joins below.
+            let rc = unsafe { hew_node_stop(node_ptr as *mut HewNode) };
+            stop_tx.send(rc).expect("stop result receiver dropped");
+        });
+
+        // The drain is wedged: stop must NOT reach the conn_mgr free while the
+        // counted router is still parked at the hook.
+        assert!(
+            !NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.wait_for_enter(Duration::from_millis(200)),
+            "hew_node_stop reached conn_mgr free while a router counted by the drain was still wedged \
+             — the spawn-gate/counter protocol failed to keep the worker visible to the drain"
+        );
+        assert!(
+            stop_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "hew_node_stop returned before the wedged router drained"
+        );
+
+        // Release the router. It re-reads the now-closed gate, decrements, and
+        // bails WITHOUT spawning — the counter returns to zero, unblocking the
+        // drain. (The gate was closed by stop before the drain, so the re-check
+        // sees it closed: this is the Dekker `router observes gate closed` leg.)
+        INBOUND_ROUTER_AFTER_INCREMENT_HOOK.release();
+        router_handle.join().expect("router thread panicked");
+
+        assert!(
+            NODE_STOP_BEFORE_CONNMGR_FREE_HOOK.wait_for_enter(Duration::from_secs(1)),
+            "hew_node_stop never reached conn_mgr free after the wedged router drained"
+        );
+        assert_eq!(
+            stop_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("hew_node_stop did not finish after the router drained"),
+            0,
+            "hew_node_stop should succeed once the wedged router drained"
+        );
+        stop_handle.join().expect("stop thread panicked");
+
+        assert_eq!(
+            per_mgr_active.load(Ordering::SeqCst),
+            0,
+            "per-manager counter must be zero after the wedged router bailed and stop drained"
+        );
+
+        crate::registry::hew_registry_clear();
+    }
+
+    /// Pins the SECONDARY-node safety of the up-front feature-flags capture in
+    /// `handle_inbound_ask`.
+    ///
+    /// The capture's barrier must be keyed on the SPECIFIC manager's lifetime,
+    /// not the global `CURRENT_NODE`. In a multi-node runtime `CURRENT_NODE`
+    /// points at the FIRST node started (node1 here) and stays there; stopping a
+    /// secondary node (node2) frees node2's `conn_mgr` WITHOUT zeroing
+    /// `CURRENT_NODE`. A `*guard == 0` check therefore passes during a secondary
+    /// teardown, so the OLD capture dereferenced node2's already-freed
+    /// `conn_mgr` (use-after-free; the deeper freed-`conn_mgr` path surfaced
+    /// under `AddressSanitizer`). The fix also consults THIS manager's
+    /// `shutdown_started` (`reconnect_shutdown`) flag, which `hew_node_stop` sets
+    /// for the stopping node under the `CURRENT_NODE` write lock before it frees
+    /// the manager.
+    ///
+    /// This test reproduces the straggler exactly: it drives `handle_inbound_ask`
+    /// for node2 DIRECTLY (uncounted by the per-manager guard, i.e. a worker the
+    /// drain no longer waits on), wedges it at the capture hook, lets
+    /// `hew_node_stop(node2)` run to completion (freeing node2's `conn_mgr` while
+    /// `CURRENT_NODE` still points at node1), then releases the worker. With the
+    /// fix the worker observes node2's `shutdown_started` and returns `None`
+    /// WITHOUT touching the freed manager; under `AddressSanitizer` the run is
+    /// clean. Against the old `*guard == 0`-only capture the release reads freed
+    /// memory.
+    #[test]
+    fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
+        struct HookResetGuard;
+        impl Drop for HookResetGuard {
+            fn drop(&mut self) {
+                INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.release();
+                INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.reset();
+            }
+        }
+
+        let _guard = crate::runtime_test_guard();
+        let _hook_reset = HookResetGuard;
+        crate::registry::hew_registry_clear();
+
+        // Wedge any worker that reaches the top-of-handler capture hook.
+        INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.arm(true);
+
+        // node1 starts FIRST → it owns CURRENT_NODE and keeps it.
+        let node1_bind = CString::new("127.0.0.1:0").unwrap();
+        // SAFETY: node1_bind is a valid C string for the duration of this test.
+        let node1 = unsafe { TestNode::new(363, &node1_bind) };
+        assert!(!node1.as_ptr().is_null());
+        // SAFETY: node1 is valid for start-up here.
+        unsafe {
+            assert_eq!(hew_node_start(node1.as_ptr()), 0); // CURRENT_NODE = node1
+        }
+        thread::sleep(Duration::from_millis(50));
+
+        // node2 is the SECONDARY node; starting it does NOT change CURRENT_NODE.
+        let (node2, node2_port) = start_tcp_test_listener_node(364);
+
+        init_real_scheduler();
+
+        // Spawn (and immediately stop) a node2-PID actor so the inbound ask hits
+        // the actor-error path — exercising the full post-capture handler on a
+        // freed-conn_mgr straggler. The error path's reply send is itself
+        // `shutdown_started`-guarded, so no path may touch the freed manager.
+        crate::pid::hew_pid_set_local_node(364);
+        // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
+        let actor =
+            unsafe { crate::actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        crate::pid::hew_pid_set_local_node(363);
+        assert!(!actor.is_null(), "actor spawn failed");
+        // SAFETY: actor was just spawned and is valid here.
+        let actor_id = unsafe { (*actor).id };
+        assert_eq!(crate::pid::hew_pid_node(actor_id), 364);
+        // SAFETY: actor was spawned above and remains valid while stopped here.
+        unsafe { crate::actor::hew_actor_stop(actor) };
+
+        // Establish the node1→node2 connection so node2 has an ACTIVE connection
+        // back to node1 — the entry `feature_flags_for_node` would walk if the
+        // capture dereferenced the (soon-to-be-freed) manager.
+        let connect_addr = CString::new(format!("364@127.0.0.1:{node2_port}")).unwrap();
+        // SAFETY: node1 and connect_addr are valid for this connection attempt.
+        unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
+        // SAFETY: both node pointers remain valid until teardown.
+        unsafe { wait_for_handshake(node1.as_ptr(), node2.as_ptr()) };
+
+        // Capture node2's manager pointer (as an integer to ferry across the
+        // thread) and a clone of its `shutdown_started` (`reconnect_shutdown`)
+        // flag — exactly what `node_inbound_router` passes into the worker.
+        // SAFETY: node2 is live here; conn_mgr is valid until we free it below.
+        let node2_conn_mgr = unsafe { (*node2.as_ptr()).conn_mgr };
+        assert!(!node2_conn_mgr.is_null());
+        // SAFETY: node2's conn_mgr is live here.
+        let shutdown_started = unsafe { connection::hew_connmgr_shutdown_flag(node2_conn_mgr) }
+            .expect("conn_mgr must expose its shutdown flag");
+        let conn_mgr_addr = node2_conn_mgr as usize;
+
+        // Drive `handle_inbound_ask` for node2 DIRECTLY — uncounted by the
+        // per-manager guard, modelling a straggler the drain has already given
+        // up on. It parks at the capture hook before touching conn_mgr.
+        let worker_handle = thread::spawn(move || {
+            handle_inbound_ask(
+                actor_id,
+                /*msg_type=*/ 1,
+                /*payload=*/ &[],
+                /*request_id=*/ 1,
+                /*source_node_id=*/ 363,
+                // SAFETY: pointer ferried as usize; valid until freed by the
+                // stop below, after which the fix guarantees it is never read.
+                SendConnMgr(conn_mgr_addr as *mut connection::HewConnMgr),
+                shutdown_started,
+            );
+        });
+
+        assert!(
+            INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.wait_for_enter(Duration::from_secs(2)),
+            "straggler worker never reached the feature-flags capture hook"
+        );
+
+        // Stop the SECONDARY node to completion. Its drain sees no counted
+        // workers and proceeds: it sets node2's `reconnect_shutdown` (under the
+        // CURRENT_NODE write lock) and frees node2's conn_mgr — while
+        // CURRENT_NODE still points at node1 (so `*guard != 0`).
+        // SAFETY: node2 is a live allocation; stop is the documented teardown.
+        let stop_rc = unsafe { hew_node_stop(node2.as_ptr()) };
+        assert_eq!(stop_rc, 0, "hew_node_stop(node2) should succeed");
+
+        // node2's conn_mgr is now FREED. Release the wedged worker: with the fix
+        // it observes node2's `shutdown_started == true` and returns `None`
+        // WITHOUT dereferencing the freed manager. (ASan would fire here on the
+        // old `*guard == 0`-only capture.)
+        INBOUND_ASK_FEATURE_FLAGS_CAPTURE_HOOK.release();
+        worker_handle
+            .join()
+            .expect("straggler worker panicked after secondary-node teardown");
+
         crate::registry::hew_registry_clear();
     }
 

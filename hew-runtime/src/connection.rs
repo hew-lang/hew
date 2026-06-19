@@ -218,11 +218,29 @@ pub struct HewConnMgr {
     /// Global shutdown signal shared with reconnect workers and stop-time
     /// ask-reply teardown guards.
     reconnect_shutdown: Arc<AtomicBool>,
+    /// Spawn gate for inbound-ask workers, distinct from `reconnect_shutdown`.
+    ///
+    /// `hew_node_stop` sets this FIRST — before draining in-flight workers —
+    /// so the drain terminates (no new workers spawn) while already-running
+    /// `handle_inbound_ask` threads still flush their computed replies to the
+    /// wire (those threads bail only on `reconnect_shutdown` / `CURRENT_NODE`,
+    /// which are set AFTER the drain). Separating the gate from the teardown
+    /// guard is what lets a graceful stop deliver in-flight replies instead of
+    /// abandoning them as a spurious `ConnectionDropped`.
+    ///
+    /// This flag and `inbound_ask_active` form a Dekker pair accessed under
+    /// `SeqCst` (see `node_inbound_router` and `drain_inbound_ask_workers`): the
+    /// store here is ordered with the counter load in the drain such that a
+    /// router which passes the gate is always visible to a concurrent drain, so
+    /// no worker can spawn after the drain observed a zero counter.
+    inbound_spawn_closed: Arc<AtomicBool>,
     /// Count of inbound-ask worker threads currently active for this manager.
     ///
-    /// Incremented in `node_inbound_router` before spawning; decremented by
-    /// the worker's `InboundAskGuard` on exit.  Used by `hew_node_stop` to
-    /// drain workers before freeing node resources.
+    /// Incremented in `node_inbound_router` before the gate re-check (so a
+    /// concurrent drain always sees a spawning worker), decremented by the
+    /// worker's `InboundAskGuard` on exit. Used by `hew_node_stop` to drain
+    /// workers before freeing node resources. Accessed under `SeqCst` on the
+    /// spawn/drain path — see `inbound_spawn_closed`.
     pub(crate) inbound_ask_active: Arc<AtomicUsize>,
     /// Background reconnect worker handles.
     reconnect_workers: PoisonSafe<Vec<JoinHandle<()>>>,
@@ -1630,6 +1648,7 @@ pub unsafe extern "C" fn hew_connmgr_new(
         reconnect_enabled: AtomicBool::new(false),
         reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
         reconnect_shutdown: Arc::new(AtomicBool::new(false)),
+        inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
         reconnect_workers: PoisonSafe::new(Vec::new()),
         next_publication_token: AtomicU64::new(1),
@@ -1697,6 +1716,48 @@ pub(crate) unsafe fn hew_connmgr_shutdown_flag(mgr: *mut HewConnMgr) -> Option<A
     // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
     let mgr_ref = unsafe { &*mgr };
     Some(Arc::clone(&mgr_ref.reconnect_shutdown))
+}
+
+/// Close the inbound-ask spawn gate so `node_inbound_router` stops spawning new
+/// workers. `hew_node_stop` calls this BEFORE draining in-flight workers, so the
+/// drain terminates while already-running `handle_inbound_ask` threads still
+/// flush their replies (they bail only on the later `reconnect_shutdown` /
+/// `CURRENT_NODE` teardown guards).
+///
+/// # Safety
+///
+/// `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
+pub(crate) unsafe fn hew_connmgr_close_inbound_spawn(mgr: *mut HewConnMgr) {
+    if mgr.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
+    let mgr_ref = unsafe { &*mgr };
+    // SeqCst (not Release): this store is the drain side of the Dekker pairing
+    // in `node_inbound_router`. `hew_node_stop` stores the gate here, then loads
+    // the per-manager counter (in `drain_inbound_ask_workers`) under SeqCst; the
+    // router increments the counter, then loads this gate under SeqCst. SeqCst on
+    // both sides gives a single total order so a router that passes the gate is
+    // always visible to the drain — Release/Acquire would let the gate store and
+    // the counter load reorder across the two distinct atomics and lose a worker.
+    mgr_ref.inbound_spawn_closed.store(true, Ordering::SeqCst);
+}
+
+/// Return a clone of the inbound-ask spawn-gate flag for `node_inbound_router`
+/// to consult before spawning a worker.
+///
+/// # Safety
+///
+/// `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
+pub(crate) unsafe fn hew_connmgr_inbound_spawn_closed_flag(
+    mgr: *mut HewConnMgr,
+) -> Option<Arc<AtomicBool>> {
+    if mgr.is_null() {
+        return None;
+    }
+    // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
+    let mgr_ref = unsafe { &*mgr };
+    Some(Arc::clone(&mgr_ref.inbound_spawn_closed))
 }
 
 /// Return a clone of the per-manager inbound-ask active counter.
@@ -2659,6 +2720,7 @@ mod tests {
             reconnect_enabled: AtomicBool::new(false),
             reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
             reconnect_shutdown: Arc::new(AtomicBool::new(false)),
+            inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
             inbound_ask_active: Arc::new(AtomicUsize::new(0)),
             reconnect_workers: PoisonSafe::new(Vec::new()),
             next_publication_token: AtomicU64::new(1),

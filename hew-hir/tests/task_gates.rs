@@ -309,8 +309,13 @@ fn deadline_empty_body_accepted() {
 }
 
 #[test]
-fn deadline_non_empty_body_rejected() {
-    // Invalid: deadline has non-empty body
+fn deadline_non_empty_body_accepted_at_hir() {
+    // A non-empty `after(...) { body }` is no longer rejected at HIR: the body is
+    // lowered downstream (an execution-context caller emits the
+    // SuspendingScopeDeadline carrier with the body as the timer-fired edge; a
+    // contextless caller fails closed at MIR). The HIR body-shape gate that
+    // previously emitted `DeadlineBodyUnsupported` is retired, so HIR must now
+    // produce no such diagnostic for a non-empty timeout body.
     let source = r"
         fn main() {
             scope {
@@ -328,15 +333,10 @@ fn deadline_non_empty_body_rejected() {
         .iter()
         .any(|d| matches!(d.kind, HirDiagnosticKind::DeadlineBodyUnsupported { .. }));
     assert!(
-        has_deadline_unsupported,
-        "Non-empty deadline must emit DeadlineBodyUnsupported; got: {:#?}",
+        !has_deadline_unsupported,
+        "Non-empty deadline body must pass HIR (the gate is retired; MIR owns the \
+         call-conv decision); got: {:#?}",
         output.diagnostics
-    );
-
-    let result = output.into_result();
-    assert!(
-        result.is_err(),
-        "into_result() must return Err for non-empty deadline"
     );
 }
 
@@ -453,7 +453,9 @@ fn await_expression_parses() {
 
 #[test]
 fn multiple_gates_can_fire() {
-    // Multiple violations in one program should all be reported
+    // Multiple violations in one program should all be reported. The non-empty
+    // `after(...)` body is no longer a HIR violation (the body-shape gate is
+    // retired); the two unsupported fork-block shapes are still reported.
     let source = r"
         fn main() {
             scope {
@@ -468,28 +470,33 @@ fn multiple_gates_can_fire() {
     ";
     let output = lower(source);
 
-    let gate_diagnostic_count = output
+    let fork_gate_count = output
         .diagnostics
         .iter()
-        .filter(|d| {
-            matches!(
-                d.kind,
-                HirDiagnosticKind::ForkBlockBodyUnsupported { .. }
-                    | HirDiagnosticKind::DeadlineBodyUnsupported { .. }
-            )
-        })
+        .filter(|d| matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. }))
         .count();
 
     assert!(
-        gate_diagnostic_count >= 3,
-        "Expected at least 3 gate diagnostics (2 fork blocks + 1 deadline); got: {:#?}",
+        fork_gate_count >= 2,
+        "Expected at least 2 fork-block gate diagnostics; got: {:#?}",
+        output.diagnostics
+    );
+
+    // The retired deadline gate must NOT fire on the non-empty after(...) body.
+    let has_deadline_unsupported = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::DeadlineBodyUnsupported { .. }));
+    assert!(
+        !has_deadline_unsupported,
+        "the retired deadline body-shape gate must not fire; got: {:#?}",
         output.diagnostics
     );
 
     let result = output.into_result();
     assert!(
         result.is_err(),
-        "into_result() must return Err when multiple gates fire"
+        "into_result() must return Err when the fork-block gates fire"
     );
 }
 

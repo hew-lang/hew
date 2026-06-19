@@ -7034,13 +7034,16 @@ impl Builder {
     /// For named records/enums the `ValueClass::of_ty(Named{..}) == BitCopy`
     /// check is the exact discriminant. For tuples it cannot be used:
     /// `ValueClass::of_ty(Tuple(_))` ALWAYS returns `CowValue` regardless of
-    /// field types, so the tuple path delegates instead to `is_owned_vec_element`
-    /// — admitting a tuple iff it owns NO heap-owning field (i.e. the negation
-    /// of the owned-element authority). This keeps the plain and owned allow-sets
-    /// disjoint and `hew_vec_free` is never emitted against a
-    /// descriptor-constructed handle (`dedup-semantic-boundary`). An unresolved
-    /// type parameter has no known value class and stays on the leak-as-before
-    /// posture rather than risking a wrong-ABI free (`boundary-fail-closed`).
+    /// field types, so the tuple path delegates instead to `tuple_is_all_bitcopy`,
+    /// which recurses structurally: a tuple element is all-`BitCopy` iff every
+    /// field is a `BitCopy` scalar, a `Named` type with `ValueClass::of_ty ==
+    /// BitCopy`, or a nested tuple that satisfies the same predicate. This is the
+    /// correct complement of the owned authority; using `!is_owned_vec_element`
+    /// is unsound here because its backing `ty_contains_heap_owning` omits
+    /// `record_field_resolved_tys` and can mis-classify a named record inside a
+    /// tuple as non-heap-owning. An unresolved type parameter has no known value
+    /// class and stays on the leak-as-before posture rather than risking a
+    /// wrong-ABI free (`boundary-fail-closed`).
     fn binding_ty_is_plain_vec(&self, ty: &ResolvedTy) -> bool {
         let ResolvedTy::Named {
             args,
@@ -7083,18 +7086,74 @@ impl Builder {
             // Tuple: `ValueClass::of_ty(Tuple(_))` ALWAYS returns `CowValue`
             // (it does not inspect element types), so using that path for a
             // tuple element would make this arm permanently dead. Instead,
-            // delegate to `is_owned_vec_element`'s own tuple logic: a tuple
-            // owns heap iff at least one element is a heap-owning type
-            // (`ty_contains_heap_owning`); the negation is exactly "all fields
-            // are BitCopy" — the same invariant `ValueClass::of_ty` expresses
-            // for scalars and named types. An all-BitCopy tuple (e.g.
-            // `(i64, i64)`) therefore admits here; a tuple with a heap-owning
-            // field (e.g. `(string, i64)`) does NOT and routes to the owned arm.
-            // This is the dedup-semantic-boundary contract: the plain and owned
-            // allow-sets stay disjoint.
+            // recurse structurally via `tuple_is_all_bitcopy`: a tuple is
+            // all-BitCopy iff every element is a BitCopy scalar, a Named type
+            // whose `ValueClass::of_ty` is `BitCopy`, or a nested tuple that
+            // also satisfies the same predicate recursively. This is the
+            // correct complement of the owned authority for tuples; using
+            // `!is_owned_vec_element` is UNSOUND here because
+            // `ty_contains_heap_owning` (which backs the tuple arm of
+            // `is_owned_vec_element`) only consults `enum_layouts` for Named
+            // types but NOT `record_field_resolved_tys`, so a named record
+            // type nested inside a tuple can be mis-classified non-heap-owning
+            // even when it transitively contains a `string` field. The
+            // `ValueClass::of_ty` path for Named types is the correct authority
+            // — it is what `harvest_vec_owned_element_key` and codegen's
+            // `resolved_ty_contains_heap_leaf` agree on — so the plain and
+            // owned allow-sets stay disjoint (`dedup-semantic-boundary`).
             (matches!(elem, ResolvedTy::Named { .. })
                 && ValueClass::of_ty(elem, &self.type_classes) == ValueClass::BitCopy)
-                || (matches!(elem, ResolvedTy::Tuple(_)) && !self.is_owned_vec_element(elem))
+                || (matches!(elem, ResolvedTy::Tuple(_)) && self.tuple_is_all_bitcopy(elem))
+        })
+    }
+
+    /// True when `ty` is a `Tuple` whose every element is all-`BitCopy` by
+    /// structural recursion.
+    ///
+    /// A tuple element is all-`BitCopy` if it is:
+    /// - a `BitCopy` scalar (same allow-list as the scalar arm of
+    ///   `binding_ty_is_plain_vec`),
+    /// - a `Named` type whose `ValueClass::of_ty` is `BitCopy` (the correct
+    ///   authority for records and direct enums — it is what
+    ///   `harvest_vec_owned_element_key` consults; a heap-owning record is never
+    ///   `BitCopy`), or
+    /// - a nested `Tuple` that also satisfies this predicate recursively.
+    ///
+    /// This is the correct complement of the owned authority for tuples.
+    /// Using `!is_owned_vec_element(Tuple)` is UNSOUND: `ty_contains_heap_owning`
+    /// (its backing check) only consults `enum_layouts` for `Named` types and
+    /// misses `record_field_resolved_tys`, so a named record nested inside a
+    /// tuple that transitively owns a `string` field can be mis-classified as
+    /// non-heap-owning, silently admitting a `Vec<(Rec, i64)>` (where `Rec` has
+    /// a `string` field) to the plain-Vec path and emitting `hew_vec_free`
+    /// where `hew_vec_free_owned` is required. `ValueClass::of_ty` for `Named`
+    /// types is the correct, complete authority and agrees with codegen's
+    /// `resolved_ty_contains_heap_leaf` (`dedup-semantic-boundary`).
+    fn tuple_is_all_bitcopy(&self, ty: &ResolvedTy) -> bool {
+        let ResolvedTy::Tuple(elems) = ty else {
+            return false;
+        };
+        elems.iter().all(|e| match e {
+            ResolvedTy::I8
+            | ResolvedTy::I16
+            | ResolvedTy::I32
+            | ResolvedTy::I64
+            | ResolvedTy::U8
+            | ResolvedTy::U16
+            | ResolvedTy::U32
+            | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
+            | ResolvedTy::F32
+            | ResolvedTy::F64
+            | ResolvedTy::Bool
+            | ResolvedTy::Char
+            | ResolvedTy::Duration => true,
+            ResolvedTy::Named { .. } => {
+                ValueClass::of_ty(e, &self.type_classes) == ValueClass::BitCopy
+            }
+            ResolvedTy::Tuple(_) => self.tuple_is_all_bitcopy(e),
+            _ => false,
         })
     }
 
@@ -35072,18 +35131,21 @@ mod binding_ty_is_plain_vec_tuple {
     //! MIR invariant tests for the tuple arm of `binding_ty_is_plain_vec`.
     //!
     //! `ValueClass::of_ty(Tuple(_))` ALWAYS returns `CowValue` regardless of
-    //! element types, so the tuple arm cannot use that path — it delegates to
-    //! `is_owned_vec_element` instead. These tests pin the exact boundary:
+    //! element types, so the tuple arm uses `tuple_is_all_bitcopy` instead.
+    //! These tests pin the exact boundary:
     //!
-    //! - `Vec<(i64, i64)>`: no heap-owning field → admitted as plain Vec →
+    //! - `Vec<(i64, i64)>`: all `BitCopy` scalars → admitted as plain Vec →
     //!   scope-exit release is buffer-only `hew_vec_free`.
     //! - `Vec<(string, i64)>`: the `string` field owns heap → NOT admitted here
     //!   → routes to `hew_vec_free_owned` via the owned arm.
+    //! - `Vec<((Rec, i64), bool)>`: a `Named` type inside a nested tuple that is
+    //!   not registered as `BitCopy` → NOT admitted here (regression guard for
+    //!   the `!is_owned_vec_element` soundness bug where `ty_contains_heap_owning`
+    //!   mis-classifies unregistered Named types as non-heap-owning).
     //!
-    //! The negative (owned-field) test is the anti-regression guard: admitting a
-    //! `Vec<(string,i64)>` to `hew_vec_free` would skip the per-element string
-    //! drop and leak the string heap (wrong direction of the double-free /
-    //! leak boundary).
+    //! The negative tests are the anti-regression guards: admitting a
+    //! `Vec<(string,i64)>` or `Vec<((Rec,i64),bool)>` to `hew_vec_free` would
+    //! skip the per-element owned drop and leak or corrupt heap.
     use super::*;
 
     fn vec_of_ty(elem: ResolvedTy) -> ResolvedTy {
@@ -35095,26 +35157,35 @@ mod binding_ty_is_plain_vec_tuple {
         }
     }
 
-    /// `Vec<(i64, i64)>` — an all-BitCopy tuple element. `is_owned_vec_element`
-    /// returns `false` (no heap-owning field), so `binding_ty_is_plain_vec` must
-    /// return `true` and the Vec earns a buffer-only `hew_vec_free` on scope exit.
-    /// Pre-fix this returned `false` (the Tuple arm used `ValueClass::of_ty` which
-    /// always returned `CowValue`), leaving the Vec in neither the plain nor the
-    /// owned allow-set → leak.
+    fn unregistered_named(name: &str) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: name.to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        }
+    }
+
+    /// `Vec<(i64, i64)>` — an all-`BitCopy` tuple element. `tuple_is_all_bitcopy`
+    /// returns `true` (both fields are `BitCopy` scalars), so
+    /// `binding_ty_is_plain_vec` must return `true` and the Vec earns a
+    /// buffer-only `hew_vec_free` on scope exit. Pre-fix this returned `false`
+    /// (the Tuple arm used `ValueClass::of_ty` which always returned `CowValue`),
+    /// leaving the Vec in neither the plain nor the owned allow-set → leak.
     #[test]
     fn all_bitcopy_tuple_element_is_admitted_as_plain_vec() {
         let builder = Builder::default();
         let ty = vec_of_ty(ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]));
         assert!(
             builder.binding_ty_is_plain_vec(&ty),
-            "Vec<(i64,i64)>: an all-BitCopy tuple element owns no heap; \
+            "Vec<(i64,i64)>: an all-`BitCopy` tuple element owns no heap; \
              `binding_ty_is_plain_vec` must return true so the buffer gets \
              a scope-exit `hew_vec_free` (not leaked)"
         );
     }
 
-    /// `Vec<(string, i64)>` — the `string` field owns heap. `is_owned_vec_element`
-    /// returns `true`, so `binding_ty_is_plain_vec` must return `false` and the
+    /// `Vec<(string, i64)>` — the `string` field owns heap. `tuple_is_all_bitcopy`
+    /// returns `false`, so `binding_ty_is_plain_vec` must return `false` and the
     /// Vec routes to `hew_vec_free_owned` instead. Admitting it here would emit a
     /// buffer-only free, skipping the per-element string drop → string heap leak.
     #[test]
@@ -35126,6 +35197,28 @@ mod binding_ty_is_plain_vec_tuple {
             "Vec<(string,i64)>: the `string` field owns heap; \
              `binding_ty_is_plain_vec` must return false so the Vec routes \
              to `hew_vec_free_owned` (per-element string drop runs)"
+        );
+    }
+
+    /// Regression guard: `Vec<((Rec, i64), bool)>` where `Rec` is a user Named
+    /// type not in `type_classes` (so `ValueClass::of_ty` returns `CowValue`,
+    /// not `BitCopy`). `tuple_is_all_bitcopy` returns `false` for the nested
+    /// tuple because `Rec` is not `BitCopy`-proven. Pre-`tuple_is_all_bitcopy`
+    /// the old `!is_owned_vec_element` path returned `true` (soundness bug:
+    /// `ty_contains_heap_owning` omits `record_field_resolved_tys` so it
+    /// mis-classifies unregistered Named types as non-heap-owning), admitting
+    /// the Vec to `hew_vec_free` when `hew_vec_free_owned` is required.
+    #[test]
+    fn nested_tuple_with_unregistered_named_is_not_admitted() {
+        let builder = Builder::default();
+        let inner_tuple = ResolvedTy::Tuple(vec![unregistered_named("Rec"), ResolvedTy::I64]);
+        let outer_tuple = ResolvedTy::Tuple(vec![inner_tuple, ResolvedTy::Bool]);
+        let ty = vec_of_ty(outer_tuple);
+        assert!(
+            !builder.binding_ty_is_plain_vec(&ty),
+            "Vec<((Rec,i64),bool)> where Rec is not proven BitCopy must NOT be \
+             admitted as plain Vec — `tuple_is_all_bitcopy` must return false \
+             for any Named element whose ValueClass is not BitCopy"
         );
     }
 
@@ -35150,7 +35243,7 @@ mod binding_ty_is_plain_vec_tuple {
         let ty = vec_of_ty(ResolvedTy::I64);
         assert!(
             builder.binding_ty_is_plain_vec(&ty),
-            "Vec<i64> must be admitted as a plain Vec (scalar BitCopy arm)"
+            "Vec<i64> must be admitted as a plain Vec (scalar `BitCopy` arm)"
         );
     }
 }

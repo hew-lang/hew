@@ -19,9 +19,10 @@
 //! The record fix extends `binding_ty_is_plain_vec` to admit a `Named` element
 //! whose `ValueClass::of_ty` is `BitCopy`. The tuple fix cannot use
 //! `ValueClass::of_ty` for tuples (it ALWAYS returns `CowValue` regardless of
-//! field types) and instead delegates to `!is_owned_vec_element(elem)`. In both
-//! cases the matching release is the plain `hew_vec_free` (buffer + handle; a
-//! `BitCopy` element owns no heap so no per-element drop runs).
+//! field types) and instead uses `tuple_is_all_bitcopy`, which recurses into
+//! each element using `ValueClass::of_ty` for Named types and recursion for
+//! nested tuples. In both cases the matching release is the plain `hew_vec_free`
+//! (buffer + handle; a `BitCopy` element owns no heap so no per-element drop runs).
 //!
 //! ## Old description (record path)
 //!
@@ -198,8 +199,10 @@ fn main() -> i64 {{
 // the tuple arm permanently dead. A `Vec<(i64,i64)>` therefore fell into the same
 // gap as the earlier `Vec<Point>`: neither the plain nor the owned allow-set
 // claimed it, so `build_lifo_drops` emitted NO drop and the backing buffer LEAKED
-// on every scope exit. The fix delegates to `is_owned_vec_element` (the negation
-// of which is "all-BitCopy tuple") instead of `ValueClass::of_ty`.
+// on every scope exit. The fix uses `tuple_is_all_bitcopy`, which recurses into
+// each element: a `BitCopy` scalar or a Named type proven `BitCopy` via
+// `ValueClass::of_ty` admits, anything else (string, Named record not proven
+// BitCopy, nested tuple containing such types) does not.
 
 /// Empty + pushed `Vec<(i64, i64)>` (all-`BitCopy` tuple element). Pre-fix the
 /// backing buffer leaked once per helper call; post-fix `hew_vec_free` releases it.
@@ -509,9 +512,9 @@ fn vec_record_release_is_exactly_once_under_malloc_scribble() {
 /// `let pairs: Vec<(i64,i64)> = Vec::new(); pairs.push(..)` -- an all-`BitCopy`
 /// tuple element. Pre-fix the backing buffer leaked once per helper call because
 /// `binding_ty_is_plain_vec`'s tuple arm was dead (it called `ValueClass::of_ty`
-/// on the tuple, which always returns `CowValue`). Post-fix the arm delegates to
-/// `is_owned_vec_element` and correctly classifies the buffer as plain-vec →
-/// `hew_vec_free` on scope exit.
+/// on the tuple, which always returns `CowValue`). Post-fix `tuple_is_all_bitcopy`
+/// recurses into the element types and correctly classifies the buffer as
+/// plain-vec → `hew_vec_free` on scope exit.
 #[test]
 fn vec_tuple_new_push_no_leak() {
     assert_no_record_vec_leak_over_control("vec_tuple_new_push", &vec_tuple_new_push_source());

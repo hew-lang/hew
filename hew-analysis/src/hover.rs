@@ -1356,6 +1356,7 @@ mod tests {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
         }
     }
@@ -1635,6 +1636,7 @@ mod tests {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
         };
         let offset = source.find("Point").unwrap();
@@ -1741,6 +1743,7 @@ mod tests {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
         };
         let result = hover(source, &pr, Some(&tc), x_offset);
@@ -1807,6 +1810,7 @@ mod tests {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
         };
 
@@ -1927,6 +1931,7 @@ mod tests {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
         };
 
@@ -2097,6 +2102,7 @@ mod tests {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
         };
         let result = hover(source, &pr, Some(&tc), x_offset).unwrap();

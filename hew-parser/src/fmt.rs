@@ -3295,6 +3295,11 @@ impl<'a> Formatter<'a> {
                 self.comma_sep(fields, Self::format_pattern_field);
                 self.write(" }");
             }
+            Pattern::RecordShorthand { fields } => {
+                self.write("{ ");
+                self.comma_sep(fields, Self::format_pattern_field);
+                self.write(" }");
+            }
             Pattern::Tuple(patterns) => {
                 self.write("(");
                 self.comma_sep(patterns, |f, p| f.format_pattern(&p.0));

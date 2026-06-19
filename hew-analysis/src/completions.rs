@@ -787,7 +787,7 @@ fn collect_pattern_names(pattern: &Pattern, locals: &mut Vec<CompletionItem>) {
                 collect_pattern_names(p, locals);
             }
         }
-        Pattern::Struct { fields, .. } => {
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
             for field in fields {
                 if let Some((pattern, _)) = &field.pattern {
                     collect_pattern_names(pattern, locals);

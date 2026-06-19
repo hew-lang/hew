@@ -884,6 +884,7 @@ mod ast_surface {
             Pattern::Identifier(_) => Some("match with constructor-payload patterns"),
             Pattern::Constructor { .. } => Some("match with constructor-payload patterns"),
             Pattern::Struct { .. } => Some("struct pattern in match arm"),
+            Pattern::RecordShorthand { .. } => Some("struct pattern in match arm"),
             Pattern::Tuple(_) => Some("tuple value + tuple-let destructure"),
             Pattern::Or(_, _) => Some("match with wildcard arm"),
             Pattern::Regex { .. } => Some("regex compile + is_match"),

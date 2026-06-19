@@ -420,12 +420,14 @@ fn pattern_binds_name(pattern: &Pattern, name: &str) -> bool {
         Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => patterns
             .iter()
             .any(|(pattern, _)| pattern_binds_name(pattern, name)),
-        Pattern::Struct { fields, .. } => fields.iter().any(|field| {
-            field
-                .pattern
-                .as_ref()
-                .is_some_and(|(pattern, _)| pattern_binds_name(pattern, name))
-        }),
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+            fields.iter().any(|field| {
+                field
+                    .pattern
+                    .as_ref()
+                    .is_some_and(|(pattern, _)| pattern_binds_name(pattern, name))
+            })
+        }
         Pattern::Or(left, right) => {
             pattern_binds_name(&left.0, name) || pattern_binds_name(&right.0, name)
         }
@@ -473,7 +475,7 @@ impl RefsVisitor<'_> {
                     self.push_pattern_matches(p, s);
                 }
             }
-            Pattern::Struct { fields, .. } => {
+            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
                 for field in fields {
                     if let Some((p, s)) = &field.pattern {
                         self.push_pattern_matches(p, s);

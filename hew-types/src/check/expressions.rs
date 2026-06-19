@@ -3945,7 +3945,7 @@ impl Checker {
                     Self::shadow_pattern_bindings(pattern, scopes);
                 }
             }
-            Pattern::Struct { fields, .. } => {
+            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
                 for field in fields {
                     if let Some((pattern, _)) = &field.pattern {
                         Self::shadow_pattern_bindings(pattern, scopes);

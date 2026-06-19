@@ -26966,4 +26966,44 @@ mod every_attribute {
             output.errors
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Record shorthand pattern: `let { a, b } = rec` (no type name)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn let_record_shorthand_binds_fields_no_error() {
+        // `let { x, y } = p` — shorthand with no type name must bind both
+        // fields with zero checker errors.
+        let output = check_source(
+            "type Point { x: i64; y: i64; }
+             fn main() -> i64 { let p = Point { x: 1, y: 2 }; let { x, y } = p; x + y }",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "shorthand record let must emit zero checker errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn let_record_shorthand_unknown_field_emits_undefined_field_error() {
+        // `let { x, z } = p` where `z` does not exist on `Point` must emit
+        // exactly one UndefinedField error (not cascade into UnresolvedSymbol).
+        let output = check_source(
+            "type Point { x: i64; y: i64; }
+             fn main() -> i64 { let p = Point { x: 1, y: 2 }; let { x, z } = p; x }",
+        );
+        let undef_field: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::UndefinedField))
+            .collect();
+        assert_eq!(
+            undef_field.len(),
+            1,
+            "unknown field in shorthand must emit exactly one UndefinedField; got: {:#?}",
+            output.errors
+        );
+    }
 }

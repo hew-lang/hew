@@ -458,6 +458,14 @@ pub enum Pattern {
         name: String,
         fields: Vec<PatternField>,
     },
+    /// Shorthand record destructure: `{ a, b }` with no type name.
+    ///
+    /// The checker infers the record type from the expected/scrutinee type and
+    /// delegates to the same field-binding path as `Pattern::Struct`.  Only
+    /// valid in `let` positions against an irrefutable (product) type.
+    RecordShorthand {
+        fields: Vec<PatternField>,
+    },
     Tuple(Vec<Spanned<Pattern>>),
     Or(Box<Spanned<Pattern>>, Box<Spanned<Pattern>>),
     /// A regex literal pattern in a match arm: `re"^Bearer\s+(.+)$"`.

@@ -787,6 +787,15 @@ fn find_pattern_binding_type(
                 find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
             })
         }),
+        // For shorthand, look up field type from the scrutinee type directly.
+        Pattern::RecordShorthand { fields } => fields.iter().find_map(|field| {
+            // Derive field type from source_ty by name, same as bind_pattern does.
+            let type_name = source_ty.type_name()?;
+            let field_ty = struct_pattern_field_ty(source_ty, type_name, &field.name, type_defs)?;
+            field.pattern.as_ref().and_then(|pattern| {
+                find_pattern_binding_type(pattern, &field_ty, type_defs, word, offset)
+            })
+        }),
         Pattern::Tuple(patterns) => {
             let Ty::Tuple(elem_tys) = source_ty else {
                 return None;
@@ -826,12 +835,14 @@ fn find_binding_name(pattern: &(Pattern, Span), word: &str, offset: usize) -> Op
         Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => patterns
             .iter()
             .find_map(|pattern| find_binding_name(pattern, word, offset)),
-        Pattern::Struct { fields, .. } => fields.iter().find_map(|field| {
-            field
-                .pattern
-                .as_ref()
-                .and_then(|pattern| find_binding_name(pattern, word, offset))
-        }),
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+            fields.iter().find_map(|field| {
+                field
+                    .pattern
+                    .as_ref()
+                    .and_then(|pattern| find_binding_name(pattern, word, offset))
+            })
+        }
         Pattern::Or(left, right) => {
             find_binding_name(left, word, offset).or_else(|| find_binding_name(right, word, offset))
         }

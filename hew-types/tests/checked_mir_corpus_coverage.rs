@@ -210,19 +210,43 @@ fn corpus_covers_every_family_or_pins_the_gap() {
     let mut uncovered = BTreeSet::new();
     for family in all_runtime_call_families() {
         let sym = family.c_symbol();
-        // Two renderings count as coverage:
-        //  - the quoted symbol (`callee: "hew_vec_len"`, `drop_fn: "..."`)
-        //    on the `Terminator::Call` / drop routes — quoting avoids
-        //    substring false-positives for short names like `abs` / `min`;
-        //  - the typed family on the `Instr::CallRuntimeAbi` route
-        //    (`family: VecLen,` — matched against the normalized text so
-        //    the multi-line pretty rendering of parameterized variants is
-        //    recognised; the trailing comma avoids prefix collisions).
+        // Three renderings count as coverage:
+        //
+        //  1. Quoted symbol (legacy Debug format):
+        //     `callee: "hew_vec_len"`, `drop_fn: "hew_string_drop"`
+        //     Quoting avoids substring false-positives for short names
+        //     like `abs` / `min` in the old format.
+        //
+        //  2. Typed family (Instr::CallRuntimeAbi route, both formats):
+        //     `family: VecLen,` (Debug) or `family:VecLen,` (normalized).
+        //     Matched against the whitespace-normalised text so that
+        //     multi-line pretty-printed variants are recognised.
+        //
+        //  3. Word-boundary patterns in the structured text format:
+        //     - `<sym>(…)` call syntax: ` abs(`, ` hew_vec_len(`
+        //     - elab call-terminator: ` abs ->`, ` hew_vec_len ->`
+        //     - drop annotations: `release({sym})`, `cow_heap({sym})`
+        //     - raw call_rt prefix: `call_rt {sym}(`
+        //     Using ` {sym}(` or ` {sym} ` avoids substring false-positives
+        //     even for short names — `abs` only appears preceded by a space
+        //     and followed by `(` or ` ->` in the structured dump.
         let quoted = format!("\"{sym}\"");
         let family_needle = format!("family:{family:?},")
             .split_whitespace()
             .collect::<String>();
-        if !haystack.contains(&quoted) && !normalized.contains(&family_needle) {
+        let call_args = format!(" {sym}(");
+        let call_term = format!(" {sym} ->");
+        let release_ann = format!("release({sym})");
+        let cow_heap_ann = format!("cow_heap({sym})");
+        let call_rt_unquoted = format!("call_rt {sym}(");
+        if !haystack.contains(&quoted)
+            && !normalized.contains(&family_needle)
+            && !haystack.contains(&call_args)
+            && !haystack.contains(&call_term)
+            && !haystack.contains(&release_ann)
+            && !haystack.contains(&cow_heap_ann)
+            && !haystack.contains(&call_rt_unquoted)
+        {
             uncovered.insert(sym);
         }
     }

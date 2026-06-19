@@ -50,6 +50,7 @@ CI_REQUIRED_CHECKS=(
     "Package-import oracle (ci.yml: make test-pkg-import)	make test-pkg-import"
     "Fuzz-oracle ratchet (ci.yml: make fuzz-oracle)	make fuzz-oracle"
     "Sandbox parity (ci.yml: make sandbox-parity)	make sandbox-parity"
+    "Checked-MIR golden corpus (ci.yml: make checked-mir-verify)	make checked-mir-verify"
 )
 
 usage() {
@@ -728,6 +729,7 @@ case "$LANE" in
         add_command "make test-hew-ratchet"
         add_command "make test-stdlib-ratchet"
         add_command "make sandbox-parity"
+        add_command "make checked-mir-verify"
         ;;
     *)
         die "unhandled lane: $LANE"

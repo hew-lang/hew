@@ -51,9 +51,12 @@ fn closure_pid_capture_adds_no_drops_to_parent_plan() {
     );
     // Every drop in the plan is the pid's no-op resource drop — the plan
     // never grows a real release for an aliased handle.
+    // Accept both the structured text format (`kind=resource`) and the
+    // legacy Debug format (`kind: Resource` / `drop_fn: None` / `ElabDrop`).
     assert!(
         closure_sig.iter().all(|line| line.contains("drop_fn: None")
             || line.contains("kind: Resource")
+            || line.contains("kind=resource")
             || line.starts_with("ElabDrop")),
         "unexpected drop signature lines: {closure_sig:?}"
     );
@@ -122,14 +125,64 @@ fn dump_elab_mir(repo: &Path, rel_source: &str) -> String {
 }
 
 /// Extract `main`'s drop signature from an elaborated-MIR dump: one entry
-/// per `ElabDrop` line plus every `drop_fn:`/`kind:` fact inside main's
-/// function chunk. Local indices are deliberately excluded so the
-/// signature compares across programs whose local numbering differs.
+/// per non-`(none)` drop-plan line inside main's function chunk.
+/// Local indices and block indices are stripped so the signature compares
+/// across programs whose numbering differs.
+///
+/// Works with both the legacy Debug format (`ElaboratedMirFunction {` /
+/// `name: "main"`) and the structured text format (`fn main -> <ty>`).
 fn main_drop_signature(dump: &str) -> Vec<String> {
+    // Try the structured text format first: functions are separated by
+    // lines beginning with "fn " at column 0.
+    let structured_chunk: Option<&str> = {
+        let mut found: Option<&str> = None;
+        let mut start: Option<usize> = None;
+        for (byte_pos, line) in line_byte_positions(dump) {
+            if line.starts_with("fn ") {
+                if let Some(s) = start {
+                    if dump[s..].trim_start().starts_with("fn main ") {
+                        found = Some(&dump[s..byte_pos]);
+                        break;
+                    }
+                }
+                start = Some(byte_pos);
+            }
+        }
+        // Handle main being the last function in the dump.
+        if found.is_none() {
+            if let Some(s) = start {
+                if dump[s..].trim_start().starts_with("fn main ") {
+                    found = Some(&dump[s..]);
+                }
+            }
+        }
+        found
+    };
+
+    if let Some(chunk) = structured_chunk {
+        return chunk
+            .lines()
+            .map(str::trim)
+            .filter(|line| {
+                // Collect every actual drop entry in the drop_plans section;
+                // skip `(none)` entries and block/terminator header lines.
+                line.starts_with("drop ") && line.contains("kind=")
+            })
+            .map(|line| {
+                // Strip the local name token (position-specific) so that the
+                // signature can be compared across programs with different
+                // local naming. Keep ty=… and kind=… which are the
+                // structural facts we care about.
+                normalise_drop_line(line)
+            })
+            .collect();
+    }
+
+    // Fallback: legacy Debug format.
     let main_chunk = dump
         .split("ElaboratedMirFunction {")
         .find(|chunk| chunk.trim_start().starts_with("name: \"main\""))
-        .expect("dump contains an ElaboratedMirFunction named main");
+        .expect("dump contains an ElaboratedMirFunction named main (structured or Debug format)");
     main_chunk
         .lines()
         .map(str::trim)
@@ -140,6 +193,34 @@ fn main_drop_signature(dump: &str) -> Vec<String> {
         })
         .map(ToString::to_string)
         .collect()
+}
+
+/// Iterate over the (byte_offset, line_str) pairs for a string without
+/// allocating a line buffer.
+fn line_byte_positions(s: &str) -> impl Iterator<Item = (usize, &str)> {
+    let mut offset = 0usize;
+    s.split('\n').map(move |line| {
+        let pos = offset;
+        offset += line.len() + 1; // +1 for the '\n'
+        (pos, line)
+    })
+}
+
+/// Remove the local-specific name token from a structured drop line so that
+/// two programs with the same *types* but different *names* compare equal.
+///
+/// Input:  `drop actor2 ty=LocalPid<Counter> kind=resource`
+/// Output: `drop ty=LocalPid<Counter> kind=resource`
+fn normalise_drop_line(line: &str) -> String {
+    // The format is: `drop <name> ty=… kind=…`
+    // We want: `drop ty=… kind=…`
+    let after_drop = line.strip_prefix("drop ").unwrap_or(line);
+    // Skip the name token (first whitespace-delimited word).
+    let rest = after_drop
+        .find(' ')
+        .map(|i| after_drop[i..].trim_start())
+        .unwrap_or(after_drop);
+    format!("drop {rest}")
 }
 
 fn repo_root() -> PathBuf {

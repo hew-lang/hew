@@ -146,49 +146,52 @@ fn channel_record_elements_roundtrip_and_early_exit_under_single_worker() {
 
 #[test]
 fn for_await_mir_dump_contains_suspending_recv_terminators() {
+    // The dump renderer changed from the derived-Debug form (`SuspendingChannelRecv`)
+    // to the structured mnemonic (`suspend.channel_recv`). Accept either so this
+    // oracle is pinned to the MIR flip fact, not the renderer version.
     for name in ["for_await_recv_string", "for_await_recv_int"] {
         let dump = for_await_mir_checked_dump(name);
         assert!(
-            dump.contains("SuspendingChannelRecv"),
+            dump.contains("SuspendingChannelRecv") || dump.contains("suspend.channel_recv"),
             "{name} must lower to a SuspendingChannelRecv terminator:\n{dump}",
         );
     }
 
-    // Bytes element: `SuspendingStreamNext { elem_ty: Bytes, .. }` — the
-    // checker-resolved element type selects the Bytes content-encoding
-    // witness for the layout pop in codegen.
+    // Bytes element: the checker-resolved element type selects the Bytes
+    // content-encoding witness for the layout pop in codegen.
+    // Debug form: `elem_ty: Bytes`; structured form: `elem_ty=bytes`.
     let bytes_dump = for_await_mir_checked_dump("for_await_stream_bytes");
     assert!(
-        bytes_dump.contains("SuspendingStreamNext"),
+        bytes_dump.contains("SuspendingStreamNext") || bytes_dump.contains("suspend.stream_next"),
         "for_await_stream_bytes must lower to a SuspendingStreamNext terminator:\n{bytes_dump}",
     );
     assert!(
-        bytes_dump.contains("elem_ty: Bytes"),
+        bytes_dump.contains("elem_ty: Bytes") || bytes_dump.contains("elem_ty=bytes"),
         "for_await_stream_bytes's SuspendingStreamNext must carry \
-         elem_ty: Bytes (the Bytes element witness):\n{bytes_dump}",
+         elem_ty=bytes (the Bytes element witness):\n{bytes_dump}",
     );
     assert!(
-        !bytes_dump.contains("elem_ty: String"),
+        !bytes_dump.contains("elem_ty: String") && !bytes_dump.contains("elem_ty=string"),
         "for_await_stream_bytes must NOT carry elem_ty: String \
          (string element type leaking into the bytes path):\n{bytes_dump}",
     );
 
-    // String element: `SuspendingStreamNext { elem_ty: String, .. }` — the
-    // String element witness keeps the header-aware cstring decode and binds
-    // `Option<string>`.
+    // String element: the String element witness keeps the header-aware
+    // cstring decode and binds `Option<string>`.
+    // Debug form: `elem_ty: String`; structured form: `elem_ty=string`.
     for name in ["for_await_stream_string", "typed_streams_string"] {
         let dump = for_await_mir_checked_dump(name);
         assert!(
-            dump.contains("SuspendingStreamNext"),
+            dump.contains("SuspendingStreamNext") || dump.contains("suspend.stream_next"),
             "{name} must lower to a SuspendingStreamNext terminator:\n{dump}",
         );
         assert!(
-            dump.contains("elem_ty: String"),
-            "{name}'s SuspendingStreamNext must carry elem_ty: String \
+            dump.contains("elem_ty: String") || dump.contains("elem_ty=string"),
+            "{name}'s SuspendingStreamNext must carry elem_ty=string \
              (the String element witness):\n{dump}",
         );
         assert!(
-            !dump.contains("elem_ty: Bytes"),
+            !dump.contains("elem_ty: Bytes") && !dump.contains("elem_ty=bytes"),
             "{name} must NOT carry elem_ty: Bytes \
              (bytes element type leaking into the string path):\n{dump}",
         );

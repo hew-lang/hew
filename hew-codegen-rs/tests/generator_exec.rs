@@ -474,7 +474,7 @@ fn main() {
     // fix it was classified non-heap-owning and got none).
     let dump = dump_mir(&repo, "leak2_tuple", "elab", source);
     assert!(
-        dump.contains("TupleInPlace"),
+        dump.contains("TupleInPlace") || dump.contains("tuple_in_place"),
         "the (Generator, i64) tuple must earn a TupleInPlace member-drop:\n{dump}"
     );
     // The codegen proof: the synthesized `__hew_tuple_drop_inplace_*` thunk

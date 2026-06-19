@@ -227,12 +227,20 @@ pub struct HewConnMgr {
     /// which are set AFTER the drain). Separating the gate from the teardown
     /// guard is what lets a graceful stop deliver in-flight replies instead of
     /// abandoning them as a spurious `ConnectionDropped`.
+    ///
+    /// This flag and `inbound_ask_active` form a Dekker pair accessed under
+    /// `SeqCst` (see `node_inbound_router` and `drain_inbound_ask_workers`): the
+    /// store here is ordered with the counter load in the drain such that a
+    /// router which passes the gate is always visible to a concurrent drain, so
+    /// no worker can spawn after the drain observed a zero counter.
     inbound_spawn_closed: Arc<AtomicBool>,
     /// Count of inbound-ask worker threads currently active for this manager.
     ///
-    /// Incremented in `node_inbound_router` before spawning; decremented by
-    /// the worker's `InboundAskGuard` on exit.  Used by `hew_node_stop` to
-    /// drain workers before freeing node resources.
+    /// Incremented in `node_inbound_router` before the gate re-check (so a
+    /// concurrent drain always sees a spawning worker), decremented by the
+    /// worker's `InboundAskGuard` on exit. Used by `hew_node_stop` to drain
+    /// workers before freeing node resources. Accessed under `SeqCst` on the
+    /// spawn/drain path — see `inbound_spawn_closed`.
     pub(crate) inbound_ask_active: Arc<AtomicUsize>,
     /// Background reconnect worker handles.
     reconnect_workers: PoisonSafe<Vec<JoinHandle<()>>>,
@@ -1725,7 +1733,14 @@ pub(crate) unsafe fn hew_connmgr_close_inbound_spawn(mgr: *mut HewConnMgr) {
     }
     // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
     let mgr_ref = unsafe { &*mgr };
-    mgr_ref.inbound_spawn_closed.store(true, Ordering::Release);
+    // SeqCst (not Release): this store is the drain side of the Dekker pairing
+    // in `node_inbound_router`. `hew_node_stop` stores the gate here, then loads
+    // the per-manager counter (in `drain_inbound_ask_workers`) under SeqCst; the
+    // router increments the counter, then loads this gate under SeqCst. SeqCst on
+    // both sides gives a single total order so a router that passes the gate is
+    // always visible to the drain — Release/Acquire would let the gate store and
+    // the counter load reorder across the two distinct atomics and lose a worker.
+    mgr_ref.inbound_spawn_closed.store(true, Ordering::SeqCst);
 }
 
 /// Return a clone of the inbound-ask spawn-gate flag for `node_inbound_router`

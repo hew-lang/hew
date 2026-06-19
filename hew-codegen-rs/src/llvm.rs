@@ -57,7 +57,7 @@ use hew_mir::{
     instr_source_places, terminator_source_places, validate_context_markers, ActorLayout,
     CheckedMirFunction, ChildInitArg, CmpPred, CooperateKind, CooperateSite, DynVtableInstance,
     ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth,
-    FunctionCallConv, GenStateLayout, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
+    FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
     LambdaEnvFieldDrop, MachineLayout, MachineVariantLayout, MirConst, MirConstValue, Place,
     RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout,
     SupervisorLayout, Terminator, TrapKind,
@@ -1335,26 +1335,6 @@ struct FnCtx<'a, 'ctx> {
     /// were a plain integer — defensive fall-back used by hand-built test
     /// fixtures that do not register a record layout for every named local.
     record_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
-    /// Per-gen-state-struct field-resolved-type table, keyed by the synthesised
-    /// state-record name `Gen$state$<body_fn>` (matches
-    /// [`GenStateLayout::function_name`]-derived names). For each gen-state
-    /// struct, the vector lists the `ResolvedTy` of each field in declaration
-    /// order:
-    ///   - `field 0` → [`ResolvedTy::I32`] (state tag — reserved, currently
-    ///     unwritten by MIR's S3b pass but field-allocated for layout stability)
-    ///   - `field 1` → [`ResolvedTy::U64`] (per-local `init_mask`, written from
-    ///     a `ConstI64`-typed scratch local at every yield/resume boundary)
-    ///   - `field 2 + i` → the original ResolvedTy of `live_locals[i]`
-    ///
-    /// `place_resolved_ty` consults this to surface the `&ResolvedTy` of a
-    /// `Place::GenState { local, field }` access; the LLVM-typed pointer for
-    /// the same place is produced by `place_pointer` via direct GEP through
-    /// the `Gen$state$<body_fn>` struct registered in `record_layouts`.
-    ///
-    /// Populated once per `build_module` from `IrPipeline.gen_state_layouts`
-    /// in `register_gen_state_layouts`; an empty map is the test-fixture path
-    /// where no generator body is lowered.
-    gen_state_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
     /// Module-wide dyn-trait vtable registry, shared by reference from
     /// `pipeline.dyn_vtable_registry`. Consumed by
     /// `Instr::CoerceToDynTrait` to resolve the
@@ -3666,81 +3646,6 @@ fn register_machine_layouts<'ctx>(
     Ok(map)
 }
 
-/// Register every generator-body state-record layout from
-/// `pipeline.gen_state_layouts` as an LLVM named struct, inserting into the
-/// shared `record_layouts` map so that `resolve_ty` for a
-/// `ResolvedTy::Named { name: "Gen$state$<body_fn>" }` local (the
-/// state-record carrier allocated by the S3b MIR pass) returns the registered
-/// struct rather than tripping the D10 fail-closed sentinel.
-///
-/// The state-record struct shape mirrors [`GenStateLayout`]'s field ordinals:
-/// field 0 is the per-state tag (`i32`, reserved — currently unwritten by
-/// MIR's S3b pass but field-allocated for layout stability and future S4
-/// tag-cascade consumers), field 1 is the per-local `init_mask` (`i64`,
-/// written from a `ConstI64`-typed `U64` scratch local at every
-/// yield/resume boundary), and field `2 + i` carries the lifted
-/// cross-yield-live local `live_locals[i].ty`.
-///
-/// Returns the per-struct field-resolved-type table consumed by
-/// `place_resolved_ty` to surface a `&ResolvedTy` for
-/// `Place::GenState { local, field }`. The LLVM-typed pointer for the same
-/// place is produced by `place_pointer` via direct GEP through the registered
-/// struct.
-///
-/// Idempotent on within-module duplicate `function_name` entries (the second
-/// registration is a no-op against the first; matches the
-/// `register_enum_layouts` within-class-duplicate tolerance). Cross-class
-/// collisions are not expected — the `Gen$state$` prefix is reserved for
-/// MIR-synthesised state records and is not a legal user record/enum/machine
-/// type name. Defensive: if such a collision arrives, the existing struct in
-/// `record_layouts` is kept and its body is set; LLVM rejects a duplicate
-/// `set_body` call, surfacing the producer-side invariant violation.
-fn register_gen_state_layouts<'ctx>(
-    ctx: &'ctx Context,
-    gen_state_layouts: &[GenStateLayout],
-    record_layouts: &mut RecordLayoutMap<'ctx>,
-) -> CodegenResult<HashMap<String, Vec<ResolvedTy>>> {
-    let mut field_resolved_tys: HashMap<String, Vec<ResolvedTy>> = HashMap::new();
-    for layout in gen_state_layouts {
-        let state_ty_name = format!("Gen$state${}", layout.function_name);
-        // Within-module duplicate guard: the second registration for the
-        // same generator body name is a no-op. The S3b pass mints exactly
-        // one layout per body fn, but pipeline merge paths (cross-module
-        // import) can replay the same layout; idempotent insertion keeps
-        // those paths stable.
-        if field_resolved_tys.contains_key(&state_ty_name) {
-            continue;
-        }
-        // Field types: i32 (state tag), i64 (init mask), then resolved
-        // cross-yield-live local types in declaration order.
-        let mut llvm_field_tys: Vec<BasicTypeEnum<'ctx>> =
-            Vec::with_capacity(layout.live_locals.len() + 2);
-        let mut resolved_field_tys: Vec<ResolvedTy> =
-            Vec::with_capacity(layout.live_locals.len() + 2);
-        llvm_field_tys.push(ctx.i32_type().into());
-        resolved_field_tys.push(ResolvedTy::I32);
-        llvm_field_tys.push(ctx.i64_type().into());
-        resolved_field_tys.push(ResolvedTy::U64);
-        for ll in &layout.live_locals {
-            llvm_field_tys.push(resolve_ty(ctx, &ll.ty, record_layouts)?);
-            resolved_field_tys.push(ll.ty.clone());
-        }
-        // Allocate-or-reuse the named LLVM struct, then set the body.
-        let st = if let Some(existing) = record_layouts.get(&state_ty_name) {
-            *existing
-        } else {
-            let s = ctx.opaque_struct_type(&state_ty_name);
-            record_layouts.insert(state_ty_name.clone(), s);
-            s
-        };
-        // packed = false to match record/enum/machine layouts (natural
-        // alignment).
-        st.set_body(&llvm_field_tys, false);
-        field_resolved_tys.insert(state_ty_name, resolved_field_tys);
-    }
-    Ok(field_resolved_tys)
-}
-
 /// LLVM tagged-union struct, inserting into the shared `machine_layouts` map
 /// so that `Place::MachineTag` / `Place::MachineVariant` codegen can look up
 /// enum-typed locals by their type name.
@@ -5867,67 +5772,6 @@ fn place_pointer<'ctx>(
                 })?;
             Ok((field_ptr, field_llvm_ty))
         }
-        // Generator state-record projection. The S3b MIR pass produces
-        // these places at every cross-yield bookend Move. The state-record
-        // local is a `ResolvedTy::Named { name: "Gen$state$<body_fn>" }`
-        // whose LLVM struct was registered by `register_gen_state_layouts`
-        // into `record_layouts` at module-build time. Field 0 is the
-        // (reserved) per-state tag (`i32`), field 1 is the per-local
-        // `init_mask` (`i64`), and field `2 + i` carries
-        // `live_locals[i].ty`.
-        //
-        // GEP path mirrors the `Place::MachineVariant` field arm: look up
-        // the state-record struct by name, range-check the field ordinal
-        // against the struct's field count, then `build_struct_gep` and
-        // surface the field's LLVM type. Out-of-range `field` is a
-        // producer-side invariant violation (MIR allocated a field index
-        // not in the layout) and is fail-closed accordingly.
-        Place::GenState { local, field } => {
-            let (slot, _slot_ty) = fn_ctx.locals.get(&local).copied().ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "Place::GenState local {local} has no alloca slot"
-                ))
-            })?;
-            let state_struct_name = match fn_ctx.local_tys.get(&local) {
-                Some(ResolvedTy::Named { name, .. }) => name,
-                _ => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "Place::GenState references local {local} which is not a \
-                         Named state-record type — `register_gen_state_layouts` \
-                         expects the carrier to be `Gen$state$<body_fn>`"
-                    )));
-                }
-            };
-            let state_struct = fn_ctx
-                .record_layouts
-                .get(state_struct_name)
-                .copied()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "Place::GenState state-record `{state_struct_name}` not in \
-                         record_layouts — `register_gen_state_layouts` must run \
-                         before lower_function for any function containing a \
-                         generator-body state local"
-                    ))
-                })?;
-            let field_count = state_struct.count_fields();
-            if field >= field_count {
-                return Err(CodegenError::FailClosed(format!(
-                    "Place::GenState field {field} out of range for \
-                     `{state_struct_name}` ({field_count} fields)"
-                )));
-            }
-            let field_ptr = fn_ctx
-                .builder
-                .build_struct_gep(state_struct, slot, field, "gen_state_field_ptr")
-                .llvm_ctx("GEP gen-state field")?;
-            let field_llvm_ty = state_struct.get_field_type_at_index(field).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "gen-state struct `{state_struct_name}` has no field at index {field}"
-                ))
-            })?;
-            Ok((field_ptr, field_llvm_ty))
-        }
     }
 }
 
@@ -6015,41 +5859,6 @@ fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResu
                 CodegenError::FailClosed(format!(
                     "Place::MachineVariant field_idx {field_idx} out of range for variant \
                      {variant_idx}"
-                ))
-            })
-        }
-        // Generator state-record projection: see `place_pointer` for the
-        // matching LLVM-typed pointer surface. Field 0 is the (reserved)
-        // per-state tag (`I32`), field 1 is the per-local `init_mask`
-        // (`U64`), and field `2 + i` is `live_locals[i].ty` — these are
-        // the resolved-type triples populated by
-        // `register_gen_state_layouts` into the per-`Gen$state$<body_fn>`
-        // entry of `fn_ctx.gen_state_field_resolved_tys`.
-        Place::GenState { local, field } => {
-            let state_struct_name = match fn_ctx.local_tys.get(&local) {
-                Some(ResolvedTy::Named { name, .. }) => name,
-                _ => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "Place::GenState references local {local} which is not a \
-                         Named state-record type"
-                    )));
-                }
-            };
-            let resolved_fields = fn_ctx
-                .gen_state_field_resolved_tys
-                .get(state_struct_name)
-                .ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "Place::GenState state-record `{state_struct_name}` not in \
-                         gen_state_field_resolved_tys — `register_gen_state_layouts` \
-                         must populate this map before any body-lowering"
-                    ))
-                })?;
-            resolved_fields.get(field as usize).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "Place::GenState field {field} out of range for `{state_struct_name}` \
-                     ({} fields)",
-                    resolved_fields.len()
                 ))
             })
         }
@@ -14627,7 +14436,7 @@ fn lower_instruction(
                 // `Move { dest: ReturnSlot, src }`) AND owned-aggregate payload
                 // construction — machine/enum variant fields and generator
                 // state spills, which MIR lowers as
-                // `Move { dest: MachineVariant/EnumVariant/GenState, src }`
+                // `Move { dest: MachineVariant/EnumVariant, src }`
                 // (lower.rs `MachineVariantCtor` / S3b gen-state synthesis).
                 // Under `borrow_mode != 0` retain via `hew_string_clone`; under
                 // `borrow_mode == 0` (copy mode) the handler already owns its
@@ -25219,7 +25028,7 @@ fn place_base_local(place: &Place) -> Option<u32> {
 /// A `Move` is the single MIR primitive that both propagates a value between
 /// locals AND materialises owned-aggregate payload construction (MIR lowers
 /// machine/enum-variant payload fields and generator-state spills as
-/// `Move { dest: Place::MachineVariant/EnumVariant/GenState, src }`). The
+/// `Move { dest: Place::MachineVariant/EnumVariant, src }`). The
 /// borrow-escape analysis must therefore classify the *destination* of every
 /// `Move` rather than treat the whole instruction as categorically safe — a
 /// tainted view reaching an owned aggregate with no retain is the latent
@@ -25257,10 +25066,9 @@ fn classify_move_borrow_sink(dest: &Place) -> MoveBorrowSink {
         // non-String local would be untracked, so that case fails closed).
         Place::Local(_) => MoveBorrowSink::Propagated,
         // Owned sinks: each takes its own owner of the borrowed buffer.
-        Place::ReturnSlot
-        | Place::MachineVariant { .. }
-        | Place::EnumVariant { .. }
-        | Place::GenState { .. } => MoveBorrowSink::OwnedRetain,
+        Place::ReturnSlot | Place::MachineVariant { .. } | Place::EnumVariant { .. } => {
+            MoveBorrowSink::OwnedRetain
+        }
         // Tag slots hold an integer discriminant; the handle/half places hold
         // runtime handles, never a String borrow root. Fail closed if a
         // tainted view ever reaches one.
@@ -25340,7 +25148,7 @@ fn compute_borrow_taint(func: &RawMirFunction) -> HashSet<u32> {
 ///
 /// Stage 2a retains a borrowed `String` view at five sinks — actor field store,
 /// return position, re-send (`Terminator::Send`), owned-aggregate payload
-/// construction (`Move` into `Place::MachineVariant`/`EnumVariant`/`GenState`,
+/// construction (`Move` into `Place::MachineVariant`/`EnumVariant`,
 /// retained in the `Move` lowering), and an owned local that outlives the
 /// handler (via taint-propagating `Instr::Move`, drop-suppressed) — and
 /// suppresses the scope-exit drop of a discarded view. Any OTHER construct that
@@ -40603,7 +40411,6 @@ fn lower_function<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     enum_layouts: &[EnumLayout],
     record_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
-    gen_state_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
     dyn_vtable_registry: &[DynVtableInstance],
     const_globals: &ConstGlobalMap<'ctx>,
     emit_wasm_entry_alias: bool,
@@ -41393,7 +41200,6 @@ fn lower_function<'ctx>(
         machine_layouts,
         enum_layouts,
         record_field_resolved_tys,
-        gen_state_field_resolved_tys,
         dyn_vtable_registry,
         const_globals,
         borrow_mode,
@@ -42694,17 +42500,6 @@ fn build_module_for_target<'ctx>(
         &mut machine_layouts,
         Some(&target_data),
     )?;
-    // Register synthesised generator-body state-record structs from
-    // `pipeline.gen_state_layouts` into `record_layouts`. This must happen
-    // BEFORE any function-body lowering because the S3b MIR pass allocates
-    // a `state_local: Vec<ResolvedTy>::push(Named { name: "Gen$state$..." })`
-    // at the end of every generator body's locals vector — `lower_function`'s
-    // alloca prologue calls `resolve_ty` on each local type, which would trip
-    // the D10 fail-closed sentinel for the Named gen-state type otherwise.
-    // The drop shim function (`__hew_gen_drop_in_state_<owner>_<id>`) shares
-    // the same parameter type and is satisfied by the same registration.
-    let gen_state_field_resolved_tys =
-        register_gen_state_layouts(ctx, &pipeline.gen_state_layouts, &mut record_layouts)?;
     let const_globals = emit_const_globals(ctx, &llvm_mod, &pipeline.user_consts, &record_layouts)?;
     let mut fn_symbols: FnSymbolMap<'ctx> = HashMap::new();
     predeclare_stdlib_catalog(ctx, &llvm_mod, &mut fn_symbols, &record_layouts)?;
@@ -42989,7 +42784,6 @@ fn build_module_for_target<'ctx>(
             &machine_layouts,
             &pipeline.enum_layouts,
             &record_field_resolved_tys,
-            &gen_state_field_resolved_tys,
             &pipeline.dyn_vtable_registry,
             &const_globals,
             emit_wasm_entry_alias,
@@ -45759,7 +45553,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -46193,7 +45986,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -46277,7 +46069,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -46399,7 +46190,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -46507,7 +46297,6 @@ mod tests {
                 ty: const_ty,
                 value: const_value,
             }],
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -46635,7 +46424,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -46763,7 +46551,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -46843,7 +46630,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -46917,7 +46703,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -47194,7 +46979,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -47403,7 +47187,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -48108,7 +47891,6 @@ mod tests {
             enum_layouts: vec![enum_layout],
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -48197,7 +47979,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -48347,7 +48128,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -48429,7 +48209,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -48453,112 +48232,6 @@ mod tests {
         assert!(
             m.verify().is_ok(),
             "CancellationToken.is_cancelled module must pass LLVM verify:\n{ir}"
-        );
-    }
-
-    /// Generators substrate — `Place::GenState { local, field }` load/store wires
-    /// through the registered `Gen$state$<body_fn>` LLVM struct. This
-    /// exercises the seam end-to-end through `build_module`: a synthetic
-    /// generator body declares a state-record local (a `Named` type
-    /// matching `Gen$state$<fnname>`), the pipeline carries the matching
-    /// `GenStateLayout`, and a Move from a body local into the state-record
-    /// field-2 (the first live-local slot) must emit a `getelementptr`
-    /// through the registered struct without tripping the prior
-    /// `FailClosed` rejection.
-    #[test]
-    fn place_genstate_field_lowers_through_registered_struct() {
-        use hew_mir::{GenStateLayout, GenStateLiveLocal};
-        let body_name = "__hew_gen_body_genstate_test_0";
-        let state_ty_name = format!("Gen$state${body_name}");
-        let state_ty = ResolvedTy::Named {
-            name: state_ty_name.clone(),
-            args: Vec::new(),
-            builtin: None,
-            is_opaque: false,
-        };
-        // Body locals: [Local(0) = i64 source, Local(1) = state-record].
-        // Move Local(0) → GenState { local: 1, field: 2 } (first live local).
-        let body = RawMirFunction {
-            name: body_name.to_string(),
-            return_ty: ResolvedTy::Unit,
-            call_conv: FunctionCallConv::Default,
-            params: Vec::new(),
-            locals: vec![ResolvedTy::I64, state_ty.clone()],
-            blocks: vec![BasicBlock {
-                id: 0,
-                statements: Vec::new(),
-                instructions: vec![
-                    Instr::ConstI64 {
-                        dest: Place::Local(0),
-                        value: 99,
-                    },
-                    Instr::Move {
-                        dest: Place::GenState { local: 1, field: 2 },
-                        src: Place::Local(0),
-                    },
-                ],
-                terminator: Terminator::Return,
-            }],
-            decisions: Vec::new(),
-            intrinsic_id: None,
-            await_deadline_ns: std::collections::HashMap::new(),
-
-            lambda_actor_user_param_locals: Vec::new(),
-            span: None,
-            instr_spans: ::std::collections::BTreeMap::new(),
-        };
-        let layout = GenStateLayout {
-            function_name: body_name.to_string(),
-            live_locals: vec![GenStateLiveLocal {
-                original_local: 0,
-                ty: ResolvedTy::I64,
-            }],
-            yield_count: 0,
-            drop_shim_name: "__hew_gen_drop_in_state_genstate_test_0".to_string(),
-            drop_tables: Vec::new(),
-        };
-        let pipeline = IrPipeline {
-            thir: Vec::new(),
-            raw_mir: vec![body],
-            checked_mir: Vec::new(),
-            elaborated_mir: Vec::new(),
-            diagnostics: Vec::new(),
-            opaque_handle_names: Vec::new(),
-            record_layouts: Vec::new(),
-            actor_layouts: Vec::new(),
-            supervisor_layouts: Vec::new(),
-            machine_layouts: Vec::new(),
-            enum_layouts: Vec::new(),
-            regex_literals: Vec::new(),
-            user_consts: Vec::new(),
-            gen_state_layouts: vec![layout],
-            extern_decls: vec![],
-            dyn_vtable_registry: vec![],
-            hashmap_lowering_facts: vec![],
-            hashset_lowering_facts: vec![],
-            actor_send_aliasing: std::collections::HashMap::new(),
-            polymorphic_mir: Vec::new(),
-            user_clone_record_seeds: vec![],
-        };
-        let ctx = Context::create();
-        let m = build_module(&ctx, &pipeline, "gen_state_field_codegen_test").expect(
-            "Place::GenState load/store must lower without error after \
-             register_gen_state_layouts runs",
-        );
-        let ir = m.print_to_string().to_string();
-        // Struct type must be declared and named per the layout convention.
-        assert!(
-            ir.contains(&format!("%\"{state_ty_name}\"")) || ir.contains(&state_ty_name),
-            "Gen$state struct must appear in IR; got IR:\n{ir}"
-        );
-        // GEP through the state-record carrier must surface.
-        assert!(
-            ir.contains("gen_state_field_ptr"),
-            "Place::GenState GEP must emit a gen_state_field_ptr value; got IR:\n{ir}"
-        );
-        assert!(
-            m.verify().is_ok(),
-            "Place::GenState module must pass LLVM verify:\n{ir}"
         );
     }
 
@@ -48808,7 +48481,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -48878,7 +48550,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -48934,7 +48605,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -49077,7 +48747,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -49625,7 +49294,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -49703,10 +49371,6 @@ mod tests {
         /// the composite-helper unit tests, so no bool-field defence path is
         /// taken. Carried so the FnCtx field stays populated.
         record_field_resolved_tys: HashMap<String, Vec<ResolvedTy>>,
-        /// Empty for these fixtures — composite-helper unit tests never
-        /// lower a generator body. Carried so the FnCtx field stays
-        /// populated alongside `record_field_resolved_tys`.
-        gen_state_field_resolved_tys: HashMap<String, Vec<ResolvedTy>>,
         const_globals: ConstGlobalMap<'ctx>,
     }
 
@@ -49883,7 +49547,6 @@ mod tests {
             fn_symbols: HashMap::new(),
             actor_layouts: Vec::new(),
             record_field_resolved_tys: HashMap::new(),
-            gen_state_field_resolved_tys: HashMap::new(),
             const_globals: HashMap::new(),
         }
     }
@@ -49938,7 +49601,6 @@ mod tests {
             machine_layouts: &harness.machine_layouts,
             enum_layouts: &[],
             record_field_resolved_tys: &harness.record_field_resolved_tys,
-            gen_state_field_resolved_tys: &harness.gen_state_field_resolved_tys,
             // Composite-helper unit tests never lower an
             // `Instr::CoerceToDynTrait`; carry an empty slice so the
             // FnCtx field stays populated. The dyn-trait
@@ -51426,7 +51088,6 @@ mod tests {
             enum_layouts: vec![],
             regex_literals: vec![],
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![DynVtableInstance {
                 vtable_id: 0,
@@ -51574,7 +51235,6 @@ mod tests {
             enum_layouts: vec![],
             regex_literals: vec![],
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             // Empty registry — no entry for the `(Display, i64, [])`
             // coercion below. The arm must surface a fail-closed
@@ -51952,7 +51612,6 @@ mod tests {
             enum_layouts: vec![],
             regex_literals: vec![],
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![hew_mir::DynVtableInstance {
                 vtable_id: 0,
@@ -52156,7 +51815,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -52378,7 +52036,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -52568,7 +52225,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -52755,7 +52411,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],
@@ -52947,7 +52602,6 @@ mod tests {
             enum_layouts: Vec::new(),
             regex_literals: Vec::new(),
             user_consts: Vec::new(),
-            gen_state_layouts: vec![],
             extern_decls: vec![],
             dyn_vtable_registry: vec![],
             hashmap_lowering_facts: vec![],

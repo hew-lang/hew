@@ -101,7 +101,6 @@ fn pipeline_with_call_runtime_abi_parts(
         enum_layouts: vec![],
         regex_literals: vec![],
         user_consts: Vec::new(),
-        gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],

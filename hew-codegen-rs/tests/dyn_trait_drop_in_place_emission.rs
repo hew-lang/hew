@@ -113,7 +113,6 @@ fn pipeline_with(
         enum_layouts: vec![],
         regex_literals: vec![],
         user_consts: Vec::new(),
-        gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: registry,
         hashmap_lowering_facts: vec![],

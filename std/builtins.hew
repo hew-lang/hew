@@ -42,6 +42,20 @@ pub enum SendError {
     Closed;
     /// Cross-node routing has not been wired for this runtime path yet.
     NodeRoutingNotWired;
+    /// The route to the peer is unavailable or the peer is suspected dead.
+    Partition;
+    /// The pid refers to an old session or actor incarnation.
+    StaleRef;
+    /// The local node is shutting down before the send can complete.
+    LocalShutdown;
+    /// The caller cancelled the send before it completed.
+    Cancelled;
+    /// The peer rejected the send because protocol or schema versions differ.
+    VersionMismatch;
+    /// The peer rejected the send because the caller lacks authority.
+    Unauthorized;
+    /// The destination or route is applying flow control.
+    Backpressure;
 }
 
 /// Error returned when `Node::lookup<T>(name)` cannot resolve `name`.
@@ -55,6 +69,20 @@ pub enum SendError {
 pub enum LookupError {
     /// No actor is registered under the requested name.
     NotFound;
+    /// The lookup route is unavailable or the peer is suspected dead.
+    Partition;
+    /// The caller's lookup deadline elapsed before a result arrived.
+    Timeout;
+    /// The name resolved to an old session or actor incarnation.
+    StaleRef;
+    /// The caller cancelled the lookup before it completed.
+    Cancelled;
+    /// The local node is shutting down before the lookup can complete.
+    LocalShutdown;
+    /// The peer rejected the lookup because protocol or schema versions differ.
+    VersionMismatch;
+    /// The peer rejected the lookup because the caller lacks authority.
+    Unauthorized;
 }
 
 /// Error returned when a remote actor ask cannot complete.
@@ -91,6 +119,22 @@ pub enum AskError {
     /// The inbound request payload could not be decoded into a value in the
     /// receiving node's address space; the handler was never dispatched.
     DecodeFailure;
+    /// The route to the peer is unavailable or the peer is suspected dead.
+    Partition;
+    /// The pid refers to an old session or actor incarnation.
+    StaleRef;
+    /// The caller cancelled the ask before it completed.
+    Cancelled;
+    /// The local node is shutting down before the ask can complete.
+    LocalShutdown;
+    /// The peer rejected the ask because protocol or schema versions differ.
+    VersionMismatch;
+    /// The peer rejected the ask because the caller lacks authority.
+    Unauthorized;
+    /// The destination or route is applying flow control.
+    Backpressure;
+    /// A monitor required to resolve the ask was lost before completion.
+    MonitorLost;
 }
 
 /// Error arm of `await rx.recv() | after d` and `await stream.recv() | after d`.

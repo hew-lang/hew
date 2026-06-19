@@ -47,6 +47,33 @@ actor Deadliner {
         };
         return fired;
     }
+
+    // Nested scope-deadlines, each with its own scope token + arbiter. The INNER
+    // scope's child sleeps 100ms against a 20ms deadline (the inner deadline wins,
+    // its body adds 1). The OUTER scope's child sleeps 10ms against a 200ms
+    // deadline (the outer work wins, the outer body is skipped). Proves nested
+    // SuspendingScopeDeadline arbiters compose: the inner arbiter resumes the
+    // handler, then the outer scope's own join/deadline race runs independently.
+    receive fn run_nested() -> i64 {
+        var acc: i64 = 0;
+        scope {
+            fork {
+                nap_short();
+            };
+            after(200ms) {
+                acc = acc + 100;
+            };
+            scope {
+                fork {
+                    nap_long();
+                };
+                after(20ms) {
+                    acc = acc + 1;
+                };
+            };
+        };
+        return acc;
+    }
 }
 
 fn nap_long() {
@@ -74,6 +101,19 @@ fn deadline_body_skipped_when_work_finishes_first() {
     // body is skipped, so `fired` stays 0.
     match await d.run_work_wins() {
         Ok(v) => testing.assert_eq(v, 0),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn nested_scope_deadlines_each_take_their_own_branch() {
+    let d = spawn Deadliner(fired: 0);
+    // Inner deadline (20ms) wins over its 100ms child → inner body adds 1.
+    // Outer work (10ms) wins over its 200ms deadline → outer body skipped.
+    // Exactly 1 proves the inner timeout fired and the outer skipped — a swapped
+    // branch (101, 100, or 0) would fail.
+    match await d.run_nested() {
+        Ok(v) => testing.assert_eq(v, 1),
         Err(_) => testing.assert_true(false),
     }
 }

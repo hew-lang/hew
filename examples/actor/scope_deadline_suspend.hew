@@ -1,0 +1,71 @@
+// cut-task-sleep — `scope { } after(d) { body }` with a NON-EMPTY timeout body
+// suspends the actor instead of spawning a per-deadline OS thread.
+//
+// `Worker.guarded` runs a `scope { fork ... }` whose child sleeps a fixed time,
+// racing an `after(d) { ... }` deadline. The non-empty timeout body is the proof
+// surface: when the deadline wins it runs the recovery body (sets `fired`); when
+// the scope completes first the body is skipped. The SuspendingScopeDeadline
+// arbiter arms the deadline on the global timer wheel and wires the scope's
+// child-join as the completion arm; the first-ready one-shot CAS decides the
+// winner and resumes the actor — the worker is freed for the wait, never pinned
+// on a per-deadline thread.
+//
+// A regression that runs the body on the success path, skips it on the timeout
+// path, or fails to free the worker (HEW_WORKERS=1 deadlocks) prints the wrong
+// line. The exact stdout is asserted under both pools.
+actor Worker {
+    var fired: i64 = 0;
+
+    // The scoped child sleeps 100ms; the deadline is 20ms, so the deadline wins
+    // and the recovery body runs (fired = 7).
+    receive fn timeout_wins() -> i64 {
+        scope {
+            fork {
+                nap_long();
+            };
+            after(20ms) {
+                fired = 7;
+            };
+        };
+        return fired;
+    }
+
+    // The scoped child sleeps 10ms; the deadline is 200ms, so the scope completes
+    // first and the body is skipped (fired stays 0).
+    receive fn work_wins() -> i64 {
+        scope {
+            fork {
+                nap_short();
+            };
+            after(200ms) {
+                fired = 7;
+            };
+        };
+        return fired;
+    }
+}
+
+fn nap_long() {
+    sleep_ms(100);
+}
+
+fn nap_short() {
+    sleep_ms(10);
+}
+
+fn main() {
+    let w = spawn Worker(fired: 0);
+    // Deadline (20ms) beats the 100ms child: the recovery body runs.
+    let t = await w.timeout_wins();
+    match t {
+        Ok(v) => println(f"timeout={v}"),
+        Err(_) => println("timeout failed"),
+    }
+    // The 10ms child beats the 200ms deadline: the body is skipped.
+    let g = spawn Worker(fired: 0);
+    let s = await g.work_wins();
+    match s {
+        Ok(v) => println(f"work={v}"),
+        Err(_) => println("work failed"),
+    }
+}

@@ -35,7 +35,14 @@ jobs:
       # platform jobs to the full workspace nextest when a change can touch
       # native linking / ABI / toolchain. playground drives the browser WASM
       # job. Docs-only changes trip NONE of these → every required job no-ops.
-      linux_correctness: ${{ steps.filter.outputs.linux_correctness }}
+      #
+      # FAIL-SAFE: linux_correctness is derived by NEGATION of docs_only —
+      # it is 'true' for ANY change that is not exclusively docs. This means
+      # release scripts, Makefile, installer configs, .github operational files,
+      # packaging, and any new/unrecognised file all trip correctness by default.
+      # The only safe skip is a change set composed entirely of the docs allowlist
+      # below (docs/**, *.md, LICENSE*, NOTICE, CHANGELOG, etc.).
+      linux_correctness: ${{ steps.gate.outputs.linux_correctness }}
       platform_smoke: ${{ steps.filter.outputs.platform_smoke }}
       platform_full: ${{ steps.filter.outputs.platform_full }}
       playground: ${{ steps.filter.outputs.playground }}
@@ -45,40 +52,31 @@ jobs:
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
         id: filter
         with:
-          # FAIL-SAFE path gates. Required heavy checks may no-op for docs-only
-          # changes, but anything that can change test/gate/build behaviour must
-          # fail CLOSED and run them. Any path that is not provably docs-only
-          # must trip linux_correctness (full correctness owner). Unknown new
-          # crates/files are caught by '**/*.rs' / '**/Cargo.toml' globs and run
-          # the full gate — they never default to no-op.
+          # FAIL-SAFE path gates. linux_correctness is derived below via
+          # inversion of docs_only (see the gate step). platform_smoke,
+          # platform_full, and playground use conventional allowlists because
+          # their no-op is safe (Linux already owns full correctness for every
+          # non-docs change).
           filters: |
-            # Rule 2 (CI/toolchain/deps) ∪ Rule 3 (Linux correctness / core Rust).
-            # This is the broadest gate: any non-doc change trips it, so Linux
-            # owns full correctness fail-closed.
-            linux_correctness:
-              - '**/*.rs'
-              - 'tests/**'
-              - 'scripts/**'
-              - '.config/nextest.toml'
-              - '.cargo/**'
-              - 'rust-toolchain.toml'
-              - 'Cargo.toml'
-              - '**/Cargo.toml'
-              - 'Cargo.lock'
-              - '**/Cargo.lock'
-              - 'deny.toml'
-              - 'std/**'
-              - 'examples/**'
-              - 'wasm-capability-manifest.toml'
-              - 'hew-sandbox-vm/**'
-              - 'hew-sandbox-wasm/**'
-              - 'hew-runtime-testkit/**'
-              - 'hew-testutil/**'
-              - 'tools/**'
-              - 'xtask/**'
-              - 'Makefile'
-              - '.github/workflows/**'
-              - '.github/actions/**'
+            # docs_only: change set composed EXCLUSIVELY of documentation,
+            # licence, and community-health files. Every path listed here is
+            # provably incapable of affecting build, test, or runtime behaviour.
+            # Anything not in this list (incl. Makefile, release/install scripts,
+            # .github operational files, packaging configs, etc.) is non-docs and
+            # will trip linux_correctness via the gate step below.
+            docs_only:
+              - 'docs/**'
+              - '**/*.md'
+              - 'LICENSE'
+              - 'LICENSE-*'
+              - 'NOTICE'
+              - 'CHANGELOG'
+              - 'CHANGELOG.*'
+              - '.github/CODEOWNERS'
+              - '.github/FUNDING.yml'
+              - '.github/ISSUE_TEMPLATE/**'
+              - '.github/PULL_REQUEST_TEMPLATE/**'
+              - '.github/PULL_REQUEST_TEMPLATE.md'
             # Rule 4 (platform parity, weak set): any Rust change or CI/toolchain
             # change runs the platform build + smoke on Windows/macOS. Same broad
             # surface as linux_correctness — a Rust change anywhere can change
@@ -144,6 +142,27 @@ jobs:
               - 'Cargo.lock'
               - 'Makefile'
               - '.github/workflows/ci.yml'
+
+      # Derive linux_correctness by inverting docs_only.
+      # Invariant: ANY change that is not exclusively documentation must run
+      # the full Linux correctness gate. This catches release scripts, Makefile,
+      # .github operational files, installer/packaging configs, and any new or
+      # unrecognised file — all of which would be silent no-ops under a positive
+      # allowlist that has not been updated to include them.
+      #
+      # docs_only is 'true' only when EVERY changed file matches the docs
+      # allowlist above.  A mixed PR (docs + any operational file) sets
+      # docs_only to 'false', which trips linux_correctness here.
+      - name: Derive linux_correctness (invert docs_only)
+        id: gate
+        run: |
+          if [[ "${{ steps.filter.outputs.docs_only }}" == "true" ]]; then
+            echo "linux_correctness=false" >> "$GITHUB_OUTPUT"
+            echo "Change set is exclusively docs — Linux correctness gate will no-op."
+          else
+            echo "linux_correctness=true" >> "$GITHUB_OUTPUT"
+            echo "Non-docs change detected — Linux correctness gate will run."
+          fi
 
   # ─────────────────────────────────────────────────────────────────────────
   # Lint — fast feedback on code quality (always runs, ~1.5 min)

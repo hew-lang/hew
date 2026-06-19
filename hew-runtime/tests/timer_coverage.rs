@@ -1,9 +1,9 @@
-//! Coverage tests for `io_time`, `timer`, and `timer_wheel`.
+//! Coverage tests for `io_time` and `timer_wheel`.
 //!
 //! Duration helpers are pure functions — no global state needed.
-//! Timer and timer-wheel tests use the simulated-time API so behaviour
-//! is deterministic regardless of CI load.  Because simulated time uses
-//! global atomics, tests that toggle it are serialised via `SIMTIME_LOCK`.
+//! Timer-wheel tests use the simulated-time API so behaviour is deterministic
+//! regardless of CI load.  Because simulated time uses global atomics, tests
+//! that toggle it are serialised via `SIMTIME_LOCK`.
 
 // Many tests deliberately exercise raw FFI functions that are inherently unsafe.
 #![expect(
@@ -18,10 +18,6 @@ use std::sync::Mutex;
 
 use hew_runtime::deterministic::{hew_simtime_advance_ms, hew_simtime_disable, hew_simtime_enable};
 use hew_runtime::io_time::{hew_milliseconds, hew_now_ms, hew_seconds, hew_sleep_ms};
-use hew_runtime::timer::{
-    hew_timer_cancel, hew_timer_list_destroy, hew_timer_list_init, hew_timer_next_deadline_ms,
-    hew_timer_schedule, hew_timer_tick, HewTimerList,
-};
 use hew_runtime::timer_wheel::{
     hew_timer_wheel_cancel, hew_timer_wheel_free, hew_timer_wheel_new,
     hew_timer_wheel_next_deadline_ms, hew_timer_wheel_schedule, hew_timer_wheel_schedule_handle,
@@ -54,9 +50,6 @@ struct SimtimeGuard<'a> {
 }
 
 // Statics declared before any test function to avoid `items_after_statements`.
-static TAG_A: AtomicI32 = AtomicI32::new(0);
-static TAG_B: AtomicI32 = AtomicI32::new(0);
-static TAG_C: AtomicI32 = AtomicI32::new(0);
 static TAG_L0: AtomicI32 = AtomicI32::new(0);
 static TAG_L1: AtomicI32 = AtomicI32::new(0);
 static TAG_OVF: AtomicI32 = AtomicI32::new(0);
@@ -167,198 +160,6 @@ fn sleep_ms_short_duration() {
         elapsed.as_millis() >= 5,
         "hew_sleep_ms(10) should sleep for at least a few milliseconds"
     );
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-//  timer.rs — sorted linked-list timer
-// ═══════════════════════════════════════════════════════════════════════
-
-/// Helper: create an initialised `HewTimerList` on the stack.
-fn make_timer_list() -> std::mem::MaybeUninit<HewTimerList> {
-    let mut tl = std::mem::MaybeUninit::<HewTimerList>::uninit();
-    unsafe {
-        hew_timer_list_init(tl.as_mut_ptr());
-    }
-    tl
-}
-
-#[test]
-fn timer_list_null_safety() {
-    unsafe {
-        // All functions should tolerate null without crashing.
-        hew_timer_list_init(ptr::null_mut());
-        hew_timer_list_destroy(ptr::null_mut());
-        assert_eq!(hew_timer_tick(ptr::null_mut()), 0);
-        assert_eq!(hew_timer_next_deadline_ms(ptr::null_mut()), -1);
-        hew_timer_cancel(ptr::null_mut(), ptr::null_mut());
-    }
-}
-
-#[test]
-fn timer_list_multiple_timers_fire_in_order() {
-    let _guard = SimtimeGuard::new(1000);
-
-    TAG_A.store(0, Ordering::SeqCst);
-    TAG_B.store(0, Ordering::SeqCst);
-    TAG_C.store(0, Ordering::SeqCst);
-
-    let mut tl = make_timer_list();
-    unsafe {
-        let tl = tl.as_mut_ptr();
-
-        // Schedule three timers: 10ms, 20ms, 30ms.
-        hew_timer_schedule(tl, 10, tag_cb, (&raw const TAG_A).cast_mut().cast());
-        hew_timer_schedule(tl, 20, tag_cb, (&raw const TAG_B).cast_mut().cast());
-        hew_timer_schedule(tl, 30, tag_cb, (&raw const TAG_C).cast_mut().cast());
-
-        // Advance to t=1015 — only A should fire.
-        hew_simtime_advance_ms(15);
-        let fired = hew_timer_tick(tl);
-        assert_eq!(fired, 1);
-        assert_eq!(TAG_A.load(Ordering::SeqCst), 1);
-        assert_eq!(TAG_B.load(Ordering::SeqCst), 0);
-
-        // Advance to t=1025 — B fires.
-        hew_simtime_advance_ms(10);
-        let fired = hew_timer_tick(tl);
-        assert_eq!(fired, 1);
-        assert_eq!(TAG_B.load(Ordering::SeqCst), 1);
-        assert_eq!(TAG_C.load(Ordering::SeqCst), 0);
-
-        // Advance to t=1035 — C fires.
-        hew_simtime_advance_ms(10);
-        let fired = hew_timer_tick(tl);
-        assert_eq!(fired, 1);
-        assert_eq!(TAG_C.load(Ordering::SeqCst), 1);
-
-        hew_timer_list_destroy(tl);
-    }
-}
-
-#[test]
-fn timer_list_cancel_middle_timer() {
-    let _guard = SimtimeGuard::new(1000);
-    FIRE_COUNT.store(0, Ordering::SeqCst);
-
-    let mut tl = make_timer_list();
-    unsafe {
-        let tl = tl.as_mut_ptr();
-
-        // Schedule three 0ms timers; cancel the second.
-        hew_timer_schedule(tl, 0, counting_cb, ptr::null_mut());
-        let middle = hew_timer_schedule(tl, 0, counting_cb, ptr::null_mut());
-        hew_timer_schedule(tl, 0, counting_cb, ptr::null_mut());
-        hew_timer_cancel(tl, middle);
-
-        hew_simtime_advance_ms(1);
-        let fired = hew_timer_tick(tl);
-        assert_eq!(fired, 2, "cancelled timer must not fire");
-        assert_eq!(FIRE_COUNT.load(Ordering::SeqCst), 2);
-
-        hew_timer_list_destroy(tl);
-    }
-}
-
-#[test]
-fn timer_list_tick_with_no_expired_timers() {
-    let _guard = SimtimeGuard::new(1000);
-    FIRE_COUNT.store(0, Ordering::SeqCst);
-
-    let mut tl = make_timer_list();
-    unsafe {
-        let tl = tl.as_mut_ptr();
-
-        // Schedule a timer 100ms in the future, but don't advance time.
-        hew_timer_schedule(tl, 100, counting_cb, ptr::null_mut());
-
-        let fired = hew_timer_tick(tl);
-        assert_eq!(fired, 0, "timer should not fire before its deadline");
-        assert_eq!(FIRE_COUNT.load(Ordering::SeqCst), 0);
-
-        hew_timer_list_destroy(tl);
-    }
-}
-
-#[test]
-fn timer_list_next_deadline_reports_remaining() {
-    let _guard = SimtimeGuard::new(1000);
-
-    let mut tl = make_timer_list();
-    unsafe {
-        let tl = tl.as_mut_ptr();
-
-        hew_timer_schedule(tl, 50, counting_cb, ptr::null_mut());
-
-        let remaining = hew_timer_next_deadline_ms(tl);
-        // Should be approximately 50ms (the timer is 50ms in the future).
-        assert!(
-            remaining > 0 && remaining <= 50,
-            "expected ~50ms remaining, got {remaining}"
-        );
-
-        // After time passes, remaining decreases.
-        hew_simtime_advance_ms(30);
-        let remaining2 = hew_timer_next_deadline_ms(tl);
-        assert!(
-            remaining2 < remaining,
-            "remaining should decrease after time passes"
-        );
-
-        hew_timer_list_destroy(tl);
-    }
-}
-
-#[test]
-fn timer_list_next_deadline_returns_zero_when_overdue() {
-    let _guard = SimtimeGuard::new(1000);
-
-    let mut tl = make_timer_list();
-    unsafe {
-        let tl = tl.as_mut_ptr();
-
-        hew_timer_schedule(tl, 10, counting_cb, ptr::null_mut());
-        hew_simtime_advance_ms(100);
-
-        let remaining = hew_timer_next_deadline_ms(tl);
-        assert_eq!(remaining, 0, "overdue timer should report 0 remaining");
-
-        hew_timer_list_destroy(tl);
-    }
-}
-
-#[test]
-fn timer_list_destroy_frees_pending_timers() {
-    let _guard = SimtimeGuard::new(1000);
-    FIRE_COUNT.store(0, Ordering::SeqCst);
-
-    let mut tl = make_timer_list();
-    unsafe {
-        let tl = tl.as_mut_ptr();
-
-        // Schedule timers but destroy the list without ticking — no leak.
-        hew_timer_schedule(tl, 100, counting_cb, ptr::null_mut());
-        hew_timer_schedule(tl, 200, counting_cb, ptr::null_mut());
-        hew_timer_schedule(tl, 300, counting_cb, ptr::null_mut());
-        hew_timer_list_destroy(tl);
-
-        // If we get here without a crash or ASAN report, the memory was freed.
-        assert_eq!(
-            FIRE_COUNT.load(Ordering::SeqCst),
-            0,
-            "destroyed timers must not fire"
-        );
-    }
-}
-
-#[test]
-fn timer_list_cancel_null_timer_is_safe() {
-    let mut tl = make_timer_list();
-    unsafe {
-        let tl = tl.as_mut_ptr();
-        // Cancelling a null timer on a valid list should not crash.
-        hew_timer_cancel(tl, ptr::null_mut());
-        hew_timer_list_destroy(tl);
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -569,6 +370,76 @@ fn wheel_null_safety() {
         assert_eq!(hew_timer_wheel_tick(ptr::null_mut()), 0);
         assert_eq!(hew_timer_wheel_next_deadline_ms(ptr::null_mut()), -1);
         hew_timer_wheel_free(ptr::null_mut());
+    }
+}
+
+// ── Regression: CAP-07 — cancelled overflow head must not hide live entry ──
+
+/// Arm two overflow timers; cancel the earlier one (which becomes the sorted
+/// head).  `next_deadline_ms` must return the later live deadline, not -1.
+/// The later timer must fire when time advances past it.
+#[test]
+fn overflow_cancelled_head_does_not_hide_live_entry_next_deadline() {
+    let _guard = SimtimeGuard::new(0);
+    FIRE_COUNT.store(0, Ordering::SeqCst);
+
+    unsafe {
+        let tw = hew_timer_wheel_new();
+
+        // Both delays > MAX_MS (16384) → overflow list, sorted ascending.
+        // earlier_h is the head (smaller deadline).
+        let earlier_h = hew_timer_wheel_schedule_handle(tw, 17_000, counting_cb, ptr::null_mut());
+        hew_timer_wheel_schedule(tw, 18_000, counting_cb, ptr::null_mut());
+
+        // Cancel the head entry.
+        hew_timer_wheel_cancel(tw, earlier_h.entry, earlier_h.generation);
+
+        // next_deadline_ms must return ~18_000, not -1.
+        let next = hew_timer_wheel_next_deadline_ms(tw);
+        assert!(
+            next > 0,
+            "cancelled overflow head must not make next_deadline_ms return -1; got {next}"
+        );
+        assert!(
+            next > 17_000 && next <= 18_000,
+            "expected ~18_000ms for the live overflow timer, got {next}"
+        );
+
+        // Advance past the live timer and verify it fires.
+        hew_simtime_advance_ms(19_000);
+        let fired = hew_timer_wheel_tick(tw);
+        assert_eq!(
+            fired, 1,
+            "the live overflow timer (18s) must fire; got {fired}"
+        );
+        assert_eq!(FIRE_COUNT.load(Ordering::SeqCst), 1);
+
+        hew_timer_wheel_free(tw);
+    }
+}
+
+/// When all overflow entries are cancelled and no L0/L1 timers exist,
+/// `next_deadline_ms` must return -1.
+#[test]
+fn overflow_all_cancelled_returns_minus_one() {
+    let _guard = SimtimeGuard::new(0);
+
+    unsafe {
+        let tw = hew_timer_wheel_new();
+
+        let h1 = hew_timer_wheel_schedule_handle(tw, 17_000, counting_cb, ptr::null_mut());
+        let h2 = hew_timer_wheel_schedule_handle(tw, 18_000, counting_cb, ptr::null_mut());
+
+        hew_timer_wheel_cancel(tw, h1.entry, h1.generation);
+        hew_timer_wheel_cancel(tw, h2.entry, h2.generation);
+
+        assert_eq!(
+            hew_timer_wheel_next_deadline_ms(tw),
+            -1,
+            "all overflow entries cancelled → no live timers → must return -1"
+        );
+
+        hew_timer_wheel_free(tw);
     }
 }
 

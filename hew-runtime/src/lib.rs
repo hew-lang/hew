@@ -656,8 +656,6 @@ pub mod blocking_pool;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod task_scope;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod timer;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod timer_periodic;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod timer_periodic_wasm;

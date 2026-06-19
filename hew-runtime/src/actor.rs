@@ -4416,16 +4416,25 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
     let supervisor_child_index = a.supervisor_child_index;
     let actor_id = a.id;
 
-    // Close mailbox to reject new messages.
-    let mb = a.mailbox.cast::<HewMailbox>();
-    if !mb.is_null() {
-        // SAFETY: mailbox is valid for actor's lifetime.
-        unsafe { mailbox::mailbox_close(mb) };
-    }
-
-    // Transition to terminal state using CAS to ensure only one thread
-    // can successfully trap/stop the actor. If another thread already
-    // transitioned to a terminal state, bail out.
+    // Claim the terminal transition BEFORE closing the mailbox.
+    //
+    // Ordering matters. Closing the mailbox first opens a lost-crash-notify
+    // race: a worker concurrently dispatching this actor reaches its
+    // post-dispatch settle, observes the now-closed mailbox, and drives the
+    // actor IDLE -> STOPPED via the "mailbox closed while draining" self-stop
+    // (scheduler `activate_actor`). That self-stop path is for graceful stop
+    // and does NOT notify the supervisor. If it wins the terminal CAS, this
+    // trap then reads STOPPED, treats the actor as already-terminal, bails out,
+    // and the child-crashed notification is never delivered — the supervisor's
+    // `hew_supervisor_wait_restart` blocks to its full timeout ceiling.
+    //
+    // Taking the terminal CAS first makes the trap authoritative: once the
+    // actor is CRASHED/STOPPED, the worker's `Running -> Idle` / `Idle ->
+    // Stopped` settle CAS fails, so it cannot self-stop the actor out from
+    // under us, and the notify below always runs. The mailbox is closed
+    // immediately after to reject new sends and wake blocked senders — by then
+    // the actor is already terminal, so every sender's `Idle -> Runnable` CAS
+    // fails regardless.
     loop {
         let current = a.actor_state.load(Ordering::Acquire);
         if current == HewActorState::Stopped as i32 || current == HewActorState::Crashed as i32 {
@@ -4437,6 +4446,14 @@ pub unsafe extern "C" fn hew_actor_trap(actor: *mut HewActor, error_code: i32) {
         {
             break;
         }
+    }
+
+    // Close mailbox to reject new messages and wake any blocked senders. Safe
+    // after the terminal CAS: sends are already rejected by the terminal state.
+    let mb = a.mailbox.cast::<HewMailbox>();
+    if !mb.is_null() {
+        // SAFETY: mailbox is valid for actor's lifetime.
+        unsafe { mailbox::mailbox_close(mb) };
     }
 
     // Store error code only after winning the CAS race.

@@ -22,14 +22,20 @@ env:
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────
-  # Path change detection — skip heavy jobs for doc-only changes
+  # Path change detection — gates Windows/macOS and playground jobs
   # ─────────────────────────────────────────────────────────────────────────
   changes:
     name: Detect changes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      code: ${{ steps.filter.outputs.code }}
+      # platform_smoke drives the Windows/macOS build+smoke required checks;
+      # platform_full additionally promotes those platform jobs to the full
+      # workspace nextest when a change can touch native linking / ABI /
+      # toolchain. playground drives the browser WASM job.
+      # Build & test (Linux) runs unconditionally on every push/PR.
+      platform_smoke: ${{ steps.filter.outputs.platform_smoke }}
+      platform_full: ${{ steps.filter.outputs.platform_full }}
       playground: ${{ steps.filter.outputs.playground }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
@@ -37,13 +43,22 @@ jobs:
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
         id: filter
         with:
-          # Required heavy checks may no-op for docs-only changes, but anything
-          # that can change test/gate behaviour must fail closed and run them.
           filters: |
-            code:
+            # Rule 4 (platform parity, weak set): any Rust change or CI/toolchain
+            # change runs the platform build + smoke on Windows/macOS. A Rust change
+            # anywhere can change native linking, paths, or process behaviour, so
+            # platform build/link coverage stays fail-closed.
+            platform_smoke:
               - '**/*.rs'
               - 'tests/**'
-              - 'scripts/**'
+              - 'std/**'
+              - 'examples/**'
+              - 'hew-sandbox-vm/**'
+              - 'hew-sandbox-wasm/**'
+              - 'hew-runtime-testkit/**'
+              - 'hew-testutil/**'
+              - 'tools/**'
+              - 'xtask/**'
               - '.config/nextest.toml'
               - '.cargo/**'
               - 'rust-toolchain.toml'
@@ -51,18 +66,35 @@ jobs:
               - '**/Cargo.toml'
               - 'Cargo.lock'
               - '**/Cargo.lock'
-              - 'std/**'
-              - 'examples/**'
-              - 'wasm-capability-manifest.toml'
-              - 'hew-sandbox-vm/**'
-              - 'hew-sandbox-wasm/**'
-              - 'hew-runtime-testkit/**'
-              - 'hew-testutil/**'
-              - 'tools/**'
-              - 'xtask/**'
               - 'Makefile'
               - '.github/workflows/**'
               - '.github/actions/**'
+            # Rule 4 (platform parity, strong set): native linking / LLVM / C ABI
+            # / runtime scheduling / process / filesystem / networking / codegen
+            # paths force the FULL workspace nextest on Windows/macOS (not just
+            # smoke). Toolchain/dependency changes also force full, since they can
+            # shift the linked surface on any platform. Anything narrower than the
+            # smoke set but in this set runs full; everything else runs smoke.
+            platform_full:
+              - 'hew-runtime/**'
+              - 'hew-lib/**'
+              - 'hew-cabi/**'
+              - 'hew-codegen-rs/**'
+              - 'hew-compile/**'
+              - 'hew-cli/**'
+              - 'adze-cli/**'
+              - 'hew-capability-gen/**'
+              - 'std/net/**'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
+              - 'Cargo.toml'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - '**/Cargo.lock'
+              - '.github/actions/setup-llvm/**'
+              - '.github/actions/setup-msvc/**'
+              - '.github/actions/setup-rust-build/**'
+              - '.github/workflows/ci.yml'
             playground:
               - 'hew-wasm/**'
               - 'hew-analysis/**'
@@ -214,18 +246,10 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test:
     name: Build & test (Linux)
-    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    env:
-      RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
     steps:
-      - name: No-op for docs-only changes
-        if: env.RUN_CODE_PATH != 'true'
-        run: echo "No code changes detected; skipping heavy Linux CI while satisfying the required check."
-
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        if: env.RUN_CODE_PATH == 'true'
 
       - name: Free runner disk
         # This job runs a release build (hew-runtime + hew-lsp), a wasm32 build,
@@ -234,7 +258,6 @@ jobs:
         # disk-marginal; the runner process itself died of ENOSPC twice (after
         # all tests passed, and again mid-test-step — see PR #1994). Mirror the
         # same preinstalled-toolchain purge release-gate already carries.
-        if: env.RUN_CODE_PATH == 'true'
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
@@ -242,39 +265,32 @@ jobs:
           df -h /
 
       - name: Install build tools
-        if: env.RUN_CODE_PATH == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libssl-dev pkg-config
 
       - name: Install LLVM ${{ env.LLVM_VERSION }}
-        if: env.RUN_CODE_PATH == 'true'
         uses: ./.github/actions/setup-llvm
         with:
           version: ${{ env.LLVM_VERSION }}
 
       - uses: ./.github/actions/setup-rust-build
-        if: env.RUN_CODE_PATH == 'true'
         with:
           tools: nextest
           cache-shared-key: build-test-linux
 
       - name: Build Rust runtime and frontend (release)
-        if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-runtime -p hew-lsp --release
 
       - name: Smoke test hew-lsp
-        if: env.RUN_CODE_PATH == 'true'
         run: ./target/release/hew-lsp --version
 
       - name: Build WASM runtime
-        if: env.RUN_CODE_PATH == 'true'
         run: |
           rustup target add wasm32-wasip1
           cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 
       - name: Install wasmtime
-        if: env.RUN_CODE_PATH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -287,7 +303,6 @@ jobs:
           "./${WASMTIME_DIR}/wasmtime" --version
 
       - name: Run WASM runtime actual-target libtests
-        if: env.RUN_CODE_PATH == 'true'
         env:
           CARGO_TARGET_WASM32_WASIP1_RUNNER: wasmtime run
         run: cargo test -p hew-runtime --target wasm32-wasip1 --no-default-features --lib
@@ -308,7 +323,6 @@ jobs:
       # maintained CI_BUILD_AND_TEST_STEPS list in the parity script is now
       # derived from here instead of a hand-maintained copy.
       - name: Run Rust workspace tests
-        if: env.RUN_CODE_PATH == 'true'
         # line-tables-only: the release build + wasm build + full debug
         # workspace nextest run together leave the runner disk-marginal
         # (ENOSPC twice on this exact job — see PR #1994). Full debug info
@@ -322,15 +336,12 @@ jobs:
           --profile ci
 
       - name: Run vertical-slice end-to-end oracle
-        if: env.RUN_CODE_PATH == 'true'
         run: make test-vertical-slice
 
       - name: Run cross-module package-import oracle
-        if: env.RUN_CODE_PATH == 'true'
         run: make test-pkg-import
 
       - name: Run fuzz-to-run completeness oracle (ratcheted)
-        if: env.RUN_CODE_PATH == 'true'
         # Compiles and runs every checker-valid program in the regressions
         # corpus and the vertical-slice accept fixtures.  Known failures are
         # tracked in tests/fuzz-oracle/expected-failures.txt (ratchet contract:
@@ -340,7 +351,6 @@ jobs:
         run: make fuzz-oracle
 
       - name: Run Hew language test suite (ratcheted)
-        if: env.RUN_CODE_PATH == 'true'
         # Runs tests/hew/ through scripts/hew-suite-ratchet.sh.
         # Known failures are tracked in scripts/hew-suite-expected-failures.txt;
         # any unexpected failure OR unexpected pass (ratchet forward) exits 1.
@@ -349,13 +359,11 @@ jobs:
         run: make test-hew-ratchet
 
       - name: Run stdlib type-check suite (ratcheted)
-        if: env.RUN_CODE_PATH == 'true'
         # Type-checks every std/*.hew file through scripts/stdlib-ratchet.sh.
         # Known failures tracked in scripts/stdlib-expected-failures.txt.
         run: make test-stdlib-ratchet
 
       - name: Setup Node.js for sandbox parity
-        if: env.RUN_CODE_PATH == 'true'
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: 24
@@ -363,177 +371,21 @@ jobs:
           cache-dependency-path: hew-sandbox-vm/package-lock.json
 
       - name: Run sandbox VM parity
-        if: env.RUN_CODE_PATH == 'true'
         run: make sandbox-parity
       # <<< CI-PARITY-STEPS
 
       - name: Upload test reports
-        if: always() && env.RUN_CODE_PATH == 'true'
+        if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d  # v6.4.1
         with:
           report_paths: target/nextest/ci/junit.xml
           check_name: Test Results (Linux)
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # Code coverage — Rust workspace tests instrumented with cargo-llvm-cov
-  # ─────────────────────────────────────────────────────────────────────────
-  coverage:
-    name: Code coverage
-    needs: changes
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
-      # cargo-llvm-cov builds into target/llvm-cov-target/, so the `hew`
-      # binary the e2e tests spawn sits one directory deeper than the normal
-      # target/debug/ — its exe-relative std discovery (../../std) then misses
-      # the repo std/. Pin std explicitly for the instrumented run; the normal
-      # test job finds it relative to target/debug/ and needs no override.
-      HEW_STD: ${{ github.workspace }}/std
-    steps:
-      - name: No-op for docs-only changes
-        if: env.RUN_CODE_PATH != 'true'
-        run: echo "No code changes detected; skipping heavy coverage work while satisfying the required check."
-
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        if: env.RUN_CODE_PATH == 'true'
-
-      - uses: ./.github/actions/setup-rust-build
-        if: env.RUN_CODE_PATH == 'true'
-        with:
-          components: llvm-tools
-          tools: nextest,cargo-llvm-cov
-          cache-shared-key: coverage
-
-      - name: Free runner disk
-        # cargo-llvm-cov instruments the full workspace and writes a separate
-        # target/llvm-cov-target/ tree on top of the normal target/. That
-        # combination — LLVM 22.1.5 download/install plus the instrumented
-        # build — has exhausted the runner disk at the LLVM install step
-        # (System.IO.IOException: No space left on device). Mirror the same
-        # preinstalled-toolchain purge the Linux build job carries (PR #1995).
-        # jvm (~1.5 GB) and julia (~0.5 GB) are present on ubuntu-24.04 but were
-        # missing from this step; adding them recovers ~2 GB before LLVM install.
-        if: env.RUN_CODE_PATH == 'true'
-        run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
-          sudo rm -rf /usr/lib/jvm || true
-          sudo rm -rf /usr/local/julia* || true
-          sudo docker system prune -af >/dev/null 2>&1 || true
-          df -h /
-
-      # hew-codegen-rs depends on inkwell -> llvm-sys-221, whose build
-      # script requires LLVM_SYS_221_PREFIX. `cargo llvm-cov nextest
-      # --workspace` resolves and compiles the full workspace.
-      - name: Install LLVM ${{ env.LLVM_VERSION }}
-        if: env.RUN_CODE_PATH == 'true'
-        uses: ./.github/actions/setup-llvm
-        with:
-          version: ${{ env.LLVM_VERSION }}
-
-      - name: Disk space before coverage build
-        # Baseline snapshot before the instrumented build writes
-        # target/llvm-cov-target/. Confirms whether disk was already marginal
-        # entering the build, independently of the build itself.
-        if: env.RUN_CODE_PATH == 'true'
-        run: df -h /
-
-      - name: Run tests with coverage
-        if: env.RUN_CODE_PATH == 'true'
-        # Default features include "full" (encryption + profiler + quic),
-        # so all QUIC transport tests are covered without an explicit flag.
-        # The wasi-runner e2e tests (eval_wasm_* and the wasi_run_e2e
-        # binary) need wasmtime plus the wasm runtime archive; they run and
-        # gate in the normal "Build & test" job, so they are excluded from the
-        # instrumented run rather than duplicating that wasm setup here (which
-        # would also hit the llvm-cov target-dir path issue). Their Rust-side
-        # coverage is marginal — they drive a wasmtime subprocess.
-        #
-        # two_process_remote_ask / remote_ask_two_process tests are
-        # intentionally NOT excluded here (x86_64 coverage is preserved).
-        # These tests are already retried+serialised via profile.ci's
-        # real-timing group (nextest.toml) and that profile is active for
-        # this llvm-cov run. release-gate.yml excludes them only on aarch64
-        # (arm64-runner helper-exit-101 quirk specific to that runner family).
-        # Adding an x86_64 exclude would be a category error and would silently
-        # remove coverage of a real cross-process path.
-        #
-        # line-tables-only: target/llvm-cov-target/ is the dominant disk cost
-        # in this job. Full debug info (~3–4× larger) is not needed for coverage
-        # reporting and is the same mitigation the Linux build job applies at
-        # ci.yml:300. Without it, the instrumented target dir alone can exceed
-        # the runner's remaining free space after the jvm/julia/LLVM purges.
-        #
-        # Diagnostics (observability, not a fix):
-        #   - stdbuf -oL -eL: line-buffer stdout/stderr so per-test progress and
-        #     SLOW warnings are flushed immediately; a silent hang still shows the
-        #     last test that started, confirming/refuting a wedged-test hypothesis.
-        #   - --status-level pass --final-status-level slow: emit each test result
-        #     as it completes and mark slow tests at summary; a hang reveals the
-        #     last test that ran before the process stalled.
-        #   - timeout 1800: hard-kill at 30 min (comfortably above a healthy
-        #     ~16-22 min run) so a hang fails fast with a clear marker rather than
-        #     burning the full 6h job limit.
-        #   - Periodic df-monitor: a background loop prints disk usage every 30 s;
-        #     an ENOSPC becomes visible in the log instead of causing a silent kill.
-        env:
-          CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
-        run: |
-          # Start periodic disk monitor (every 30 s) before the build begins so
-          # disk consumption during compilation is also captured.
-          ( while true; do
-              echo "[disk] $(date -u +%H:%M:%S) $(df -h / | tail -1)";
-              sleep 30;
-            done ) &
-          DISK_MON_PID=$!
-
-          timeout 1800 \
-            stdbuf -oL -eL \
-            cargo llvm-cov nextest \
-            --workspace --exclude hew-wasm \
-            --profile ci \
-            -E 'not test(eval_wasm) and not binary(wasi_run_e2e)' \
-            --status-level pass \
-            --final-status-level slow \
-            --lcov --output-path lcov.info
-          COV_EXIT=$?
-
-          kill "$DISK_MON_PID" 2>/dev/null || true
-          wait "$DISK_MON_PID" 2>/dev/null || true
-
-          echo "[disk] post-coverage $(date -u +%H:%M:%S) $(df -h / | tail -1)"
-
-          if [ "$COV_EXIT" -eq 124 ]; then
-            echo "ERROR: coverage timed out after 30 min (timeout exit 124)"
-            df -h /
-            exit 1
-          fi
-          exit "$COV_EXIT"
-
-      - name: Generate HTML report
-        if: env.RUN_CODE_PATH == 'true'
-        run: >
-          cargo llvm-cov report
-          --html --output-dir coverage-html
-
-      - name: Coverage summary
-        if: env.RUN_CODE_PATH == 'true'
-        run: cargo llvm-cov report | tee -a "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload coverage (lcov)
-        if: always() && env.RUN_CODE_PATH == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: coverage-lcov
-          path: lcov.info
-
-      - name: Upload coverage (HTML)
-        if: always() && env.RUN_CODE_PATH == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: coverage-html
-          path: coverage-html/
+  # Code coverage moved off the per-PR path: it was the flakiest required check
+  # (cargo-llvm-cov instrumentation + the duplicated target/llvm-cov-target/
+  # tree on top of LLVM install exited 100 / ENOSPC on sound PRs). The real
+  # correctness tests run in "Build & test (Linux)"; coverage now runs nightly
+  # in .github/workflows/coverage-nightly.yml (same llvm-cov command + report).
 
   # ─────────────────────────────────────────────────────────────────────────
   # Build & test — Windows
@@ -544,7 +396,14 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 60
     env:
-      RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
+      # platform_smoke gates the whole Windows build+smoke required check;
+      # platform_full additionally promotes the test step to the full workspace
+      # nextest. Linux owns full correctness on every code change — Windows is a
+      # platform build/link/smoke gate, with the full duplicated workspace
+      # nextest reserved for platform/toolchain/ABI changes here and the nightly
+      # cross-platform matrix.
+      RUN_CODE_PATH: ${{ needs.changes.outputs.platform_smoke }}
+      RUN_FULL_NEXTEST: ${{ needs.changes.outputs.platform_full }}
       # aws-lc-sys (rustls under hew-runtime, jsonwebtoken under hew-lib) wants
       # NASM on windows-msvc; the documented escape consumes the crate's
       # pregenerated assembly objects, so the test-time hew-lib bootstrap links
@@ -577,13 +436,33 @@ jobs:
         # because the upstream LLVM tarball is provisioned above.
         run: cargo build -p adze-cli -p hew-runtime -p hew-lsp -p hew-cli --release
 
-      - name: Run Rust workspace tests
-        if: env.RUN_CODE_PATH == 'true'
-        # hew-wasm requires wasmtime; hew-cabi has #[no_mangle] symbols
-        # that conflict with hew-runtime when both are linked into a
-        # test binary (duplicate symbol errors).
+      - name: Run platform smoke tests
+        # Default Windows path: prove the platform build links and the
+        # platform-sensitive crates pass on windows-msvc, without re-running the
+        # whole 9500-test workspace that Linux already owns. The smoke set is the
+        # native/ABI/codegen/CLI surface where Windows-specific breakage lives
+        # (linking, path separators, process spawning).
+        # hew-cabi excluded — its #[no_mangle] symbols conflict with hew-runtime
+        # when both link into a test binary.
+        if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST != 'true'
+        run: >-
+          cargo nextest run
+          -p hew-runtime
+          -p hew-codegen-rs
+          -p hew-compile
+          -p hew-cli
+          -p hew-lib
+          --profile ci
+
+      - name: Run full Rust workspace tests
+        # Platform/toolchain/ABI change: run the full workspace nextest on
+        # Windows so a native-linking or cross-platform regression is caught
+        # per-PR, not only by the nightly matrix.
+        # hew-wasm requires wasmtime; hew-cabi has #[no_mangle] symbols that
+        # conflict with hew-runtime when both link into a test binary.
         # Default features include "full" (encryption + profiler + quic),
         # so all QUIC transport tests run without an explicit flag.
+        if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST == 'true'
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm
@@ -606,7 +485,14 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 60
     env:
-      RUN_CODE_PATH: ${{ needs.changes.outputs.code }}
+      # platform_smoke gates the whole macOS build+smoke required check;
+      # platform_full additionally promotes the test step to the full workspace
+      # nextest. Linux owns full correctness; macOS proves the Apple Silicon
+      # linker/WASI prerequisites + platform-sensitive crates per-PR, with the
+      # full duplicated nextest reserved for platform/toolchain/ABI changes and
+      # the nightly cross-platform matrix.
+      RUN_CODE_PATH: ${{ needs.changes.outputs.platform_smoke }}
+      RUN_FULL_NEXTEST: ${{ needs.changes.outputs.platform_full }}
     steps:
       - name: No-op for docs-only changes
         if: env.RUN_CODE_PATH != 'true'
@@ -655,8 +541,29 @@ jobs:
         if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
 
-      - name: Run Rust workspace tests
-        if: env.RUN_CODE_PATH == 'true'
+      - name: Run platform smoke tests
+        # Default macOS path: prove the Apple Silicon build links and the
+        # platform-sensitive crates pass, without re-running the whole
+        # 9500-test workspace that Linux already owns. The smoke set is the
+        # native/ABI/codegen/CLI surface where macOS-specific breakage lives
+        # (linker, dylib, WASI prereqs, process spawning).
+        # hew-cabi excluded — its #[no_mangle] symbols conflict with hew-runtime
+        # when both link into a test binary.
+        if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST != 'true'
+        run: >-
+          cargo nextest run
+          -p hew-runtime
+          -p hew-codegen-rs
+          -p hew-compile
+          -p hew-cli
+          -p hew-lib
+          --profile ci
+          -E 'not binary(~oracle) - test(~coro_substrate_leak)'
+
+      - name: Run full Rust workspace tests
+        # Platform/toolchain/ABI change: run the full workspace nextest on
+        # macOS so a native-linking or cross-platform regression is caught
+        # per-PR, not only by the nightly matrix.
         # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
         # when both link into a test binary.
         #
@@ -668,6 +575,7 @@ jobs:
         # was terminated) and slope/leak measurement is timing-sensitive on a
         # noisy cloud runner. The Linux job runs the full oracle + coro-leak set
         # on its faster runner, so leak coverage is not lost.
+        if: env.RUN_CODE_PATH == 'true' && env.RUN_FULL_NEXTEST == 'true'
         run: >-
           cargo nextest run --workspace
           --exclude hew-wasm

@@ -1,0 +1,291 @@
+name: Coverage nightly
+
+# Nightly coverage + full cross-platform matrix.
+#
+# Code coverage was the flakiest required per-PR check: cargo-llvm-cov
+# instrumentation plus the duplicated target/llvm-cov-target/ tree on top of
+# the LLVM install repeatedly exited 100 / ENOSPC on sound PRs (deglob,
+# wasm32-gen, and others where "Build & test" was green and only coverage
+# instrumentation/disk failed). Coverage no longer blocks the merge queue; it
+# runs here nightly with the same command + report. This workflow also runs the
+# FULL Windows / macOS workspace nextest that ci.yml dedups off the per-PR path
+# (per-PR Windows/macOS run platform build + smoke unless they touch
+# platform/toolchain/ABI code). Failures here are visible (run summary) but are
+# not merge-blocking — they need a same-day owner per the L6 plan.
+
+on:
+  schedule:
+    # Run daily at 07:00 UTC (offset from nightly-sanitizers at 06:00 to avoid
+    # both heavy LLVM-install jobs contending for the same runner pool start).
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pinned LLVM upstream release tag, used by hew-codegen-rs (inkwell ->
+  # llvm-sys-221) build script. Must match ci.yml / setup-llvm action pins.
+  LLVM_VERSION: "22.1.5"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Code coverage — Rust workspace tests instrumented with cargo-llvm-cov.
+  # Moved verbatim off ci.yml's per-PR path: same LLVM setup, same disk purge,
+  # same cargo llvm-cov nextest expression, same lcov/HTML uploads.
+  # ─────────────────────────────────────────────────────────────────────────
+  coverage:
+    name: Code coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      # cargo-llvm-cov builds into target/llvm-cov-target/, so the `hew`
+      # binary the e2e tests spawn sits one directory deeper than the normal
+      # target/debug/ — its exe-relative std discovery (../../std) then misses
+      # the repo std/. Pin std explicitly for the instrumented run; the normal
+      # test job finds it relative to target/debug/ and needs no override.
+      HEW_STD: ${{ github.workspace }}/std
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          components: llvm-tools
+          tools: nextest,cargo-llvm-cov
+          cache-shared-key: coverage
+
+      - name: Free runner disk
+        # cargo-llvm-cov instruments the full workspace and writes a separate
+        # target/llvm-cov-target/ tree on top of the normal target/. That
+        # combination — LLVM 22.1.5 download/install plus the instrumented
+        # build — has exhausted the runner disk at the LLVM install step
+        # (System.IO.IOException: No space left on device). Mirror the same
+        # preinstalled-toolchain purge the Linux build job carries (PR #1995).
+        # jvm (~1.5 GB) and julia (~0.5 GB) are present on ubuntu-24.04 but were
+        # missing from this step; adding them recovers ~2 GB before LLVM install.
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          sudo rm -rf /usr/lib/jvm || true
+          sudo rm -rf /usr/local/julia* || true
+          sudo docker system prune -af >/dev/null 2>&1 || true
+          df -h /
+
+      # hew-codegen-rs depends on inkwell -> llvm-sys-221, whose build
+      # script requires LLVM_SYS_221_PREFIX. `cargo llvm-cov nextest
+      # --workspace` resolves and compiles the full workspace.
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Disk space before coverage build
+        # Baseline snapshot before the instrumented build writes
+        # target/llvm-cov-target/. Confirms whether disk was already marginal
+        # entering the build, independently of the build itself.
+        run: df -h /
+
+      - name: Run tests with coverage
+        # Default features include "full" (encryption + profiler + quic),
+        # so all QUIC transport tests are covered without an explicit flag.
+        # The wasi-runner e2e tests (eval_wasm_* and the wasi_run_e2e
+        # binary) need wasmtime plus the wasm runtime archive; they run and
+        # gate in the per-PR "Build & test (Linux)" job, so they are excluded
+        # from the instrumented run rather than duplicating that wasm setup here
+        # (which would also hit the llvm-cov target-dir path issue). Their
+        # Rust-side coverage is marginal — they drive a wasmtime subprocess.
+        #
+        # two_process_remote_ask / remote_ask_two_process tests are
+        # intentionally NOT excluded here (x86_64 coverage is preserved).
+        # These tests are already retried+serialised via profile.ci's
+        # real-timing group (nextest.toml) and that profile is active for
+        # this llvm-cov run. release-gate.yml excludes them only on aarch64
+        # (arm64-runner helper-exit-101 quirk specific to that runner family).
+        # Adding an x86_64 exclude would be a category error and would silently
+        # remove coverage of a real cross-process path.
+        #
+        # line-tables-only: target/llvm-cov-target/ is the dominant disk cost
+        # in this job. Full debug info (~3–4× larger) is not needed for coverage
+        # reporting and is the same mitigation the Linux build job applies.
+        # Without it, the instrumented target dir alone can exceed the runner's
+        # remaining free space after the jvm/julia/LLVM purges.
+        #
+        # Diagnostics (observability, not a fix):
+        #   - stdbuf -oL -eL: line-buffer stdout/stderr so per-test progress and
+        #     SLOW warnings are flushed immediately; a silent hang still shows the
+        #     last test that started, confirming/refuting a wedged-test hypothesis.
+        #   - --status-level pass --final-status-level slow: emit each test result
+        #     as it completes and mark slow tests at summary; a hang reveals the
+        #     last test that ran before the process stalled.
+        #   - timeout 1800: hard-kill at 30 min (comfortably above a healthy
+        #     ~16-22 min run) so a hang fails fast with a clear marker rather than
+        #     burning the full 6h job limit.
+        #   - Periodic df-monitor: a background loop prints disk usage every 30 s;
+        #     an ENOSPC becomes visible in the log instead of causing a silent kill.
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
+        run: |
+          # Start periodic disk monitor (every 30 s) before the build begins so
+          # disk consumption during compilation is also captured.
+          ( while true; do
+              echo "[disk] $(date -u +%H:%M:%S) $(df -h / | tail -1)";
+              sleep 30;
+            done ) &
+          DISK_MON_PID=$!
+
+          timeout 1800 \
+            stdbuf -oL -eL \
+            cargo llvm-cov nextest \
+            --workspace --exclude hew-wasm \
+            --profile ci \
+            -E 'not test(eval_wasm) and not binary(wasi_run_e2e)' \
+            --status-level pass \
+            --final-status-level slow \
+            --lcov --output-path lcov.info
+          COV_EXIT=$?
+
+          kill "$DISK_MON_PID" 2>/dev/null || true
+          wait "$DISK_MON_PID" 2>/dev/null || true
+
+          echo "[disk] post-coverage $(date -u +%H:%M:%S) $(df -h / | tail -1)"
+
+          if [ "$COV_EXIT" -eq 124 ]; then
+            echo "ERROR: coverage timed out after 30 min (timeout exit 124)"
+            df -h /
+            exit 1
+          fi
+          exit "$COV_EXIT"
+
+      - name: Generate HTML report
+        run: >
+          cargo llvm-cov report
+          --html --output-dir coverage-html
+
+      - name: Coverage summary
+        run: cargo llvm-cov report | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage (lcov)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: coverage-lcov
+          path: lcov.info
+
+      - name: Upload coverage (HTML)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: coverage-html
+          path: coverage-html/
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Full Windows workspace nextest — the cross-platform coverage that ci.yml
+  # dedups off the per-PR path (per-PR Windows runs build + platform smoke
+  # unless it touches platform/toolchain/ABI code). Same command ci.yml ran
+  # unconditionally before L6.
+  # ─────────────────────────────────────────────────────────────────────────
+  full-windows:
+    name: Full workspace tests (Windows)
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      # aws-lc-sys (rustls under hew-runtime, jsonwebtoken under hew-lib) wants
+      # NASM on windows-msvc; the documented escape consumes the crate's
+      # pregenerated assembly objects, so the test-time hew-lib bootstrap links
+      # without a NASM toolchain. (Parity with release-gate.yml / release.yml.)
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          tools: nextest
+          cache-shared-key: build-test-windows
+
+      - name: Build Rust crates
+        # hew-codegen-rs (inkwell -> llvm-sys-221) compiles end-to-end
+        # because the upstream LLVM tarball is provisioned above.
+        run: cargo build -p adze-cli -p hew-runtime -p hew-lsp -p hew-cli --release
+
+      - name: Run Rust workspace tests
+        # hew-wasm requires wasmtime; hew-cabi has #[no_mangle] symbols
+        # that conflict with hew-runtime when both are linked into a
+        # test binary (duplicate symbol errors).
+        # Default features include "full" (encryption + profiler + quic),
+        # so all QUIC transport tests run without an explicit flag.
+        run: >-
+          cargo nextest run --workspace
+          --exclude hew-wasm
+          --exclude hew-cabi
+          --profile ci
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Full macOS arm64 workspace nextest — the cross-platform coverage that
+  # ci.yml dedups off the per-PR path. Same command ci.yml ran unconditionally
+  # before L6 (minus the timing-sensitive leak/oracle exclusions that the
+  # 3-core macos-14 runner cannot meet).
+  # ─────────────────────────────────────────────────────────────────────────
+  full-macos:
+    name: Full workspace tests (macOS arm64)
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - uses: ./.github/actions/setup-rust-build
+        with:
+          targets: 'aarch64-apple-darwin, x86_64-apple-darwin'
+          tools: nextest
+          cache-shared-key: build-test-macos
+
+      - name: Install LLVM ${{ env.LLVM_VERSION }}
+        uses: ./.github/actions/setup-llvm
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Set macOS deployment target
+        run: echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> "$GITHUB_ENV"
+
+      - name: Build libhew.a (runtime + stdlib)
+        run: |
+          cargo build -p hew-lib --release
+          cargo build -p hew-lib
+
+      - name: Build frontend (release)
+        run: cargo build -p hew-cli --release
+
+      - name: Install WASI runner prerequisites
+        run: |
+          rustup target add wasm32-wasip1
+          brew install wasmtime
+          wasmtime --version
+          command -v wasm-ld
+          wasm-ld --version
+
+      - name: Build hew-runtime for wasm32-wasip1
+        run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+
+      - name: Run Rust workspace tests
+        # hew-cabi has #[no_mangle] symbols that conflict with hew-runtime
+        # when both link into a test binary.
+        #
+        # Skip the leak-slope oracles AND the coro substrate-leak exec test on
+        # the 3-core macos-14 runner. Both compile/run Hew programs through LLVM
+        # at test time and measure RSS/leak behaviour over loops; on 3 cores
+        # under the subprocess-intensive group's parallelism they exceed the ci
+        # profile's exec budget (coro_substrate_leak_clean_native ran >480s and
+        # was terminated) and slope/leak measurement is timing-sensitive on a
+        # noisy cloud runner. The Linux job runs the full oracle + coro-leak set
+        # on its faster runner, so leak coverage is not lost.
+        run: >-
+          cargo nextest run --workspace
+          --exclude hew-wasm
+          --exclude hew-cabi
+          --profile ci
+          -E 'not binary(~oracle) - test(~coro_substrate_leak)'

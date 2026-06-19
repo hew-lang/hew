@@ -2569,6 +2569,21 @@ pub unsafe extern "C" fn hew_actor_send_aliased(
         return;
     }
 
+    // EXIT(terminal): the actor is terminal (Crashed/Stopped). Reject before
+    // touching the mailbox — see `actor_send_is_terminal`. The trap takes the
+    // terminal CAS before closing the mailbox, so without this gate an alias
+    // send racing that window would consume the caller's refcount into an
+    // undeliverable enqueued node and report success. Release the single
+    // caller-transferred refcount exactly once (same outcome as a send to a
+    // closed mailbox) and return.
+    if actor_send_is_terminal(a) {
+        if !envelope.is_null() {
+            // SAFETY: caller transferred one refcount on `envelope`.
+            unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+        }
+        return;
+    }
+
     // EXIT(drop-fault-injection): the deterministic harness asks us to
     // silently discard this message. The receiver never consumes the
     // payload, so the alias path must release the envelope here — the
@@ -2767,6 +2782,16 @@ pub unsafe extern "C" fn hew_actor_try_send(
     if !actor_runtime_matches(a) {
         return HewError::ErrForeignRuntime as i32;
     }
+    // Terminal-state send gate (see `actor_send_is_terminal`): reject once the
+    // actor is terminal even if its mailbox is not yet closed, closing the
+    // trap's terminal-CAS-before-mailbox-close window. The non-blocking caller
+    // gets `ErrClosed` here — the same code `hew_mailbox_try_send` returns for a
+    // closed mailbox — preserving the try_send-vs-blocking error divergence
+    // (`hew_mailbox_send`'s native/WASM note): a terminal actor and a closed
+    // mailbox are the same observable condition for a non-blocking sender.
+    if actor_send_is_terminal(a) {
+        return HewError::ErrClosed as i32;
+    }
     let mb = a.mailbox.cast::<HewMailbox>();
 
     // SAFETY: Mailbox is valid for the actor's lifetime.
@@ -2828,6 +2853,14 @@ pub(crate) unsafe fn hew_actor_send_guaranteed(
     // Fail closed on a cross-runtime pointer (never fires single-runtime).
     if !actor_runtime_matches(a) {
         return HewError::ErrForeignRuntime as i32;
+    }
+    // Terminal-state send gate (see `actor_send_is_terminal`): a terminal actor
+    // is already gone, so the out-of-band terminal event is moot. Reject before
+    // the mailbox even if it is not yet closed, matching the closed-mailbox
+    // outcome ("nothing left to deliver") and closing the trap's
+    // terminal-CAS-before-mailbox-close window.
+    if actor_send_is_terminal(a) {
+        return HewError::ErrActorStopped as i32;
     }
     let mb = a.mailbox.cast::<HewMailbox>();
 
@@ -3951,6 +3984,37 @@ fn actor_runtime_matches(a: &HewActor) -> bool {
     false
 }
 
+/// Terminal-state send gate: `true` once the actor has been published into a
+/// terminal state (`Crashed`/`Stopped`) by [`hew_actor_trap`]'s authoritative
+/// CAS, so the send path must reject before touching the mailbox.
+///
+/// `hew_actor_trap` takes the terminal CAS BEFORE closing the mailbox (the
+/// lost-crash-notify fix: making the trap the authoritative terminator so the
+/// worker's settle CAS cannot self-stop the actor out from under it). That
+/// reorder leaves a window — terminal CAS done, mailbox not yet closed — in
+/// which the mailbox is still open. Without this gate a send racing that window
+/// observes the open mailbox and enqueues an undeliverable node (or, for the
+/// alias path, consumes the caller's refcount into one), reporting false
+/// success into an actor that will never dispatch it. The mailbox-closed check
+/// alone does not cover this window because the close has not happened yet.
+///
+/// The gate closes it: the trap publishes terminal with a release CAS, so a
+/// sender's acquire-load that observes the terminal state rejects exactly as a
+/// send to a closed mailbox would — same outcome, releasing the alias envelope
+/// and returning `ErrActorStopped`, so no send succeeds after terminal
+/// publication. A sender that loads non-terminal proceeds to the mailbox, where
+/// the existing closed check rejects it once the trap's close lands; the only
+/// node that can still land is one whose enqueue linearizes before BOTH the
+/// gate observes terminal and the close runs — the inherent "sent the instant
+/// before the crash" case, drained by `hew_mailbox_free`, identical to every
+/// prior ordering.
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn actor_send_is_terminal(a: &HewActor) -> bool {
+    let state = a.actor_state.load(Ordering::Acquire);
+    state == HewActorState::Crashed as i32 || state == HewActorState::Stopped as i32
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn actor_send_result_internal(
     actor: *mut HewActor,
@@ -3981,6 +4045,14 @@ unsafe fn actor_send_result_internal_reply(
     // wire delivery both funnel through here). Never fires single-runtime.
     if !actor_runtime_matches(a) {
         return HewError::ErrForeignRuntime as i32;
+    }
+
+    // Terminal-state send gate (see `actor_send_is_terminal`): reject once the
+    // actor is terminal, even if its mailbox is not yet closed — closes the
+    // trap's terminal-CAS-before-mailbox-close window so no copy-mode send
+    // enqueues into, or reports false success against, a terminal actor.
+    if actor_send_is_terminal(a) {
+        return HewError::ErrActorStopped as i32;
     }
 
     // Check for injected drop fault (testing only). Silently discard
@@ -7596,6 +7668,244 @@ mod tests {
             crate::deterministic::hew_fault_clear(fault_actor_id);
             mailbox::hew_mailbox_free(mailbox);
             drop(Box::from_raw(actor));
+        }
+    }
+
+    /// Terminal-state send gate, copy-mode paths. `hew_actor_trap` takes its
+    /// terminal CAS BEFORE closing the mailbox, leaving a window in which the
+    /// actor is terminal but the mailbox is still open. A send racing that
+    /// window must be rejected by the actor-level terminal gate so it never
+    /// enqueues into, or reports false success against, a terminal actor —
+    /// closing the window the lost-crash-notify reorder opened.
+    ///
+    /// Drives the test actor directly into each terminal state (the trap's CAS
+    /// post-state, mailbox deliberately left OPEN to model the window) and
+    /// asserts every copy-mode held-pointer send path rejects with
+    /// `ErrActorStopped` and enqueues nothing.
+    #[test]
+    fn terminal_actor_copy_send_paths_reject_without_enqueue() {
+        let _guard = crate::runtime_test_guard();
+
+        for terminal in [HewActorState::Crashed, HewActorState::Stopped] {
+            // `Running` initial state so a (hypothetically) accepted send would
+            // not also try to push onto a scheduler queue; the mailbox is left
+            // OPEN to model the trap's terminal-CAS-before-close window.
+            let (actor, mailbox) = make_stop_test_actor(HewActorState::Running);
+            // SAFETY: the test exclusively owns `actor`; publish the terminal
+            // state with a release store, exactly as the trap's CAS does.
+            unsafe {
+                (*actor)
+                    .actor_state
+                    .store(terminal as i32, Ordering::Release);
+                assert!(
+                    !mailbox::mailbox_is_closed(mailbox),
+                    "mailbox must be OPEN to model the terminal-CAS-before-close window"
+                );
+            }
+
+            // try_send rejects without enqueue. The non-blocking path returns
+            // `ErrClosed` (mirroring `hew_mailbox_try_send`'s closed-mailbox
+            // code), distinct from the blocking paths' `ErrActorStopped`.
+            // SAFETY: `actor` valid and owned; null payload.
+            let try_rc = unsafe { hew_actor_try_send(actor, 1, ptr::null_mut(), 0) };
+            assert_eq!(
+                try_rc,
+                HewError::ErrClosed as i32,
+                "try_send into a {terminal:?} actor must be rejected by the terminal gate"
+            );
+
+            // The fire-and-forget result path (used by `hew_actor_send`).
+            // SAFETY: as above.
+            let send_rc = unsafe { actor_send_result_internal(actor, 1, ptr::null_mut(), 0) };
+            assert_eq!(
+                send_rc,
+                HewError::ErrActorStopped as i32,
+                "send into a {terminal:?} actor must be rejected by the terminal gate"
+            );
+
+            // The guaranteed (out-of-band terminal-event) path.
+            // SAFETY: as above.
+            let guaranteed_rc = unsafe { hew_actor_send_guaranteed(actor, 1, ptr::null_mut(), 0) };
+            assert_eq!(
+                guaranteed_rc,
+                HewError::ErrActorStopped as i32,
+                "send_guaranteed into a {terminal:?} actor must be rejected by the terminal gate"
+            );
+
+            // No path enqueued: nothing reached the (still-open) mailbox.
+            // SAFETY: `mailbox` is valid and owned by this test.
+            let has_messages = unsafe { mailbox::hew_mailbox_has_messages(mailbox) };
+            assert_eq!(
+                has_messages, 0,
+                "a send rejected by the terminal gate must not enqueue into a {terminal:?} actor"
+            );
+
+            // SAFETY: the test fully owns the actor and its mailbox.
+            unsafe {
+                mailbox::hew_mailbox_free(mailbox);
+                drop(Box::from_raw(actor));
+            }
+        }
+    }
+
+    /// Terminal-state send gate, alias path. An alias send transfers exactly
+    /// one envelope refcount; on rejection that refcount must be released
+    /// exactly once (no leak, no false success consuming it into an
+    /// undeliverable enqueued node) — the same single-release outcome as a send
+    /// to a closed mailbox. The drop-glue counter is the deterministic oracle
+    /// for exactly-once; the mailbox-empty assertion proves no undeliverable
+    /// node was enqueued. Both terminal states, mailbox left OPEN to model the
+    /// trap's terminal-CAS-before-close window.
+    #[test]
+    fn terminal_actor_alias_send_releases_envelope_once_without_enqueue() {
+        static DROP_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+        unsafe extern "C" fn count_drop_glue(_payload: *mut c_void) {
+            DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let _guard = ALIAS_SEND_TEST_LOCK.lock().unwrap();
+
+        for terminal in [HewActorState::Crashed, HewActorState::Stopped] {
+            DROP_COUNT.store(0, Ordering::SeqCst);
+
+            let (actor, mailbox) = make_stop_test_actor(HewActorState::Running);
+            // SAFETY: the test exclusively owns `actor`; publish terminal state
+            // with a release store as the trap's CAS does, mailbox left OPEN.
+            unsafe {
+                (*actor)
+                    .actor_state
+                    .store(terminal as i32, Ordering::Release);
+                assert!(
+                    !mailbox::mailbox_is_closed(mailbox),
+                    "mailbox must be OPEN to model the terminal-CAS-before-close window"
+                );
+
+                let size = 5usize;
+                let payload = libc::malloc(size);
+                assert!(!payload.is_null());
+                libc::memcpy(payload, b"alias".as_ptr().cast(), size);
+                let env =
+                    crate::mailbox::hew_msg_envelope_new(payload, size, Some(count_drop_glue));
+                assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
+
+                hew_actor_send_aliased(actor, 4, env);
+
+                // Rejected: nothing enqueued, envelope released exactly once.
+                assert_eq!(
+                    mailbox::hew_mailbox_has_messages(mailbox),
+                    0,
+                    "terminal-gate alias rejection must not enqueue an undeliverable node \
+                     ({terminal:?})"
+                );
+                assert_eq!(
+                    DROP_COUNT.load(Ordering::SeqCst),
+                    1,
+                    "terminal-gate alias rejection must release the envelope exactly once \
+                     ({terminal:?})"
+                );
+
+                mailbox::hew_mailbox_free(mailbox);
+                drop(Box::from_raw(actor));
+            }
+        }
+    }
+
+    /// Concurrent racing-sender window. A real alias send is issued from a
+    /// second thread CONCURRENTLY with `hew_actor_trap`'s terminal transition,
+    /// looped so the send lands across the whole pre-CAS / in-window /
+    /// post-close spectrum. The invariants the gate must hold on EVERY
+    /// interleaving: (1) the envelope refcount is released exactly once per
+    /// send — the per-iteration drop counter must equal the send count (no
+    /// leak, no double-free); (2) the crash notify is never lost — the actor
+    /// reaches the `Crashed` terminal state. Run under ASan/LSan this also
+    /// proves the rejected send's alias is freed exactly once.
+    #[test]
+    fn racing_alias_sender_during_trap_releases_once_and_crash_notifies() {
+        const ITERS: usize = 2_000;
+
+        static DROP_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+        unsafe extern "C" fn count_drop_glue(_payload: *mut c_void) {
+            DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let _guard = ALIAS_SEND_TEST_LOCK.lock().unwrap();
+
+        for _ in 0..ITERS {
+            DROP_COUNT.store(0, Ordering::SeqCst);
+
+            // `Running` so the sender's success path would not also enqueue on a
+            // scheduler; the trap drives this actor terminal under the sender.
+            let (actor, mailbox) = make_stop_test_actor(HewActorState::Running);
+            let actor_addr = actor as usize;
+
+            let start = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let sender_start = start.clone();
+
+            let sender = std::thread::spawn(move || {
+                let actor = actor_addr as *mut HewActor;
+                // SAFETY: the actor outlives both threads (freed after join);
+                // the envelope carries one refcount transferred into the send.
+                unsafe {
+                    let size = 5usize;
+                    let payload = libc::malloc(size);
+                    assert!(!payload.is_null());
+                    libc::memcpy(payload, b"alias".as_ptr().cast(), size);
+                    let env =
+                        crate::mailbox::hew_msg_envelope_new(payload, size, Some(count_drop_glue));
+                    sender_start.wait();
+                    hew_actor_send_aliased(actor, 4, env);
+                }
+            });
+
+            start.wait();
+            // SAFETY: `actor` is valid; the trap drives it to the Crashed
+            // terminal state concurrently with the racing sender.
+            unsafe { hew_actor_trap(actor, 1) };
+
+            sender.join().expect("sender thread must not panic");
+
+            // SAFETY: both threads have joined; the actor and mailbox are now
+            // exclusively owned by this thread.
+            unsafe {
+                // Crash notify never lost: the trap published the terminal state.
+                assert_eq!(
+                    (*actor).actor_state.load(Ordering::Acquire),
+                    HewActorState::Crashed as i32,
+                    "trap must win the terminal race and publish Crashed"
+                );
+
+                // Drain whatever the send enqueued before the gate/close (the
+                // inherent "sent the instant before the crash" node, if any) so
+                // its envelope release is accounted before the exactly-once check.
+                let mut drained = 0usize;
+                loop {
+                    let node = mailbox::hew_mailbox_try_recv(mailbox);
+                    if node.is_null() {
+                        break;
+                    }
+                    mailbox::hew_msg_node_free(node);
+                    drained += 1;
+                }
+                assert!(
+                    drained <= 1,
+                    "at most one node can land in the pre-close window, drained {drained}"
+                );
+
+                mailbox::hew_mailbox_free(mailbox);
+
+                // Exactly-once release of the single send's envelope across
+                // EVERY interleaving: rejected-by-gate, rejected-by-close, or
+                // enqueued-then-drained — each releases the refcount once.
+                assert_eq!(
+                    DROP_COUNT.load(Ordering::SeqCst),
+                    1,
+                    "the racing send's envelope must be released exactly once"
+                );
+
+                drop(Box::from_raw(actor));
+            }
         }
     }
 

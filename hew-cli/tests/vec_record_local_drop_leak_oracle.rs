@@ -1,21 +1,31 @@
-//! Constant-leak oracle for the `Vec<record>` (`BitCopy` value-aggregate element)
-//! scope-exit release.
+//! Constant-leak oracle for `Vec<record>` and `Vec<tuple>` (`BitCopy`
+//! value-aggregate element) scope-exit release.
 //!
 //! ## The leak this pins
 //!
 //! A `Vec<Point>` where `type Point { x: i64, y: i64 }` is an all-`BitCopy`
-//! value record. Such a Vec is constructed inline via `hew_vec_new_with_layout`
-//! (the `_layout` ABI codegen uses for a value-aggregate element), NOT through
-//! the owned-element descriptor (`hew_vec_new_with_elem_layout`). Pre-fix the
-//! MIR drop elaborator's plain-vec predicate (`binding_ty_is_plain_vec`,
-//! `hew-mir/src/lower.rs`) only admitted SCALAR and `string` elements, and the
-//! owned-element predicate (`is_owned_vec_element`) only admits HEAP-OWNING
-//! records (a string/bytes/nested-collection field). A `BitCopy` record element
-//! fell into the gap between the two: NEITHER `owned_vec_drop_allowed` nor
-//! `plain_vec_drop_allowed` claimed the binding, so `build_lifo_drops` emitted
-//! NO drop and the Vec's backing buffer LEAKED on every scope exit.
+//! value record, and a `Vec<(i64, i64)>` whose tuple element is also all-`BitCopy`.
+//! Both are constructed inline via `hew_vec_new_with_layout` (the `_layout` ABI
+//! codegen uses for a value-aggregate element), NOT through the owned-element
+//! descriptor (`hew_vec_new_with_elem_layout`). Pre-fix the MIR drop elaborator's
+//! plain-vec predicate (`binding_ty_is_plain_vec`, `hew-mir/src/lower.rs`) only
+//! admitted SCALAR and `string` elements, and the owned-element predicate
+//! (`is_owned_vec_element`) only admits HEAP-OWNING aggregates (a
+//! string/bytes/nested-collection field). `BitCopy` record and all-`BitCopy` tuple
+//! elements fell into the gap between the two: NEITHER `owned_vec_drop_allowed`
+//! nor `plain_vec_drop_allowed` claimed the binding, so `build_lifo_drops`
+//! emitted NO drop and the Vec's backing buffer LEAKED on every scope exit.
 //!
-//! The fix extends `binding_ty_is_plain_vec` to also admit a `Named` /
+//! The record fix extends `binding_ty_is_plain_vec` to admit a `Named` element
+//! whose `ValueClass::of_ty` is `BitCopy`. The tuple fix cannot use
+//! `ValueClass::of_ty` for tuples (it ALWAYS returns `CowValue` regardless of
+//! field types) and instead delegates to `!is_owned_vec_element(elem)`. In both
+//! cases the matching release is the plain `hew_vec_free` (buffer + handle; a
+//! `BitCopy` element owns no heap so no per-element drop runs).
+//!
+//! ## Old description (record path)
+//!
+//! The original record fix extends `binding_ty_is_plain_vec` to also admit a `Named` /
 //! `Tuple` element whose `ValueClass::of_ty` is `BitCopy` — the precise
 //! complement of the owned-element class (a heap-owning or closure-bearing
 //! aggregate is never `BitCopy`). The matching release is the plain
@@ -177,6 +187,85 @@ fn main() -> i64 {{
         expected = ITERATIONS * 3
     )
 }
+
+// ── tuple-element fixtures ────────────────────────────────────────────────────
+//
+// `Vec<(i64, i64)>` is an all-BitCopy tuple element. Like an all-BitCopy record
+// it is constructed inline via `hew_vec_new_with_layout` (the `_layout` ABI),
+// NOT through the owned-element descriptor. Pre-fix the MIR plain-vec predicate
+// (`binding_ty_is_plain_vec`) used `ValueClass::of_ty(Tuple(_))` to classify the
+// tuple arm, but that function ALWAYS returns `CowValue` for any tuple — making
+// the tuple arm permanently dead. A `Vec<(i64,i64)>` therefore fell into the same
+// gap as the earlier `Vec<Point>`: neither the plain nor the owned allow-set
+// claimed it, so `build_lifo_drops` emitted NO drop and the backing buffer LEAKED
+// on every scope exit. The fix delegates to `is_owned_vec_element` (the negation
+// of which is "all-BitCopy tuple") instead of `ValueClass::of_ty`.
+
+/// Empty + pushed `Vec<(i64, i64)>` (all-`BitCopy` tuple element). Pre-fix the
+/// backing buffer leaked once per helper call; post-fix `hew_vec_free` releases it.
+fn vec_tuple_new_push_source() -> String {
+    format!(
+        "\
+fn build(n: i64) -> i64 {{
+    let pairs: Vec<(i64, i64)> = Vec::new();
+    pairs.push((n, n));
+    pairs.push((n, n));
+    pairs.len()
+}}
+
+fn main() -> i64 {{
+    var total: i64 = 0;
+    for i in 0..{ITERATIONS} {{
+        total = total + build(i);
+    }}
+    if total != {expected} {{ return 74; }}
+    0
+}}
+",
+        expected = ITERATIONS * 2
+    )
+}
+
+/// Array-repeat `[(1, 2); 3]` of an all-`BitCopy` tuple. Lowers to the same
+/// `hew_vec_new_with_layout` backing buffer as the record shapes; pre-fix leaked.
+fn vec_tuple_array_repeat_source() -> String {
+    format!(
+        "\
+fn build(n: i64) -> i64 {{
+    let pairs = [(n, n + 1); 3];
+    pairs.len()
+}}
+
+fn main() -> i64 {{
+    var total: i64 = 0;
+    for i in 0..{ITERATIONS} {{
+        total = total + build(i);
+    }}
+    if total != {expected} {{ return 75; }}
+    0
+}}
+",
+        expected = ITERATIONS * 3
+    )
+}
+
+/// No-double-free pin for the tuple path: a `Vec<(i64,i64)>` alongside a
+/// `Vec<string>` (owned path, per-element string drop) in one frame. The
+/// tuple-Vec `hew_vec_free` must run exactly once and must NOT walk the inline
+/// `BitCopy` elements; the string-Vec `hew_vec_free_owned` must run its own drop.
+/// A wrong-ABI free (buffer-only free on the string Vec, or per-element walk on
+/// the tuple Vec) crashes under `MallocScribble` before the sentinel prints.
+const TUPLE_NO_DOUBLE_FREE_SOURCE: &str = "\
+fn main() {
+    let pairs: Vec<(i64, i64)> = Vec::new();
+    pairs.push((10, 20));
+    let words: Vec<string> = Vec::new();
+    words.push(\"hello\");
+    let sum = pairs.len() + words.len();
+    print(sum);
+    print(\"OK\");
+}
+";
 
 /// No-double-free pin: a `Vec<Point>` plus a read of its element back into a
 /// record local, a scalar array-repeat, and a `Vec<string>` (the CAP-09 path),
@@ -409,6 +498,72 @@ fn vec_record_release_is_exactly_once_under_malloc_scribble() {
     assert_eq!(
         stdout,
         "40OK",
+        "output must be untouched -- a scribbled value indicates an over-drop corrupted a live \
+         value;\n{}",
+        describe_output(&output)
+    );
+}
+
+// ── tuple-element oracles ─────────────────────────────────────────────────────
+
+/// `let pairs: Vec<(i64,i64)> = Vec::new(); pairs.push(..)` -- an all-`BitCopy`
+/// tuple element. Pre-fix the backing buffer leaked once per helper call because
+/// `binding_ty_is_plain_vec`'s tuple arm was dead (it called `ValueClass::of_ty`
+/// on the tuple, which always returns `CowValue`). Post-fix the arm delegates to
+/// `is_owned_vec_element` and correctly classifies the buffer as plain-vec →
+/// `hew_vec_free` on scope exit.
+#[test]
+fn vec_tuple_new_push_no_leak() {
+    assert_no_record_vec_leak_over_control("vec_tuple_new_push", &vec_tuple_new_push_source());
+}
+
+/// `[(n, n+1); 3]` array-repeat of an all-`BitCopy` tuple. The repeat lowers via
+/// `hew_vec_new_with_layout`; pre-fix that buffer leaked once per helper call.
+#[test]
+fn vec_tuple_array_repeat_no_leak() {
+    assert_no_record_vec_leak_over_control(
+        "vec_tuple_array_repeat",
+        &vec_tuple_array_repeat_source(),
+    );
+}
+
+/// No-double-free pin for tuples: `Vec<(i64,i64)>` + `Vec<string>` in one frame.
+/// The tuple-Vec must get a buffer-only `hew_vec_free`; the string-Vec must get
+/// `hew_vec_free_owned`. A wrong-ABI free or double-free crashes under
+/// `MallocScribble` before the sentinel. Runs on any unix.
+#[test]
+fn vec_tuple_release_is_exactly_once_under_malloc_scribble() {
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix("vec-tuple-no-double-free-")
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(
+        TUPLE_NO_DOUBLE_FREE_SOURCE,
+        dir.path(),
+        "tuple_no_double_free",
+    );
+
+    let output = Command::new(&bin)
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1")
+        .env("MallocGuardEdges", "1")
+        .output()
+        .expect("run tuple no-double-free binary");
+
+    assert!(
+        output.status.success(),
+        "tuple-Vec release must run exactly once -- a crash here indicates a wrong-ABI free \
+         (buffer-only free skipping per-element string drop, or per-element walk on the \
+         BitCopy tuple Vec);\n{}",
+        describe_output(&output)
+    );
+    // pairs.len()(1) + words.len()(1) = 2, followed by the `OK` sentinel.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout,
+        "2OK",
         "output must be untouched -- a scribbled value indicates an over-drop corrupted a live \
          value;\n{}",
         describe_output(&output)

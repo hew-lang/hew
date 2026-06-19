@@ -224,6 +224,20 @@ fn with_registry<R>(f: impl FnOnce(&mut RegistryInner) -> R) -> R {
         .access(|slot| f(slot.get_or_insert_with(RegistryInner::default)))
 }
 
+/// Run `f` over the registry interior for a *read*, tolerating a missing
+/// runtime. Returns `None` when no runtime is installed (the read surface — see
+/// [`metrics_state_opt`]) or when no metric has yet been registered (the
+/// registry interior is still unmaterialised), in both of which cases there is
+/// nothing to read. Mirrors the no-runtime tolerance the old process-global
+/// registry had for `read_u64`: a read before any registration simply found no
+/// such name. Unlike [`with_registry`] this never materialises the registry, so
+/// a bare read does not allocate one on a host scrape outside the runtime
+/// lifecycle.
+fn with_registry_opt<R>(f: impl FnOnce(&RegistryInner) -> R) -> Option<R> {
+    let state = metrics_state_opt()?;
+    state.registry.access(|slot| slot.as_ref().map(f))
+}
+
 /// Sentinel returned by every register entry point when registration fails a
 /// cap, charset, or collision check. Distinguishable from a valid slot index
 /// (which is always `>= 0`).
@@ -753,9 +767,14 @@ pub fn render_snapshot() -> Vec<RenderedMetric> {
 }
 
 /// Read the base value for an unlabelled user metric by canonical name.
+///
+/// A pure read: tolerates a missing runtime (and an unmaterialised registry) by
+/// returning `None`, exactly as the old process-global registry did when a name
+/// was read before any registration. `observe::read_u64` reaches this for any
+/// unknown name, including from a host scrape outside the runtime lifecycle.
 #[must_use]
 pub fn read_u64(name: &str) -> Option<u64> {
-    with_registry(|reg| {
+    with_registry_opt(|reg| {
         let entry = reg.names.get(name)?;
         if !entry.label_keys.is_empty() {
             return None;
@@ -763,6 +782,7 @@ pub fn read_u64(name: &str) -> Option<u64> {
         let value = reg.slots.get(entry.base_slot)?.load(Ordering::Relaxed);
         u64::try_from(value).ok()
     })
+    .flatten()
 }
 
 /// Decode a [`canonical_series_key`] back into its label-value list.
@@ -1707,5 +1727,33 @@ mod tests {
         // SAFETY: valid name, null key array with zero keys.
         let h = unsafe { hew_metric_vec_register(name.as_ptr(), 99, std::ptr::null(), 0) };
         assert_eq!(h, REGISTER_FAILED);
+    }
+
+    /// `read_u64` is a pure read and must tolerate a missing runtime, returning
+    /// `None` rather than aborting "no runtime installed". `observe::read_u64`
+    /// reaches it for any unknown name with no runtime guard installed (the
+    /// observe read tests), which is the path that aborted before the fix. With
+    /// no runtime there is no registry, so any name reads as absent.
+    #[test]
+    fn read_u64_tolerates_no_runtime() {
+        // No `guard()`: this thread has no runtime installed.
+        assert_eq!(read_u64("does.not.exist"), None);
+        // A name that a runtime-installed test would register also reads None
+        // here, since there is no registry to hold it.
+        assert_eq!(read_u64("app.unregistered"), None);
+    }
+
+    /// With a runtime installed `read_u64` resolves the per-runtime registry and
+    /// returns the registered value — confirming the deglobalization is intact
+    /// and the no-runtime tolerance did not flatten the read to an always-None.
+    #[test]
+    fn read_u64_with_runtime_returns_registered_value() {
+        let _g = guard();
+        let h = register_counter("app.read_back");
+        assert!(h >= 0);
+        inc(h);
+        inc(h);
+        assert_eq!(read_u64("app.read_back"), Some(2));
+        assert_eq!(read_u64("app.never_registered"), None);
     }
 }

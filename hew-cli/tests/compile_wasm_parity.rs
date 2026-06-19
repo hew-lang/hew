@@ -1,6 +1,6 @@
 //! E5c integration tests: WASM parity classification for native-only substrates.
 //!
-//! Four behaviours under test:
+//! Behaviours under test:
 //!
 //! 1. Non-duplex programs (`01-arith.hew`) still emit a `.wasm` artefact when
 //!    WASM is requested with `--target wasm32-unknown-unknown`. The duplex
@@ -11,8 +11,9 @@
 //!    only the native binary.
 //!
 //! 3. `CodegenError::WasmUnsupportedSubstrate` diagnostics keep the category
-//!    selected by the codegen display path: generators report generator parity,
-//!    and duplex remains duplex/#1451.
+//!    selected by the codegen display path: lambda-actor surfaces `lambda_actor`
+//!    + `#1451`; duplex surfaces `duplex` + `#1451`.
+//!      (Generators are now fully supported on wasm32 — see `wasm_generator_exec.rs`.)
 //!
 //! 4. WASM-TODO(#1451): `hew_duplex_*` symbols are excluded from wasm32
 //!    builds via `hew-runtime/src/duplex.rs:54`. The codegen layer returns
@@ -150,11 +151,14 @@ fn bare_compile_skips_wasm_for_non_duplex() {
 fn wasm_unsupported_substrate_diagnostics_preserve_symbol_category() {
     require_codegen();
 
-    assert_wasm_unsupported_category(
-        "tests/vertical-slice/accept/gen_block_outside_receive.hew",
-        &["generator"],
-        &["duplex"],
-    );
+    // `gen_block_outside_receive.hew` was previously asserted to fail on wasm32
+    // (the generator fence, WASM-TODO(#1758)). Generators are now supported on
+    // wasm32 via the in-module `hew_gen_coro_destroy` override emitted by
+    // `emit_wasm_coro_runtime_overrides`; that fixture compiles and produces a
+    // `.wasm` artefact on this target.  The generator-parity classification path
+    // in `CodegenError::WasmUnsupportedSubstrate` is no longer reachable from a
+    // `gen {}` expression, so the representative below is lambda-actor.
+
     assert_wasm_unsupported_category(
         "tests/vertical-slice/accept/lambda_method_send.hew",
         // Spawn-side wiring (Terminator::MakeLambdaActor → hew_lambda_actor_new)

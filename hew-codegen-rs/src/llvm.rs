@@ -196,15 +196,6 @@ impl std::fmt::Display for CodegenError {
                         "the suspending channel-receive substrate",
                         "WASM-TODO(#1451)",
                     )
-                } else if symbol == "hew_gen_coro_destroy" {
-                    // Generator carrier (`Terminator::Yield` / `MakeGenerator`):
-                    // builds onto the coro substrate but the coro-frame teardown
-                    // traps on wasm32, so generators are fenced fail-closed at
-                    // compile until the teardown is proven under the wasm runtime.
-                    (
-                        "the generator substrate",
-                        "WASM-TODO(#1758): generator wasm coro-frame teardown not yet proven",
-                    )
                 } else {
                     ("a native-only runtime substrate", "WASM-TODO(#1451)")
                 };
@@ -603,14 +594,6 @@ fn validate_codegen_front_with_name(pipeline: &IrPipeline, module_name: &str) ->
     Ok(())
 }
 
-/// Sentinel symbol the wasm-exclusion scan returns for a generator carrier
-/// `Terminator::Yield` or `MakeGenerator`. It is not a real runtime gap: the
-/// generator coro substrate emits `hew_cont_*`, which ARE wasm-clean. The
-/// coro-frame TEARDOWN traps on wasm32, so the scan refuses the whole generator
-/// at compile. The `CodegenError::Display` arm maps this sentinel to a
-/// "generator substrate" diagnostic. WASM-TODO(#1758).
-const WASM_GENERATOR_UNSUPPORTED_SYMBOL: &str = "hew_gen_coro_destroy";
-
 /// Return the first WASM-excluded substrate symbol found in `pipeline`'s
 /// instruction stream, or `None` if none is present.
 ///
@@ -770,22 +753,6 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
             // belt-and-braces. WASM-TODO(#1758).
             if let Terminator::SuspendingScopeDeadline { .. } = &block.terminator {
                 return Some("hew_await_cancel_schedule_deadline_ms".to_string());
-            }
-            // Generators on wasm32 build onto the `llvm.coro.*` + `hew_cont_*`
-            // continuation substrate, but the coro-frame TEARDOWN path is not yet
-            // proven on the wasm runtime: `hew_gen_coro_destroy` →
-            // `hew_cont_frame_free` traps under the wasm harness. A program that
-            // BUILDS for wasm32 then traps in teardown is strictly worse than a
-            // compile-time refusal (it violates the fail-closed tenet, Tenet 5 /
-            // LESSONS P0 `boundary-fail-closed`), so generators are fenced
-            // fail-closed at COMPILE on wasm32 — both the construction
-            // (`MakeGenerator`) and the suspension (`Yield`) carrier surface the
-            // same structured `WasmUnsupportedSubstrate` diagnostic — until the
-            // teardown is fixed AND a committed wasm32 RUN proof (build + execute
-            // + correct stdout) is green. The native coro path is unaffected.
-            // WASM-TODO(#1758): wasm32 generator coro-frame teardown parity.
-            if let Terminator::Yield { .. } | Terminator::MakeGenerator { .. } = &block.terminator {
-                return Some(WASM_GENERATOR_UNSUPPORTED_SYMBOL.to_string());
             }
             // Lambda-actor construction emits `hew_lambda_actor_new`. The
             // whole `hew-runtime/src/lambda_actor.rs` module is gated
@@ -42944,6 +42911,9 @@ fn build_module_for_target<'ctx>(
         &pipeline.dyn_vtable_registry,
         &record_layouts,
     )?;
+    if emit_wasm_entry_alias {
+        emit_wasm_coro_runtime_overrides(ctx, &llvm_mod, &target_data)?;
+    }
     // Finalize all deferred debug-info metadata BEFORE verification: inkwell's
     // `DebugInfoBuilder::finalize` resolves forward references and the verifier
     // rejects (or silently drops) incomplete debug metadata otherwise.
@@ -42954,6 +42924,199 @@ fn build_module_for_target<'ctx>(
         .verify()
         .map_err(|e| CodegenError::LlvmVerify(e.to_string()))?;
     Ok(llvm_mod)
+}
+
+/// Define wasm-local generator teardown that must lower in the same LLVM module
+/// as the coroutine frame it destroys.
+///
+/// Native calls the runtime's Rust `hew_gen_coro_destroy`, which in turn mirrors
+/// switched-resume's `{ resume_fn, destroy_fn, ... }` frame prefix. On wasm32 the
+/// correct function-table lowering is target-specific; reimplementing the
+/// destroy-call half of that ABI in a separately compiled Rust runtime is the
+/// trap-prone path that fenced generators. This definition keeps the C ABI name
+/// (`hew_gen_coro_destroy`) but lowers the frame teardown through LLVM's own
+/// `llvm.coro.destroy` intrinsic inside the final program module. CoroSplit/coro-
+/// cleanup then produces the target-correct wasm table call while preserving the
+/// native single-owner drop contract:
+///
+/// - `hew_gen_coro_destroy(companion)` destroys the frame, frees the heap env,
+///   typed-drops an unconsumed pending `out_value`, and frees the companion.
+fn emit_wasm_coro_runtime_overrides<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    target_data: &TargetData,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i8_ty = ctx.i8_type();
+    let void_ty = ctx.void_type();
+
+    let Some(destroy_fn) = llvm_mod.get_function("hew_gen_coro_destroy") else {
+        return Ok(());
+    };
+    if destroy_fn.count_basic_blocks() > 0 {
+        return Ok(());
+    }
+
+    let builder = ctx.create_builder();
+    let entry = ctx.append_basic_block(destroy_fn, "entry");
+    let do_destroy = ctx.append_basic_block(destroy_fn, "do_destroy");
+    let pending_check = ctx.append_basic_block(destroy_fn, "pending_check");
+    let thunk_call = ctx.append_basic_block(destroy_fn, "out_drop_call");
+    let free_companion = ctx.append_basic_block(destroy_fn, "free_companion");
+    let done = ctx.append_basic_block(destroy_fn, "done");
+
+    builder.position_at_end(entry);
+    let companion = destroy_fn
+        .get_nth_param(0)
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_gen_coro_destroy missing companion param".into())
+        })?
+        .into_pointer_value();
+    let is_null = builder
+        .build_is_null(companion, "gen_destroy_null")
+        .llvm_ctx("wasm gen destroy null check")?;
+    builder
+        .build_conditional_branch(is_null, done, do_destroy)
+        .llvm_ctx("wasm gen destroy null branch")?;
+
+    builder.position_at_end(do_destroy);
+    let handle = builder
+        .build_load(ptr_ty, companion, "gen_destroy_handle")
+        .llvm_ctx("wasm gen destroy handle load")?
+        .into_pointer_value();
+    let handle_is_null = builder
+        .build_is_null(handle, "gen_destroy_handle_null")
+        .llvm_ctx("wasm gen destroy handle null check")?;
+    let destroy_frame = ctx.append_basic_block(destroy_fn, "destroy_frame");
+    let after_frame = ctx.append_basic_block(destroy_fn, "after_frame");
+    builder
+        .build_conditional_branch(handle_is_null, after_frame, destroy_frame)
+        .llvm_ctx("wasm gen destroy handle branch")?;
+
+    builder.position_at_end(destroy_frame);
+    let coro_destroy = Intrinsic::find("llvm.coro.destroy")
+        .ok_or_else(|| CodegenError::FailClosed("llvm.coro.destroy intrinsic missing".into()))?
+        .get_declaration(llvm_mod, &[])
+        .ok_or_else(|| CodegenError::FailClosed("llvm.coro.destroy declaration failed".into()))?;
+    builder
+        .build_call(coro_destroy, &[handle.into()], "wasm_coro_destroy")
+        .llvm_ctx("wasm llvm.coro.destroy call")?;
+    builder
+        .build_unconditional_branch(after_frame)
+        .llvm_ctx("wasm gen destroy after frame branch")?;
+
+    builder.position_at_end(after_frame);
+    let ptr_width = u64::from(target_data.get_pointer_byte_size(None));
+    let i64_ty = ctx.i64_type();
+    let env_slot = unsafe {
+        builder.build_in_bounds_gep(
+            i8_ty,
+            companion,
+            &[i64_ty.const_int(ptr_width, false)],
+            "gen_destroy_env_slot",
+        )
+    }
+    .llvm_ctx("wasm gen destroy env slot gep")?;
+    let env = builder
+        .build_load(ptr_ty, env_slot, "gen_destroy_env")
+        .llvm_ctx("wasm gen destroy env load")?
+        .into_pointer_value();
+    let frame_free = llvm_mod
+        .get_function("hew_cont_frame_free")
+        .unwrap_or_else(|| {
+            llvm_mod.add_function(
+                "hew_cont_frame_free",
+                void_ty.fn_type(&[ptr_ty.into()], false),
+                Some(Linkage::External),
+            )
+        });
+    builder
+        .build_call(frame_free, &[env.into()], "gen_destroy_env_free")
+        .llvm_ctx("wasm gen destroy env free")?;
+    builder
+        .build_unconditional_branch(pending_check)
+        .llvm_ctx("wasm gen destroy pending branch")?;
+
+    builder.position_at_end(pending_check);
+    let pending_offset = ptr_width
+        .checked_mul(3)
+        .and_then(|base| base.checked_add(1))
+        .ok_or_else(|| {
+            CodegenError::FailClosed("generator companion pending offset overflow".into())
+        })?;
+    let pending_slot = unsafe {
+        builder.build_in_bounds_gep(
+            i8_ty,
+            companion,
+            &[i64_ty.const_int(pending_offset, false)],
+            "gen_destroy_pending_slot",
+        )
+    }
+    .llvm_ctx("wasm gen destroy pending slot gep")?;
+    let pending = builder
+        .build_load(i8_ty, pending_slot, "gen_destroy_pending")
+        .llvm_ctx("wasm gen destroy pending load")?
+        .into_int_value();
+    let pending_live = builder
+        .build_int_compare(
+            IntPredicate::NE,
+            pending,
+            i8_ty.const_zero(),
+            "gen_destroy_pending_live",
+        )
+        .llvm_ctx("wasm gen destroy pending cmp")?;
+    builder
+        .build_conditional_branch(pending_live, thunk_call, free_companion)
+        .llvm_ctx("wasm gen destroy pending conditional")?;
+
+    builder.position_at_end(thunk_call);
+    let thunk_slot = unsafe {
+        builder.build_in_bounds_gep(
+            i8_ty,
+            companion,
+            &[i64_ty.const_int(ptr_width * 2, false)],
+            "gen_destroy_thunk_slot",
+        )
+    }
+    .llvm_ctx("wasm gen destroy thunk slot gep")?;
+    let thunk = builder
+        .build_load(ptr_ty, thunk_slot, "gen_destroy_thunk")
+        .llvm_ctx("wasm gen destroy thunk load")?
+        .into_pointer_value();
+    let thunk_is_null = builder
+        .build_is_null(thunk, "gen_destroy_thunk_null")
+        .llvm_ctx("wasm gen destroy thunk null check")?;
+    let thunk_invoke = ctx.append_basic_block(destroy_fn, "out_drop_invoke");
+    builder
+        .build_conditional_branch(thunk_is_null, free_companion, thunk_invoke)
+        .llvm_ctx("wasm gen destroy thunk branch")?;
+
+    builder.position_at_end(thunk_invoke);
+    let thunk_ty = void_ty.fn_type(&[ptr_ty.into()], false);
+    builder
+        .build_indirect_call(thunk_ty, thunk, &[companion.into()], "gen_destroy_out_drop")
+        .llvm_ctx("wasm gen destroy out-drop thunk call")?;
+    builder
+        .build_unconditional_branch(free_companion)
+        .llvm_ctx("wasm gen destroy thunk -> free")?;
+
+    builder.position_at_end(free_companion);
+    builder
+        .build_call(
+            frame_free,
+            &[companion.into()],
+            "gen_destroy_companion_free",
+        )
+        .llvm_ctx("wasm gen destroy companion free")?;
+    builder
+        .build_unconditional_branch(done)
+        .llvm_ctx("wasm gen destroy done branch")?;
+
+    builder.position_at_end(done);
+    builder
+        .build_return(None)
+        .llvm_ctx("wasm gen destroy return")?;
+    Ok(())
 }
 
 /// Synthesise one erased-self method thunk per `(vtable_id,
@@ -48642,115 +48805,6 @@ mod tests {
         assert!(
             found.starts_with("hew_duplex_"),
             "found symbol must be the hew_duplex_ C-ABI: got {found}"
-        );
-    }
-
-    /// Generators are fenced FAIL-CLOSED on wasm32 at compile: a
-    /// `Terminator::Yield`-carrying body builds onto the coro substrate, but the
-    /// coro-frame teardown traps on wasm32, so the wasm-exclusion scan MUST flag
-    /// it with the generator-substrate sentinel rather than letting it build and
-    /// trap at runtime (Tenet 5 / LESSONS P0 `boundary-fail-closed`).
-    /// WASM-TODO(#1758): wasm32 generator coro-frame teardown parity.
-    #[test]
-    fn wasm_exclusion_scan_flags_generator_yield_fail_closed() {
-        let ptr_ty = ResolvedTy::Pointer {
-            is_mutable: true,
-            pointee: Box::new(ResolvedTy::Unit),
-        };
-        let body = RawMirFunction {
-            name: "__hew_gen_body_wasm_excl_test_0".to_string(),
-            return_ty: ResolvedTy::Unit,
-            call_conv: FunctionCallConv::Default,
-            params: vec![ptr_ty.clone()],
-            locals: vec![ptr_ty.clone(), ResolvedTy::I64],
-            blocks: vec![
-                BasicBlock {
-                    id: 0,
-                    statements: Vec::new(),
-                    instructions: vec![Instr::ConstI64 {
-                        dest: Place::Local(1),
-                        value: 1,
-                    }],
-                    terminator: Terminator::Yield {
-                        value: Place::Local(1),
-                        next: 1,
-                    },
-                },
-                BasicBlock {
-                    id: 1,
-                    statements: Vec::new(),
-                    instructions: Vec::new(),
-                    terminator: Terminator::Return,
-                },
-            ],
-            decisions: Vec::new(),
-            intrinsic_id: None,
-            await_deadline_ns: std::collections::HashMap::new(),
-
-            lambda_actor_user_param_locals: Vec::new(),
-            span: None,
-            instr_spans: ::std::collections::BTreeMap::new(),
-        };
-        let pipeline = raw_mir_only_pipeline(body);
-        assert_eq!(
-            uses_wasm_excluded_symbol(&pipeline).as_deref(),
-            Some(WASM_GENERATOR_UNSUPPORTED_SYMBOL),
-            "a generator (Terminator::Yield) body must be fenced fail-closed on \
-             wasm32 at compile until the coro-frame teardown is proven (#1758)"
-        );
-    }
-
-    /// The construction carrier is fenced too: a `Terminator::MakeGenerator`
-    /// site must surface the same generator-substrate sentinel on wasm32, so a
-    /// generator-constructing program is refused at compile rather than building
-    /// and trapping in teardown. WASM-TODO(#1758).
-    #[test]
-    fn wasm_exclusion_scan_flags_make_generator_fail_closed() {
-        let gen_ty = ResolvedTy::Named {
-            name: "Generator".to_string(),
-            args: vec![ResolvedTy::I64, ResolvedTy::Unit],
-            builtin: Some(hew_types::BuiltinType::Generator),
-            is_opaque: false,
-        };
-        let body = RawMirFunction {
-            name: "make_gen_wasm_excl_test".to_string(),
-            return_ty: ResolvedTy::Unit,
-            call_conv: FunctionCallConv::Default,
-            params: Vec::new(),
-            locals: vec![gen_ty],
-            blocks: vec![
-                BasicBlock {
-                    id: 0,
-                    statements: Vec::new(),
-                    instructions: Vec::new(),
-                    terminator: Terminator::MakeGenerator {
-                        dest: Place::Local(0),
-                        body_fn: "__hew_gen_body_make_gen_wasm_excl_test_0".to_string(),
-                        next: 1,
-                        env: None,
-                    },
-                },
-                BasicBlock {
-                    id: 1,
-                    statements: Vec::new(),
-                    instructions: Vec::new(),
-                    terminator: Terminator::Return,
-                },
-            ],
-            decisions: Vec::new(),
-            intrinsic_id: None,
-            await_deadline_ns: std::collections::HashMap::new(),
-
-            lambda_actor_user_param_locals: Vec::new(),
-            span: None,
-            instr_spans: ::std::collections::BTreeMap::new(),
-        };
-        let pipeline = raw_mir_only_pipeline(body);
-        assert_eq!(
-            uses_wasm_excluded_symbol(&pipeline).as_deref(),
-            Some(WASM_GENERATOR_UNSUPPORTED_SYMBOL),
-            "a generator construction (Terminator::MakeGenerator) must be fenced \
-             fail-closed on wasm32 at compile (#1758)"
         );
     }
 

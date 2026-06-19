@@ -351,6 +351,7 @@ pub unsafe extern "C" fn hew_cont_destroy(handle: *mut c_void) {
 /// out-drop thunk (or null), followed by the `started` / `pending` flag bytes —
 /// not yet destroyed. Called exactly once per generator value.
 #[no_mangle]
+#[cfg(not(target_arch = "wasm32"))]
 pub unsafe extern "C" fn hew_gen_coro_destroy(companion: *mut c_void) {
     if companion.is_null() {
         return;
@@ -583,22 +584,31 @@ mod tests {
     // un-consumed owned `out` value exactly once. These tests model that block
     // directly (no LLVM) and assert the dispatch fires exactly when pending,
     // never when consumed, and exactly once.
+    //
+    // `hew_gen_coro_destroy` is not emitted for wasm32 (teardown is handled by
+    // the synthesized IR on that target), so the helpers and tests in this block
+    // are gated off wasm32.
 
+    #[cfg(not(target_arch = "wasm32"))]
     use std::sync::atomic::{AtomicU32, Ordering};
 
     // Separate counters per test so the dispatch tests stay isolated under
     // nextest's parallel execution (a shared counter would race).
+    #[cfg(not(target_arch = "wasm32"))]
     static PENDING_DROP_CALLS: AtomicU32 = AtomicU32::new(0);
+    #[cfg(not(target_arch = "wasm32"))]
     static CONSUMED_DROP_CALLS: AtomicU32 = AtomicU32::new(0);
 
     /// Stand-in for a codegen-emitted typed out-drop thunk: bumps the
     /// pending-path counter. A real thunk GEPs to the companion's `out` field and
     /// runs `Y`'s drop; the dispatch contract this pins is "called once iff pending".
+    #[cfg(not(target_arch = "wasm32"))]
     unsafe extern "C" fn pending_counting_thunk(_companion: *mut c_void) {
         PENDING_DROP_CALLS.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Stand-in thunk for the consumed-path test (bumps a distinct counter).
+    #[cfg(not(target_arch = "wasm32"))]
     unsafe extern "C" fn consumed_counting_thunk(_companion: *mut c_void) {
         CONSUMED_DROP_CALLS.fetch_add(1, Ordering::SeqCst);
     }
@@ -607,6 +617,7 @@ mod tests {
     /// coro handle + null env (so handle/env teardown are no-ops) and the given
     /// `pending` flag + out-drop thunk. Returns the companion pointer (owned by
     /// `hew_cont_frame_alloc`, freed by `hew_gen_coro_destroy`).
+    #[cfg(not(target_arch = "wasm32"))]
     unsafe fn make_companion(
         pending: u8,
         thunk: Option<unsafe extern "C" fn(*mut c_void)>,
@@ -647,6 +658,9 @@ mod tests {
 
     /// A companion dropped with `pending == 1` and a non-null thunk runs the
     /// typed out-drop EXACTLY once — the leak fix for an un-consumed owned yield.
+    /// `hew_gen_coro_destroy` is not emitted for wasm32 (the IR path handles
+    /// teardown there); this test covers the native Rust implementation only.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn destroy_runs_out_drop_thunk_exactly_once_when_pending() {
         PENDING_DROP_CALLS.store(0, Ordering::SeqCst);
@@ -666,6 +680,7 @@ mod tests {
     /// A companion dropped with `pending == 0` (the value was consumed by a
     /// `.next()`, or never yielded) must NOT run the thunk — dropping a consumed
     /// value would double-free the copy the consumer now owns.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn destroy_skips_out_drop_thunk_when_not_pending() {
         CONSUMED_DROP_CALLS.store(0, Ordering::SeqCst);
@@ -683,6 +698,7 @@ mod tests {
 
     /// A `BitCopy` `Y` plants a null thunk; destroy with pending set must be a
     /// no-op on the drop side (nothing to free) and not deref a null thunk.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn destroy_null_thunk_pending_is_noop_drop() {
         // SAFETY: companion has a null thunk; destroy must skip the call.

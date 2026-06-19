@@ -20043,33 +20043,44 @@ impl Builder {
         actor_name: &str,
         name: &str,
         explicit_init: bool,
-        expected_arg_names: &[String],
+        init_param_names: &[String],
         state_field_names: &[String],
     ) -> String {
-        let parameters = format!(
-            "[{}]",
-            expected_arg_names
-                .iter()
-                .map(|expected| format!("`{expected}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
         if explicit_init {
-            if state_field_names.iter().any(|field| field == name) {
-                format!(
-                    "`{name}` is a state field on actor `{actor_name}` but not an `init()` \
-                     parameter; init() parameters are: {parameters}"
-                )
-            } else {
-                format!(
-                    "actor `{actor_name}` has no init() parameter named `{name}`; \
-                     parameters are: {parameters}"
-                )
-            }
+            // Both init params and state fields are valid spawn args when an
+            // init() block is present (COEXIST model). Report the full valid set.
+            let params = format!(
+                "[{}]",
+                init_param_names
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            let fields = format!(
+                "[{}]",
+                state_field_names
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            format!(
+                "actor `{actor_name}` has no init() parameter or state field named `{name}`; \
+                 init() parameters are: {params}; state fields are: {fields}"
+            )
         } else {
+            let fields = format!(
+                "[{}]",
+                state_field_names
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
             format!(
                 "actor `{actor_name}` has no state field named `{name}`; \
-                 fields are: {parameters}"
+                 fields are: {fields}"
             )
         }
     }
@@ -20127,19 +20138,24 @@ impl Builder {
             return None;
         };
         let explicit_init = layout.init_symbol.is_some();
-        let expected_arg_names = if explicit_init {
-            &layout.init_param_names
-        } else {
-            &layout.state_field_names
-        };
         let mut explicit: HashMap<&str, &HirExpr> = HashMap::new();
         for (name, arg) in args {
-            if !expected_arg_names.iter().any(|expected| expected == name) {
+            // COEXIST model (A155): when an init() block is present, spawn args
+            // may name EITHER init() parameters (routed to the init call) OR
+            // state fields (routed to the initial state record). Without init(),
+            // only state fields are valid.
+            let is_valid = if explicit_init {
+                layout.init_param_names.iter().any(|n| n == name)
+                    || layout.state_field_names.iter().any(|n| n == name)
+            } else {
+                layout.state_field_names.iter().any(|n| n == name)
+            };
+            if !is_valid {
                 let note = Self::invalid_spawn_arg_note(
                     actor_name,
                     name,
                     explicit_init,
-                    expected_arg_names,
+                    &layout.init_param_names,
                     &layout.state_field_names,
                 );
                 self.diagnostics.push(MirDiagnostic {

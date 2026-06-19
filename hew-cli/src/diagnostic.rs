@@ -515,9 +515,6 @@ fn mir_place_label(place: &hew_mir::Place) -> String {
             variant_idx,
             field_idx,
         } => format!("enum local {local} variant {variant_idx} field {field_idx}"),
-        hew_mir::Place::GenState { local, field } => {
-            format!("generator state local {local} field {field}")
-        }
     }
 }
 

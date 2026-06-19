@@ -387,7 +387,6 @@ fn unknown_named_type_still_fails_closed_with_d10() {
         enum_layouts: vec![],
         regex_literals: vec![],
         user_consts: vec![],
-        gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],

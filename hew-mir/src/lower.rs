@@ -907,7 +907,6 @@ pub fn lower_hir_module_with_facts(
     let mut supervisor_layouts: Vec<crate::model::SupervisorLayout> = Vec::new();
     let mut machine_layouts: Vec<crate::model::MachineLayout> = Vec::new();
     let mut enum_layouts: Vec<crate::model::EnumLayout> = Vec::new();
-    let mut gen_state_layouts: Vec<crate::model::GenStateLayout> = Vec::new();
     // Named-fn invoke shims are synthesised per-use-site inside each
     // `lower_function` builder, so the same shim can appear in
     // `lowered.generated` for every function that references the same
@@ -2003,7 +2002,6 @@ pub fn lower_hir_module_with_facts(
                 checked_mir.push(lowered.checked);
                 elaborated_mir.push(lowered.elaborated);
                 record_layouts.extend(lowered.record_layouts);
-                gen_state_layouts.extend(lowered.gen_state_layouts.clone());
                 for generated in lowered.generated {
                     if generated.raw.name.starts_with("__hew_named_fn_invoke_")
                         && !emitted_named_fn_shims.insert(generated.raw.name.clone())
@@ -2016,7 +2014,6 @@ pub fn lower_hir_module_with_facts(
                     elaborated_mir.push(generated.elaborated);
                     diagnostics.extend(generated.diagnostics);
                     record_layouts.extend(generated.record_layouts);
-                    gen_state_layouts.extend(generated.gen_state_layouts.clone());
                 }
                 diagnostics.extend(lowered.diagnostics);
             }
@@ -2045,7 +2042,6 @@ pub fn lower_hir_module_with_facts(
                     checked_mir.push(lowered.checked);
                     elaborated_mir.push(lowered.elaborated);
                     record_layouts.extend(lowered.record_layouts);
-                    gen_state_layouts.extend(lowered.gen_state_layouts.clone());
                     for generated in lowered.generated {
                         if generated.raw.name.starts_with("__hew_named_fn_invoke_")
                             && !emitted_named_fn_shims.insert(generated.raw.name.clone())
@@ -2058,7 +2054,6 @@ pub fn lower_hir_module_with_facts(
                         elaborated_mir.push(generated.elaborated);
                         diagnostics.extend(generated.diagnostics);
                         record_layouts.extend(generated.record_layouts);
-                        gen_state_layouts.extend(generated.gen_state_layouts.clone());
                     }
                     diagnostics.extend(lowered.diagnostics);
                 }
@@ -2088,7 +2083,6 @@ pub fn lower_hir_module_with_facts(
                     checked_mir.push(lowered.checked);
                     elaborated_mir.push(lowered.elaborated);
                     record_layouts.extend(lowered.record_layouts);
-                    gen_state_layouts.extend(lowered.gen_state_layouts.clone());
                     for generated in lowered.generated {
                         if generated.raw.name.starts_with("__hew_named_fn_invoke_")
                             && !emitted_named_fn_shims.insert(generated.raw.name.clone())
@@ -2101,7 +2095,6 @@ pub fn lower_hir_module_with_facts(
                         elaborated_mir.push(generated.elaborated);
                         diagnostics.extend(generated.diagnostics);
                         record_layouts.extend(generated.record_layouts);
-                        gen_state_layouts.extend(generated.gen_state_layouts.clone());
                     }
                     diagnostics.extend(lowered.diagnostics);
                 }
@@ -2227,7 +2220,6 @@ pub fn lower_hir_module_with_facts(
         checked_mir.push(lowered.checked);
         elaborated_mir.push(lowered.elaborated);
         record_layouts.extend(lowered.record_layouts);
-        gen_state_layouts.extend(lowered.gen_state_layouts.clone());
         for generated in lowered.generated {
             if generated.raw.name.starts_with("__hew_named_fn_invoke_")
                 && !emitted_named_fn_shims.insert(generated.raw.name.clone())
@@ -2240,7 +2232,6 @@ pub fn lower_hir_module_with_facts(
             elaborated_mir.push(generated.elaborated);
             diagnostics.extend(generated.diagnostics);
             record_layouts.extend(generated.record_layouts);
-            gen_state_layouts.extend(generated.gen_state_layouts.clone());
         }
         diagnostics.extend(lowered.diagnostics);
     }
@@ -2327,7 +2318,6 @@ pub fn lower_hir_module_with_facts(
         enum_layouts,
         regex_literals,
         user_consts,
-        gen_state_layouts,
         extern_decls,
         dyn_vtable_registry,
         // C-3b: checker-authored layout facts are routed through a
@@ -3430,7 +3420,6 @@ fn synthesize_machine_step_fn(
         diagnostics,
         generated: Vec::new(),
         record_layouts: Vec::new(),
-        gen_state_layouts: Vec::new(),
     }
 }
 
@@ -4579,11 +4568,6 @@ struct LoweredFunction {
     diagnostics: Vec<MirDiagnostic>,
     generated: Vec<LoweredFunction>,
     record_layouts: Vec<crate::model::RecordLayout>,
-    /// Generator state-record layouts synthesised inside this function or
-    /// any of its `generated` children. `lower_hir_module` flattens these
-    /// into `IrPipeline.gen_state_layouts`. Empty on every function that
-    /// contains no `gen { … }` block.
-    gen_state_layouts: Vec<crate::model::GenStateLayout>,
 }
 
 /// Insert execution-context carrier markers into a context-bearing CFG.
@@ -4923,7 +4907,6 @@ fn lower_function(
         diagnostics,
         generated: builder.generated_functions,
         record_layouts: builder.closure_record_layouts,
-        gen_state_layouts: builder.gen_state_layouts,
     }
 }
 
@@ -5755,12 +5738,6 @@ struct Builder {
     /// S3b will extend this context with the cross-yield live-set
     /// accumulator once liveness analysis lands.
     in_gen_body: bool,
-    /// State-record layouts synthesised by `lower_gen_block` while
-    /// lowering this function body. Each entry corresponds to one
-    /// generator body function pushed onto `generated_functions`.
-    /// `lower_hir_module` flattens them into `IrPipeline.gen_state_layouts`
-    /// so codegen consumes them by gen-body function name.
-    gen_state_layouts: Vec<crate::model::GenStateLayout>,
     /// Per-scope deferred bodies collected during statement lowering.
     /// Key: the `ScopeId` of the HIR scope that owns the defer.
     /// Value: deferred body expressions in registration order (FIFO).
@@ -7591,11 +7568,10 @@ impl Builder {
                         Place::MachineTag(_)
                         | Place::MachineVariant { .. }
                         | Place::EnumTag(_)
-                        | Place::EnumVariant { .. }
-                        | Place::GenState { .. } => {
+                        | Place::EnumVariant { .. } => {
                             panic!(
                                 "builder invariant: `Let` binding may not bind directly to a \
-                                 MachineTag / MachineVariant / EnumTag / EnumVariant / GenState \
+                                 MachineTag / MachineVariant / EnumTag / EnumVariant \
                                  place; these are projection primitives into a tagged-union \
                                  value, not independent bindings. Binding {:?}, src {:?}",
                                 binding.id, src
@@ -16333,7 +16309,6 @@ impl Builder {
             diagnostics,
             generated: vec![],
             record_layouts: vec![],
-            gen_state_layouts: vec![],
         }
     }
 
@@ -16852,7 +16827,6 @@ impl Builder {
             diagnostics,
             generated: builder.generated_functions,
             record_layouts: builder.closure_record_layouts,
-            gen_state_layouts: builder.gen_state_layouts,
         }
     }
 
@@ -20642,7 +20616,6 @@ impl Builder {
             diagnostics,
             generated: builder.generated_functions,
             record_layouts: builder.closure_record_layouts,
-            gen_state_layouts: builder.gen_state_layouts,
         }
     }
 
@@ -20797,7 +20770,6 @@ impl Builder {
             diagnostics,
             generated: builder.generated_functions,
             record_layouts: builder.closure_record_layouts,
-            gen_state_layouts: builder.gen_state_layouts,
         }
     }
 
@@ -21290,7 +21262,6 @@ impl Builder {
             diagnostics: body_diagnostics,
             generated: body_builder.generated_functions,
             record_layouts: body_builder.closure_record_layouts,
-            gen_state_layouts: body_builder.gen_state_layouts,
         };
         self.generated_functions.push(body_lowered);
 
@@ -21948,12 +21919,6 @@ impl Builder {
             generated: body_builder.generated_functions,
             record_layouts: body_builder.closure_record_layouts,
             // The state-record layout this body owns sits on the
-            // enclosing builder (pushed above); the LoweredFunction
-            // itself carries only nested layouts from any nested
-            // generated functions. Today gen bodies cannot nest
-            // gen-blocks (HIR rejects the construct), so this stays
-            // empty.
-            gen_state_layouts: body_builder.gen_state_layouts,
         };
         self.generated_functions.push(body_lowered);
 
@@ -23626,10 +23591,7 @@ fn duplex_parent_local(place: Place) -> Option<u32> {
         | Place::MachineTag(_)
         | Place::MachineVariant { .. }
         | Place::EnumTag(_)
-        | Place::EnumVariant { .. }
-        // GenState fields are generator state-record projections, not
-        // Duplex-family handles. They have no parent Duplex local.
-        | Place::GenState { .. } => None,
+        | Place::EnumVariant { .. } => None,
     }
 }
 
@@ -24353,9 +24315,7 @@ fn base_local(place: Place) -> Option<u32> {
         | Place::RecvHalf(n)
         | Place::MachineTag(n)
         | Place::EnumTag(n) => Some(n),
-        Place::MachineVariant { local, .. }
-        | Place::EnumVariant { local, .. }
-        | Place::GenState { local, .. } => Some(local),
+        Place::MachineVariant { local, .. } | Place::EnumVariant { local, .. } => Some(local),
     }
 }
 
@@ -24380,7 +24340,7 @@ fn base_local(place: Place) -> Option<u32> {
 /// synthetic `ReturnSlot` are plain, non-aliasing slots whose `Move` is an
 /// ownership hand-off (forward-propagated by the fixpoint, not seeded).
 /// Every other variant — the interior-projection loads
-/// (`MachineVariant`/`EnumVariant`/`GenState`) *and* the handle/tag places
+/// (`MachineVariant`/`EnumVariant`) *and* the handle/tag places
 /// — is treated as interior so a future projection-shaped place cannot be
 /// added without deciding it here; over-tainting a handle/tag place only
 /// over-excludes its dest from drop (leaks, never double-frees).
@@ -24403,7 +24363,7 @@ fn place_is_interior_projection(place: Place) -> bool {
         // Interior-projection loads — the payload-destructure forms that
         // alias parent storage with no retain. These are the variants this
         // fix exists to catch.
-        Place::MachineVariant { .. } | Place::EnumVariant { .. } | Place::GenState { .. } => true,
+        Place::MachineVariant { .. } | Place::EnumVariant { .. } => true,
         // Handle/tag places. Tainting these only over-excludes (leaks); kept
         // on the interior side so the match stays fail-closed and no future
         // projection-shaped place defaults to the hand-off branch.
@@ -27570,7 +27530,7 @@ fn derive_tuple_composite_drop_allowed(
 /// This predicate restores symmetry with `base_local`: accept `Local` *and* the
 /// five owned handle places (each a standalone, resource-owning slot whose `Move`
 /// hands off ownership), while CONTINUING TO REJECT the interior-projection
-/// places (`EnumVariant`/`MachineVariant`/`GenState`/`MachineTag`/`EnumTag`),
+/// places (`EnumVariant`/`MachineVariant`/`MachineTag`/`EnumTag`),
 /// which alias a still-live parent aggregate's storage — adding one of those to
 /// `flows_to_return` would exclude a parent-owned payload from drop and LEAK the
 /// parent's buffer. `ReturnSlot` is the aggregate's destination, never a member
@@ -27600,7 +27560,6 @@ fn place_is_owned_handoff_member(place: Place) -> bool {
         Place::ReturnSlot
         | Place::EnumVariant { .. }
         | Place::MachineVariant { .. }
-        | Place::GenState { .. }
         | Place::MachineTag(_)
         | Place::EnumTag(_) => false,
     }
@@ -29079,14 +29038,7 @@ fn drop_kind_for(
         | Place::MachineTag(_)
         | Place::MachineVariant { .. }
         | Place::EnumTag(_)
-        | Place::EnumVariant { .. }
-        // Generator state-record projections are not drop bindings on
-        // their own — drop discipline for the state record runs via the
-        // per-state `__drop_in_state` shim that S3b2 synthesises, not
-        // through the per-Place drop-kind dispatcher. Fail-closed to
-        // `Resource` so any accidental reach-through surfaces a
-        // diagnostic rather than a silent no-op.
-        | Place::GenState { .. } => DropKind::Resource,
+        | Place::EnumVariant { .. } => DropKind::Resource,
     }
 }
 
@@ -33045,8 +32997,8 @@ mod cow_sole_owner_derivation {
         );
     }
 
-    /// The same exclusion holds for the user-enum (`EnumVariant`) and
-    /// generator-state (`GenState`) interior-projection load forms, and the
+    /// The same exclusion holds for the user-enum (`EnumVariant`) interior-projection
+    /// load form, and the
     /// taint propagates one `Move` hop further (binder copied into a second
     /// local).
     #[test]

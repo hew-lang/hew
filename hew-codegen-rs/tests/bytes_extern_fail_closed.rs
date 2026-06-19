@@ -133,7 +133,6 @@ fn pipeline_with_extern(
         enum_layouts: vec![],
         regex_literals: vec![],
         user_consts: vec![],
-        gen_state_layouts: vec![],
         extern_decls: vec![ExternDecl {
             name: fn_name.to_string(),
             abi: "C".to_string(),

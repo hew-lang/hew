@@ -107,7 +107,6 @@ fn select_stream_i64_pipeline() -> IrPipeline {
         enum_layouts: vec![],
         regex_literals: vec![],
         user_consts: Vec::new(),
-        gen_state_layouts: vec![],
         extern_decls: vec![],
         dyn_vtable_registry: vec![],
         hashmap_lowering_facts: vec![],

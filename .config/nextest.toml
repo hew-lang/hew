@@ -238,42 +238,6 @@ slow-timeout = { period = "30s", terminate-after = 3 }
 filter = "test(tcp_stream_backing_records_error_on_reset)"
 slow-timeout = { period = "120s", terminate-after = 6 }
 
-[[profile.ci.overrides]]
-# child_supervisor_recovery_recreates_nested_subtree polls a nested supervisor
-# rebuild across escalation.  The test is 0.21s isolated; under the full
-# cargo llvm-cov workspace population (~3-8% of coverage runs) the restart wake
-# is LOST: hew_supervisor_wait_restart reaches its 30s ceiling and the test
-# times out even though the nested subtree is eventually recreated.  The
-# mechanism: the dispatch-count polling loop's per-instruction instrumentation
-# overhead delays the signal delivery path long enough that the restart-wake
-# notification is consumed before wait_restart observes it, leaving wait_restart
-# blocked at its deadline.  This is a production lost-wake bug in the
-# restart-wake/signal path under instrumented load, not a scheduler-timing
-# approximation.
-#
-# Route into the process-timing group (max-threads=4) so the scheduler has
-# headroom.
-#
-# SHIM: retry absorbs the lost-wake on the restart-wake/signal path that occurs
-#   when cargo llvm-cov instrumentation delays dispatch-count delivery past the
-#   wait_restart ceiling (~3-8% under full workspace coverage population).
-# WHEN obsolete: when the restart-wake path delivers its signal reliably under
-#   instrumentation — either the wake is made edge-triggered (not level-
-#   triggered) so a missed notification is re-checked, or wait_restart uses a
-#   condvar/futex that cannot lose the wake even under instrumented delay.
-#   Tracked: production restart-wake follow-on (hew_supervisor_wait_restart
-#   lost-wake under instrumented contention).
-# WHAT the real solution looks like: replace the dispatch-count polling loop with
-#   a condvar or channel that holds the completion signal until the waiter
-#   arrives, making the wake delivery order-independent.
-# Correctness invariant: a real escalation-rebuild regression (subtree never
-#   recreated) fails on both attempts — the poll times out on the first try and
-#   the retry alike; the retry only absorbs the intermittent lost-wake where the
-#   subtree IS rebuilt but wait_restart misses the signal.
-filter = "test(child_supervisor_recovery_recreates_nested_subtree)"
-test-group = "process-timing"
-retries = 1
-
 [profile.ci.junit]
 path = "junit.xml"
 

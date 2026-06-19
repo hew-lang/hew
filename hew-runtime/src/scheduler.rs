@@ -1502,6 +1502,42 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
 
 // ── Actor activation ────────────────────────────────────────────────────
 
+/// RAII marker that an `activate_actor` frame owns an actor's in-flight
+/// activation. Set `dispatch_active = true` the instant the worker wins the
+/// `Runnable -> Running` CAS and clears it on EVERY exit of the activation
+/// (settle, suspend-park, crash-break, or normal fall-through).
+///
+/// The flag exists because an external `hew_actor_trap` CAS-es the actor
+/// straight to the quiescent `Crashed`/`Stopped` state out from under this
+/// worker — erasing the `Running` state while the worker is still reading
+/// `a.actor_state`, the arena, and the mailbox in its post-dispatch settle. The
+/// async free that the trap's supervisor-notify ultimately drives
+/// (`hew_actor_free`) treats `Crashed`/`Stopped` as quiescent and would reclaim
+/// the box + mailbox in that window — a use-after-free that surfaces as a
+/// corrupted msg-node tripping the envelope-mode dispatch guard. `hew_actor_free`
+/// additionally waits on this flag, so it never frees under an in-flight
+/// activation regardless of which thread published the terminal state.
+struct ActivationOwnership<'a> {
+    flag: &'a std::sync::atomic::AtomicBool,
+}
+
+impl<'a> ActivationOwnership<'a> {
+    /// Mark the activation owned. Call immediately after the `Runnable ->
+    /// Running` CAS succeeds.
+    fn claim(flag: &'a std::sync::atomic::AtomicBool) -> Self {
+        flag.store(true, Ordering::Release);
+        Self { flag }
+    }
+}
+
+impl Drop for ActivationOwnership<'_> {
+    fn drop(&mut self) {
+        // Release so a free path that subsequently observes the cleared flag
+        // also observes every write this activation made to the actor box.
+        self.flag.store(false, Ordering::Release);
+    }
+}
+
 /// Activate an actor: CAS state to `Running`, drain messages up to budget,
 /// then transition back to `Idle` or re-enqueue as `Runnable`.
 #[expect(
@@ -1542,6 +1578,13 @@ fn activate_actor(actor: *mut HewActor) {
     {
         return;
     }
+
+    // Mark the activation owned for the rest of this frame. Held until every
+    // exit below (settle / suspend-park / crash-break / fall-through) so the
+    // async free path cannot reclaim the actor box while this worker is still
+    // reading it — even after an external `hew_actor_trap` forces the state to
+    // a quiescent terminal value out from under us. See `ActivationOwnership`.
+    let _activation_ownership = ActivationOwnership::claim(&a.dispatch_active);
 
     // Resume re-entry (slice-4 executor). This activation may be a resumed
     // continuation rather than a fresh message dispatch. The discriminator —
@@ -2862,6 +2905,7 @@ mod tests {
             state_clone_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
+            dispatch_active: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,
@@ -3706,6 +3750,7 @@ mod tests {
             state_clone_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
+            dispatch_active: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,
@@ -3751,6 +3796,122 @@ mod tests {
         // SAFETY: mailbox was created in this test and is not used afterwards.
         unsafe { mailbox::hew_mailbox_free(mailbox) };
         crate::tracing::hew_trace_reset();
+    }
+
+    // Observations captured by `trap_self_mid_dispatch` from INSIDE the
+    // activation, so the test can assert the dispatch-ownership invariant that
+    // gates `hew_actor_free` against the free-under-active-dispatch UAF.
+    static MID_DISPATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
+    static MID_DISPATCH_STATE: AtomicI32 = AtomicI32::new(-1);
+    static MID_DISPATCH_FREE_REFUSED: AtomicBool = AtomicBool::new(false);
+
+    /// Dispatch handler that traps its own actor mid-dispatch (modelling an
+    /// external `hew_actor_trap` forcing the actor terminal while a worker still
+    /// owns the activation), then snapshots — from inside the still-running
+    /// activation — the dispatch-ownership flag, the (now terminal) state, and
+    /// whether the free-quiescence predicate would refuse to free at this
+    /// instant. This is the exact dangerous window: state is `Crashed` but the
+    /// worker is still reading the actor box.
+    unsafe extern "C-unwind" fn trap_self_mid_dispatch(
+        ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut std::ffi::c_void,
+        _msg_type: i32,
+        _data: *mut std::ffi::c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        // SAFETY: the scheduler installs a valid context for the dispatch.
+        let actor = unsafe { (*ctx).actor };
+        // SAFETY: `actor` is the live actor owning this activation.
+        unsafe {
+            crate::actor::hew_actor_trap(actor, 1);
+            let a = &*actor;
+            MID_DISPATCH_ACTIVE.store(a.dispatch_active.load(Ordering::Acquire), Ordering::SeqCst);
+            MID_DISPATCH_STATE.store(a.actor_state.load(Ordering::Acquire), Ordering::SeqCst);
+            // The free-quiescence predicate the free path uses: terminal state
+            // AND no active dispatch. Inside this handler the activation is
+            // still owned, so it must refuse (so an async free waits us out).
+            let terminal = a.actor_state.load(Ordering::Acquire) == HewActorState::Crashed as i32;
+            let owned = a.dispatch_active.load(Ordering::Acquire);
+            MID_DISPATCH_FREE_REFUSED.store(terminal && owned, Ordering::SeqCst);
+        }
+        std::ptr::null_mut()
+    }
+
+    /// A worker that wins an activation owns the actor box until it leaves
+    /// `activate_actor` — even when an external trap forces the actor terminal
+    /// mid-dispatch. `dispatch_active` stays set across the trap (so the async
+    /// free path that the trap's supervisor-notify ultimately drives waits the
+    /// worker out instead of reclaiming the box+mailbox under it), and is
+    /// cleared once the activation returns. Regression guard for the
+    /// free-under-active-dispatch use-after-free that surfaced as a corrupted
+    /// msg-node tripping the envelope-mode dispatch guard on Windows-IOCP timing
+    /// (#58/#2 `child_supervisor_recovery_recreates_nested_subtree`).
+    #[test]
+    fn activation_owns_actor_across_external_trap_until_settle() {
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        MID_DISPATCH_ACTIVE.store(false, Ordering::SeqCst);
+        MID_DISPATCH_STATE.store(-1, Ordering::SeqCst);
+        MID_DISPATCH_FREE_REFUSED.store(false, Ordering::SeqCst);
+
+        // SAFETY: creating a new mailbox with no preconditions.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            // SAFETY: mailbox is non-null and was just created above.
+            unsafe { mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) },
+            0
+        );
+
+        let mut actor = stub_actor();
+        actor.dispatch = Some(trap_self_mid_dispatch);
+        actor.mailbox = mailbox.cast();
+        actor.actor_state = AtomicI32::new(HewActorState::Runnable as i32);
+        let actor_ptr: *mut HewActor = Box::into_raw(Box::new(actor));
+
+        activate_actor(actor_ptr);
+
+        // SAFETY: `actor_ptr` is still owned by this test (no supervisor free).
+        let a = unsafe { &*actor_ptr };
+
+        // Inside the activation, after the trap: the actor was terminal AND the
+        // activation still owned it — exactly the window a naive free would
+        // have reclaimed the box in.
+        assert!(
+            MID_DISPATCH_ACTIVE.load(Ordering::SeqCst),
+            "dispatch_active must stay set across an external trap while the worker owns the activation"
+        );
+        assert_eq!(
+            MID_DISPATCH_STATE.load(Ordering::SeqCst),
+            HewActorState::Crashed as i32,
+            "the trap must have published the terminal state mid-dispatch"
+        );
+        assert!(
+            MID_DISPATCH_FREE_REFUSED.load(Ordering::SeqCst),
+            "free-quiescence must REFUSE while terminal-but-dispatch-active (the UAF window)"
+        );
+
+        // After the activation returns, ownership is released so the free path
+        // can proceed.
+        assert!(
+            !a.dispatch_active.load(Ordering::Acquire),
+            "dispatch_active must clear once the activation leaves activate_actor"
+        );
+        assert_eq!(
+            a.actor_state.load(Ordering::Acquire),
+            HewActorState::Crashed as i32,
+            "the actor remains Crashed after the activation settles"
+        );
+
+        // SAFETY: the test exclusively owns the actor and mailbox; the mailbox
+        // drain releases any node enqueued before the trap.
+        unsafe {
+            mailbox::hew_mailbox_free(mailbox);
+            drop(Box::from_raw(actor_ptr));
+        }
     }
 
     /// A dispatch handler that returns a non-null `coro.begin`-shaped handle:
@@ -4885,6 +5046,7 @@ mod tests {
             state_clone_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
+            dispatch_active: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,

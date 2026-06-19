@@ -692,6 +692,7 @@ mod tests {
             state_clone_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
+            dispatch_active: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
             supervisor: std::ptr::null_mut(),
             supervisor_child_index: 0,

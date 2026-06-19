@@ -1,22 +1,28 @@
-// Reject fixture: scope_deadline_body — non-empty `after(duration) { ... }` body.
+// Reject fixture: scope_deadline_body — non-empty `after(duration) { ... }`
+// timeout body in a CONTEXTLESS caller (`fn main()`).
 //
-// The `after(duration) { ... }` deadline clause inside a `scope {}` body
-// currently only supports empty bodies.  A non-empty body fails closed in HIR
-// lowering.  This is the fail-closed boundary until select/arm dispatch lands.
+// The HIR shape gate now admits a non-empty timeout body; MIR decides whether it
+// can be lowered. A non-empty body is only lowered from an execution-context
+// caller (actor handler / closure / task entry), which has a parkable
+// continuation to run the body on the deadline edge. A contextless `fn main()`
+// has no such continuation, so MIR lowering fails closed rather than silently
+// dropping the body.
 //
 // This fixture pins the fail-closed boundary at:
-//   hew-hir/src/lower.rs deadline body guard
+//   hew-mir/src/lower.rs scope-deadline-body lowering (execution-context guard)
 //
 // Harness verb: hew compile
 // Expected diagnostics:
-//   - E_HIR
-//   - "deadline body must be empty"
-
+//   - E_NOT_YET_IMPLEMENTED
+//   - "MIR lowering for scope deadline body is not implemented yet"
+//   - "a contextless caller has no parkable continuation"
 fn _cleanup() {}
 
 fn main() -> i64 {
     scope {
-        after(5s) { _cleanup(); }
+        after(5s) {
+            _cleanup();
+        };
     };
     0
 }

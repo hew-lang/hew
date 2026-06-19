@@ -1104,17 +1104,23 @@ pub unsafe extern "C" fn hew_task_scope_completion_observe(
     // SAFETY: caller guarantees `scope` is valid.
     let s = unsafe { &mut *scope };
 
-    // First pass: count outstanding (not-yet-Done) children.
-    let mut pending: usize = 0;
+    // First pass: collect the children that were outstanding (not-yet-Done) at
+    // this instant. `pending`/`refs` are sized to this exact set, and the second
+    // pass registers an observer for each one — never re-reading `load_state()`
+    // to decide membership, so a child that flips to Done between the passes
+    // stays in the counted set (its observer fires synchronously below) rather
+    // than being silently dropped (the lost-wake + box-leak race).
+    let mut outstanding: Vec<*mut HewTask> = Vec::new();
     let mut cur = s.tasks;
     while !cur.is_null() {
         // SAFETY: all task pointers in the scope list are valid.
         let t = unsafe { &*cur };
         if t.load_state() != HewTaskState::Done {
-            pending += 1;
+            outstanding.push(cur);
         }
         cur = t.next;
     }
+    let pending = outstanding.len();
 
     if pending == 0 {
         // The whole scope already joined. Win the arbiter synchronously; the
@@ -1141,21 +1147,49 @@ pub unsafe extern "C" fn hew_task_scope_completion_observe(
         refs: AtomicUsize::new(pending + 1),
     }));
 
-    // Second pass: register a counting observer on each outstanding child. A
-    // child that became Done between the two passes fires `scope_join_child_done`
-    // synchronously inside `observe`, which still decrements `pending` correctly.
-    cur = s.tasks;
-    while !cur.is_null() {
-        // SAFETY: all task pointers in the scope list are valid.
-        let t = unsafe { &mut *cur };
-        let next = t.next;
-        if t.load_state() != HewTaskState::Done {
+    // Test-only seam: deterministically open the count→observe window so a unit
+    // test can drive a counted-but-not-yet-observed child to Done between the two
+    // passes (the threaded race that production reproduces non-deterministically).
+    #[cfg(test)]
+    run_inter_pass_hook(s);
+
+    // Second pass: register a counting observer for EVERY child counted in the
+    // first pass — unconditionally, never re-checking membership. The first-pass
+    // set is the source of truth for `pending`/`refs`; each member must drive its
+    // box ref to exactly one fire+release or the `pending` count never reaches
+    // zero (the join never wins → wrong TimedOut) and the box + its retained
+    // arbiter ref leak.
+    //
+    // A child that flipped to Done between the passes fires synchronously:
+    //   * threaded child: its `done_signal` exists (installed at spawn) and its
+    //     `notify_done` already set `done`, so `observe`'s lock-guarded done-check
+    //     fires `scope_join_child_done` immediately via the `fire_now` branch.
+    //   * synchronously-completed child: `mark_done` may have run with no signal
+    //     installed (a no-op notify), so a fresh signal would read `done == false`
+    //     and never fire. Detect the Done state here and fire the callback
+    //     directly — equivalent to `observe`'s synchronous path, decrementing
+    //     `pending` and releasing exactly one box ref.
+    // Either way the child decrements `pending` and releases its box ref exactly
+    // once, with no double-fire and no double-release.
+    for &child in &outstanding {
+        // SAFETY: all task pointers in the scope list are valid for this call.
+        let t = unsafe { &mut *child };
+        if t.load_state() == HewTaskState::Done {
+            // Already Done at registration time: fire the counting callback
+            // directly (the signal's `done` flag may not reflect this for a
+            // synchronously-completed child without an installed signal).
+            // SAFETY: `waiter` holds one box ref per outstanding child; this fire
+            // consumes exactly this child's ref.
+            unsafe { scope_join_child_done(waiter.cast::<c_void>()) };
+        } else {
             let signal = t
                 .done_signal
                 .get_or_insert_with(|| Arc::new(TaskDoneSignal::new()));
+            // `observe` re-checks `done` under the signal lock, so a child that
+            // flips Done between the `load_state` above and this call still fires
+            // synchronously via `fire_now` — closing the inner race atomically.
             signal.observe(scope_join_child_done, waiter.cast::<c_void>());
         }
-        cur = next;
     }
 
     // Drop the registrant guard ref. If every child already fired during the
@@ -2072,6 +2106,34 @@ fn should_fail_task_reaper_spawn() -> bool {
     FAIL_TASK_REAPER_SPAWN.with(Cell::get)
 }
 
+#[cfg(test)]
+type InterPassHook = Box<dyn FnMut(*mut HewTaskScope)>;
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only hook fired by `hew_task_scope_completion_observe` between its
+    /// count pass and its observe pass, used to deterministically inject a child
+    /// completion inside the count→observe window (the production race).
+    static INTER_PASS_HOOK: std::cell::RefCell<Option<InterPassHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run (and consume) the test-only inter-pass hook against `scope`, if installed.
+#[cfg(test)]
+fn run_inter_pass_hook(scope: &mut HewTaskScope) {
+    let hook = INTER_PASS_HOOK.with(|h| h.borrow_mut().take());
+    if let Some(mut hook) = hook {
+        hook(scope as *mut HewTaskScope);
+    }
+}
+
+/// Install a one-shot inter-pass hook for the current thread. Cleared after the
+/// next `hew_task_scope_completion_observe` consumes it (or on test teardown).
+#[cfg(test)]
+fn set_inter_pass_hook(hook: InterPassHook) {
+    INTER_PASS_HOOK.with(|h| *h.borrow_mut() = Some(hook));
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 /// Test-only: captures the message passed to `set_last_error` when
@@ -2252,6 +2314,134 @@ mod tests {
                 hew_await_cancel_status(reg),
                 AwaitCancelStatus::TimedOut as i32,
                 "a late child completion must not re-win after the deadline"
+            );
+
+            hew_await_cancel_free(reg);
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn scope_completion_observe_threaded_child_done_in_window_completes_join() {
+        use crate::await_cancel::{
+            hew_await_cancel_free, hew_await_cancel_new, hew_await_cancel_status, AwaitCancelStatus,
+        };
+        // Regression: a child that flips to Done INSIDE the count→observe window
+        // must still drive `pending` to zero. The first pass counts it; if the
+        // second pass then skipped it because it now reads Done, no observer would
+        // ever decrement `pending` → the join would never win → the scope would
+        // hang to its deadline (wrong TimedOut) and the waiter box + its retained
+        // arbiter ref would leak.
+        //
+        // The inter-pass hook reproduces a THREADED child completing in the
+        // window: it installs a `done_signal` (as `hew_task_spawn_thread` does)
+        // and fires `notify_done` (as the worker thread's tail does), then sets
+        // the task Done — exactly the interleaving a real worker thread produces.
+        // SAFETY: the test owns every scope/task/arbiter pointer exclusively.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let t1 = hew_task_new();
+            let t2 = hew_task_new();
+            hew_task_scope_spawn(scope, t1);
+            hew_task_scope_spawn(scope, t2);
+
+            // Both children are outstanding at the count pass. The hook completes
+            // t2 between the passes, as a worker thread's `notify_done` would.
+            let t2_raw = t2 as usize;
+            set_inter_pass_hook(Box::new(move |_scope| {
+                let t2 = t2_raw as *mut HewTask;
+                // SAFETY: t2 is owned by the test and live for this call (the
+                // dereference is covered by the enclosing test `unsafe` block).
+                let child = &mut *t2;
+                child
+                    .done_signal
+                    .get_or_insert_with(|| Arc::new(TaskDoneSignal::new()));
+                child.store_state(HewTaskState::Done, Ordering::Release);
+                child.notify_done_signal();
+            }));
+
+            let reg = hew_await_cancel_new(ptr::null_mut(), None, ptr::null_mut());
+            // Both children were outstanding at the count pass, so the join arm
+            // parks rather than completing synchronously.
+            assert_eq!(
+                hew_task_scope_completion_observe(scope, reg, ptr::null_mut()),
+                SCOPE_JOIN_SUSPEND
+            );
+            assert_eq!(
+                hew_await_cancel_status(reg),
+                AwaitCancelStatus::Pending as i32,
+                "t1 is still outstanding, so the join must remain Pending"
+            );
+
+            // The last child completes → the join wins the arbiter. Before the
+            // fix, t2's in-window completion was dropped and `pending` was stuck
+            // at 1, so this completion would leave the arbiter Pending forever.
+            hew_task_scope_complete_task(scope, t1);
+            assert_eq!(
+                hew_await_cancel_status(reg),
+                AwaitCancelStatus::Completed as i32,
+                "the join must win once every counted child (incl. the in-window \
+                 child) has fired — not hang to the deadline as TimedOut"
+            );
+
+            // Clean teardown proves no leak: the waiter box and its retained
+            // arbiter ref were released by exactly two child fires (run under
+            // ASan/LSan in the runtime leak gate).
+            hew_await_cancel_free(reg);
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn scope_completion_observe_synchronous_child_done_in_window_completes_join() {
+        use crate::await_cancel::{
+            hew_await_cancel_free, hew_await_cancel_new, hew_await_cancel_status, AwaitCancelStatus,
+        };
+        // Companion to the threaded case: a SYNCHRONOUSLY-completed child can be
+        // marked Done in the window with NO `done_signal` installed (its
+        // `mark_done` notify is a no-op). A fresh signal would read `done == false`
+        // and never fire, so the observe pass must detect the Done state and fire
+        // the counting callback directly. This proves the direct-fire branch.
+        // SAFETY: the test owns every scope/task/arbiter pointer exclusively.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let t1 = hew_task_new();
+            let t2 = hew_task_new();
+            hew_task_scope_spawn(scope, t1);
+            hew_task_scope_spawn(scope, t2);
+
+            // Complete t2 in the window WITHOUT a done_signal: only flip its state
+            // to Done, as a signal-less synchronous completion leaves it.
+            let t2_raw = t2 as usize;
+            set_inter_pass_hook(Box::new(move |_scope| {
+                let t2 = t2_raw as *mut HewTask;
+                // SAFETY: t2 is owned by the test and live for this call (the
+                // dereference is covered by the enclosing test `unsafe` block).
+                let child = &mut *t2;
+                assert!(
+                    child.done_signal.is_none(),
+                    "this case exercises the no-signal Done child"
+                );
+                child.store_state(HewTaskState::Done, Ordering::Release);
+            }));
+
+            let reg = hew_await_cancel_new(ptr::null_mut(), None, ptr::null_mut());
+            assert_eq!(
+                hew_task_scope_completion_observe(scope, reg, ptr::null_mut()),
+                SCOPE_JOIN_SUSPEND
+            );
+            assert_eq!(
+                hew_await_cancel_status(reg),
+                AwaitCancelStatus::Pending as i32,
+                "t1 is still outstanding, so the join must remain Pending"
+            );
+
+            hew_task_scope_complete_task(scope, t1);
+            assert_eq!(
+                hew_await_cancel_status(reg),
+                AwaitCancelStatus::Completed as i32,
+                "the signal-less in-window child must fire via the direct path so \
+                 the join still wins"
             );
 
             hew_await_cancel_free(reg);

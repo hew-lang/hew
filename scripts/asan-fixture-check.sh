@@ -22,12 +22,22 @@
 #    ASan libhew.a.
 # 3. Run each binary with ASAN_OPTIONS=detect_leaks=1.
 #
-# Two fixture probes:
-#   clean-probe  — a compiled Hew binary exercising the previously-leaky shapes
-#                  (now fixed); must produce ZERO ASan/LSan findings.
-#   leak-proof   — a pure C binary compiled with -fsanitize=address that leaks
-#                  1 KiB via malloc; the gate must catch it, proving ASan/LSan
-#                  fires correctly in binaries produced by this pipeline.
+# Three fixture probes:
+#   clean-probe (--emit-obj path)
+#       A compiled Hew binary exercising the previously-leaky Vec<string>
+#       index-into-compare and local drop shapes (now fixed); must produce ZERO
+#       ASan/LSan findings.
+#   leak-probe (Hew generated-code)
+#       asan_fixture_leak_probe.hew calls malloc via extern "C" and never frees
+#       it.  The malloc call is in the LLVM IR produced by hew codegen — a
+#       genuine generated-code leak.  The gate must catch it, proving it would
+#       have flagged the historical array-repeat Vec<string>/Vec<record> leaks
+#       that were previously macOS-oracle-only.
+#   clean-probe (HEW_SANITIZE_ADDRESS=1 hew build path)
+#       The same clean fixture linked by `hew build` with HEW_SANITIZE_ADDRESS=1
+#       (the full CLI link step, routing through hew-cli/src/link.rs).  Proves
+#       the CLI flag path is exercised by this CI gate, not only the manual
+#       clang step in the emit-obj pipeline.  Must produce ZERO findings.
 #
 # SHIM: Linux-only gate.  On macOS the leak oracle is the `leaks --atExit`
 # path in hew-cli/tests/*_leak_oracle.rs; ASan + LSan on Darwin does not
@@ -215,50 +225,100 @@ run_asan_fixture() {
   echo "    PASS ${label}: exit ${actual_exit}, no ASan/LSan findings"
 }
 
-# ── Proof probe: deliberately-leaky binary ───────────────────────────────
-# To prove the gate actually fires on leaks, we compile a small C program
-# that deliberately leaks 1 KiB via malloc, linked with -fsanitize=address
-# using the same clang call as the Hew fixture pipeline.
-#
-# NOTE: We use a pure C proof rather than a Hew program calling extern "rt",
-# because extern "rt" declarations are restricted to symbols in the JIT stable
-# ABI list (scripts/jit-symbol-classification.toml).  A synthetic test symbol
-# does not belong in that list.  The C proof demonstrates the same thing: that
-# a binary produced by this gate's link pipeline is correctly intercepted by
-# ASan/LSan.  The clean-probe (a real Hew fixture) validates the full Hew
-# codegen → clang-link → ASan-run path.
-LEAK_PROOF_C="${WORK_DIR}/asan_leak_proof.c"
-cat > "${LEAK_PROOF_C}" <<'EOF'
-#include <stdlib.h>
+# ── Helper: run one binary expecting an ASan/LSan finding ─────────────────
+# The inverse of run_asan_fixture.  Returns 0 (pass) if the binary's ASan/LSan
+# report contains a finding marker or the binary exits non-zero due to LSan.
+# Returns 1 (fail) if no finding is detected — indicating ASan/LSan is not
+# firing and the gate would silently miss leaks.
+run_asan_fixture_expect_leak() {
+  local label="$1"
+  local bin="$2"
+  local log_prefix="${bin}.asan"
 
-/* Deliberately leak 1024 bytes to prove the ASan/LSan gate catches leaks in
- * binaries produced by the asan-fixture pipeline.  The main function returns 0
- * so we test the LSan at-exit check, not the allocator error path. */
-int main(void) {
-    void *p = malloc(1024);
-    (void)p; /* deliberately not freed — LSan must report this at exit */
-    return 0;
+  echo "  RUN      ${label} (expect LSan finding)"
+
+  local actual_exit=0
+  ASAN_OPTIONS="detect_leaks=1:log_path=${log_prefix}" \
+  ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH}" \
+  HEW_WORKERS=1 \
+    "${bin}" >/dev/null 2>/dev/null || actual_exit=$?
+
+  local asan_output=""
+  for f in "${log_prefix}".*; do
+    [[ -f "${f}" ]] || continue
+    asan_output+="$(cat "${f}")"$'\n'
+    rm -f "${f}"
+  done
+
+  # Also capture stderr directly in case log_path was not respected.
+  local asan_stderr=""
+  ASAN_OPTIONS="detect_leaks=1" \
+  ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH}" \
+    "${bin}" >/dev/null 2>"${log_prefix}.stderr" || true
+  asan_stderr="$(cat "${log_prefix}.stderr" 2>/dev/null || true)"
+  rm -f "${log_prefix}.stderr"
+
+  local gate_fired=false
+  if printf '%s\n%s' "${asan_output}" "${asan_stderr}" \
+       | grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)|detected memory leaks|SUMMARY: (AddressSanitizer|LeakSanitizer)"; then
+    gate_fired=true
+  elif [[ "${actual_exit}" -ne 0 ]]; then
+    # LSan exits non-zero when leaks are detected even without matching text
+    gate_fired=true
+  fi
+
+  if "${gate_fired}"; then
+    echo "    PASS ${label}: gate correctly caught deliberate generated-code leak (exit ${actual_exit})"
+    return 0
+  else
+    echo "    FAIL ${label}: gate did NOT catch the deliberate 1 KiB malloc leak" >&2
+    echo "    This means ASan/LSan is not firing on compiled Hew binaries." >&2
+    echo "    Check: -fsanitize=address at both compile and link steps." >&2
+    echo "    Binary: ${bin}" >&2
+    return 1
+  fi
 }
-EOF
 
-PROOF_BIN="${WORK_DIR}/asan_leak_proof"
-echo "  LINK     leak-proof (C)"
-clang \
-  -fsanitize=address \
-  -fno-omit-frame-pointer \
-  -target "${SANITIZER_TARGET}" \
-  "${LEAK_PROOF_C}" \
-  -o "${PROOF_BIN}"
-
-# ── Step 2: compile the clean fixture ────────────────────────────────────
+# ── Step 2: compile the clean and leak-probe fixtures ────────────────────
 CLEAN_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_clean_probe.hew"
+LEAK_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_leak_probe.hew"
 
-# ── Step 3: compile the Hew clean fixture ────────────────────────────────
+# ── Step 3: compile the Hew fixtures ─────────────────────────────────────
 echo ""
 echo "=== asan-fixture-check: compiling fixtures ==="
 
 CLEAN_BIN="${WORK_DIR}/asan_fixture_clean_probe"
 compile_asan_fixture "clean-probe" "${CLEAN_SRC}" "${CLEAN_BIN}"
+
+# ── Step 3b: compile the Hew generated-code leak-proof fixture ───────────
+# asan_fixture_leak_probe.hew calls malloc via extern "C" and intentionally
+# never frees it.  The call to malloc is in the LLVM IR emitted by hew
+# codegen — this is a genuine generated-code leak, not a standalone C program.
+# The gate expects this binary to produce an ASan/LSan finding, proving that
+# the pipeline catches leaks in compiled Hew code.
+LEAK_BIN="${WORK_DIR}/asan_fixture_leak_probe"
+compile_asan_fixture "leak-probe (Hew generated-code)" "${LEAK_SRC}" "${LEAK_BIN}"
+
+# ── Step 3c: compile and link the clean probe via the CLI flag path ───────
+# Uses HEW_SANITIZE_ADDRESS=1 hew build (full link, not --emit-obj) to exercise
+# the CLI integration that routes -fsanitize=address through hew-cli/src/link.rs.
+# This proves the HEW_SANITIZE_ADDRESS flag path is active in the CI gate, not
+# only the manual clang step in compile_asan_fixture.
+CLI_LINK_BIN="${WORK_DIR}/asan_fixture_clean_probe_cli_link"
+echo "  CLI-LINK clean-probe (HEW_SANITIZE_ADDRESS=1 hew build)"
+HEW_SANITIZE_ADDRESS=1 \
+  "${ASAN_HEW}" build "${CLEAN_SRC}" -o "${CLI_LINK_BIN}" 2>&1 | sed 's/^/    /'
+if [[ ! -f "${CLI_LINK_BIN}" ]]; then
+  echo "asan-fixture-check: HEW_SANITIZE_ADDRESS=1 hew build produced no binary at ${CLI_LINK_BIN}" >&2
+  exit 1
+fi
+echo "  VERIFY   CLI-linked binary contains ASan/LSan runtime symbols"
+if ! nm "${CLI_LINK_BIN}" 2>/dev/null | grep -q "__asan_init\|__lsan_"; then
+  echo "asan-fixture-check: CLI-linked binary does not contain __asan_init / __lsan_ symbols" >&2
+  echo "    Check: HEW_SANITIZE_ADDRESS=1 must add -fsanitize=address at the clang link step." >&2
+  exit 1
+fi
+echo "    PASS CLI-link: binary contains ASan/LSan runtime symbols (__asan_init / __lsan_*)"
 
 # ── Step 4: run the gate ──────────────────────────────────────────────────
 echo ""
@@ -267,53 +327,32 @@ echo "=== asan-fixture-check: running gate ==="
 pass=0
 fail=0
 
-# ── Gate 1: clean fixture MUST produce zero ASan/LSan findings ──────────
+# ── Gate 1: clean fixture (--emit-obj path) MUST produce zero findings ───
 if run_asan_fixture "clean-probe" "${CLEAN_BIN}" 0; then
   pass=$((pass + 1))
 else
   fail=$((fail + 1))
 fi
 
-# ── Gate 2: leaky fixture MUST produce an ASan/LSan finding ─────────────
-echo "  RUN      leak-proof (expect LSan finding)"
-
-proof_exit=0
-ASAN_OPTIONS="detect_leaks=1:log_path=${PROOF_BIN}.asan" \
-ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH}" \
-HEW_WORKERS=1 \
-  "${PROOF_BIN}" >/dev/null 2>/dev/null || proof_exit=$?
-
-proof_output=""
-for f in "${PROOF_BIN}.asan".*; do
-  [[ -f "${f}" ]] || continue
-  proof_output+="$(cat "${f}")"$'\n'
-  rm -f "${f}"
-done
-
-# Also capture stderr directly in case log_path was not respected.
-proof_stderr=""
-ASAN_OPTIONS="detect_leaks=1" \
-ASAN_SYMBOLIZER_PATH="${ASAN_SYMBOLIZER_PATH}" \
-  "${PROOF_BIN}" >/dev/null 2>"${PROOF_BIN}.stderr" || true
-proof_stderr="$(cat "${PROOF_BIN}.stderr" 2>/dev/null || true)"
-
-gate_fired=false
-if printf '%s\n%s' "${proof_output}" "${proof_stderr}" \
-     | grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)|detected memory leaks|SUMMARY: (AddressSanitizer|LeakSanitizer)"; then
-  gate_fired=true
-elif [[ "${proof_exit}" -ne 0 ]]; then
-  # LSan exits non-zero when leaks are detected even without matching text
-  gate_fired=true
-fi
-
-if "${gate_fired}"; then
-  echo "    PASS leak-proof: gate correctly caught deliberate leak (exit ${proof_exit})"
+# ── Gate 2: Hew generated-code leak-probe MUST produce a LSan finding ────
+# asan_fixture_leak_probe.hew calls malloc via extern "C" and never frees it.
+# The malloc call is in the LLVM IR produced by hew codegen.  LSan's at-exit
+# scan must report the 1 KiB unreachable block.  This is the positive proof
+# that the gate would have caught the historical array-repeat Vec<string>/
+# Vec<record> leaks.
+if run_asan_fixture_expect_leak "leak-probe (Hew generated-code)" "${LEAK_BIN}"; then
   pass=$((pass + 1))
 else
-  echo "    FAIL leak-proof: gate did NOT catch the deliberate 1 KiB leak" >&2
-  echo "    This means ASan/LSan is not firing on the gate's binaries." >&2
-  echo "    Check: clang -fsanitize=address at both compile and link steps." >&2
-  echo "    Proof binary: ${PROOF_BIN}" >&2
+  fail=$((fail + 1))
+fi
+
+# ── Gate 3: clean fixture (HEW_SANITIZE_ADDRESS=1 hew build path) ─────────
+# Runs the CLI-linked binary (produced by the full `hew build` link step with
+# HEW_SANITIZE_ADDRESS=1) under ASan/LSan.  Proves the CLI flag integration is
+# exercised by this gate, not only the manual clang path.
+if run_asan_fixture "clean-probe (CLI link path)" "${CLI_LINK_BIN}" 0; then
+  pass=$((pass + 1))
+else
   fail=$((fail + 1))
 fi
 

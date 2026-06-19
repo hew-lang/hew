@@ -77,12 +77,20 @@ jobs:
   #   leaks that only appear in the generated code (e.g. a hew_vec_get_str
   #   retained node that codegen failed to drop after a string compare)
   #
-  # Two fixture probes:
-  #   clean-probe   exercises the previously-leaky Vec<string> index-into-compare
-  #                 and owned array-repeat shapes (both fixed); must be ZERO findings.
-  #   leak-proof    calls a C shim that intentionally leaks 1 KiB; the gate must
-  #                 catch it — proving the extended gate would have flagged the two
-  #                 missed leaks that were previously macOS-oracle-only.
+  # Three fixture probes:
+  #   clean-probe (--emit-obj path)
+  #       Exercises the previously-leaky Vec<string> index-into-compare and
+  #       local drop shapes (both fixed); must produce ZERO findings.
+  #   leak-probe (Hew generated-code)
+  #       asan_fixture_leak_probe.hew calls malloc via extern "C" and never frees
+  #       it.  The malloc call is in the LLVM IR produced by hew codegen — a
+  #       genuine generated-code leak, not a standalone C program.  The gate must
+  #       catch it, proving it would have flagged the historical array-repeat
+  #       Vec<string>/Vec<record> leaks that were previously macOS-oracle-only.
+  #   clean-probe (HEW_SANITIZE_ADDRESS=1 hew build path)
+  #       The same clean fixture linked by `hew build` with HEW_SANITIZE_ADDRESS=1
+  #       (the full CLI link step, not manual clang).  Proves the CLI flag
+  #       integration is exercised by this gate; must produce ZERO findings.
   # ─────────────────────────────────────────────────────────────────────────
   compiled-fixture-asan:
     name: Compiled fixture ASan (generated code)
@@ -123,12 +131,15 @@ jobs:
           SANITIZER_RUST_TARGET: x86_64-unknown-linux-gnu
           CARGO_TERM_COLOR: always
         run: |
-          # scripts/asan-fixture-check.sh:
+          # scripts/asan-fixture-check.sh — three probes:
           #   1. Builds hew CLI + libhew.a with nightly -Zsanitizer=address.
-          #   2. Compiles .hew fixtures to objects (hew build --emit-obj).
-          #   3. Links with clang -fsanitize=address against the ASan libhew.a.
-          #   4. Runs clean-probe (must be zero findings) and leak-proof (must
-          #      detect the deliberate 1 KiB leak).
+          #   2. Compiles clean-probe + leak-probe via hew build --emit-obj,
+          #      then links with clang -fsanitize=address.
+          #   3. Also compiles clean-probe via HEW_SANITIZE_ADDRESS=1 hew build
+          #      (the full CLI link path through hew-cli/src/link.rs).
+          #   4. Runs clean-probe (zero findings), leak-probe (must catch the
+          #      Hew generated-code malloc leak), clean-probe CLI-link (zero
+          #      findings).
           scripts/asan-fixture-check.sh
 
   # ─────────────────────────────────────────────────────────────────────────

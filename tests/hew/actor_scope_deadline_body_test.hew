@@ -27,7 +27,7 @@ actor Deadliner {
             fork {
                 nap_long();
             };
-            after(20) {
+            after(20ms) {
                 fired = 7;
             };
         };
@@ -41,7 +41,7 @@ actor Deadliner {
             fork {
                 nap_short();
             };
-            after(200) {
+            after(200ms) {
                 fired = 7;
             };
         };

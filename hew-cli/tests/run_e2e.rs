@@ -3401,12 +3401,15 @@ fn suspending_stream_recv_send_flip_in_execution_context() {
          }\n\
          fn main() { let r = spawn Runner(); r.go(0); }\n",
     );
+    // Accept either the derived-Debug spelling (`SuspendingStreamNext`) or the
+    // structured mnemonic (`suspend.stream_next`) — the flip's presence is the
+    // load-bearing signal, not the renderer version.
     assert!(
-        dump.contains("SuspendingStreamNext"),
+        dump.contains("SuspendingStreamNext") || dump.contains("suspend.stream_next"),
         "actor `await stream.recv()` must flip to SuspendingStreamNext:\n{dump}"
     );
     assert!(
-        dump.contains("SuspendingStreamSend"),
+        dump.contains("SuspendingStreamSend") || dump.contains("suspend.stream_send"),
         "actor `await sink.send()` must flip to SuspendingStreamSend:\n{dump}"
     );
 }
@@ -3433,8 +3436,11 @@ fn suspending_listener_accept_flip_in_execution_context() {
          \x20   a.go(0);\n\
          }\n",
     );
+    // Accept either the derived-Debug spelling (`SuspendingAccept`) or the
+    // structured mnemonic (`suspend.accept`) — the flip's presence is the
+    // load-bearing signal, not the renderer version.
     assert!(
-        dump.contains("SuspendingAccept"),
+        dump.contains("SuspendingAccept") || dump.contains("suspend.accept"),
         "actor `await listener.accept()` must flip to SuspendingAccept:\n{dump}"
     );
 }
@@ -3454,7 +3460,7 @@ fn blocking_listener_accept_in_main_keeps_blocking_call() {
          }\n",
     );
     assert!(
-        !dump.contains("SuspendingAccept"),
+        !dump.contains("SuspendingAccept") && !dump.contains("suspend.accept"),
         "`await listener.accept()` from main must NOT flip to SuspendingAccept:\n{dump}"
     );
     assert!(
@@ -3489,8 +3495,11 @@ fn suspending_remote_ask_flip_in_execution_context() {
          }\n\
          fn main() { let c = spawn Client(); c.go(0); }\n",
     );
+    // Accept either the derived-Debug spelling (`SuspendingRemoteAsk`) or the
+    // structured mnemonic (`suspend.remote_ask`) — the flip's presence is the
+    // load-bearing signal, not the renderer version.
     assert!(
-        dump.contains("SuspendingRemoteAsk"),
+        dump.contains("SuspendingRemoteAsk") || dump.contains("suspend.remote_ask"),
         "actor-handler `peer.ask()` must flip to SuspendingRemoteAsk:\n{dump}"
     );
 }
@@ -3517,7 +3526,7 @@ fn blocking_remote_ask_in_main_keeps_blocking_terminator() {
          }\n",
     );
     assert!(
-        !dump.contains("SuspendingRemoteAsk"),
+        !dump.contains("SuspendingRemoteAsk") && !dump.contains("suspend.remote_ask"),
         "`peer.ask()` from main must NOT flip to SuspendingRemoteAsk:\n{dump}"
     );
     assert!(

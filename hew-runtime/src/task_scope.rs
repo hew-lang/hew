@@ -968,6 +968,224 @@ pub unsafe extern "C" fn hew_task_detach_await(
     }
 }
 
+// ── Suspending scope-deadline join (cut-task-sleep S5) ───────────────────────
+//
+// `scope { ... } after(d) { body }` with a NON-EMPTY timeout body races the
+// scope's child-task join (wait-ALL) against a timer-wheel deadline. The codegen
+// `SuspendingScopeDeadline` ramp owns ONE shared `HewAwaitCancel` arbiter (the
+// same first-ready one-shot CAS the suspending select uses): the deadline arm is
+// armed via `hew_await_cancel_schedule_deadline_ms`, and the JOIN arm is wired
+// here — the scope's last child to complete fires `hew_await_cancel_complete` and
+// `enqueue_resume`s the parked actor exactly once. Whichever arm wins the CAS
+// settles the wait; the loser's finish returns 0 and drops its wake.
+
+/// Codegen ABI: every scope child was already `Done` when the join observer was
+/// installed; the arbiter is completed synchronously and the caller MUST NOT
+/// suspend — it binds the join-won (scope-complete) edge immediately.
+pub const SCOPE_JOIN_READY: i32 = 1;
+/// Codegen ABI: at least one child is outstanding; the caller MUST `coro.suspend`
+/// and resume on the first-ready wake (join completes or the deadline fires).
+pub const SCOPE_JOIN_SUSPEND: i32 = 0;
+
+/// Shared join-arm state across a scope's child-completion observers. One ref is
+/// held per registered child observer; the last observer to fire reclaims the
+/// box and releases the arbiter ref. `pending` counts the not-yet-fired child
+/// observers; reaching zero is the wait-ALL completion that wins the arbiter.
+struct ScopeJoinWaiter {
+    /// The shared first-ready arbiter (retained once for this waiter). The
+    /// winning child observer calls `hew_await_cancel_complete` on it.
+    reg: *mut crate::await_cancel::HewAwaitCancel,
+    /// The parked-continuation actor, woken via `enqueue_resume` when the join
+    /// wins. Raw and possibly-stale: `enqueue_resume` re-validates liveness.
+    actor: *mut crate::actor::HewActor,
+    /// Outstanding child observers not yet fired. The observer that decrements
+    /// this to zero is the join winner.
+    pending: AtomicUsize,
+    /// Live observer references on this box (one per registered observer). The
+    /// observer that drops the last ref reclaims the box + releases `reg`.
+    refs: AtomicUsize,
+}
+
+/// Release one `ScopeJoinWaiter` box reference; the last release reclaims the box
+/// and releases the arbiter ref it retained.
+///
+/// # Safety
+///
+/// `waiter` must be a live `ScopeJoinWaiter` box pointer this caller holds a ref
+/// to.
+unsafe fn scope_join_waiter_release(waiter: *mut ScopeJoinWaiter) {
+    if waiter.is_null() {
+        return;
+    }
+    // SAFETY: caller holds one live reference.
+    let prev = unsafe { (*waiter).refs.fetch_sub(1, Ordering::AcqRel) };
+    debug_assert!(prev > 0, "scope-join waiter release on a released box");
+    if prev != 1 {
+        return;
+    }
+    // SAFETY: last ref; reclaim the box and release the arbiter ref it held.
+    let boxed = unsafe { Box::from_raw(waiter) };
+    // SAFETY: the waiter retained `reg` once at registration.
+    unsafe { crate::await_cancel::hew_await_cancel_free(boxed.reg) };
+}
+
+/// One scope child completed (or was cancelled). Decrement the wait-ALL count;
+/// the last child wins the arbiter and wakes the parked actor. Runs OUTSIDE the
+/// task lock (`TaskDoneSignal::notify_done` fires observers after releasing it).
+///
+/// # Safety
+///
+/// `ctx` must be a `*mut ScopeJoinWaiter` handed to `observe` by
+/// [`hew_task_scope_completion_observe`]; this consumes exactly one box ref.
+unsafe extern "C" fn scope_join_child_done(ctx: *mut c_void) {
+    if ctx.is_null() {
+        return;
+    }
+    let waiter = ctx.cast::<ScopeJoinWaiter>();
+    // SAFETY: the registrant retained one box ref per observer; this observer
+    // owns the ref it releases at the end.
+    let w = unsafe { &*waiter };
+    // The wait-ALL fires only when the LAST child completes. `fetch_sub` returns
+    // the prior value, so `prev == 1` means this observer drove pending to zero.
+    let prev = w.pending.fetch_sub(1, Ordering::AcqRel);
+    if prev == 1 {
+        // Join won: settle the shared arbiter. `complete` returns 1 iff this call
+        // won the one-shot CAS (the deadline had not already fired); only then do
+        // we wake — the deadline-won edge already woke the actor.
+        // SAFETY: the waiter holds a retained arbiter ref for the lifetime of the
+        // box.
+        let won = unsafe { crate::await_cancel::hew_await_cancel_complete(w.reg) != 0 };
+        if won {
+            let actor = w.actor;
+            if !actor.is_null() {
+                // SAFETY: `enqueue_resume` re-validates `actor` liveness under the
+                // registry lock; a freed actor drops the wake with no deref.
+                unsafe { crate::scheduler::enqueue_resume(actor, ptr::null_mut()) };
+            }
+        }
+    }
+    // Release this observer's box ref (the last release reclaims the box).
+    // SAFETY: this observer held exactly one box ref.
+    unsafe { scope_join_waiter_release(waiter) };
+}
+
+/// Wire the scope's child-task join (wait-ALL) as the completion arm of the
+/// shared `SuspendingScopeDeadline` arbiter `reg`.
+///
+/// Counts the scope's not-yet-`Done` children. When every child is already
+/// `Done`, completes the arbiter synchronously and returns [`SCOPE_JOIN_READY`]
+/// (the caller binds the scope-complete edge without suspending). Otherwise
+/// registers one counting observer per outstanding child; the last child to
+/// complete fires `hew_await_cancel_complete` + `enqueue_resume`, and returns
+/// [`SCOPE_JOIN_SUSPEND`] (the caller MUST `coro.suspend`).
+///
+/// The arbiter is BORROWED: this call retains its own arbiter reference for the
+/// join waiter's lifetime and releases it when the last observer fires (or the
+/// synchronous-complete path frees it before returning). The deadline arm and
+/// the caller's resume/abandon edges hold their own references.
+///
+/// # Safety
+///
+/// - `scope` must be a valid pointer returned by [`hew_task_scope_new`].
+/// - `reg` must be a live arbiter the caller created via `hew_await_cancel_new`.
+/// - `actor` is the awaiting actor (`hew_actor_self`); may be null (no wake).
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_scope_completion_observe(
+    scope: *mut HewTaskScope,
+    reg: *mut crate::await_cancel::HewAwaitCancel,
+    actor: *mut crate::actor::HewActor,
+) -> i32 {
+    if scope.is_null() || reg.is_null() {
+        crate::set_last_error("C-ABI guard failed: scope/reg null in scope_completion_observe");
+        // Fail closed: report READY so the caller binds the join-won edge rather
+        // than parking forever on an un-wired arbiter.
+        return SCOPE_JOIN_READY;
+    }
+    // SAFETY: caller guarantees `scope` is valid.
+    let s = unsafe { &mut *scope };
+
+    // First pass: count outstanding (not-yet-Done) children.
+    let mut pending: usize = 0;
+    let mut cur = s.tasks;
+    while !cur.is_null() {
+        // SAFETY: all task pointers in the scope list are valid.
+        let t = unsafe { &*cur };
+        if t.load_state() != HewTaskState::Done {
+            pending += 1;
+        }
+        cur = t.next;
+    }
+
+    if pending == 0 {
+        // The whole scope already joined. Win the arbiter synchronously; the
+        // caller binds the scope-complete edge on the immediate path.
+        // SAFETY: `reg` is a live arbiter.
+        unsafe { crate::await_cancel::hew_await_cancel_complete(reg) };
+        return SCOPE_JOIN_READY;
+    }
+
+    // Park: one box ref + one arbiter ref per outstanding child observer, plus a
+    // single registrant ref released after the registration loop so a child that
+    // completes mid-loop cannot reclaim the box before every observer is wired.
+    // SAFETY: `reg` is live; retain one arbiter ref the box owns for its lifetime.
+    unsafe { crate::await_cancel::hew_await_cancel_retain(reg) };
+    let waiter = Box::into_raw(Box::new(ScopeJoinWaiter {
+        reg,
+        actor,
+        pending: AtomicUsize::new(pending),
+        // refs = one per observer (set below) + one registrant guard ref.
+        refs: AtomicUsize::new(pending + 1),
+    }));
+
+    // Second pass: register a counting observer on each outstanding child. A
+    // child that became Done between the two passes fires `scope_join_child_done`
+    // synchronously inside `observe`, which still decrements `pending` correctly.
+    cur = s.tasks;
+    while !cur.is_null() {
+        // SAFETY: all task pointers in the scope list are valid.
+        let t = unsafe { &mut *cur };
+        let next = t.next;
+        if t.load_state() != HewTaskState::Done {
+            let signal = t
+                .done_signal
+                .get_or_insert_with(|| Arc::new(TaskDoneSignal::new()));
+            signal.observe(scope_join_child_done, waiter.cast::<c_void>());
+        }
+        cur = next;
+    }
+
+    // Drop the registrant guard ref. If every child already fired during the
+    // registration loop (all completed mid-loop), this release reclaims the box.
+    // SAFETY: the registrant held exactly one guard ref.
+    unsafe { scope_join_waiter_release(waiter) };
+    SCOPE_JOIN_SUSPEND
+}
+
+/// Detach an abandoned scope-deadline join arm (the codegen abandon edge).
+///
+/// The per-child observers remain registered; the scope-join driven by the
+/// resume/abandon teardown (`hew_task_scope_cancel` + `hew_task_scope_join_all`)
+/// drives every child to completion, so each observer still fires exactly once
+/// against the now-cancelled arbiter (`hew_await_cancel_complete` returns 0 — the
+/// abandon edge already won the one-shot CAS) and releases its box ref. The box
+/// is reclaimed when the last observer fires. This entry is the explicit
+/// no-resource-leaked acknowledgement that the join arm needs no separate
+/// unobserve sweep: cancelling the scope forces every child Done, which fires
+/// every observer.
+///
+/// # Safety
+///
+/// `scope` is part of the FFI contract (not dereferenced beyond the null guard).
+#[no_mangle]
+pub unsafe extern "C" fn hew_task_scope_detach_completion(scope: *mut HewTaskScope) {
+    // The observers self-reclaim when their children complete under the
+    // scope-cancel + join that the abandon/resume teardown always runs. Nothing
+    // to do here beyond the documented contract; kept as a named ABI seam so the
+    // codegen abandon edge has an explicit detach call mirroring the await /
+    // select arms.
+    let _ = scope;
+}
+
 /// Set the task's result by deep-copying `result`.
 ///
 /// # Panics

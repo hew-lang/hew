@@ -71,6 +71,9 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // Non-finite f64 rendering: overflow → `inf` / `-inf`, 0/0 → `nan`.
     // Pins the sandbox VM's renderF64 path against native printf %g.
     "f64_nonfinite_render",
+    // Finite f64 rendering: negative zero, %g fixed/scientific thresholds,
+    // 6-sig-fig rounding. Pins renderF64's %g-equivalent finite path.
+    "f64_finite_render",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";

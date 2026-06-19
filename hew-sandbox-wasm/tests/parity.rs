@@ -210,6 +210,18 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/playground/language/f64_nonfinite_render.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        // Finite f64 values render identically to native printf("%g"): negative
+        // zero prints as `-0`, large/small values use scientific notation at the
+        // %g thresholds (exp < -4 or >= 6), and 6 significant digits are used
+        // with trailing zeros removed. JavaScript's `String()` uses Ryu
+        // shortest-round-trip digits and different notation thresholds, so the
+        // sandbox VM's renderF64 must implement %g-equivalent logic rather than
+        // delegating to `String()` for finite values.
+        test_name: "f64_finite_render",
+        source_rel: "examples/playground/language/f64_finite_render.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

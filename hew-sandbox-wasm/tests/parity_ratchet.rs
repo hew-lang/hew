@@ -514,6 +514,20 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("f64_nonfinite_render"),
     },
     Construct {
+        id: "finite f64 rendering (%g thresholds, neg-zero, 6-sig-fig)",
+        // Sandbox VM's renderF64 must match native printf("%g") for finite
+        // values. JavaScript's `String()` uses Ryu shortest-round-trip digits
+        // and different fixed/scientific thresholds: `-0.0` renders as `"0"`
+        // (not `"-0"`), large values like `1.23457e+20` render as the long
+        // decimal string, and small values like `1.23457e-06` render as
+        // `"0.00000123456789"`. The renderF64 now implements %g semantics:
+        // 6 sig figs via toExponential(5)/toPrecision(6), scientific when
+        // exp < -4 or >= 6, and explicit sign for negative zero.
+        // Pinned to the f64_finite_render parity case.
+        probe: "fn main() {\n    let n: f64 = -0.0;\n    println(n);\n    let big: f64 = 1.23456789e20;\n    println(big);\n    let small: f64 = 1.23456789e-6;\n    println(small);\n}\n",
+        coverage: Coverage::Parity("f64_finite_render"),
+    },
+    Construct {
         id: "top-level type alias (`type T = U;`)",
         // Native E_NOT_YET_IMPLEMENTED; the sandbox used to admit + run it,
         // diverging from native (which refuses to compile). Rejected fail-closed.
@@ -682,7 +696,7 @@ fn every_required_parity_case_backs_a_construct() {
 /// justifying a removed admission in the same commit.
 #[test]
 fn runnable_coverage_does_not_shrink() {
-    const RUNNABLE_BASELINE: usize = 39; // +1: f64_nonfinite_render
+    const RUNNABLE_BASELINE: usize = 40; // +1: f64_finite_render
     let runnable = CONSTRUCTS
         .iter()
         .filter(|c| matches!(c.coverage, Coverage::Parity(_)))

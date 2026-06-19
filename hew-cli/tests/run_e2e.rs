@@ -479,8 +479,7 @@ fn run_generic_user_iterator_static_dispatch_outputs_first_value() {
 fn run_generic_vec_element_methods_roundtrip_scalar_abis() {
     require_codegen();
 
-    let source =
-        repo_root().join("tests/vertical-slice/accept/vec_generic_elem_push_get.hew");
+    let source = repo_root().join("tests/vertical-slice/accept/vec_generic_elem_push_get.hew");
     let expected = std::fs::read_to_string(
         repo_root().join("tests/vertical-slice/accept/vec_generic_elem_push_get.expected"),
     )
@@ -506,8 +505,7 @@ fn run_generic_vec_element_methods_roundtrip_scalar_abis() {
 fn run_generic_vec_element_methods_roundtrip_ptr_abi() {
     require_codegen();
 
-    let source =
-        repo_root().join("tests/vertical-slice/accept/vec_generic_elem_ptr_handle.hew");
+    let source = repo_root().join("tests/vertical-slice/accept/vec_generic_elem_ptr_handle.hew");
     let expected = std::fs::read_to_string(
         repo_root().join("tests/vertical-slice/accept/vec_generic_elem_ptr_handle.expected"),
     )
@@ -599,8 +597,7 @@ fn run_generic_vec_element_owned_element_fails_closed() {
 fn run_generic_vec_for_in_collect_scalar_and_record() {
     require_codegen();
 
-    let source =
-        repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_collect.hew");
+    let source = repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_collect.hew");
     let expected = std::fs::read_to_string(
         repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_collect.expected"),
     )
@@ -627,8 +624,7 @@ fn run_generic_vec_for_in_collect_scalar_and_record() {
 fn run_generic_vec_for_in_count_across_element_abis() {
     require_codegen();
 
-    let source =
-        repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_count.hew");
+    let source = repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_count.hew");
     let expected = std::fs::read_to_string(
         repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_count.expected"),
     )

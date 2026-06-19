@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
+use hew_types::{stdlib::VecElementToken, NumericMethodFamily};
 use hew_types::{
     ChildSlot, ExecutionContextReader, ImplId, MethodTargetFamily, ResolvedTy, Ty, TyPattern,
     VariantMatch,
 };
-use hew_types::{stdlib::VecElementToken, NumericMethodFamily};
 use hew_types::{NumericMethodOp, NumericSignedness, NumericWidth, WireCodecDirection};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};

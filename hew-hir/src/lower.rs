@@ -272,7 +272,10 @@ const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
 /// constructs the `VecIter` literal with exactly these fields in this order.
 pub(crate) fn vec_iter_field_shape(elem_ty: &ResolvedTy) -> Vec<(String, ResolvedTy)> {
     vec![
-        ("vec".to_string(), LowerCtx::resolved_vec_ty(elem_ty.clone())),
+        (
+            "vec".to_string(),
+            LowerCtx::resolved_vec_ty(elem_ty.clone()),
+        ),
         ("idx".to_string(), ResolvedTy::I64),
     ]
 }

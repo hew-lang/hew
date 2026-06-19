@@ -4628,9 +4628,7 @@ fn lower_function(
         hew_hir::dispatch::TraitImplMethodEntry,
     >,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
-    vec_generic_element_abi: Option<
-        &HashMap<hew_types::Ty, hew_types::stdlib::VecElementToken>,
-    >,
+    vec_generic_element_abi: Option<&HashMap<hew_types::Ty, hew_types::stdlib::VecElementToken>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
     pointer_width: PointerWidth,

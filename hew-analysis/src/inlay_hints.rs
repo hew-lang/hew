@@ -695,6 +695,7 @@ mod tests {
             hashset_layout_facts: HashMap::new(),
             actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
+            vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
         }
     }

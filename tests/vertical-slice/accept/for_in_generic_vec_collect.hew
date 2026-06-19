@@ -1,0 +1,45 @@
+// #1929 Stage 2: `for x in items` over a `Vec<T>` where `T` is a type
+// parameter.
+//
+// `copy_all<T>` drives the generic for-in (the Stage 2 target) and re-collects
+// each yielded element into a fresh `Vec<T>` with `out.push(x)` (the Stage 1
+// generic element write). The synthetic `VecIter<elem>` record layout is
+// registered per monomorphisation, so the desugared iterator's `idx`/`vec`
+// field access and its `VecIter` struct-init resolve for each concrete element.
+//
+// Proven for a scalar element (`i64`) and a Copy value-record element
+// (`Point`): every element survives the iterate-and-collect round-trip,
+// summed at the concrete call site (`60` then `10`). The two outer
+// `for ... in copy_all(...)` loops are CONCRETE (`Vec<i64>` / `Vec<Point>`),
+// so the concrete for-in path is exercised alongside the generic one.
+
+type Point { x: i64; y: i64 }
+
+fn copy_all<T>(items: Vec<T>) -> Vec<T> {
+    let out: Vec<T> = Vec::new();
+    for x in items {
+        out.push(x);
+    }
+    out
+}
+
+fn main() {
+    let nums: Vec<i64> = Vec::new();
+    nums.push(10);
+    nums.push(20);
+    nums.push(30);
+    var sum: i64 = 0;
+    for n in copy_all(nums) {
+        sum = sum + n;
+    }
+    println(sum);
+
+    let pts: Vec<Point> = Vec::new();
+    pts.push(Point { x: 1, y: 2 });
+    pts.push(Point { x: 3, y: 4 });
+    var total: i64 = 0;
+    for p in copy_all(pts) {
+        total = total + p.x + p.y;
+    }
+    println(total);
+}

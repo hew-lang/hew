@@ -471,6 +471,177 @@ fn run_generic_user_iterator_static_dispatch_outputs_first_value() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n");
 }
 
+/// #1929 Stage 1: element-typed `Vec<T>` methods (`push`/`get`/`set`/`pop`)
+/// under a type parameter re-resolve to the correct per-ABI runtime symbol per
+/// monomorphisation and round-trip the EXACT pushed value for every scalar /
+/// string element ABI (i64, f64, bool, string) plus `set`/`pop`.
+#[test]
+fn run_generic_vec_element_methods_roundtrip_scalar_abis() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/vec_generic_elem_push_get.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/vec_generic_elem_push_get.expected"),
+    )
+    .expect("read vec_generic_elem_push_get.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic Vec element-method round-trip should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// #1929 Stage 1: the pointer-ABI element. A `Vec<T>` `push`/`get` under a type
+/// parameter instantiated with the Copy pointer-identity handle
+/// `LocalPid<Counter>` re-resolves to `hew_vec_push_ptr` / `hew_vec_get_ptr`,
+/// and the retrieved handle drives the SAME actor (bump then report → "1").
+#[test]
+fn run_generic_vec_element_methods_roundtrip_ptr_abi() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/vec_generic_elem_ptr_handle.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/vec_generic_elem_ptr_handle.expected"),
+    )
+    .expect("read vec_generic_elem_ptr_handle.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic Vec ptr-element round-trip should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// #1929 Stage 1: read-only generic algorithm `items.get(i).show()` over
+/// `Vec<T> where T: Show`, instantiated with the Copy value-record `Color`.
+/// `get` re-resolves to the `hew_vec_get_layout` (Copy value-record) ABI the
+/// concrete path already backs, then `.show()` dispatches statically.
+#[test]
+fn run_generic_vec_get_copy_record_then_trait_dispatch() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/vec_generic_elem_get_trait_dispatch.hew");
+    let expected = std::fs::read_to_string(
+        repo_root()
+            .join("tests/vertical-slice/accept/vec_generic_elem_get_trait_dispatch.expected"),
+    )
+    .expect("read vec_generic_elem_get_trait_dispatch.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic Vec Copy-record get + trait dispatch should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// #1929 Stage 1 fail-closed boundary: an owned / non-Copy element under a type
+/// parameter is DEFERRED. `Vec<Name>` (Name owns a heap `string`) is supported
+/// on the concrete path via the owned ABI, but the generic `Vec<T>`
+/// re-resolution must reject it with a precise diagnostic rather than emit a
+/// `_layout` op that would alias an owner and double-free — never a silent
+/// accept that aborts at run.
+#[test]
+fn run_generic_vec_element_owned_element_fails_closed() {
+    let source =
+        repo_root().join("tests/vertical-slice/reject/vec_generic_elem_owned_deferred.hew");
+
+    let output = Command::new(hew_binary())
+        .args(["check", source.to_str().unwrap()])
+        .current_dir(repo_root())
+        .output()
+        .expect("hew binary must run");
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        !output.status.success(),
+        "owned element under a type parameter must fail closed; stdout: {}\nstderr: {stderr}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    assert!(
+        stderr.contains("E_NOT_YET_IMPLEMENTED")
+            && stderr.contains("Name")
+            && stderr.contains("type-parameter element"),
+        "deferred-element diagnostic should name the element and the Stage 1 boundary; got:\n{stderr}",
+    );
+    assert!(
+        !stderr.contains(": OK"),
+        "hew check must not print OK after the fail-closed gate; got:\n{stderr}",
+    );
+}
+
+/// #1929 Stage 2: `for x in items` over a `Vec<T>` where `T` is a type
+/// parameter. `copy_all<T>` drives the generic for-in (the Stage 2 target) and
+/// re-collects each yielded element into a fresh `Vec<T>` via `out.push(x)`.
+/// The synthetic `VecIter<elem>` layout is registered per monomorphisation so
+/// the iterator's record-field access resolves for each concrete element. The
+/// iterate-and-collect round-trip is summed at the concrete call site for a
+/// scalar element (i64 → 60) and a Copy value-record element (Point → 10).
+#[test]
+fn run_generic_vec_for_in_collect_scalar_and_record() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_collect.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_collect.expected"),
+    )
+    .expect("read for_in_generic_vec_collect.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic Vec<T> for-in collect should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// #1929 Stage 2: pure-iteration proof for the generic for-in. `count<T>`
+/// increments an `i64` accumulator once per yielded element without touching
+/// the element value, isolating the `VecIter` desugar from the element-write
+/// path. The loop runs exactly once per element across three element ABIs —
+/// `i64` (3), `string` (4), and the Copy value-record `Point` (2).
+#[test]
+fn run_generic_vec_for_in_count_across_element_abis() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_count.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/for_in_generic_vec_count.expected"),
+    )
+    .expect("read for_in_generic_vec_count.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic Vec<T> for-in count should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
 #[test]
 fn var_self_countdown_loop_writes_receiver_back() {
     require_codegen();

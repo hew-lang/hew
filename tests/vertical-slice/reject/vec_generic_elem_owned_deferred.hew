@@ -1,0 +1,20 @@
+// #1929 Stage 1 fail-closed boundary: an owned / non-Copy element under a type
+// parameter is DEFERRED, not silently accepted. `Name` owns a heap `string`
+// field, so it is not `Copy`; the concrete `Vec<Name>` path lowers its element
+// ops through the owned ABI, but the generic `Vec<T>` re-resolution does not
+// yet synthesize the per-instantiation owned clone/drop glue. The element-typed
+// methods must therefore fail closed with a precise diagnostic rather than emit
+// a `_layout`/`_ptr` op that would alias an owner and double-free at runtime.
+
+type Name { label: string; }
+
+fn store_and_read<T>(v: Vec<T>, x: T) -> T {
+    v.push(x);
+    v.get(0)
+}
+
+fn main() {
+    let v: Vec<Name> = Vec::new();
+    let r = store_and_read(v, Name { label: "hi" });
+    println(r.label);
+}

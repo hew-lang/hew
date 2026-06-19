@@ -163,6 +163,145 @@ pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
     }
 }
 
+/// The runtime-ABI class of a `Vec<T>` element, as classified by
+/// [`vec_element_runtime_suffix`].
+///
+/// This is the single typed currency for "which `hew_vec_*_<suffix>` family
+/// does this element route to". It is the carry-channel between the checker
+/// (which classifies a concrete element type, consulting `TypeDef::is_indirect`
+/// and the `Copy` marker) and the per-monomorphisation MIR re-resolution of a
+/// `Vec<T>` element method under a type parameter (#1929 Stage 1): the checker
+/// exports a `Ty → VecElementToken` verdict table and MIR maps `(method,
+/// token)` to the concrete symbol through [`vec_element_op_symbol`] — the same
+/// `(method, suffix)` authority that backs the concrete constructor path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum VecElementToken {
+    /// `bool` — one-byte runtime convention (`hew_vec_*_bool`).
+    Bool,
+    /// `i8` — 8-bit signed integer (`hew_vec_*_i8`).
+    I8,
+    /// `u8` — 8-bit unsigned integer (`hew_vec_*_u8`).
+    U8,
+    /// `i16` — 16-bit signed integer (`hew_vec_*_i16`).
+    I16,
+    /// `u16` — 16-bit unsigned integer (`hew_vec_*_u16`).
+    U16,
+    /// `char`/`i32`/`u32` — 32-bit integer convention (`hew_vec_*_i32`).
+    I32,
+    /// `i64`/`u64` — 64-bit integers (`hew_vec_*_i64`).
+    I64,
+    /// `f32` — 32-bit float (`hew_vec_*_f32`).
+    F32,
+    /// `f64` — 64-bit float (`hew_vec_*_f64`).
+    F64,
+    /// `string` (`hew_vec_*_str`).
+    Str,
+    /// Pointer-shaped heap-handle / opaque / closure-pair (`hew_vec_*_ptr`).
+    Ptr,
+    /// Value-record / tuple layout-descriptor element (`hew_vec_*_layout`).
+    Layout,
+}
+
+impl VecElementToken {
+    /// Map the string suffix produced by [`vec_element_runtime_suffix`] to the
+    /// typed token. Returns `None` for any suffix outside the closed set
+    /// (keeps the two in lockstep — a new suffix fails closed here until this
+    /// match is extended).
+    #[must_use]
+    pub fn from_runtime_suffix(suffix: &str) -> Option<Self> {
+        Some(match suffix {
+            "bool" => Self::Bool,
+            "i8" => Self::I8,
+            "u8" => Self::U8,
+            "i16" => Self::I16,
+            "u16" => Self::U16,
+            "i32" => Self::I32,
+            "i64" => Self::I64,
+            "f32" => Self::F32,
+            "f64" => Self::F64,
+            "string" => Self::Str,
+            "ptr" => Self::Ptr,
+            "layout" => Self::Layout,
+            _ => return None,
+        })
+    }
+}
+
+/// The sole `(element-typed Vec method, element ABI token) → runtime symbol`
+/// authority.
+///
+/// Both the concrete dispatch path ([`resolve_vec_method`]) and the
+/// per-monomorphisation generic path (#1929 Stage 1, MIR re-resolution) route
+/// element-typed Vec method calls through this one table, so the symbol a
+/// `Vec<T>` op lowers to is identical whether the element was concrete at check
+/// time or substituted at monomorphisation time. `None` means "no runtime entry
+/// point for this `(method, token)` pair" (e.g. `contains` has no pointer or
+/// bool overload) — callers fail closed.
+#[must_use]
+pub fn vec_element_op_symbol(method: &str, token: VecElementToken) -> Option<&'static str> {
+    use VecElementToken::{Bool, Layout, Ptr, Str, F32, F64, I16, I32, I64, I8, U16, U8};
+    Some(match (method, token) {
+        ("push", Bool) => "hew_vec_push_bool",
+        ("push", I8) => "hew_vec_push_i8",
+        ("push", U8) => "hew_vec_push_u8",
+        ("push", I16) => "hew_vec_push_i16",
+        ("push", U16) => "hew_vec_push_u16",
+        ("push", I32) => "hew_vec_push_i32",
+        ("push", I64) => "hew_vec_push_i64",
+        ("push", F32) => "hew_vec_push_f32",
+        ("push", F64) => "hew_vec_push_f64",
+        ("push", Str) => "hew_vec_push_str",
+        ("push", Ptr) => "hew_vec_push_ptr",
+        ("push", Layout) => "hew_vec_push_layout",
+        ("pop", Bool) => "hew_vec_pop_bool",
+        ("pop", I8) => "hew_vec_pop_i8",
+        ("pop", U8) => "hew_vec_pop_u8",
+        ("pop", I16) => "hew_vec_pop_i16",
+        ("pop", U16) => "hew_vec_pop_u16",
+        ("pop", I32) => "hew_vec_pop_i32",
+        ("pop", I64) => "hew_vec_pop_i64",
+        ("pop", F32) => "hew_vec_pop_f32",
+        ("pop", F64) => "hew_vec_pop_f64",
+        ("pop", Str) => "hew_vec_pop_str",
+        ("pop", Ptr) => "hew_vec_pop_ptr",
+        ("pop", Layout) => "hew_vec_pop_layout",
+        ("get", Bool) => "hew_vec_get_bool",
+        ("get", I8) => "hew_vec_get_i8",
+        ("get", U8) => "hew_vec_get_u8",
+        ("get", I16) => "hew_vec_get_i16",
+        ("get", U16) => "hew_vec_get_u16",
+        ("get", I32) => "hew_vec_get_i32",
+        ("get", I64) => "hew_vec_get_i64",
+        ("get", F32) => "hew_vec_get_f32",
+        ("get", F64) => "hew_vec_get_f64",
+        ("get", Str) => "hew_vec_get_str",
+        ("get", Ptr) => "hew_vec_get_ptr",
+        ("get", Layout) => "hew_vec_get_layout",
+        ("set", Bool) => "hew_vec_set_bool",
+        ("set", I8) => "hew_vec_set_i8",
+        ("set", U8) => "hew_vec_set_u8",
+        ("set", I16) => "hew_vec_set_i16",
+        ("set", U16) => "hew_vec_set_u16",
+        ("set", I32) => "hew_vec_set_i32",
+        ("set", I64) => "hew_vec_set_i64",
+        ("set", F32) => "hew_vec_set_f32",
+        ("set", F64) => "hew_vec_set_f64",
+        ("set", Str) => "hew_vec_set_str",
+        ("set", Ptr) => "hew_vec_set_ptr",
+        ("set", Layout) => "hew_vec_set_layout",
+        // `contains` has no pointer-shaped or bool overload in the runtime.
+        // Layout (value-record/tuple) elements route to the thunk variant.
+        // Narrow-integer types (i8/u8/i16/u16) have no `contains` overload —
+        // fail closed (return None).
+        ("contains", I32) => "hew_vec_contains_i32",
+        ("contains", I64) => "hew_vec_contains_i64",
+        ("contains", F64) => "hew_vec_contains_f64",
+        ("contains", Str) => "hew_vec_contains_str",
+        ("contains", Layout) => "hew_vec_contains_thunk",
+        _ => return None,
+    })
+}
+
 /// Resolve a `Vec<T>` method call to its `hew_*` C-ABI runtime symbol.
 ///
 /// Mirrors [`resolve_channel_method`] / [`resolve_stream_method`]: the checker
@@ -223,88 +362,13 @@ pub fn resolve_vec_method<S: std::hash::BuildHasher>(
             Some("layout") => Some("hew_vec_remove_at_layout"),
             _ => Some("hew_vec_remove_at"),
         },
-        "push" => match vec_element_runtime_suffix(elem_ty, type_defs)? {
-            "bool" => Some("hew_vec_push_bool"),
-            "i8" => Some("hew_vec_push_i8"),
-            "u8" => Some("hew_vec_push_u8"),
-            "i16" => Some("hew_vec_push_i16"),
-            "u16" => Some("hew_vec_push_u16"),
-            "i32" => Some("hew_vec_push_i32"),
-            "i64" => Some("hew_vec_push_i64"),
-            "f32" => Some("hew_vec_push_f32"),
-            "f64" => Some("hew_vec_push_f64"),
-            "string" => Some("hew_vec_push_str"),
-            "ptr" => Some("hew_vec_push_ptr"),
-            "layout" => Some("hew_vec_push_layout"),
-            _ => None,
-        },
-        "pop" => match vec_element_runtime_suffix(elem_ty, type_defs)? {
-            "bool" => Some("hew_vec_pop_bool"),
-            "i8" => Some("hew_vec_pop_i8"),
-            "u8" => Some("hew_vec_pop_u8"),
-            "i16" => Some("hew_vec_pop_i16"),
-            "u16" => Some("hew_vec_pop_u16"),
-            "i32" => Some("hew_vec_pop_i32"),
-            "i64" => Some("hew_vec_pop_i64"),
-            "f32" => Some("hew_vec_pop_f32"),
-            "f64" => Some("hew_vec_pop_f64"),
-            "string" => Some("hew_vec_pop_str"),
-            "ptr" => Some("hew_vec_pop_ptr"),
-            "layout" => Some("hew_vec_pop_layout"),
-            _ => None,
-        },
-        "get" => match vec_element_runtime_suffix(elem_ty, type_defs)? {
-            "bool" => Some("hew_vec_get_bool"),
-            "i8" => Some("hew_vec_get_i8"),
-            "u8" => Some("hew_vec_get_u8"),
-            "i16" => Some("hew_vec_get_i16"),
-            "u16" => Some("hew_vec_get_u16"),
-            "i32" => Some("hew_vec_get_i32"),
-            "i64" => Some("hew_vec_get_i64"),
-            "f32" => Some("hew_vec_get_f32"),
-            "f64" => Some("hew_vec_get_f64"),
-            "string" => Some("hew_vec_get_str"),
-            "ptr" => Some("hew_vec_get_ptr"),
-            "layout" => Some("hew_vec_get_layout"),
-            _ => None,
-        },
-        "set" => match vec_element_runtime_suffix(elem_ty, type_defs)? {
-            "bool" => Some("hew_vec_set_bool"),
-            "i8" => Some("hew_vec_set_i8"),
-            "u8" => Some("hew_vec_set_u8"),
-            "i16" => Some("hew_vec_set_i16"),
-            "u16" => Some("hew_vec_set_u16"),
-            "i32" => Some("hew_vec_set_i32"),
-            "i64" => Some("hew_vec_set_i64"),
-            "f32" => Some("hew_vec_set_f32"),
-            "f64" => Some("hew_vec_set_f64"),
-            "string" => Some("hew_vec_set_str"),
-            "ptr" => Some("hew_vec_set_ptr"),
-            "layout" => Some("hew_vec_set_layout"),
-            _ => None,
-        },
-        "contains" => match vec_element_runtime_suffix(elem_ty, type_defs)? {
-            "i32" => Some("hew_vec_contains_i32"),
-            "i64" => Some("hew_vec_contains_i64"),
-            "f64" => Some("hew_vec_contains_f64"),
-            "string" => Some("hew_vec_contains_str"),
-            // W3.032 Slice 3e: layout (value-record/tuple) elements now route
-            // through `hew_vec_contains_thunk`.  The checker layer
-            // (`check_vec_method` `contains` arm) gates by equality
-            // eligibility + `Copy`; only equality-eligible Copy aggregates
-            // reach this point with the rewrite recorded.  Ineligible /
-            // non-Copy layouts produce a type-error before
-            // `resolve_vec_runtime_symbol` is consulted.
-            //
-            // NOTE: `hew_vec_contains_layout` (the historical abort stub for
-            // managed/non-Copy layouts) is intentionally retained in the
-            // runtime ABI for future use, but is no longer the routing target
-            // for any checker-accepted call.
-            "layout" => Some("hew_vec_contains_thunk"),
-            // Pointer-shaped heap-handle nominals (`ptr`) and `bool` have no
-            // `contains` overload in the runtime — fail closed.
-            _ => None,
-        },
+        // Element-typed ops route through the single `(method, token)` →
+        // symbol authority so the concrete path and the per-monomorphisation
+        // generic path (#1929) cannot drift.
+        "push" | "pop" | "get" | "set" | "contains" => {
+            let suffix = vec_element_runtime_suffix(elem_ty, type_defs)?;
+            vec_element_op_symbol(method, VecElementToken::from_runtime_suffix(suffix)?)
+        }
         _ => None,
     }
 }
@@ -862,5 +926,72 @@ mod tests {
         assert_eq!(RECEIVER, "Receiver");
         assert_eq!(STREAM, "Stream");
         assert_eq!(SINK, "Sink");
+    }
+
+    #[test]
+    fn vec_element_token_round_trips_runtime_suffix() {
+        for (suffix, token) in [
+            ("bool", VecElementToken::Bool),
+            ("i8", VecElementToken::I8),
+            ("u8", VecElementToken::U8),
+            ("i16", VecElementToken::I16),
+            ("u16", VecElementToken::U16),
+            ("i32", VecElementToken::I32),
+            ("i64", VecElementToken::I64),
+            ("f32", VecElementToken::F32),
+            ("f64", VecElementToken::F64),
+            ("string", VecElementToken::Str),
+            ("ptr", VecElementToken::Ptr),
+            ("layout", VecElementToken::Layout),
+        ] {
+            assert_eq!(VecElementToken::from_runtime_suffix(suffix), Some(token));
+        }
+        assert_eq!(VecElementToken::from_runtime_suffix("nonexistent"), None);
+    }
+
+    #[test]
+    fn vec_element_op_symbol_is_the_single_method_token_authority() {
+        use VecElementToken::{Bool, Layout, Ptr, Str, F32, F64, I16, I32, I64, I8, U16, U8};
+        // The element-typed concrete path (`resolve_vec_method`) and the
+        // per-monomorphisation generic path both route through this map; the
+        // matrix below pins every (method, token) the runtime backs.
+        let cases = [
+            ("push", Bool, Some("hew_vec_push_bool")),
+            ("push", I8, Some("hew_vec_push_i8")),
+            ("push", U8, Some("hew_vec_push_u8")),
+            ("push", I16, Some("hew_vec_push_i16")),
+            ("push", U16, Some("hew_vec_push_u16")),
+            ("push", I32, Some("hew_vec_push_i32")),
+            ("push", I64, Some("hew_vec_push_i64")),
+            ("push", F32, Some("hew_vec_push_f32")),
+            ("push", F64, Some("hew_vec_push_f64")),
+            ("push", Str, Some("hew_vec_push_str")),
+            ("push", Ptr, Some("hew_vec_push_ptr")),
+            ("push", Layout, Some("hew_vec_push_layout")),
+            ("get", I8, Some("hew_vec_get_i8")),
+            ("get", U8, Some("hew_vec_get_u8")),
+            ("get", I64, Some("hew_vec_get_i64")),
+            ("get", F32, Some("hew_vec_get_f32")),
+            ("get", Layout, Some("hew_vec_get_layout")),
+            ("set", I16, Some("hew_vec_set_i16")),
+            ("set", Ptr, Some("hew_vec_set_ptr")),
+            ("pop", U16, Some("hew_vec_pop_u16")),
+            ("pop", Str, Some("hew_vec_pop_str")),
+            // `contains` has no pointer, bool, or narrow-int overload in the runtime.
+            ("contains", I64, Some("hew_vec_contains_i64")),
+            ("contains", Ptr, None),
+            ("contains", Bool, None),
+            ("contains", I8, None),
+            ("contains", F32, None),
+            // Out-of-scope method names fall through.
+            ("len", I64, None),
+        ];
+        for (method, token, expected) in cases {
+            assert_eq!(
+                vec_element_op_symbol(method, token),
+                expected,
+                "({method}, {token:?})"
+            );
+        }
     }
 }

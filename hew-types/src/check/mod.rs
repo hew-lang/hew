@@ -606,6 +606,19 @@ impl Checker {
             typed
         };
 
+        // #1929 Stage 1: classify every concrete generic type-argument's
+        // `Vec<T>` element ABI now, while `self.registry` (the `Copy` marker
+        // authority) and the resolved `type_defs` (the `is_indirect` authority)
+        // are both still in scope. MIR re-resolution of an element-typed Vec
+        // method under a type parameter consults this verdict per
+        // monomorphisation; computing it here keeps the single element→ABI
+        // authority on the checker side rather than re-deriving it downstream.
+        let vec_generic_element_abi = self.build_vec_generic_element_abi(
+            &resolved_call_type_args,
+            &resolved_record_init_type_args,
+            &resolved_type_defs,
+        );
+
         let mut output = TypeCheckOutput {
             expr_types: resolved_expr_types,
             resolved_expr_types: resolved_expr_types_typed,
@@ -647,6 +660,7 @@ impl Checker {
             cycle_capable_actors: HashSet::new(),
             user_modules: std::mem::take(&mut self.user_modules),
             call_type_args: resolved_call_type_args,
+            vec_generic_element_abi,
             record_init_type_args: resolved_record_init_type_args,
             stack_hints: std::mem::take(&mut self.stack_hints),
             dyn_trait_coercions: std::mem::take(&mut self.dyn_trait_coercions),

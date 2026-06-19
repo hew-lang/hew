@@ -25508,6 +25508,27 @@ fn is_borrowing_string_call_callee(callee: &str) -> bool {
         || matches!(callee, "print" | "println" | "print_str" | "println_str")
 }
 
+/// `true` when `instr` is a string comparison (`==`/`!=`/`<`/`<=`/`>`/`>=`)
+/// that **borrows** the leaf-`string` temp `t` as an operand. String compares
+/// lower to `Instr::IntCmp { pred, lhs, rhs }` (see `lower_binary`); codegen
+/// routes string-typed `IntCmp` operands through `hew_string_equals` /
+/// `hew_string_compare` (`hew-codegen-rs/src/llvm.rs`), both of which `strcmp`
+/// their arguments WITHOUT consuming the refcount (verified in
+/// `hew-runtime/src/string.rs`: `CStr`/`strcmp` read, never free). So a fresh
+/// `+1`-retained `hew_vec_get_str` temp fed into a compare still owns its single
+/// drop obligation afterwards — `xs[i] == "hello"` leaked the retain before this
+/// admission. The leaf-`string` type gate (rule 1) guarantees the operand takes
+/// codegen's borrowing string-`icmp` path, not the aggregate structural-eq thunk
+/// (which only fires for `Named`/struct operands a `hew_vec_get_str` temp can
+/// never be).
+fn is_borrowing_string_cmp_instr(instr: &Instr, t: u32) -> bool {
+    matches!(
+        instr,
+        Instr::IntCmp { lhs, rhs, .. }
+            if place_refs_local(*lhs, t) || place_refs_local(*rhs, t)
+    )
+}
+
 /// W5.011 P3 — `true` when an instruction transfers ownership of a fresh-owned
 /// `string` `local` out of its slot, so a scope-exit drop of `local` would be a
 /// double-free (over-decrement of the shared refcount).
@@ -25694,10 +25715,12 @@ enum NestedDefSite {
 }
 
 /// A source-operand use site of a fresh-`string` temporary (deduplicated per
-/// instruction/terminator, so `f(t, t)` is one use site, not two).
+/// instruction/terminator, so `f(t, t)` is one use site, not two). The `Instr`
+/// arm carries `block`/`idx` so the admission can locate the using instruction
+/// and prove the def dominates it (a straight-line same-block use).
 #[derive(Clone, Copy)]
 enum NestedUseSite {
-    Instr,
+    Instr { block: u32, idx: usize },
     Term { block: u32 },
 }
 
@@ -25811,7 +25834,7 @@ fn collect_nested_fresh_string_temp_drops(
     // instruction/terminator so a temp referenced twice by one call counts once.
     let mut source_uses: HashMap<u32, Vec<NestedUseSite>> = HashMap::new();
     for block in blocks {
-        for instr in &block.instructions {
+        for (idx, instr) in block.instructions.iter().enumerate() {
             let mut here: HashSet<u32> = HashSet::new();
             for p in instr_source_places(instr) {
                 if let Some(l) = base_local(p) {
@@ -25819,7 +25842,13 @@ fn collect_nested_fresh_string_temp_drops(
                 }
             }
             for l in here {
-                source_uses.entry(l).or_default().push(NestedUseSite::Instr);
+                source_uses
+                    .entry(l)
+                    .or_default()
+                    .push(NestedUseSite::Instr {
+                        block: block.id,
+                        idx,
+                    });
             }
         }
         let mut here: HashSet<u32> = HashSet::new();
@@ -25971,9 +26000,39 @@ fn nested_fresh_string_temp_drop(
             };
             def_dominates.then_some((*next, 0, drop_place, drop_ty))
         }
-        // A single instruction use is not covered by the dominance reasoning
-        // above; fail closed (leak, never double-free).
-        (_, Some(NestedUseSite::Instr)) => None,
+        // Single instruction use: admit ONLY a borrowing string compare
+        // (`xs[i] == "hello"`, `xs[i] != s`, and the ordering family) where the
+        // def dominates the use, and drop right after the compare consumed
+        // (read) the temp. String compares lower to `Instr::IntCmp` whose
+        // string operands codegen routes through `hew_string_equals` /
+        // `hew_string_compare` — pure `strcmp` borrows that never free the
+        // operand (see `is_borrowing_string_cmp_instr`). Any other instruction
+        // use stays fail-closed (leak, never double-free): a `Move`/store/
+        // user-call/closure-call may take ownership, and the conservative leak
+        // is the safe side.
+        (_, Some(NestedUseSite::Instr { block: ub, idx: ui })) => {
+            let ub = *ub;
+            let use_instr = block_by_id(blocks, ub)?.instructions.get(*ui)?;
+            if !is_borrowing_string_cmp_instr(use_instr, t) {
+                return None;
+            }
+            let def_dominates = match def {
+                // Instruction def must be an EARLIER instruction in the use's
+                // own block: same-block straight-line execution means reaching
+                // the use (which reads `t`) implies the def ran.
+                NestedDefSite::Instr { block, idx } => block == ub && idx < *ui,
+                // Terminator def `Call(next = U)`: a single-predecessor `U` is
+                // reached only from the def block, so the def ran before the use.
+                NestedDefSite::Term { block } => {
+                    call_terminator_next(&block_by_id(blocks, block)?.terminator) == Some(ub)
+                        && pred_count.get(&ub).copied().unwrap_or(0) == 1
+                }
+            };
+            // Drop immediately after the compare instruction (straight-line in
+            // its block), so the release runs exactly once on the path that
+            // produced and borrowed the temp.
+            def_dominates.then_some((ub, ui + 1, drop_place, drop_ty))
+        }
     }
 }
 

@@ -20,7 +20,7 @@ fn collect_pattern_bound_names(pattern: &Pattern) -> HashSet<String> {
             .iter()
             .flat_map(|pattern| collect_pattern_bound_names(&pattern.0))
             .collect(),
-        Pattern::Struct { fields, .. } => fields
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => fields
             .iter()
             .flat_map(|field| {
                 field.pattern.as_ref().map_or_else(
@@ -99,6 +99,7 @@ fn binding_name_for_pattern(pattern: &Pattern) -> Option<String> {
         | Pattern::Regex { .. }
         | Pattern::Constructor { .. }
         | Pattern::Struct { .. }
+        | Pattern::RecordShorthand { .. }
         | Pattern::Tuple(_)
         | Pattern::Or(_, _) => None,
     }
@@ -114,9 +115,11 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
     match pattern {
         // Plain binding, wildcard, literal predicates, and aggregate
         // destructures are supported.
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Struct { .. } | Pattern::Tuple(_) => {
-            None
-        }
+        Pattern::Wildcard
+        | Pattern::Literal(_)
+        | Pattern::Struct { .. }
+        | Pattern::RecordShorthand { .. }
+        | Pattern::Tuple(_) => None,
         Pattern::Identifier(name) => {
             let is_constructor_like =
                 name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
@@ -160,7 +163,7 @@ fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static st
         Pattern::Tuple(pats) if pats.is_empty() => None,
         Pattern::Literal(lit) => Some(literal_pattern_label(lit)),
         Pattern::Constructor { .. } => Some("nested constructor"),
-        Pattern::Struct { .. } => Some("struct destructure"),
+        Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => Some("struct destructure"),
         Pattern::Tuple(_) => Some("tuple destructure"),
         Pattern::Or(_, _) => Some("or-pattern"),
         Pattern::Regex { .. } => Some("regex pattern"),
@@ -699,6 +702,77 @@ impl Checker {
                     self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
                 }
             }
+            // Shorthand record destructure `{ a, b }` — no type name in the pattern.
+            // Use the scrutinee's type directly to look up field types, identical to
+            // the `Pattern::Struct` fields-only path but without the variant-name check.
+            Pattern::RecordShorthand { fields } => {
+                let type_name_opt = ty.type_name();
+                if let Some(type_name) = type_name_opt {
+                    if let Some(td) = self.lookup_type_def(type_name) {
+                        let type_params = td.type_params.clone();
+                        let type_args = if let Ty::Named { args, .. } = ty {
+                            args.clone()
+                        } else {
+                            vec![]
+                        };
+                        for pf in fields {
+                            if let Some(raw_field_ty) = td.fields.get(&pf.name) {
+                                let field_ty = substitute_pattern_field_ty(
+                                    raw_field_ty,
+                                    &type_params,
+                                    &type_args,
+                                );
+                                if let Some((pat, ps)) = &pf.pattern {
+                                    self.bind_pattern(pat, &field_ty, is_mutable, ps);
+                                } else {
+                                    self.check_shadowing(&pf.name, span);
+                                    self.env.define_with_span(
+                                        pf.name.clone(),
+                                        field_ty,
+                                        is_mutable,
+                                        span.clone(),
+                                    );
+                                }
+                            } else {
+                                let similar = crate::error::find_similar(
+                                    &pf.name,
+                                    td.fields.keys().map(String::as_str),
+                                );
+                                self.report_error_with_suggestions(
+                                    TypeErrorKind::UndefinedField,
+                                    span,
+                                    format!("no field `{}` on type `{type_name}`", pf.name),
+                                    similar,
+                                );
+                            }
+                        }
+                    } else {
+                        self.report_error(
+                            TypeErrorKind::UndefinedType,
+                            span,
+                            format!(
+                                "type `{type_name}` is not defined for record shorthand pattern"
+                            ),
+                        );
+                        self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
+                    }
+                } else if matches!(ty, Ty::Var(_) | Ty::Error) {
+                    self.bind_struct_field_placeholders(fields, ty, is_mutable, span);
+                } else {
+                    let expected = ty.user_facing().to_string();
+                    self.report_error(
+                        TypeErrorKind::Mismatch {
+                            expected: expected.clone(),
+                            actual: "{ .. }".to_string(),
+                        },
+                        span,
+                        format!(
+                            "record shorthand pattern cannot match non-record type `{expected}`"
+                        ),
+                    );
+                    self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
+                }
+            }
             Pattern::Tuple(pats) => match ty {
                 // `()` as a pattern (empty tuple) is the unit literal; accept
                 // it against unit-typed payloads, e.g. `Ok(())` on
@@ -1211,6 +1285,19 @@ impl Checker {
                     payload_variant_patterns: vec![],
                 }
             }
+            // Shorthand `{ a, b }` is only valid in `let` position; the
+            // checker's `check_stmt` validates this before `record_arm_resolution`
+            // is reached. If it somehow appears in a match arm, fail closed.
+            Pattern::RecordShorthand { .. } => {
+                self.report_error(
+                    crate::error::TypeErrorKind::InvalidOperation,
+                    pattern_span,
+                    "record shorthand pattern `{ .. }` is not valid in match arms; \
+                     use a typed record pattern `TypeName { .. }` instead"
+                        .to_string(),
+                );
+                return;
+            }
             Pattern::Tuple(pats) => {
                 for (sub_pat, sub_span) in pats {
                     if let Some(label) = unsupported_project_subpattern_label(sub_pat) {
@@ -1414,7 +1501,9 @@ impl Checker {
                     // fail-closed at every depth.
                     let label = match other {
                         Pattern::Literal(_) => "literal predicate inside a nested constructor",
-                        Pattern::Struct { .. } => "struct destructure",
+                        Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => {
+                            "struct destructure"
+                        }
                         Pattern::Tuple(_) => "tuple destructure",
                         Pattern::Or(_, _) => "or-pattern",
                         Pattern::Regex { .. } => "regex pattern",

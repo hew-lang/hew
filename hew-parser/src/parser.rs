@@ -8286,6 +8286,30 @@ impl<'src> Parser<'src> {
                     Pattern::Tuple(patterns)
                 }
             }
+            // Shorthand record destructure: `{ a, b }` with no type name.
+            // The checker infers the record type from the scrutinee type and
+            // delegates to the same field-binding path as `Pattern::Struct`.
+            Some(Token::LeftBrace) => {
+                self.advance(); // consume '{'
+                let mut fields = Vec::new();
+                while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                    let field_name = self.expect_ident()?;
+                    let pattern = if self.eat(&Token::Colon) {
+                        Some(self.parse_pattern()?)
+                    } else {
+                        None
+                    };
+                    fields.push(PatternField {
+                        name: field_name,
+                        pattern,
+                    });
+                    if !self.eat(&Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Token::RightBrace)?;
+                Pattern::RecordShorthand { fields }
+            }
             Some(Token::Integer(s)) => {
                 if let Ok((val, radix)) = parse_int_literal(s) {
                     self.advance();
@@ -12604,5 +12628,79 @@ wire type Msg {
             other => panic!("expected qualified Pattern::Constructor, got {other:?}"),
         }
         assert!(matches!(&patterns[1], Pattern::Identifier(n) if n == "None"));
+    }
+
+    // ── RecordShorthand pattern (let {a, b} = rec) ───────────────────────────
+
+    /// `let { x, y } = p` parses as `Pattern::RecordShorthand` with two plain
+    /// field bindings and no type name.
+    #[test]
+    fn parse_let_record_shorthand_two_fields_no_type_name() {
+        let source = "fn main() -> i64 { let p = Point { x: 1, y: 2 }; let { x, y } = p; x + y }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        // Extract the let statement pattern from the function body.
+        let crate::ast::Item::Function(func) = &result.program.items[0].0 else {
+            panic!("expected function, got {:?}", result.program.items[0].0);
+        };
+        let stmts = &func.body.stmts;
+        // Second statement (index 1) is `let { x, y } = p`.
+        let (crate::ast::Stmt::Let { pattern, .. }, _) = &stmts[1] else {
+            panic!("expected let statement at index 1, got {:?}", stmts[1]);
+        };
+        let Pattern::RecordShorthand { fields } = &pattern.0 else {
+            panic!("expected Pattern::RecordShorthand, got {:?}", pattern.0);
+        };
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "x");
+        assert!(
+            fields[0].pattern.is_none(),
+            "shorthand field should have no sub-pattern"
+        );
+        assert_eq!(fields[1].name, "y");
+    }
+
+    /// `let { x: px, y: py } = p` parses as `Pattern::RecordShorthand` with
+    /// alias sub-patterns for each field.
+    #[test]
+    fn parse_let_record_shorthand_with_alias_subpatterns() {
+        let source =
+            "fn main() -> i64 { let p = Point { x: 1, y: 2 }; let { x: px, y: py } = p; px + py }";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let crate::ast::Item::Function(func) = &result.program.items[0].0 else {
+            panic!("expected function, got {:?}", result.program.items[0].0);
+        };
+        let stmts = &func.body.stmts;
+        let (crate::ast::Stmt::Let { pattern, .. }, _) = &stmts[1] else {
+            panic!("expected let statement at index 1, got {:?}", stmts[1]);
+        };
+        let Pattern::RecordShorthand { fields } = &pattern.0 else {
+            panic!("expected Pattern::RecordShorthand, got {:?}", pattern.0);
+        };
+        assert_eq!(fields.len(), 2);
+        assert!(
+            fields[0].pattern.is_some(),
+            "field x should have alias sub-pattern"
+        );
+        assert!(
+            fields[1].pattern.is_some(),
+            "field y should have alias sub-pattern"
+        );
+    }
+
+    /// `let { x, y } = p` round-trips through the formatter as `let { x, y } = p`
+    /// (the shorthand form is preserved — not rewritten to the typed form).
+    #[test]
+    fn format_let_record_shorthand_round_trips_without_type_name() {
+        let source = "fn main() -> i64 {\n    let p = Point { x: 1, y: 2 };\n    let { x, y } = p;\n    x + y\n}\n";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let formatted = crate::fmt::format_program(&result.program);
+        // The formatted output must contain the shorthand `{ x, y }`, not `Point { x, y }`.
+        assert!(
+            formatted.contains("let { x, y } = p"),
+            "formatted output should preserve shorthand form, got:\n{formatted}"
+        );
     }
 } // mod tests

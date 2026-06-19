@@ -151,7 +151,8 @@ fn collect_match_payload_predicates(ctx: &LowerCtx, pattern: &Pattern) -> Vec<Hi
         | Pattern::Literal(_)
         | Pattern::Tuple(_)
         | Pattern::Or(_, _)
-        | Pattern::Regex { .. } => Vec::new(),
+        | Pattern::Regex { .. }
+        | Pattern::RecordShorthand { .. } => Vec::new(),
     }
 }
 
@@ -9691,6 +9692,7 @@ impl LowerCtx {
             }
 
             // Record-let: `let Point { x, y } = value_expr;`
+            // and shorthand: `let { x, y } = value_expr;`
             //
             // Desugar into the same three-phase template as tuple-let:
             //   1. `let __rec_N = expr;`         — synthetic temp binds the record
@@ -9702,10 +9704,13 @@ impl LowerCtx {
             // `bind_pattern` (called by the checker at check_stmt time) has
             // already bound the field names in the checker's env; HIR mirrors
             // those bindings via `self.bind(...)` below.
-            if let Pattern::Struct {
-                fields: pat_fields, ..
-            } = &pattern.0
-            {
+            let pat_fields_opt = match &pattern.0 {
+                Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
+                    Some(fields)
+                }
+                _ => None,
+            };
+            if let Some(pat_fields) = pat_fields_opt {
                 let rec_val = self.lower_expr(value_expr, IntentKind::Consume);
                 let rec_ty = rec_val.ty.clone();
 
@@ -9868,7 +9873,7 @@ impl LowerCtx {
             Pattern::Tuple(elements) => {
                 self.lower_tuple_pattern_value_into_stmts(elements, value, &value_ty, stmts, span);
             }
-            Pattern::Struct { fields, .. } => {
+            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
                 self.lower_record_pattern_value_into_stmts(fields, value, &value_ty, stmts, span);
             }
             Pattern::Constructor { .. }
@@ -20973,7 +20978,9 @@ impl LowerCtx {
             // Struct / tuple / nested-or / regex leaves inside an or-pattern
             // remain fail-closed: they require deeper destructure lowering the
             // v0.5 substrate does not yet provide.
+            // RecordShorthand is only valid in `let` position; reject here.
             Pattern::Struct { .. }
+            | Pattern::RecordShorthand { .. }
             | Pattern::Tuple(_)
             | Pattern::Or(_, _)
             | Pattern::Regex { .. } => None,

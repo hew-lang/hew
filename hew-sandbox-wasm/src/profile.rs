@@ -814,7 +814,7 @@ impl<'a> ProfileChecker<'a> {
                     self.check_pattern(pattern);
                 }
             }
-            Pattern::Struct { fields, .. } => {
+            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
                 for field in fields {
                     if let Some(pattern) = &field.pattern {
                         self.check_pattern(pattern);

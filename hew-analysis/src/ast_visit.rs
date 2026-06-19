@@ -993,7 +993,7 @@ fn collect_pattern_bindings<'ast>(
                 collect_pattern_bindings(source, pattern, span, bindings);
             }
         }
-        Pattern::Struct { fields, .. } => {
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
             for field in fields {
                 collect_pattern_field_bindings(source, span, field, bindings);
             }

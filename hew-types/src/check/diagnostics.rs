@@ -603,6 +603,7 @@ impl Checker {
     ) -> bool {
         let kind_name = match pattern {
             Pattern::Regex { .. } => "regex",
+            Pattern::RecordShorthand { .. } => "record shorthand",
             Pattern::Wildcard
             | Pattern::Identifier(_)
             | Pattern::Literal(_)

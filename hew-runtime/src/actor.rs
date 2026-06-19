@@ -879,6 +879,22 @@ pub struct HewActor {
     /// is still running on another thread.
     pub terminate_finished: AtomicBool,
 
+    /// `true` while a scheduler worker owns this actor's activation, from the
+    /// moment it wins the `Runnable -> Running` CAS in `activate_actor` until it
+    /// leaves the activation (settle / suspend / crash-break). Distinct from the
+    /// `Running` lifecycle state because an external `hew_actor_trap` CAS-es the
+    /// actor straight to the quiescent `Crashed`/`Stopped` state *out from under*
+    /// the owning worker, erasing the `Running` marker while the worker is still
+    /// in its dispatch/settle critical section (reading `a.actor_state`, the
+    /// arena, the mailbox). `hew_actor_free` treats `Crashed`/`Stopped` as
+    /// quiescent and would reclaim the box+mailbox in that window — a
+    /// use-after-free. The free path waits on this flag (in addition to the
+    /// terminal state) so it never frees under an in-flight activation, no matter
+    /// which thread published the terminal state. Native-only: the WASM
+    /// scheduler is cooperative single-threaded, so no concurrent free can race
+    /// an activation.
+    pub dispatch_active: AtomicBool,
+
     /// Error code set by `hew_actor_trap` (0 = no error).
     pub error_code: AtomicI32,
 
@@ -2023,6 +2039,7 @@ fn build_spawned_actor(
         state_clone_fn: None,
         terminate_called: AtomicBool::new(false),
         terminate_finished: AtomicBool::new(false),
+        dispatch_active: AtomicBool::new(false),
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,
@@ -3128,7 +3145,16 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
         // Step 1: wait until the actor first looks quiescent (bounded).
         loop {
             let state = a.actor_state.load(Ordering::Acquire);
-            if actor_free_state_is_quiescent(state) {
+            // A terminal state alone is NOT enough: an external `hew_actor_trap`
+            // CAS-es a still-dispatching actor straight to `Crashed`/`Stopped`
+            // out from under its owning worker, which is still reading the actor
+            // box, arena, and mailbox in its post-dispatch settle. Freeing then
+            // is a use-after-free. `dispatch_active` (cleared by the scheduler's
+            // `ActivationOwnership` guard when the activation leaves) gates the
+            // quiescence decision so we wait the worker out. The `Acquire` load
+            // pairs with the guard's `Release` clear so we also observe every
+            // write the activation made before we proceed to free.
+            if actor_free_state_is_quiescent(state) && !a.dispatch_active.load(Ordering::Acquire) {
                 break;
             }
             if std::time::Instant::now() >= deadline {
@@ -5790,6 +5816,7 @@ mod tests {
                 state_clone_fn: None,
                 terminate_called: AtomicBool::new(false),
                 terminate_finished: AtomicBool::new(false),
+                dispatch_active: AtomicBool::new(false),
                 error_code: AtomicI32::new(0),
                 supervisor: ptr::null_mut(),
                 supervisor_child_index: -1,
@@ -5832,6 +5859,7 @@ mod tests {
             state_clone_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
+            dispatch_active: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,
@@ -9219,6 +9247,7 @@ mod tests {
             state_clone_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
+            dispatch_active: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,

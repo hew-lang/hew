@@ -95,6 +95,7 @@ pub struct HewActor {
     pub state_clone_fn: Option<crate::actor::HewStateCloneFn>,
     pub terminate_called: AtomicBool,
     pub terminate_finished: AtomicBool,
+    pub dispatch_active: AtomicBool,
     pub error_code: AtomicI32,
     pub supervisor: *mut c_void,
     pub supervisor_child_index: i32,
@@ -162,6 +163,7 @@ const _: () = {
     assert!(offset_of!(W, state_clone_fn) == offset_of!(N, state_clone_fn));
     assert!(offset_of!(W, terminate_called) == offset_of!(N, terminate_called));
     assert!(offset_of!(W, terminate_finished) == offset_of!(N, terminate_finished));
+    assert!(offset_of!(W, dispatch_active) == offset_of!(N, dispatch_active));
     assert!(offset_of!(W, error_code) == offset_of!(N, error_code));
     assert!(offset_of!(W, supervisor) == offset_of!(N, supervisor));
     assert!(offset_of!(W, supervisor_child_index) == offset_of!(N, supervisor_child_index));
@@ -1907,6 +1909,7 @@ mod tests {
             state_clone_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
+            dispatch_active: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,
@@ -4812,6 +4815,7 @@ mod tests {
             state_clone_fn: None,
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
+            dispatch_active: AtomicBool::new(false),
             error_code: AtomicI32::new(0),
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,

@@ -336,6 +336,30 @@ pub enum AskError {
     /// `msg_type`, or a malformed / truncated wire payload). The handler was
     /// never dispatched — fail-closed rather than delivering garbage.
     DecodeFailure = 13,
+    /// The target actor's partition is unreachable or the network is
+    /// partitioned. Distinct from `ConnectionDropped`: the node is reachable
+    /// but the routing topology has isolated the target partition.
+    Partition = 14,
+    /// The target actor reference is stale: the actor existed at bind time
+    /// but has since stopped or been replaced by a newer generation.
+    StaleRef = 15,
+    /// The ask was cancelled by the caller before a reply was received.
+    Cancelled = 16,
+    /// The local node is shutting down; no further asks can be dispatched.
+    LocalShutdown = 17,
+    /// The remote node's wire protocol version is incompatible with the
+    /// caller's version. The ask was refused before dispatch.
+    VersionMismatch = 18,
+    /// The caller is not authorized to ask the target actor. The remote
+    /// capability check refused the request before dispatch.
+    Unauthorized = 19,
+    /// The remote node's inbound ask pipeline is applying backpressure:
+    /// the caller should back off and retry. Distinct from `WorkerAtCapacity`
+    /// (pool exhaustion) — this is a deliberate flow-control signal.
+    Backpressure = 20,
+    /// The monitor subscription for the ask's reply was lost before the
+    /// reply arrived (e.g. the monitor actor was stopped or evicted).
+    MonitorLost = 21,
 }
 
 // ── Trap error codes ─────────────────────────────────────────────────────

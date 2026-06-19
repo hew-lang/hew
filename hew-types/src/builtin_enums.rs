@@ -72,6 +72,106 @@ pub struct BuiltinMonomorphicEnumVariant {
     pub name: &'static str,
 }
 
+const LOOKUP_ERROR_VARIANTS: &[BuiltinMonomorphicEnumVariant] = &[
+    BuiltinMonomorphicEnumVariant { name: "NotFound" },
+    BuiltinMonomorphicEnumVariant { name: "Partition" },
+    BuiltinMonomorphicEnumVariant { name: "Timeout" },
+    BuiltinMonomorphicEnumVariant { name: "StaleRef" },
+    BuiltinMonomorphicEnumVariant { name: "Cancelled" },
+    BuiltinMonomorphicEnumVariant {
+        name: "LocalShutdown",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "VersionMismatch",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "Unauthorized",
+    },
+];
+
+const SEND_ERROR_VARIANTS: &[BuiltinMonomorphicEnumVariant] = &[
+    BuiltinMonomorphicEnumVariant { name: "Full" },
+    BuiltinMonomorphicEnumVariant { name: "Closed" },
+    BuiltinMonomorphicEnumVariant {
+        name: "NodeRoutingNotWired",
+    },
+    BuiltinMonomorphicEnumVariant { name: "Partition" },
+    BuiltinMonomorphicEnumVariant { name: "StaleRef" },
+    BuiltinMonomorphicEnumVariant {
+        name: "LocalShutdown",
+    },
+    BuiltinMonomorphicEnumVariant { name: "Cancelled" },
+    BuiltinMonomorphicEnumVariant {
+        name: "VersionMismatch",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "Unauthorized",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "Backpressure",
+    },
+];
+
+const ASK_ERROR_VARIANTS: &[BuiltinMonomorphicEnumVariant] = &[
+    BuiltinMonomorphicEnumVariant { name: "NoError" },
+    BuiltinMonomorphicEnumVariant {
+        name: "NodeNotRunning",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "RoutingFailed",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "EncodeFailed",
+    },
+    BuiltinMonomorphicEnumVariant { name: "SendFailed" },
+    BuiltinMonomorphicEnumVariant { name: "Timeout" },
+    BuiltinMonomorphicEnumVariant {
+        name: "ConnectionDropped",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "PayloadSizeMismatch",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "WorkerAtCapacity",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "ActorStopped",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "MailboxFull",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "OrphanedAsk",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "NoRunnableWork",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "DecodeFailure",
+    },
+    BuiltinMonomorphicEnumVariant { name: "Partition" },
+    BuiltinMonomorphicEnumVariant { name: "StaleRef" },
+    BuiltinMonomorphicEnumVariant { name: "Cancelled" },
+    BuiltinMonomorphicEnumVariant {
+        name: "LocalShutdown",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "VersionMismatch",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "Unauthorized",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "Backpressure",
+    },
+    BuiltinMonomorphicEnumVariant {
+        name: "MonitorLost",
+    },
+];
+
+const TIMEOUT_ERROR_VARIANTS: &[BuiltinMonomorphicEnumVariant] =
+    &[BuiltinMonomorphicEnumVariant { name: "Timeout" }];
+
 /// Catalog of monomorphic builtin enums whose layout must be registered
 /// out-of-band into MIR's `enum_layouts` and `machine_layout_names`.
 ///
@@ -84,7 +184,7 @@ pub fn monomorphic_builtin_enums() -> &'static [BuiltinMonomorphicEnum] {
     &[
         BuiltinMonomorphicEnum {
             name: "LookupError",
-            variants: &[BuiltinMonomorphicEnumVariant { name: "NotFound" }],
+            variants: LOOKUP_ERROR_VARIANTS,
             suppress_from_sandbox_emit: true,
         },
         // `SendError` is the `Err` variant of `Result<(), SendError>`
@@ -112,55 +212,12 @@ pub fn monomorphic_builtin_enums() -> &'static [BuiltinMonomorphicEnum] {
         // and must stay there — hence `suppress_from_sandbox_emit: false`.
         BuiltinMonomorphicEnum {
             name: "SendError",
-            variants: &[
-                BuiltinMonomorphicEnumVariant { name: "Full" },
-                BuiltinMonomorphicEnumVariant { name: "Closed" },
-                BuiltinMonomorphicEnumVariant {
-                    name: "NodeRoutingNotWired",
-                },
-            ],
+            variants: SEND_ERROR_VARIANTS,
             suppress_from_sandbox_emit: false,
         },
         BuiltinMonomorphicEnum {
             name: "AskError",
-            variants: &[
-                BuiltinMonomorphicEnumVariant { name: "NoError" },
-                BuiltinMonomorphicEnumVariant {
-                    name: "NodeNotRunning",
-                },
-                BuiltinMonomorphicEnumVariant {
-                    name: "RoutingFailed",
-                },
-                BuiltinMonomorphicEnumVariant {
-                    name: "EncodeFailed",
-                },
-                BuiltinMonomorphicEnumVariant { name: "SendFailed" },
-                BuiltinMonomorphicEnumVariant { name: "Timeout" },
-                BuiltinMonomorphicEnumVariant {
-                    name: "ConnectionDropped",
-                },
-                BuiltinMonomorphicEnumVariant {
-                    name: "PayloadSizeMismatch",
-                },
-                BuiltinMonomorphicEnumVariant {
-                    name: "WorkerAtCapacity",
-                },
-                BuiltinMonomorphicEnumVariant {
-                    name: "ActorStopped",
-                },
-                BuiltinMonomorphicEnumVariant {
-                    name: "MailboxFull",
-                },
-                BuiltinMonomorphicEnumVariant {
-                    name: "OrphanedAsk",
-                },
-                BuiltinMonomorphicEnumVariant {
-                    name: "NoRunnableWork",
-                },
-                BuiltinMonomorphicEnumVariant {
-                    name: "DecodeFailure",
-                },
-            ],
+            variants: ASK_ERROR_VARIANTS,
             suppress_from_sandbox_emit: false,
         },
         // `TimeoutError` is the error arm of `await rx.recv() | after d` and
@@ -173,7 +230,7 @@ pub fn monomorphic_builtin_enums() -> &'static [BuiltinMonomorphicEnum] {
         // bytecode descriptor has no stable fixture baseline for `TimeoutError`.
         BuiltinMonomorphicEnum {
             name: "TimeoutError",
-            variants: &[BuiltinMonomorphicEnumVariant { name: "Timeout" }],
+            variants: TIMEOUT_ERROR_VARIANTS,
             suppress_from_sandbox_emit: true,
         },
     ]

@@ -41,9 +41,10 @@ fn surface_askerror_variants() -> Vec<&'static str> {
 /// producer).
 fn runtime_askerror_variants() -> Vec<(&'static str, i32)> {
     use AskError::{
-        ActorStopped, ConnectionDropped, DecodeFailure, EncodeFailed, MailboxFull, NoRunnableWork,
-        NodeNotRunning, None as RuntimeNone, OrphanedAsk, PayloadSizeMismatch, RoutingFailed,
-        SendFailed, Timeout, WorkerAtCapacity,
+        ActorStopped, Backpressure, Cancelled, ConnectionDropped, DecodeFailure, EncodeFailed,
+        LocalShutdown, MailboxFull, MonitorLost, NoRunnableWork, NodeNotRunning,
+        None as RuntimeNone, OrphanedAsk, Partition, PayloadSizeMismatch, RoutingFailed,
+        SendFailed, StaleRef, Timeout, Unauthorized, VersionMismatch, WorkerAtCapacity,
     };
     vec![
         ("None", RuntimeNone as i32),
@@ -60,6 +61,14 @@ fn runtime_askerror_variants() -> Vec<(&'static str, i32)> {
         ("OrphanedAsk", OrphanedAsk as i32),
         ("NoRunnableWork", NoRunnableWork as i32),
         ("DecodeFailure", DecodeFailure as i32),
+        ("Partition", Partition as i32),
+        ("StaleRef", StaleRef as i32),
+        ("Cancelled", Cancelled as i32),
+        ("LocalShutdown", LocalShutdown as i32),
+        ("VersionMismatch", VersionMismatch as i32),
+        ("Unauthorized", Unauthorized as i32),
+        ("Backpressure", Backpressure as i32),
+        ("MonitorLost", MonitorLost as i32),
     ]
 }
 

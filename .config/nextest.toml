@@ -191,31 +191,17 @@ retries = 1                                                           # SHIM: se
 slow-timeout = { period = "30s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
-# The two-process remote-ask pair (echo: T-01, timeout: T-02) spawns a second
-# OS process and round-trips an ask over loopback TCP.  Under load (~5-15% of
-# full-workspace CI runs) the connection is DROPPED between the registry-lookup
-# and the ask: the client observes ConnectionDropped / "echo ask returned null"
-# (helper exit 101) while the server's membership record still shows ALIVE and
-# active_conns=0.  This is a connection-lifecycle bug — the outbound connection
-# tears down between lookup completion and ask dispatch, leaving an ask in-flight
-# with no live transport — not a runner environment quirk.
-#
-# SHIM: retry absorbs the connection-lifecycle drop that occurs between registry-
-#   lookup completion and ask dispatch under concurrent load.  The real-timing
-#   serialisation group reduces contention but does not eliminate the race.
-# WHEN obsolete: when the connection-lifecycle path holds the connection open
-#   across the lookup→ask gap (or re-establishes it transparently on the ask
-#   path), making ConnectionDropped between lookup and ask impossible.
-# WHAT the real solution looks like: the outbound connection pool keeps the
-#   connection alive until the ask completes; a dropped connection triggers a
-#   transparent reconnect-and-retry at the transport layer before surfacing
-#   ConnectionDropped to the caller.  Tracked: production connection-lifecycle
-#   follow-on.
-# Correctness invariant: a real remote-ask regression (null reply from a live
-#   node on a stable connection) fails on both attempts; the retry only absorbs
-#   the intermittent mid-lookup connection drop.
+# The two-process remote-ask pair (echo, timeout) spawns a second OS process and
+# round-trips an ask over loopback TCP. These run in the real-timing group
+# (max-threads = 1) because their assertions irreducibly measure a real
+# cross-process round-trip that the in-process simtime seam cannot fake; the
+# serialisation keeps them off the fast tiers and gives the round-trip scheduler
+# headroom. They carry NO retry: the connection-drop race that once forced a
+# retry shim (a graceful node-stop abandoned an already-computed inbound reply,
+# surfacing a spurious ConnectionDropped) was fixed at the root — hew_node_stop
+# now drains in-flight inbound-ask reply sends before tearing down the
+# connection, so a correct echo/timeout outcome is deterministic under load.
 filter = "test(two_process_remote_ask_echo_double_returns_42) | test(remote_ask_two_process_echo_client_helper) | test(remote_ask_two_process_echo_server_helper) | test(two_process_remote_ask_timeout_returns_timeout_under_1500ms) | test(remote_ask_two_process_timeout_client_helper) | test(remote_ask_two_process_timeout_server_helper)"
-retries = 1
 test-group = "real-timing"
 # Defense-in-depth: the test's internal wait_output fires at 40 s; 90 s nextest
 # kill (30 s × 3) bounds a wedged test that bypasses that guard.

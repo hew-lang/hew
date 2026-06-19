@@ -218,6 +218,16 @@ pub struct HewConnMgr {
     /// Global shutdown signal shared with reconnect workers and stop-time
     /// ask-reply teardown guards.
     reconnect_shutdown: Arc<AtomicBool>,
+    /// Spawn gate for inbound-ask workers, distinct from `reconnect_shutdown`.
+    ///
+    /// `hew_node_stop` sets this FIRST — before draining in-flight workers —
+    /// so the drain terminates (no new workers spawn) while already-running
+    /// `handle_inbound_ask` threads still flush their computed replies to the
+    /// wire (those threads bail only on `reconnect_shutdown` / `CURRENT_NODE`,
+    /// which are set AFTER the drain). Separating the gate from the teardown
+    /// guard is what lets a graceful stop deliver in-flight replies instead of
+    /// abandoning them as a spurious `ConnectionDropped`.
+    inbound_spawn_closed: Arc<AtomicBool>,
     /// Count of inbound-ask worker threads currently active for this manager.
     ///
     /// Incremented in `node_inbound_router` before spawning; decremented by
@@ -1630,6 +1640,7 @@ pub unsafe extern "C" fn hew_connmgr_new(
         reconnect_enabled: AtomicBool::new(false),
         reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
         reconnect_shutdown: Arc::new(AtomicBool::new(false)),
+        inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
         reconnect_workers: PoisonSafe::new(Vec::new()),
         next_publication_token: AtomicU64::new(1),
@@ -1697,6 +1708,41 @@ pub(crate) unsafe fn hew_connmgr_shutdown_flag(mgr: *mut HewConnMgr) -> Option<A
     // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
     let mgr_ref = unsafe { &*mgr };
     Some(Arc::clone(&mgr_ref.reconnect_shutdown))
+}
+
+/// Close the inbound-ask spawn gate so `node_inbound_router` stops spawning new
+/// workers. `hew_node_stop` calls this BEFORE draining in-flight workers, so the
+/// drain terminates while already-running `handle_inbound_ask` threads still
+/// flush their replies (they bail only on the later `reconnect_shutdown` /
+/// `CURRENT_NODE` teardown guards).
+///
+/// # Safety
+///
+/// `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
+pub(crate) unsafe fn hew_connmgr_close_inbound_spawn(mgr: *mut HewConnMgr) {
+    if mgr.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
+    let mgr_ref = unsafe { &*mgr };
+    mgr_ref.inbound_spawn_closed.store(true, Ordering::Release);
+}
+
+/// Return a clone of the inbound-ask spawn-gate flag for `node_inbound_router`
+/// to consult before spawning a worker.
+///
+/// # Safety
+///
+/// `mgr` must be a valid pointer returned by [`hew_connmgr_new`].
+pub(crate) unsafe fn hew_connmgr_inbound_spawn_closed_flag(
+    mgr: *mut HewConnMgr,
+) -> Option<Arc<AtomicBool>> {
+    if mgr.is_null() {
+        return None;
+    }
+    // SAFETY: caller guarantees `mgr` is valid for the duration of the call.
+    let mgr_ref = unsafe { &*mgr };
+    Some(Arc::clone(&mgr_ref.inbound_spawn_closed))
 }
 
 /// Return a clone of the per-manager inbound-ask active counter.
@@ -2659,6 +2705,7 @@ mod tests {
             reconnect_enabled: AtomicBool::new(false),
             reconnect_max_retries: AtomicU32::new(RECONNECT_DEFAULT_MAX_RETRIES),
             reconnect_shutdown: Arc::new(AtomicBool::new(false)),
+            inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
             inbound_ask_active: Arc::new(AtomicUsize::new(0)),
             reconnect_workers: PoisonSafe::new(Vec::new()),
             next_publication_token: AtomicU64::new(1),

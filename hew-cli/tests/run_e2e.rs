@@ -2604,11 +2604,11 @@ fn cross_module_fn_value_shadowed_local_binding_resolves_as_field() {
     );
 }
 
-/// A GENERIC cross-module named function used as a value stays deferred:
-/// the checker diagnostic names the exported generic function and the
-/// lambda workaround instead of misreporting a missing constant.
+/// An unannotated GENERIC cross-module named function used as a value is
+/// rejected: the type parameters cannot be determined from context and the
+/// diagnostic names the function and asks for an annotation.
 #[test]
-fn check_cross_module_generic_fn_value_reports_deferred_feature() {
+fn check_cross_module_generic_fn_value_ambiguous_rejected() {
     require_codegen();
 
     let source =
@@ -2632,16 +2632,45 @@ fn check_cross_module_generic_fn_value_reports_deferred_feature() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        combined.contains("using a generic cross-module function as a value is not yet supported"),
-        "expected deferred-feature diagnostic; got: {combined}"
+        combined.contains("is a generic function"),
+        "expected diagnostic to name the generic function; got: {combined}"
     );
     assert!(
-        combined.contains("wrap it in a lambda"),
-        "expected the diagnostic to name the lambda workaround; got: {combined}"
+        combined.contains("type annotation"),
+        "expected the diagnostic to ask for a type annotation; got: {combined}"
     );
     assert!(
         !combined.contains("has no exported constant"),
         "must not misreport an exported function as a missing constant; got: {combined}"
+    );
+}
+
+/// A context-determined GENERIC cross-module named function used as a value
+/// is now accepted (A156): the type parameters are inferred from the binding
+/// annotation, the monomorphisation is registered, and the compiled binary
+/// produces the expected output.
+#[test]
+fn cross_module_generic_fn_value_context_determined_accepted() {
+    require_codegen();
+
+    let source =
+        repo_root().join("tests/vertical-slice/accept/cross_module_generic_fn_value/main.hew");
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "cross_module_generic_fn_value should succeed; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/cross_module_generic_fn_value/main.expected"),
+    )
+    .expect("read main.expected");
+    assert_eq!(
+        actual, expected,
+        "expected the oracle lines from main.expected; got: {actual:?}"
     );
 }
 

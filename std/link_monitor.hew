@@ -1,8 +1,9 @@
 //! Actor monitor / link handle helpers.
 //!
-//! Import `std::link_monitor` when you want to name `MonitorRef` or
-//! `LinkError` explicitly.  The `monitor(actor)` builtin returns `MonitorRef`;
-//! the `link(actor)` builtin returns `Result<(), LinkError>`.
+//! Import `std::link_monitor` when you want to name `MonitorRef`,
+//! `LinkError`, `MonitorError`, or `PartitionPolicy` explicitly. The
+//! `monitor(actor)` builtin returns `MonitorRef`; the `link(actor)` builtin
+//! returns `Result<(), LinkError>`.
 //!
 //! v0.5 link/monitor builtins return through the Cluster 2 composite-return
 //! spine, which lands in v0.6. The runtime symbols exist (`hew_actor_link`,
@@ -20,6 +21,38 @@
 pub enum LinkError {
     AlreadyLinked;
     TargetDead;
+}
+
+/// Error returned when a monitor delivery cannot be completed.
+pub enum MonitorError {
+    /// The route to the monitored peer is unavailable or the peer is suspect.
+    Partition;
+    /// The monitor refers to an old session or actor incarnation.
+    StaleRef;
+    /// The local node is shutting down before monitor delivery can complete.
+    LocalShutdown;
+    /// The peer rejected the monitor because protocol or schema versions differ.
+    VersionMismatch;
+    /// The peer rejected the monitor because the caller lacks authority.
+    Unauthorized;
+    /// The monitor payload could not be decoded on receipt.
+    DecodeFailure;
+    /// The monitor channel was lost before a definitive actor failure arrived.
+    MonitorLost;
+}
+
+/// Policy for resolving actor operations across network partitions.
+pub enum PartitionPolicy {
+    /// Return `Partition` immediately when the route is unavailable or suspect.
+    FailFast;
+    /// Retry until the caller deadline, then return `Timeout` or `Partition`.
+    Deadline;
+    /// Resolve monitor and supervision partitions as `MonitorLost`.
+    MonitorLost;
+    /// Opt in to cross-node link and supervision fail-together behavior.
+    CrashLinked;
+    /// Stop sending to a suspect or dead peer until a fresh incarnation appears.
+    Quarantine;
 }
 
 /// A handle to an active monitor registration.

@@ -485,7 +485,7 @@ pub mod wasm_stubs {
     //!   clone/close helpers). Blocking `hew_channel_recv_layout` remains an
     //!   explicit trap until cooperative scheduler yield/resume parity exists.
 
-    use std::ffi::{c_char, c_void};
+    use std::ffi::c_void;
 
     // ── Sleep ────────────────────────────────────────────────────────────────
 

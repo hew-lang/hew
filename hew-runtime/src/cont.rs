@@ -351,6 +351,7 @@ pub unsafe extern "C" fn hew_cont_destroy(handle: *mut c_void) {
 /// out-drop thunk (or null), followed by the `started` / `pending` flag bytes —
 /// not yet destroyed. Called exactly once per generator value.
 #[no_mangle]
+#[cfg(not(target_arch = "wasm32"))]
 pub unsafe extern "C" fn hew_gen_coro_destroy(companion: *mut c_void) {
     if companion.is_null() {
         return;

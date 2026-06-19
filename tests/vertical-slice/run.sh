@@ -216,10 +216,10 @@ run_native_under_memory_cap() {
 }
 
 "${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/string_return.hew" >"${accept_output}"
-grep -q 'return_ty: String' "${accept_output}"
+grep -qe '-> string' "${accept_output}"
 
 "${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/01-arith.hew" >"${accept_output}"
-grep -q 'return_ty: I64' "${accept_output}"
+grep -qe '-> i64' "${accept_output}"
 
 "${HEW}" compile "${ROOT}/tests/vertical-slice/accept/arith_call.hew" >"${accept_output}" 2>&1
 arith_bin="${ROOT}/.tmp/compile-out/arith_call"
@@ -669,26 +669,24 @@ run_accept_expect_status "on_crash_basic" 42
 run_accept_expect_status "on_crash_info_code" 42
 
 # `#[max_heap(N)]` wire-through — direct spawn path:
-#   1. MIR dump confirms ActorLayout carries max_heap_bytes: Some(65536),
+#   1. MIR dump confirms SpawnActor carries max_heap=65536,
 #      proving the annotation propagated from HIR through MIR.
 #   2. Binary exits 42, proving codegen routed the spawn through
 #      hew_actor_spawn_opts (arena_cap_bytes=65536) without breaking
 #      actor functionality.
 "${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/actor_max_heap_basic.hew" >"${accept_output}" 2>&1
-grep -q 'max_heap_bytes: Some(' "${accept_output}"
-grep -q '65536' "${accept_output}"
+grep -q 'max_heap=65536' "${accept_output}"
 run_accept_expect_status "actor_max_heap_basic" 42
 
 # `#[max_heap(N)]` wire-through — supervisor child path:
 #   1. MIR dump confirms the supervisor bootstrap's SpawnActor instruction
-#      carries max_heap_bytes: Some(131072), proving the post-loop pass
-#      mirrored the cap from ActorLayout into SupervisorChildLayout, and
-#      codegen emitted it into HewChildSpec.arena_cap_bytes.
+#      carries max_heap=131072, proving the post-loop pass mirrored the cap
+#      from ActorLayout into SupervisorChildLayout, and codegen emitted it
+#      into HewChildSpec.arena_cap_bytes.
 #   2. Binary exits 42, proving the supervisor bootstrap path is
 #      unaffected.
 "${HEW}" compile --dump-mir raw "${ROOT}/tests/vertical-slice/accept/supervisor_max_heap.hew" >"${accept_output}" 2>&1
-grep -q 'max_heap_bytes: Some(' "${accept_output}"
-grep -q '131072' "${accept_output}"
+grep -q 'max_heap=131072' "${accept_output}"
 run_accept_expect_status "supervisor_max_heap" 42
 
 # Reject: accessing a non-existent child name on a supervisor LHS.
@@ -1986,23 +1984,23 @@ grep -q ": OK$" "${accept_output}" || {
 }
 
 "${HEW}" compile --dump-mir raw "${w2006_fixture}" >"${accept_output}" 2>&1
-grep -qF 'family: TaskScopeNew,' "${accept_output}" || {
-  echo "W2.006: MIR dump must contain the TaskScopeNew runtime-call family" >&2
+grep -qF 'hew_task_scope_new()' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain hew_task_scope_new runtime call" >&2
   cat "${accept_output}" >&2
   exit 1
 }
-grep -qF 'family: TaskScopeSpawn,' "${accept_output}" || {
-  echo "W2.006: MIR dump must contain the TaskScopeSpawn runtime-call family" >&2
+grep -qF 'hew_task_scope_spawn(' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain hew_task_scope_spawn runtime call" >&2
   cat "${accept_output}" >&2
   exit 1
 }
-grep -qF 'family: TaskNew,' "${accept_output}" || {
-  echo "W2.006: MIR dump must contain the TaskNew runtime-call family (preceding TaskScopeSpawn)" >&2
+grep -qF 'hew_task_new()' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain hew_task_new runtime call (preceding hew_task_scope_spawn)" >&2
   cat "${accept_output}" >&2
   exit 1
 }
-grep -qF 'family: TaskScopeDestroy,' "${accept_output}" || {
-  echo "W2.006: MIR dump must contain the TaskScopeDestroy runtime-call family" >&2
+grep -qF 'hew_task_scope_destroy(' "${accept_output}" || {
+  echo "W2.006: MIR dump must contain hew_task_scope_destroy runtime call" >&2
   cat "${accept_output}" >&2
   exit 1
 }

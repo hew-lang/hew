@@ -245,6 +245,7 @@ mod tests {
         );
 
         let name = CString::new("missing_runtime_registry").unwrap();
+        // SAFETY: `name` is a valid NUL-terminated C string produced by CString::new.
         unsafe {
             assert!(hew_registry_lookup(name.as_ptr()).is_null());
         }

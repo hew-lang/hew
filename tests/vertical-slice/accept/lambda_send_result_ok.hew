@@ -31,6 +31,13 @@ fn main() -> i64 {
             SendError::Full => 1,
             SendError::Closed => 2,
             SendError::NodeRoutingNotWired => 3,
+            SendError::Partition => 4,
+            SendError::StaleRef => 5,
+            SendError::LocalShutdown => 6,
+            SendError::Cancelled => 7,
+            SendError::VersionMismatch => 8,
+            SendError::Unauthorized => 9,
+            SendError::Backpressure => 10,
         },
     }
 }

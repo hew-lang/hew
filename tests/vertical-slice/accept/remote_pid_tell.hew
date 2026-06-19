@@ -19,7 +19,7 @@
 // variant that starts a real node, registers Worker, calls tell, and asserts
 // Result::Ok.
 record Ping {
-    n: i64,
+    n: i64
 }
 
 actor Worker {
@@ -32,7 +32,7 @@ impl ActorMsg for Worker {
 }
 
 fn main() -> i64 {
-    let pid: RemotePid<Worker> = RemotePid::<Worker>::from_raw(1, 0);
+    let pid: RemotePid<Worker> = RemotePid::from_raw<Worker>(1, 0);
     let result: Result<(), SendError> = pid.tell(Ping { n: 0 });
     match result {
         Result::Ok(_) => 0,
@@ -40,6 +40,13 @@ fn main() -> i64 {
             SendError::NodeRoutingNotWired => 42,
             SendError::Full => 1,
             SendError::Closed => 2,
+            SendError::Partition => 3,
+            SendError::StaleRef => 4,
+            SendError::LocalShutdown => 5,
+            SendError::Cancelled => 6,
+            SendError::VersionMismatch => 7,
+            SendError::Unauthorized => 8,
+            SendError::Backpressure => 9,
         },
     }
 }

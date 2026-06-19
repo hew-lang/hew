@@ -372,6 +372,14 @@ jobs:
 
       - name: Run sandbox VM parity
         run: make sandbox-parity
+
+      - name: Verify checked-MIR golden corpus
+        # Re-dumps every examples/v05/checked-mir/*.hew fixture through
+        # --dump-mir and byte-diffs against the committed goldens.  A drift
+        # here means either the renderer changed without regenerating the
+        # corpus (make checked-mir-golden) or a non-determinism bug crept
+        # into dump_mir.  The hew binary is already built by this point.
+        run: make checked-mir-verify
       # <<< CI-PARITY-STEPS
 
       - name: Upload test reports

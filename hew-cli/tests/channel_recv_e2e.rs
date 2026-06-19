@@ -98,6 +98,21 @@ fn mir_checked_dump(source: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// True when the Checked-MIR dump carries the suspending channel-recv flip
+/// carrier (`Terminator::SuspendingChannelRecv`).
+///
+/// The dump renderer is a presentation detail that has evolved: the
+/// derived-`Debug` form prints the variant name `SuspendingChannelRecv`,
+/// while the structured Checked-MIR renderer prints the instruction
+/// mnemonic `suspend.channel_recv`. The flip's PRESENCE is the load-bearing
+/// signal these oracles assert; match either rendering so the oracle stays
+/// pinned to the MIR fact, not the formatter. Both mnemonics are distinct
+/// from the blocking recv call (`hew_channel_recv_layout`), so the negative
+/// oracle below cannot false-match the non-flipped path.
+fn dump_has_channel_recv_suspend(dump: &str) -> bool {
+    dump.contains("SuspendingChannelRecv") || dump.contains("suspend.channel_recv")
+}
+
 /// NEW-4 oracle: `await rx.recv()` in an actor handler (an execution-context
 /// caller) flips to the `SuspendingChannelRecv` carrier.
 #[test]
@@ -116,7 +131,7 @@ fn actor_await_recv_flips_to_suspending_channel_recv() {
          fn main() { let w = spawn Worker(); w.run(0); }\n",
     );
     assert!(
-        dump.contains("SuspendingChannelRecv"),
+        dump_has_channel_recv_suspend(&dump),
         "actor `await rx.recv()` must flip to SuspendingChannelRecv:\n{dump}"
     );
 }
@@ -136,7 +151,7 @@ fn main_await_recv_does_not_flip() {
          }\n",
     );
     assert!(
-        !dump.contains("SuspendingChannelRecv"),
+        !dump_has_channel_recv_suspend(&dump),
         "`await rx.recv()` from main must NOT flip to SuspendingChannelRecv:\n{dump}"
     );
 }

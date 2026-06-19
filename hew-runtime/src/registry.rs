@@ -17,7 +17,7 @@ mod native {
     use std::ffi::{c_char, c_void};
     use std::sync::RwLock;
 
-    use crate::runtime::rt_current;
+    use crate::runtime::{rt_current, rt_current_opt};
     use crate::util::RwLockExt;
 
     const N_SHARDS: usize = 256;
@@ -42,6 +42,10 @@ mod native {
     /// cleanup) shard maps.
     pub(crate) struct ShardedRegistry {
         shards: [RwLock<RegistryShard>; N_SHARDS],
+    }
+
+    fn registry_opt() -> Option<&'static ShardedRegistry> {
+        rt_current_opt().map(|rt| &rt.registry)
     }
 
     impl ShardedRegistry {
@@ -114,7 +118,10 @@ mod native {
         let Some(key) = (unsafe { crate::util::cstr_to_str(&name, "hew_registry_lookup") }) else {
             return std::ptr::null_mut();
         };
-        let shard = rt_current().registry.shard_for(key);
+        let Some(registry) = registry_opt() else {
+            return std::ptr::null_mut();
+        };
+        let shard = registry.shard_for(key);
         let reg = shard.read_or_recover();
         reg.0.get(key).copied().unwrap_or(std::ptr::null_mut())
     }
@@ -146,7 +153,10 @@ mod native {
     #[no_mangle]
     pub extern "C" fn hew_registry_count() -> i32 {
         let mut total_count = 0usize;
-        for shard in &rt_current().registry.shards {
+        let Some(registry) = registry_opt() else {
+            return 0;
+        };
+        for shard in &registry.shards {
             let reg = shard.read_or_recover();
             total_count += reg.0.len();
         }
@@ -169,7 +179,10 @@ mod native {
     /// resolves the draining runtime's own registry.
     #[no_mangle]
     pub extern "C" fn hew_registry_clear() {
-        for shard in &rt_current().registry.shards {
+        let Some(registry) = registry_opt() else {
+            return;
+        };
+        for shard in &registry.shards {
             let mut reg = shard.write_or_recover();
             reg.0.clear();
         }
@@ -221,6 +234,22 @@ mod tests {
             let result = hew_registry_unregister(name.as_ptr());
             assert_eq!(result, 0);
         }
+    }
+
+    #[test]
+    fn registry_read_and_clear_treat_missing_runtime_as_empty_registry() {
+        let _lock = crate::scheduler::SchedTestLock::acquire();
+        assert!(
+            crate::runtime::rt_default().is_none(),
+            "test requires the runtime slot to be empty"
+        );
+
+        let name = CString::new("missing_runtime_registry").unwrap();
+        unsafe {
+            assert!(hew_registry_lookup(name.as_ptr()).is_null());
+        }
+        assert_eq!(hew_registry_count(), 0);
+        hew_registry_clear();
     }
 
     #[test]

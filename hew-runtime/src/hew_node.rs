@@ -234,7 +234,10 @@ impl NodeSlot {
 
 /// Run `f` with read access to the current runtime's active-node slot.
 fn with_current_node_read<R>(f: impl FnOnce(&usize) -> R) -> R {
-    crate::runtime::rt_current().node.current.read_access(f)
+    match crate::runtime::rt_current_opt() {
+        Some(rt) => rt.node.current.read_access(f),
+        None => f(&0),
+    }
 }
 
 /// Run `f` with write access to the current runtime's active-node slot.
@@ -247,9 +250,17 @@ fn with_known_nodes<R>(f: impl FnOnce(&mut Vec<KnownNodePtr>) -> R) -> R {
     crate::runtime::rt_current().node.known_nodes.access(f)
 }
 
+fn with_known_nodes_opt<R>(f: impl FnOnce(&mut Vec<KnownNodePtr>) -> R) -> Option<R> {
+    crate::runtime::rt_current_opt().map(|rt| rt.node.known_nodes.access(f))
+}
+
 /// The current runtime's reply routing table.
 fn reply_table() -> &'static ReplyRoutingTable {
     &crate::runtime::rt_current().node.reply_table
+}
+
+fn reply_table_opt() -> Option<&'static ReplyRoutingTable> {
+    crate::runtime::rt_current_opt().map(|rt| &rt.node.reply_table)
 }
 
 // ---------------------------------------------------------------------------
@@ -688,7 +699,7 @@ static REMOTE_VOID_REPLY_SENTINEL: u8 = 0;
 /// Called by the reader thread when a reply envelope arrives. Returns
 /// `true` if the request ID was matched.
 pub(crate) fn complete_remote_reply(request_id: u64, payload: &[u8]) -> bool {
-    reply_table().complete(request_id, payload.to_vec())
+    reply_table_opt().is_some_and(|table| table.complete(request_id, payload.to_vec()))
 }
 
 fn ask_error_from_code(code: i32) -> Option<AskError> {
@@ -771,13 +782,15 @@ pub(crate) fn fail_remote_reply(request_id: u64, reason_payload: &[u8]) -> bool 
     // On unknown codes, leave the pending ask unresolved (it will timeout)
     // rather than fabricating a misleading AskError.
     match decode_rejection_reason(reason_payload) {
-        Ok(reason) => reply_table().fail(request_id, reason),
+        Ok(reason) => reply_table_opt().is_some_and(|table| table.fail(request_id, reason)),
         Err(_) => false,
     }
 }
 
 pub(crate) fn fail_remote_replies_for_connection(conn_mgr: *const HewConnMgr, conn_id: c_int) {
-    reply_table().fail_connection(ConnectionKey::new(conn_mgr, conn_id));
+    if let Some(table) = reply_table_opt() {
+        table.fail_connection(ConnectionKey::new(conn_mgr, conn_id));
+    }
 }
 
 fn remote_void_reply_sentinel() -> *mut c_void {
@@ -962,7 +975,7 @@ unsafe fn unregister_local_names_for_node(node: &HewNode) {
 /// local names after a named actor is freed or restarted.
 pub(crate) unsafe fn unregister_actor_names(actor_id: u64) {
     let owner_node_id = crate::pid::hew_pid_node(actor_id);
-    with_known_nodes(|known| {
+    let _ = with_known_nodes_opt(|known| {
         for entry in known.iter().copied() {
             if entry.0.is_null() {
                 continue;
@@ -2859,7 +2872,9 @@ fn spawn_remote_ask_timeout(request_id: u64, timeout_ms: u64) -> Result<(), AskE
         .name("hew-remote-ask-timeout".to_string())
         .spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(timeout_ms));
-            reply_table().fail(request_id, AskError::Timeout);
+            if let Some(table) = reply_table_opt() {
+                table.fail(request_id, AskError::Timeout);
+            }
         })
         .map(|_| ())
         .map_err(|_| AskError::SendFailed)
@@ -3116,6 +3131,22 @@ mod tests {
     /// safely retires a `runtime_test_guard()` placeholder before init).
     fn init_real_scheduler() {
         crate::scheduler::init_real_scheduler_for_test();
+    }
+
+    #[test]
+    fn node_read_and_sweep_paths_treat_missing_runtime_as_empty_state() {
+        let _lock = crate::scheduler::SchedTestLock::acquire();
+        assert!(
+            crate::runtime::rt_default().is_none(),
+            "test requires the runtime slot to be empty"
+        );
+
+        with_current_node_read(|current| assert_eq!(*current, 0));
+        assert!(!complete_remote_reply(1, &[1, 2, 3]));
+        assert!(!fail_remote_reply(1, &[]));
+        fail_remote_replies_for_connection(std::ptr::null(), 0);
+        // SAFETY: with no runtime there are no known-node registries to sweep.
+        unsafe { unregister_actor_names(crate::pid::hew_pid_make(1, 1)) };
     }
 
     // ── Test-only u32 codec ──────────────────────────────────────────────

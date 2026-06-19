@@ -161,7 +161,7 @@ pub(crate) unsafe fn track_actor(actor: *mut HewActor) {
 pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
     // SAFETY: caller guarantees `actor` is valid and not yet freed.
     let id = unsafe { (*actor).id };
-    with_live_actors(|map| {
+    with_live_actors_opt(|map| {
         if let Some(m) = map.as_mut() {
             if let std::collections::hash_map::Entry::Occupied(entry) = m.entry(id) {
                 if entry.get().0 == actor {
@@ -172,13 +172,14 @@ pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
         }
         false
     })
+    .unwrap_or(false)
 }
 
 /// Remove and return the actor tracked under `actor_id` if it still matches `expected`.
 // live on not(wasm32) — drain_quiesced_actor; dead on wasm32; caller actor.rs:2716
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn take_actor_by_id(actor_id: u64, expected: *mut HewActor) -> Option<*mut HewActor> {
-    with_live_actors(|map| {
+    with_live_actors_opt(|map| {
         let tracked = map.as_mut()?.remove(&actor_id)?;
         if tracked.0 == expected {
             Some(tracked.0)
@@ -188,6 +189,7 @@ pub(crate) fn take_actor_by_id(actor_id: u64, expected: *mut HewActor) -> Option
             None
         }
     })
+    .flatten()
 }
 
 /// Check whether an actor pointer is still live.
@@ -302,10 +304,11 @@ pub(crate) fn is_actor_live_with_id(actor_id: u64, expected: *mut HewActor) -> b
 /// Returns the drained map so the caller can free each actor.
 /// Called by `actor::cleanup_all_actors` after worker threads have stopped.
 pub(crate) fn drain_all_for_cleanup() -> HashMap<u64, ActorPtr> {
-    with_live_actors(|map| match map.as_mut() {
+    with_live_actors_opt(|map| match map.as_mut() {
         Some(m) => std::mem::take(m),
         None => HashMap::new(),
     })
+    .unwrap_or_default()
 }
 
 // ── Deferred teardown threads ───────────────────────────────────────────────
@@ -320,7 +323,8 @@ pub(crate) fn push_deferred_teardown_thread(handle: std::thread::JoinHandle<()>)
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn drain_deferred_teardown_threads() {
-    let threads = &rt_current().live_actors.deferred_teardown_threads;
+    let Some(rt) = rt_current_opt() else { return };
+    let threads = &rt.live_actors.deferred_teardown_threads;
     loop {
         let handles = threads.access(|threads| {
             if threads.is_empty() {
@@ -356,5 +360,7 @@ mod tests {
         assert_eq!(get_actor_ptr_by_id(42), None);
         assert!(!is_actor_live(actor));
         assert!(!is_actor_live_with_id(42, actor));
+        assert!(drain_all_for_cleanup().is_empty());
+        drain_deferred_teardown_threads();
     }
 }

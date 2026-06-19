@@ -66,6 +66,72 @@ jobs:
             --lib
 
   # ─────────────────────────────────────────────────────────────────────────
+  # Compiled .hew fixture ASan — leak detection for generated code
+  #
+  # Scope: compiled Hew programs linked against an ASan-instrumented libhew.a.
+  # The `rust-runtime-asan` job above instruments the Rust runtime crate under
+  # test; this job instruments the GENERATED CODE (the LLVM IR + clang-linked
+  # artefact produced by `hew compile`).  These are two different surfaces:
+  # - runtime-asan: cargo test --lib sees Rust-level allocation/free paths
+  # - fixture-asan: a compiled .hew binary running against ASan libhew.a sees
+  #   leaks that only appear in the generated code (e.g. a hew_vec_get_str
+  #   retained node that codegen failed to drop after a string compare)
+  #
+  # Two fixture probes:
+  #   clean-probe   exercises the previously-leaky Vec<string> index-into-compare
+  #                 and owned array-repeat shapes (both fixed); must be ZERO findings.
+  #   leak-proof    calls a C shim that intentionally leaks 1 KiB; the gate must
+  #                 catch it — proving the extended gate would have flagged the two
+  #                 missed leaks that were previously macOS-oracle-only.
+  # ─────────────────────────────────────────────────────────────────────────
+  compiled-fixture-asan:
+    name: Compiled fixture ASan (generated code)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Install llvm-${{ env.LLVM_VERSION }} (symbolizer + clang for link step)
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq llvm-${{ env.LLVM_VERSION }} clang-${{ env.LLVM_VERSION }}
+          # Make clang-N available as `clang` (hew's link step calls `clang`).
+          sudo update-alternatives --install /usr/bin/clang clang \
+            /usr/bin/clang-${{ env.LLVM_VERSION }} 100
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # master 2026-03-27
+        with:
+          toolchain: nightly
+
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            target/sanitizer-fixture-asan/
+          key: fixture-asan-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: fixture-asan-${{ runner.os }}-
+
+      - name: Run compiled-fixture ASan gate
+        env:
+          LLVM_VERSION: ${{ env.LLVM_VERSION }}
+          SANITIZER_RUST_TARGET: x86_64-unknown-linux-gnu
+          CARGO_TERM_COLOR: always
+        run: |
+          # scripts/asan-fixture-check.sh:
+          #   1. Builds hew CLI + libhew.a with nightly -Zsanitizer=address.
+          #   2. Compiles .hew fixtures to objects (hew build --emit-obj).
+          #   3. Links with clang -fsanitize=address against the ASan libhew.a.
+          #   4. Runs clean-probe (must be zero findings) and leak-proof (must
+          #      detect the deliberate 1 KiB leak).
+          scripts/asan-fixture-check.sh
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Rust runtime TSan — data-race detection for the actor runtime
   #
   # Scope: core concurrency primitives (reply-channel, mailbox, scheduler).

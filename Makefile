@@ -63,7 +63,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew adze observe runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -819,6 +819,26 @@ asan:
 	ASAN_SYMBOLIZER_PATH=$(ASAN_SYMBOLIZER) \
 	LSAN_OPTIONS="suppressions=$(CURDIR)/hew-runtime/lsan.supp" \
 	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime --lib -- --test-threads=1
+
+# ASan gate for compiled .hew fixture binaries (Linux/nightly toolchain required).
+#
+# Unlike `make asan` (which instruments the Rust runtime crate under test),
+# this target builds an ASan-instrumented copy of the full hew toolchain
+# (hew CLI + libhew.a) using nightly Rust, then compiles .hew leak-test
+# fixtures against that instrumented library and runs them under
+# ASAN_OPTIONS=detect_leaks=1.  This catches leaks in the GENERATED CODE
+# emitted by hew (the Vec<string> compare-temp leak and the owned array-repeat
+# clone leak were only caught by the macOS `leaks` oracle before this gate).
+#
+# Passes LLVM_VERSION through to the script if set (e.g. LLVM_VERSION=22).
+asan-fixtures:
+ifeq ($(shell uname -s),Darwin)
+	@echo "asan-fixtures: skipped on macOS — use the leaks oracle in hew-cli/tests/*_leak_oracle.rs"
+else
+	LLVM_VERSION=$(LLVM_VERSION) \
+	SANITIZER_RUST_TARGET=$(SANITIZER_RUST_TARGET) \
+	scripts/asan-fixture-check.sh
+endif
 
 # Nightly rust-runtime TSan command (Linux/nightly toolchain required).
 #

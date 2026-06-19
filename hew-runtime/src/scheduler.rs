@@ -77,6 +77,15 @@ impl Drop for ActivationMetricsGuard {
 #[cfg(test)]
 static ACTIVATE_PRE_REENQUEUE_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> = PoisonSafe::new(None);
 
+/// Fires inside `activate_actor` immediately after the worker WINS the
+/// `Runnable -> Running` CAS — the exact CAS->marker-gap location. A regression
+/// test installs a hook here to fire an external trap in the precise window the
+/// pre-fix code left `dispatch_active == false` while the actor was already
+/// `Running`, and asserts the fix (claim before the CAS) keeps the flag set so
+/// the free-quiescence predicate refuses.
+#[cfg(test)]
+static ACTIVATE_POST_CAS_HOOK: PoisonSafe<Option<fn(*mut HewActor)>> = PoisonSafe::new(None);
+
 #[cfg(any(test, debug_assertions))]
 static INJECT_NULL_LOCK_SEAT_ONCE: AtomicBool = AtomicBool::new(false);
 
@@ -106,6 +115,14 @@ fn dispatch_lock_seat_for_actor(
 #[cfg(test)]
 fn run_activate_pre_reenqueue_hook(actor: *mut HewActor) {
     let hook = ACTIVATE_PRE_REENQUEUE_HOOK.access(|h| *h);
+    if let Some(hook) = hook {
+        hook(actor);
+    }
+}
+
+#[cfg(test)]
+fn run_activate_post_cas_hook(actor: *mut HewActor) {
+    let hook = ACTIVATE_POST_CAS_HOOK.access(|h| *h);
     if let Some(hook) = hook {
         hook(actor);
     }
@@ -1503,9 +1520,9 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
 // ── Actor activation ────────────────────────────────────────────────────
 
 /// RAII marker that an `activate_actor` frame owns an actor's in-flight
-/// activation. Set `dispatch_active = true` the instant the worker wins the
+/// activation. Set `dispatch_active = true` *before* the worker attempts the
 /// `Runnable -> Running` CAS and clears it on EVERY exit of the activation
-/// (settle, suspend-park, crash-break, or normal fall-through).
+/// (settle, suspend-park, crash-break, normal fall-through, or a lost CAS).
 ///
 /// The flag exists because an external `hew_actor_trap` CAS-es the actor
 /// straight to the quiescent `Crashed`/`Stopped` state out from under this
@@ -1517,13 +1534,32 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
 /// corrupted msg-node tripping the envelope-mode dispatch guard. `hew_actor_free`
 /// additionally waits on this flag, so it never frees under an in-flight
 /// activation regardless of which thread published the terminal state.
+///
+/// CAS-gap ordering (why claim runs BEFORE the CAS, not after): a trap can only
+/// flip a `Running` actor terminal. If the flag were set *after* a successful
+/// `Runnable -> Running` CAS, the actor would be `Running` and trap-stealable
+/// for the instructions between the CAS and the set, during which the flag
+/// still reads `false`. A trap landing there flips `Running -> Crashed`, and a
+/// free observing `Crashed && !dispatch_active` reclaims the box before the
+/// worker sets the flag and continues reading the (now freed) box — UAF.
+/// Claiming the flag *before* the CAS guarantees it is already `true` the
+/// instant the actor can become `Running`, so the trap-stealable window is
+/// never flag-`false`. On a lost CAS the worker is not the owner, so the guard
+/// is dropped on the early-return path, clearing the flag.
+///
+/// No-clobber: a single actor is enqueued at most once per `Runnable` epoch
+/// (every `X -> Runnable` transition is CAS-gated and only the winner
+/// `sched_enqueue`s) and the Chase-Lev deque hands each queued pointer to
+/// exactly one worker, so at most one `activate_actor` frame runs per actor at a
+/// time. A worker that loses the `Runnable -> Running` CAS therefore has no
+/// concurrent winner whose flag its clear could erase.
 struct ActivationOwnership<'a> {
     flag: &'a std::sync::atomic::AtomicBool,
 }
 
 impl<'a> ActivationOwnership<'a> {
-    /// Mark the activation owned. Call immediately after the `Runnable ->
-    /// Running` CAS succeeds.
+    /// Mark the activation owned. Call BEFORE the `Runnable -> Running` CAS so
+    /// the flag is already published when the actor first becomes `Running`.
     fn claim(flag: &'a std::sync::atomic::AtomicBool) -> Self {
         flag.store(true, Ordering::Release);
         Self { flag }
@@ -1566,6 +1602,19 @@ fn activate_actor(actor: *mut HewActor) {
         return;
     }
 
+    // Mark the activation owned BEFORE the CAS so `dispatch_active` is already
+    // published the instant this actor can become `Running` and thus
+    // trap-stealable. A trap can only flip a `Running` actor terminal; if the
+    // flag were claimed *after* a winning CAS, the actor would be `Running`
+    // with the flag still `false` for the instructions in between, and a trap
+    // landing there (`Running -> Crashed`) plus an async free observing
+    // `Crashed && !dispatch_active` would reclaim the box out from under this
+    // still-running worker — the CAS->marker-gap UAF. Held until every exit
+    // below (settle / suspend-park / crash-break / fall-through) so the async
+    // free path cannot reclaim the actor box while this worker is still reading
+    // it. See `ActivationOwnership`.
+    let activation_ownership = ActivationOwnership::claim(&a.dispatch_active);
+
     // CAS: RUNNABLE → RUNNING.
     if a.actor_state
         .compare_exchange(
@@ -1576,15 +1625,24 @@ fn activate_actor(actor: *mut HewActor) {
         )
         .is_err()
     {
+        // Lost the CAS: this worker never owned the activation (the actor was
+        // already terminal / claimed / no longer `Runnable`). Clear the flag we
+        // optimistically set — no concurrent winner exists to clobber (single
+        // dispatch per actor; see `ActivationOwnership`), so this restores the
+        // flag to the `false` a non-owning worker must leave behind.
+        drop(activation_ownership);
         return;
     }
 
-    // Mark the activation owned for the rest of this frame. Held until every
-    // exit below (settle / suspend-park / crash-break / fall-through) so the
-    // async free path cannot reclaim the actor box while this worker is still
-    // reading it — even after an external `hew_actor_trap` forces the state to
-    // a quiescent terminal value out from under us. See `ActivationOwnership`.
-    let _activation_ownership = ActivationOwnership::claim(&a.dispatch_active);
+    // The CAS won: keep ownership for the rest of this frame.
+    let _activation_ownership = activation_ownership;
+
+    // Test-only rendezvous at the exact CAS->marker-gap location: the actor is
+    // now `Running` and trap-stealable. A regression test fires an external trap
+    // HERE and asserts `dispatch_active` is already set (claimed before the CAS),
+    // so a concurrent free refuses to reclaim the box under this worker.
+    #[cfg(test)]
+    run_activate_post_cas_hook(actor);
 
     // Resume re-entry (slice-4 executor). This activation may be a resumed
     // continuation rather than a fresh message dispatch. The discriminator —
@@ -2886,6 +2944,23 @@ mod tests {
         }
     }
 
+    struct ActivatePostCasHookGuard;
+
+    impl ActivatePostCasHookGuard {
+        fn install(hook: fn(*mut HewActor)) -> Self {
+            ACTIVATE_POST_CAS_HOOK.access(|h| {
+                assert!(h.replace(hook).is_none(), "test hook already installed");
+            });
+            Self
+        }
+    }
+
+    impl Drop for ActivatePostCasHookGuard {
+        fn drop(&mut self) {
+            ACTIVATE_POST_CAS_HOOK.access(|h| *h = None);
+        }
+    }
+
     /// Helper: build a minimal `HewActor` with sensible defaults.
     fn stub_actor() -> HewActor {
         HewActor {
@@ -3912,6 +3987,168 @@ mod tests {
             mailbox::hew_mailbox_free(mailbox);
             drop(Box::from_raw(actor_ptr));
         }
+    }
+
+    // Cross-thread coordination for the CAS->marker-gap race test. The worker
+    // thread (running `activate_actor`) and a concurrent freer thread rendezvous
+    // through these so the free races the worker's post-trap settle reads.
+    static GAP_TRAP_FIRED: AtomicBool = AtomicBool::new(false);
+    static GAP_FREE_RETURNED: AtomicI32 = AtomicI32::new(i32::MIN);
+    static GAP_FLAG_AT_TRAP: AtomicBool = AtomicBool::new(false);
+
+    /// Hook fired at the CAS->marker-gap location (immediately after the
+    /// `Runnable -> Running` CAS wins, while the worker owns the activation).
+    /// Models an external `hew_actor_trap` from another thread landing in the
+    /// gap: it forces the actor terminal (`Running -> Crashed`), snapshots the
+    /// dispatch-ownership flag, then SIGNALS a concurrent freer thread to call
+    /// `hew_actor_free` while this worker is still inside the activation and
+    /// about to run its settle reads of the actor box. The free must observe
+    /// `dispatch_active == true` and WAIT, never reclaiming the box under us.
+    ///
+    /// Pre-fix (claim AFTER the CAS) the flag could be `false` here, so the freer
+    /// would reclaim the box and the worker's subsequent settle reads (and the
+    /// guard's own `dispatch_active` store on frame exit) would touch freed
+    /// memory — the UAF this guards against, caught by ASan/LSan.
+    fn trap_then_signal_free(actor: *mut HewActor) {
+        // SAFETY: `actor` is the live actor this worker just CAS'd to `Running`.
+        unsafe {
+            crate::actor::hew_actor_trap(actor, 1);
+            let a = &*actor;
+            GAP_FLAG_AT_TRAP.store(a.dispatch_active.load(Ordering::Acquire), Ordering::SeqCst);
+        }
+        // Release the freer: it now races our settle. The freer must block on
+        // `dispatch_active` until this activation returns.
+        GAP_TRAP_FIRED.store(true, Ordering::Release);
+        // Give the freer a wide window to wake, enter `hew_actor_free`, and reach
+        // its quiescence load while this worker is still inside the activation. A
+        // correct free is blocked on `dispatch_active` (set before the CAS), so
+        // this is harmless; a pre-fix free would (incorrectly) observe
+        // terminal-without-marker here and reclaim the box under us — the UAF
+        // this widened window makes ASan-visible.
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+
+    /// `dispatch_active` is claimed BEFORE the `Runnable -> Running` CAS, so an
+    /// external trap landing in the CAS->marker gap (the actor is `Running` and
+    /// owned) keeps the flag set, and a concurrent `hew_actor_free` racing the
+    /// worker's settle WAITS on the flag instead of reclaiming the box under the
+    /// worker. Regression guard (ASan/LSan teeth) for the residual
+    /// CAS->marker-gap use-after-free: pre-fix the flag was set only after the
+    /// CAS, leaving a window where a trap (`Running -> Crashed`) plus an async
+    /// free reclaimed the box under the still-running worker.
+    #[test]
+    fn activation_claims_ownership_before_running_cas_closes_gap() {
+        // Unique ids across repeated runs so the process-wide `LIVE_ACTORS`
+        // registry never collides with a prior iteration's actor.
+        static GAP_ID: AtomicU64 = AtomicU64::new(900_001);
+
+        // `runtime_test_guard` installs a worker-less default runtime (so
+        // `track_actor` / `hew_actor_free` have runtime authority) and holds the
+        // shared scheduler-test lock for serialisation.
+        let _rt = crate::runtime_test_guard();
+
+        GAP_TRAP_FIRED.store(false, Ordering::SeqCst);
+        GAP_FREE_RETURNED.store(i32::MIN, Ordering::SeqCst);
+        GAP_FLAG_AT_TRAP.store(false, Ordering::SeqCst);
+
+        let _hook = ActivatePostCasHookGuard::install(trap_then_signal_free);
+
+        // SAFETY: creating a new mailbox with no preconditions.
+        let mailbox = unsafe { mailbox::hew_mailbox_new() };
+        assert!(!mailbox.is_null());
+        assert_eq!(
+            // SAFETY: mailbox is non-null and was just created above.
+            unsafe { mailbox::hew_mailbox_send(mailbox, 1, ptr::null_mut(), 0) },
+            0
+        );
+
+        // Track the actor in `LIVE_ACTORS` so the freer thread's `hew_actor_free`
+        // runs its full production path (quiescence wait -> untrack -> reclaim).
+        // The freer OWNS the box reclaim; the test must not free it again.
+        let mut actor = stub_actor();
+        actor.dispatch = Some(noop_dispatch);
+        actor.mailbox = mailbox.cast();
+        actor.actor_state = AtomicI32::new(HewActorState::Runnable as i32);
+        actor.id = GAP_ID.fetch_add(1, Ordering::Relaxed);
+        let actor_ptr: *mut HewActor = Box::into_raw(Box::new(actor));
+        // SAFETY: freshly-boxed, fully-initialised actor.
+        unsafe { crate::lifetime::live_actors::track_actor(actor_ptr) };
+
+        // Freer thread: wait for the gap trap, then race `hew_actor_free` against
+        // the worker's settle. `hew_actor_free` must block on `dispatch_active`.
+        let freer_ptr = actor_ptr as usize;
+        let freer = std::thread::spawn(move || {
+            while !GAP_TRAP_FIRED.load(Ordering::Acquire) {
+                std::hint::spin_loop();
+            }
+            let p = freer_ptr as *mut HewActor;
+            // SAFETY: `p` is the tracked actor box; `hew_actor_free` reclaims it.
+            let rc = unsafe { crate::actor::hew_actor_free(p) };
+            GAP_FREE_RETURNED.store(rc, Ordering::SeqCst);
+        });
+
+        // Worker: the post-CAS hook traps + signals the freer, then this returns
+        // through the settle (reading the actor box) while the freer races. With
+        // the fix the freer is blocked on `dispatch_active` so these reads are
+        // safe; without it ASan/LSan reports the use-after-free here.
+        activate_actor(actor_ptr);
+
+        freer.join().expect("freer thread panicked");
+
+        // The flag was set at the trap instant (claimed before the CAS), so the
+        // freer's quiescence wait could never observe terminal-without-marker.
+        assert!(
+            GAP_FLAG_AT_TRAP.load(Ordering::SeqCst),
+            "dispatch_active must be set at the gap trap (claimed before the CAS)"
+        );
+        // The free completed (rc 0) — it waited the worker out, then reclaimed.
+        assert_eq!(
+            GAP_FREE_RETURNED.load(Ordering::SeqCst),
+            0,
+            "the concurrent free must succeed after waiting out the activation"
+        );
+
+        // The freer's `hew_actor_free` reclaimed BOTH the actor box and its
+        // mailbox (and untracked it from `LIVE_ACTORS`). The test owns neither
+        // afterward — freeing again would be a double-free. `mailbox` is left
+        // unused past this point intentionally.
+        let _ = mailbox;
+    }
+
+    /// A lost `Runnable -> Running` CAS must clear the `dispatch_active` flag the
+    /// worker optimistically set before the CAS — otherwise a non-owning worker
+    /// would leave the flag set and wedge a later free to its deadline. This
+    /// guards the no-deadlock half of the CAS->marker-gap fix (every failure path
+    /// of the claim-before-CAS clears the flag).
+    #[test]
+    fn lost_running_cas_clears_optimistic_dispatch_active() {
+        let _g = SCHED_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let mut actor = stub_actor();
+        // `Idle` is not terminal (it passes the early terminal-state skip and
+        // reaches the claim + CAS) but is not `Runnable` either, so the
+        // `Runnable -> Running` CAS fails — exercising the lost-CAS path that
+        // must clear the optimistically-claimed flag.
+        actor.actor_state = AtomicI32::new(HewActorState::Idle as i32);
+        let actor_ptr: *mut HewActor = Box::into_raw(Box::new(actor));
+        activate_actor(actor_ptr);
+
+        // SAFETY: the test exclusively owns the actor.
+        let a = unsafe { &*actor_ptr };
+        assert!(
+            !a.dispatch_active.load(Ordering::Acquire),
+            "a worker that lost the Runnable->Running CAS must clear the optimistic flag"
+        );
+        assert_eq!(
+            a.actor_state.load(Ordering::Acquire),
+            HewActorState::Idle as i32,
+            "a lost CAS must not change the actor state"
+        );
+
+        // SAFETY: the test exclusively owns the actor box.
+        unsafe { drop(Box::from_raw(actor_ptr)) };
     }
 
     /// A dispatch handler that returns a non-null `coro.begin`-shaped handle:

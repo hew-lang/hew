@@ -102,21 +102,10 @@ pub(crate) struct MonoClock {
     pub(crate) sleep_ms: fn(u64),
 }
 
-/// Real-time implementation: uses the process-epoch `Instant` and
-/// `thread::sleep`.  This is identical to the previous hard-coded behaviour.
+/// Real-time implementation: uses the process-wide monotonic epoch
+/// ([`crate::monotonic`]) and `thread::sleep`.
 fn real_now_ms() -> u64 {
-    // Re-use the same epoch anchor as `io_time::monotonic_ms`.
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    let epoch = EPOCH.get_or_init(Instant::now);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "monotonic ms since process start will not exceed u64"
-    )]
-    {
-        epoch.elapsed().as_millis() as u64
-    }
+    crate::monotonic::monotonic_ms()
 }
 
 fn real_sleep_ms(ms: u64) {

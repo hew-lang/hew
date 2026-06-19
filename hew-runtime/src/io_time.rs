@@ -68,19 +68,10 @@ pub unsafe extern "C" fn hew_sleep_ms(ms: i64) {
     }
 }
 
-/// Cross-platform monotonic clock in milliseconds.
+/// Cross-platform monotonic clock in milliseconds, anchored on the
+/// process-wide epoch ([`crate::monotonic`]).
 fn monotonic_ms() -> u64 {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    let epoch = EPOCH.get_or_init(Instant::now);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "monotonic ms since process start won't exceed u64"
-    )]
-    {
-        epoch.elapsed().as_millis() as u64
-    }
+    crate::monotonic::monotonic_ms()
 }
 
 /// Return the current monotonic clock time in milliseconds.

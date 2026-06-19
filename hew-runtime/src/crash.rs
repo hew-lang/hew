@@ -182,20 +182,11 @@ pub(crate) fn record_injected_crash(actor_id: u64) {
 
 // ── Monotonic timestamp utility ─────────────────────────────────────────
 
-/// Get the current monotonic time in nanoseconds (cross-platform).
+/// Get the current monotonic time in nanoseconds, anchored on the process-wide
+/// epoch ([`crate::monotonic`]).
 fn monotonic_time_ns() -> u64 {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    let epoch = EPOCH.get_or_init(Instant::now);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "monotonic ns since process start won't exceed u64"
-    )]
-    {
-        // Add 1 so the timestamp is never zero — callers use 0 as "not set".
-        (epoch.elapsed().as_nanos() as u64).saturating_add(1)
-    }
+    // Add 1 so the timestamp is never zero — callers use 0 as "not set".
+    crate::monotonic::monotonic_ns().saturating_add(1)
 }
 
 // ── C ABI functions ─────────────────────────────────────────────────────

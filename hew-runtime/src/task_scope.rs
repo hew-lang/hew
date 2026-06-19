@@ -2126,6 +2126,136 @@ mod tests {
     }
 
     #[test]
+    fn scope_completion_observe_wins_arbiter_on_last_child() {
+        use crate::await_cancel::{
+            hew_await_cancel_free, hew_await_cancel_new, hew_await_cancel_status, AwaitCancelStatus,
+        };
+        // The wait-ALL join arm of the SuspendingScopeDeadline arbiter must win
+        // the shared one-shot CAS only when the LAST child completes — not the
+        // first. `actor` is null so no wake is enqueued; the CAS transition is the
+        // observable outcome.
+        // SAFETY: the test owns every scope/task/arbiter pointer exclusively.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let t1 = hew_task_new();
+            let t2 = hew_task_new();
+            hew_task_scope_spawn(scope, t1);
+            hew_task_scope_spawn(scope, t2);
+
+            let reg = hew_await_cancel_new(ptr::null_mut(), None, ptr::null_mut());
+            // Two outstanding children → the join arm parks (SCOPE_JOIN_SUSPEND).
+            assert_eq!(
+                hew_task_scope_completion_observe(scope, reg, ptr::null_mut()),
+                SCOPE_JOIN_SUSPEND
+            );
+            assert_eq!(
+                hew_await_cancel_status(reg),
+                AwaitCancelStatus::Pending as i32,
+                "the arbiter must stay Pending while any child is outstanding"
+            );
+
+            // First child done → still one outstanding → arbiter Pending.
+            hew_task_scope_complete_task(scope, t1);
+            assert_eq!(
+                hew_await_cancel_status(reg),
+                AwaitCancelStatus::Pending as i32,
+                "the join must not win on the first of two children"
+            );
+
+            // Last child done → the join wins the one-shot → Completed.
+            hew_task_scope_complete_task(scope, t2);
+            assert_eq!(
+                hew_await_cancel_status(reg),
+                AwaitCancelStatus::Completed as i32,
+                "the join must win the arbiter when the last child completes"
+            );
+
+            // The caller's creator ref + clean teardown: no double-free / leak.
+            hew_await_cancel_free(reg);
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn scope_completion_observe_ready_when_all_children_already_done() {
+        use crate::await_cancel::{
+            hew_await_cancel_free, hew_await_cancel_new, hew_await_cancel_status, AwaitCancelStatus,
+        };
+        // When every child is already Done at registration time, the join arm
+        // completes the arbiter synchronously and reports SCOPE_JOIN_READY so the
+        // caller binds the scope-complete edge without suspending.
+        // SAFETY: the test owns every scope/task/arbiter pointer exclusively.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let t1 = hew_task_new();
+            hew_task_scope_spawn(scope, t1);
+            hew_task_scope_complete_task(scope, t1);
+
+            let reg = hew_await_cancel_new(ptr::null_mut(), None, ptr::null_mut());
+            assert_eq!(
+                hew_task_scope_completion_observe(scope, reg, ptr::null_mut()),
+                SCOPE_JOIN_READY,
+                "an all-done scope must report READY (bind immediately)"
+            );
+            assert_eq!(
+                hew_await_cancel_status(reg),
+                AwaitCancelStatus::Completed as i32,
+                "the synchronous-ready path must complete the arbiter"
+            );
+
+            hew_await_cancel_free(reg);
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
+    fn scope_completion_observe_deadline_wins_first_blocks_the_join() {
+        use crate::await_cancel::{
+            hew_await_cancel_cancel, hew_await_cancel_free, hew_await_cancel_new,
+            hew_await_cancel_status, AwaitCancelStatus,
+        };
+        // The first-ready CAS makes deadline-vs-completion mutually exclusive:
+        // when the deadline arm wins first (here forced via an explicit TimedOut
+        // cancel), the later child-completion observers must NOT re-win the
+        // arbiter — its status stays TimedOut and the join's complete is a no-op.
+        // SAFETY: the test owns every scope/task/arbiter pointer exclusively.
+        unsafe {
+            let scope = hew_task_scope_new();
+            let t1 = hew_task_new();
+            hew_task_scope_spawn(scope, t1);
+
+            let reg = hew_await_cancel_new(ptr::null_mut(), None, ptr::null_mut());
+            assert_eq!(
+                hew_task_scope_completion_observe(scope, reg, ptr::null_mut()),
+                SCOPE_JOIN_SUSPEND
+            );
+
+            // The deadline arm wins first (TimedOut, no wake — null actor).
+            assert_eq!(
+                hew_await_cancel_cancel(reg, AwaitCancelStatus::TimedOut as i32, 0),
+                1,
+                "the deadline arm must win the one-shot CAS"
+            );
+            assert_eq!(
+                hew_await_cancel_status(reg),
+                AwaitCancelStatus::TimedOut as i32
+            );
+
+            // The child completes AFTER the deadline won: the join observer fires
+            // but its hew_await_cancel_complete loses the CAS — status unchanged.
+            hew_task_scope_complete_task(scope, t1);
+            assert_eq!(
+                hew_await_cancel_status(reg),
+                AwaitCancelStatus::TimedOut as i32,
+                "a late child completion must not re-win after the deadline"
+            );
+
+            hew_await_cancel_free(reg);
+            hew_task_scope_destroy(scope);
+        }
+    }
+
+    #[test]
     fn scope_cancel() {
         // SAFETY: test owns all scope/task pointers exclusively; all are valid.
         unsafe {

@@ -251,8 +251,9 @@ const SYNTHETIC_LOOKUP_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1000);
 /// `SendError` is also declared in `std/builtins.hew` and likewise invisible
 /// to the user-enum walk. Surface it so `match e { SendError::NodeRoutingNotWired
 /// => ... }` arms inside `Result<(), SendError>` matches resolve via
-/// `machine_ctor_registry`. Variant order matches `hew-codegen-rs/src/llvm.rs`:
-/// Full=0, Closed=1, NodeRoutingNotWired=2.
+/// `machine_ctor_registry`. Variant order matches `std/builtins.hew`; existing
+/// codegen tags stay Full=0, Closed=1, NodeRoutingNotWired=2, with distributed
+/// taxonomy tags appended after them.
 const SYNTHETIC_SEND_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1001);
 /// `TimeoutError` is declared in `std/builtins.hew` and likewise invisible to
 /// the user-enum walk. Surface it so `match e { TimeoutError::Timeout => ... }`
@@ -405,7 +406,68 @@ const BUILTIN_ENUM_VARIANT_BARE_NAMES: &[&str] = &[
     "OrphanedAsk",
     "NoRunnableWork",
     "DecodeFailure",
+    "Partition",
+    "StaleRef",
+    "Cancelled",
+    "LocalShutdown",
+    "VersionMismatch",
+    "Unauthorized",
+    "Backpressure",
+    "MonitorLost",
 ];
+
+const UNIT_VARIANT_PAYLOAD: &[&str] = &[];
+const LOOKUP_ERROR_VARIANTS: &[&str] = &[
+    "NotFound",
+    "Partition",
+    "Timeout",
+    "StaleRef",
+    "Cancelled",
+    "LocalShutdown",
+    "VersionMismatch",
+    "Unauthorized",
+];
+const LOOKUP_ERROR_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 8];
+const SEND_ERROR_VARIANTS: &[&str] = &[
+    "Full",
+    "Closed",
+    "NodeRoutingNotWired",
+    "Partition",
+    "StaleRef",
+    "LocalShutdown",
+    "Cancelled",
+    "VersionMismatch",
+    "Unauthorized",
+    "Backpressure",
+];
+const SEND_ERROR_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 10];
+const ASK_ERROR_VARIANTS: &[&str] = &[
+    "NoError",
+    "NodeNotRunning",
+    "RoutingFailed",
+    "EncodeFailed",
+    "SendFailed",
+    "Timeout",
+    "ConnectionDropped",
+    "PayloadSizeMismatch",
+    "WorkerAtCapacity",
+    "ActorStopped",
+    "MailboxFull",
+    "OrphanedAsk",
+    "NoRunnableWork",
+    "DecodeFailure",
+    "Partition",
+    "StaleRef",
+    "Cancelled",
+    "LocalShutdown",
+    "VersionMismatch",
+    "Unauthorized",
+    "Backpressure",
+    "MonitorLost",
+];
+const ASK_ERROR_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 22];
+const TIMEOUT_ERROR_VARIANTS: &[&str] = &["Timeout"];
+const TIMEOUT_ERROR_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 1];
 
 /// Description of a built-in tagged union for the HIR pre-pass that seeds
 /// the same registries user enums populate (`machine_ctor_registry`,
@@ -441,59 +503,29 @@ fn builtin_enum_specs() -> &'static [BuiltinEnumSpec] {
             type_name: "LookupError",
             item_id: SYNTHETIC_LOOKUP_ERROR_ITEM,
             type_params: &[],
-            variant_names: &["NotFound"],
-            variant_payloads: &[&[]],
+            variant_names: LOOKUP_ERROR_VARIANTS,
+            variant_payloads: LOOKUP_ERROR_PAYLOADS,
         },
         BuiltinEnumSpec {
             type_name: "SendError",
             item_id: SYNTHETIC_SEND_ERROR_ITEM,
             type_params: &[],
-            variant_names: &["Full", "Closed", "NodeRoutingNotWired"],
-            variant_payloads: &[&[], &[], &[]],
+            variant_names: SEND_ERROR_VARIANTS,
+            variant_payloads: SEND_ERROR_PAYLOADS,
         },
         BuiltinEnumSpec {
             type_name: "TimeoutError",
             item_id: SYNTHETIC_TIMEOUT_ERROR_ITEM,
             type_params: &[],
-            variant_names: &["Timeout"],
-            variant_payloads: &[&[]],
+            variant_names: TIMEOUT_ERROR_VARIANTS,
+            variant_payloads: TIMEOUT_ERROR_PAYLOADS,
         },
         BuiltinEnumSpec {
             type_name: "AskError",
             item_id: ItemId(u32::MAX - 1003),
             type_params: &[],
-            variant_names: &[
-                "NoError",
-                "NodeNotRunning",
-                "RoutingFailed",
-                "EncodeFailed",
-                "SendFailed",
-                "Timeout",
-                "ConnectionDropped",
-                "PayloadSizeMismatch",
-                "WorkerAtCapacity",
-                "ActorStopped",
-                "MailboxFull",
-                "OrphanedAsk",
-                "NoRunnableWork",
-                "DecodeFailure",
-            ],
-            variant_payloads: &[
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-                &[],
-            ],
+            variant_names: ASK_ERROR_VARIANTS,
+            variant_payloads: ASK_ERROR_PAYLOADS,
         },
     ]
 }

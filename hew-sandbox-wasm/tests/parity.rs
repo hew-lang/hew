@@ -172,6 +172,35 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/enums/run_colour_eq.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        // Structural `==`/`!=` on records (user-defined struct types) and
+        // payload enums (enums with data-carrying variants). The profile now
+        // admits these; `lower_binary` already emits `cmp.eq`/`cmp.ne` for all
+        // types; the VM's `canonicalComparable` serialises record fields and
+        // enum payloads recursively to a canonical JSON string, giving
+        // structural field-by-field equality that mirrors native Hew semantics.
+        test_name: "record_equality",
+        source_rel: "examples/playground/types/record_equality.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // `clone expr` produces an independent deep copy. The emitter lowers
+        // `Expr::Clone` by evaluating the operand then emitting `local.set`
+        // into a fresh temp, which calls `cloneValue` in the VM — a deep
+        // recursive copy. Proves vector aliasing safety: push to the original
+        // does not affect the clone.
+        test_name: "clone_value",
+        source_rel: "examples/playground/basics/clone_value.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) for both i64 and
+        // f64. The emitter reads the current binding, applies the type-directed
+        // opcode family (i64.checked_* or f64.*), and writes the result back.
+        test_name: "compound_assign",
+        source_rel: "examples/playground/language/compound_assign.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use hew_parser::ast::{
-    ActorDecl, BinaryOp, Block as AstBlock, CallArg, ElseBlock, Expr, FnDecl, Item, Literal,
-    MatchArm, Pattern, Program, ReceiveFnDecl, Spanned, Stmt, TypeBodyItem, TypeDeclKind,
-    VariantKind,
+    ActorDecl, BinaryOp, Block as AstBlock, CallArg, CompoundAssignOp, ElseBlock, Expr, FnDecl,
+    Item, Literal, MatchArm, Pattern, Program, ReceiveFnDecl, Spanned, Stmt, TypeBodyItem,
+    TypeDeclKind, VariantKind,
 };
 use hew_types::check::{SpanKey, TypeDefKind, VariantDef};
 use hew_types::Ty;
@@ -1347,14 +1347,68 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             Stmt::Expression(expr) => {
                 self.lower_expr(expr)?;
             }
-            Stmt::Assign { target, value, .. } => {
-                let value_local = self.lower_expr(value)?;
+            Stmt::Assign { target, op, value } => {
                 if let Expr::Identifier(name) = &target.0 {
                     if let Some(local) = self.bindings.get(name).cloned() {
+                        let rhs_local = self.lower_expr(value)?;
+                        let result_local = if let Some(compound_op) = op {
+                            // Compound assignment (`x += v`, `x -= v`, …).
+                            // Read the current binding, combine with rhs using the
+                            // type-directed opcode family, then write the result back.
+                            let target_ty = self.ty_for_expr(target);
+                            let operand_is_float = target_ty.is_float();
+                            let opcode = match compound_op {
+                                CompoundAssignOp::Add if operand_is_float => "f64.add",
+                                CompoundAssignOp::Subtract if operand_is_float => "f64.sub",
+                                CompoundAssignOp::Multiply if operand_is_float => "f64.mul",
+                                CompoundAssignOp::Divide if operand_is_float => "f64.div",
+                                CompoundAssignOp::Modulo if operand_is_float => "f64.rem",
+                                CompoundAssignOp::Add => "i64.checked_add",
+                                CompoundAssignOp::Subtract => "i64.checked_sub",
+                                CompoundAssignOp::Multiply => "i64.checked_mul",
+                                CompoundAssignOp::Divide => "i64.checked_div",
+                                CompoundAssignOp::Modulo => "i64.checked_rem",
+                                // Bitwise and shift forms are integer-only; admit them
+                                // to the arithmetic path when an opcode exists, trap
+                                // otherwise so learners get a named failure.
+                                CompoundAssignOp::BitAnd
+                                | CompoundAssignOp::BitOr
+                                | CompoundAssignOp::BitXor
+                                | CompoundAssignOp::Shl
+                                | CompoundAssignOp::Shr => {
+                                    self.emit_unsupported(Some(span));
+                                    return Ok(());
+                                }
+                            };
+                            // Emit `local.get current, binding` to read the current value.
+                            let current_ty = self.ty_for_expr(target);
+                            let current = self.temp_local(&current_ty, Some(span.clone()));
+                            self.emit_instruction(
+                                "local.get",
+                                Some(current.clone()),
+                                vec![Operand::local(local.clone())],
+                                Some(span.clone()),
+                                None,
+                            );
+                            // Emit the binary op: `result = current op rhs`.
+                            let result_ty = self.ty_for_expr(target);
+                            let result = self.temp_local(&result_ty, Some(span.clone()));
+                            self.emit_instruction(
+                                opcode,
+                                Some(result.clone()),
+                                vec![Operand::local(current), Operand::local(rhs_local)],
+                                Some(span.clone()),
+                                None,
+                            );
+                            result
+                        } else {
+                            // Plain assignment — value is already lowered.
+                            rhs_local
+                        };
                         self.emit_instruction(
                             "local.set",
                             None,
-                            vec![Operand::local(local), Operand::local(value_local)],
+                            vec![Operand::local(local), Operand::local(result_local)],
                             Some(span),
                             None,
                         );
@@ -1855,6 +1909,28 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 else_body.as_ref(),
                 span.clone(),
             ),
+            Expr::Clone(operand) => {
+                // `clone expr` produces an independent deep copy of the value.
+                // The sandbox VM's `local.set` always calls `cloneValue` (a deep
+                // recursive copy), so writing the evaluated operand into a fresh
+                // temp local via `local.set` is sufficient to produce an
+                // independent copy. This correctly handles vector aliasing: a
+                // cloned vector is a distinct object whose items are independent
+                // from the original.
+                let inner = self.lower_expr(operand)?;
+                let ty = self.ty_for_expr(expr);
+                let dst = self.temp_local(&ty, Some(span.clone()));
+                // `local.set dst, inner` calls cloneValue(resolve(inner)) in the
+                // VM, producing a deep copy stored in `dst`.
+                self.emit_instruction(
+                    "local.set",
+                    None,
+                    vec![Operand::local(dst.clone()), Operand::local(inner)],
+                    Some(span.clone()),
+                    None,
+                );
+                Ok(dst)
+            }
             Expr::Tuple(_)
             | Expr::ArrayRepeat { .. }
             | Expr::MapLiteral { .. }
@@ -1872,7 +1948,6 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::This
             | Expr::Cast { .. }
             | Expr::PostfixTry(_)
-            | Expr::Clone(_)
             | Expr::Range { .. }
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)

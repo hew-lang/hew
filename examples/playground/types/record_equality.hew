@@ -1,0 +1,29 @@
+//! @name Record Equality
+//! @description Structural == and != on records, enums with payloads, and nested records
+
+type Point {
+    x: i64;
+    y: i64;
+}
+
+enum Shape {
+    Circle(i64);
+    Square(i64);
+}
+
+fn main() {
+    let a = Point { x: 1, y: 2 };
+    let b = Point { x: 1, y: 2 };
+    let c = Point { x: 3, y: 4 };
+    println(a == b);
+    println(a == c);
+    println(a != c);
+    println(a != b);
+
+    let s1 = Circle(5);
+    let s2 = Circle(5);
+    let s3 = Square(5);
+    println(s1 == s2);
+    println(s1 == s3);
+    println(s1 != s3);
+}

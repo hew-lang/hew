@@ -1,9 +1,6 @@
 use std::collections::BTreeSet;
 
-use hew_parser::ast::{
-    BinaryOp, CallArg, Expr, ImportDecl, Item, Pattern, Program, Spanned, Stmt, TypeDeclKind,
-    TypeExpr, VariantKind,
-};
+use hew_parser::ast::{CallArg, Expr, ImportDecl, Item, Pattern, Program, Spanned, Stmt, TypeExpr};
 use hew_types::{check::SpanKey, Ty};
 
 use crate::Diagnostic;
@@ -99,8 +96,6 @@ struct ProfileChecker<'a> {
     imports: BTreeSet<String>,
     user_functions: BTreeSet<String>,
     user_types: BTreeSet<String>,
-    record_types: BTreeSet<String>,
-    payload_enum_types: BTreeSet<String>,
     enum_variants: BTreeSet<String>,
     /// Actor type names declared in the program (admits `spawn` + actor field/method access).
     actors: BTreeSet<String>,
@@ -121,8 +116,6 @@ impl<'a> ProfileChecker<'a> {
             imports: BTreeSet::new(),
             user_functions: BTreeSet::new(),
             user_types: BTreeSet::new(),
-            record_types: BTreeSet::new(),
-            payload_enum_types: BTreeSet::new(),
             enum_variants: BTreeSet::new(),
             actors: BTreeSet::new(),
             actor_methods: BTreeSet::new(),
@@ -142,22 +135,6 @@ impl<'a> ProfileChecker<'a> {
                 }
                 Item::TypeDecl(type_decl) => {
                     self.user_types.insert(type_decl.name.clone());
-                    match type_decl.kind {
-                        TypeDeclKind::Struct => {
-                            self.record_types.insert(type_decl.name.clone());
-                        }
-                        TypeDeclKind::Enum => {
-                            if type_decl.body.iter().any(|body_item| {
-                                matches!(
-                                    body_item,
-                                    hew_parser::ast::TypeBodyItem::Variant(variant)
-                                        if !matches!(variant.kind, VariantKind::Unit)
-                                )
-                            }) {
-                                self.payload_enum_types.insert(type_decl.name.clone());
-                            }
-                        }
-                    }
                     for body_item in &type_decl.body {
                         if let hew_parser::ast::TypeBodyItem::Variant(variant) = body_item {
                             self.enum_variants.insert(variant.name.clone());
@@ -166,7 +143,6 @@ impl<'a> ProfileChecker<'a> {
                 }
                 Item::Record(record) => {
                     self.user_types.insert(record.name.clone());
-                    self.record_types.insert(record.name.clone());
                 }
                 Item::Actor(actor) => {
                     self.actors.insert(actor.name.clone());
@@ -384,26 +360,12 @@ impl<'a> ProfileChecker<'a> {
                     self.check_expr(expr);
                 }
             }
-            Stmt::Assign { target, op, value } => {
-                // Compound assignment (`x += v`, `x *= v`, …) carries the operator
-                // in `op`; the parser leaves `value` as the bare right-hand side
-                // (NOT pre-combined). The sandbox emitter lowers `Stmt::Assign` by
-                // storing `value` directly into the target and ignores `op`, so
-                // `x += 5` silently became `x = 5` — a silent-wrong-answer (G1)
-                // class hole inside the admitted surface. Correct compound-assign
-                // lowering is type-directed (an `f64` `+=` must pick the f64 op
-                // family, which the SP-1 type-aware numeric lowering provides), so
-                // it graduates with that lane. Until then, reject fail-closed so a
-                // learner gets a compile-time diagnostic instead of a wrong answer.
-                if op.is_some() {
-                    self.reject(
-                        span.clone(),
-                        "compound_assignment_rejected",
-                        "compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`, bitwise/shift forms) \
-                         is not yet admitted to sandbox bytecode export; rewrite as an explicit \
-                         `x = x + v` assignment",
-                    );
-                }
+            Stmt::Assign { target, op: _, value } => {
+                // Compound assignment (`x += v`, `x -= v`, …): the arithmetic
+                // forms (+, -, *, /, %) are now lowered type-correctly by the
+                // emitter (reading the current binding, applying the type-directed
+                // opcode, and writing back). Bitwise/shift forms that the emitter
+                // cannot lower fall through to `emit_unsupported` (fail-loud trap).
                 self.check_expr(target);
                 self.check_expr(value);
             }
@@ -547,16 +509,15 @@ impl<'a> ProfileChecker<'a> {
         let (expr, span) = expr;
         match expr {
             Expr::Literal(_) | Expr::Identifier(_) | Expr::This | Expr::RegexLiteral(_) => {}
-            Expr::Binary { left, op, right } => {
-                if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
-                    && (self.is_structural_eq_operand(left) || self.is_structural_eq_operand(right))
-                {
-                    self.reject(
-                        span.clone(),
-                        "reserved_runtime_feature",
-                        "structural record/payload-enum equality is not admitted to sandbox bytecode export yet; WASM-TODO(structural-eq-aggregate-compare)",
-                    );
-                }
+            Expr::Binary { left, op: _, right } => {
+                // Structural equality (`==`/`!=`) on records, payload enums,
+                // Option, and Result is now admitted: `lower_binary` emits
+                // `cmp.eq`/`cmp.ne` for all types, and the VM's `compare` handler
+                // uses `canonicalComparable` which serialises any VmValue
+                // (including records and enums with payload) to a canonical JSON
+                // string, giving structural field-by-field equality that mirrors
+                // native Hew semantics. Bitwise/shift/logic ops that the emitter
+                // cannot lower fall through to `emit_unsupported` (fail-loud trap).
                 self.check_expr(left);
                 self.check_expr(right);
             }
@@ -575,16 +536,12 @@ impl<'a> ProfileChecker<'a> {
                 self.check_expr(operand);
             }
             Expr::Clone(operand) => {
-                // `clone x` lowers to a `.clone()` method call the sandbox
-                // emitter does not implement, so the profile admits nothing:
-                // reject here (yielding `bytecode: None`) rather than letting
-                // emission fall through to an `unsupported_instruction` trap.
-                // The operand is still walked so its own rejections surface.
-                self.reject(
-                    span.clone(),
-                    "reserved_runtime_feature",
-                    "`clone` duplication is not admitted to sandbox bytecode export yet",
-                );
+                // `clone expr` produces an independent deep copy. The emitter
+                // lowers this by evaluating the operand then forcing a deep clone
+                // via `local.set` (which calls `cloneValue` in the VM). This
+                // correctly models vector aliasing safety: a cloned vector is
+                // independent from the original, so mutations to one do not
+                // affect the other.
                 self.check_expr(operand);
             }
             Expr::Await(operand) => {
@@ -883,27 +840,6 @@ impl<'a> ProfileChecker<'a> {
             .expr_types
             .get(&SpanKey::from(&expr.1))
             .cloned()
-    }
-
-    fn is_structural_eq_operand(&self, expr: &Spanned<Expr>) -> bool {
-        let Some(ty) = self.ty_for_expr(expr) else {
-            return false;
-        };
-        match ty.materialize_literal_defaults() {
-            Ty::Named {
-                name,
-                builtin: Some(hew_types::BuiltinType::Option | hew_types::BuiltinType::Result),
-                ..
-            } => name == "Option" || name == "Result",
-            Ty::Named { name, .. } => {
-                let bare_name = name.rsplit('.').next().unwrap_or(name.as_str());
-                self.record_types.contains(name.as_str())
-                    || self.record_types.contains(bare_name)
-                    || self.payload_enum_types.contains(name.as_str())
-                    || self.payload_enum_types.contains(bare_name)
-            }
-            _ => false,
-        }
     }
 
     /// True if `ty` is an actor handle type for a declared actor in this program.

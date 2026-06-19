@@ -564,6 +564,7 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
             callee,
             args,
             task_ty,
+            ..
         } => {
             writeln!(out, "{pad}  spawned-call task_ty={}", task_ty.user_facing())
                 .expect("write to string");

@@ -9051,7 +9051,8 @@ impl Builder {
                 callee,
                 args,
                 task_ty,
-            } => self.lower_spawned_call_task(callee, args, task_ty, expr.site),
+                bound,
+            } => self.lower_spawned_call_task(callee, args, task_ty, *bound, expr.site),
             HirExprKind::ForkBlock { body, .. } => self.lower_fork_block_task(body, expr.site),
             HirExprKind::ScopeDeadline { duration, body } => {
                 self.lower_scope_deadline(duration, body, expr.site)
@@ -16169,6 +16170,16 @@ impl Builder {
             });
             return None;
         }
+        // A no-argument callee returning UNIT is supported via this function.
+        // Value-returning (`T != ()`) no-arg spawns are allowed only through
+        // the `fork t = callee()` bound form — the task handle is then awaited
+        // to retrieve `T`. An UNBOUND implicit spawn of a non-unit callee
+        // (bare `callee()` inside `scope { }` with `T != ()`) is rejected here:
+        // the result would be silently discarded and the value channel unused,
+        // which is a miscompile not a runtime leak.
+        //
+        // Arg-bearing spawns route through `lower_spawned_args_call_task` before
+        // this point; value+args spawns remain fail-closed there.
         if !args.is_empty() || !matches!(ret_ty, ResolvedTy::Unit) {
             for arg in args {
                 let _ = self.lower_value(arg);
@@ -16218,7 +16229,7 @@ impl Builder {
         )
     }
 
-    fn ensure_task_entry_adapter(&mut self, callee_symbol: &str) -> String {
+    fn ensure_task_entry_adapter(&mut self, callee_symbol: &str, result_ty: &ResolvedTy) -> String {
         let adapter_symbol = Self::task_entry_adapter_symbol(callee_symbol);
         if !self
             .task_entry_adapter_symbols
@@ -16227,16 +16238,37 @@ impl Builder {
         {
             return adapter_symbol;
         }
-        let lowered = self.synthesize_task_entry_adapter(callee_symbol, &adapter_symbol);
+        let lowered = self.synthesize_task_entry_adapter(callee_symbol, &adapter_symbol, result_ty);
         self.generated_functions.push(lowered);
         adapter_symbol
     }
 
+    /// Synthesize the per-callee task-entry adapter (`__hew_task_entry_<fn>`,
+    /// `TaskEntry` call-conv). The adapter is the body the codegen task wrapper
+    /// invokes on the spawned worker; the wrapper publishes the adapter's return
+    /// value through `hew_task_set_result` and then `hew_task_complete_threaded`.
+    ///
+    /// For a value-returning task (`result_ty != ()`) the adapter calls the body
+    /// into a typed `dest` local and RETURNS it, so the wrapper captures the
+    /// child's `T` and writes it into the task result buffer. For a unit task
+    /// the adapter calls the body with `dest: None` and returns unit — the
+    /// wrapper publishes nothing.
     fn synthesize_task_entry_adapter(
         &self,
         callee_symbol: &str,
         adapter_symbol: &str,
+        result_ty: &ResolvedTy,
     ) -> LoweredFunction {
+        let is_value_task = !matches!(result_ty, ResolvedTy::Unit);
+        // Value task: the body call writes its `T` directly into the function
+        // return slot so `Terminator::Return` hands it back; the codegen wrapper
+        // then publishes that return value through `hew_task_set_result`. Unit
+        // task: discard the body result (`dest: None`).
+        let call_dest = if is_value_task {
+            Some(Place::ReturnSlot)
+        } else {
+            None
+        };
         let mut blocks = vec![
             BasicBlock {
                 id: 0,
@@ -16246,7 +16278,7 @@ impl Builder {
                     callee: callee_symbol.to_string(),
                     builtin: None,
                     args: vec![],
-                    dest: None,
+                    dest: call_dest,
                     next: 1,
                 },
             },
@@ -16259,14 +16291,15 @@ impl Builder {
         ];
         bracket_actor_handler_blocks(&mut blocks);
 
+        let adapter_return_ty = result_ty.clone();
         let thir = ThirFunction {
             name: adapter_symbol.to_string(),
-            return_ty: ResolvedTy::Unit,
+            return_ty: adapter_return_ty.clone(),
             statements: vec![],
         };
         let raw = RawMirFunction {
             name: adapter_symbol.to_string(),
-            return_ty: ResolvedTy::Unit,
+            return_ty: adapter_return_ty.clone(),
             call_conv: crate::model::FunctionCallConv::TaskEntry,
             params: vec![],
             locals: vec![],
@@ -16295,7 +16328,7 @@ impl Builder {
         let cooperate_sites = dataflow::compute_cooperate_sites(&raw.blocks);
         let checked = CheckedMirFunction {
             name: adapter_symbol.to_string(),
-            return_ty: ResolvedTy::Unit,
+            return_ty: adapter_return_ty,
             blocks: raw.blocks.clone(),
             decisions: vec![],
             checks: dataflow_result.checks.clone(),
@@ -16319,6 +16352,9 @@ impl Builder {
         callee: &HirExpr,
         args: &[HirExpr],
         task_ty: &ResolvedTy,
+        // `true` for a bound `fork t = callee()` spawn (value-task allowed);
+        // `false` for an implicit/unbound spawn (non-unit callee must reject).
+        bound: bool,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
         let Some(scope_place) = self.current_task_scope else {
@@ -16388,10 +16424,103 @@ impl Builder {
                 site,
             );
         }
+        // Bound value-returning task (`fork t = callee()` where callee returns T ≠ ()):
+        // route through the value-callee path — no unit-return restriction, the task handle
+        // is awaited to retrieve `T`. Unbound implicit spawns (`callee()` as a bare scope
+        // statement, `bound = false`) fall through to `direct_no_arg_unit_callee` where the
+        // unit-return gate rejects the non-unit callee fail-closed.
+        if bound && !matches!(&**inner, ResolvedTy::Unit) {
+            return self.lower_no_arg_value_callee_task(callee, inner, task_ty, scope_place, site);
+        }
         let user_callee_symbol =
             self.direct_no_arg_unit_callee(callee, args, inner, site, "spawned call")?;
-        let callee_symbol = self.ensure_task_entry_adapter(&user_callee_symbol);
+        let callee_symbol = self.ensure_task_entry_adapter(&user_callee_symbol, inner);
 
+        let task_place = self.alloc_local(task_ty.clone());
+        self.push_runtime_call("hew_task_new", vec![], Some(task_place));
+        self.push_runtime_call("hew_task_scope_spawn", vec![scope_place, task_place], None);
+        self.push_instr(Instr::SpawnTaskDirect {
+            task: task_place,
+            callee_symbol,
+        });
+        Some(task_place)
+    }
+
+    /// Lower a no-argument value-returning task spawn: `fork t = callee()` where
+    /// `callee` returns `T ≠ ()`. The task-entry adapter is synthesized with
+    /// `result_ty = T` so the child's `T` is published via `hew_task_set_result`
+    /// and the awaiting handler reads it on the resume edge.
+    ///
+    /// This path does NOT enforce a unit-return restriction (unlike
+    /// `direct_no_arg_unit_callee`). All other gates (generic callee,
+    /// non-module-fn callee, arg-bearing callee) remain fail-closed.
+    fn lower_no_arg_value_callee_task(
+        &mut self,
+        callee: &HirExpr,
+        inner: &ResolvedTy,
+        task_ty: &ResolvedTy,
+        scope_place: Place,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // Generic callees: fail-closed until monomorphisation adapter lands.
+        if self
+            .call_site_type_args
+            .get(&site)
+            .is_some_and(|type_args| !type_args.is_empty())
+        {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "value-task spawn".to_string(),
+                    site,
+                },
+                note: "generic free-function value-task spawning is not yet implemented; \
+                       W4.010 keeps generic spawned free functions fail-closed until \
+                       the task-entry adapter can resolve monomorphised callees"
+                    .to_string(),
+            });
+            return None;
+        }
+        if matches!(
+            &callee.kind,
+            HirExprKind::BindingRef { name, .. } if self.module_generic_fn_names.contains(name)
+        ) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "value-task spawn".to_string(),
+                    site,
+                },
+                note: "generic free-function value-task spawning is not yet implemented; \
+                       W4.010 keeps generic spawned free functions fail-closed until \
+                       the task-entry adapter can resolve monomorphised callees"
+                    .to_string(),
+            });
+            return None;
+        }
+        let HirExprKind::BindingRef { name, .. } = &callee.kind else {
+            let _ = self.lower_value(callee);
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "value-task spawn".to_string(),
+                    site,
+                },
+                note: "value-task spawn requires a direct module function callee".to_string(),
+            });
+            return None;
+        };
+        if !self.module_fn_names.contains(name) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "value-task spawn".to_string(),
+                    site,
+                },
+                note: format!(
+                    "value-task spawn callee `{name}` is not a registered module function"
+                ),
+            });
+            return None;
+        }
+        let user_callee_symbol = name.clone();
+        let callee_symbol = self.ensure_task_entry_adapter(&user_callee_symbol, inner);
         let task_place = self.alloc_local(task_ty.clone());
         self.push_runtime_call("hew_task_new", vec![], Some(task_place));
         self.push_runtime_call("hew_task_scope_spawn", vec![scope_place, task_place], None);
@@ -16854,7 +16983,8 @@ impl Builder {
             return None;
         };
         let task_ty = ResolvedTy::Task(Box::new(ResolvedTy::Unit));
-        self.lower_spawned_call_task(callee, args, &task_ty, site)
+        // Fork-block spawns are unbound — no `fork t =` name, no await.
+        self.lower_spawned_call_task(callee, args, &task_ty, false, site)
     }
 
     fn lower_scope_deadline(
@@ -16903,25 +17033,7 @@ impl Builder {
         output_ty: &ResolvedTy,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        if !matches!(output_ty, ResolvedTy::Unit) {
-            // Value-returning task await binds the child's `T` on the resume
-            // edge. The carrier's `result_dest` is wired, but the WRITE side of
-            // the value channel — the task-entry adapter capturing the body's
-            // return value into `hew_task_set_result` + result sizing — is a
-            // separate cross-layer slice. Until that lands, value task await
-            // remains fail-closed (never a miscompile).
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "await task result".to_string(),
-                    site,
-                },
-                note: "await lowering currently supports unit tasks only; value task \
-                       result propagation remains fail-closed pending the task-entry \
-                       result channel"
-                    .to_string(),
-            });
-            return None;
-        }
+        let is_value_task = !matches!(output_ty, ResolvedTy::Unit);
         let Some(task_place) = self.binding_locals.get(&binding_id).copied() else {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::UnresolvedPlace {
@@ -16947,34 +17059,65 @@ impl Builder {
         self.mark_binding_moved(binding_id);
 
         // Suspendable-caller flip: in a caller that carries the execution
-        // context (actor handler / closure / task entry) the unit `await t`
-        // SUSPENDS on the child task's completion instead of blocking the worker
-        // in `hew_task_await_blocking` (a condvar). The completion observer
+        // context (actor handler / closure / task entry) `await t` SUSPENDS on
+        // the child task's completion instead of blocking the worker in
+        // `hew_task_await_blocking` (a condvar). The completion observer
         // (`hew_task_await_suspend`) re-enqueues the parked continuation on the
         // child's `Done`. A `FunctionCallConv::Default` caller (`main`, free fn)
         // has no parkable continuation and keeps the blocking call. Reuses the
         // same `carries_execution_context` discriminator as the recv/ask flips.
         if self.current_function_call_conv.carries_execution_context() {
             if let Some(scope_place) = self.current_task_scope {
+                // Value task: allocate the slot the child's `T` is read into on
+                // the resume edge (codegen reads `hew_task_get_result` into it,
+                // copying the result-buffer bytes at the `T` element width). A
+                // unit task binds nothing.
+                let result_dest = if is_value_task {
+                    Some(self.alloc_local(output_ty.clone()))
+                } else {
+                    None
+                };
                 let next = self.alloc_block();
                 // The carrier rides the multi-suspend epilogue, so `cleanup`
                 // reuses `next` exactly as the recv/ask carriers do.
                 self.finish_current_block(Terminator::SuspendingTaskAwait {
                     scope: scope_place,
                     task: task_place,
-                    // Unit task: nothing to bind on the resume edge.
-                    result_dest: None,
+                    result_dest,
                     resume: next,
                     cleanup: next,
                 });
                 self.start_block(next);
+                if let Some(result_dest) = result_dest {
+                    // The resume edge bound the child's `T` into `result_dest`.
+                    return Some(result_dest);
+                }
                 let unit_place = self.alloc_local(ResolvedTy::Unit);
                 self.push_instr(Instr::UnitLit { dest: unit_place });
                 return Some(unit_place);
             }
         }
 
-        // Contextless keep path: block the foreign thread on the condvar.
+        // Contextless keep path: a `FunctionCallConv::Default` caller has no
+        // parkable continuation and blocks the foreign thread on the condvar.
+        // Value tasks cannot reach this path: `lower_spawned_call_task` refuses
+        // to spawn from a Default-callconv caller, so a value `Task<T>` handle
+        // never exists in a contextless awaiter. Fail closed rather than emit a
+        // blocking read whose result-width copy was never proven on this path.
+        if is_value_task {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "await task result".to_string(),
+                    site,
+                },
+                note: "awaiting a value-returning task is only lowered from an \
+                       execution-context caller (actor handler / closure / task \
+                       entry); a `Task<T>` handle cannot reach a Default-callconv \
+                       awaiter because value tasks cannot be spawned there"
+                    .to_string(),
+            });
+            return None;
+        }
         self.push_runtime_call("hew_task_await_blocking", vec![task_place], None);
         let unit_place = self.alloc_local(ResolvedTy::Unit);
         self.push_instr(Instr::UnitLit { dest: unit_place });

@@ -571,7 +571,6 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::SpawnedClosureNonSendCapture { .. }
                     | crate::HirDiagnosticKind::ForkBlockBodyUnsupported { .. }
                     | crate::HirDiagnosticKind::DeadlineBodyUnsupported { .. }
-                    | crate::HirDiagnosticKind::AwaitTaskResultUnsupported { .. }
                     | crate::HirDiagnosticKind::SupervisorPoolChildAccessorUnsupported { .. }
                     | crate::HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
                     | crate::HirDiagnosticKind::ActorSendRequiresUnitHandler { .. }
@@ -4163,6 +4162,26 @@ fn contains_abstract_symbol(
     }
 }
 
+/// The syntactic position of an expression being lowered, as it bears on
+/// `await` legality (TI-4). The position is set on `LowerCtx` immediately
+/// before lowering an expression and consumed atomically at `lower_expr`
+/// entry, so recursive sub-expression lowering always sees [`Self::Other`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AwaitPosition {
+    /// Any position where `await` is NOT specially admitted: function
+    /// arguments, binary operands, return values, block tails, etc. A task
+    /// `await` here trips `AwaitOutOfPosition`.
+    Other,
+    /// The direct expression of a `Stmt::Expression` — the statement-expression
+    /// position inside a `scope{}` body where a unit/value `await t` is legal.
+    Statement,
+    /// The value of a `let` binding that the `Stmt::Let` path validated as a
+    /// bindable value-returning task await (`let x = await t`, `T != ()`). The
+    /// child's `T` is read on the resume edge; admitting the await here does
+    /// NOT admit it in arg / return / operand positions.
+    BindableValueLet,
+}
+
 #[derive(Debug)]
 struct LowerCtx {
     ids: IdGen,
@@ -4328,13 +4347,11 @@ struct LowerCtx {
     /// Used by `Expr::PostfixTry` to synthesize `return Err(e)` / `return None`
     /// with the enclosing body's return type rather than the scrutinee type.
     current_return_type: Option<ResolvedTy>,
-    /// Set to `true` immediately before lowering the expression of a
-    /// `Stmt::Expression` statement. `lower_expr` consumes it via
-    /// `mem::replace(…, false)` at entry, so all recursive calls see `false`.
-    /// This lets `Expr::Await` check whether it is the direct statement, not
-    /// a sub-expression of a return value, argument, binary operand, etc.
-    /// (TI-4 position rule.)
-    statement_position: bool,
+    /// The syntactic position of the expression about to be lowered, as it
+    /// bears on `await` legality (TI-4). Set immediately before lowering an
+    /// expression and consumed by `lower_expr` via `mem::replace(…, Other)` at
+    /// entry, so every recursive (sub-expression) call sees `Other`.
+    await_position: AwaitPosition,
     /// `Some((let_id, let_name))` while lowering the body of an actor-lambda
     /// that is the value of `let <let_name> = actor |..| { .. }`. The
     /// capture-strength classifier inside the body walk compares each
@@ -4720,7 +4737,7 @@ impl LowerCtx {
             scope_depth: 0,
             current_scope_id: ScopeId(0),
             current_return_type: None,
-            statement_position: false,
+            await_position: AwaitPosition::Other,
             current_actor_self: None,
             call_type_args: tc_output.call_type_args.clone(),
             lowering_facts: tc_output.lowering_facts.clone(),
@@ -10060,9 +10077,9 @@ impl LowerCtx {
         // Mark this as statement position before lowering so that
         // `lower_expr`'s `Expr::Await` arm can enforce TI-4 (await is
         // only legal in statement-expression position, not as a
-        // sub-expression). The flag is consumed by `mem::replace` at the
-        // top of `lower_expr`, so recursive calls see `false`.
-        self.statement_position = true;
+        // sub-expression). The position is consumed by `mem::replace` at the
+        // top of `lower_expr`, so recursive calls see `AwaitPosition::Other`.
+        self.await_position = AwaitPosition::Statement;
         if self.scope_depth > 0 {
             if let Expr::Call { .. } = &expr.0 {
                 let spawned = self.lower_spawned_call(expr);
@@ -10138,6 +10155,24 @@ impl LowerCtx {
         )
     }
 
+    /// True when the `await`'s inner expression is a VALUE-returning task
+    /// handle — `await t` over a `Task<T>` with `T != ()`. Such an await is
+    /// bindable (`let x = await t`): it produces the child's `T`, read back on
+    /// the resume edge through `hew_task_get_result`. A `Task<()>` await is the
+    /// unit "wait until Done" form, which binds nothing and is statement-only;
+    /// this predicate excludes it so the unit reroute keeps its position rules.
+    ///
+    /// The element type rides the checker-resolved type of the inner operand
+    /// (the `Task<T>` binding), the same table `check_await_task_result`
+    /// consults — not a method-call rewrite descriptor, since `await t` over a
+    /// bare binding has no method call.
+    fn is_value_task_await(&self, inner_key: &SpanKey) -> bool {
+        matches!(
+            self.resolved_expr_types.get(inner_key),
+            Some(ResolvedTy::Task(inner)) if !matches!(**inner, ResolvedTy::Unit)
+        )
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "single large match on stmt variants; splitting would hurt readability"
@@ -10199,6 +10234,9 @@ impl LowerCtx {
                                 || self.listener_await_accepts.contains(&original_key)
                                 || self.is_stream_recv_await(&original_key)
                                 || self.is_channel_recv_await(&original_key)
+                                // `let x = await t` over a value-returning task:
+                                // the child's `T` is read back on the resume edge.
+                                || self.is_value_task_await(&original_key)
                         }
                         _ => false,
                     };
@@ -10284,6 +10322,15 @@ impl LowerCtx {
                         kind: HirStmtKind::Let(pre_binding, Some(lowered_value)),
                         span,
                     };
+                }
+                // A `let x = await t` over a value-returning task is a bindable
+                // let-value. Flag the position so the `Expr::Await` arm admits
+                // it (the position is consumed atomically at `lower_expr` entry,
+                // so only this direct await sees it — not nested sub-expressions).
+                if let Some((Expr::Await(inner), _)) = value.as_ref() {
+                    if self.is_value_task_await(&self.mk_key(&inner.1)) {
+                        self.await_position = AwaitPosition::BindableValueLet;
+                    }
                 }
                 let value = value
                     .as_ref()
@@ -11375,11 +11422,15 @@ impl LowerCtx {
         reason = "single large match on expr variants; splitting would hurt readability"
     )]
     fn lower_expr_inner(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
-        // Consume the statement-position flag atomically. Every recursive call
-        // to `lower_expr` (for arguments, operands, return values, block tails,
-        // etc.) therefore sees `false`. Only the `Stmt::Expression` arm in
-        // `lower_stmt` sets this to `true` immediately before calling us.
-        let in_stmt_position = std::mem::replace(&mut self.statement_position, false);
+        // Consume the await-position atomically. Every recursive call to
+        // `lower_expr` (for arguments, operands, return values, block tails,
+        // etc.) therefore sees `AwaitPosition::Other`. Only the
+        // `Stmt::Expression` arm (Statement) and the `Stmt::Let` bindable path
+        // (BindableValueLet) set a non-Other position immediately before
+        // calling us.
+        let await_position = std::mem::replace(&mut self.await_position, AwaitPosition::Other);
+        let in_stmt_position = await_position == AwaitPosition::Statement;
+        let in_bindable_value_position = await_position == AwaitPosition::BindableValueLet;
         let span = expr.1.clone();
         // Pre-allocate the SiteId for this expression so call-site
         // side-tables (e.g. `call_site_type_args`) can be keyed
@@ -12196,12 +12247,24 @@ impl LowerCtx {
                 }
                 // `await expr` — only legal as the direct statement-expression
                 // inside a `scope{}` body in v0.5 (TI-4). Sub-expression positions
-                // (return value, function argument, binary operand, let value, block
-                // tail, etc.) are rejected with `AwaitOutOfPosition`.
+                // (return value, function argument, binary operand, block tail,
+                // etc.) are rejected with `AwaitOutOfPosition`.
                 // `in_stmt_position` is set by `Stmt::Expression` in `lower_stmt`
                 // and consumed by `mem::replace` at the top of this function, so
                 // recursive calls always see `false`.
-                if self.scope_depth == 0 || !in_stmt_position {
+                //
+                // A VALUE-returning task await (`let x = await t` over a
+                // `Task<T>`, `T != ()`) is additionally legal as a bindable
+                // let-value: it produces the child's `T`, read back on the resume
+                // edge, like the actor-ask / conn-read forms above. The
+                // `Stmt::Let` path validates that position and sets
+                // `bindable_value_await_position`, which admits the await HERE
+                // without admitting it in arg / return / binary-operand positions
+                // (those keep the TI-4 rejection). A unit `await t` (a "wait until
+                // Done" with nothing to bind) stays statement-only.
+                let inner_is_value_task = self.is_value_task_await(&self.mk_key(&inner.1));
+                let value_await_in_let = inner_is_value_task && in_bindable_value_position;
+                if !value_await_in_let && (self.scope_depth == 0 || !in_stmt_position) {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::AwaitOutOfPosition,
                         span.clone(),
@@ -20945,9 +21008,10 @@ impl LowerCtx {
                             // FC-P1-A1 (revision pass 2): Non-unit callee return is
                             // VALID at spawn time. `fork t = compute() -> i64` binds
                             // `t: Task<i64>` cleanly here (canonical TI-2 invariant,
-                            // see vertical.rs::task_handle_ti2_*). The
-                            // `AwaitTaskResultUnsupported` gate at MIR :7871 fires
-                            // when the non-unit result is awaited, not when spawned.
+                            // see vertical.rs::task_handle_ti2_*). Awaiting the
+                            // non-unit result is now lowered through the value-task
+                            // await result channel (the resume edge reads the child's
+                            // `T` via `hew_task_get_result`).
                             let call_hir = self.lower_expr(child_expr, IntentKind::Consume);
                             let call_site = call_hir.site;
                             let explicit_type_args = match &child_expr.0 {
@@ -20991,6 +21055,7 @@ impl LowerCtx {
                                     callee,
                                     args,
                                     task_ty: task_ty.clone(),
+                                    bound: true,
                                 },
                                 span: child_expr.1.clone(),
                             };
@@ -21070,9 +21135,9 @@ impl LowerCtx {
         //
         // FC-P1-A1 (revision pass 2): The callee return type is intentionally
         // NOT gated here. An implicit spawn that produces `Task<T>` for
-        // non-unit T is a valid Hew construct; only `await` of a non-unit
-        // task is gated (MIR :7871, `AwaitTaskResultUnsupported`). Gating at
-        // spawn time would break the TI-1/TI-2/TI-4 canonical invariants.
+        // non-unit T is a valid Hew construct; awaiting the non-unit result is
+        // lowered through the value-task await result channel. Gating at spawn
+        // time would break the TI-1/TI-2/TI-4 canonical invariants.
         let call_hir = self.lower_expr(expr, IntentKind::Consume);
         let call_site = call_hir.site;
         let explicit_type_args = match &expr.0 {
@@ -21113,6 +21178,7 @@ impl LowerCtx {
                 callee,
                 args,
                 task_ty,
+                bound: false,
             },
             span,
         }
@@ -23587,10 +23653,6 @@ fn scan_expr_for_task_gates(expr: &Expr, span: &Span, ctx: &mut LowerCtx, progra
             scan_expr_for_task_gates(&duration.0, &duration.1, ctx, program);
             scan_block_for_task_gates(body, ctx, program);
         }
-        Expr::Await(object) => {
-            check_await_task_result(&object.0, &object.1, ctx, program);
-            scan_expr_for_task_gates(&object.0, &object.1, ctx, program);
-        }
         // Recursive scanning for all other expression variants
         Expr::MethodCall { receiver, args, .. } => {
             scan_expr_for_task_gates(&receiver.0, &receiver.1, ctx, program);
@@ -23709,7 +23771,10 @@ fn scan_expr_for_task_gates(expr: &Expr, span: &Span, ctx: &mut LowerCtx, progra
             scan_expr_for_task_gates(&duration.0, &duration.1, ctx, program);
         }
         Expr::UnsafeBlock(b) => scan_block_for_task_gates(b, ctx, program),
-        Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) => {
+        // `await object`, `object.field`, and `object?` all just recurse into
+        // their single operand — the value-task await gate moved into HIR
+        // lowering, so the await scan no longer carries a dedicated check.
+        Expr::Await(object) | Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) => {
             scan_expr_for_task_gates(&object.0, &object.1, ctx, program);
         }
         Expr::Index { object, index } => {
@@ -23966,25 +24031,6 @@ fn check_scope_deadline_shape(body: &hew_parser::ast::Block, span: &Span, ctx: &
             span.clone(),
             "deadline body must be empty (syntax sugar for timeout-only scope)".to_string(),
         ));
-    }
-}
-
-/// Check await task result type.
-/// Site: hew-mir/src/lower.rs:7871 (`AwaitTask` result)
-fn check_await_task_result(_expr: &Expr, span: &Span, ctx: &mut LowerCtx, _program: &Program) {
-    // Look up the type of the awaited expression
-    let span_key = SpanKey::in_module(span, ctx.current_module_idx);
-    if let Some(hew_types::Ty::Named { name, args, .. }) = ctx.expr_types.get(&span_key) {
-        // Check if it's a Task<T> where T != unit
-        if name == "Task" && !args.is_empty() && !matches!(args[0], hew_types::Ty::Unit) {
-            ctx.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::AwaitTaskResultUnsupported {
-                    site: ctx.ids.site(),
-                },
-                span.clone(),
-                "awaiting task with non-unit result is not yet supported".to_string(),
-            ));
-        }
     }
 }
 

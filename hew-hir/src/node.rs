@@ -1243,6 +1243,15 @@ pub enum HirExprKind {
         callee: Box<HirExpr>,
         args: Vec<HirExpr>,
         task_ty: ResolvedTy,
+        /// `true` when this spawn was written as `fork t = callee()` (the task handle
+        /// is bound to a name and can be awaited for its result). `false` for an
+        /// implicit/unbound spawn (`callee()` as a bare statement inside a `scope{}`
+        /// body — the task handle is immediately discarded).
+        ///
+        /// MIR lowering uses this to determine whether a non-unit-returning callee
+        /// is permissible (bound → value-task supported) or must reject (unbound →
+        /// the result would be silently discarded, fail-closed).
+        bound: bool,
     },
     /// `fork { ... }` inside a scope. The block is an anonymous child task
     /// body; later MIR slices attach a derived cancellation token and spawn it.

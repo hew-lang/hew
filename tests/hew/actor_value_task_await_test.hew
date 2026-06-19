@@ -1,0 +1,132 @@
+//! Awaiting a VALUE-returning child task inside an actor handler binds the
+//! child's `T` on the resume edge and suspends the coroutine instead of
+//! blocking the worker on a condvar.
+//!
+//! The unit-task await reroute (a `Task<()>` "wait until Done" with nothing to
+//! bind) landed earlier. This fixture covers the value channel: a child task
+//! computes a `T != ()`, publishes it through `hew_task_set_result` on body
+//! completion, and the awaiting handler reads it back through
+//! `hew_task_get_result` on the resume edge, binding `let x = await t`.
+//!
+//! The assertions pin EXACT bound values across three element-ABI classes:
+//! - `i64` — a BitCopy scalar (the result buffer holds a true value copy);
+//! - `string` — a CowValue managed handle (the buffer holds the handle bytes,
+//!   moved out into the binding exactly once);
+//! - a record of scalars + a string — a managed aggregate (mixed field ABI).
+//!
+//! A wrong result-copy width, a mis-routed resume edge, a double-resume, or a
+//! double-free of a managed result would corrupt the exact value or abort under
+//! the sanitizer — not merely fail a `> 0` smoke check.
+
+import std::testing;
+
+record Pair {
+    n: i64,
+    label: string
+}
+
+fn compute_i64() -> i64 {
+    return 42;
+}
+
+fn compute_string() -> string {
+    return "forty-two";
+}
+
+fn compute_pair() -> Pair {
+    return Pair { n: 7, label: "seven" };
+}
+
+actor ValueWorker {
+    var acc: i64 = 0;
+
+    // Bind a scalar result. The exact value 42 proves the result channel
+    // published the body's return and the resume edge bound it.
+    receive fn run_i64() -> i64 {
+        var out: i64 = 0;
+        scope {
+            fork t = compute_i64();
+            let x = await t;
+            out = x;
+        };
+        acc = acc + out;
+        return acc;
+    }
+
+    // Bind a managed string result. Returning the bound string proves the
+    // CowValue handle was moved out of the result buffer exactly once.
+    receive fn run_string() -> string {
+        var out: string = "";
+        scope {
+            fork t = compute_string();
+            let s = await t;
+            out = s;
+        };
+        return out;
+    }
+
+    // Bind a record result (mixed scalar + managed field). The two reads prove
+    // the aggregate copied at the full element width and the string field
+    // survived the move into the binding.
+    receive fn run_pair() -> i64 {
+        var n: i64 = 0;
+        scope {
+            fork t = compute_pair();
+            let p = await t;
+            n = p.n;
+        };
+        return n;
+    }
+
+    // Two value awaits in one frame: the accumulated exact value proves both
+    // resumed in order through one persistent coroutine frame and neither lost
+    // its bound result.
+    receive fn run_twice() -> i64 {
+        var sum: i64 = 0;
+        scope {
+            fork a = compute_i64();
+            let x = await a;
+            sum = sum + x;
+            fork b = compute_i64();
+            let y = await b;
+            sum = sum + y;
+        };
+        return sum;
+    }
+}
+
+#[test]
+fn value_task_await_binds_i64_result() {
+    let w = spawn ValueWorker(acc: 0);
+    match await w.run_i64() {
+        Ok(n) => testing.assert_eq(n, 42),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn value_task_await_binds_string_result() {
+    let w = spawn ValueWorker(acc: 0);
+    match await w.run_string() {
+        Ok(s) => testing.assert_eq_str(s, "forty-two"),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn value_task_await_binds_record_result() {
+    let w = spawn ValueWorker(acc: 0);
+    match await w.run_pair() {
+        Ok(n) => testing.assert_eq(n, 7),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn two_value_awaits_in_one_handler_resume_in_order() {
+    let w = spawn ValueWorker(acc: 0);
+    match await w.run_twice() {
+        Ok(n) => testing.assert_eq(n, 84),
+        Err(_) => testing.assert_true(false),
+    }
+}

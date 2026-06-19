@@ -528,6 +528,11 @@ run_accept_expect_status "actor_counter_reorder" 42
 # The exit code being 42 (not 41) proves on(start) fired before the first message.
 run_accept_expect_status "actor_counter_init" 42
 
+# COEXIST: state-field spawn args alongside init() params. count=5, base=100 are
+# state fields passed at spawn; multiplier=2 is an init() param. init() runs
+# count = count * multiplier = 5*2 = 10. total() returns count + base = 110.
+run_accept_expect_status "actor_ctor_init_coexist" 110
+
 # Actor body with init + on(start) + on(stop): initial=9, boot increments to 10,
 # increment(32) = 42. The on(stop) handler zeroes count after the final ask —
 # the total() ask completes before teardown, so the returned value is 42 regardless.

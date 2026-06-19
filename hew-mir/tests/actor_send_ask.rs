@@ -133,7 +133,45 @@ fn actor_send_ask_lower_to_mir_terminators_and_state_access() {
 }
 
 #[test]
-fn spawn_init_actor_rejects_state_field_argument_as_user_error() {
+fn spawn_init_actor_accepts_state_field_argument_coexist() {
+    // COEXIST model: state-field spawn args are valid alongside init() params.
+    // `spawn Counter(count: 5)` should lower cleanly — `count` is routed into
+    // the initial state record; `init()` is still called but with no explicit
+    // arg (the init param `initial` is missing here, so we check that the
+    // *absence* of an init param surfaces, not the presence of a state-field arg).
+    //
+    // For a clean lower we supply both the state-field arg AND the init param.
+    let pipeline = lower_checked(
+        r"
+        actor Counter {
+            var count: i64;
+
+            init(initial: i64) {
+                count = initial;
+            }
+
+            receive fn total() -> i64 {
+                count
+            }
+        }
+
+        fn main() {
+            let _counter = spawn Counter(initial: 0, count: 5);
+        }
+        ",
+    );
+
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "expected no MIR diagnostics for coexist spawn; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+#[test]
+fn spawn_init_actor_rejects_unknown_argument() {
+    // A name that is neither an init() parameter nor a state field must still
+    // be rejected with a clear diagnostic.
     let pipeline = lower_for_mir_diagnostics(
         r"
         actor Counter {
@@ -149,7 +187,7 @@ fn spawn_init_actor_rejects_state_field_argument_as_user_error() {
         }
 
         fn main() {
-            let _counter = spawn Counter(count: 5);
+            let _counter = spawn Counter(initial: 0, bogus: 99);
         }
         ",
     );
@@ -157,38 +195,38 @@ fn spawn_init_actor_rejects_state_field_argument_as_user_error() {
     let diagnostic = pipeline
         .diagnostics
         .iter()
-        .find(|diagnostic| {
+        .find(|d| {
             matches!(
-                &diagnostic.kind,
+                &d.kind,
                 MirDiagnosticKind::InvalidActorSpawnArgument {
                     actor,
                     argument,
                     ..
-                } if actor == "Counter" && argument == "count"
+                } if actor == "Counter" && argument == "bogus"
             )
         })
         .unwrap_or_else(|| {
             panic!(
-                "expected InvalidActorSpawnArgument for Counter.count; diagnostics: {:#?}",
+                "expected InvalidActorSpawnArgument for `bogus`; diagnostics: {:#?}",
                 pipeline.diagnostics
             )
         });
-    assert!(diagnostic
-        .note
-        .contains("`count` is a state field on actor `Counter` but not an `init()` parameter"));
     assert!(
-        diagnostic
-            .note
-            .contains("init() parameters are: [`initial`]"),
-        "unexpected note: {}",
+        diagnostic.note.contains("init() parameters are:") && diagnostic.note.contains("`initial`"),
+        "note should list init params; got: {}",
         diagnostic.note
     );
     assert!(
-        !pipeline.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            MirDiagnosticKind::NotYetImplemented { .. }
-        )),
-        "invalid init argument must not surface as NotYetImplemented: {:#?}",
+        diagnostic.note.contains("state fields are:") && diagnostic.note.contains("`count`"),
+        "note should list state fields; got: {}",
+        diagnostic.note
+    );
+    assert!(
+        !pipeline
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, MirDiagnosticKind::NotYetImplemented { .. })),
+        "invalid spawn arg must not surface as NotYetImplemented: {:#?}",
         pipeline.diagnostics
     );
 }

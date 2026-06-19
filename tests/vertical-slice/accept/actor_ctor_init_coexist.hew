@@ -1,0 +1,24 @@
+// COEXIST: state-field spawn args alongside init() params.
+// `offset` is a state field passed at spawn time; `multiplier` is an init()
+// param that mutates state in the init block. The final value is:
+//   count = 0 (zero-init) + offset (5) = 5, then init sets count *= multiplier (2) → 10.
+// Then total() returns count (10) + base (100) = 110.
+actor Calc {
+    var count: i64;
+    var base: i64;
+    init(multiplier: i64) {
+        count = count * multiplier;
+    }
+    receive fn total() -> i64 {
+        count + base
+    }
+}
+
+fn main() -> i64 {
+    // `count` and `base` are state fields; `multiplier` is an init() param.
+    let calc = spawn Calc(multiplier: 2, count: 5, base: 100);
+    match await calc.total() {
+        Ok(v) => v,
+        Err(_e) => -1,
+    }
+}

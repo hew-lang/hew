@@ -7011,23 +7011,34 @@ impl Builder {
 
     /// True when `ty` is the builtin `Vec<T>` whose element `T` is a PLAIN
     /// element — a `BitCopy` scalar (`i64`, `u8`, `bool`, `f64`, `char`,
-    /// `Duration`, …) or `string` (whose element release lives inside the
-    /// runtime's `ElemKind::String` walk). These are exactly the Vecs codegen
-    /// constructs WITHOUT an owned-element descriptor, so the matching
-    /// scope-exit release is the plain `hew_vec_free` (buffer + handle; the
-    /// runtime walks string elements itself). Substitutes through the
-    /// monomorphisation map first (mirroring `vec_receiver_has_owned_element`)
-    /// so a polymorphic binding type resolves to its concrete element.
+    /// `Duration`, …), `string` (whose element release lives inside the
+    /// runtime's `ElemKind::String` walk), or a `BitCopy` value aggregate
+    /// (a record / direct enum / tuple whose fields are all `BitCopy`, e.g.
+    /// `type Point { x: i64, y: i64 }`). These are exactly the Vecs codegen
+    /// constructs WITHOUT an owned-element descriptor — the scalar/string ABIs
+    /// and the inline value-aggregate `hew_vec_new_with_layout` /
+    /// `hew_vec_get_layout` path — so the matching scope-exit release is the
+    /// plain `hew_vec_free` (buffer + handle; the runtime walks string elements
+    /// itself, and a `BitCopy` aggregate element owns no heap so no per-element
+    /// drop is needed). Substitutes through the monomorphisation map first
+    /// (mirroring `vec_receiver_has_owned_element`) so a polymorphic binding
+    /// type resolves to its concrete element.
     ///
-    /// Default-deny: ONLY the positively enumerated plain element shapes
-    /// admit. An owned-element Vec and a closure-pair Vec have their own
-    /// dedicated release arms (`hew_vec_free_owned` /
-    /// `hew_vec_free_closure_pairs`) and are structurally excluded here (their
-    /// elements are `Named` / fn-typed, never a scalar leaf). A `bytes` /
-    /// container / composite element, or an unresolved type parameter, is NOT
-    /// plain — those stay on the leak-as-before posture rather than risking a
-    /// wrong-ABI free against a descriptor-constructed handle
-    /// (`boundary-fail-closed`).
+    /// Default-deny: ONLY the positively enumerated plain element shapes admit.
+    /// The `BitCopy` value-aggregate arm is the precise complement of the owned
+    /// arm: an owned-element Vec (record/enum/tuple with a string/bytes/nested-
+    /// collection field) is `CowValue`/`AffineResource`, never `BitCopy`, so it
+    /// is structurally excluded here and continues to route to its dedicated
+    /// `hew_vec_free_owned` release; a closure-pair `Vec<fn>` is also non-
+    /// `BitCopy` (its element is `Function`/`Closure`) and routes to
+    /// `hew_vec_free_closure_pairs`. The `BitCopy` discriminant agrees with the
+    /// constructor/getter routing (`harvest_vec_owned_element_key` explicitly
+    /// keeps all-BitCopy records on the `_layout` path and out of the owned
+    /// allow-list), so the plain-vec and owned-vec allow-sets stay disjoint and
+    /// `hew_vec_free` is never emitted against a descriptor-constructed handle
+    /// (`dedup-semantic-boundary`). An unresolved type parameter has no known
+    /// value class and stays on the leak-as-before posture rather than risking a
+    /// wrong-ABI free (`boundary-fail-closed`).
     fn binding_ty_is_plain_vec(&self, ty: &ResolvedTy) -> bool {
         let ResolvedTy::Named {
             args,
@@ -7038,7 +7049,7 @@ impl Builder {
             return false;
         };
         args.first().is_some_and(|elem| {
-            matches!(
+            if matches!(
                 elem,
                 ResolvedTy::I8
                     | ResolvedTy::I16
@@ -7056,7 +7067,18 @@ impl Builder {
                     | ResolvedTy::Char
                     | ResolvedTy::Duration
                     | ResolvedTy::String
-            )
+            ) {
+                return true;
+            }
+            // BitCopy value aggregate (record / direct enum / tuple with all-
+            // BitCopy fields): constructed inline via `hew_vec_new_with_layout`,
+            // owns no heap, so the buffer-only `hew_vec_free` is the matching
+            // release. The `BitCopy` value-class check is the exact complement
+            // of `is_owned_vec_element` — a heap-owning or closure-bearing
+            // aggregate is never `BitCopy` — so this never claims a binding the
+            // owned/closure-pair arms own.
+            matches!(elem, ResolvedTy::Named { .. } | ResolvedTy::Tuple(_))
+                && ValueClass::of_ty(elem, &self.type_classes) == ValueClass::BitCopy
         })
     }
 

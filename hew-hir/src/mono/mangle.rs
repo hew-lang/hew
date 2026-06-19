@@ -169,9 +169,15 @@ pub fn mangle_instantiation(
     type_args: &[ResolvedTy],
     const_args: &[ConstValue],
 ) -> String {
+    // A bare Hew identifier never contains `$` (lexer rule). The one
+    // valid exception is a cross-module function whose registry key is
+    // the `mangle_dotted_name` form `module$fn` — a single `$` that
+    // acts as the module separator. What we must guard against is a
+    // double `$$`, which would corrupt the type-arg separator below.
     debug_assert!(
-        !origin_name.contains('$'),
-        "Hew identifiers cannot contain `$` (lexer rule); origin name `{origin_name}` is malformed"
+        !origin_name.contains("$$"),
+        "origin name `{origin_name}` already contains the `$$` type-arg separator — \
+         double-mangling would produce a malformed symbol"
     );
 
     // For non-Function classes, sanitize the origin name so that

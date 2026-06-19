@@ -12744,9 +12744,13 @@ impl LowerCtx {
                 // would silently hijack the field access into a fn BindingRef,
                 // producing wrong-code with exit 0.
                 //
-                // Generic cross-module fns never reach here — the checker
-                // rejects them with a deferred diagnostic before lowering
-                // starts.
+                // Generic cross-module fns now reach here via the
+                // `check_against` arm (A156): when the checker accepted a
+                // `module.generic_fn` used as a value it recorded both a
+                // concrete `ResolvedTy::Function` in `expr_types` AND the
+                // inferred type args in `call_type_args` at this span.  The
+                // non-generic arm below handles the non-generic case (no
+                // `call_type_args` entry); this arm handles the generic one.
                 if let Expr::Identifier(module_name) = &object.0 {
                     let qualified_key = format!("{module_name}.{field}");
                     let mangled = crate::mangle_dotted_name(&qualified_key);
@@ -12761,6 +12765,85 @@ impl LowerCtx {
                         let checker_ty = self.checker_expr_ty(&span, "cross-module fn value");
                         if let Some(ResolvedTy::Function { .. }) = &checker_ty {
                             let ty = checker_ty.unwrap();
+
+                            // Generic fn-value: the checker recorded concrete
+                            // type args — look them up and register the
+                            // monomorphisation so MIR's `module_fn_names` finds
+                            // the mangled symbol.  The non-generic case has an
+                            // empty `type_params` on the registry entry and
+                            // produces no monomorphisation.
+                            let fn_mangled_symbol = if entry.type_params.is_empty() {
+                                // Non-generic cross-module fn — no monomorphisation needed.
+                                mangled.clone()
+                            } else {
+                                let span_key = self.mk_key(&span);
+                                if let Some(type_args_raw) =
+                                    self.call_type_args.get(&span_key).cloned()
+                                {
+                                    let mut type_args: Vec<ResolvedTy> =
+                                        Vec::with_capacity(type_args_raw.len());
+                                    let mut boundary_ok = true;
+                                    for raw_ty in &type_args_raw {
+                                        match ResolvedTy::from_ty(raw_ty) {
+                                            Ok(resolved) => type_args.push(resolved),
+                                            Err(err) => {
+                                                self.diagnostics.push(HirDiagnostic::new(
+                                                    HirDiagnosticKind::MonomorphisationCallTypeArgsViolation {
+                                                        callee: mangled.clone(),
+                                                        reason: err.to_string(),
+                                                    },
+                                                    span.clone(),
+                                                    "checker-authoritative call_type_args entry \
+                                                     for generic fn-value failed boundary conversion",
+                                                ));
+                                                boundary_ok = false;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if boundary_ok
+                                        && !type_args
+                                            .iter()
+                                            .any(|t| self.contains_abstract_type_param(t))
+                                    {
+                                        let mono_key = MonoKey {
+                                            origin: entry.id,
+                                            origin_name: mangled.clone(),
+                                            type_args: type_args.clone(),
+                                        };
+                                        let mono_sym =
+                                            crate::monomorph::mangle(&mangled, &type_args);
+                                        if let Err(()) = self.mono_registry.insert(mono_key) {
+                                            if !self.mono_cap_diag_emitted {
+                                                self.mono_cap_diag_emitted = true;
+                                                let cap = self.mono_registry.cap();
+                                                self.diagnostics.push(HirDiagnostic::new(
+                                                    HirDiagnosticKind::MonomorphisationCapExceeded {
+                                                        cap,
+                                                    },
+                                                    span.clone(),
+                                                    "too many distinct generic-function \
+                                                     instantiations; cap exceeded at fn-value site",
+                                                ));
+                                            }
+                                        }
+                                        // Record per-site type args for the
+                                        // closure-under-substitution pass.
+                                        self.call_site_type_args.insert(site, type_args);
+                                        mono_sym
+                                    } else {
+                                        mangled.clone()
+                                    }
+                                } else {
+                                    // No call_type_args at this span — checker
+                                    // should have diagnosed this as ambiguous; fall
+                                    // back to the generic origin symbol (MIR will
+                                    // fail closed if it can't find it in
+                                    // module_fn_names).
+                                    mangled.clone()
+                                }
+                            };
+
                             return HirExpr {
                                 node: self.ids.node(),
                                 site,
@@ -12768,7 +12851,7 @@ impl LowerCtx {
                                 ty,
                                 intent,
                                 kind: HirExprKind::BindingRef {
-                                    name: mangled,
+                                    name: fn_mangled_symbol,
                                     resolved: ResolvedRef::Item(entry.id),
                                 },
                                 span,

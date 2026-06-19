@@ -1,0 +1,7 @@
+pub fn first<T>(items: Vec<T>) -> T {
+    items[0]
+}
+
+pub fn identity<T>(x: T) -> T {
+    x
+}

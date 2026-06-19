@@ -1,18 +1,13 @@
-// Generic cross-module named functions as values are deferred: the
-// diagnostic must name the exported generic function and the lambda
-// workaround, never misreport a missing constant or crash. The non-generic
-// case is accepted (see accept/cross_module_fn_value).
+// An unannotated generic cross-module named function used as a value is
+// rejected: the type parameters cannot be determined from context and an
+// explicit type annotation is required.
 //
-// Both the bare unannotated form and the context-determined form (where the
-// binding annotation fully determines the type parameters) must be rejected —
-// the check is declaration-based, not context-dependent.
+// The context-determined form (annotation that fully determines type params)
+// is now accepted — see accept/cross_module_generic_fn_value.
 import helpers;
 
 fn main() {
+    // No annotation — ambiguous; rejected with a "needs type annotation" diagnostic.
     let f = helpers.first;
     println(f([1, 2, 3]));
-    // Context-determined: type params fully known from the annotation; must
-    // still be rejected with the named generic diagnostic.
-    let g: fn(Vec<i64>) -> i64 = helpers.first;
-    println(g([4, 5, 6]));
 }

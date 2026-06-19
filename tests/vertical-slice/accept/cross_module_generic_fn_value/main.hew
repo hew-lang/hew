@@ -1,0 +1,25 @@
+// Context-determined generic cross-module function as a value.
+//
+// A156 ratified: when the concrete type args are fully determined by the
+// binding annotation or by the receiving parameter type, the generic fn is
+// accepted as a value and a monomorphic shim is selected.
+//
+// - `let g: fn(Vec<i64>) -> i64 = helpers.first` determines T=i64 from the
+//   binding annotation.
+// - `let h: fn(i64) -> i64 = helpers.identity` also via annotation.
+// - `apply(h, 99)` exercises the fn-value through a call.
+import helpers;
+
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(x)
+}
+
+fn main() {
+    // Context-determined via annotation.
+    let g: fn(Vec<i64>) -> i64 = helpers.first;
+    println(g([10, 20, 30]));   // 10
+
+    // Context-determined via annotation; invoked through a higher-order fn.
+    let h: fn(i64) -> i64 = helpers.identity;
+    println(apply(h, 99));       // 99
+}

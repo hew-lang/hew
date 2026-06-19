@@ -2964,6 +2964,118 @@ impl Checker {
                 }
             }
 
+            // Context-determined generic cross-module function as a value.
+            //
+            // When `module.fn_name` resolves to a generic function and the
+            // expected type is a concrete `Ty::Function`, infer the type
+            // args by unifying the freshened parameter/return types with the
+            // expected shape.  Concretely-resolved type args are recorded into
+            // `call_type_args` at this span so the HIR lowerer can compute the
+            // mangled monomorphisation symbol and register the instantiation.
+            //
+            // Guard: fires ONLY when
+            //   (a) the object is a bare module identifier,
+            //   (b) the field names a GENERIC function in `fn_sigs`, and
+            //   (c) the expected type is a `Ty::Function`.
+            // Non-generic cross-module fns are handled by the synthesize path
+            // (which returns the monomorphic function type directly without
+            // needing this arm).  Ambiguous fn values (no expected context) fall
+            // through to `synthesize` → `check_field_access` → diagnostic.
+            (Expr::FieldAccess { object, field }, Ty::Function { .. })
+                if if let Expr::Identifier(module_name) = &object.0 {
+                    // Must be a known module (not a local binding or user type).
+                    let receiver_is_binding = self.env.lookup_ref(module_name).is_some();
+                    let receiver_is_known_type = self.type_defs.contains_key(module_name);
+                    !receiver_is_binding
+                        && !receiver_is_known_type
+                        && self.modules.contains(module_name)
+                        && !field.contains("::")
+                        && {
+                            let qk = format!("{module_name}.{field}");
+                            self.fn_sigs
+                                .get(&qk)
+                                .is_some_and(|s| !s.type_params.is_empty())
+                        }
+                } else {
+                    false
+                } =>
+            {
+                // Re-extract the module name and qualified key now that the
+                // guard has confirmed the shape.
+                let Expr::Identifier(module_name) = &object.0 else {
+                    unreachable!("guard confirmed Identifier shape")
+                };
+                let qualified_key = format!("{module_name}.{field}");
+                // `unwrap` is safe: the guard confirmed the entry exists.
+                let sig = self.fn_sigs.get(&qualified_key).unwrap().clone();
+
+                // Freshen the sig (allocates fresh inference vars for each
+                // type parameter) and unify against the expected function type.
+                let (freshened_params, freshened_ret, resolved_type_args) =
+                    self.instantiate_fn_sig_for_call(&sig, None, span);
+
+                let fresh_fn_ty = Ty::Function {
+                    params: freshened_params.clone(),
+                    ret: Box::new(freshened_ret.clone()),
+                };
+
+                // Trial-unify: if the expected type is inconsistent (e.g. wrong
+                // arity or incompatible concrete types) surface a type mismatch
+                // diagnostic and return Error — never a garbage fn value.
+                let n = self.errors.len();
+                self.expect_type(expected, &fresh_fn_ty, span);
+                if self.errors.len() > n {
+                    return Ty::Error;
+                }
+
+                // Resolve after unification — type args should now be concrete.
+                let concrete_args: Vec<Ty> = resolved_type_args
+                    .iter()
+                    .map(|ty| self.subst.resolve(ty))
+                    .collect();
+
+                if concrete_args.iter().any(Ty::has_inference_var) {
+                    // Still ambiguous after unification — the expected type did
+                    // not fully determine the type parameters (e.g. a partially-
+                    // polymorphic context). Fail closed with a diagnostic that
+                    // asks for an explicit annotation.
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "`{qualified_key}` is a generic function; the type context \
+                             did not fully determine its type parameters — add an \
+                             explicit type annotation (e.g. `let f: fn({params}) -> {ret} \
+                             = {qualified_key}`)",
+                            params = sig
+                                .params
+                                .iter()
+                                .map(|t| format!("{t}"))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            ret = sig.return_type,
+                        ),
+                    );
+                    return Ty::Error;
+                }
+
+                // Record the concrete type args so the HIR lowerer can look
+                // them up by this expression's span and compute the mangled
+                // monomorphisation symbol.
+                self.record_concrete_call_type_args(span, &concrete_args);
+
+                // Mark the module as used.
+                self.used_modules.borrow_mut().insert(ImportKey::new(
+                    self.current_module.clone(),
+                    module_name.clone(),
+                ));
+
+                // Resolve the resulting function type and record it.
+                let result_ty = self.subst.resolve(&fresh_fn_ty);
+                self.record_type(span, &result_ty);
+                result_ty
+            }
+
             // Default: synthesize and unify
             _ => {
                 let actual = self.synthesize(expr, span);
@@ -4794,9 +4906,10 @@ impl Checker {
                         // a non-generic cross-module function in value
                         // position resolves to its function type (the HIR
                         // lowerer emits a fn-value BindingRef for it). The
-                        // generic case stays deferred with a diagnostic that
-                        // names the workaround instead of misreporting a
-                        // missing constant.
+                        // generic case reached here without a context-determined
+                        // expected type (the `check_against` arm handles the
+                        // annotated case); emit a diagnostic asking for a type
+                        // annotation or suggesting a direct call / lambda wrap.
                         if let Some(sig) = self.fn_sigs.get(&qualified_key) {
                             if sig.type_params.is_empty() {
                                 let ty = Ty::Function {
@@ -4813,10 +4926,18 @@ impl Checker {
                                 TypeErrorKind::InvalidOperation,
                                 span,
                                 format!(
-                                    "`{qualified_key}` is an exported generic function; using a \
-                                     generic cross-module function as a value is not yet \
-                                     supported — call it directly, or wrap it in a lambda \
-                                     (`|x| {qualified_key}(x)`)"
+                                    "`{qualified_key}` is a generic function; to use it as a \
+                                     value, add a type annotation that fully determines its \
+                                     type parameters (e.g. `let f: fn({params}) -> {ret} = \
+                                     {qualified_key}`), call it directly, or wrap it in a \
+                                     lambda (`|x| {qualified_key}(x)`)",
+                                    params = sig
+                                        .params
+                                        .iter()
+                                        .map(|t| format!("{t}"))
+                                        .collect::<Vec<_>>()
+                                        .join(", "),
+                                    ret = sig.return_type,
                                 ),
                             );
                             return Ty::Error;

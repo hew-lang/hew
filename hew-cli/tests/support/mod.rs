@@ -263,9 +263,66 @@ fn build_wasi_stdlib_archive(
     }
 
     if !archive_path.is_file() {
+        // Cargo can exit 0 without producing the staticlib when a stale
+        // fingerprint (e.g. from a CI cache hit that only cached the rlib)
+        // convinces it that nothing needs to be rebuilt.  Recover by cleaning
+        // the wasm32-wasip1 artifacts for this package and retrying once.
+        wasi_stdlib_archive_clean_and_retry(target_dir, build_profile, package, archive)?;
+
+        if !archive_path.is_file() {
+            return Err(format!(
+                "WASI stdlib archive bootstrap succeeded but {} was not created \
+                 even after a clean-and-retry",
+                archive_path.display()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Clean the wasm32-wasip1 artifacts for a stdlib archive package and rebuild.
+/// Used to recover from Cargo's stale-fingerprint no-op when the rlib is
+/// cached from a prior run but the staticlib was never produced.
+fn wasi_stdlib_archive_clean_and_retry(
+    target_dir: &std::path::Path,
+    build_profile: &str,
+    package: &str,
+    archive: &str,
+) -> Result<(), String> {
+    let clean_output = Command::new("cargo")
+        .args(["clean", "-p", package, "--target", "wasm32-wasip1"])
+        .env("CARGO_TARGET_DIR", target_dir)
+        .current_dir(repo_root())
+        .output()
+        .map_err(|error| {
+            format!("failed to invoke `cargo clean -p {package} --target wasm32-wasip1`: {error}")
+        })?;
+
+    if !clean_output.status.success() {
         return Err(format!(
-            "WASI stdlib archive bootstrap succeeded but {} was not created",
-            archive_path.display()
+            "WASI stdlib archive clean failed for {archive}:\n{}",
+            describe_output(&clean_output)
+        ));
+    }
+
+    let mut retry_cmd = Command::new("cargo");
+    retry_cmd
+        .args(["build", "-q", "-p", package, "--target", "wasm32-wasip1"])
+        .env("CARGO_TARGET_DIR", target_dir)
+        .current_dir(repo_root());
+    if build_profile == "release" {
+        retry_cmd.arg("--release");
+    }
+
+    let retry_output = retry_cmd.output().map_err(|error| {
+        format!("failed to invoke wasm32-wasip1 retry build for {package}: {error}")
+    })?;
+
+    if !retry_output.status.success() {
+        return Err(format!(
+            "WASI stdlib archive build failed on retry for {archive}:\n{}",
+            describe_output(&retry_output)
         ));
     }
 

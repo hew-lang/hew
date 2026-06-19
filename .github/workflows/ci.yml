@@ -40,8 +40,12 @@ jobs:
       # it is 'true' for ANY change that is not exclusively docs. This means
       # release scripts, Makefile, installer configs, .github operational files,
       # packaging, and any new/unrecognised file all trip correctness by default.
-      # The only safe skip is a change set composed entirely of the docs allowlist
-      # below (docs/**, *.md, LICENSE*, NOTICE, CHANGELOG, etc.).
+      # The only safe skip is a change set composed ENTIRELY of the docs allowlist
+      # (docs/**, *.md, LICENSE*, NOTICE, CHANGELOG, etc.). Mixed PRs that contain
+      # even one non-docs file also run correctness. docs_only uses
+      # predicate-quantifier: every in a separate step (docs-gate) to enforce
+      # the ALL-files-must-match invariant; the other filters use the default
+      # `some` semantics in the filter step and are unaffected.
       linux_correctness: ${{ steps.gate.outputs.linux_correctness }}
       platform_smoke: ${{ steps.filter.outputs.platform_smoke }}
       platform_full: ${{ steps.filter.outputs.platform_full }}
@@ -49,21 +53,23 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
+      # docs_only detection: uses predicate-quantifier: every so the filter is
+      # true ONLY when ALL changed files match the docs allowlist. A mixed PR
+      # (docs + any code/operational file) produces false, which correctly trips
+      # linux_correctness below. This step MUST be separate from the `filter`
+      # step below — predicate-quantifier applies to the entire step, so mixing
+      # docs_only (needs `every`) with the other filters (need the default `some`)
+      # would corrupt platform_smoke/platform_full/playground semantics.
       - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
-        id: filter
+        id: docs-gate
         with:
-          # FAIL-SAFE path gates. linux_correctness is derived below via
-          # inversion of docs_only (see the gate step). platform_smoke,
-          # platform_full, and playground use conventional allowlists because
-          # their no-op is safe (Linux already owns full correctness for every
-          # non-docs change).
+          predicate-quantifier: every
           filters: |
-            # docs_only: change set composed EXCLUSIVELY of documentation,
-            # licence, and community-health files. Every path listed here is
-            # provably incapable of affecting build, test, or runtime behaviour.
-            # Anything not in this list (incl. Makefile, release/install scripts,
-            # .github operational files, packaging configs, etc.) is non-docs and
-            # will trip linux_correctness via the gate step below.
+            # docs_only is true IFF EVERY changed file matches this allowlist.
+            # Files provably incapable of affecting build, test, or runtime
+            # behaviour. Anything not listed here (Makefile, release/install
+            # scripts, .github operational files, packaging configs, .rs, etc.)
+            # causes docs_only=false, which trips linux_correctness below.
             docs_only:
               - 'docs/**'
               - '**/*.md'
@@ -77,6 +83,16 @@ jobs:
               - '.github/ISSUE_TEMPLATE/**'
               - '.github/PULL_REQUEST_TEMPLATE/**'
               - '.github/PULL_REQUEST_TEMPLATE.md'
+
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
+        id: filter
+        with:
+          # Platform/playground path gates. These use the default
+          # predicate-quantifier: some (filter is true when ANY changed file
+          # matches), which is the correct semantics for positive allowlists.
+          # linux_correctness is derived separately from docs-gate above via
+          # inversion of docs_only.
+          filters: |
             # Rule 4 (platform parity, weak set): any Rust change or CI/toolchain
             # change runs the platform build + smoke on Windows/macOS. Same broad
             # surface as linux_correctness — a Rust change anywhere can change
@@ -150,13 +166,14 @@ jobs:
       # unrecognised file — all of which would be silent no-ops under a positive
       # allowlist that has not been updated to include them.
       #
-      # docs_only is 'true' only when EVERY changed file matches the docs
-      # allowlist above.  A mixed PR (docs + any operational file) sets
-      # docs_only to 'false', which trips linux_correctness here.
+      # docs_only (from docs-gate above) is 'true' only when EVERY changed file
+      # matches the docs allowlist (predicate-quantifier: every).  A mixed PR
+      # (docs + any operational/code file) sets docs_only to 'false', which
+      # trips linux_correctness here.
       - name: Derive linux_correctness (invert docs_only)
         id: gate
         run: |
-          if [[ "${{ steps.filter.outputs.docs_only }}" == "true" ]]; then
+          if [[ "${{ steps.docs-gate.outputs.docs_only }}" == "true" ]]; then
             echo "linux_correctness=false" >> "$GITHUB_OUTPUT"
             echo "Change set is exclusively docs — Linux correctness gate will no-op."
           else

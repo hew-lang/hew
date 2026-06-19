@@ -6862,17 +6862,7 @@ impl Builder {
         let ResolvedTy::Named { name, args, .. } = ty else {
             return None;
         };
-        let short = short_name(name);
-        let key = if args.is_empty() {
-            name.clone()
-        } else {
-            mangle_layout_key(short, args)
-        };
-        self.enum_layouts
-            .iter()
-            .find(|layout| {
-                layout.name == key || layout.name == *name || short_name(&layout.name) == short
-            })
+        crate::model::find_enum_layout(name, args, &self.enum_layouts)
             .filter(|layout| {
                 layout
                     .variants
@@ -32607,7 +32597,7 @@ mod slice35_cross_block_proptests {
 mod enum_layout_tests {
     use std::collections::HashMap;
 
-    use super::lower_hir_module;
+    use super::{lower_hir_module, Builder};
     use hew_hir::{
         EnumLayout, EnumMonoKey, EnumVariantLayout, HirItem, HirModule, HirNodeId, HirTypeDecl,
         HirVariant, HirVariantKind, ItemId, ResourceMarker, SiteId,
@@ -32763,6 +32753,126 @@ mod enum_layout_tests {
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Colour");
         assert_eq!(user_layouts[0].name, "Colour");
         assert_eq!(user_layouts[0].variants.len(), 3);
+    }
+
+    #[test]
+    fn fieldless_layout_key_matches_find_enum_layout_for_monomorphic() {
+        use crate::model::{EnumLayout, MachineVariantLayout};
+
+        let layouts = vec![EnumLayout {
+            name: "Colour".to_string(),
+            tag_width: 1,
+            variants: vec![
+                MachineVariantLayout {
+                    name: "Red".to_string(),
+                    field_tys: vec![],
+                },
+                MachineVariantLayout {
+                    name: "Green".to_string(),
+                    field_tys: vec![],
+                },
+                MachineVariantLayout {
+                    name: "Blue".to_string(),
+                    field_tys: vec![],
+                },
+            ],
+            is_indirect: false,
+        }];
+        let builder = Builder {
+            enum_layouts: layouts.clone(),
+            ..Builder::default()
+        };
+        let colour = ResolvedTy::named_user("Colour", vec![]);
+
+        assert_eq!(
+            builder.fieldless_enum_layout_key(&colour),
+            Some("Colour".to_string())
+        );
+        assert_eq!(
+            crate::model::find_enum_layout("Colour", &[], &layouts)
+                .map(|layout| layout.name.clone()),
+            Some("Colour".to_string())
+        );
+    }
+
+    #[test]
+    fn fieldless_layout_key_none_for_payload_enum() {
+        use crate::model::{EnumLayout, MachineVariantLayout};
+
+        let builder = Builder {
+            enum_layouts: vec![EnumLayout {
+                name: "MaybeI64".to_string(),
+                tag_width: 1,
+                variants: vec![
+                    MachineVariantLayout {
+                        name: "Some".to_string(),
+                        field_tys: vec![ResolvedTy::I64],
+                    },
+                    MachineVariantLayout {
+                        name: "None".to_string(),
+                        field_tys: vec![],
+                    },
+                ],
+                is_indirect: false,
+            }],
+            ..Builder::default()
+        };
+
+        assert_eq!(
+            builder.fieldless_enum_layout_key(&ResolvedTy::named_user("MaybeI64", vec![])),
+            None
+        );
+    }
+
+    #[test]
+    fn fieldless_layout_key_generic_uses_mangled_key_not_short_fallback() {
+        use crate::model::{EnumLayout, MachineVariantLayout};
+
+        fn fieldless_layout(name: String) -> EnumLayout {
+            EnumLayout {
+                name,
+                tag_width: 1,
+                variants: vec![
+                    MachineVariantLayout {
+                        name: "Empty".to_string(),
+                        field_tys: vec![],
+                    },
+                    MachineVariantLayout {
+                        name: "Full".to_string(),
+                        field_tys: vec![],
+                    },
+                ],
+                is_indirect: false,
+            }
+        }
+
+        let registered_key = hew_hir::mangle("Slot", &[ResolvedTy::named_user("Box", vec![])]);
+        let builder = Builder {
+            enum_layouts: vec![
+                fieldless_layout(registered_key.clone()),
+                fieldless_layout("decoy.Slot".to_string()),
+            ],
+            ..Builder::default()
+        };
+        let qualified =
+            ResolvedTy::named_user("Slot", vec![ResolvedTy::named_user("lmonobox.Box", vec![])]);
+        assert_eq!(
+            builder.fieldless_enum_layout_key(&qualified),
+            Some(registered_key)
+        );
+
+        let missing_mangled_builder = Builder {
+            enum_layouts: vec![fieldless_layout("decoy.Slot".to_string())],
+            ..Builder::default()
+        };
+        let missing_mangled_probe = ResolvedTy::named_user(
+            "Slot",
+            vec![ResolvedTy::named_user("lmonobox.Crate", vec![])],
+        );
+        assert_eq!(
+            missing_mangled_builder.fieldless_enum_layout_key(&missing_mangled_probe),
+            None
+        );
     }
 
     #[test]

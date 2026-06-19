@@ -1144,7 +1144,7 @@ pub fn short_name(name: &str) -> &str {
 /// No call site in this module may build a generic enum-layout key with a raw
 /// `mangle(.., args)`; the `mangle_feeding_layout_lookup_is_centralised` guard
 /// test fails if one reappears.
-fn find_enum_layout<'a>(
+pub(crate) fn find_enum_layout<'a>(
     name: &str,
     args: &[ResolvedTy],
     enum_layouts: &'a [EnumLayout],

@@ -33070,6 +33070,7 @@ mod enum_layout_tests {
         HirModule {
             items,
             diagnostic_source_modules: HashMap::default(),
+            wire_layouts: std::sync::Arc::new(HashMap::default()),
             type_classes: hew_hir::TypeClassTable::default(),
             monomorphisations: vec![],
             call_site_type_args: HashMap::<SiteId, _>::default(),

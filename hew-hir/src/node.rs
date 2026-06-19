@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
 use hew_types::{stdlib::VecElementToken, NumericMethodFamily};
 use hew_types::{
     ChildSlot, ExecutionContextReader, ImplId, MethodTargetFamily, ResolvedTy, Ty, TyPattern,
-    VariantMatch,
+    VariantMatch, WireLayoutTable,
 };
 use hew_types::{NumericMethodOp, NumericSignedness, NumericWidth, WireCodecDirection};
 
@@ -21,6 +21,8 @@ pub struct HirModule {
     /// item id. Diagnostics emitted while verifying one of these items inherit
     /// the same dotted module key used by `HirDiagnostic::source_module`.
     pub diagnostic_source_modules: HashMap<ItemId, String>,
+    /// Checker-authored wire layout metadata keyed by canonical type name.
+    pub wire_layouts: Arc<WireLayoutTable>,
     /// Per-named-type classification table populated during HIR lowering from
     /// each `Item::TypeDecl` carrying a user marker and from compiler-known
     /// substrate registrations.

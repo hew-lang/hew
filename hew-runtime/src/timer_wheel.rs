@@ -19,7 +19,9 @@ use std::ptr;
 use std::sync::{Mutex, OnceLock};
 
 use crate::io_time::hew_now_ms;
-use crate::timer::HewTimerCb;
+
+/// Timer callback signature matching the C `hew_timer_cb` typedef.
+pub type HewTimerCb = unsafe extern "C" fn(*mut c_void);
 
 // ---------------------------------------------------------------------------
 // Ticker-notify hook

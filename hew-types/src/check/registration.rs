@@ -127,6 +127,24 @@ pub enum LinkError {
     TargetDead;
 }
 
+pub enum MonitorError {
+    Partition;
+    StaleRef;
+    LocalShutdown;
+    VersionMismatch;
+    Unauthorized;
+    DecodeFailure;
+    MonitorLost;
+}
+
+pub enum PartitionPolicy {
+    FailFast;
+    Deadline;
+    MonitorLost;
+    CrashLinked;
+    Quarantine;
+}
+
 impl MonitorRef {
     fn close(monitor_ref: MonitorRef) {
         unsafe {
@@ -173,6 +191,13 @@ pub enum CrashAction {
 const LOOKUP_ERROR_HEW: &str = r"
 pub enum LookupError {
     NotFound;
+    Partition;
+    Timeout;
+    StaleRef;
+    Cancelled;
+    LocalShutdown;
+    VersionMismatch;
+    Unauthorized;
 }
 ";
 

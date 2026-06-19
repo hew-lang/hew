@@ -2213,6 +2213,8 @@ pub struct Checker {
     /// same variable every time).
     pub(super) deferred_channel_rewrites: HashMap<SpanKey, DeferredChannelMethodRewrite>,
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-side accumulator for [`TypeCheckOutput::wire_layouts`].
+    pub(super) wire_layouts: WireLayoutTable,
     /// Checker-side accumulator for [`TypeCheckOutput::resolved_calls`].
     ///
     /// **Stage A:** never populated by production code paths. Reserved
@@ -2829,6 +2831,7 @@ impl Checker {
             deferred_vec_admission: HashMap::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            wire_layouts: HashMap::new(),
             resolved_calls: HashMap::new(),
             numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),

@@ -681,6 +681,7 @@ mod tests {
             method_call_receiver_kinds: HashMap::new(),
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            wire_layouts: HashMap::new(),
             numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),

@@ -363,6 +363,15 @@ jobs:
         # Known failures tracked in scripts/stdlib-expected-failures.txt.
         run: make test-stdlib-ratchet
 
+      - name: Run doc-fence typecheck suite (ratcheted)
+        # Extracts every ```hew fence from docs/ and runs `hew check` on each.
+        # Known failures are tracked in scripts/doc-test-expected-failures.txt;
+        # any unexpected failure OR unexpected pass (ratchet forward) exits 1.
+        # Skip-annotated fences (<!-- doctest: skip --> or NYI callout) are
+        # excluded from the check to allow aspirational spec fences.
+        # When the expected-failures list is empty, this gate is fully green.
+        run: make test-doc-examples
+
       - name: Setup Node.js for sandbox parity
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:

@@ -51,6 +51,7 @@ CI_REQUIRED_CHECKS=(
     "Fuzz-oracle ratchet (ci.yml: make fuzz-oracle)	make fuzz-oracle"
     "Sandbox parity (ci.yml: make sandbox-parity)	make sandbox-parity"
     "Checked-MIR golden corpus (ci.yml: make checked-mir-verify)	make checked-mir-verify"
+    "Doc-fence typecheck ratchet (ci.yml: make test-doc-examples)	make test-doc-examples"
 )
 
 usage() {
@@ -601,6 +602,10 @@ fi
 
 case "$LANE" in
     docs)
+        # Docs-only change: run the doc-fence typecheck gate so documentation
+        # regressions surface locally before push.  This is the narrow lane that
+        # also runs in the fallback; it is fast (<30 s) because it is compile-only.
+        add_command "make test-doc-examples"
         ;;
     scripts-config)
         add_command "cargo fmt --all -- --check"
@@ -728,6 +733,7 @@ case "$LANE" in
         add_command "make fuzz-oracle"
         add_command "make test-hew-ratchet"
         add_command "make test-stdlib-ratchet"
+        add_command "make test-doc-examples"
         add_command "make sandbox-parity"
         add_command "make checked-mir-verify"
         ;;

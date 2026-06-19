@@ -379,8 +379,10 @@ fn array_repeat_runtime_count_lowers() {
 fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
     // Defense-in-depth: verify_hir emits NotYetImplemented for any Unsupported
     // HIR node it finds, even when the lowerer already emitted the diagnostic.
-    // Owned-element array repeat remains fail-closed pending clone semantics.
-    let output = lower("fn f() { let t = [\"x\"; 2]; }");
+    // Applying `?` to a non-Result/non-Option value in a function that does not
+    // return Result/Option is still unsupported at the HIR level; the lowerer
+    // emits NotYetImplemented and leaves an Unsupported node for the verifier.
+    let output = lower("fn f() -> i64 { let x: i64 = 5; x? }");
     // The lowerer already emits NotYetImplemented for the unsupported expression.
     assert!(
         output
@@ -402,7 +404,10 @@ fn verifier_flags_unsupported_hir_node_as_defense_in_depth() {
 
 #[test]
 fn verifier_diagnostic_retains_item_source_module() {
-    let mut output = lower("fn f() { let t = [\"x\"; 2]; }");
+    // Applying `?` to a non-Result/non-Option value produces an Unsupported HIR
+    // node; this test verifies that source-module attribution is preserved on
+    // verifier-emitted diagnostics.
+    let mut output = lower("fn f() -> i64 { let x: i64 = 5; x? }");
     let func_id = output
         .module
         .items
@@ -421,7 +426,7 @@ fn verifier_diagnostic_retains_item_source_module() {
     let diagnostic = verify
         .iter()
         .find(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
-        .expect("verifier should flag unsupported owned array-repeat node");
+        .expect("verifier should flag unsupported postfix-try HIR node");
     assert_eq!(diagnostic.source_module.as_deref(), Some("dep"));
 }
 

@@ -15074,19 +15074,13 @@ impl LowerCtx {
             );
         };
 
-        if ValueClass::of_ty(&elem_ty, &self.type_classes) != ValueClass::BitCopy {
-            self.unsupported(
-                span.clone(),
-                "array-repeat of owned element pending semantics ratification",
-                "collection-literals",
-            );
-            return (
-                HirExprKind::Unsupported(
-                    "array-repeat of owned element pending semantics ratification".into(),
-                ),
-                vec_ty,
-            );
-        }
+        // Owned (non-BitCopy) elements are cloned per slot by the runtime push
+        // path: push_str / push_bytes creates an independent copy, and push_owned
+        // calls the element clone thunk. The checker's synthesize_array_repeat
+        // already rejected unclonable owned types, so any non-BitCopy element
+        // that reaches here is guaranteed Clone-admissible. The source value
+        // binding lives until the block exits and is dropped exactly once by
+        // scope-exit drop elaboration (N runtime clones + 1 source drop).
 
         let block_scope = self.ids.scope();
         self.push_scope();

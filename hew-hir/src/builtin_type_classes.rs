@@ -166,7 +166,7 @@ pub fn crash_info_type_registration() -> &'static BuiltinTypeRegistration {
 /// lowering can query the registry instead of matching user-visible names.
 ///
 /// WHY: `Duplex<S,R>`, `Sink<T>`, `Stream<T>`, etc. are constructed via
-/// builtin functions (`duplex_pair`, `channel`) registered in
+/// builtin functions (`duplex_pair`, `duplex`) registered in
 /// `hew-types/src/check/registration.rs`.  Those builtins return `Ty::Duplex { .. }`
 /// which crosses the checker boundary as `ResolvedTy::Named { name: "Duplex", .. }`.
 /// Without this seeding, `ValueClass::of_ty` returns `Unknown` for every

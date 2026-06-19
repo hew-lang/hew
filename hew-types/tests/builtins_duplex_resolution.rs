@@ -61,24 +61,6 @@ fn duplex_detached_resolves() {
     );
 }
 
-/// `channel<i64>(16)` returns `(Sink<i64>, Stream<i64>)`.
-#[test]
-fn channel_resolves_to_sink_stream_pair() {
-    let source = r"
-        fn main() {
-            let (sink, stream) = channel<i64>(16);
-            let _: Sink<i64> = sink;
-            let _: Stream<i64> = stream;
-        }
-    ";
-    let output = typecheck(source);
-    assert!(
-        output.errors.is_empty(),
-        "channel<i64>(16) should give (Sink<i64>, Stream<i64>); got: {:#?}",
-        output.errors
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Reject fixtures
 // ---------------------------------------------------------------------------
@@ -123,26 +105,6 @@ fn duplex_pair_non_send_r_rejected() {
     assert!(
         has_bounds_err,
         "duplex_pair<i64, Rc<i64>> should fail with BoundsNotSatisfied; got: {:#?}",
-        output.errors
-    );
-}
-
-/// `channel<Rc<i64>>(16)` — `Rc<T>` is not Send; must fail.
-#[test]
-fn channel_non_send_rejected() {
-    let source = r"
-        fn main() {
-            let (s, r) = channel<Rc<i64>>(16);
-        }
-    ";
-    let output = typecheck(source);
-    let has_bounds_err = output
-        .errors
-        .iter()
-        .any(|e| matches!(e.kind, TypeErrorKind::BoundsNotSatisfied));
-    assert!(
-        has_bounds_err,
-        "channel<Rc<i64>> should fail with BoundsNotSatisfied; got: {:#?}",
         output.errors
     );
 }
@@ -222,9 +184,10 @@ fn duplex_missing_generic_args_rejected() {
     );
 }
 
-/// Calling `channel(16)` with no generic args must fail similarly.
+/// `channel(16)` is no longer a builtin; the name is unresolved and must fail.
+/// The canonical constructor is `std::channel::channel.new(capacity)`.
 #[test]
-fn channel_missing_generic_args_rejected() {
+fn channel_builtin_is_removed_unresolved() {
     let source = r"
         fn main() {
             let (s, r) = channel(16);
@@ -233,7 +196,7 @@ fn channel_missing_generic_args_rejected() {
     let output = typecheck(source);
     assert!(
         !output.errors.is_empty(),
-        "channel(16) without generic args must produce an error; got: {:#?}",
+        "channel(16) must fail after builtin removal; got: {:#?}",
         output.errors
     );
 }

@@ -1,0 +1,153 @@
+//! Construction and match coverage for distributed error taxonomy enums.
+
+import std::link_monitor::{MonitorError, PartitionPolicy};
+import std::testing;
+
+fn send_error_id(err: SendError) -> i64 {
+    match err {
+        SendError::Full => 1,
+        SendError::Closed => 2,
+        SendError::NodeRoutingNotWired => 3,
+        SendError::Partition => 4,
+        SendError::StaleRef => 5,
+        SendError::LocalShutdown => 6,
+        SendError::Cancelled => 7,
+        SendError::VersionMismatch => 8,
+        SendError::Unauthorized => 9,
+        SendError::Backpressure => 10,
+    }
+}
+
+fn lookup_error_id(err: LookupError) -> i64 {
+    match err {
+        LookupError::NotFound => 1,
+        LookupError::Partition => 2,
+        LookupError::Timeout => 3,
+        LookupError::StaleRef => 4,
+        LookupError::Cancelled => 5,
+        LookupError::LocalShutdown => 6,
+        LookupError::VersionMismatch => 7,
+        LookupError::Unauthorized => 8,
+    }
+}
+
+fn ask_error_id(err: AskError) -> i64 {
+    match err {
+        AskError::NoError => 1,
+        AskError::NodeNotRunning => 2,
+        AskError::RoutingFailed => 3,
+        AskError::EncodeFailed => 4,
+        AskError::SendFailed => 5,
+        AskError::Timeout => 6,
+        AskError::ConnectionDropped => 7,
+        AskError::PayloadSizeMismatch => 8,
+        AskError::WorkerAtCapacity => 9,
+        AskError::ActorStopped => 10,
+        AskError::MailboxFull => 11,
+        AskError::OrphanedAsk => 12,
+        AskError::NoRunnableWork => 13,
+        AskError::DecodeFailure => 14,
+        AskError::Partition => 15,
+        AskError::StaleRef => 16,
+        AskError::Cancelled => 17,
+        AskError::LocalShutdown => 18,
+        AskError::VersionMismatch => 19,
+        AskError::Unauthorized => 20,
+        AskError::Backpressure => 21,
+        AskError::MonitorLost => 22,
+    }
+}
+
+fn monitor_error_id(err: MonitorError) -> i64 {
+    match err {
+        MonitorError::Partition => 1,
+        MonitorError::StaleRef => 2,
+        MonitorError::LocalShutdown => 3,
+        MonitorError::VersionMismatch => 4,
+        MonitorError::Unauthorized => 5,
+        MonitorError::DecodeFailure => 6,
+        MonitorError::MonitorLost => 7,
+    }
+}
+
+fn partition_policy_id(policy: PartitionPolicy) -> i64 {
+    match policy {
+        PartitionPolicy::FailFast => 1,
+        PartitionPolicy::Deadline => 2,
+        PartitionPolicy::MonitorLost => 3,
+        PartitionPolicy::CrashLinked => 4,
+        PartitionPolicy::Quarantine => 5,
+    }
+}
+
+#[test]
+fn test_send_error_taxonomy_variants() {
+    testing.assert_eq(send_error_id(SendError::Full), 1);
+    testing.assert_eq(send_error_id(SendError::Closed), 2);
+    testing.assert_eq(send_error_id(SendError::NodeRoutingNotWired), 3);
+    testing.assert_eq(send_error_id(SendError::Partition), 4);
+    testing.assert_eq(send_error_id(SendError::StaleRef), 5);
+    testing.assert_eq(send_error_id(SendError::LocalShutdown), 6);
+    testing.assert_eq(send_error_id(SendError::Cancelled), 7);
+    testing.assert_eq(send_error_id(SendError::VersionMismatch), 8);
+    testing.assert_eq(send_error_id(SendError::Unauthorized), 9);
+    testing.assert_eq(send_error_id(SendError::Backpressure), 10);
+}
+
+#[test]
+fn test_lookup_error_taxonomy_variants() {
+    testing.assert_eq(lookup_error_id(LookupError::NotFound), 1);
+    testing.assert_eq(lookup_error_id(LookupError::Partition), 2);
+    testing.assert_eq(lookup_error_id(LookupError::Timeout), 3);
+    testing.assert_eq(lookup_error_id(LookupError::StaleRef), 4);
+    testing.assert_eq(lookup_error_id(LookupError::Cancelled), 5);
+    testing.assert_eq(lookup_error_id(LookupError::LocalShutdown), 6);
+    testing.assert_eq(lookup_error_id(LookupError::VersionMismatch), 7);
+    testing.assert_eq(lookup_error_id(LookupError::Unauthorized), 8);
+}
+
+#[test]
+fn test_ask_error_taxonomy_variants() {
+    testing.assert_eq(ask_error_id(AskError::NoError), 1);
+    testing.assert_eq(ask_error_id(AskError::NodeNotRunning), 2);
+    testing.assert_eq(ask_error_id(AskError::RoutingFailed), 3);
+    testing.assert_eq(ask_error_id(AskError::EncodeFailed), 4);
+    testing.assert_eq(ask_error_id(AskError::SendFailed), 5);
+    testing.assert_eq(ask_error_id(AskError::Timeout), 6);
+    testing.assert_eq(ask_error_id(AskError::ConnectionDropped), 7);
+    testing.assert_eq(ask_error_id(AskError::PayloadSizeMismatch), 8);
+    testing.assert_eq(ask_error_id(AskError::WorkerAtCapacity), 9);
+    testing.assert_eq(ask_error_id(AskError::ActorStopped), 10);
+    testing.assert_eq(ask_error_id(AskError::MailboxFull), 11);
+    testing.assert_eq(ask_error_id(AskError::OrphanedAsk), 12);
+    testing.assert_eq(ask_error_id(AskError::NoRunnableWork), 13);
+    testing.assert_eq(ask_error_id(AskError::DecodeFailure), 14);
+    testing.assert_eq(ask_error_id(AskError::Partition), 15);
+    testing.assert_eq(ask_error_id(AskError::StaleRef), 16);
+    testing.assert_eq(ask_error_id(AskError::Cancelled), 17);
+    testing.assert_eq(ask_error_id(AskError::LocalShutdown), 18);
+    testing.assert_eq(ask_error_id(AskError::VersionMismatch), 19);
+    testing.assert_eq(ask_error_id(AskError::Unauthorized), 20);
+    testing.assert_eq(ask_error_id(AskError::Backpressure), 21);
+    testing.assert_eq(ask_error_id(AskError::MonitorLost), 22);
+}
+
+#[test]
+fn test_monitor_error_taxonomy_variants() {
+    testing.assert_eq(monitor_error_id(MonitorError::Partition), 1);
+    testing.assert_eq(monitor_error_id(MonitorError::StaleRef), 2);
+    testing.assert_eq(monitor_error_id(MonitorError::LocalShutdown), 3);
+    testing.assert_eq(monitor_error_id(MonitorError::VersionMismatch), 4);
+    testing.assert_eq(monitor_error_id(MonitorError::Unauthorized), 5);
+    testing.assert_eq(monitor_error_id(MonitorError::DecodeFailure), 6);
+    testing.assert_eq(monitor_error_id(MonitorError::MonitorLost), 7);
+}
+
+#[test]
+fn test_partition_policy_variants() {
+    testing.assert_eq(partition_policy_id(PartitionPolicy::FailFast), 1);
+    testing.assert_eq(partition_policy_id(PartitionPolicy::Deadline), 2);
+    testing.assert_eq(partition_policy_id(PartitionPolicy::MonitorLost), 3);
+    testing.assert_eq(partition_policy_id(PartitionPolicy::CrashLinked), 4);
+    testing.assert_eq(partition_policy_id(PartitionPolicy::Quarantine), 5);
+}

@@ -1,640 +1,7505 @@
-fn main() -> i64 [conv=default]
-  locals:
-    _0: Option<i64>
-    _1: i64
-    _2: i64
-    _3: Option<i64>
-    _4: i64
-    _5: i64
-    _6: i64
-    _7: bool
-    _8: i64
-    _9: Option<f64>
-    _10: i64
-    _11: f64
-    _12: Option<f64>
-    _13: f64
-    _14: i64
-    _15: i64
-    _16: bool
-    _17: f64
-    _18: Option<i32>
-    _19: i64
-    _20: i32
-    _21: Option<i32>
-    _22: i32
-    _23: i64
-    _24: i64
-    _25: bool
-    _26: i32
-    _27: i32
-    _28: Option<i64>
-    _29: i64
-    _30: i64
-    _31: Option<i64>
-    _32: i64
-    _33: i64
-    _34: i64
-    _35: bool
-    _36: i64
-    _37: bool
-    _38: i64
-    _39: i64
-    _40: Option<f64>
-    _41: i64
-    _42: f64
-    _43: Option<f64>
-    _44: f64
-    _45: i64
-    _46: i64
-    _47: bool
-    _48: i64
-    _49: bool
-    _50: f64
-    _51: f64
-    _52: Option<i32>
-    _53: i64
-    _54: i32
-    _55: Option<i32>
-    _56: i32
-    _57: i64
-    _58: i64
-    _59: bool
-    _60: i64
-    _61: bool
-    _62: i32
-    _63: i32
-    _64: i32
-    _65: Result<i64, string>
-    _66: i64
-    _67: i64
-    _68: Result<i64, string>
-    _69: i64
-    _70: i64
-    _71: i64
-    _72: bool
-    _73: i64
-    _74: Result<f64, string>
-    _75: i64
-    _76: f64
-    _77: Result<f64, string>
-    _78: f64
-    _79: i64
-    _80: i64
-    _81: bool
-    _82: f64
-    _83: Result<i32, string>
-    _84: i64
-    _85: i32
-    _86: Result<i32, string>
-    _87: i32
-    _88: i64
-    _89: i64
-    _90: bool
-    _91: i32
-    _92: i32
-    _93: Result<i64, string>
-    _94: i64
-    _95: i64
-    _96: Result<i64, string>
-    _97: i64
-    _98: i64
-    _99: i64
-    _100: bool
-    _101: i64
-    _102: bool
-    _103: i64
-    _104: i64
-    _105: Result<i32, string>
-    _106: i64
-    _107: i32
-    _108: Result<i32, string>
-    _109: i32
-    _110: i64
-    _111: i64
-    _112: bool
-    _113: i64
-    _114: bool
-    _115: i32
-    _116: i32
-    _117: i32
-    _118: Result<i64, string>
-    _119: i64
-    _120: i64
-    _121: Result<i64, string>
-    _122: bool
-    _123: i64
-    _124: i64
-    _125: bool
-    _126: i64
-    _127: bool
-    _128: bool
-    _129: bool
-    _130: bool
-    _131: bool
-    _132: i64
-    _133: i64
-    _134: bool
-    _135: i64
-    _136: bool
-    _137: bool
-    _138: bool
-    _139: bool
-    _140: string
-    _141: string
-    _142: string
-    _143: string
-    _144: string
-    _145: i64
-    _146: i64
-    _147: i64
-    _148: bool
-    _149: i64
-    _150: i64
-    _151: bool
-    _152: i64
-    _153: i64
-    _154: bool
-    _155: i64
-    _156: i64
-  bb0:
-    stmt: bind BindingId(0) a site=SiteId(0) ty=Option<i64>
-    stmt: use BindingId(0) a site=SiteId(4) ty=Option<i64> intent=Consume
-    _1 = const.i64 0
-    mtag0 = move _1
-    _2 = const.i64 9
-    mvar0.0.0 = move _2
-    _3 = move _0
-    _5 = move etag3
-    _6 = const.i64 0
-    _7 = icmp.eq _5 _6
-    branch _7 ? bb2 : bb3
-  bb1:
-    call println_i64(_4) -> bb4
-  bb2:
-    stmt: bind BindingId(1) __option_unwrap_value site=SiteId(5) ty=i64
-    stmt: use BindingId(1) __option_unwrap_value site=SiteId(5) ty=i64 intent=Read
-    _8 = move mvar3.0.0
-    _4 = move _8
-    goto bb1
-  bb3:
-    trap(ExhaustivenessFallthrough)
-  bb4:
-    stmt: eval site=SiteId(2) ty=()
-    stmt: bind BindingId(2) b site=SiteId(7) ty=Option<f64>
-    stmt: use BindingId(2) b site=SiteId(11) ty=Option<f64> intent=Consume
-    _10 = const.i64 0
-    mtag9 = move _10
-    _11 = const.f64 0x3ff8000000000000
-    mvar9.0.0 = move _11
-    _12 = move _9
-    _14 = move etag12
-    _15 = const.i64 0
-    _16 = icmp.eq _14 _15
-    branch _16 ? bb6 : bb7
-  bb5:
-    call println_f64(_13) -> bb8
-  bb6:
-    stmt: bind BindingId(3) __option_unwrap_value site=SiteId(12) ty=f64
-    stmt: use BindingId(3) __option_unwrap_value site=SiteId(12) ty=f64 intent=Read
-    _17 = move mvar12.0.0
-    _13 = move _17
-    goto bb5
-  bb7:
-    trap(ExhaustivenessFallthrough)
-  bb8:
-    stmt: eval site=SiteId(9) ty=()
-    stmt: bind BindingId(4) c site=SiteId(14) ty=Option<i32>
-    stmt: use BindingId(4) c site=SiteId(17) ty=Option<i32> intent=Consume
-    _19 = const.i64 0
-    mtag18 = move _19
-    _20 = const.i64 3
-    mvar18.0.0 = move _20
-    _21 = move _18
-    _23 = move etag21
-    _24 = const.i64 0
-    _25 = icmp.eq _23 _24
-    branch _25 ? bb10 : bb11
-  bb9:
-    stmt: bind BindingId(6) cv site=SiteId(16) ty=i32
-    stmt: bind BindingId(7) d site=SiteId(19) ty=Option<i64>
-    stmt: use BindingId(7) d site=SiteId(23) ty=Option<i64> intent=Consume
-    _27 = move _22
-    _29 = const.i64 0
-    mtag28 = move _29
-    _30 = const.i64 9
-    mvar28.0.0 = move _30
-    _31 = move _28
-    _33 = move etag31
-    _34 = const.i64 0
-    _35 = icmp.eq _33 _34
-    branch _35 ? bb13 : bb16
-  bb10:
-    stmt: bind BindingId(5) __option_unwrap_value site=SiteId(18) ty=i32
-    stmt: use BindingId(5) __option_unwrap_value site=SiteId(18) ty=i32 intent=Read
-    _26 = move mvar21.0.0
-    _22 = move _26
-    goto bb9
-  bb11:
-    trap(ExhaustivenessFallthrough)
-  bb12:
-    call println_i64(_32) -> bb17
-  bb13:
-    stmt: bind BindingId(8) __option_unwrap_or_value site=SiteId(25) ty=i64
-    stmt: use BindingId(8) __option_unwrap_or_value site=SiteId(25) ty=i64 intent=Read
-    _38 = move mvar31.0.0
-    _32 = move _38
-    goto bb12
-  bb14:
-    _39 = const.i64 0
-    _32 = move _39
-    goto bb12
-  bb15:
-    trap(ExhaustivenessFallthrough)
-  bb16:
-    _36 = const.i64 1
-    _37 = icmp.eq _33 _36
-    branch _37 ? bb14 : bb15
-  bb17:
-    stmt: eval site=SiteId(21) ty=()
-    stmt: bind BindingId(9) e site=SiteId(27) ty=Option<f64>
-    stmt: use BindingId(9) e site=SiteId(31) ty=Option<f64> intent=Consume
-    _41 = const.i64 0
-    mtag40 = move _41
-    _42 = const.f64 0x4004000000000000
-    mvar40.0.0 = move _42
-    _43 = move _40
-    _45 = move etag43
-    _46 = const.i64 0
-    _47 = icmp.eq _45 _46
-    branch _47 ? bb19 : bb22
-  bb18:
-    call println_f64(_44) -> bb23
-  bb19:
-    stmt: bind BindingId(10) __option_unwrap_or_value site=SiteId(33) ty=f64
-    stmt: use BindingId(10) __option_unwrap_or_value site=SiteId(33) ty=f64 intent=Read
-    _50 = move mvar43.0.0
-    _44 = move _50
-    goto bb18
-  bb20:
-    _51 = const.f64 0x0000000000000000
-    _44 = move _51
-    goto bb18
-  bb21:
-    trap(ExhaustivenessFallthrough)
-  bb22:
-    _48 = const.i64 1
-    _49 = icmp.eq _45 _48
-    branch _49 ? bb20 : bb21
-  bb23:
-    stmt: eval site=SiteId(29) ty=()
-    stmt: bind BindingId(11) g site=SiteId(35) ty=Option<i32>
-    stmt: use BindingId(11) g site=SiteId(38) ty=Option<i32> intent=Consume
-    _53 = const.i64 0
-    mtag52 = move _53
-    _54 = const.i64 4
-    mvar52.0.0 = move _54
-    _55 = move _52
-    _57 = move etag55
-    _58 = const.i64 0
-    _59 = icmp.eq _57 _58
-    branch _59 ? bb25 : bb28
-  bb24:
-    stmt: bind BindingId(13) gv site=SiteId(37) ty=i32
-    stmt: bind BindingId(14) r site=SiteId(41) ty=Result<i64, string>
-    stmt: use BindingId(14) r site=SiteId(45) ty=Result<i64, string> intent=Consume
-    _64 = move _56
-    _66 = const.i64 0
-    mtag65 = move _66
-    _67 = const.i64 7
-    mvar65.0.0 = move _67
-    _68 = move _65
-    _70 = move etag68
-    _71 = const.i64 0
-    _72 = icmp.eq _70 _71
-    branch _72 ? bb30 : bb31
-  bb25:
-    stmt: bind BindingId(12) __option_unwrap_or_value site=SiteId(40) ty=i32
-    stmt: use BindingId(12) __option_unwrap_or_value site=SiteId(40) ty=i32 intent=Read
-    _62 = move mvar55.0.0
-    _56 = move _62
-    goto bb24
-  bb26:
-    _63 = const.i64 7
-    _56 = move _63
-    goto bb24
-  bb27:
-    trap(ExhaustivenessFallthrough)
-  bb28:
-    _60 = const.i64 1
-    _61 = icmp.eq _57 _60
-    branch _61 ? bb26 : bb27
-  bb29:
-    call println_i64(_69) -> bb32
-  bb30:
-    stmt: bind BindingId(15) __result_unwrap_value site=SiteId(46) ty=i64
-    stmt: use BindingId(15) __result_unwrap_value site=SiteId(46) ty=i64 intent=Read
-    _73 = move mvar68.0.0
-    _69 = move _73
-    goto bb29
-  bb31:
-    trap(ExhaustivenessFallthrough)
-  bb32:
-    stmt: eval site=SiteId(43) ty=()
-    stmt: bind BindingId(16) rf site=SiteId(48) ty=Result<f64, string>
-    stmt: use BindingId(16) rf site=SiteId(52) ty=Result<f64, string> intent=Consume
-    _75 = const.i64 0
-    mtag74 = move _75
-    _76 = const.f64 0x3ff0000000000000
-    mvar74.0.0 = move _76
-    _77 = move _74
-    _79 = move etag77
-    _80 = const.i64 0
-    _81 = icmp.eq _79 _80
-    branch _81 ? bb34 : bb35
-  bb33:
-    call println_f64(_78) -> bb36
-  bb34:
-    stmt: bind BindingId(17) __result_unwrap_value site=SiteId(53) ty=f64
-    stmt: use BindingId(17) __result_unwrap_value site=SiteId(53) ty=f64 intent=Read
-    _82 = move mvar77.0.0
-    _78 = move _82
-    goto bb33
-  bb35:
-    trap(ExhaustivenessFallthrough)
-  bb36:
-    stmt: eval site=SiteId(50) ty=()
-    stmt: bind BindingId(18) ri site=SiteId(55) ty=Result<i32, string>
-    stmt: use BindingId(18) ri site=SiteId(58) ty=Result<i32, string> intent=Consume
-    _84 = const.i64 0
-    mtag83 = move _84
-    _85 = const.i64 2
-    mvar83.0.0 = move _85
-    _86 = move _83
-    _88 = move etag86
-    _89 = const.i64 0
-    _90 = icmp.eq _88 _89
-    branch _90 ? bb38 : bb39
-  bb37:
-    stmt: bind BindingId(20) riv site=SiteId(57) ty=i32
-    stmt: bind BindingId(21) ru site=SiteId(60) ty=Result<i64, string>
-    stmt: use BindingId(21) ru site=SiteId(64) ty=Result<i64, string> intent=Consume
-    _92 = move _87
-    _94 = const.i64 0
-    mtag93 = move _94
-    _95 = const.i64 8
-    mvar93.0.0 = move _95
-    _96 = move _93
-    _98 = move etag96
-    _99 = const.i64 0
-    _100 = icmp.eq _98 _99
-    branch _100 ? bb41 : bb44
-  bb38:
-    stmt: bind BindingId(19) __result_unwrap_value site=SiteId(59) ty=i32
-    stmt: use BindingId(19) __result_unwrap_value site=SiteId(59) ty=i32 intent=Read
-    _91 = move mvar86.0.0
-    _87 = move _91
-    goto bb37
-  bb39:
-    trap(ExhaustivenessFallthrough)
-  bb40:
-    call println_i64(_97) -> bb45
-  bb41:
-    stmt: bind BindingId(22) __result_unwrap_or_value site=SiteId(66) ty=i64
-    stmt: use BindingId(22) __result_unwrap_or_value site=SiteId(66) ty=i64 intent=Read
-    _103 = move mvar96.0.0
-    _97 = move _103
-    goto bb40
-  bb42:
-    _104 = const.i64 0
-    _97 = move _104
-    goto bb40
-  bb43:
-    trap(ExhaustivenessFallthrough)
-  bb44:
-    _101 = const.i64 1
-    _102 = icmp.eq _98 _101
-    branch _102 ? bb42 : bb43
-  bb45:
-    stmt: eval site=SiteId(62) ty=()
-    stmt: bind BindingId(23) rv site=SiteId(68) ty=Result<i32, string>
-    stmt: use BindingId(23) rv site=SiteId(71) ty=Result<i32, string> intent=Consume
-    _106 = const.i64 0
-    mtag105 = move _106
-    _107 = const.i64 8
-    mvar105.0.0 = move _107
-    _108 = move _105
-    _110 = move etag108
-    _111 = const.i64 0
-    _112 = icmp.eq _110 _111
-    branch _112 ? bb47 : bb50
-  bb46:
-    stmt: bind BindingId(25) rvv site=SiteId(70) ty=i32
-    stmt: bind BindingId(26) p site=SiteId(74) ty=Result<i64, string>
-    stmt: use BindingId(26) p site=SiteId(77) ty=Result<i64, string> intent=Read
-    _117 = move _109
-    _119 = const.i64 0
-    mtag118 = move _119
-    _120 = const.i64 7
-    mvar118.0.0 = move _120
-    _121 = move _118
-    _123 = move etag121
-    _124 = const.i64 0
-    _125 = icmp.eq _123 _124
-    branch _125 ? bb52 : bb55
-  bb47:
-    stmt: bind BindingId(24) __result_unwrap_or_value site=SiteId(73) ty=i32
-    stmt: use BindingId(24) __result_unwrap_or_value site=SiteId(73) ty=i32 intent=Read
-    _115 = move mvar108.0.0
-    _109 = move _115
-    goto bb46
-  bb48:
-    _116 = const.i64 0
-    _109 = move _116
-    goto bb46
-  bb49:
-    trap(ExhaustivenessFallthrough)
-  bb50:
-    _113 = const.i64 1
-    _114 = icmp.eq _110 _113
-    branch _114 ? bb48 : bb49
-  bb51:
-    stmt: bind BindingId(27) ok site=SiteId(76) ty=bool
-    stmt: use BindingId(26) p site=SiteId(81) ty=Result<i64, string> intent=Read
-    _130 = move _122
-    _132 = move etag121
-    _133 = const.i64 0
-    _134 = icmp.eq _132 _133
-    branch _134 ? bb57 : bb60
-  bb52:
-    _128 = const.i64 1
-    _122 = move _128
-    goto bb51
-  bb53:
-    _129 = const.i64 0
-    _122 = move _129
-    goto bb51
-  bb54:
-    trap(ExhaustivenessFallthrough)
-  bb55:
-    _126 = const.i64 1
-    _127 = icmp.eq _123 _126
-    branch _127 ? bb53 : bb54
-  bb56:
-    stmt: bind BindingId(28) err site=SiteId(80) ty=bool
-    stmt: use BindingId(27) ok site=SiteId(86) ty=bool intent=Read
-    _139 = move _131
-    _140 = call to_string_bool(_130) -> bb61
-  bb57:
-    _137 = const.i64 0
-    _131 = move _137
-    goto bb56
-  bb58:
-    _138 = const.i64 1
-    _131 = move _138
-    goto bb56
-  bb59:
-    trap(ExhaustivenessFallthrough)
-  bb60:
-    _135 = const.i64 1
-    _136 = icmp.eq _132 _135
-    branch _136 ? bb58 : bb59
-  bb61:
-    _141 = string_lit " "
-    _142 = call string_concat(_140, _141) -> bb62
-  bb62:
-    stmt: use BindingId(28) err site=SiteId(90) ty=bool intent=Read
-    _143 = call to_string_bool(_139) -> bb63
-  bb63:
-    _144 = call string_concat(_142, _143) -> bb64
-  bb64:
-    call println_str(_144) -> bb65
-  bb65:
-    stmt: eval site=SiteId(84) ty=()
-    stmt: use BindingId(6) cv site=SiteId(102) ty=i32 intent=Read
-    stmt: use BindingId(13) gv site=SiteId(104) ty=i32 intent=Read
-    _145 = cast _27 i32 -> i64
-    _146 = cast _64 i32 -> i64
-    _147 ovf=_148 = add.checked.s _145 _146
-    branch _148 ? bb66 : bb67
-  bb66:
-    trap(IntegerOverflow)
-  bb67:
-    stmt: use BindingId(20) riv site=SiteId(106) ty=i32 intent=Read
-    _149 = cast _92 i32 -> i64
-    _150 ovf=_151 = add.checked.s _147 _149
-    branch _151 ? bb68 : bb69
-  bb68:
-    trap(IntegerOverflow)
-  bb69:
-    stmt: use BindingId(25) rvv site=SiteId(108) ty=i32 intent=Read
-    _152 = cast _117 i32 -> i64
-    _153 ovf=_154 = add.checked.s _150 _152
-    branch _154 ? bb70 : bb71
-  bb70:
-    trap(IntegerOverflow)
-  bb71:
-    stmt: bind BindingId(29) keep site=SiteId(98) ty=i64
-    stmt: use BindingId(29) keep site=SiteId(110) ty=i64 intent=Read
-    _155 = move _153
-    call println_i64(_155) -> bb72
-  bb72:
-    stmt: eval site=SiteId(109) ty=()
-    stmt: return site=Some(SiteId(112)) ty=i64
-    _156 = const.i64 0
-    ret = move _156
-    return
-
-fn i32::fmt(i32) -> string [conv=default]
-  locals:
-    _0: i32
-    _1: string
-  bb0:
-    stmt: use BindingId(33) val site=SiteId(142) ty=i32 intent=Read
-    _1 = call to_string_i32(_0) -> bb1
-  bb1:
-    stmt: return site=Some(SiteId(141)) ty=string
-    ret = move _1
-    return
-
-fn i64::fmt(i64) -> string [conv=default]
-  locals:
-    _0: i64
-    _1: string
-  bb0:
-    stmt: use BindingId(34) val site=SiteId(145) ty=i64 intent=Read
-    _1 = call to_string_i64(_0) -> bb1
-  bb1:
-    stmt: return site=Some(SiteId(144)) ty=string
-    ret = move _1
-    return
-
-fn u32::fmt(u32) -> string [conv=default]
-  locals:
-    _0: u32
-    _1: string
-  bb0:
-    stmt: use BindingId(35) val site=SiteId(148) ty=u32 intent=Read
-    _1 = call to_string_u32(_0) -> bb1
-  bb1:
-    stmt: return site=Some(SiteId(147)) ty=string
-    ret = move _1
-    return
-
-fn u64::fmt(u64) -> string [conv=default]
-  locals:
-    _0: u64
-    _1: string
-  bb0:
-    stmt: use BindingId(36) val site=SiteId(151) ty=u64 intent=Read
-    _1 = call to_string_u64(_0) -> bb1
-  bb1:
-    stmt: return site=Some(SiteId(150)) ty=string
-    ret = move _1
-    return
-
-fn bool::fmt(bool) -> string [conv=default]
-  locals:
-    _0: bool
-    _1: string
-  bb0:
-    stmt: use BindingId(37) val site=SiteId(154) ty=bool intent=Read
-    _1 = call to_string_bool(_0) -> bb1
-  bb1:
-    stmt: return site=Some(SiteId(153)) ty=string
-    ret = move _1
-    return
-
-fn char::fmt(char) -> string [conv=default]
-  locals:
-    _0: char
-    _1: string
-  bb0:
-    stmt: use BindingId(38) val site=SiteId(157) ty=char intent=Read
-    _1 = call to_string_char(_0) -> bb1
-  bb1:
-    stmt: return site=Some(SiteId(156)) ty=string
-    ret = move _1
-    return
-
-fn f64::fmt(f64) -> string [conv=default]
-  locals:
-    _0: f64
-    _1: string
-  bb0:
-    stmt: use BindingId(39) val site=SiteId(160) ty=f64 intent=Read
-    _1 = call to_string_f64(_0) -> bb1
-  bb1:
-    stmt: return site=Some(SiteId(159)) ty=string
-    ret = move _1
-    return
-
-fn string::fmt(string) -> string [conv=default]
-  locals:
-    _0: string
-  bb0:
-    stmt: use BindingId(40) val site=SiteId(162) ty=string intent=Read
-    stmt: return site=Some(SiteId(162)) ty=string
-    ret = move _0
-    return
-
+RawMirFunction {
+    name: "main",
+    return_ty: I64,
+    call_conv: Default,
+    params: [],
+    locals: [
+        Named {
+            name: "Option",
+            args: [
+                I64,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        Named {
+            name: "Option",
+            args: [
+                I64,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        I64,
+        Bool,
+        I64,
+        Named {
+            name: "Option",
+            args: [
+                F64,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        F64,
+        Named {
+            name: "Option",
+            args: [
+                F64,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        F64,
+        I64,
+        I64,
+        Bool,
+        F64,
+        Named {
+            name: "Option",
+            args: [
+                I32,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I32,
+        Named {
+            name: "Option",
+            args: [
+                I32,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        I32,
+        I64,
+        I64,
+        Bool,
+        I32,
+        I32,
+        Named {
+            name: "Option",
+            args: [
+                I64,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        Named {
+            name: "Option",
+            args: [
+                I64,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        I64,
+        Bool,
+        I64,
+        Bool,
+        I64,
+        I64,
+        Named {
+            name: "Option",
+            args: [
+                F64,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        F64,
+        Named {
+            name: "Option",
+            args: [
+                F64,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        F64,
+        I64,
+        I64,
+        Bool,
+        I64,
+        Bool,
+        F64,
+        F64,
+        Named {
+            name: "Option",
+            args: [
+                I32,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I32,
+        Named {
+            name: "Option",
+            args: [
+                I32,
+            ],
+            builtin: Some(
+                Option,
+            ),
+            is_opaque: false,
+        },
+        I32,
+        I64,
+        I64,
+        Bool,
+        I64,
+        Bool,
+        I32,
+        I32,
+        I32,
+        Named {
+            name: "Result",
+            args: [
+                I64,
+                String,
+            ],
+            builtin: Some(
+                Result,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        Named {
+            name: "Result",
+            args: [
+                I64,
+                String,
+            ],
+            builtin: Some(
+                Result,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        I64,
+        Bool,
+        I64,
+        Named {
+            name: "Result",
+            args: [
+                F64,
+                String,
+            ],
+            builtin: Some(
+                Result,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        F64,
+        Named {
+            name: "Result",
+            args: [
+                F64,
+                String,
+            ],
+            builtin: Some(
+                Result,
+            ),
+            is_opaque: false,
+        },
+        F64,
+        I64,
+        I64,
+        Bool,
+        F64,
+        Named {
+            name: "Result",
+            args: [
+                I32,
+                String,
+            ],
+            builtin: Some(
+                Result,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I32,
+        Named {
+            name: "Result",
+            args: [
+                I32,
+                String,
+            ],
+            builtin: Some(
+                Result,
+            ),
+            is_opaque: false,
+        },
+        I32,
+        I64,
+        I64,
+        Bool,
+        I32,
+        I32,
+        Named {
+            name: "Result",
+            args: [
+                I64,
+                String,
+            ],
+            builtin: Some(
+                Result,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        Named {
+            name: "Result",
+            args: [
+                I64,
+                String,
+            ],
+            builtin: Some(
+                Result,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        I64,
+        Bool,
+        I64,
+        Bool,
+        I64,
+        I64,
+        Named {
+            name: "Result",
+            args: [
+                I32,
+                String,
+            ],
+            builtin: Some(
+                Result,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I32,
+        Named {
+            name: "Result",
+            args: [
+                I32,
+                String,
+            ],
+            builtin: Some(
+                Result,
+            ),
+            is_opaque: false,
+        },
+        I32,
+        I64,
+        I64,
+        Bool,
+        I64,
+        Bool,
+        I32,
+        I32,
+        I32,
+        Named {
+            name: "Result",
+            args: [
+                I64,
+                String,
+            ],
+            builtin: Some(
+                Result,
+            ),
+            is_opaque: false,
+        },
+        I64,
+        I64,
+        Named {
+            name: "Result",
+            args: [
+                I64,
+                String,
+            ],
+            builtin: Some(
+                Result,
+            ),
+            is_opaque: false,
+        },
+        Bool,
+        I64,
+        I64,
+        Bool,
+        I64,
+        Bool,
+        Bool,
+        Bool,
+        Bool,
+        Bool,
+        I64,
+        I64,
+        Bool,
+        I64,
+        Bool,
+        Bool,
+        Bool,
+        Bool,
+        String,
+        String,
+        String,
+        String,
+        String,
+        I64,
+        I64,
+        I64,
+        Bool,
+        I64,
+        I64,
+        Bool,
+        I64,
+        I64,
+        Bool,
+        I64,
+        I64,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "a",
+                    site: SiteId(
+                        0,
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            I64,
+                        ],
+                        builtin: Some(
+                            Option,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        0,
+                    ),
+                    name: "a",
+                    site: SiteId(
+                        4,
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            I64,
+                        ],
+                        builtin: Some(
+                            Option,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Consume,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        1,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: MachineTag(
+                        0,
+                    ),
+                    src: Local(
+                        1,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        2,
+                    ),
+                    value: 9,
+                },
+                Move {
+                    dest: MachineVariant {
+                        local: 0,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                    src: Local(
+                        2,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        3,
+                    ),
+                    src: Local(
+                        0,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        5,
+                    ),
+                    src: EnumTag(
+                        3,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        6,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        7,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        5,
+                    ),
+                    rhs: Local(
+                        6,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    7,
+                ),
+                then_target: 2,
+                else_target: 3,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        4,
+                    ),
+                ],
+                dest: None,
+                next: 4,
+            },
+        },
+        BasicBlock {
+            id: 2,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        1,
+                    ),
+                    name: "__option_unwrap_value",
+                    site: SiteId(
+                        5,
+                    ),
+                    ty: I64,
+                },
+                Use {
+                    binding: BindingId(
+                        1,
+                    ),
+                    name: "__option_unwrap_value",
+                    site: SiteId(
+                        5,
+                    ),
+                    ty: I64,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        8,
+                    ),
+                    src: MachineVariant {
+                        local: 3,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Move {
+                    dest: Local(
+                        4,
+                    ),
+                    src: Local(
+                        8,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 1,
+            },
+        },
+        BasicBlock {
+            id: 3,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 4,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        2,
+                    ),
+                    ty: Unit,
+                },
+                Bind {
+                    binding: BindingId(
+                        2,
+                    ),
+                    name: "b",
+                    site: SiteId(
+                        7,
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Option,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        2,
+                    ),
+                    name: "b",
+                    site: SiteId(
+                        11,
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Option,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Consume,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        10,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: MachineTag(
+                        9,
+                    ),
+                    src: Local(
+                        10,
+                    ),
+                },
+                FloatLit {
+                    dest: Local(
+                        11,
+                    ),
+                    value_bits: 4609434218613702656,
+                    width: F64,
+                },
+                Move {
+                    dest: MachineVariant {
+                        local: 9,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                    src: Local(
+                        11,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        12,
+                    ),
+                    src: Local(
+                        9,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        14,
+                    ),
+                    src: EnumTag(
+                        12,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        15,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        16,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        14,
+                    ),
+                    rhs: Local(
+                        15,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    16,
+                ),
+                then_target: 6,
+                else_target: 7,
+            },
+        },
+        BasicBlock {
+            id: 5,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_f64",
+                builtin: None,
+                args: [
+                    Local(
+                        13,
+                    ),
+                ],
+                dest: None,
+                next: 8,
+            },
+        },
+        BasicBlock {
+            id: 6,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        3,
+                    ),
+                    name: "__option_unwrap_value",
+                    site: SiteId(
+                        12,
+                    ),
+                    ty: F64,
+                },
+                Use {
+                    binding: BindingId(
+                        3,
+                    ),
+                    name: "__option_unwrap_value",
+                    site: SiteId(
+                        12,
+                    ),
+                    ty: F64,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        17,
+                    ),
+                    src: MachineVariant {
+                        local: 12,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Move {
+                    dest: Local(
+                        13,
+                    ),
+                    src: Local(
+                        17,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 5,
+            },
+        },
+        BasicBlock {
+            id: 7,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 8,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        9,
+                    ),
+                    ty: Unit,
+                },
+                Bind {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "c",
+                    site: SiteId(
+                        14,
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            I32,
+                        ],
+                        builtin: Some(
+                            Option,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        4,
+                    ),
+                    name: "c",
+                    site: SiteId(
+                        17,
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            I32,
+                        ],
+                        builtin: Some(
+                            Option,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Consume,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        19,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: MachineTag(
+                        18,
+                    ),
+                    src: Local(
+                        19,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        20,
+                    ),
+                    value: 3,
+                },
+                Move {
+                    dest: MachineVariant {
+                        local: 18,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                    src: Local(
+                        20,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        21,
+                    ),
+                    src: Local(
+                        18,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        23,
+                    ),
+                    src: EnumTag(
+                        21,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        24,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        25,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        23,
+                    ),
+                    rhs: Local(
+                        24,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    25,
+                ),
+                then_target: 10,
+                else_target: 11,
+            },
+        },
+        BasicBlock {
+            id: 9,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        6,
+                    ),
+                    name: "cv",
+                    site: SiteId(
+                        16,
+                    ),
+                    ty: I32,
+                },
+                Bind {
+                    binding: BindingId(
+                        7,
+                    ),
+                    name: "d",
+                    site: SiteId(
+                        19,
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            I64,
+                        ],
+                        builtin: Some(
+                            Option,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        7,
+                    ),
+                    name: "d",
+                    site: SiteId(
+                        23,
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            I64,
+                        ],
+                        builtin: Some(
+                            Option,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Consume,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        27,
+                    ),
+                    src: Local(
+                        22,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        29,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: MachineTag(
+                        28,
+                    ),
+                    src: Local(
+                        29,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        30,
+                    ),
+                    value: 9,
+                },
+                Move {
+                    dest: MachineVariant {
+                        local: 28,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                    src: Local(
+                        30,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        31,
+                    ),
+                    src: Local(
+                        28,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        33,
+                    ),
+                    src: EnumTag(
+                        31,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        34,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        35,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        33,
+                    ),
+                    rhs: Local(
+                        34,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    35,
+                ),
+                then_target: 13,
+                else_target: 16,
+            },
+        },
+        BasicBlock {
+            id: 10,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "__option_unwrap_value",
+                    site: SiteId(
+                        18,
+                    ),
+                    ty: I32,
+                },
+                Use {
+                    binding: BindingId(
+                        5,
+                    ),
+                    name: "__option_unwrap_value",
+                    site: SiteId(
+                        18,
+                    ),
+                    ty: I32,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        26,
+                    ),
+                    src: MachineVariant {
+                        local: 21,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Move {
+                    dest: Local(
+                        22,
+                    ),
+                    src: Local(
+                        26,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 9,
+            },
+        },
+        BasicBlock {
+            id: 11,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 12,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        32,
+                    ),
+                ],
+                dest: None,
+                next: 17,
+            },
+        },
+        BasicBlock {
+            id: 13,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        8,
+                    ),
+                    name: "__option_unwrap_or_value",
+                    site: SiteId(
+                        25,
+                    ),
+                    ty: I64,
+                },
+                Use {
+                    binding: BindingId(
+                        8,
+                    ),
+                    name: "__option_unwrap_or_value",
+                    site: SiteId(
+                        25,
+                    ),
+                    ty: I64,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        38,
+                    ),
+                    src: MachineVariant {
+                        local: 31,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Move {
+                    dest: Local(
+                        32,
+                    ),
+                    src: Local(
+                        38,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 12,
+            },
+        },
+        BasicBlock {
+            id: 14,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        39,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: Local(
+                        32,
+                    ),
+                    src: Local(
+                        39,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 12,
+            },
+        },
+        BasicBlock {
+            id: 15,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 16,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        36,
+                    ),
+                    value: 1,
+                },
+                IntCmp {
+                    dest: Local(
+                        37,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        33,
+                    ),
+                    rhs: Local(
+                        36,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    37,
+                ),
+                then_target: 14,
+                else_target: 15,
+            },
+        },
+        BasicBlock {
+            id: 17,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        21,
+                    ),
+                    ty: Unit,
+                },
+                Bind {
+                    binding: BindingId(
+                        9,
+                    ),
+                    name: "e",
+                    site: SiteId(
+                        27,
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Option,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        9,
+                    ),
+                    name: "e",
+                    site: SiteId(
+                        31,
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            F64,
+                        ],
+                        builtin: Some(
+                            Option,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Consume,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        41,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: MachineTag(
+                        40,
+                    ),
+                    src: Local(
+                        41,
+                    ),
+                },
+                FloatLit {
+                    dest: Local(
+                        42,
+                    ),
+                    value_bits: 4612811918334230528,
+                    width: F64,
+                },
+                Move {
+                    dest: MachineVariant {
+                        local: 40,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                    src: Local(
+                        42,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        43,
+                    ),
+                    src: Local(
+                        40,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        45,
+                    ),
+                    src: EnumTag(
+                        43,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        46,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        47,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        45,
+                    ),
+                    rhs: Local(
+                        46,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    47,
+                ),
+                then_target: 19,
+                else_target: 22,
+            },
+        },
+        BasicBlock {
+            id: 18,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_f64",
+                builtin: None,
+                args: [
+                    Local(
+                        44,
+                    ),
+                ],
+                dest: None,
+                next: 23,
+            },
+        },
+        BasicBlock {
+            id: 19,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        10,
+                    ),
+                    name: "__option_unwrap_or_value",
+                    site: SiteId(
+                        33,
+                    ),
+                    ty: F64,
+                },
+                Use {
+                    binding: BindingId(
+                        10,
+                    ),
+                    name: "__option_unwrap_or_value",
+                    site: SiteId(
+                        33,
+                    ),
+                    ty: F64,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        50,
+                    ),
+                    src: MachineVariant {
+                        local: 43,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Move {
+                    dest: Local(
+                        44,
+                    ),
+                    src: Local(
+                        50,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 18,
+            },
+        },
+        BasicBlock {
+            id: 20,
+            statements: [],
+            instructions: [
+                FloatLit {
+                    dest: Local(
+                        51,
+                    ),
+                    value_bits: 0,
+                    width: F64,
+                },
+                Move {
+                    dest: Local(
+                        44,
+                    ),
+                    src: Local(
+                        51,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 18,
+            },
+        },
+        BasicBlock {
+            id: 21,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 22,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        48,
+                    ),
+                    value: 1,
+                },
+                IntCmp {
+                    dest: Local(
+                        49,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        45,
+                    ),
+                    rhs: Local(
+                        48,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    49,
+                ),
+                then_target: 20,
+                else_target: 21,
+            },
+        },
+        BasicBlock {
+            id: 23,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        29,
+                    ),
+                    ty: Unit,
+                },
+                Bind {
+                    binding: BindingId(
+                        11,
+                    ),
+                    name: "g",
+                    site: SiteId(
+                        35,
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            I32,
+                        ],
+                        builtin: Some(
+                            Option,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        11,
+                    ),
+                    name: "g",
+                    site: SiteId(
+                        38,
+                    ),
+                    ty: Named {
+                        name: "Option",
+                        args: [
+                            I32,
+                        ],
+                        builtin: Some(
+                            Option,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Consume,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        53,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: MachineTag(
+                        52,
+                    ),
+                    src: Local(
+                        53,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        54,
+                    ),
+                    value: 4,
+                },
+                Move {
+                    dest: MachineVariant {
+                        local: 52,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                    src: Local(
+                        54,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        55,
+                    ),
+                    src: Local(
+                        52,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        57,
+                    ),
+                    src: EnumTag(
+                        55,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        58,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        59,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        57,
+                    ),
+                    rhs: Local(
+                        58,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    59,
+                ),
+                then_target: 25,
+                else_target: 28,
+            },
+        },
+        BasicBlock {
+            id: 24,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        13,
+                    ),
+                    name: "gv",
+                    site: SiteId(
+                        37,
+                    ),
+                    ty: I32,
+                },
+                Bind {
+                    binding: BindingId(
+                        14,
+                    ),
+                    name: "r",
+                    site: SiteId(
+                        41,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I64,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        14,
+                    ),
+                    name: "r",
+                    site: SiteId(
+                        45,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I64,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Consume,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        64,
+                    ),
+                    src: Local(
+                        56,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        66,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: MachineTag(
+                        65,
+                    ),
+                    src: Local(
+                        66,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        67,
+                    ),
+                    value: 7,
+                },
+                Move {
+                    dest: MachineVariant {
+                        local: 65,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                    src: Local(
+                        67,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        68,
+                    ),
+                    src: Local(
+                        65,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        70,
+                    ),
+                    src: EnumTag(
+                        68,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        71,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        72,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        70,
+                    ),
+                    rhs: Local(
+                        71,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    72,
+                ),
+                then_target: 30,
+                else_target: 31,
+            },
+        },
+        BasicBlock {
+            id: 25,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        12,
+                    ),
+                    name: "__option_unwrap_or_value",
+                    site: SiteId(
+                        40,
+                    ),
+                    ty: I32,
+                },
+                Use {
+                    binding: BindingId(
+                        12,
+                    ),
+                    name: "__option_unwrap_or_value",
+                    site: SiteId(
+                        40,
+                    ),
+                    ty: I32,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        62,
+                    ),
+                    src: MachineVariant {
+                        local: 55,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Move {
+                    dest: Local(
+                        56,
+                    ),
+                    src: Local(
+                        62,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 24,
+            },
+        },
+        BasicBlock {
+            id: 26,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        63,
+                    ),
+                    value: 7,
+                },
+                Move {
+                    dest: Local(
+                        56,
+                    ),
+                    src: Local(
+                        63,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 24,
+            },
+        },
+        BasicBlock {
+            id: 27,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 28,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        60,
+                    ),
+                    value: 1,
+                },
+                IntCmp {
+                    dest: Local(
+                        61,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        57,
+                    ),
+                    rhs: Local(
+                        60,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    61,
+                ),
+                then_target: 26,
+                else_target: 27,
+            },
+        },
+        BasicBlock {
+            id: 29,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        69,
+                    ),
+                ],
+                dest: None,
+                next: 32,
+            },
+        },
+        BasicBlock {
+            id: 30,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        15,
+                    ),
+                    name: "__result_unwrap_value",
+                    site: SiteId(
+                        46,
+                    ),
+                    ty: I64,
+                },
+                Use {
+                    binding: BindingId(
+                        15,
+                    ),
+                    name: "__result_unwrap_value",
+                    site: SiteId(
+                        46,
+                    ),
+                    ty: I64,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        73,
+                    ),
+                    src: MachineVariant {
+                        local: 68,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Move {
+                    dest: Local(
+                        69,
+                    ),
+                    src: Local(
+                        73,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 29,
+            },
+        },
+        BasicBlock {
+            id: 31,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 32,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        43,
+                    ),
+                    ty: Unit,
+                },
+                Bind {
+                    binding: BindingId(
+                        16,
+                    ),
+                    name: "rf",
+                    site: SiteId(
+                        48,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            F64,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        16,
+                    ),
+                    name: "rf",
+                    site: SiteId(
+                        52,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            F64,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Consume,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        75,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: MachineTag(
+                        74,
+                    ),
+                    src: Local(
+                        75,
+                    ),
+                },
+                FloatLit {
+                    dest: Local(
+                        76,
+                    ),
+                    value_bits: 4607182418800017408,
+                    width: F64,
+                },
+                Move {
+                    dest: MachineVariant {
+                        local: 74,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                    src: Local(
+                        76,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        77,
+                    ),
+                    src: Local(
+                        74,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        79,
+                    ),
+                    src: EnumTag(
+                        77,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        80,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        81,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        79,
+                    ),
+                    rhs: Local(
+                        80,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    81,
+                ),
+                then_target: 34,
+                else_target: 35,
+            },
+        },
+        BasicBlock {
+            id: 33,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_f64",
+                builtin: None,
+                args: [
+                    Local(
+                        78,
+                    ),
+                ],
+                dest: None,
+                next: 36,
+            },
+        },
+        BasicBlock {
+            id: 34,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        17,
+                    ),
+                    name: "__result_unwrap_value",
+                    site: SiteId(
+                        53,
+                    ),
+                    ty: F64,
+                },
+                Use {
+                    binding: BindingId(
+                        17,
+                    ),
+                    name: "__result_unwrap_value",
+                    site: SiteId(
+                        53,
+                    ),
+                    ty: F64,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        82,
+                    ),
+                    src: MachineVariant {
+                        local: 77,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Move {
+                    dest: Local(
+                        78,
+                    ),
+                    src: Local(
+                        82,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 33,
+            },
+        },
+        BasicBlock {
+            id: 35,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 36,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        50,
+                    ),
+                    ty: Unit,
+                },
+                Bind {
+                    binding: BindingId(
+                        18,
+                    ),
+                    name: "ri",
+                    site: SiteId(
+                        55,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I32,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        18,
+                    ),
+                    name: "ri",
+                    site: SiteId(
+                        58,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I32,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Consume,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        84,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: MachineTag(
+                        83,
+                    ),
+                    src: Local(
+                        84,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        85,
+                    ),
+                    value: 2,
+                },
+                Move {
+                    dest: MachineVariant {
+                        local: 83,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                    src: Local(
+                        85,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        86,
+                    ),
+                    src: Local(
+                        83,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        88,
+                    ),
+                    src: EnumTag(
+                        86,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        89,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        90,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        88,
+                    ),
+                    rhs: Local(
+                        89,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    90,
+                ),
+                then_target: 38,
+                else_target: 39,
+            },
+        },
+        BasicBlock {
+            id: 37,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        20,
+                    ),
+                    name: "riv",
+                    site: SiteId(
+                        57,
+                    ),
+                    ty: I32,
+                },
+                Bind {
+                    binding: BindingId(
+                        21,
+                    ),
+                    name: "ru",
+                    site: SiteId(
+                        60,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I64,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        21,
+                    ),
+                    name: "ru",
+                    site: SiteId(
+                        64,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I64,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Consume,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        92,
+                    ),
+                    src: Local(
+                        87,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        94,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: MachineTag(
+                        93,
+                    ),
+                    src: Local(
+                        94,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        95,
+                    ),
+                    value: 8,
+                },
+                Move {
+                    dest: MachineVariant {
+                        local: 93,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                    src: Local(
+                        95,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        96,
+                    ),
+                    src: Local(
+                        93,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        98,
+                    ),
+                    src: EnumTag(
+                        96,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        99,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        100,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        98,
+                    ),
+                    rhs: Local(
+                        99,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    100,
+                ),
+                then_target: 41,
+                else_target: 44,
+            },
+        },
+        BasicBlock {
+            id: 38,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        19,
+                    ),
+                    name: "__result_unwrap_value",
+                    site: SiteId(
+                        59,
+                    ),
+                    ty: I32,
+                },
+                Use {
+                    binding: BindingId(
+                        19,
+                    ),
+                    name: "__result_unwrap_value",
+                    site: SiteId(
+                        59,
+                    ),
+                    ty: I32,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        91,
+                    ),
+                    src: MachineVariant {
+                        local: 86,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Move {
+                    dest: Local(
+                        87,
+                    ),
+                    src: Local(
+                        91,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 37,
+            },
+        },
+        BasicBlock {
+            id: 39,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 40,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        97,
+                    ),
+                ],
+                dest: None,
+                next: 45,
+            },
+        },
+        BasicBlock {
+            id: 41,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        22,
+                    ),
+                    name: "__result_unwrap_or_value",
+                    site: SiteId(
+                        66,
+                    ),
+                    ty: I64,
+                },
+                Use {
+                    binding: BindingId(
+                        22,
+                    ),
+                    name: "__result_unwrap_or_value",
+                    site: SiteId(
+                        66,
+                    ),
+                    ty: I64,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        103,
+                    ),
+                    src: MachineVariant {
+                        local: 96,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Move {
+                    dest: Local(
+                        97,
+                    ),
+                    src: Local(
+                        103,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 40,
+            },
+        },
+        BasicBlock {
+            id: 42,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        104,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: Local(
+                        97,
+                    ),
+                    src: Local(
+                        104,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 40,
+            },
+        },
+        BasicBlock {
+            id: 43,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 44,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        101,
+                    ),
+                    value: 1,
+                },
+                IntCmp {
+                    dest: Local(
+                        102,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        98,
+                    ),
+                    rhs: Local(
+                        101,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    102,
+                ),
+                then_target: 42,
+                else_target: 43,
+            },
+        },
+        BasicBlock {
+            id: 45,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        62,
+                    ),
+                    ty: Unit,
+                },
+                Bind {
+                    binding: BindingId(
+                        23,
+                    ),
+                    name: "rv",
+                    site: SiteId(
+                        68,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I32,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        23,
+                    ),
+                    name: "rv",
+                    site: SiteId(
+                        71,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I32,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Consume,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        106,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: MachineTag(
+                        105,
+                    ),
+                    src: Local(
+                        106,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        107,
+                    ),
+                    value: 8,
+                },
+                Move {
+                    dest: MachineVariant {
+                        local: 105,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                    src: Local(
+                        107,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        108,
+                    ),
+                    src: Local(
+                        105,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        110,
+                    ),
+                    src: EnumTag(
+                        108,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        111,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        112,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        110,
+                    ),
+                    rhs: Local(
+                        111,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    112,
+                ),
+                then_target: 47,
+                else_target: 50,
+            },
+        },
+        BasicBlock {
+            id: 46,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        25,
+                    ),
+                    name: "rvv",
+                    site: SiteId(
+                        70,
+                    ),
+                    ty: I32,
+                },
+                Bind {
+                    binding: BindingId(
+                        26,
+                    ),
+                    name: "p",
+                    site: SiteId(
+                        74,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I64,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                },
+                Use {
+                    binding: BindingId(
+                        26,
+                    ),
+                    name: "p",
+                    site: SiteId(
+                        77,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I64,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        117,
+                    ),
+                    src: Local(
+                        109,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        119,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: MachineTag(
+                        118,
+                    ),
+                    src: Local(
+                        119,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        120,
+                    ),
+                    value: 7,
+                },
+                Move {
+                    dest: MachineVariant {
+                        local: 118,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                    src: Local(
+                        120,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        121,
+                    ),
+                    src: Local(
+                        118,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        123,
+                    ),
+                    src: EnumTag(
+                        121,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        124,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        125,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        123,
+                    ),
+                    rhs: Local(
+                        124,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    125,
+                ),
+                then_target: 52,
+                else_target: 55,
+            },
+        },
+        BasicBlock {
+            id: 47,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        24,
+                    ),
+                    name: "__result_unwrap_or_value",
+                    site: SiteId(
+                        73,
+                    ),
+                    ty: I32,
+                },
+                Use {
+                    binding: BindingId(
+                        24,
+                    ),
+                    name: "__result_unwrap_or_value",
+                    site: SiteId(
+                        73,
+                    ),
+                    ty: I32,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        115,
+                    ),
+                    src: MachineVariant {
+                        local: 108,
+                        variant_idx: 0,
+                        field_idx: 0,
+                    },
+                },
+                Move {
+                    dest: Local(
+                        109,
+                    ),
+                    src: Local(
+                        115,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 46,
+            },
+        },
+        BasicBlock {
+            id: 48,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        116,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: Local(
+                        109,
+                    ),
+                    src: Local(
+                        116,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 46,
+            },
+        },
+        BasicBlock {
+            id: 49,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 50,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        113,
+                    ),
+                    value: 1,
+                },
+                IntCmp {
+                    dest: Local(
+                        114,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        110,
+                    ),
+                    rhs: Local(
+                        113,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    114,
+                ),
+                then_target: 48,
+                else_target: 49,
+            },
+        },
+        BasicBlock {
+            id: 51,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        27,
+                    ),
+                    name: "ok",
+                    site: SiteId(
+                        76,
+                    ),
+                    ty: Bool,
+                },
+                Use {
+                    binding: BindingId(
+                        26,
+                    ),
+                    name: "p",
+                    site: SiteId(
+                        81,
+                    ),
+                    ty: Named {
+                        name: "Result",
+                        args: [
+                            I64,
+                            String,
+                        ],
+                        builtin: Some(
+                            Result,
+                        ),
+                        is_opaque: false,
+                    },
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        130,
+                    ),
+                    src: Local(
+                        122,
+                    ),
+                },
+                Move {
+                    dest: Local(
+                        132,
+                    ),
+                    src: EnumTag(
+                        121,
+                    ),
+                },
+                ConstI64 {
+                    dest: Local(
+                        133,
+                    ),
+                    value: 0,
+                },
+                IntCmp {
+                    dest: Local(
+                        134,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        132,
+                    ),
+                    rhs: Local(
+                        133,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    134,
+                ),
+                then_target: 57,
+                else_target: 60,
+            },
+        },
+        BasicBlock {
+            id: 52,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        128,
+                    ),
+                    value: 1,
+                },
+                Move {
+                    dest: Local(
+                        122,
+                    ),
+                    src: Local(
+                        128,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 51,
+            },
+        },
+        BasicBlock {
+            id: 53,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        129,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: Local(
+                        122,
+                    ),
+                    src: Local(
+                        129,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 51,
+            },
+        },
+        BasicBlock {
+            id: 54,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 55,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        126,
+                    ),
+                    value: 1,
+                },
+                IntCmp {
+                    dest: Local(
+                        127,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        123,
+                    ),
+                    rhs: Local(
+                        126,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    127,
+                ),
+                then_target: 53,
+                else_target: 54,
+            },
+        },
+        BasicBlock {
+            id: 56,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        28,
+                    ),
+                    name: "err",
+                    site: SiteId(
+                        80,
+                    ),
+                    ty: Bool,
+                },
+                Use {
+                    binding: BindingId(
+                        27,
+                    ),
+                    name: "ok",
+                    site: SiteId(
+                        86,
+                    ),
+                    ty: Bool,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        139,
+                    ),
+                    src: Local(
+                        131,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "to_string_bool",
+                builtin: None,
+                args: [
+                    Local(
+                        130,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        140,
+                    ),
+                ),
+                next: 61,
+            },
+        },
+        BasicBlock {
+            id: 57,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        137,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: Local(
+                        131,
+                    ),
+                    src: Local(
+                        137,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 56,
+            },
+        },
+        BasicBlock {
+            id: 58,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        138,
+                    ),
+                    value: 1,
+                },
+                Move {
+                    dest: Local(
+                        131,
+                    ),
+                    src: Local(
+                        138,
+                    ),
+                },
+            ],
+            terminator: Goto {
+                target: 56,
+            },
+        },
+        BasicBlock {
+            id: 59,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: ExhaustivenessFallthrough,
+            },
+        },
+        BasicBlock {
+            id: 60,
+            statements: [],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        135,
+                    ),
+                    value: 1,
+                },
+                IntCmp {
+                    dest: Local(
+                        136,
+                    ),
+                    pred: Eq,
+                    lhs: Local(
+                        132,
+                    ),
+                    rhs: Local(
+                        135,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    136,
+                ),
+                then_target: 58,
+                else_target: 59,
+            },
+        },
+        BasicBlock {
+            id: 61,
+            statements: [],
+            instructions: [
+                StringLit {
+                    bytes: [
+                        32,
+                    ],
+                    dest: Local(
+                        141,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "string_concat",
+                builtin: None,
+                args: [
+                    Local(
+                        140,
+                    ),
+                    Local(
+                        141,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        142,
+                    ),
+                ),
+                next: 62,
+            },
+        },
+        BasicBlock {
+            id: 62,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        28,
+                    ),
+                    name: "err",
+                    site: SiteId(
+                        90,
+                    ),
+                    ty: Bool,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_bool",
+                builtin: None,
+                args: [
+                    Local(
+                        139,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        143,
+                    ),
+                ),
+                next: 63,
+            },
+        },
+        BasicBlock {
+            id: 63,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "string_concat",
+                builtin: None,
+                args: [
+                    Local(
+                        142,
+                    ),
+                    Local(
+                        143,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        144,
+                    ),
+                ),
+                next: 64,
+            },
+        },
+        BasicBlock {
+            id: 64,
+            statements: [],
+            instructions: [],
+            terminator: Call {
+                callee: "println_str",
+                builtin: None,
+                args: [
+                    Local(
+                        144,
+                    ),
+                ],
+                dest: None,
+                next: 65,
+            },
+        },
+        BasicBlock {
+            id: 65,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        84,
+                    ),
+                    ty: Unit,
+                },
+                Use {
+                    binding: BindingId(
+                        6,
+                    ),
+                    name: "cv",
+                    site: SiteId(
+                        102,
+                    ),
+                    ty: I32,
+                    intent: Read,
+                },
+                Use {
+                    binding: BindingId(
+                        13,
+                    ),
+                    name: "gv",
+                    site: SiteId(
+                        104,
+                    ),
+                    ty: I32,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                NumericCast {
+                    dest: Local(
+                        145,
+                    ),
+                    src: Local(
+                        27,
+                    ),
+                    from_ty: I32,
+                    to_ty: I64,
+                },
+                NumericCast {
+                    dest: Local(
+                        146,
+                    ),
+                    src: Local(
+                        64,
+                    ),
+                    from_ty: I32,
+                    to_ty: I64,
+                },
+                IntArithChecked {
+                    op: Add,
+                    signed: Signed,
+                    dest: Local(
+                        147,
+                    ),
+                    lhs: Local(
+                        145,
+                    ),
+                    rhs: Local(
+                        146,
+                    ),
+                    overflow_flag: Local(
+                        148,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    148,
+                ),
+                then_target: 66,
+                else_target: 67,
+            },
+        },
+        BasicBlock {
+            id: 66,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IntegerOverflow,
+            },
+        },
+        BasicBlock {
+            id: 67,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        20,
+                    ),
+                    name: "riv",
+                    site: SiteId(
+                        106,
+                    ),
+                    ty: I32,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                NumericCast {
+                    dest: Local(
+                        149,
+                    ),
+                    src: Local(
+                        92,
+                    ),
+                    from_ty: I32,
+                    to_ty: I64,
+                },
+                IntArithChecked {
+                    op: Add,
+                    signed: Signed,
+                    dest: Local(
+                        150,
+                    ),
+                    lhs: Local(
+                        147,
+                    ),
+                    rhs: Local(
+                        149,
+                    ),
+                    overflow_flag: Local(
+                        151,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    151,
+                ),
+                then_target: 68,
+                else_target: 69,
+            },
+        },
+        BasicBlock {
+            id: 68,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IntegerOverflow,
+            },
+        },
+        BasicBlock {
+            id: 69,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        25,
+                    ),
+                    name: "rvv",
+                    site: SiteId(
+                        108,
+                    ),
+                    ty: I32,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                NumericCast {
+                    dest: Local(
+                        152,
+                    ),
+                    src: Local(
+                        117,
+                    ),
+                    from_ty: I32,
+                    to_ty: I64,
+                },
+                IntArithChecked {
+                    op: Add,
+                    signed: Signed,
+                    dest: Local(
+                        153,
+                    ),
+                    lhs: Local(
+                        150,
+                    ),
+                    rhs: Local(
+                        152,
+                    ),
+                    overflow_flag: Local(
+                        154,
+                    ),
+                },
+            ],
+            terminator: Branch {
+                cond: Local(
+                    154,
+                ),
+                then_target: 70,
+                else_target: 71,
+            },
+        },
+        BasicBlock {
+            id: 70,
+            statements: [],
+            instructions: [],
+            terminator: Trap {
+                kind: IntegerOverflow,
+            },
+        },
+        BasicBlock {
+            id: 71,
+            statements: [
+                Bind {
+                    binding: BindingId(
+                        29,
+                    ),
+                    name: "keep",
+                    site: SiteId(
+                        98,
+                    ),
+                    ty: I64,
+                },
+                Use {
+                    binding: BindingId(
+                        29,
+                    ),
+                    name: "keep",
+                    site: SiteId(
+                        110,
+                    ),
+                    ty: I64,
+                    intent: Read,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: Local(
+                        155,
+                    ),
+                    src: Local(
+                        153,
+                    ),
+                },
+            ],
+            terminator: Call {
+                callee: "println_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        155,
+                    ),
+                ],
+                dest: None,
+                next: 72,
+            },
+        },
+        BasicBlock {
+            id: 72,
+            statements: [
+                Evaluate {
+                    site: SiteId(
+                        109,
+                    ),
+                    ty: Unit,
+                },
+                Return {
+                    site: Some(
+                        SiteId(
+                            112,
+                        ),
+                    ),
+                    ty: I64,
+                },
+            ],
+            instructions: [
+                ConstI64 {
+                    dest: Local(
+                        156,
+                    ),
+                    value: 0,
+                },
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        156,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                0,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                1,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                2,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                3,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                4,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                5,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                7,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    F64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                8,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                9,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                10,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                11,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    F64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                12,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                14,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I32,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                15,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                16,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                17,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I32,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                18,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                19,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                20,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                21,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                22,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                23,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                25,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                24,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                27,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    F64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                28,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                29,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                30,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                31,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    F64,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                33,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                32,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                35,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I32,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                36,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                37,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                38,
+            ),
+            ty: Named {
+                name: "Option",
+                args: [
+                    I32,
+                ],
+                builtin: Some(
+                    Option,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                40,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                39,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                41,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                42,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                43,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                44,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                45,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                46,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                48,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    F64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                49,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                50,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                51,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                52,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    F64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                53,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                55,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I32,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                56,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                57,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                58,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I32,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                59,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                60,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                61,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                62,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                63,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                64,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                66,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                65,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                68,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I32,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                69,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                70,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                71,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I32,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                73,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                72,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                74,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                75,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                76,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                77,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                78,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                79,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                80,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                81,
+            ),
+            ty: Named {
+                name: "Result",
+                args: [
+                    I64,
+                    String,
+                ],
+                builtin: Some(
+                    Result,
+                ),
+                is_opaque: false,
+            },
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                82,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                83,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                84,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                85,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                94,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                88,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                86,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                89,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                92,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                90,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                98,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Consume,
+            strategy: Move,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                99,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                100,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                101,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                102,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                103,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                104,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                105,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                106,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                107,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                108,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                109,
+            ),
+            ty: Unit,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                110,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                112,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            509,
+            1453,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            532,
+            566,
+        ),
+        (
+            0,
+            1,
+        ): (
+            532,
+            566,
+        ),
+        (
+            0,
+            2,
+        ): (
+            532,
+            566,
+        ),
+        (
+            0,
+            3,
+        ): (
+            532,
+            566,
+        ),
+        (
+            0,
+            4,
+        ): (
+            532,
+            566,
+        ),
+        (
+            0,
+            5,
+        ): (
+            566,
+            585,
+        ),
+        (
+            0,
+            6,
+        ): (
+            566,
+            585,
+        ),
+        (
+            0,
+            7,
+        ): (
+            566,
+            585,
+        ),
+        (
+            0,
+            8,
+        ): (
+            566,
+            585,
+        ),
+        (
+            1,
+            0,
+        ): (
+            566,
+            585,
+        ),
+        (
+            2,
+            0,
+        ): (
+            566,
+            585,
+        ),
+        (
+            2,
+            1,
+        ): (
+            566,
+            585,
+        ),
+        (
+            2,
+            2,
+        ): (
+            566,
+            585,
+        ),
+        (
+            3,
+            0,
+        ): (
+            566,
+            585,
+        ),
+        (
+            4,
+            0,
+        ): (
+            591,
+            627,
+        ),
+        (
+            4,
+            1,
+        ): (
+            591,
+            627,
+        ),
+        (
+            4,
+            2,
+        ): (
+            591,
+            627,
+        ),
+        (
+            4,
+            3,
+        ): (
+            591,
+            627,
+        ),
+        (
+            4,
+            4,
+        ): (
+            591,
+            627,
+        ),
+        (
+            4,
+            5,
+        ): (
+            627,
+            646,
+        ),
+        (
+            4,
+            6,
+        ): (
+            627,
+            646,
+        ),
+        (
+            4,
+            7,
+        ): (
+            627,
+            646,
+        ),
+        (
+            4,
+            8,
+        ): (
+            627,
+            646,
+        ),
+        (
+            5,
+            0,
+        ): (
+            627,
+            646,
+        ),
+        (
+            6,
+            0,
+        ): (
+            627,
+            646,
+        ),
+        (
+            6,
+            1,
+        ): (
+            627,
+            646,
+        ),
+        (
+            6,
+            2,
+        ): (
+            627,
+            646,
+        ),
+        (
+            7,
+            0,
+        ): (
+            627,
+            646,
+        ),
+        (
+            8,
+            0,
+        ): (
+            652,
+            686,
+        ),
+        (
+            8,
+            1,
+        ): (
+            652,
+            686,
+        ),
+        (
+            8,
+            2,
+        ): (
+            652,
+            686,
+        ),
+        (
+            8,
+            3,
+        ): (
+            652,
+            686,
+        ),
+        (
+            8,
+            4,
+        ): (
+            652,
+            686,
+        ),
+        (
+            8,
+            5,
+        ): (
+            686,
+            711,
+        ),
+        (
+            8,
+            6,
+        ): (
+            686,
+            711,
+        ),
+        (
+            8,
+            7,
+        ): (
+            686,
+            711,
+        ),
+        (
+            8,
+            8,
+        ): (
+            686,
+            711,
+        ),
+        (
+            9,
+            0,
+        ): (
+            686,
+            711,
+        ),
+        (
+            9,
+            1,
+        ): (
+            711,
+            745,
+        ),
+        (
+            9,
+            2,
+        ): (
+            711,
+            745,
+        ),
+        (
+            9,
+            3,
+        ): (
+            711,
+            745,
+        ),
+        (
+            9,
+            4,
+        ): (
+            711,
+            745,
+        ),
+        (
+            9,
+            5,
+        ): (
+            711,
+            745,
+        ),
+        (
+            9,
+            6,
+        ): (
+            745,
+            768,
+        ),
+        (
+            9,
+            7,
+        ): (
+            745,
+            768,
+        ),
+        (
+            9,
+            8,
+        ): (
+            745,
+            768,
+        ),
+        (
+            9,
+            9,
+        ): (
+            745,
+            768,
+        ),
+        (
+            10,
+            0,
+        ): (
+            686,
+            711,
+        ),
+        (
+            10,
+            1,
+        ): (
+            686,
+            711,
+        ),
+        (
+            10,
+            2,
+        ): (
+            686,
+            711,
+        ),
+        (
+            11,
+            0,
+        ): (
+            686,
+            711,
+        ),
+        (
+            12,
+            0,
+        ): (
+            745,
+            768,
+        ),
+        (
+            13,
+            0,
+        ): (
+            745,
+            768,
+        ),
+        (
+            13,
+            1,
+        ): (
+            745,
+            768,
+        ),
+        (
+            13,
+            2,
+        ): (
+            745,
+            768,
+        ),
+        (
+            14,
+            0,
+        ): (
+            745,
+            768,
+        ),
+        (
+            14,
+            1,
+        ): (
+            745,
+            768,
+        ),
+        (
+            14,
+            2,
+        ): (
+            745,
+            768,
+        ),
+        (
+            15,
+            0,
+        ): (
+            745,
+            768,
+        ),
+        (
+            16,
+            0,
+        ): (
+            745,
+            768,
+        ),
+        (
+            16,
+            1,
+        ): (
+            745,
+            768,
+        ),
+        (
+            16,
+            2,
+        ): (
+            745,
+            768,
+        ),
+        (
+            17,
+            0,
+        ): (
+            774,
+            810,
+        ),
+        (
+            17,
+            1,
+        ): (
+            774,
+            810,
+        ),
+        (
+            17,
+            2,
+        ): (
+            774,
+            810,
+        ),
+        (
+            17,
+            3,
+        ): (
+            774,
+            810,
+        ),
+        (
+            17,
+            4,
+        ): (
+            774,
+            810,
+        ),
+        (
+            17,
+            5,
+        ): (
+            810,
+            835,
+        ),
+        (
+            17,
+            6,
+        ): (
+            810,
+            835,
+        ),
+        (
+            17,
+            7,
+        ): (
+            810,
+            835,
+        ),
+        (
+            17,
+            8,
+        ): (
+            810,
+            835,
+        ),
+        (
+            18,
+            0,
+        ): (
+            810,
+            835,
+        ),
+        (
+            19,
+            0,
+        ): (
+            810,
+            835,
+        ),
+        (
+            19,
+            1,
+        ): (
+            810,
+            835,
+        ),
+        (
+            19,
+            2,
+        ): (
+            810,
+            835,
+        ),
+        (
+            20,
+            0,
+        ): (
+            810,
+            835,
+        ),
+        (
+            20,
+            1,
+        ): (
+            810,
+            835,
+        ),
+        (
+            20,
+            2,
+        ): (
+            810,
+            835,
+        ),
+        (
+            21,
+            0,
+        ): (
+            810,
+            835,
+        ),
+        (
+            22,
+            0,
+        ): (
+            810,
+            835,
+        ),
+        (
+            22,
+            1,
+        ): (
+            810,
+            835,
+        ),
+        (
+            22,
+            2,
+        ): (
+            810,
+            835,
+        ),
+        (
+            23,
+            0,
+        ): (
+            841,
+            875,
+        ),
+        (
+            23,
+            1,
+        ): (
+            841,
+            875,
+        ),
+        (
+            23,
+            2,
+        ): (
+            841,
+            875,
+        ),
+        (
+            23,
+            3,
+        ): (
+            841,
+            875,
+        ),
+        (
+            23,
+            4,
+        ): (
+            841,
+            875,
+        ),
+        (
+            23,
+            5,
+        ): (
+            875,
+            904,
+        ),
+        (
+            23,
+            6,
+        ): (
+            875,
+            904,
+        ),
+        (
+            23,
+            7,
+        ): (
+            875,
+            904,
+        ),
+        (
+            23,
+            8,
+        ): (
+            875,
+            904,
+        ),
+        (
+            24,
+            0,
+        ): (
+            875,
+            904,
+        ),
+        (
+            24,
+            1,
+        ): (
+            904,
+            944,
+        ),
+        (
+            24,
+            2,
+        ): (
+            904,
+            944,
+        ),
+        (
+            24,
+            3,
+        ): (
+            904,
+            944,
+        ),
+        (
+            24,
+            4,
+        ): (
+            904,
+            944,
+        ),
+        (
+            24,
+            5,
+        ): (
+            904,
+            944,
+        ),
+        (
+            24,
+            6,
+        ): (
+            944,
+            963,
+        ),
+        (
+            24,
+            7,
+        ): (
+            944,
+            963,
+        ),
+        (
+            24,
+            8,
+        ): (
+            944,
+            963,
+        ),
+        (
+            24,
+            9,
+        ): (
+            944,
+            963,
+        ),
+        (
+            25,
+            0,
+        ): (
+            875,
+            904,
+        ),
+        (
+            25,
+            1,
+        ): (
+            875,
+            904,
+        ),
+        (
+            25,
+            2,
+        ): (
+            875,
+            904,
+        ),
+        (
+            26,
+            0,
+        ): (
+            875,
+            904,
+        ),
+        (
+            26,
+            1,
+        ): (
+            875,
+            904,
+        ),
+        (
+            26,
+            2,
+        ): (
+            875,
+            904,
+        ),
+        (
+            27,
+            0,
+        ): (
+            875,
+            904,
+        ),
+        (
+            28,
+            0,
+        ): (
+            875,
+            904,
+        ),
+        (
+            28,
+            1,
+        ): (
+            875,
+            904,
+        ),
+        (
+            28,
+            2,
+        ): (
+            875,
+            904,
+        ),
+        (
+            29,
+            0,
+        ): (
+            944,
+            963,
+        ),
+        (
+            30,
+            0,
+        ): (
+            944,
+            963,
+        ),
+        (
+            30,
+            1,
+        ): (
+            944,
+            963,
+        ),
+        (
+            30,
+            2,
+        ): (
+            944,
+            963,
+        ),
+        (
+            31,
+            0,
+        ): (
+            944,
+            963,
+        ),
+        (
+            32,
+            0,
+        ): (
+            969,
+            1012,
+        ),
+        (
+            32,
+            1,
+        ): (
+            969,
+            1012,
+        ),
+        (
+            32,
+            2,
+        ): (
+            969,
+            1012,
+        ),
+        (
+            32,
+            3,
+        ): (
+            969,
+            1012,
+        ),
+        (
+            32,
+            4,
+        ): (
+            969,
+            1012,
+        ),
+        (
+            32,
+            5,
+        ): (
+            1012,
+            1032,
+        ),
+        (
+            32,
+            6,
+        ): (
+            1012,
+            1032,
+        ),
+        (
+            32,
+            7,
+        ): (
+            1012,
+            1032,
+        ),
+        (
+            32,
+            8,
+        ): (
+            1012,
+            1032,
+        ),
+        (
+            33,
+            0,
+        ): (
+            1012,
+            1032,
+        ),
+        (
+            34,
+            0,
+        ): (
+            1012,
+            1032,
+        ),
+        (
+            34,
+            1,
+        ): (
+            1012,
+            1032,
+        ),
+        (
+            34,
+            2,
+        ): (
+            1012,
+            1032,
+        ),
+        (
+            35,
+            0,
+        ): (
+            1012,
+            1032,
+        ),
+        (
+            36,
+            0,
+        ): (
+            1038,
+            1079,
+        ),
+        (
+            36,
+            1,
+        ): (
+            1038,
+            1079,
+        ),
+        (
+            36,
+            2,
+        ): (
+            1038,
+            1079,
+        ),
+        (
+            36,
+            3,
+        ): (
+            1038,
+            1079,
+        ),
+        (
+            36,
+            4,
+        ): (
+            1038,
+            1079,
+        ),
+        (
+            36,
+            5,
+        ): (
+            1079,
+            1106,
+        ),
+        (
+            36,
+            6,
+        ): (
+            1079,
+            1106,
+        ),
+        (
+            36,
+            7,
+        ): (
+            1079,
+            1106,
+        ),
+        (
+            36,
+            8,
+        ): (
+            1079,
+            1106,
+        ),
+        (
+            37,
+            0,
+        ): (
+            1079,
+            1106,
+        ),
+        (
+            37,
+            1,
+        ): (
+            1106,
+            1147,
+        ),
+        (
+            37,
+            2,
+        ): (
+            1106,
+            1147,
+        ),
+        (
+            37,
+            3,
+        ): (
+            1106,
+            1147,
+        ),
+        (
+            37,
+            4,
+        ): (
+            1106,
+            1147,
+        ),
+        (
+            37,
+            5,
+        ): (
+            1106,
+            1147,
+        ),
+        (
+            37,
+            6,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            37,
+            7,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            37,
+            8,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            37,
+            9,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            38,
+            0,
+        ): (
+            1079,
+            1106,
+        ),
+        (
+            38,
+            1,
+        ): (
+            1079,
+            1106,
+        ),
+        (
+            38,
+            2,
+        ): (
+            1079,
+            1106,
+        ),
+        (
+            39,
+            0,
+        ): (
+            1079,
+            1106,
+        ),
+        (
+            40,
+            0,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            41,
+            0,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            41,
+            1,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            41,
+            2,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            42,
+            0,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            42,
+            1,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            42,
+            2,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            43,
+            0,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            44,
+            0,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            44,
+            1,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            44,
+            2,
+        ): (
+            1147,
+            1171,
+        ),
+        (
+            45,
+            0,
+        ): (
+            1177,
+            1218,
+        ),
+        (
+            45,
+            1,
+        ): (
+            1177,
+            1218,
+        ),
+        (
+            45,
+            2,
+        ): (
+            1177,
+            1218,
+        ),
+        (
+            45,
+            3,
+        ): (
+            1177,
+            1218,
+        ),
+        (
+            45,
+            4,
+        ): (
+            1177,
+            1218,
+        ),
+        (
+            45,
+            5,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            45,
+            6,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            45,
+            7,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            45,
+            8,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            46,
+            0,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            46,
+            1,
+        ): (
+            1249,
+            1289,
+        ),
+        (
+            46,
+            2,
+        ): (
+            1249,
+            1289,
+        ),
+        (
+            46,
+            3,
+        ): (
+            1249,
+            1289,
+        ),
+        (
+            46,
+            4,
+        ): (
+            1249,
+            1289,
+        ),
+        (
+            46,
+            5,
+        ): (
+            1249,
+            1289,
+        ),
+        (
+            46,
+            6,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            46,
+            7,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            46,
+            8,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            46,
+            9,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            47,
+            0,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            47,
+            1,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            47,
+            2,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            48,
+            0,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            48,
+            1,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            48,
+            2,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            49,
+            0,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            50,
+            0,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            50,
+            1,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            50,
+            2,
+        ): (
+            1218,
+            1249,
+        ),
+        (
+            51,
+            0,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            51,
+            1,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            51,
+            2,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            51,
+            3,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            51,
+            4,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            52,
+            0,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            52,
+            1,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            52,
+            2,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            53,
+            0,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            53,
+            1,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            53,
+            2,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            54,
+            0,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            55,
+            0,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            55,
+            1,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            55,
+            2,
+        ): (
+            1289,
+            1313,
+        ),
+        (
+            56,
+            0,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            56,
+            1,
+        ): (
+            1339,
+            1361,
+        ),
+        (
+            57,
+            0,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            57,
+            1,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            57,
+            2,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            58,
+            0,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            58,
+            1,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            58,
+            2,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            59,
+            0,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            60,
+            0,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            60,
+            1,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            60,
+            2,
+        ): (
+            1313,
+            1339,
+        ),
+        (
+            61,
+            0,
+        ): (
+            1339,
+            1361,
+        ),
+        (
+            61,
+            1,
+        ): (
+            1339,
+            1361,
+        ),
+        (
+            62,
+            0,
+        ): (
+            1339,
+            1361,
+        ),
+        (
+            63,
+            0,
+        ): (
+            1339,
+            1361,
+        ),
+        (
+            64,
+            0,
+        ): (
+            1339,
+            1361,
+        ),
+        (
+            65,
+            0,
+        ): (
+            1367,
+            1431,
+        ),
+        (
+            65,
+            1,
+        ): (
+            1367,
+            1431,
+        ),
+        (
+            65,
+            2,
+        ): (
+            1367,
+            1431,
+        ),
+        (
+            65,
+            3,
+        ): (
+            1367,
+            1431,
+        ),
+        (
+            66,
+            0,
+        ): (
+            1367,
+            1431,
+        ),
+        (
+            67,
+            0,
+        ): (
+            1367,
+            1431,
+        ),
+        (
+            67,
+            1,
+        ): (
+            1367,
+            1431,
+        ),
+        (
+            67,
+            2,
+        ): (
+            1367,
+            1431,
+        ),
+        (
+            68,
+            0,
+        ): (
+            1367,
+            1431,
+        ),
+        (
+            69,
+            0,
+        ): (
+            1367,
+            1431,
+        ),
+        (
+            69,
+            1,
+        ): (
+            1367,
+            1431,
+        ),
+        (
+            69,
+            2,
+        ): (
+            1367,
+            1431,
+        ),
+        (
+            70,
+            0,
+        ): (
+            1367,
+            1431,
+        ),
+        (
+            71,
+            0,
+        ): (
+            1367,
+            1431,
+        ),
+        (
+            71,
+            1,
+        ): (
+            1431,
+            1444,
+        ),
+        (
+            72,
+            0,
+        ): (
+            1450,
+            1452,
+        ),
+        (
+            72,
+            1,
+        ): (
+            1450,
+            1452,
+        ),
+        (
+            72,
+            2,
+        ): (
+            1450,
+            1452,
+        ),
+    },
+}
+RawMirFunction {
+    name: "i32::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        I32,
+    ],
+    locals: [
+        I32,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        33,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        142,
+                    ),
+                    ty: I32,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_i32",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            141,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                141,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                142,
+            ),
+            ty: I32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            16446,
+            16534,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            16510,
+            16529,
+        ),
+        (
+            1,
+            0,
+        ): (
+            16510,
+            16529,
+        ),
+        (
+            1,
+            1,
+        ): (
+            16510,
+            16529,
+        ),
+    },
+}
+RawMirFunction {
+    name: "i64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        I64,
+    ],
+    locals: [
+        I64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        34,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        145,
+                    ),
+                    ty: I64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_i64",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            144,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                144,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                145,
+            ),
+            ty: I64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            16534,
+            16622,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            16598,
+            16617,
+        ),
+        (
+            1,
+            0,
+        ): (
+            16598,
+            16617,
+        ),
+        (
+            1,
+            1,
+        ): (
+            16598,
+            16617,
+        ),
+    },
+}
+RawMirFunction {
+    name: "u32::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        U32,
+    ],
+    locals: [
+        U32,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        35,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        148,
+                    ),
+                    ty: U32,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_u32",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            147,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                147,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                148,
+            ),
+            ty: U32,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            16796,
+            16884,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            16860,
+            16879,
+        ),
+        (
+            1,
+            0,
+        ): (
+            16860,
+            16879,
+        ),
+        (
+            1,
+            1,
+        ): (
+            16860,
+            16879,
+        ),
+    },
+}
+RawMirFunction {
+    name: "u64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        U64,
+    ],
+    locals: [
+        U64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        36,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        151,
+                    ),
+                    ty: U64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_u64",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            150,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                150,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                151,
+            ),
+            ty: U64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            16884,
+            16972,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            16948,
+            16967,
+        ),
+        (
+            1,
+            0,
+        ): (
+            16948,
+            16967,
+        ),
+        (
+            1,
+            1,
+        ): (
+            16948,
+            16967,
+        ),
+    },
+}
+RawMirFunction {
+    name: "bool::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        Bool,
+    ],
+    locals: [
+        Bool,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        37,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        154,
+                    ),
+                    ty: Bool,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_bool",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            153,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                153,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                154,
+            ),
+            ty: Bool,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            16972,
+            17062,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            17038,
+            17057,
+        ),
+        (
+            1,
+            0,
+        ): (
+            17038,
+            17057,
+        ),
+        (
+            1,
+            1,
+        ): (
+            17038,
+            17057,
+        ),
+    },
+}
+RawMirFunction {
+    name: "char::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        Char,
+    ],
+    locals: [
+        Char,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        38,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        157,
+                    ),
+                    ty: Char,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_char",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            156,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                156,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                157,
+            ),
+            ty: Char,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            17062,
+            17152,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            17128,
+            17147,
+        ),
+        (
+            1,
+            0,
+        ): (
+            17128,
+            17147,
+        ),
+        (
+            1,
+            1,
+        ): (
+            17128,
+            17147,
+        ),
+    },
+}
+RawMirFunction {
+    name: "f64::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        F64,
+    ],
+    locals: [
+        F64,
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        39,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        160,
+                    ),
+                    ty: F64,
+                    intent: Read,
+                },
+            ],
+            instructions: [],
+            terminator: Call {
+                callee: "to_string_f64",
+                builtin: None,
+                args: [
+                    Local(
+                        0,
+                    ),
+                ],
+                dest: Some(
+                    Local(
+                        1,
+                    ),
+                ),
+                next: 1,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: [
+                Return {
+                    site: Some(
+                        SiteId(
+                            159,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        1,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                159,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+        DecisionFact {
+            site: SiteId(
+                160,
+            ),
+            ty: F64,
+            value_class: BitCopy,
+            intent: Read,
+            strategy: BorrowRead,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            17152,
+            17240,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            17216,
+            17235,
+        ),
+        (
+            1,
+            0,
+        ): (
+            17216,
+            17235,
+        ),
+        (
+            1,
+            1,
+        ): (
+            17216,
+            17235,
+        ),
+    },
+}
+RawMirFunction {
+    name: "string::fmt",
+    return_ty: String,
+    call_conv: Default,
+    params: [
+        String,
+    ],
+    locals: [
+        String,
+    ],
+    blocks: [
+        BasicBlock {
+            id: 0,
+            statements: [
+                Use {
+                    binding: BindingId(
+                        40,
+                    ),
+                    name: "val",
+                    site: SiteId(
+                        162,
+                    ),
+                    ty: String,
+                    intent: Read,
+                },
+                Return {
+                    site: Some(
+                        SiteId(
+                            162,
+                        ),
+                    ),
+                    ty: String,
+                },
+            ],
+            instructions: [
+                Move {
+                    dest: ReturnSlot,
+                    src: Local(
+                        0,
+                    ),
+                },
+            ],
+            terminator: Return,
+        },
+    ],
+    decisions: [
+        DecisionFact {
+            site: SiteId(
+                162,
+            ),
+            ty: String,
+            value_class: CowValue,
+            intent: Read,
+            strategy: CowShare,
+            why: "first vertical-slice classifier",
+        },
+    ],
+    intrinsic_id: None,
+    await_deadline_ns: {},
+    lambda_actor_user_param_locals: [],
+    span: Some(
+        (
+            17240,
+            17810,
+        ),
+    ),
+    instr_spans: {
+        (
+            0,
+            0,
+        ): (
+            17310,
+            17318,
+        ),
+        (
+            0,
+            1,
+        ): (
+            17310,
+            17318,
+        ),
+    },
+}

@@ -355,6 +355,7 @@ fn vec_index_mir_wraps_in_pipeline_without_errors() {
         checked_mir: vec![],
         elaborated_mir: vec![],
         diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
         record_layouts: vec![],
         actor_layouts: vec![],

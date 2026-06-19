@@ -2309,6 +2309,7 @@ pub fn lower_hir_module_with_facts(
         checked_mir,
         elaborated_mir,
         diagnostics,
+        wire_layouts: module.wire_layouts.clone(),
         opaque_handle_names: module
             .items
             .iter()

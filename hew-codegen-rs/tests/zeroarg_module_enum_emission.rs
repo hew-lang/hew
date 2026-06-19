@@ -379,6 +379,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
         record_layouts: vec![],
         actor_layouts: vec![],

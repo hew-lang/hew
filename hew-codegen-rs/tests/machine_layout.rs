@@ -12,6 +12,7 @@ fn empty_pipeline(machine_layouts: Vec<MachineLayout>) -> IrPipeline {
         checked_mir: Vec::new(),
         elaborated_mir: Vec::new(),
         diagnostics: Vec::new(),
+        wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
         record_layouts: Vec::new(),
         actor_layouts: Vec::new(),

@@ -121,6 +121,7 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
         record_layouts: vec![],
         actor_layouts: vec![],

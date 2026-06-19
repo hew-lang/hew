@@ -405,6 +405,7 @@ fn floor_pipeline_with_driver(driver: RawMirFunction) -> IrPipeline {
         checked_mir: vec![] as Vec<CheckedMirFunction>,
         elaborated_mir: vec![] as Vec<ElaboratedMirFunction>,
         diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
         record_layouts: vec![],
         actor_layouts: vec![],

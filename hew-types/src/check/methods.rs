@@ -3499,10 +3499,18 @@ impl Checker {
         let token = VecElementToken::from_runtime_suffix(suffix)?;
         let admissible = match token {
             // Bit-copy scalars and the CoW `string` representation carry no
-            // owner-aliasing hazard across the shared-buffer element ops.
+            // owner-aliasing hazard across the shared-buffer element ops. Every
+            // integer width and both float widths route to a dedicated
+            // `hew_vec_*_{suffix}` kernel (see `vec_element_op_symbol`), so the
+            // whole scalar set is unconditionally admissible.
             VecElementToken::Bool
+            | VecElementToken::I8
+            | VecElementToken::U8
+            | VecElementToken::I16
+            | VecElementToken::U16
             | VecElementToken::I32
             | VecElementToken::I64
+            | VecElementToken::F32
             | VecElementToken::F64
             | VecElementToken::Str => true,
             // Pointer-identity and layout-descriptor elements are admitted

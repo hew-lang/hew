@@ -76,6 +76,7 @@ use std::ptr;
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::LazyLock;
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use std::thread::JoinHandle;
 
@@ -249,11 +250,18 @@ pub unsafe extern "C" fn hew_lambda_body_alloc_reply_buf(len: usize) -> *mut u8 
 
 // ── Per-runtime drain registry ─────────────────────────────────────────────
 
+/// Fallback dispatch counter for lambda-only compiled programs that never
+/// install a scheduler runtime.
+static FALLBACK_LAMBDA_DISPATCH: LazyLock<crate::lifetime::live_actors::LiveActors> =
+    LazyLock::new(crate::lifetime::live_actors::LiveActors::new);
+
 /// Count of currently-running lambda-actor dispatch threads. Bumped in the
-/// spawning runtime's `RuntimeInner.live_actors` at
-/// `HewLambdaActor::new` BEFORE spawn; decremented inside the dispatch
-/// thread by the `LambdaDispatchGuard` Drop impl AFTER `dispatch_loop`
-/// returns (covering both natural exit on `Closed` and panic-unwind).
+/// spawning runtime's `RuntimeInner.live_actors` when one is installed, or in
+/// [`FALLBACK_LAMBDA_DISPATCH`] for lambda-only programs that never call
+/// `hew_sched_init`, at `HewLambdaActor::new` BEFORE spawn; decremented inside
+/// the dispatch thread by the `LambdaDispatchGuard` Drop impl AFTER
+/// `dispatch_loop` returns (covering both natural exit on `Closed` and
+/// panic-unwind).
 ///
 /// Used by [`hew_lambda_drain_all`] so a non-actor-using `main` can block
 /// until every spawned lambda actor has drained its mailbox before the
@@ -261,19 +269,20 @@ pub unsafe extern "C" fn hew_lambda_body_alloc_reply_buf(len: usize) -> *mut u8 
 /// scheduler workers, but for lambda actors which run on their own
 /// dedicated OS threads (not the work-stealing scheduler).
 fn active_lambda_dispatch() -> &'static crate::lifetime::live_actors::LiveActors {
-    &crate::runtime::rt_current().live_actors
+    crate::runtime::rt_current_opt().map_or(&FALLBACK_LAMBDA_DISPATCH, |rt| &rt.live_actors)
 }
 
-/// Resolve the lambda dispatch counter for read-only drain probes.
+/// Resolve the lambda dispatch counter for drain probes.
 ///
 /// `hew_lambda_drain_all` is emitted in process-exit epilogues and can run after
-/// scheduler cleanup has detached the runtime. The old process-global counter
-/// read as zero in that state; with no installed runtime there are no
-/// runtime-owned lambda dispatch threads left to wait for, so keep that
-/// read-only default. Lambda actor construction still uses
-/// [`active_lambda_dispatch`] and fails closed without an owning runtime.
-fn active_lambda_dispatch_opt() -> Option<&'static crate::lifetime::live_actors::LiveActors> {
-    crate::runtime::rt_current_opt().map(|rt| &rt.live_actors)
+/// scheduler cleanup has detached the runtime, and lambda-only compiled
+/// programs can spawn dispatch threads without ever installing a scheduler
+/// runtime. The old process-global counter covered both cases; after
+/// deglobalization, the fallback counter preserves that no-runtime behaviour
+/// while runtime-backed programs still isolate their dispatch counts per
+/// `RuntimeInner`.
+fn active_lambda_dispatch_for_drain() -> &'static crate::lifetime::live_actors::LiveActors {
+    active_lambda_dispatch()
 }
 
 /// RAII guard that decrements the spawning runtime's lambda dispatch counter on
@@ -324,9 +333,7 @@ pub extern "C" fn hew_lambda_drain_all(timeout_ms: i64) -> i32 {
     let mut backoff = std::time::Duration::from_micros(100);
     let max_backoff = std::time::Duration::from_millis(16);
     loop {
-        let Some(active_lambda_dispatch) = active_lambda_dispatch_opt() else {
-            return 0;
-        };
+        let active_lambda_dispatch = active_lambda_dispatch_for_drain();
         if active_lambda_dispatch.lambda_dispatch_load(Ordering::Acquire) == 0 {
             return 0;
         }
@@ -1667,6 +1674,48 @@ mod tests {
         );
 
         assert_eq!(hew_lambda_drain_all(1), 0);
+    }
+
+    static NO_RUNTIME_TELL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    unsafe extern "C-unwind" fn no_runtime_counting_tell_body(
+        _state: *mut core::ffi::c_void,
+        _msg: *const u8,
+        _msg_len: usize,
+        reply_out: *mut *mut u8,
+        reply_len_out: *mut usize,
+    ) -> i32 {
+        NO_RUNTIME_TELL_COUNT.fetch_add(1, Ordering::AcqRel);
+        unsafe {
+            *reply_out = ptr::null_mut();
+            *reply_len_out = 0;
+        }
+        0
+    }
+
+    #[test]
+    fn lambda_actor_without_runtime_uses_fallback_dispatch_counter() {
+        let _lock = crate::scheduler::SchedTestLock::acquire();
+        assert!(
+            crate::runtime::rt_default().is_none(),
+            "test requires the runtime slot to be empty"
+        );
+        NO_RUNTIME_TELL_COUNT.store(0, Ordering::Release);
+
+        let actor = HewLambdaActor::new(
+            2,
+            LambdaShape::Tell,
+            no_runtime_counting_tell_body,
+            ptr::null_mut(),
+            noop_state_drop,
+        )
+        .expect("spawn lambda actor without scheduler runtime");
+
+        assert_eq!(actor.send(b"hello".to_vec()), SendError::Ok);
+        drop(actor);
+
+        assert_eq!(hew_lambda_drain_all(2_000), 0);
+        assert_eq!(NO_RUNTIME_TELL_COUNT.load(Ordering::Acquire), 1);
     }
 
     /// No-op state-drop callback for tests that don't need cleanup.

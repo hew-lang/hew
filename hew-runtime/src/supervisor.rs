@@ -700,19 +700,10 @@ unsafe impl Send for DeferredSupervisorStop {}
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Get the current monotonic time in nanoseconds (cross-platform).
+/// Get the current monotonic time in nanoseconds, anchored on the process-wide
+/// epoch ([`crate::monotonic`]).
 fn monotonic_time_ns() -> u64 {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    let epoch = EPOCH.get_or_init(Instant::now);
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "monotonic ns since process start won't exceed u64"
-    )]
-    {
-        epoch.elapsed().as_nanos() as u64
-    }
+    crate::monotonic::monotonic_ns()
 }
 
 /// Count restarts within the sliding window.

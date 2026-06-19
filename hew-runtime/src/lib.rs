@@ -446,6 +446,9 @@ pub mod bytes;
 mod channel_common;
 pub mod duration;
 pub mod machine_emit;
+/// Process-wide monotonic clock epoch shared by every subsystem that reports
+/// "duration since process start" (timers, supervisor, crash, tracing, SWIM).
+pub mod monotonic;
 pub use machine_emit::{
     hew_machine_emit_push, hew_machine_emit_step_enter, hew_machine_emit_step_exit,
     DrainError as MachineEmitDrainError, EmitEvent, EmitQueue, EmitQueueAppend,
@@ -531,18 +534,7 @@ pub mod wasm_stubs {
     /// No preconditions.
     #[no_mangle]
     pub unsafe extern "C" fn hew_now_ms() -> u64 {
-        use std::sync::OnceLock;
-        use std::time::Instant;
-
-        static EPOCH: OnceLock<Instant> = OnceLock::new();
-        let epoch = EPOCH.get_or_init(Instant::now);
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "monotonic ms since process start won't exceed u64"
-        )]
-        {
-            epoch.elapsed().as_millis() as u64
-        }
+        crate::monotonic::monotonic_ms()
     }
 
     // ── Channels (blocking recv still deferred on wasm32) ────────────────────

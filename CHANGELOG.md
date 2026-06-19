@@ -190,14 +190,15 @@ the structured changelog.
   only inside a `gen` block.
 - **Unified concurrency substrate — `Duplex<S,R>`, `Sink<T>`, `Stream<T>`:**
   Three typed channel primitives replace the legacy send-operator surface.
-  `Duplex<S,R>` is a full-duplex channel; `Sink<T>` and `Stream<T>` are the
-  directional halves, constructed via `duplex_pair<S,R>(capacity)` and
-  `channel<T>(capacity)`. In 0.5.0 the lowered surface is tell-shaped
-  `.send(msg)` on these primitives plus the full `std::channel`
-  `Sender`/`Receiver` pair (`channel.new(capacity)`, `await rx.recv()`,
-  deadline-aware recv); the remaining Duplex/Sink methods (`.try_send`,
-  `.try_recv`, `.close`, ask-shaped send) type-check but refuse with named
-  diagnostics until their lowering lands.
+  `Duplex<S,R>` is a full-duplex channel constructed via
+  `duplex_pair<S,R>(capacity)`; `Sink<T>` and `Stream<T>` are the directional
+  halves exposed by std / runtime streaming surfaces (file, network, HTTP,
+  `std::stream`). Generic in-memory message channels use the `std::channel`
+  `Sender<T>`/`Receiver<T>` pair (`channel.new(capacity)`, `await rx.recv()`,
+  deadline-aware recv). In 0.5.0 the lowered surface is tell-shaped `.send(msg)`
+  on `Duplex`; the remaining Duplex/Sink methods (`.try_send`, `.try_recv`,
+  `.close`, ask-shaped send) type-check but refuse with named diagnostics until
+  their lowering lands.
 - **Lambda-actor form — `actor |params| { body }`:** A lambda-actor literal
   evaluates to a `Duplex<Msg, Reply>` handle running in a supervised child
   context. Both bare-call syntax `handle(msg)` and `.send(msg)` are accepted.

@@ -23649,7 +23649,12 @@ fn scan_expr_for_task_gates(expr: &Expr, span: &Span, ctx: &mut LowerCtx, progra
             scan_block_for_task_gates(body, ctx, program);
         }
         Expr::ScopeDeadline { duration, body } => {
-            check_scope_deadline_shape(body, span, ctx);
+            // A NON-EMPTY `after(...)` timeout body is now lowered: an
+            // execution-context caller emits the `SuspendingScopeDeadline` carrier
+            // (the after-body is the timer-fired edge), and a contextless caller
+            // fails closed at MIR (`scope deadline body` NYI). The body-shape gate
+            // that previously rejected non-empty bodies at HIR is therefore
+            // retired; MIR owns the call-conv decision.
             scan_expr_for_task_gates(&duration.0, &duration.1, ctx, program);
             scan_block_for_task_gates(body, ctx, program);
         }
@@ -24015,21 +24020,6 @@ fn check_fork_block_shape(
             },
             span.clone(),
             "fork block body must be a direct function call".to_string(),
-        ));
-    }
-}
-
-/// Check scope deadline body shape.
-/// Site: hew-mir/src/lower.rs:7842 (Deadline body)
-fn check_scope_deadline_shape(body: &hew_parser::ast::Block, span: &Span, ctx: &mut LowerCtx) {
-    // Deadline body must be empty
-    if !body.stmts.is_empty() || body.trailing_expr.is_some() {
-        ctx.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::DeadlineBodyUnsupported {
-                site: ctx.ids.site(),
-            },
-            span.clone(),
-            "deadline body must be empty (syntax sugar for timeout-only scope)".to_string(),
         ));
     }
 }

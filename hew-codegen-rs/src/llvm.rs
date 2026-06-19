@@ -2523,8 +2523,26 @@ fn intern_runtime_decl<'ctx>(
         "hew_task_get_error" => i32_ty.fn_type(&[ptr_ty.into()], false),
         "hew_task_get_env" => ptr_ty.fn_type(&[ptr_ty.into()], false),
         "hew_task_scope_new" => ptr_ty.fn_type(&[], false),
-        "hew_task_scope_destroy" | "hew_task_scope_join_all" => {
+        // hew_task_scope_cancel / _detach_completion(scope: *mut HewTaskScope)
+        // -> void. `cancel` flips the scope's cancellation flag (driving every
+        // child to Done); `detach_completion` is the SuspendingScopeDeadline
+        // abandon-edge seam (the per-child join observers self-reclaim under the
+        // scope cancel + join_all the teardown runs).
+        "hew_task_scope_destroy"
+        | "hew_task_scope_join_all"
+        | "hew_task_scope_cancel"
+        | "hew_task_scope_detach_completion" => {
             ctx.void_type().fn_type(&[ptr_ty.into()], false)
+        }
+        // hew_task_scope_completion_observe(scope: *mut HewTaskScope,
+        //   reg: *mut HewAwaitCancel, actor: *mut HewActor) -> i32
+        // (`hew-runtime/src/task_scope.rs`). The wait-ALL completion arm of the
+        // SuspendingScopeDeadline arbiter: wires the scope's child join onto the
+        // shared first-ready arbiter. Returns SCOPE_JOIN_READY (1) when the scope
+        // already joined (bind immediately) or SCOPE_JOIN_SUSPEND (0) after
+        // parking one counting observer per outstanding child.
+        "hew_task_scope_completion_observe" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)
         }
         "hew_task_scope_spawn" => ctx
             .void_type()
@@ -28384,12 +28402,6 @@ struct SuspendingSleepEmit {
 
 /// Carrier for [`emit_suspending_scope_deadline_terminator`] — the suspending
 /// `scope { } after(d) { body }` ramp (`Terminator::SuspendingScopeDeadline`).
-#[allow(
-    dead_code,
-    reason = "the scope-deadline ramp is staged: the carrier + dispatch are in \
-              place but the emit body is fail-closed until the join-await \
-              arbiter lands; the fields document the future ramp's inputs"
-)]
 struct SuspendingScopeDeadlineEmit {
     scope: Place,
     duration_ms: Place,
@@ -31595,23 +31607,440 @@ fn emit_suspending_sleep_terminator<'ctx>(
 /// `scope { } after(d) { body }` with a NON-EMPTY timeout body
 /// (`Terminator::SuspendingScopeDeadline`).
 ///
-/// The carrier, MIR lowering, and CFG/drop walkers are in place; the codegen
-/// ramp is staged as a follow-up. Unlike the single-task await, the suspending
-/// scope-deadline must arbitrate the scope-wide join (all children done) against
-/// the timer deadline and route the deadline-won edge to the lowered `after(...)`
-/// body — a multi-child join-await barrier over the existing scope-join +
-/// `hew_task_scope_cancel` model. Until that ramp lands, the MIR producer keeps
-/// the non-empty `after(...)` body fail-closed (the HIR `DeadlineBodyUnsupported`
-/// gate), so this terminator is never emitted; reaching codegen is a producer
-/// bug, surfaced as a named fail-closed error rather than a miscompile.
-fn emit_suspending_scope_deadline_terminator(
-    _fn_ctx: &FnCtx<'_, '_>,
-    _term: SuspendingScopeDeadlineEmit,
+/// The two-arm sibling of [`emit_suspending_sleep_terminator`]: a single shared
+/// `HewAwaitCancel` arbiter (the first-ready one-shot CAS the suspending select
+/// uses) races the scope-wide child JOIN (wait-ALL) against a timer-wheel
+/// DEADLINE. The deadline-won edge cancels the remaining children and routes to
+/// the lowered `after(...)` body; the join-won edge skips the body. Whichever arm
+/// wins the CAS settles the wait, so deadline-vs-completion is mutually exclusive.
+///
+/// Shape (the suspending scope-deadline ramp):
+/// ```text
+///   self  = hew_actor_self()                       ; the parked-cont actor
+///   scope = <load scope>                           ; the task scope
+///   d_ms  = max(0, <load duration> / 1_000_000)    ; ns → ms
+///   reg   = hew_await_cancel_new(self, null, null) ; ONE shared arbiter
+///   tw    = hew_global_timer_wheel()
+///   hew_await_cancel_schedule_deadline_ms(reg, tw, d_ms)   ; DEADLINE arm
+///   ready = hew_task_scope_completion_observe(scope, reg, self) ; JOIN arm
+///   br (ready == SCOPE_JOIN_READY) -> scan, do_suspend
+/// do_suspend:                                       ; coro.suspend (non-final)
+///   switch coro.suspend [default -> return handle, 0 -> scan, 1 -> abandon]
+/// abandon:                                          ; parked cont destroyed
+///   hew_await_cancel_cancel(reg, Cancelled, no_wake)   ; cancels the timer
+///   hew_task_scope_detach_completion(scope)
+///   hew_task_scope_cancel(scope)                       ; force children Done
+///   hew_await_cancel_free(reg); br shared cleanup
+/// scan (resume):                                    ; join completed OR deadline fired
+///   status = hew_await_cancel_status(reg)
+///   hew_await_cancel_cancel(reg, Cancelled, no_wake)   ; idempotent settle (timer)
+///   br (status == TimedOut) -> deadline_won, join_won
+/// deadline_won:
+///   hew_task_scope_cancel(scope); hew_task_scope_join_all(scope)  ; reap
+///   hew_await_cancel_free(reg); br timeout_body_block  ; run after-body -> resume
+/// join_won:
+///   hew_task_scope_join_all(scope)                     ; reap (all done)
+///   hew_await_cancel_free(reg); br resume_bb           ; skip the body
+/// ```
+/// The deadline arm cannot fail-safe to immediate the way `sleep` does (the join
+/// arm is still live if the wheel is unavailable), so the schedule rc is ignored:
+/// a failed arm means no deadline fires and the join decides the winner. The
+/// `scope` local is frame-spilled, so loading the carrier's `scope` place is
+/// valid before the suspend (arm) and after resume (cancel + join). The `cleanup`
+/// edge is the coro abandon outline; the resume/abandon arms hold every teardown.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the full scope-deadline ramp — arbiter setup + two-arm arming + \
+              suspend + the resume-edge winner branch (deadline body vs \
+              scope-complete) + the abandon teardown — is kept in one place so \
+              the arbiter's exactly-once teardown is read together"
+)]
+fn emit_suspending_scope_deadline_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    term: SuspendingScopeDeadlineEmit,
 ) -> CodegenResult<()> {
-    Err(CodegenError::FailClosed(
-        "Terminator::SuspendingScopeDeadline reached codegen but the non-empty          scope-deadline ramp is not yet wired; the MIR producer must keep          non-empty after(...) bodies fail-closed until the join-await arbiter          lands"
-            .into(),
-    ))
+    let coro = fn_ctx.coro.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "Terminator::SuspendingScopeDeadline reached codegen but the function \
+             carries no coro prologue state — lower_function must detect the \
+             suspend carrier (has_suspend) and emit the prologue before the body"
+                .into(),
+        )
+    })?;
+    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SuspendingScopeDeadline resume target bb{} not found",
+            term.resume
+        ))
+    })?;
+    let timeout_body_bb = *fn_ctx.blocks.get(&term.timeout_body_block).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "SuspendingScopeDeadline timeout-body target bb{} not found",
+            term.timeout_body_block
+        ))
+    })?;
+    if !fn_ctx.blocks.contains_key(&term.cleanup) {
+        return Err(CodegenError::FailClosed(format!(
+            "SuspendingScopeDeadline cleanup target bb{} not found",
+            term.cleanup
+        )));
+    }
+
+    let ctx = fn_ctx.ctx;
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let ptr_ty = ctx.ptr_type(inkwell::AddressSpace::default());
+
+    // self = the parked-continuation actor the timer / join wake re-enqueues.
+    // MUST come from hew_actor_self() (the live thread-local context), not a
+    // spilled param: across a suspend the per-dispatch context is freed; on
+    // resume the scheduler installs a fresh one (the FIX-THE-CLASS accessor the
+    // ask / read / sleep ramps use).
+    let actor_self_fn = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_self",
+    )?;
+    let self_actor = fn_ctx
+        .builder
+        .build_call(actor_self_fn, &[], "suspending_scope_deadline_self")
+        .llvm_ctx("hew_actor_self call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
+        .into_pointer_value();
+
+    // The scope being raced (a frame-spilled local; valid across the suspend).
+    let scope_ptr = load_place_as_basic(fn_ctx, term.scope, "suspending_scope_deadline_scope")?
+        .into_pointer_value();
+
+    // ns → ms, clamped non-negative (`after(d)` carries a duration value in
+    // nanoseconds, like the select AfterTimer arm; the schedule takes u64 ms).
+    let dur_ns = load_place_as_basic(fn_ctx, term.duration_ms, "suspending_scope_deadline_dur")?
+        .into_int_value();
+    let ms_per_ns = i64_ty.const_int(1_000_000, false);
+    let dur_ms = fn_ctx
+        .builder
+        .build_int_signed_div(dur_ns, ms_per_ns, "suspending_scope_deadline_dur_ms")
+        .llvm_ctx("scope deadline dur sdiv")?;
+    let zero_i64 = i64_ty.const_zero();
+    let neg = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::SLT,
+            dur_ms,
+            zero_i64,
+            "suspending_scope_deadline_neg",
+        )
+        .llvm_ctx("scope deadline neg cmp")?;
+    let dur_ms_nonneg = fn_ctx
+        .builder
+        .build_select(neg, zero_i64, dur_ms, "suspending_scope_deadline_nonneg")
+        .llvm_ctx("scope deadline nonneg select")?
+        .into_int_value();
+
+    // ONE shared first-ready arbiter (no source cleanup — the resume/abandon arms
+    // do the scope cancel + join + arbiter free with full pointer context, like
+    // the sleep ramp's null-cleanup arbiter).
+    let null_ptr = ptr_ty.const_null();
+    let cancel_new = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_new",
+    )?;
+    let reg = fn_ctx
+        .builder
+        .build_call(
+            cancel_new,
+            &[self_actor.into(), null_ptr.into(), null_ptr.into()],
+            "suspending_scope_deadline_reg",
+        )
+        .llvm_ctx("hew_await_cancel_new call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
+        .into_pointer_value();
+
+    // DEADLINE arm: arm the timeout on the shared arbiter via the global wheel.
+    // Ignore the schedule rc: the JOIN arm still decides the winner if the wheel
+    // is unavailable, so a failed deadline arm never hangs the wait.
+    let tw_fn = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_global_timer_wheel",
+    )?;
+    let tw = fn_ctx
+        .builder
+        .build_call(tw_fn, &[], "suspending_scope_deadline_tw")
+        .llvm_ctx("hew_global_timer_wheel call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_global_timer_wheel returned void".into()))?
+        .into_pointer_value();
+    let schedule = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_schedule_deadline_ms",
+    )?;
+    fn_ctx
+        .builder
+        .build_call(
+            schedule,
+            &[reg.into(), tw.into(), dur_ms_nonneg.into()],
+            "suspending_scope_deadline_schedule",
+        )
+        .llvm_ctx("hew_await_cancel_schedule_deadline_ms call")?;
+
+    // JOIN arm: wire the scope's wait-ALL completion onto the same arbiter. A
+    // return of SCOPE_JOIN_READY (1) means the scope already joined — bind the
+    // scope-complete edge without suspending (the immediate path).
+    let scope_observe = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_scope_completion_observe",
+    )?;
+    let join_ready = fn_ctx
+        .builder
+        .build_call(
+            scope_observe,
+            &[scope_ptr.into(), reg.into(), self_actor.into()],
+            "suspending_scope_deadline_observe",
+        )
+        .llvm_ctx("hew_task_scope_completion_observe call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_task_scope_completion_observe returned void".into())
+        })?
+        .into_int_value();
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::Llvm("suspending scope deadline block has no parent function".into())
+        })?;
+    let do_suspend_bb = ctx.append_basic_block(parent, "suspending_scope_deadline_suspend");
+    let scan_bb = ctx.append_basic_block(parent, "suspending_scope_deadline_scan");
+
+    // SCOPE_JOIN_READY (1) → bind immediately on the scan edge; else suspend.
+    let scope_join_ready = i32_ty.const_int(1, false);
+    let already_done = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            join_ready,
+            scope_join_ready,
+            "suspending_scope_deadline_ready",
+        )
+        .llvm_ctx("scope deadline ready cmp")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(already_done, scan_bb, do_suspend_bb)
+        .llvm_ctx("scope deadline ready branch")?;
+
+    let reg_cancel = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_cancel",
+    )?;
+    let reg_free = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_free",
+    )?;
+    let reg_status = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_await_cancel_status",
+    )?;
+    let scope_cancel = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_scope_cancel",
+    )?;
+    let scope_join = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_scope_join_all",
+    )?;
+    let scope_detach = intern_runtime_decl(
+        ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_task_scope_detach_completion",
+    )?;
+
+    let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
+    let timed_out_status = i32_ty.const_int(3, false); // AwaitCancelStatus::TimedOut
+    let no_wake = i32_ty.const_zero();
+
+    fn_ctx.builder.position_at_end(do_suspend_bb);
+    emit_suspend_point(
+        fn_ctx,
+        coro,
+        parent,
+        scan_bb,
+        "suspending_scope_deadline",
+        "suspending_scope_deadline_abandon_cleanup",
+        "suspending scope deadline abandon -> shared cleanup br",
+        || {
+            // Abandon: the parked continuation is being destroyed. Cancel the
+            // arbiter WITHOUT waking (cancels the armed deadline so a racing fire
+            // drops its wake), detach the join arm, then force the scope's
+            // children Done (scope-cancel) so every per-child join observer fires
+            // and reclaims its box, then free the arbiter's creator ref. Each call
+            // runs exactly once on this single abandon edge.
+            fn_ctx
+                .builder
+                .build_call(
+                    reg_cancel,
+                    &[reg.into(), cancelled_status.into(), no_wake.into()],
+                    "suspending_scope_deadline_abandon_cancel",
+                )
+                .llvm_ctx("scope deadline abandon arbiter cancel")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    scope_detach,
+                    &[scope_ptr.into()],
+                    "suspending_scope_deadline_abandon_detach",
+                )
+                .llvm_ctx("scope deadline abandon detach")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    scope_cancel,
+                    &[scope_ptr.into()],
+                    "suspending_scope_deadline_abandon_scope_cancel",
+                )
+                .llvm_ctx("scope deadline abandon scope cancel")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    reg_free,
+                    &[reg.into()],
+                    "suspending_scope_deadline_abandon_free",
+                )
+                .llvm_ctx("scope deadline abandon arbiter free")?;
+            Ok(())
+        },
+        || {
+            // Resume / immediate: the join completed OR the deadline fired. Read
+            // the terminal status to decide which arm won, settle the arbiter
+            // (cancel-no-wake is idempotent — cancels the timer if the join won),
+            // then branch. Both arms reap the children with join_all and free the
+            // arbiter's creator ref exactly once.
+            let status = fn_ctx
+                .builder
+                .build_call(
+                    reg_status,
+                    &[reg.into()],
+                    "suspending_scope_deadline_status",
+                )
+                .llvm_ctx("hew_await_cancel_status call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_await_cancel_status returned void".into())
+                })?
+                .into_int_value();
+            fn_ctx
+                .builder
+                .build_call(
+                    reg_cancel,
+                    &[reg.into(), cancelled_status.into(), no_wake.into()],
+                    "suspending_scope_deadline_resume_cancel",
+                )
+                .llvm_ctx("scope deadline resume arbiter cancel")?;
+
+            let deadline_won = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    timed_out_status,
+                    "suspending_scope_deadline_timed_out",
+                )
+                .llvm_ctx("scope deadline timed-out cmp")?;
+            let deadline_won_bb =
+                ctx.append_basic_block(parent, "suspending_scope_deadline_deadline_won");
+            let join_won_bb = ctx.append_basic_block(parent, "suspending_scope_deadline_join_won");
+            fn_ctx
+                .builder
+                .build_conditional_branch(deadline_won, deadline_won_bb, join_won_bb)
+                .llvm_ctx("scope deadline winner branch")?;
+
+            // Deadline won: cancel the remaining children, reap them, free the
+            // arbiter, then run the lowered after(...) body (which converges on
+            // resume).
+            fn_ctx.builder.position_at_end(deadline_won_bb);
+            fn_ctx
+                .builder
+                .build_call(
+                    scope_cancel,
+                    &[scope_ptr.into()],
+                    "suspending_scope_deadline_won_cancel",
+                )
+                .llvm_ctx("scope deadline won scope cancel")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    scope_join,
+                    &[scope_ptr.into()],
+                    "suspending_scope_deadline_won_join",
+                )
+                .llvm_ctx("scope deadline won join_all")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    reg_free,
+                    &[reg.into()],
+                    "suspending_scope_deadline_won_free",
+                )
+                .llvm_ctx("scope deadline won arbiter free")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(timeout_body_bb)
+                .llvm_ctx("scope deadline won -> body br")?;
+
+            // Join won: reap the (already-complete) children, free the arbiter,
+            // and skip the after-body — the scope completed in time.
+            fn_ctx.builder.position_at_end(join_won_bb);
+            fn_ctx
+                .builder
+                .build_call(
+                    scope_join,
+                    &[scope_ptr.into()],
+                    "suspending_scope_deadline_join_join",
+                )
+                .llvm_ctx("scope deadline join join_all")?;
+            fn_ctx
+                .builder
+                .build_call(
+                    reg_free,
+                    &[reg.into()],
+                    "suspending_scope_deadline_join_free",
+                )
+                .llvm_ctx("scope deadline join arbiter free")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(resume_bb)
+                .llvm_ctx("scope deadline join -> resume br")?;
+            Ok(())
+        },
+    )
 }
 
 /// The element type of a recv dest local's checker-resolved `Option<T>` slot.

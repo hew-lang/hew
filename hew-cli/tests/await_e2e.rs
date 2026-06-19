@@ -165,6 +165,21 @@ fn select_after_deadline_fires_timeout_branch_under_both_pools() {
     run_await_example_both_pools("select_suspend_deadline", "deadline=-7\n");
 }
 
+#[test]
+fn scope_deadline_runs_or_skips_the_timeout_body_under_both_pools() {
+    // cut-task-sleep: `scope { } after(d) { body }` with a NON-EMPTY timeout body
+    // races the scope's child join against the deadline. `timeout_wins` has a
+    // 100ms child + a 20ms deadline (the deadline wins, the recovery body runs →
+    // `timeout=7`); `work_wins` has a 10ms child + a 200ms deadline (the scope
+    // completes first, the body is skipped → `work=0`). The SuspendingScopeDeadline
+    // arbiter arms the deadline on the global timer wheel and wires the child join
+    // as the completion arm; the first-ready CAS routes the resume edge. Under
+    // HEW_WORKERS=1 the lone worker MUST suspend the actor (not block on the child
+    // sleep / per-deadline thread), or both lines never print. The exact lines
+    // prove the deadline-won edge runs the body and the join-won edge skips it.
+    run_await_example_both_pools("scope_deadline_suspend", "timeout=7\nwork=0\n");
+}
+
 /// Run an `examples/net/<name>.hew` fixture via `hew run`, optionally setting
 /// `HEW_WORKERS`, and assert it exits 0 with exactly `expected_stdout`. The net
 /// fixtures are self-contained: `main` runs the TCP server and the actor runs

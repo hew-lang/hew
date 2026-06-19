@@ -1266,14 +1266,18 @@ fi
 grep -q 'E_HIR' "${reject_output}"
 grep -qF 'fork block body must contain exactly one statement or expression' "${reject_output}"
 
-# Reject: `after(duration) { ... }` with a non-empty timeout body.
-# Pins the HIR fail-closed deadline body boundary.
+# Reject: `after(duration) { ... }` with a non-empty timeout body in a
+# CONTEXTLESS caller. The HIR shape gate now admits non-empty bodies (MIR
+# decides), but a `fn main()` has no execution context and so no parkable
+# continuation to run the timeout body on the deadline edge — it must fail
+# closed at MIR with E_NOT_YET_IMPLEMENTED, not silently drop the body.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/scope_deadline_body.hew" >"${reject_output}" 2>&1; then
   echo "expected scope-deadline-body fixture to fail" >&2
   exit 1
 fi
-grep -q 'E_HIR' "${reject_output}"
-grep -qF 'deadline body must be empty' "${reject_output}"
+grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
+grep -qF 'MIR lowering for scope deadline body is not implemented yet' "${reject_output}"
+grep -qF 'a contextless caller has no parkable continuation' "${reject_output}"
 
 # Reject: `for x in non_iterable` — Vec<T> is accepted through IntoIterator,
 # but values with no iterable contract must still fail closed.

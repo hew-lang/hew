@@ -17003,24 +17003,81 @@ impl Builder {
             });
             return None;
         };
-        if !body.statements.is_empty() || body.tail.is_some() {
+        let has_body = !body.statements.is_empty() || body.tail.is_some();
+
+        // Empty `after(d) {}` keeps the legacy per-deadline-thread cancel on BOTH
+        // call-convs — there is no body to route to, so nothing suspends. The
+        // deadline simply cancels the scope's children when it fires.
+        if !has_body {
+            let duration_place = self.lower_value(duration)?;
+            self.push_runtime_call(
+                "hew_task_scope_cancel_after_ns",
+                vec![scope_place, duration_place],
+                None,
+            );
+            let unit_place = self.alloc_local(ResolvedTy::Unit);
+            self.push_instr(Instr::UnitLit { dest: unit_place });
+            return Some(unit_place);
+        }
+
+        // A NON-EMPTY `after(d) { body }` from a SUSPENDABLE caller (actor handler
+        // / closure / task entry) lowers onto the `SuspendingScopeDeadline`
+        // carrier: codegen arms a deadline on the global timer wheel carrying the
+        // parked continuation, the scope's children run, and the FIRST of {all
+        // children joined, deadline fired} wins the shared one-shot arbiter. The
+        // deadline-wins edge routes to `timeout_body_block` (the lowered `after`
+        // body); the join-wins edge skips it. A `FunctionCallConv::Default` caller
+        // has no parkable continuation, so the non-empty timeout body stays
+        // fail-closed there (mirrors the suspending await / sleep / select flips).
+        if !self.current_function_call_conv.carries_execution_context() {
+            // Lower the duration + body operands for diagnostics coherence, then
+            // fail closed: a contextless caller cannot park to run the body.
+            let _ = self.lower_value(duration);
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "scope deadline body".to_string(),
                     site,
                 },
-                note: "deadline cancellation lowering supports empty after(...) bodies only; \
-                       non-empty timeout bodies remain fail-closed until select/arm dispatch lands"
+                note: "a non-empty after(...) timeout body is only lowered from an \
+                       execution-context caller (actor handler / closure / task \
+                       entry); a contextless caller has no parkable continuation to \
+                       run the body on the deadline edge"
                     .to_string(),
             });
             return None;
         }
+
         let duration_place = self.lower_value(duration)?;
-        self.push_runtime_call(
-            "hew_task_scope_cancel_after_ns",
-            vec![scope_place, duration_place],
-            None,
-        );
+
+        // Allocate the timer-fired body block + the convergence (resume) block.
+        // The carrier's `resume` is the scope-complete path AND the point the
+        // timeout body falls through to; `cleanup` reuses `resume` exactly as the
+        // await / sleep / select carriers do (the coro `cleanup` outline is the
+        // abandon teardown owner, not this MIR block).
+        let timeout_body_block = self.alloc_block();
+        let resume = self.alloc_block();
+
+        self.finish_current_block(Terminator::SuspendingScopeDeadline {
+            scope: scope_place,
+            duration_ms: duration_place,
+            timeout_body_block,
+            resume,
+            cleanup: resume,
+        });
+
+        // The deadline-fired edge: lower the `after(...)` body, then converge on
+        // `resume`. The body runs ONLY on the timeout edge; the join-wins resume
+        // edge branches straight into `resume` from the coro switch.
+        self.start_block(timeout_body_block);
+        for stmt in &body.statements {
+            self.stmt(stmt);
+        }
+        if let Some(tail) = &body.tail {
+            let _ = self.lower_value(tail);
+        }
+        self.finish_current_block(Terminator::Goto { target: resume });
+
+        self.start_block(resume);
         let unit_place = self.alloc_local(ResolvedTy::Unit);
         self.push_instr(Instr::UnitLit { dest: unit_place });
         Some(unit_place)

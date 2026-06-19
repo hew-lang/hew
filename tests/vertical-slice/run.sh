@@ -328,6 +328,18 @@ run_accept_expect_stdout "vec_string_for_each"
 run_accept_expect_status "array_literal_int_sum" 6
 run_accept_expect_status "array_repeat_int_sum" 0
 run_accept_expect_status "array_repeat_runtime_count" 0
+run_accept_expect_status "array_repeat_string_clone" 0
+run_accept_expect_status "array_repeat_record_clone" 0
+
+# Owned-element array-repeat reject: a record with a Vec field has no clone
+# thunk (container-in-container), so [r; N] must fail closed with a clear
+# diagnostic naming the missing clone path.
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/array_repeat_non_clone_element.hew" \
+    'array repeat requires the element type to be Clone' \
+    "array_repeat_non_clone_element"
+
 run_accept_expect_status "map_literal_string_keys" 0
 run_accept_expect_status "map_literal_empty_annotated" 0
 run_accept_expect_stdout "array_literal_float_sum"

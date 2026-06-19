@@ -1,0 +1,23 @@
+// Owned-element array-repeat: ["x"; 3] must produce 3 independent string
+// clones. Mutations to one slot must not affect the others.
+fn main() -> i64 {
+    let xs = ["hello"; 3];
+    if xs.len() != 3 {
+        return 70;
+    }
+    if xs[0] != "hello" {
+        return 71;
+    }
+    if xs[1] != "hello" {
+        return 72;
+    }
+    if xs[2] != "hello" {
+        return 73;
+    }
+    // Scalar repeat still works alongside owned repeat.
+    let ns = [42; 3];
+    if ns[0] != 42 {
+        return 74;
+    }
+    0
+}

@@ -40524,6 +40524,26 @@ fn module_uses_node_authority(raw_mir: &[RawMirFunction]) -> bool {
     })
 }
 
+/// Does the module reach the user-metrics registry authority?
+///
+/// The de-globalized metrics registry is owned by `RuntimeInner::metrics`.
+/// Registration and mutation remain fail-closed in the runtime, so a metrics-only
+/// program must install the runtime at `main` entry just like node/actor programs
+/// do. Scans every function body's runtime-call instructions for the C-ABI symbols that
+/// `std::metrics` lowers to.
+fn module_uses_metric_authority(raw_mir: &[RawMirFunction]) -> bool {
+    raw_mir.iter().any(|func| {
+        func.blocks.iter().any(|block| {
+            block.instructions.iter().any(|instr| {
+                matches!(
+                    instr,
+                    Instr::CallRuntimeAbi(call) if call.symbol().starts_with("hew_metric_")
+                )
+            })
+        })
+    })
+}
+
 /// Lower one function from `raw_mir`, consuming `elaborated_mir.drop_plans`
 /// to emit LIFO close calls before every exit terminator.
 ///
@@ -40540,14 +40560,16 @@ fn module_uses_node_authority(raw_mir: &[RawMirFunction]) -> bool {
 /// a matching checked function.
 ///
 /// `module_uses_runtime` is true when the module declares an actor, declares a
-/// supervisor, or reaches a `Node::*` authority. When true, the native `main`
-/// entry installs the default `RuntimeInner` (via `hew_sched_init`) in its
-/// prologue, BEFORE any user code runs. This guarantees a runtime authority
-/// (node setup, the live-actor registry, the shutdown phase) is never touched
-/// before the runtime is installed — the de-globalized `rt_current()` fails
-/// closed (`hew-runtime/src/runtime.rs`) rather than lazily fabricating one, so
-/// a program that calls `Node::start` or `pid.tell(..)` before its first
-/// `spawn` site (which also calls `hew_sched_init`) would otherwise trap.
+/// supervisor, or reaches a runtime-owned authority (Node, metrics). When true,
+/// the native `main` entry installs the default `RuntimeInner` (via
+/// `hew_sched_init`) in its prologue, BEFORE any user code runs. This
+/// guarantees a runtime authority (node setup, the live-actor registry, the
+/// shutdown phase, user metrics) is never touched before the runtime is
+/// installed — the de-globalized `rt_current()` fails closed
+/// (`hew-runtime/src/runtime.rs`) rather than lazily fabricating one, so a
+/// program that calls `Node::start`, `metrics.counter(..)`, or `pid.tell(..)`
+/// before its first `spawn` site (which also calls `hew_sched_init`) would
+/// otherwise trap.
 /// `hew_sched_init` is idempotent (a second call CAS-fails to a no-op), so the
 /// spawn-site and supervisor-bootstrap calls remain harmless.
 /// Stage 2 (gdb `-g`): set the builder's current debug location from a
@@ -42929,14 +42951,16 @@ fn build_module_for_target<'ctx>(
         .map(|s| s.bootstrap_symbol.clone())
         .collect();
     // Whether the module reaches any runtime authority — an actor, a
-    // supervisor, or a `Node::*` builtin. Drives the native `main`-entry
-    // runtime install (#1228 M1): when true, `main` calls `hew_sched_init` in
-    // its prologue so the de-globalized `RuntimeInner` is installed before any
-    // authority is touched (node setup before the first spawn, a remote
-    // `pid.tell` with no spawn site at all, the implicit drain epilogue).
+    // supervisor, or a runtime-owned builtin/FFI surface. Drives the native
+    // `main`-entry runtime install (#1228 M1): when true, `main` calls
+    // `hew_sched_init` in its prologue so the de-globalized `RuntimeInner` is
+    // installed before any authority is touched (node setup before the first
+    // spawn, a remote `pid.tell` with no spawn site at all, metrics registry
+    // registration/mutation, the implicit drain epilogue).
     let module_uses_runtime = !pipeline.actor_layouts.is_empty()
         || !pipeline.supervisor_layouts.is_empty()
-        || module_uses_node_authority(&pipeline.raw_mir);
+        || module_uses_node_authority(&pipeline.raw_mir)
+        || module_uses_metric_authority(&pipeline.raw_mir);
     for sup in &pipeline.supervisor_layouts {
         emit_supervisor_bootstrap_body(
             ctx,

@@ -285,7 +285,9 @@ pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
 
     // Find which shard contains this ref_id by checking all shards.
     // This is not optimal but monitors are typically rare operations.
-    let state = monitor_state();
+    let Some(state) = monitor_state_opt() else {
+        return;
+    };
     for shard_index in 0..MONITOR_SHARDS {
         let removed = state.table[shard_index].access(|shard| {
             if let Some((target_id, _watcher_addr)) = shard.ref_to_monitor.remove(&ref_id) {

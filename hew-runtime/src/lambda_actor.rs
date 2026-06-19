@@ -264,6 +264,18 @@ fn active_lambda_dispatch() -> &'static crate::lifetime::live_actors::LiveActors
     &crate::runtime::rt_current().live_actors
 }
 
+/// Resolve the lambda dispatch counter for read-only drain probes.
+///
+/// `hew_lambda_drain_all` is emitted in process-exit epilogues and can run after
+/// scheduler cleanup has detached the runtime. The old process-global counter
+/// read as zero in that state; with no installed runtime there are no
+/// runtime-owned lambda dispatch threads left to wait for, so keep that
+/// read-only default. Lambda actor construction still uses
+/// [`active_lambda_dispatch`] and fails closed without an owning runtime.
+fn active_lambda_dispatch_opt() -> Option<&'static crate::lifetime::live_actors::LiveActors> {
+    crate::runtime::rt_current_opt().map(|rt| &rt.live_actors)
+}
+
 /// RAII guard that decrements the spawning runtime's lambda dispatch counter on
 /// drop. Lives
 /// on the dispatch thread's stack so the decrement is unconditional —
@@ -312,7 +324,10 @@ pub extern "C" fn hew_lambda_drain_all(timeout_ms: i64) -> i32 {
     let mut backoff = std::time::Duration::from_micros(100);
     let max_backoff = std::time::Duration::from_millis(16);
     loop {
-        if active_lambda_dispatch().lambda_dispatch_load(Ordering::Acquire) == 0 {
+        let Some(active_lambda_dispatch) = active_lambda_dispatch_opt() else {
+            return 0;
+        };
+        if active_lambda_dispatch.lambda_dispatch_load(Ordering::Acquire) == 0 {
             return 0;
         }
         let now = std::time::Instant::now();
@@ -1641,6 +1656,17 @@ mod tests {
             _enter: enter,
             _rt: rt,
         }
+    }
+
+    #[test]
+    fn drain_all_treats_missing_runtime_as_no_active_lambda_dispatch() {
+        let _lock = crate::scheduler::SchedTestLock::acquire();
+        assert!(
+            crate::runtime::rt_default().is_none(),
+            "test requires the runtime slot to be empty"
+        );
+
+        assert_eq!(hew_lambda_drain_all(1), 0);
     }
 
     /// No-op state-drop callback for tests that don't need cleanup.

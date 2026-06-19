@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::actor::HewActor;
 use crate::lifetime::poison_safe::PoisonSafe;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::runtime::rt_current;
+use crate::runtime::{rt_current, rt_current_opt};
 
 /// Opaque wrapper around `*mut HewActor` that makes it `Send`.
 ///
@@ -109,6 +109,29 @@ fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R)
     rt_current().live_actors.map.access(f)
 }
 
+/// Run `f` with mutable access to the current runtime's live-actor map, if one
+/// is installed.
+///
+/// The liveness probe/read surface is reachable from trap/teardown paths that
+/// also support manually-constructed actors with no runtime installed. When the
+/// map was a process-global static, those probes observed an empty map and
+/// returned "not live"; after deglobalization they must keep that read-only
+/// default while registration/removal paths continue to fail closed through
+/// [`with_live_actors`].
+#[cfg(not(target_arch = "wasm32"))]
+fn with_live_actors_opt<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R) -> Option<R> {
+    rt_current_opt().map(|rt| rt.live_actors.map.access(f))
+}
+
+/// Run `f` with mutable access to the WASM runtime's live-actor map.
+///
+/// WASM still uses a module-private static, so the optional native resolver is
+/// always present there.
+#[cfg(target_arch = "wasm32")]
+fn with_live_actors_opt<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R) -> Option<R> {
+    Some(with_live_actors(f))
+}
+
 /// Run `f` with mutable access to the WASM runtime's live-actor map.
 #[cfg(target_arch = "wasm32")]
 fn with_live_actors<R>(f: impl FnOnce(&mut Option<HashMap<u64, ActorPtr>>) -> R) -> R {
@@ -178,7 +201,7 @@ pub(crate) fn with_live_actor<R>(
     actor: *mut HewActor,
     f: impl FnOnce(&HewActor) -> R,
 ) -> Option<R> {
-    with_live_actors(|map| {
+    with_live_actors_opt(|map| {
         if map
             .as_ref()
             .is_some_and(|m| m.values().any(|ptr| ptr.0 == actor))
@@ -190,6 +213,7 @@ pub(crate) fn with_live_actor<R>(
             None
         }
     })
+    .flatten()
 }
 
 /// Check whether an actor ID still maps to the expected live actor pointer.
@@ -203,7 +227,7 @@ pub(crate) fn with_live_actor_by_id<R>(
     expected: *mut HewActor,
     f: impl FnOnce(&HewActor) -> R,
 ) -> Option<R> {
-    with_live_actors(|map| {
+    with_live_actors_opt(|map| {
         if map
             .as_ref()
             .and_then(|m| m.get(&actor_id))
@@ -216,6 +240,7 @@ pub(crate) fn with_live_actor_by_id<R>(
             None
         }
     })
+    .flatten()
 }
 
 /// Look up an actor by ID and return a copy of its raw pointer if live.
@@ -232,11 +257,12 @@ pub(crate) fn with_live_actor_by_id<R>(
 // live on not(wasm32) — hew_actor_send_by_id / hew_actor_ask_by_id / hew_node; dead on wasm32
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
-    with_live_actors(|map| {
+    with_live_actors_opt(|map| {
         map.as_ref()
             .and_then(|m| m.get(&actor_id).map(|ptr| ptr.0))
             .filter(|ptr| !ptr.is_null())
     })
+    .flatten()
 }
 
 /// Check whether an actor pointer is still live (tracked and not yet freed).
@@ -309,5 +335,26 @@ pub(crate) fn drain_deferred_teardown_threads() {
                 eprintln!("hew: warning: deferred teardown thread panicked");
             }
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn liveness_reads_treat_missing_runtime_as_empty_registry() {
+        let _lock = crate::scheduler::SchedTestLock::acquire();
+        assert!(
+            crate::runtime::rt_default().is_none(),
+            "test requires the runtime slot to be empty"
+        );
+
+        let actor = std::ptr::dangling_mut::<HewActor>();
+        assert_eq!(with_live_actor(actor, |_| unreachable!()), None);
+        assert_eq!(with_live_actor_by_id(42, actor, |_| unreachable!()), None);
+        assert_eq!(get_actor_ptr_by_id(42), None);
+        assert!(!is_actor_live(actor));
+        assert!(!is_actor_live_with_id(42, actor));
     }
 }

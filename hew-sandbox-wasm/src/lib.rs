@@ -68,6 +68,9 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "clone_value",
     // Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) for i64 and f64.
     "compound_assign",
+    // Non-finite f64 rendering: overflow → `inf` / `-inf`, 0/0 → `nan`.
+    // Pins the sandbox VM's renderF64 path against native printf %g.
+    "f64_nonfinite_render",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";

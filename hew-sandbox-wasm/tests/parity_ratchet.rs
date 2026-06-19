@@ -503,6 +503,17 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("compound_assign"),
     },
     Construct {
+        id: "non-finite f64 rendering (inf / -inf / nan)",
+        // Sandbox VM's renderF64 must match native printf("%g"): lowercase
+        // `inf`, `-inf`, `nan`. JavaScript's `String()` produces capitalised
+        // `Infinity` / `-Infinity` / `NaN`, which mismatches native. The
+        // renderF64 helper intercepts the non-finite cases before `String()`.
+        // Overflow via *= 10 on 1e308 yields +inf; -1e308 * 10 yields -inf;
+        // 0.0/0.0 yields nan. Pinned to the f64_nonfinite_render parity case.
+        probe: "fn main() {\n    var big: f64 = 1.0e308;\n    big *= 10.0;\n    println(big);\n    let z: f64 = 0.0;\n    println(z / z);\n}\n",
+        coverage: Coverage::Parity("f64_nonfinite_render"),
+    },
+    Construct {
         id: "top-level type alias (`type T = U;`)",
         // Native E_NOT_YET_IMPLEMENTED; the sandbox used to admit + run it,
         // diverging from native (which refuses to compile). Rejected fail-closed.
@@ -671,7 +682,7 @@ fn every_required_parity_case_backs_a_construct() {
 /// justifying a removed admission in the same commit.
 #[test]
 fn runnable_coverage_does_not_shrink() {
-    const RUNNABLE_BASELINE: usize = 38; // +4: record_equality(×2), clone_value, compound_assign
+    const RUNNABLE_BASELINE: usize = 39; // +1: f64_nonfinite_render
     let runnable = CONSTRUCTS
         .iter()
         .filter(|c| matches!(c.coverage, Coverage::Parity(_)))

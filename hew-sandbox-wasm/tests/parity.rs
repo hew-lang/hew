@@ -201,6 +201,15 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/playground/language/compound_assign.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        // Non-finite f64 values (inf, -inf, nan) render identically to native.
+        // Native uses printf("%g") which produces lowercase `inf`, `-inf`, `nan`;
+        // the sandbox VM's renderF64 must match exactly — not JavaScript's
+        // `String(Infinity)` which produces `Infinity` / `NaN` (capitalised).
+        test_name: "f64_nonfinite_render",
+        source_rel: "examples/playground/language/f64_nonfinite_render.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

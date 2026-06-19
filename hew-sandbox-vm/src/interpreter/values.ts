@@ -67,6 +67,20 @@ export function valueFromLiteral(value: JsonValue): VmValue {
   }
 }
 
+/// Render an f64 value to a string matching native Hew output.
+///
+/// Native uses `printf("%g", x)` which produces `inf`, `-inf`, and `nan`
+/// for non-finite values (lowercase). JavaScript's `String()` produces
+/// `Infinity`, `-Infinity`, and `NaN` — mismatching native. This function
+/// maps the non-finite cases to the native-matching forms and falls back to
+/// `String()` for ordinary finite values (where both agree).
+export function renderF64(value: number): string {
+  if (Number.isNaN(value)) return "nan";
+  if (value === Infinity) return "inf";
+  if (value === -Infinity) return "-inf";
+  return String(value);
+}
+
 export function renderStdout(value: VmValue): string {
   switch (value.kind) {
     case "unit":
@@ -76,7 +90,7 @@ export function renderStdout(value: VmValue): string {
     case "i64":
       return value.value.toString();
     case "f64":
-      return String(value.value);
+      return renderF64(value.value);
     case "string":
       return value.value;
     case "actor":

@@ -373,6 +373,76 @@ fn wheel_null_safety() {
     }
 }
 
+// ── Regression: CAP-07 — cancelled overflow head must not hide live entry ──
+
+/// Arm two overflow timers; cancel the earlier one (which becomes the sorted
+/// head).  `next_deadline_ms` must return the later live deadline, not -1.
+/// The later timer must fire when time advances past it.
+#[test]
+fn overflow_cancelled_head_does_not_hide_live_entry_next_deadline() {
+    let _guard = SimtimeGuard::new(0);
+    FIRE_COUNT.store(0, Ordering::SeqCst);
+
+    unsafe {
+        let tw = hew_timer_wheel_new();
+
+        // Both delays > MAX_MS (16384) → overflow list, sorted ascending.
+        // earlier_h is the head (smaller deadline).
+        let earlier_h = hew_timer_wheel_schedule_handle(tw, 17_000, counting_cb, ptr::null_mut());
+        hew_timer_wheel_schedule(tw, 18_000, counting_cb, ptr::null_mut());
+
+        // Cancel the head entry.
+        hew_timer_wheel_cancel(tw, earlier_h.entry, earlier_h.generation);
+
+        // next_deadline_ms must return ~18_000, not -1.
+        let next = hew_timer_wheel_next_deadline_ms(tw);
+        assert!(
+            next > 0,
+            "cancelled overflow head must not make next_deadline_ms return -1; got {next}"
+        );
+        assert!(
+            next > 17_000 && next <= 18_000,
+            "expected ~18_000ms for the live overflow timer, got {next}"
+        );
+
+        // Advance past the live timer and verify it fires.
+        hew_simtime_advance_ms(19_000);
+        let fired = hew_timer_wheel_tick(tw);
+        assert_eq!(
+            fired, 1,
+            "the live overflow timer (18s) must fire; got {fired}"
+        );
+        assert_eq!(FIRE_COUNT.load(Ordering::SeqCst), 1);
+
+        hew_timer_wheel_free(tw);
+    }
+}
+
+/// When all overflow entries are cancelled and no L0/L1 timers exist,
+/// `next_deadline_ms` must return -1.
+#[test]
+fn overflow_all_cancelled_returns_minus_one() {
+    let _guard = SimtimeGuard::new(0);
+
+    unsafe {
+        let tw = hew_timer_wheel_new();
+
+        let h1 = hew_timer_wheel_schedule_handle(tw, 17_000, counting_cb, ptr::null_mut());
+        let h2 = hew_timer_wheel_schedule_handle(tw, 18_000, counting_cb, ptr::null_mut());
+
+        hew_timer_wheel_cancel(tw, h1.entry, h1.generation);
+        hew_timer_wheel_cancel(tw, h2.entry, h2.generation);
+
+        assert_eq!(
+            hew_timer_wheel_next_deadline_ms(tw),
+            -1,
+            "all overflow entries cancelled → no live timers → must return -1"
+        );
+
+        hew_timer_wheel_free(tw);
+    }
+}
+
 #[test]
 fn wheel_many_l0_timers_all_fire() {
     // Stress test: schedule 50 timers in L0 range and verify all fire.

@@ -698,12 +698,21 @@ pub unsafe extern "C" fn hew_timer_wheel_next_deadline_ms(tw: *mut HewTimerWheel
         }
     }
 
-    // Check overflow.
-    if earliest == u64::MAX && !w.overflow.is_null() {
-        // SAFETY: overflow head is valid under lock.
-        unsafe {
-            if (*w.overflow).cancelled == 0 {
-                earliest = (*w.overflow).deadline_ms;
+    // Check overflow: scan past cancelled heads to find the first live entry.
+    // The overflow list is sorted by deadline_ms ascending.  A cancelled head
+    // must not shadow a live entry further down the list — if it did,
+    // next_deadline_ms would return -1 and the ticker would park indefinitely,
+    // never waking to fire the live timer.
+    if earliest == u64::MAX {
+        let mut e = w.overflow;
+        while !e.is_null() {
+            // SAFETY: overflow list nodes are valid under lock.
+            unsafe {
+                if (*e).cancelled == 0 {
+                    earliest = (*e).deadline_ms;
+                    break;
+                }
+                e = (*e).next;
             }
         }
     }

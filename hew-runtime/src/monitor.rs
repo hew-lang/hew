@@ -81,6 +81,29 @@ fn monitor_state() -> &'static MonitorState {
     &crate::runtime::rt_current().monitors
 }
 
+/// Resolve the per-runtime monitor state, tolerating a missing runtime.
+///
+/// The death and cleanup reads (`notify_monitors_on_death`,
+/// `remove_all_monitors_for_actor`, `has_monitors_for_actor`) are reachable from
+/// `hew_actor_trap` and the actor-free teardown, which run with OR without an
+/// installed runtime — the supervisor-cascade unit tests trap a
+/// manually-constructed actor that never installed a runtime guard. When the
+/// monitor table lived in a process-global `LazyLock` these paths always found
+/// an (empty) table and silently did nothing; moving it behind the fail-closed
+/// [`monitor_state`] would instead abort "no runtime installed".
+///
+/// This resolver restores that tolerance: with no runtime there is no per-runtime
+/// table, so there are no monitors to notify, remove, or count, and the caller
+/// no-ops — exactly the old empty-global-table behaviour. The registration
+/// surface (`hew_actor_monitor` / `hew_actor_demonitor`) keeps the fail-closed
+/// [`monitor_state`], since recording a monitor requires its owning runtime
+/// (mirroring the metrics register/mutate vs read split on
+/// [`crate::runtime::rt_current_opt`]).
+#[inline]
+fn monitor_state_opt() -> Option<&'static MonitorState> {
+    crate::runtime::rt_current_opt().map(|rt| &rt.monitors)
+}
+
 #[cfg(test)]
 #[inline]
 fn monitor_table_for_test() -> &'static [PoisonSafeRw<MonitorShard>; MONITOR_SHARDS] {
@@ -291,7 +314,13 @@ pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
 /// dead actor and sends DOWN messages to all monitoring actors.
 pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32) {
     let shard_index = get_shard_index(actor_id);
-    let state = monitor_state();
+    // No runtime → no per-runtime monitor table → no monitors to notify. This
+    // path is reachable from `hew_actor_trap` without an installed runtime
+    // (supervisor-cascade unit tests), and the old process-global table simply
+    // had no entries to sweep there. Tolerate it as before.
+    let Some(state) = monitor_state_opt() else {
+        return;
+    };
 
     // Take all monitors for this actor ID.
     let monitors = state.table[shard_index].access(|shard| {
@@ -365,7 +394,12 @@ impl Drop for NotifyMonitorsHookGuard {
 /// `notify_monitors_on_death` from dereferencing freed memory.
 pub(crate) fn remove_all_monitors_for_actor(actor_id: u64, actor_addr: *mut HewActor) {
     let actor_usize = actor_addr as usize;
-    let state = monitor_state();
+    // Like `notify_monitors_on_death`, this teardown read runs from the actor
+    // free path with OR without an installed runtime. No runtime → no table →
+    // no entries to scrub, matching the old empty-global-table no-op.
+    let Some(state) = monitor_state_opt() else {
+        return;
+    };
 
     // Remove any monitors-on-this-actor entry from its shard.
     let own_shard = get_shard_index(actor_id);
@@ -983,6 +1017,49 @@ mod tests {
             assert!(
                 !shard.terminal_reasons.contains_key(&60_200),
                 "runtime B must not inherit runtime A's terminal reason"
+            );
+        });
+    }
+
+    /// Death-path monitor reads must tolerate a missing runtime, exactly as the
+    /// old process-global table did. `hew_actor_trap` reaches
+    /// `notify_monitors_on_death` (and the free path reaches
+    /// `remove_all_monitors_for_actor`) without an installed runtime in the
+    /// supervisor-cascade unit tests; the fail-closed `monitor_state` resolver
+    /// would abort there. With no runtime there is no table and thus no monitors
+    /// to sweep, so both calls must be silent no-ops rather than panicking.
+    #[test]
+    fn death_path_tolerates_no_runtime() {
+        // No runtime guard installed on this thread. Before the fix the
+        // fail-closed `monitor_state` resolver aborted "no runtime installed"
+        // here; both calls must now return silently. (A global default runtime
+        // installed by a concurrent scheduler test would also be tolerated —
+        // it resolves an empty table and no-ops just the same.)
+        notify_monitors_on_death(70_200, HewActorState::Crashed as i32);
+
+        let actor = create_test_actor(70_200);
+        let ptr = (&raw const actor).cast_mut();
+        remove_all_monitors_for_actor(70_200, ptr);
+    }
+
+    /// With a runtime installed the death path resolves the per-runtime table
+    /// and records the terminal sweep there — confirming the deglobalization is
+    /// intact and the no-runtime tolerance did not flatten it back to a no-op.
+    #[test]
+    fn death_path_with_runtime_records_terminal_reason() {
+        let rt = Box::new(crate::runtime::RuntimeInner::new(
+            crate::scheduler::worker_less_scheduler(),
+        ));
+        // SAFETY: rt lives for the whole entered scope.
+        let _enter = unsafe { crate::runtime::enter(&rt) };
+
+        notify_monitors_on_death(71_200, HewActorState::Crashed as i32);
+
+        monitor_shard_for_runtime_test(&rt, 71_200).read_access(|shard| {
+            assert_eq!(
+                shard.terminal_reasons.get(&71_200).copied(),
+                Some(HewActorState::Crashed as i32),
+                "the installed runtime's monitor table must record the terminal sweep"
             );
         });
     }

@@ -870,31 +870,16 @@ fn cmd_compile(a: &args::CompileArgs) {
     // Dump path: print the requested MIR stage and exit. Useful for
     // spot-checking the lowering during development.
     if let Some(stage) = a.dump_mir.as_deref() {
-        match stage {
-            "raw" => {
-                for func in &pipeline.raw_mir {
-                    println!("{func:#?}");
-                }
-            }
-            "checked" => {
-                // The Checked MIR dump includes the `MirCheck` findings
-                // list. On a function that passes, `checks` is empty —
-                // that emptiness is the load-bearing signal the CLI
-                // rejection path keys off of.
-                for func in &pipeline.checked_mir {
-                    println!("{func:#?}");
-                }
-            }
-            "elab" => {
-                for func in &pipeline.elaborated_mir {
-                    println!("{func:#?}");
-                }
-            }
+        let dump_stage = match stage {
+            "raw" => hew_mir::DumpStage::Raw,
+            "checked" => hew_mir::DumpStage::Checked,
+            "elab" => hew_mir::DumpStage::Elab,
             other => {
                 eprintln!("Error: unknown --dump-mir stage `{other}`");
                 std::process::exit(2);
             }
-        }
+        };
+        print!("{}", hew_mir::dump_mir(&pipeline, dump_stage));
         return;
     }
 

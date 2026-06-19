@@ -3201,7 +3201,7 @@ fn run_whole_tuple_of_handles_drops_each_member_once() {
 // ---------------------------------------------------------------------------
 
 /// Compile `source` with `--dump-mir elab` and return the number of
-/// `Stream::close` / `Sink::close` drops in `callee`'s elaborated body. The
+/// `kind=duplex_half_close` drops in `callee`'s elaborated body. The
 /// oracle: a callee returning an owned-handle aggregate must report ZERO.
 fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
     let dir = support::tempdir();
@@ -3217,17 +3217,21 @@ fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
         String::from_utf8_lossy(&out.stderr),
     );
     let dump = String::from_utf8_lossy(&out.stdout);
-    // Slice the dump to the named callee function (from its `name:` header to
-    // the next function header) so closes belonging to `main` (which legitimately
-    // closes its own destructured handles) are not counted.
-    let header = format!("name: \"{callee}\"");
+    // Slice the dump to the named callee function (from its `fn <name> ->` header
+    // to the next function header) so closes belonging to `main` (which
+    // legitimately closes its own destructured handles) are not counted.
+    // The structured MIR renderer emits `fn {name} -> {ret}` (not `name: "{name}"`).
+    let header = format!("fn {callee} ->");
     let start = dump
         .find(&header)
         .unwrap_or_else(|| panic!("callee `{callee}` not found in MIR dump:\n{dump}"));
     let rest = &dump[start + header.len()..];
-    let end = rest.find("\n    name: \"").map_or(rest.len(), |i| i);
+    // Next function starts with `\nfn ` in the structured renderer.
+    let end = rest.find("\nfn ").map_or(rest.len(), |i| i);
     let body = &rest[..end];
-    body.matches("Stream::close").count() + body.matches("Sink::close").count()
+    // Structured renderer emits `kind=duplex_half_close(recv)` for Stream drops
+    // and `kind=duplex_half_close(send)` for Sink drops.
+    body.matches("duplex_half_close").count()
 }
 
 /// Compile `source` with `--dump-mir elab` and return the number of owned
@@ -3238,10 +3242,11 @@ fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
 ///
 /// A separate counter from `callee_handle_close_drops` because handle-place
 /// members register in `binding_locals` as their handle Place (not a `Local`),
-/// elaborate a `LambdaActorRelease`/`Duplex::close` drop (not `Stream::close`),
-/// AND fail closed at codegen-front (the `SendHalf`/`RecvHalf`/`LambdaActorHandle`
-/// Place lowering is unwired), so the runtime negative-control the Stream/Sink
-/// shapes use is impossible — this dump-mir assertion is the only oracle.
+/// elaborate a `kind=lambda_actor_release`/`kind=duplex_close` drop (not
+/// `kind=duplex_half_close`), AND fail closed at codegen-front (the
+/// `SendHalf`/`RecvHalf`/`LambdaActorHandle` Place lowering is unwired), so
+/// the runtime negative-control the Stream/Sink shapes use is impossible — this
+/// dump-mir assertion is the only oracle.
 fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
     let dir = support::tempdir();
     let hew_src = dir.path().join("oracle.hew");
@@ -3256,14 +3261,17 @@ fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
         String::from_utf8_lossy(&out.stderr),
     );
     let dump = String::from_utf8_lossy(&out.stdout);
-    let header = format!("name: \"{callee}\"");
+    // Structured renderer emits `fn {name} -> {ret}` (not `name: "{name}"`).
+    let header = format!("fn {callee} ->");
     let start = dump
         .find(&header)
         .unwrap_or_else(|| panic!("callee `{callee}` not found in MIR dump:\n{dump}"));
     let rest = &dump[start + header.len()..];
-    let end = rest.find("\n    name: \"").map_or(rest.len(), |i| i);
+    // Next function starts with `\nfn ` in the structured renderer.
+    let end = rest.find("\nfn ").map_or(rest.len(), |i| i);
     let body = &rest[..end];
-    body.matches("LambdaActorRelease").count()
+    // Structured renderer emits `kind=lambda_actor_release` (not `LambdaActorRelease`).
+    body.matches("lambda_actor_release").count()
 }
 
 /// Oracle: a `(Sink, Stream)` tuple let-bound then returned BY NAME
@@ -3530,7 +3538,7 @@ fn blocking_remote_ask_in_main_keeps_blocking_terminator() {
         "`peer.ask()` from main must NOT flip to SuspendingRemoteAsk:\n{dump}"
     );
     assert!(
-        dump.contains("RemoteAsk"),
+        dump.contains("RemoteAsk") || dump.contains("remote_ask"),
         "`peer.ask()` from main must keep the blocking RemoteAsk terminator:\n{dump}"
     );
 }

@@ -1513,12 +1513,28 @@ impl<'src> Parser<'src> {
                             }
                             let _ = self.expect(&Token::RightParen);
                         }
+                        "json_name" if self.eat(&Token::Equal) => {
+                            if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
+                                modifiers.json_name = Some(unquote_str(s).to_string());
+                                self.advance();
+                            } else {
+                                self.error("expected string literal after json_name=".to_string());
+                            }
+                        }
                         "yaml" if self.eat(&Token::LeftParen) => {
                             if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
                                 modifiers.yaml_name = Some(unquote_str(s).to_string());
                                 self.advance();
                             }
                             let _ = self.expect(&Token::RightParen);
+                        }
+                        "yaml_name" if self.eat(&Token::Equal) => {
+                            if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
+                                modifiers.yaml_name = Some(unquote_str(s).to_string());
+                                self.advance();
+                            } else {
+                                self.error("expected string literal after yaml_name=".to_string());
+                            }
                         }
                         _ => {
                             self.restore_pos(saved);

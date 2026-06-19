@@ -1124,16 +1124,20 @@ pub unsafe extern "C" fn hew_task_scope_completion_observe(
         return SCOPE_JOIN_READY;
     }
 
-    // Park: one box ref + one arbiter ref per outstanding child observer, plus a
-    // single registrant ref released after the registration loop so a child that
-    // completes mid-loop cannot reclaim the box before every observer is wired.
-    // SAFETY: `reg` is live; retain one arbiter ref the box owns for its lifetime.
+    // Park. Refcounting:
+    //   * ONE arbiter ref the box owns for its whole lifetime (retained here,
+    //     released once when the last box ref drops in scope_join_waiter_release).
+    //   * `refs` counts BOX references: one per registered child observer plus a
+    //     single registrant guard ref. The guard is released after the wiring loop
+    //     so a child completing mid-loop cannot reclaim the box (and with it the
+    //     arbiter ref) before every observer is installed.
+    // SAFETY: `reg` is live; retain the single box-owned arbiter ref.
     unsafe { crate::await_cancel::hew_await_cancel_retain(reg) };
     let waiter = Box::into_raw(Box::new(ScopeJoinWaiter {
         reg,
         actor,
         pending: AtomicUsize::new(pending),
-        // refs = one per observer (set below) + one registrant guard ref.
+        // refs = one per child observer (wired below) + one registrant guard ref.
         refs: AtomicUsize::new(pending + 1),
     }));
 

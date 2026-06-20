@@ -79,7 +79,13 @@ impl TypeVar {
         Self(NEXT_TYPE_VAR.fetch_add(1, Ordering::Relaxed))
     }
 
-    /// Reset the type variable counter (for testing).
+    /// Reset the type variable counter.
+    ///
+    /// Only available in test builds. Production code must never reset the
+    /// counter; doing so outside a single-threaded test context causes two
+    /// distinct inference variables to share the same ID (a silent
+    /// non-determinism source when nextest runs tests in parallel).
+    #[cfg(test)]
     pub fn reset() {
         NEXT_TYPE_VAR.store(0, Ordering::Relaxed);
     }
@@ -1767,7 +1773,6 @@ mod tests {
 
     #[test]
     fn test_contains_var() {
-        TypeVar::reset();
         let v = TypeVar::fresh();
         let ty = Ty::Tuple(vec![Ty::I32, Ty::Var(v)]);
         assert!(ty.contains_var(v));
@@ -1776,7 +1781,6 @@ mod tests {
 
     #[test]
     fn test_substitute() {
-        TypeVar::reset();
         let v = TypeVar::fresh();
         let ty = Ty::Tuple(vec![Ty::Var(v), Ty::I32]);
         let result = ty.substitute(v, &Ty::Bool);
@@ -1816,7 +1820,6 @@ mod tests {
     fn test_borrow_contains_var_recurses_through_pointee() {
         // Guards the type-inference-boundary invariant: an unresolved `Ty::Var`
         // inside `&T` must be detected by the occurs/contains check, not skipped.
-        TypeVar::reset();
         let v = TypeVar::fresh();
         let borrow = Ty::Borrow {
             pointee: Box::new(Ty::Var(v)),
@@ -1854,7 +1857,6 @@ mod tests {
     fn test_borrow_substitute_recurses_through_nested_pointee() {
         // `map_children` (via `substitute`) must recurse through a borrow into a
         // nested generic pointee: `&Vec<$v>` with `$v := i32` becomes `&Vec<i32>`.
-        TypeVar::reset();
         let v = TypeVar::fresh();
         let borrow = Ty::Borrow {
             pointee: Box::new(Ty::Named {
@@ -1880,7 +1882,6 @@ mod tests {
 
     #[test]
     fn test_has_inference_var() {
-        TypeVar::reset();
         let inferred = Ty::Var(TypeVar::fresh());
         let ty = Ty::Function {
             params: vec![Ty::I32],
@@ -2077,7 +2078,6 @@ mod tests {
 
     #[test]
     fn test_substitute_nested() {
-        TypeVar::reset();
         let v = TypeVar::fresh();
         let ty = Ty::Named {
             builtin: None,
@@ -2097,7 +2097,6 @@ mod tests {
 
     #[test]
     fn test_substitute_no_match() {
-        TypeVar::reset();
         let v1 = TypeVar::fresh();
         let v2 = TypeVar::fresh();
         let ty = Ty::Tuple(vec![Ty::Var(v1), Ty::I32]);
@@ -2108,7 +2107,6 @@ mod tests {
 
     #[test]
     fn test_contains_var_in_function() {
-        TypeVar::reset();
         let v = TypeVar::fresh();
         let ty = Ty::Function {
             params: vec![Ty::I32],
@@ -2119,7 +2117,6 @@ mod tests {
 
     #[test]
     fn test_contains_var_in_option() {
-        TypeVar::reset();
         let v = TypeVar::fresh();
         let ty = Ty::option(Ty::Var(v));
         assert!(ty.contains_var(v));
@@ -2133,7 +2130,6 @@ mod tests {
 
     #[test]
     fn test_substitution_insert_rejects_direct_cycle() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
 
@@ -2147,7 +2143,6 @@ mod tests {
 
     #[test]
     fn test_substitution_resolve_returns_error_on_cycle() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v1 = TypeVar::fresh();
         let v2 = TypeVar::fresh();
@@ -2160,7 +2155,6 @@ mod tests {
 
     #[test]
     fn test_apply_subst_returns_error_on_cycle() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v1 = TypeVar::fresh();
         let v2 = TypeVar::fresh();

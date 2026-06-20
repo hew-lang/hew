@@ -222,6 +222,13 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/playground/language/f64_finite_render.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        // Tuples lowered as anonymous records with positional fields _0, _1, …
+        // so record.new / record.get handle construction and let-destructure.
+        test_name: "tuple_values",
+        source_rel: "examples/playground/types/tuple_values.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

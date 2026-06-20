@@ -60,8 +60,8 @@ fn curated_playground_examples_run_under_wasi() {
     let manifest = load_playground_manifest();
     assert_eq!(
         manifest.len(),
-        29,
-        "expected the curated 29-snippet manifest"
+        35,
+        "expected the curated 35-snippet manifest"
     );
 
     let mut actual_unsupported: Vec<&str> = manifest

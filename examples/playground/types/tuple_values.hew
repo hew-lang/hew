@@ -1,0 +1,12 @@
+//! @name Tuple Values
+//! @description Tuple construction and positional destructure via let-binding
+
+fn main() {
+    let t = (1, 2, 3);
+    let (a, b, c) = t;
+    println(a + b + c);
+    let pair = (true, 42);
+    let (flag, n) = pair;
+    println(flag);
+    println(n);
+}

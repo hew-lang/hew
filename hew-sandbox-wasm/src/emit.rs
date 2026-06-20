@@ -839,9 +839,36 @@ impl<'a> PackageEmitter<'a> {
                         .collect::<Vec<_>>()
                         .join(".")
                 );
+                // Register a RecordLayout with positional fields _0, _1, … so
+                // the VM's `record.new` / `record.get` ops can handle tuples.
+                // `or_insert` is idempotent — repeated calls for the same
+                // tuple shape are no-ops.
+                let fields: Vec<FieldLayout> = params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, ty_id)| FieldLayout {
+                        name: format!("_{i}"),
+                        ty: ty_id.clone(),
+                        index: i,
+                    })
+                    .collect();
+                let mut indexes = BTreeMap::new();
+                for i in 0..items.len() {
+                    indexes.insert(format!("_{i}"), i);
+                }
+                self.record_field_indexes
+                    .entry(id.clone())
+                    .or_insert(indexes);
+                self.record_layouts
+                    .entry(id.clone())
+                    .or_insert(RecordLayout {
+                        id: id.clone(),
+                        name: ty.user_facing().to_string(),
+                        fields,
+                    });
                 (
                     id,
-                    "opaque".to_string(),
+                    "record".to_string(),
                     ty.user_facing().to_string(),
                     params,
                 )
@@ -1256,6 +1283,54 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                             None,
                         );
                         self.bindings.insert(name.clone(), local);
+                    }
+                } else if let Pattern::Tuple(sub_patterns) = &pattern.0 {
+                    // Tuple destructure: `let (a, b, c) = expr;`
+                    // The tuple was lowered as an anonymous record with positional
+                    // fields _0, _1, …; emit `record.get` at each index and bind
+                    // each sub-pattern's identifier.  Only `Pattern::Identifier`
+                    // and `Pattern::Wildcard` sub-patterns are supported here;
+                    // nested destructure hits emit_unsupported.
+                    if let Some(value) = value {
+                        let value_local = self.lower_expr(value)?;
+                        let tuple_ty = self.ty_for_expr(value);
+                        let elem_tys: Vec<Ty> = match &tuple_ty {
+                            Ty::Tuple(items) => items.clone(),
+                            _ => vec![],
+                        };
+                        let sub_patterns = sub_patterns.clone();
+                        for (i, sub_pat) in sub_patterns.iter().enumerate() {
+                            match &sub_pat.0 {
+                                Pattern::Identifier(name) => {
+                                    let elem_ty = elem_tys.get(i).cloned().unwrap_or(Ty::Unit);
+                                    let dst = self.declare_local(
+                                        Some(name.clone()),
+                                        &elem_ty,
+                                        false,
+                                        Some(sub_pat.1.clone()),
+                                    );
+                                    self.emit_instruction(
+                                        "record.get",
+                                        Some(dst.clone()),
+                                        vec![
+                                            Operand::local(value_local.clone()),
+                                            Operand::literal(i as u64),
+                                        ],
+                                        Some(span.clone()),
+                                        None,
+                                    );
+                                    self.bindings.insert(name.clone(), dst);
+                                }
+                                Pattern::Wildcard => {
+                                    // discard element — no binding needed
+                                }
+                                _ => {
+                                    // nested destructure not yet supported
+                                    self.emit_unsupported(Some(span.clone()));
+                                    return Ok(());
+                                }
+                            }
+                        }
                     }
                 } else {
                     self.emit_unsupported(Some(span));
@@ -1931,8 +2006,30 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 );
                 Ok(dst)
             }
-            Expr::Tuple(_)
-            | Expr::ArrayRepeat { .. }
+            Expr::Tuple(items) => {
+                // Tuples are lowered as anonymous records with positional fields
+                // _0, _1, … so the VM's `record.new` / `record.get` ops handle
+                // them the same way as named structs.  `type_id_for_ty` already
+                // registers the RecordLayout and field-index map for every
+                // Ty::Tuple it encounters.
+                let ty = self.ty_for_expr(expr);
+                let type_id = self.package.type_id_for_ty(&ty);
+                let mut args = vec![Operand::ty(type_id)];
+                for item in items {
+                    let local = self.lower_expr(item)?;
+                    args.push(Operand::local(local));
+                }
+                let dst = self.temp_local(&ty, Some(span.clone()));
+                self.emit_instruction(
+                    "record.new",
+                    Some(dst.clone()),
+                    args,
+                    Some(span.clone()),
+                    None,
+                );
+                Ok(dst)
+            }
+            Expr::ArrayRepeat { .. }
             | Expr::MapLiteral { .. }
             | Expr::Lambda { .. }
             | Expr::SpawnLambdaActor { .. }

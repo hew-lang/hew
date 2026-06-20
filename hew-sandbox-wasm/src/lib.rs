@@ -74,6 +74,9 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // Finite f64 rendering: negative zero, %g fixed/scientific thresholds,
     // 6-sig-fig rounding. Pins renderF64's %g-equivalent finite path.
     "f64_finite_render",
+    // Tuple construction and positional let-destructure lowered as anonymous
+    // records with fields _0, _1, … using record.new / record.get.
+    "tuple_values",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";

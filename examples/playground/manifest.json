@@ -440,5 +440,18 @@
       "sandbox": "runnable",
       "wasi": "runnable"
     }
+  },
+  {
+    "id": "types/tuple_values",
+    "category": "types",
+    "name": "Tuple Values",
+    "description": "Tuple construction and positional destructure via let-binding",
+    "source_path": "types/tuple_values.hew",
+    "expected_path": "types/tuple_values.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
   }
 ]

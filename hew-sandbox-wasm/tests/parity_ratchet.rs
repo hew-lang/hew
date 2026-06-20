@@ -377,10 +377,7 @@ const CONSTRUCTS: &[Construct] = &[
     Construct {
         id: "tuple value + tuple-let destructure",
         probe: "fn main() {\n    let t = (1, 2, 3);\n    let (a, b, c) = t;\n    println(a + b + c);\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "Expr::Tuple has no emit arm and tuple-pattern Let hits emit_unsupported -> trap",
-        },
+        coverage: Coverage::Parity("tuple_values"),
     },
     Construct {
         id: "expression-statement if-let (result discarded)",

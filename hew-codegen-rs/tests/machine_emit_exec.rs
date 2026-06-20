@@ -133,6 +133,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
@@ -179,6 +180,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,

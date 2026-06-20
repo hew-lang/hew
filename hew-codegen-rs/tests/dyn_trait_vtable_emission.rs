@@ -95,6 +95,7 @@ fn impl_method_stub(name: &str, ret: ResolvedTy) -> RawMirFunction {
         decisions: vec![],
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
@@ -494,6 +495,7 @@ fn coercion_site_and_vtable_definition_share_same_symbol() {
         decisions: vec![],
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,

@@ -117,6 +117,7 @@ fn floor_fn(name: &str, id: &str, params: Vec<ResolvedTy>, ret: ResolvedTy) -> R
         decisions: vec![],
         intrinsic_id: Some(id.to_string()),
         await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
@@ -253,6 +254,7 @@ fn driver_main() -> RawMirFunction {
         decisions: vec![],
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
@@ -351,6 +353,7 @@ fn driver_copy_no_free() -> RawMirFunction {
         decisions: vec![],
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,

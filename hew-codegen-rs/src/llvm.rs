@@ -45929,6 +45929,7 @@ mod tests {
             decisions: Vec::<DecisionFact>::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -46318,6 +46319,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -46360,6 +46362,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -46441,6 +46444,7 @@ mod tests {
                 decisions: Vec::<DecisionFact>::new(),
                 intrinsic_id: None,
                 await_deadline_ns: std::collections::HashMap::new(),
+                suspend_kinds: std::collections::HashMap::new(),
 
                 lambda_actor_user_param_locals: Vec::new(),
                 span: None,
@@ -46569,6 +46573,7 @@ mod tests {
                 decisions: Vec::<DecisionFact>::new(),
                 intrinsic_id: None,
                 await_deadline_ns: std::collections::HashMap::new(),
+                suspend_kinds: std::collections::HashMap::new(),
 
                 lambda_actor_user_param_locals: Vec::new(),
                 span: None,
@@ -46671,6 +46676,7 @@ mod tests {
             decisions: Vec::<DecisionFact>::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -46805,6 +46811,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -46933,6 +46940,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -47013,6 +47021,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -47087,6 +47096,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -47364,6 +47374,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -47573,6 +47584,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -48277,6 +48289,7 @@ mod tests {
             decisions: Vec::<DecisionFact>::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -48367,6 +48380,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -48482,6 +48496,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -48517,6 +48532,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -48599,6 +48615,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -49108,6 +49125,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -49172,6 +49190,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -49235,6 +49254,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -49296,6 +49316,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
@@ -49351,6 +49372,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
@@ -49432,6 +49454,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
@@ -49490,6 +49513,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
@@ -51602,6 +51626,7 @@ mod tests {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -51750,6 +51775,7 @@ mod tests {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -52102,6 +52128,7 @@ mod tests {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -52387,6 +52414,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -52635,6 +52663,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -52825,6 +52854,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -53012,6 +53042,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -53123,6 +53154,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -53150,6 +53182,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -53179,6 +53212,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -54089,6 +54123,7 @@ fn main() {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,

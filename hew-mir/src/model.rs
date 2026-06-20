@@ -1640,6 +1640,103 @@ pub struct ThirFunction {
     pub statements: Vec<MirStatement>,
 }
 
+/// The per-carrier payload of a collapsed suspension point, stored in the
+/// [`RawMirFunction::suspend_kinds`] side-table keyed by the id of the basic
+/// block whose terminator is the bare [`Terminator::Suspend`].
+///
+/// The ten PURE-`{resume, cleanup}` suspension carriers
+/// (`SuspendingAsk`/`SuspendingRead`/`SuspendingAccept`/`SuspendingCallClosure`/
+/// `SuspendingStreamNext`/`SuspendingStreamSend`/`SuspendingChannelRecv`/
+/// `SuspendingRemoteAsk`/`SuspendingTaskAwait`/`SuspendingSleep`) carry no CFG
+/// successor edge beyond `resume` + `cleanup`, so the suspension SUBSTRATE they
+/// share — the `coro.suspend` + 3-way switch — is exactly [`Terminator::Suspend`].
+/// Their distinguishing PAYLOAD (which readiness source to register, which
+/// result slot to bind on resume) lives here in the side-table rather than on a
+/// dedicated terminator variant — following the `await_deadline_ns` precedent
+/// (a side-table, not a carrier field). Codegen reads this at the `Suspend`
+/// dispatch and routes to the SAME `emit_suspending_*` ramp it always did, so
+/// the emitted IR is byte-identical to the dedicated-carrier shape.
+///
+/// `SuspendingSelect` (per-arm `body_block`s) and `SuspendingScopeDeadline`
+/// (`timeout_body_block`) carry real EXTRA CFG successor edges a bare `Suspend`
+/// cannot hold, so they stay distinct terminators and are NOT represented here.
+///
+/// Each variant mirrors its carrier's non-edge fields exactly. The `resume`,
+/// `cleanup`, and `is_final` edges live on [`Terminator::Suspend`]; the
+/// `await … | after d` deadline (ns) continues to live in
+/// [`RawMirFunction::await_deadline_ns`] keyed by the same block id.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SuspendKind {
+    /// Non-blocking `await actor.method(value)` (`SuspendingAsk`).
+    Ask {
+        actor: Place,
+        msg_type: i32,
+        value: Place,
+        result_dest: Place,
+        reply_dest: Place,
+        error_dest: Place,
+    },
+    /// Non-blocking `await conn.read()` (`SuspendingRead`).
+    Read {
+        conn: Place,
+        result_dest: Place,
+        deadline_result_dest: Option<Place>,
+        error_dest: Option<Place>,
+        to_string: bool,
+    },
+    /// Non-blocking `await listener.accept()` (`SuspendingAccept`).
+    Accept {
+        listener: Place,
+        result_dest: Place,
+        deadline_result_dest: Option<Place>,
+        error_dest: Option<Place>,
+    },
+    /// Suspendable-callee driver `await closure(args...)` (`SuspendingCallClosure`).
+    CallClosure {
+        callee: Place,
+        args: Vec<Place>,
+        ret_ty: ResolvedTy,
+        result_dest: Option<Place>,
+    },
+    /// Non-blocking `await stream.recv()` (`SuspendingStreamNext`).
+    StreamNext {
+        stream: Place,
+        result_dest: Place,
+        elem_ty: ResolvedTy,
+        deadline_result_dest: Option<Place>,
+        error_dest: Option<Place>,
+    },
+    /// Non-blocking `await sink.send(value)` (`SuspendingStreamSend`).
+    StreamSend { sink: Place, value: Place },
+    /// Non-blocking `await rx.recv()` over a `std::channel` (`SuspendingChannelRecv`).
+    ChannelRecv {
+        receiver: Place,
+        result_dest: Place,
+        elem_ty: ResolvedTy,
+        deadline_result_dest: Option<Place>,
+        error_dest: Option<Place>,
+    },
+    /// Non-blocking `await remote.ask(...)` across nodes (`SuspendingRemoteAsk`).
+    RemoteAsk {
+        actor: Place,
+        msg_type: i32,
+        value: Place,
+        timeout_ms: Place,
+        result_dest: Place,
+        reply_dest: Place,
+        error_dest: Place,
+        reply_ty: ResolvedTy,
+    },
+    /// Non-blocking `await t` over a scope-owned child `Task<T>` (`SuspendingTaskAwait`).
+    TaskAwait {
+        scope: Place,
+        task: Place,
+        result_dest: Option<Place>,
+    },
+    /// Non-blocking `sleep_ms(d)` / `sleep(d)` (`SuspendingSleep`).
+    Sleep { duration_ms: Place },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawMirFunction {
     pub name: String,
@@ -1681,6 +1778,18 @@ pub struct RawMirFunction {
     /// shapes the resume edge to `Err(AskError::Timeout)` on expiry. A side-table
     /// (not a carrier field) keeps the eight `Suspending*` terminators unchanged.
     pub await_deadline_ns: std::collections::HashMap<u32, i64>,
+    /// Per-block payload for collapsed suspension points. Maps the id of each
+    /// basic block whose terminator is the bare [`Terminator::Suspend`] AND
+    /// originated from one of the ten PURE-`{resume, cleanup}` suspension
+    /// carriers to the carrier's distinguishing payload ([`SuspendKind`]).
+    /// Empty for functions with no collapsed suspension carrier (a bare
+    /// `Terminator::Suspend` with no entry is a generator / synthetic substrate
+    /// suspend, which codegen lowers directly via `coro.suspend`). Codegen reads
+    /// this at the `Suspend` dispatch to route to the matching `emit_suspending_*`
+    /// ramp. A side-table (not carrier fields) collapses the ten carriers onto
+    /// one terminator while keeping the emitted IR byte-identical — the same
+    /// reasoning as `await_deadline_ns` above.
+    pub suspend_kinds: std::collections::HashMap<u32, SuspendKind>,
     /// User-visible parameter locals for a `FunctionCallConv::LambdaActorBody`
     /// function, in declaration order. Each entry is the index of a
     /// `Place::Local(N)` whose `locals[N]` carries the user-visible type

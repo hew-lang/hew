@@ -7,13 +7,17 @@
 ///
 /// ## Determinism
 ///
-/// `RawMirFunction.await_deadline_ns` (`HashMap`) and `.instr_spans`
-/// (`BTreeMap`) are side-tables that do not represent IR shape.
-/// `instr_spans` is already a `BTreeMap` so its iteration order is
-/// deterministic. `await_deadline_ns` is deliberately OMITTED from
-/// the dump: rendering a `HashMap` field would make the golden corpus
-/// nondeterministic. If a consumer needs deadline info, it is available
-/// via the `{:#?}` Debug dump or directly from the struct field.
+/// `RawMirFunction.await_deadline_ns` (`HashMap`), `.suspend_kinds`
+/// (`HashMap`), and `.instr_spans` (`BTreeMap`) are side-tables that do not
+/// represent IR shape. `instr_spans` is already a `BTreeMap` so its iteration
+/// order is deterministic. `await_deadline_ns` and `suspend_kinds` are both
+/// keyed by block id, so the collapsed `Terminator::Suspend` renderer looks up
+/// `suspend_kinds` by the block being rendered (a single deterministic lookup,
+/// not a `HashMap` iteration) to recover the carrier payload for the dump. The
+/// raw maps themselves are NOT iterated into the dump: rendering a `HashMap`
+/// field would make the golden corpus nondeterministic. If a consumer needs the
+/// raw tables, they are available via the `{:#?}` Debug dump or the struct
+/// fields directly.
 ///
 /// ## Exhaustiveness (fail-closed)
 ///
@@ -1815,6 +1819,7 @@ mod tests {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: vec![],
             span: None,
             instr_spans: std::collections::BTreeMap::new(),
@@ -1971,6 +1976,7 @@ mod tests {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: vec![],
             span: None,
             instr_spans: std::collections::BTreeMap::new(),

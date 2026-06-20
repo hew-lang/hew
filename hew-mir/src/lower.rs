@@ -35,7 +35,7 @@ use crate::model::{
     FieldOffset, FloatWidth, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch,
     LambdaCapture, MirCheck, MirConst, MirConstValue, MirDiagnostic, MirDiagnosticKind,
     MirStatement, Place, PointerWidth, RawMirFunction, SelectArm, SelectArmKind, Strategy,
-    Terminator, ThirFunction, TraitObjectStorage, TrapKind,
+    SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind,
 };
 
 type TaskEntryAdapterSymbols = Rc<RefCell<HashSet<String>>>;
@@ -3405,6 +3405,7 @@ fn synthesize_machine_step_fn(
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
         instr_spans: ::std::collections::BTreeMap::new(),
@@ -4797,6 +4798,7 @@ fn lower_function(
         // emitting the bodyless placeholder (the D343 fail-OPEN no-op).
         intrinsic_id: func.intrinsic_id.clone(),
         await_deadline_ns: builder.await_deadline_ns.clone(),
+        suspend_kinds: builder.suspend_kinds.clone(),
         lambda_actor_user_param_locals: Vec::new(),
         span: Some((
             u32::try_from(func.span.start).unwrap_or(u32::MAX),
@@ -5405,6 +5407,14 @@ struct Builder {
     /// registration. Carried as a side-table (not a carrier/Terminator field) so
     /// the eight `Suspending*` carriers stay unchanged (codegen-locals shape).
     await_deadline_ns: HashMap<u32, i64>,
+    /// Maps the id of a basic block that ends in one of the ten collapsed
+    /// suspension carriers to the carrier's distinguishing payload
+    /// ([`SuspendKind`]). Populated at each `finish_current_block(Suspending*)`
+    /// site for a PURE-`{resume, cleanup}` carrier; copied into
+    /// [`RawMirFunction::suspend_kinds`] at finalize. A side-table (not a
+    /// carrier/Terminator field) so the carriers collapse onto one
+    /// `Terminator::Suspend` while the emitted IR stays byte-identical.
+    suspend_kinds: HashMap<u32, SuspendKind>,
     owned_locals: Vec<(hew_hir::BindingId, String, ResolvedTy)>,
     /// Generator/`AsyncGenerator` owned bindings tagged with the HIR scope they
     /// were declared in, recorded so a per-scope-exit `hew_gen_free` fires when
@@ -16650,6 +16660,7 @@ impl Builder {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
@@ -17152,6 +17163,7 @@ impl Builder {
             decisions: builder.decisions.clone(),
             intrinsic_id: None,
             await_deadline_ns: builder.await_deadline_ns.clone(),
+            suspend_kinds: builder.suspend_kinds.clone(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
@@ -20959,6 +20971,7 @@ impl Builder {
             decisions: builder.decisions.clone(),
             intrinsic_id: None,
             await_deadline_ns: builder.await_deadline_ns.clone(),
+            suspend_kinds: builder.suspend_kinds.clone(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
@@ -21108,6 +21121,7 @@ impl Builder {
             decisions: builder.decisions.clone(),
             intrinsic_id: None,
             await_deadline_ns: builder.await_deadline_ns.clone(),
+            suspend_kinds: builder.suspend_kinds.clone(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
@@ -21583,6 +21597,7 @@ impl Builder {
             decisions: body_builder.decisions.clone(),
             intrinsic_id: None,
             await_deadline_ns: body_builder.await_deadline_ns.clone(),
+            suspend_kinds: body_builder.suspend_kinds.clone(),
             lambda_actor_user_param_locals: user_param_local_ids.clone(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
@@ -22256,6 +22271,7 @@ impl Builder {
             decisions: body_builder.decisions.clone(),
             intrinsic_id: None,
             await_deadline_ns: body_builder.await_deadline_ns.clone(),
+            suspend_kinds: body_builder.suspend_kinds.clone(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),

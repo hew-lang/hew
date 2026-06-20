@@ -29746,88 +29746,97 @@ fn emit_suspending_accept_terminator<'ctx>(
     let accept_bind_bb = fn_ctx
         .ctx
         .append_basic_block(parent, "suspending_accept_bind");
-    // Abandon-cleanup edge: when a parked SuspendingAccept continuation is
-    // DESTROYED without resuming, `coro.suspend`'s case-1 edge runs. Route it to
-    // an accept-specific block that CANCELS + FREES the creator ref before
-    // joining the shared cleanup (identical discipline to the read ramp).
-    let abandon_cleanup_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_accept_abandon_cleanup");
-    let cc = crate::coro::CoroContext {
-        ctx: fn_ctx.ctx,
-        llvm_mod: fn_ctx.llvm_mod,
-        builder: &fn_ctx.builder,
-        function: parent,
-        handle: coro.handle,
-        id_token: coro.id_token,
-    };
-    cc.emit_suspend(
+    // ── abandon_cleanup edge: when a parked SuspendingAccept continuation is
+    // DESTROYED without resuming, `coro.suspend`'s case-1 edge runs. The abandon
+    // continuation CANCELS + FREES the creator ref before joining the shared
+    // cleanup (identical discipline to the read ramp).
+    emit_suspend_point(
+        fn_ctx,
+        coro,
+        parent,
         accept_bind_bb,
-        abandon_cleanup_bb,
-        coro.suspend_return_block,
-        false,
         "suspending_accept",
+        "suspending_accept_abandon_cleanup",
+        "suspending accept abandon -> shared cleanup br",
+        || {
+            // ── abandon_cleanup: cancel + free the read slot, then join the shared
+            // coro cleanup (frame-free + coro.end). ─────────────────────────────
+            if let Some(reg) = reg {
+                let reg_cancel = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_await_cancel_cancel",
+                )?;
+                let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
+                let no_wake = i32_ty.const_zero();
+                fn_ctx
+                    .builder
+                    .build_call(
+                        reg_cancel,
+                        &[reg.into(), cancelled_status.into(), no_wake.into()],
+                        "suspending_accept_abandon_reg_cancel",
+                    )
+                    .llvm_ctx("hew_await_cancel_cancel (accept abandon) call")?;
+                let reg_free = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_await_cancel_free",
+                )?;
+                fn_ctx
+                    .builder
+                    .build_call(
+                        reg_free,
+                        &[reg.into()],
+                        "suspending_accept_abandon_reg_free",
+                    )
+                    .llvm_ctx("hew_await_cancel_free (accept abandon) call")?;
+            }
+            fn_ctx
+                .builder
+                .build_call(
+                    slot_cancel,
+                    &[slot.into()],
+                    "suspending_accept_abandon_cancel",
+                )
+                .llvm_ctx("hew_read_slot_cancel (abandon) call")?;
+            fn_ctx
+                .builder
+                .build_call(slot_free, &[slot.into()], "suspending_accept_abandon_free")
+                .llvm_ctx("hew_read_slot_free (abandon) call")?;
+            Ok(())
+        },
+        || emit_suspending_accept_bind(fn_ctx, &term, slot, slot_free, reg, resume_bb, parent),
     )?;
 
-    // ── abandon_cleanup: cancel + free the read slot, then join the shared coro
-    // cleanup (frame-free + coro.end). ─────────────────────────────────────────
-    fn_ctx.builder.position_at_end(abandon_cleanup_bb);
-    if let Some(reg) = reg {
-        let reg_cancel = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_cancel",
-        )?;
-        let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
-        let no_wake = i32_ty.const_zero();
-        fn_ctx
-            .builder
-            .build_call(
-                reg_cancel,
-                &[reg.into(), cancelled_status.into(), no_wake.into()],
-                "suspending_accept_abandon_reg_cancel",
-            )
-            .llvm_ctx("hew_await_cancel_cancel (accept abandon) call")?;
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                reg_free,
-                &[reg.into()],
-                "suspending_accept_abandon_reg_free",
-            )
-            .llvm_ctx("hew_await_cancel_free (accept abandon) call")?;
-    }
-    fn_ctx
-        .builder
-        .build_call(
-            slot_cancel,
-            &[slot.into()],
-            "suspending_accept_abandon_cancel",
-        )
-        .llvm_ctx("hew_read_slot_cancel (abandon) call")?;
-    fn_ctx
-        .builder
-        .build_call(slot_free, &[slot.into()], "suspending_accept_abandon_free")
-        .llvm_ctx("hew_read_slot_free (abandon) call")?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(coro.cleanup_block)
-        .llvm_ctx("suspending accept abandon -> shared cleanup br")?;
+    Ok(())
+}
 
-    // ── accept_bind: the reactor resumed us (enqueue_resume). The accepted
-    // connection handle is already deposited in `slot`; `hew_read_slot_take_handle`
-    // returns it (as the pointer-shaped `Connection`) on the fast path. Store it
-    // into `result_dest`, release the creator ref, and branch to the MIR resume
-    // block. When a deadline is active, first resolve the arbiter (complete vs
-    // timed-out) before binding. ───────────────────────────────────────────────
-    fn_ctx.builder.position_at_end(accept_bind_bb);
+/// Resume-bind continuation of [`emit_suspending_accept_terminator`]: the reactor
+/// resumed us (enqueue_resume). The accepted connection handle is already
+/// deposited in `slot`; `hew_read_slot_take_handle` returns it (as the
+/// pointer-shaped `Connection`) on the fast path. Store it into `result_dest`,
+/// release the creator ref, and branch to the MIR resume block. When a deadline
+/// is active, first resolve the arbiter (complete vs timed-out) before binding.
+/// Split out so the suspend-point seam owns the suspend + abandon scaffolding
+/// while this owns the value routing.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the full accept-bind edge — deadline arbiter + the Connection \
+              binding — is kept in one place so the deadline resolution and the \
+              value routing it gates are read together"
+)]
+fn emit_suspending_accept_bind<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    term: &SuspendingAcceptEmit,
+    slot: inkwell::values::PointerValue<'ctx>,
+    slot_free: FunctionValue<'ctx>,
+    reg: Option<inkwell::values::PointerValue<'ctx>>,
+    resume_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    parent: FunctionValue<'ctx>,
+) -> CodegenResult<()> {
+    let i32_ty = fn_ctx.ctx.i32_type();
     if let Some(reg) = reg {
         let complete = intern_runtime_decl(
             fn_ctx.ctx,

@@ -390,6 +390,7 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::SendHalf
             | BuiltinType::RecvHalf
             | BuiltinType::LambdaActorHandle
+            | BuiltinType::LambdaPid
             | BuiltinType::CrashInfo
             | BuiltinType::CrashAction
             | BuiltinType::SendError

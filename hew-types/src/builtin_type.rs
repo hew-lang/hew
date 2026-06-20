@@ -39,6 +39,15 @@ pub enum BuiltinType {
     SendHalf,
     RecvHalf,
     LambdaActorHandle,
+    /// `LambdaPid<M, R>` — the user-visible handle for a lambda actor
+    /// (`actor |m: M| -> R { .. }`). PID-like: "a pid you ask, M in → R out".
+    /// Unifies the conceptual model with `LocalPid`/`RemotePid` (the `Pid`
+    /// family) rather than the `Duplex` channel substrate. `handle_family =
+    /// ActorPid` (not `Duplex`) so the channel-only surface (`.recv()`,
+    /// `.send_half()`, `.recv_half()`) is never exposed on an actor handle.
+    /// Lowers to `*mut HewLambdaActorHandle`; the MIR routes it through
+    /// `Place::LambdaActorHandle` to `hew_lambda_actor_send` / `_ask`.
+    LambdaPid,
     CrashInfo,
     CrashAction,
     SendError,
@@ -165,6 +174,7 @@ builtin_types! {
     SendHalf => "SendHalf",
     RecvHalf => "RecvHalf",
     LambdaActorHandle => "LambdaActorHandle",
+    LambdaPid => "LambdaPid",
     CrashInfo => "CrashInfo",
     CrashAction => "CrashAction",
     SendError => "SendError",
@@ -202,6 +212,7 @@ impl BuiltinType {
             | Self::SendHalf
             | Self::RecvHalf
             | Self::LambdaActorHandle
+            | Self::LambdaPid
             | Self::CancellationToken => BuiltinTypeMarker::Resource,
             Self::ActorState | Self::MachineState => BuiltinTypeMarker::Linear,
             Self::CrashInfo => BuiltinTypeMarker::BitCopy,
@@ -224,7 +235,8 @@ impl BuiltinType {
             | Self::BoxedActor
             | Self::SendHalf
             | Self::RecvHalf
-            | Self::LambdaActorHandle => Some("close"),
+            | Self::LambdaActorHandle
+            | Self::LambdaPid => Some("close"),
             Self::CancellationToken => Some("release"),
             _ => None,
         }
@@ -233,7 +245,9 @@ impl BuiltinType {
     #[must_use]
     pub const fn handle_family(self) -> Option<BuiltinHandleFamily> {
         match self {
-            Self::Pid | Self::LocalPid | Self::RemotePid => Some(BuiltinHandleFamily::ActorPid),
+            Self::Pid | Self::LocalPid | Self::RemotePid | Self::LambdaPid => {
+                Some(BuiltinHandleFamily::ActorPid)
+            }
             Self::HewActor | Self::BoxedActor => Some(BuiltinHandleFamily::ActorRuntime),
             Self::Duplex | Self::HewDuplex | Self::LambdaActorHandle => {
                 Some(BuiltinHandleFamily::Duplex)
@@ -275,7 +289,8 @@ impl BuiltinType {
             | Self::StreamPair
             | Self::Duplex
             | Self::HewDuplex
-            | Self::LambdaActorHandle => 2,
+            | Self::LambdaActorHandle
+            | Self::LambdaPid => 2,
             Self::Pid
             | Self::HewActor
             | Self::HewSendHalf
@@ -303,7 +318,9 @@ impl BuiltinType {
     #[must_use]
     pub const fn roles(self) -> &'static [BuiltinTypeRole] {
         match self {
-            Self::ActorRef | Self::Actor => &[BuiltinTypeRole::ActorDispatchLocal],
+            Self::ActorRef | Self::Actor | Self::LambdaPid => {
+                &[BuiltinTypeRole::ActorDispatchLocal]
+            }
             Self::LocalPid => &[
                 BuiltinTypeRole::ActorDispatchLocal,
                 BuiltinTypeRole::SupervisorLocalPid,
@@ -452,6 +469,14 @@ mod tests {
                 Some(BuiltinHandleFamily::ActorPid),
                 1,
                 &[BuiltinTypeRole::ActorDispatchRemote][..],
+            ),
+            (
+                BuiltinType::LambdaPid,
+                BuiltinTypeMarker::Resource,
+                Some("close"),
+                Some(BuiltinHandleFamily::ActorPid),
+                2,
+                &[BuiltinTypeRole::ActorDispatchLocal][..],
             ),
             (
                 BuiltinType::Sender,

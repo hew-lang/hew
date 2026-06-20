@@ -815,6 +815,27 @@ impl TraitRegistry {
                 _ => false,
             },
 
+            // LambdaPid<M, R>: the user-visible lambda-actor handle.
+            // Send/Sync iff BOTH M: Send AND R: Send (message and reply cross
+            // the actor boundary).
+            // NOT Copy (move-only resource — last-handle drop stops the actor).
+            // NOT Clone (a lambda actor handle is not split or duplicated by
+            //   cloning; the runtime owns strong/weak ref discipline, §5.9).
+            // Resource: yes — dropping the last handle runs the stop-on-last-
+            //   handle-drop protocol (`hew_lambda_actor_release`).
+            Ty::Named {
+                builtin: Some(BuiltinType::LambdaPid),
+                args,
+                ..
+            } if args.len() == 2 => match marker {
+                MarkerTrait::Send | MarkerTrait::Sync => {
+                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
+                        && self.implements_marker_guarded(&args[1], MarkerTrait::Send, visiting)
+                }
+                MarkerTrait::Resource => true,
+                _ => false,
+            },
+
             // Tuple: marker holds if ALL elements have it
             Ty::Tuple(elems) => elems
                 .iter()

@@ -2321,7 +2321,7 @@ fi
 
 # Accept (worker-free read-deadline oracle): `await conn.read() | after 60ms`
 # where the peer stays silent. Under HEW_WORKERS=1 the read parks worker-free and
-# the deadline timer resumes the actor with Err(IoError::TimedOut) -> exit 7.
+# the deadline timer resumes the actor with Err(NetError::TimedOut) -> exit 7.
 compile_accept "await_read_deadline_deferred"
 read_timeout_bin="${ROOT}/.tmp/compile-out/await_read_deadline_deferred"
 read_deadline_status=0
@@ -2356,7 +2356,7 @@ fi
 
 # Accept (read_string worker-free timeout oracle): `await conn.read_string() | after 60ms`
 # where the peer stays silent. Under HEW_WORKERS=1 the read parks worker-free and
-# the deadline timer resumes the actor with Err(IoError::TimedOut) -> exit 7.
+# the deadline timer resumes the actor with Err(NetError::TimedOut) -> exit 7.
 # Proves the to_string deadline path does NOT apply bytes-to-string on the timeout edge.
 compile_accept "await_read_string_deadline_timeout"
 read_str_timeout_bin="${ROOT}/.tmp/compile-out/await_read_string_deadline_timeout"
@@ -2490,7 +2490,7 @@ fi
 
 # Accept (accept-deadline worker-free timeout oracle): `await ln.accept() | after 60ms`
 # where no client connects. Under HEW_WORKERS=1 the accept parks worker-free and
-# the deadline timer resumes the actor with Err(IoError::TimedOut) -> exit 7.
+# the deadline timer resumes the actor with Err(NetError::TimedOut) -> exit 7.
 compile_accept "await_accept_deadline_timeout"
 accept_timeout_bin="${ROOT}/.tmp/compile-out/await_accept_deadline_timeout"
 accept_timeout_status=0

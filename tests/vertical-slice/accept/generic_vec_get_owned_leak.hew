@@ -1,0 +1,36 @@
+// #1929 Stage 2 leak proof: `Vec<T>.push`/`.get` for a NON-Copy record element
+// under a type parameter, exercised 100k times. Each iteration builds a fresh
+// owned `Name`, pushes it into a `Vec<Name>` through the generic owned ABI,
+// gets it back out via a returning generic helper (the ownership escape), reads
+// the field, and drops both the returned record and the Vec at scope exit.
+//
+// The owned getter (`hew_vec_get_owned`) borrows the live slot; returning it
+// transfers ownership to the caller while the Vec's scope-exit
+// `hew_vec_free_owned` also releases the element. If those two paths aliased one
+// heap string a double-free would SIGABRT within a few iterations; a missed drop
+// would grow RSS linearly across 100k iterations. A clean run with flat RSS is
+// the exactly-once witness for the generic owned-element ABI.
+type Name { label: string; }
+
+fn first<T>(v: Vec<T>) -> T {
+    v.get(0)
+}
+
+fn roundtrip(print_it: bool) -> i64 {
+    let vn: Vec<Name> = Vec::new();
+    vn.push(Name { label: "owned" });
+    let got = first(vn);
+    if print_it {
+        println(got.label);
+    }
+    got.label.len()
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    while i < 100000 {
+        roundtrip(i == 0);
+        i = i + 1;
+    }
+    0
+}

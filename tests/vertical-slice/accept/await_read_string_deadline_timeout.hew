@@ -1,6 +1,6 @@
 // Accept fixture (NEW-6c): `await conn.read_string() | after d` — deadline
 // elapses before the peer writes, so the suspending read resolves to
-// `Err(IoError::TimedOut(_))`.
+// `Err(NetError::TimedOut(_))`.
 //
 // Run under `HEW_WORKERS=1`: the reader parks worker-free on the read slot,
 // the main thread keeps the accepted peer silent, and the deadline timer
@@ -8,7 +8,9 @@
 // and hang.
 //
 // Exit-code contract: timeout Err(TimedOut) -> 7; unexpected Ok -> 42;
-// wrong IoError variant -> 8; no actor exit -> main fallback 99.
+// wrong NetError variant -> 8; no actor exit -> main fallback 99.
+import std::net;
+
 import std::net::{Listener};
 
 extern "C" {
@@ -24,7 +26,7 @@ actor Reader {
             Ok(_body) => 42,
             Err(e) => {
                 match e {
-                    IoError::TimedOut(_code) => 7,
+                    NetError::TimedOut(_code) => 7,
                     _ => 8,
                 }
             },

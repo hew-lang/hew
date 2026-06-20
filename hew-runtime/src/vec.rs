@@ -2494,6 +2494,46 @@ pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::f
     }
 }
 
+/// Push an owned element by MOVE: byte-copy it into a new slot and transfer
+/// ownership of its heap to the Vec WITHOUT running the descriptor `clone_fn`.
+///
+/// Unlike [`hew_vec_push_owned`] (COPY-IN: deep-clone, source retains its own
+/// heap), this is the move-in variant for a FRESH, single-use element source —
+/// the array-literal desugar (`[Boxed { .. }, ..]`) constructs each element
+/// solely to hand it to the Vec, so deep-cloning would allocate a second copy
+/// and leak the original (the transient `record_init` temp has no binding and
+/// no scope-exit drop). Moving the bytes transfers the element's owned heap
+/// into the slot; the caller's source is dead after the call and must NOT be
+/// dropped (the MIR routes the array-literal owned push here exactly because
+/// the element operand is a throwaway temp). `hew_vec_free_owned` releases the
+/// element from the Vec slot, so the heap is freed exactly once.
+///
+/// # Safety
+///
+/// `v` must be an owned-element `HewVec` (created by
+/// [`hew_vec_new_with_elem_layout`]). `data` must point to at least
+/// `descriptor.size` readable bytes whose ownership is transferred to the Vec.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_push_owned_move(v: *mut HewVec, data: *const core::ffi::c_void) {
+    cabi_guard!(v.is_null() || data.is_null());
+    // SAFETY: guards reject null pointers; descriptor presence is validated.
+    unsafe {
+        let layout = owned_descriptor(v);
+        let elem_size = layout.size;
+        let len = (*v).len;
+        let Some(new_len) = len.checked_add(1) else {
+            libc::abort();
+        };
+        ensure_cap_raw(v, new_len);
+        let dst = (*v).data.add(len * elem_size);
+        // Move-in: byte-copy transfers the element (BitCopy fields, enum tag
+        // bytes, AND owned-heap pointers) into the slot. No `clone_fn` — the
+        // source's heap is now owned by the Vec; the source is dead.
+        core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
+        (*v).len = new_len;
+    }
+}
+
 /// Return a borrowed pointer to an owned element at `index`. The pointer aliases
 /// the live buffer (BORROW) — the caller must NOT free or drop it, and it is
 /// valid only until the next mutation. Aborts on out-of-bounds.

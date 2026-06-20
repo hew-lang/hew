@@ -1,0 +1,15 @@
+// CAP-02 slice 2: a DIRECT call to an imported generic free function with
+// inferred type args. Before the fix this hit
+// `E_NOT_YET_IMPLEMENTED: MIR lowering for function call`. Two instantiations
+// of the SAME generic fn at distinct concrete types (i64, string) prove the
+// per-instantiation mangling actually distinguishes the two emitted symbols —
+// not a one-symbol collapse. Prints only concrete-typed values (no abstract
+// `T`), so the gate keys on the call-lowering fix alone.
+import hew::genhelpers;
+
+fn main() {
+    let a = genhelpers.first([1, 2, 3]);
+    let b = genhelpers.first(["x", "y", "z"]);
+    println(f"{a}");
+    println(f"{b}");
+}

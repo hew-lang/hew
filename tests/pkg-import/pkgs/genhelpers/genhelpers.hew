@@ -1,0 +1,6 @@
+// Generic free function exported for the cross-module generic direct-call
+// path. A direct call `genhelpers.first([1, 2, 3])` infers `T` and dispatches
+// to the per-instantiation mangled symbol emitted in the root module.
+pub fn first<T>(xs: [T]) -> T {
+    xs[0]
+}

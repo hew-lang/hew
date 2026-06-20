@@ -5320,17 +5320,52 @@ impl LowerCtx {
         call_site: SiteId,
     ) {
         let Expr::Identifier(name) = callee_expr else {
-            // Only direct-name callees are candidates for top-level-fn
-            // monomorphisation. Method calls, indirect calls through
-            // bindings, and complex callee expressions are out of scope
-            // for G-1.a.
+            // Only direct-name callees are candidates here. A `module.fn(...)`
+            // direct call parses as `Expr::MethodCall`, not `Expr::Call`, so it
+            // never reaches `lower_regular_call`/this site; its
+            // monomorphisation is registered by the
+            // `RewriteModuleQualifiedToFunction` arm of `lower_method_call`,
+            // which calls `register_free_fn_monomorphisation` with the mangled
+            // qualified symbol. Indirect calls through bindings and other
+            // complex callee expressions are out of scope.
             return;
         };
         let registry_name = if self.lookup(name).is_none() {
             self.imported_rewrite_symbol(name).unwrap_or(name)
         } else {
             name
-        };
+        }
+        .to_string();
+        self.register_free_fn_monomorphisation(&registry_name, call_span, call_site);
+    }
+
+    /// Register the per-instantiation monomorphisation of a generic top-level
+    /// free function whose callee resolved to `registry_name` in `fn_registry`.
+    ///
+    /// This is the single authority both direct-call callee shapes feed:
+    /// - a bare `Expr::Identifier` callee (`first([1,2,3])`,
+    ///   `helper([1,2,3])` after import rewrite) via `record_monomorphisation`;
+    /// - a module-qualified `module.fn([1,2,3])` callee (which parses as
+    ///   `Expr::MethodCall` → `RewriteModuleQualifiedToFunction`) with the
+    ///   mangled qualified symbol (`module$fn`).
+    ///
+    /// `registry_name` is the un-mono symbol the emitted `BindingRef.name`
+    /// carries; MIR re-mangles it with `call_site_type_args[call_site]`, so
+    /// `MonoKey.origin_name == registry_name` keeps the registry's
+    /// `mangled_name` and the MIR-side mangling spine identical.
+    ///
+    /// Reads type args exclusively from the checker side-table
+    /// (`call_type_args` at `mk_key(call_span)`) — never re-inferred from the
+    /// AST (LESSONS `checker-authority`) — and fails closed
+    /// (`MonomorphisationCallTypeArgsViolation`) on a poisoned boundary
+    /// conversion. No-op for non-generic, catalog-linkage, or unregistered
+    /// callees, and for sites the checker did not record.
+    fn register_free_fn_monomorphisation(
+        &mut self,
+        registry_name: &str,
+        call_span: &std::ops::Range<usize>,
+        call_site: SiteId,
+    ) {
         let Some(entry) = self.fn_registry.get(registry_name) else {
             // Callee is not a top-level user fn — skip (builtin,
             // runtime-symbol, or unresolved). Filtering on `fn_registry`
@@ -18406,6 +18441,21 @@ impl LowerCtx {
                 // codegen `add_function`) see the same mangled key.  Stdlib
                 // `hew_*` symbols contain no dots, so mangling is identity.
                 let symbol = crate::mangle_dotted_name(&c_symbol);
+                // A direct call to an imported GENERIC free fn
+                // (`module.first([1,2,3])`) needs the per-instantiation
+                // monomorphisation registered here — the same authority the
+                // bare-identifier callee feeds through `record_monomorphisation`
+                // — or MIR's `Call` arm finds neither a `call_site_type_args`
+                // entry (mangled-dispatch) nor the mangled name in
+                // `module_fn_names`, and the callee falls through to the
+                // "function call" NYI. The helper seeds `call_site_type_args`
+                // with the checker-recorded args and inserts the `MonoKey`
+                // whose `origin_name == symbol`, so the registry's
+                // `mangled_name` matches what MIR re-mangles from the un-mono
+                // `BindingRef.name` below. No-op for non-generic callees, so
+                // safe to call unconditionally (mirrors the by-value
+                // `RewriteToFunction` arm's `record_var_self_direct_monomorphisation`).
+                self.register_free_fn_monomorphisation(&symbol, &span, site);
                 let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                 let ret_ty = self
                     .expr_types

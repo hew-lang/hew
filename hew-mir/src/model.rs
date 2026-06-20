@@ -1114,12 +1114,30 @@ fn ty_contains_heap_owning_inner(
         // these as heap-owning (`CowValue` / `AffineResource`); this is the
         // matching composite-recursion leaf so the two cannot disagree
         // (`dedup-semantic-boundary`).
+        //
+        // A `Vec<T>` / `HashMap<K, V>` / `HashSet<T>` is likewise a heap-owning
+        // handle regardless of its element types: even `Vec<i64>` owns its
+        // backing buffer (`hew_vec_free` releases it). A record/enum/tuple FIELD
+        // of such a type therefore makes the whole composite heap-owning — e.g.
+        // `type Boxed { payload: Vec<i64> }` owns heap through `payload` even
+        // though `i64` is BitCopy. Without the collection arm the type-arg
+        // recursion below answers `false` (the args are BitCopy), the composite
+        // is mis-classified non-heap-owning, its `Vec<Boxed>` is built as a plain
+        // (shallow `hew_vec_free`) vec, and the per-element `payload` buffers
+        // leak. `ValueClass::of_ty` already classifies these builtins as
+        // `CowValue` for any element type, so the two authorities must agree.
         ResolvedTy::String
         | ResolvedTy::Bytes
         | ResolvedTy::CancellationToken
         | ResolvedTy::Named {
             builtin:
-                Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
+                Some(
+                    hew_types::BuiltinType::Generator
+                    | hew_types::BuiltinType::AsyncGenerator
+                    | hew_types::BuiltinType::Vec
+                    | hew_types::BuiltinType::HashMap
+                    | hew_types::BuiltinType::HashSet,
+                ),
             ..
         } => true,
         ResolvedTy::Named { name, args, .. } => {

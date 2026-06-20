@@ -596,6 +596,24 @@ pub fn is_fresh_owned_string_producer(symbol: &str) -> bool {
             | "hew_u64_to_string"
             | "hew_float_to_string"
             | "hew_bool_to_string"
+            // --- f-string Display-dispatch CATALOG producers ---
+            // An f-string interpolant (`f"{n}"`) lowers to the catalog symbol
+            // `to_string_<ty>` (`hew-hir` `lower_display_dispatch`), which codegen
+            // maps to the `hew_<ty>_to_string` runtime fn above — a fresh
+            // `malloc_cstring` at rc==1. The drop-derivation scans the MIR stream,
+            // which carries the catalog presentation, so the producer must be
+            // recognised under BOTH names or the interpolation result temp (and a
+            // `let s = f"{n}"` binding) is never admitted to a scope-exit
+            // `hew_string_drop` and leaks (one buffer per interpolated value).
+            | "to_string_i32"
+            | "to_string_i64"
+            | "to_string_u8"
+            | "to_string_u16"
+            | "to_string_u32"
+            | "to_string_u64"
+            | "to_string_f64"
+            | "to_string_bool"
+            | "to_string_char"
             // --- Refcounted-retain producers (+1 owner aliasing a live buffer) ---
             | "hew_string_clone"
             | "hew_vec_get_str"

@@ -191,6 +191,29 @@ fixtures=(
   # over-strict "is missing required method(s): base" rejection of the
   # separate-supertrait-impl pattern.
   imported_redeclared_super_separate_impl_accept
+  # CAP-02 slice 2: a DIRECT call to an imported generic free fn with inferred
+  # type args (`genhelpers.first([1, 2, 3])`). This parses as a method-call and
+  # lowers through the module-qualified rewrite arm, which previously registered
+  # no monomorphisation — so MIR found neither the mangled name in
+  # `module_fn_names` nor a `call_site_type_args` entry and fell through to the
+  # "function call" E_NOT_YET_IMPLEMENTED. Two instantiations of the SAME fn at
+  # distinct concrete types (i64, string) prove the per-instantiation mangling
+  # distinguishes the two emitted symbols (no one-symbol collapse). Prints only
+  # concrete-typed values, so the gate keys on the call-lowering fix alone.
+  generic_freefn_direct_call
+  # CAP-02 slice 2: a lambda whose body wraps the same imported-generic direct
+  # call, then invoked. Reproduced the IDENTICAL "function call" NYI at the same
+  # MIR site; the monomorphisation recording walks the lambda body's call sites
+  # the same way, so the single fix closes both.
+  generic_freefn_lambda_wrap
+  # CAP-02 slice 2: a `Vec<owned-record>` arg crossing the imported-generic
+  # `first` call. The element `Boxed` owns a heap array, so the Vec arg and the
+  # returned element exercise the owned-element drop ABI at the cross-module
+  # mono boundary — caller and emitted specialised body must agree on
+  # owned-vs-BitCopy or the drop falls through the codegen fail-closed
+  # (`container-abi-ctor-op-agreement`). Reading `b.payload[0]` back proves the
+  # element survived the call end-to-end.
+  generic_freefn_owned_element
 )
 
 for fixture in "${fixtures[@]}"; do

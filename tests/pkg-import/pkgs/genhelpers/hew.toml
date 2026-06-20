@@ -1,0 +1,6 @@
+[package]
+name = "hew::genhelpers"
+version = "0.1.0"
+description = "In-tree fixture package exporting a generic free function for the cross-module generic direct-call path"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

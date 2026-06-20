@@ -6874,7 +6874,26 @@ impl Builder {
     /// path) is NOT treated as an owned-Vec element.
     fn named_elem_owns_heap(&self, ty: &ResolvedTy, visiting: &mut HashSet<String>) -> bool {
         match ty {
-            ResolvedTy::String | ResolvedTy::Bytes => true,
+            // `string` / `bytes` are heap leaves. A `Vec` / `HashMap` /
+            // `HashSet` is a heap-owning handle regardless of element type: a
+            // record/enum field of one of these owns heap even when every
+            // element is BitCopy (`type Boxed { payload: [i64] }` owns its
+            // `payload` buffer). Mirror the same arm in
+            // `crate::model::ty_contains_heap_owning` and codegen's
+            // `resolved_ty_contains_heap_leaf`, and `ValueClass::of_ty` (all
+            // classify these builtins as heap-owning for any element)
+            // (`dedup-semantic-boundary`).
+            ResolvedTy::String
+            | ResolvedTy::Bytes
+            | ResolvedTy::Named {
+                builtin:
+                    Some(
+                        hew_types::BuiltinType::Vec
+                        | hew_types::BuiltinType::HashMap
+                        | hew_types::BuiltinType::HashSet,
+                    ),
+                ..
+            } => true,
             ResolvedTy::Tuple(elems) => {
                 elems.iter().any(|e| self.named_elem_owns_heap(e, visiting))
             }
@@ -9712,7 +9731,28 @@ impl Builder {
                 ) && target_symbol == "hew_vec_push_layout"
                     && self.vec_receiver_has_owned_element(&receiver.ty)
                 {
-                    "hew_vec_push_owned".to_string()
+                    // Array literals are HIR-desugared to pushes into a synthetic
+                    // Vec temp; the element operand is a FRESH, single-use
+                    // `record_init` temp constructed solely for the Vec (even a
+                    // named-binding element `[a, ..]` is re-constructed into a
+                    // throwaway temp first). A COPY-IN deep clone
+                    // (`hew_vec_push_owned`) would then leak that temp's owned
+                    // heap — it has no binding and no scope-exit drop to retain
+                    // the original (`container-ingress-ownership-is-per-container`
+                    // COPY-IN retain assumes a tracked source). Route the
+                    // array-literal owned push to the MOVE-in variant, which
+                    // transfers the element's heap into the slot without a clone;
+                    // the source temp is then dead. A user-authored
+                    // `v.push(existing_owned)` keeps the COPY-IN clone (its source
+                    // binding lives on and retains its own drop).
+                    if matches!(
+                        &receiver.kind,
+                        HirExprKind::BindingRef { name, .. } if name.starts_with("__hew_array_")
+                    ) {
+                        "hew_vec_push_owned_move".to_string()
+                    } else {
+                        "hew_vec_push_owned".to_string()
+                    }
                 } else {
                     target_symbol.clone()
                 };
@@ -30676,6 +30716,7 @@ fn is_vec_receiver_borrow_symbol(callee: &str) -> bool {
             | "hew_vec_push_layout"
             | "hew_vec_push_ptr"
             | "hew_vec_push_owned"
+            | "hew_vec_push_owned_move"
             | "hew_vec_get_bool"
             | "hew_vec_get_i8"
             | "hew_vec_get_u8"

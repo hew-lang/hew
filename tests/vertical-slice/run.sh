@@ -789,6 +789,27 @@ run_fixture_path_expect_status "${ROOT}/tests/vertical-slice/reject/std_panic_wr
 grep -q 'cron.parse: invalid expression' "${stderr_output}"
 run_accept_expect_status "std_panic_wrappers_success" 0
 
+# F1.3: a trap in main/free-fn context must emit a diagnostic to stderr and
+# never be silent. The fixture triggers an out-of-bounds Vec index in main;
+# hew_trap_with_code emits "hew: trap in main context: <kind>" before the
+# process terminates. Exit is 132 (SIGILL+128 on x86_64) or 133 (SIGTRAP+128
+# on aarch64/macOS) from the llvm.trap terminator.
+run_accept_expect_trap "crash_main_context_diagnostic"
+grep -q 'hew: trap in main context' "${stderr_output}"
+
+# F4.3: an actor crash must name the function/context in the diagnostic, not
+# emit an opaque msg_type integer. The fixture spawns an actor that triggers
+# an OOB trap in its handler; handle_crash_recovery_impl must resolve the
+# handler name from the registry ("Crasher::on_trigger") rather than printing
+# "msg_type=-N". Exit 0 (main returns after sleep; crash is unsupervised).
+run_accept_expect_status "crash_actor_context_diagnostic" 0
+grep -q 'Crasher' "${stderr_output}"
+if grep -q 'msg_type=-' "${stderr_output}"; then
+  echo "crash_actor_context_diagnostic: stderr still contains opaque msg_type=-N format" >&2
+  cat "${stderr_output}" >&2
+  exit 1
+fi
+
 run_accept_expect_status "directory_module_call" 7
 
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/unresolved_symbol.hew" >"${reject_output}" 2>&1; then

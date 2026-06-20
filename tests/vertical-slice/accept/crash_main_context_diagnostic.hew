@@ -1,0 +1,17 @@
+// F1.3 proving fixture: a trap in main/free-fn context must never be silent.
+//
+// hew_trap_with_code is called by the codegen-emitted IR for the OOB bounds
+// check. When no actor recovery context is active (main/free-fn context),
+// it emits "hew: trap in main context: IndexOutOfBounds" to stderr before
+// the caller's llvm.trap terminates the process.
+//
+// run.sh asserts:
+//   1. Exit code is 132 (SIGILL+128 on x86_64) or 133 (SIGTRAP+128 on aarch64).
+//   2. stderr contains "hew: trap in main context" — the diagnostic is present.
+fn main() -> i64 {
+    let xs: Vec<i64> = Vec::new();
+    xs.push(42);
+    // Index 1 is out of bounds (only index 0 exists) — triggers IndexOutOfBounds trap.
+    let _ = xs[1];
+    0
+}

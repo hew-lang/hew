@@ -243,12 +243,43 @@ pub(crate) fn emit_runtime_failure_output(
         print!("{stdout}");
     }
     if stderr.is_empty() {
-        // The child died without saying why (e.g. a signal-killed arithmetic
-        // trap). Synthesise an explanation so the failure is not silent.
+        // The child died silently (e.g. classic signal-killed arithmetic trap
+        // with no stderr). Synthesise an explanation.
         eprintln!("{}", describe_runtime_failure(exit_code, signal));
+    } else if signal.is_some() || is_runtime_trap_stderr(stderr) {
+        // Two equivalent cases for which we synthesise a user-facing prefix:
+        //
+        // 1. Unix: child was killed by a signal (F1.3 path on Linux/macOS —
+        //    `hew_trap_with_code` emits "hew: trap in main context: …" then
+        //    the default SIGILL handler terminates the process). The Unix
+        //    signal number is available via `signal`.
+        //
+        // 2. Windows: `hew_trap_with_code` emits the runtime-internal message
+        //    then the caller's `llvm.trap` terminates the process as
+        //    STATUS_ILLEGAL_INSTRUCTION (0xC000001D). There is no Unix signal;
+        //    the cause is detectable only via the stderr message prefix and the
+        //    NTSTATUS exit code.
+        //
+        // In both cases, emit the synthesised user-facing description first so
+        // the output always contains "runtime error" and the named cause, then
+        // forward the child's raw runtime-internal stderr for additional context.
+        eprintln!("{}", describe_runtime_failure(exit_code, signal));
+        eprint!("{stderr}");
     } else {
         eprint!("{stderr}");
     }
+}
+
+/// Return `true` when the child's stderr is a runtime-internal trap diagnostic
+/// emitted by `hew_trap_with_code` (F1.3). The pattern
+/// `"hew: trap in main context:"` is the sole source of this prefix.
+///
+/// Used to detect the Windows trap path, where no Unix signal is available but
+/// the child's stderr names the cause before `llvm.trap` terminates the process.
+pub(crate) fn is_runtime_trap_stderr(stderr: &str) -> bool {
+    stderr
+        .trim_start()
+        .starts_with("hew: trap in main context:")
 }
 
 fn normalize_captured_output(output: &str) -> String {
@@ -1876,6 +1907,34 @@ mod tests {
             !msg.contains("divide-by-zero"),
             "false positive cause: {msg}"
         );
+    }
+
+    #[test]
+    fn is_runtime_trap_stderr_matches_trap_prefix() {
+        // F1.3 runtime message from hew_trap_with_code.
+        assert!(is_runtime_trap_stderr(
+            "hew: trap in main context: DivideByZero\n"
+        ));
+        assert!(is_runtime_trap_stderr(
+            "hew: trap in main context: IndexOutOfBounds\n"
+        ));
+        assert!(is_runtime_trap_stderr(
+            "hew: trap in main context: IntegerOverflow\n"
+        ));
+    }
+
+    #[test]
+    fn is_runtime_trap_stderr_rejects_non_trap_messages() {
+        // Ordinary process stderr (e.g. panic output) must not be detected.
+        assert!(!is_runtime_trap_stderr(
+            "thread 'main' panicked at foo.rs:1"
+        ));
+        assert!(!is_runtime_trap_stderr(""));
+        assert!(!is_runtime_trap_stderr("error: something went wrong\n"));
+        // Partial match is not enough.
+        assert!(!is_runtime_trap_stderr(
+            "hew: some other prefix: DivideByZero"
+        ));
     }
 
     #[cfg(unix)]

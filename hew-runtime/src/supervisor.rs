@@ -353,8 +353,8 @@ pub use crate::internal::types::{
 /// matching the `HEW_TRAP_HEAP_EXCEEDED` precedent. Outside a dispatch
 /// context (top-level `main`, `hew eval` REPL, JIT preview) there is no
 /// recovery context; `try_direct_longjmp_with_code` is a no-op and this
-/// function returns. The caller's `llvm.trap` then aborts the process
-/// with SIGILL, preserving today's behaviour for non-actor crashes.
+/// function returns, then emits a diagnostic naming the trap kind before
+/// the caller's `llvm.trap` terminates the process.
 ///
 /// # Safety
 ///
@@ -370,6 +370,29 @@ pub unsafe extern "C" fn hew_trap_with_code(code: i32) {
     // recovery context internally; it is a no-op when none is active.
     unsafe {
         crate::signal::try_direct_longjmp_with_code(code);
+    }
+    // If we reach here, there is no actor recovery context — this trap
+    // occurred in main/free-fn context. Emit a diagnostic before the
+    // caller's `llvm.trap` terminates the process so the crash is never
+    // silent (F1.3 / fail-closed-with-diagnostic requirement).
+    //
+    // eprintln! is safe here: hew_trap_with_code is called from generated
+    // code, not from a signal handler, so the stderr lock is available.
+    let kind = trap_kind_name(code);
+    eprintln!("hew: trap in main context: {kind}");
+}
+
+/// Map a trap code to a human-readable trap kind name.
+fn trap_kind_name(code: i32) -> &'static str {
+    match code {
+        HEW_TRAP_HEAP_EXCEEDED => "HeapExceeded",
+        HEW_TRAP_INTEGER_OVERFLOW => "IntegerOverflow",
+        HEW_TRAP_DIVIDE_BY_ZERO => "DivideByZero",
+        HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE => "SignedMinDivNegOne",
+        HEW_TRAP_SHIFT_OUT_OF_RANGE => "ShiftOutOfRange",
+        HEW_TRAP_INDEX_OUT_OF_BOUNDS => "IndexOutOfBounds",
+        HEW_TRAP_ACTOR_SEND_FAILED => "ActorSendFailed",
+        _ => "Trap",
     }
 }
 

@@ -1,0 +1,34 @@
+// F4.3 proving fixture: an actor crash must name the function/context in the
+// diagnostic, not emit an opaque msg_type integer.
+//
+// The Crasher actor traps in its `on_trigger` handler via an out-of-bounds Vec
+// index (hardware fault — SIGILL on x86_64, SIGTRAP on aarch64/macOS). The
+// signal handler longjmps back to the scheduler, which calls
+// handle_crash_recovery_impl. The diagnostic must include the actor type name
+// "Crasher" (resolved from the dispatch-fn registry populated by codegen at
+// startup), not the opaque "msg_type=-N" format.
+//
+// A sleep after the send gives the scheduler time to deliver the message and
+// run the crash recovery path before the process exits.
+//
+// run.sh asserts:
+//   1. Exit is 0 (main returns normally after sleep; the crash is supervised).
+//   2. stderr contains "Crasher" (the actor type name, at minimum).
+//   3. stderr does NOT contain "msg_type=-" (the old opaque format is gone).
+actor Crasher {
+    receive fn on_trigger(x: i64) {
+        let xs: Vec<i64> = Vec::new();
+        xs.push(x);
+        // Index 1 is out of bounds — hardware trap via hew_trap_with_code.
+        let _ = xs[1];
+    }
+}
+
+fn main() -> i64 {
+    let c = spawn Crasher;
+    // Fire-and-forget: send the message that will crash the actor.
+    c.on_trigger(99);
+    // Give the scheduler time to deliver the message and emit the diagnostic.
+    sleep_ms(300);
+    0
+}

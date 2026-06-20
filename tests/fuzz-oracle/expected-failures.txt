@@ -21,7 +21,7 @@
 # map_literal_empty_annotated.hew, array_repeat_int_sum.hew, and
 # array_repeat_runtime_count.hew are intentionally absent: they must pass.
 #
-# Total: 8 known-failing entries (8 intentional-trap/abort fixtures).
+# Total: 9 known-failing entries (9 intentional-trap/abort fixtures).
 #
 # Intentional aborts/traps: fixtures in tests/vertical-slice/accept/ that are
 # designed to trap or abort at runtime as their correctness proof.  Listed here
@@ -38,3 +38,4 @@ isize_shift_oob_traps.hew    # intentional trap: isize << 64 → ShiftOutOfRange
 option_unwrap_none_aborts.hew  # intentional abort: None unwrap traps deterministically — x86_64 SIGILL/132 or aarch64 SIGTRAP/133 — via the generic unmatched-arm path
 vec_element_width_oob_traps.hew  # intentional trap: Vec<i8> index at len → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
 vec_index_assign_oob_traps.hew   # intentional trap: Vec<i64> OOB write v[1] on 1-element vec → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
+crash_main_context_diagnostic.hew  # intentional trap: OOB Vec index in main context → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64) + "hew: trap in main context" stderr diagnostic (F1.3)

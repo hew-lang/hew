@@ -195,7 +195,15 @@ pub unsafe extern "C" fn hew_rc_drop(ptr: *mut u8) {
         // SAFETY: header is valid; the borrow is confined to this block and
         // dropped before any opaque call or deallocation below.
         let inner = unsafe { &mut *header };
-        debug_assert!(inner.strong > 0, "Rc double-free");
+        // Refcount invariant: strong must be > 0 before decrement. In release
+        // mode a zero-or-underflowed strong count indicates a double-free or
+        // use-after-free — both are memory-safety violations that must not
+        // pass silently. `assert!` aborts in release; `debug_assert!` would
+        // let the decrement wrap and corrupt the header in production builds.
+        assert!(
+            inner.strong > 0,
+            "Rc double-free: strong refcount is already 0"
+        );
         inner.strong -= 1;
         (
             inner.strong,
@@ -376,7 +384,12 @@ pub unsafe extern "C" fn hew_weak_drop_rc(weak_ptr: *mut u8) {
     // SAFETY: weak_ptr is a header pointer.
     let inner = unsafe { &mut *header };
 
-    debug_assert!(inner.weak > 0, "Weak double-free");
+    // Same rationale as the strong-count assert in hew_rc_drop: a zero weak
+    // count before decrement is a double-free and must abort in release.
+    assert!(
+        inner.weak > 0,
+        "Weak<Rc> double-free: weak refcount is already 0"
+    );
     inner.weak -= 1;
 
     if inner.weak == 0 && inner.strong == 0 {

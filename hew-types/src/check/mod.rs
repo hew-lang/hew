@@ -1753,15 +1753,33 @@ enum AnonContext {
 }
 
 /// Collect every `actor` declaration in the program (root items + each
-/// module-graph module), paired with its checker identity: the bare name
-/// for root actors, the dotted `{module_short}.{name}` form for module
-/// actors. The walk is read-only so it can run after the checker has
-/// frozen its mutable state.
-fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
-    let mut actors: Vec<(String, &ActorDecl)> = Vec::new();
+/// module-graph module).
+///
+/// Returns a triple `(collision_identity, sigs_key, actor_decl)` per actor:
+///
+/// - `collision_identity`: the full-path dotted form used for the descriptor
+///   map key and the cross-actor collision check.  Module path `["a","b"]` →
+///   `"a.b.Alpha"`.  Full path ensures actors in DISTINCT nested modules with
+///   an identical leaf component produce different identities so the collision
+///   check sees them as separate actors.
+/// - `sigs_key`: the module-short dotted form `"{leaf}.{Actor}"` (or bare
+///   name for root actors) that `fn_sigs` is keyed with during registration
+///   (`collect_functions` uses `current_module_short()` = the leaf segment).
+///   Used only for `fn_sigs.get("{sigs_key}::{handler}")` look-ups inside
+///   `build_actor_protocol_descriptors`.
+///
+/// The two fields differ for deeply-nested modules: `["a","b"].Alpha` has
+/// `collision_identity = "a.b.Alpha"` but `sigs_key = "b.Alpha"`.  Root and
+/// single-segment modules are the same for both.
+///
+/// The walk is read-only so it can run after the checker has frozen its
+/// mutable state.
+fn collect_program_actors(program: &Program) -> Vec<(String, String, &ActorDecl)> {
+    let mut actors: Vec<(String, String, &ActorDecl)> = Vec::new();
     for (item, _) in &program.items {
         if let Item::Actor(ad) = item {
-            actors.push((ad.name.clone(), ad));
+            // Root actors: both keys are the bare name.
+            actors.push((ad.name.clone(), ad.name.clone(), ad));
         }
     }
     if let Some(mg) = &program.module_graph {
@@ -1769,12 +1787,24 @@ fn collect_program_actors(program: &Program) -> Vec<(String, &ActorDecl)> {
             if *mod_id == mg.root {
                 continue;
             }
-            let module_short = mod_id.path.last().map(String::as_str);
+            let module_full = mod_id.path.join(".");
+            // The leaf segment is what `current_module_short()` (rsplit('.'))
+            // returns during `collect_functions`; that is the prefix used when
+            // fn_sigs keys are registered.
+            let module_leaf = mod_id.path.last().map_or("", String::as_str);
             for (item, _) in &module.items {
                 if let Item::Actor(ad) = item {
-                    let identity = module_short
-                        .map_or_else(|| ad.name.clone(), |m| format!("{m}.{}", ad.name));
-                    actors.push((identity, ad));
+                    let collision_identity = if module_full.is_empty() {
+                        ad.name.clone()
+                    } else {
+                        format!("{module_full}.{}", ad.name)
+                    };
+                    let sigs_key = if module_leaf.is_empty() {
+                        ad.name.clone()
+                    } else {
+                        format!("{module_leaf}.{}", ad.name)
+                    };
+                    actors.push((collision_identity, sigs_key, ad));
                 }
             }
         }
@@ -1810,7 +1840,7 @@ fn build_actor_protocol_descriptors(
     // refusing the collision at the source of truth keeps the wire unambiguous
     // for relays / mixed-binary peers (the `boundary-fail-closed` invariant).
     let mut cross_actor_seen: Vec<(u32, String, String, std::ops::Range<usize>)> = Vec::new();
-    for (identity, ad) in collect_program_actors(program) {
+    for (collision_identity, sigs_key, ad) in collect_program_actors(program) {
         if ad.receive_fns.is_empty() {
             continue;
         }
@@ -1818,7 +1848,8 @@ fn build_actor_protocol_descriptors(
             Vec::with_capacity(ad.receive_fns.len());
         let mut all_signatures_resolved = true;
         for rf in &ad.receive_fns {
-            let key = format!("{identity}::{}", rf.name);
+            // fn_sigs are keyed by the module-short identity (leaf segment).
+            let key = format!("{sigs_key}::{}", rf.name);
             let Some(sig) = fn_sigs.get(&key) else {
                 all_signatures_resolved = false;
                 break;
@@ -1846,7 +1877,7 @@ fn build_actor_protocol_descriptors(
             // is self-describing. Downstream consumers may continue to
             // derive their own emit name today; subsequent Q87 slices route
             // codegen through this `symbol` field.
-            let symbol = format!("{identity}__{}", rf.name);
+            let symbol = format!("{sigs_key}__{}", rf.name);
             specs.push(crate::actor_protocol::ActorHandlerSpec {
                 name: rf.name.clone(),
                 param_tys,
@@ -1862,21 +1893,36 @@ fn build_actor_protocol_descriptors(
             continue;
         }
 
+        // Build the descriptor under `sigs_key` (module-short form) so that
+        // downstream consumers — HIR lowerer, coercion checker — can look it
+        // up via the same identity they registered actors under.
+        // `collision_identity` (full-path form) is used ONLY for the
+        // cross-actor collision check below, where its uniqueness across all
+        // nested-module actors matters.
         match crate::actor_protocol::ActorProtocolDescriptor::from_handlers(
-            identity.clone(),
+            sigs_key.clone(),
             &specs,
         ) {
             Ok(descriptor) => {
-                // Record each handler's msg_id for the cross-actor pass below.
+                // Record each handler's msg_id for the cross-actor pass.
+                // Use `collision_identity` as the actor name so that two actors
+                // in different nested modules with the same leaf segment (and
+                // thus the same `sigs_key`, e.g. `b.Alpha`) appear as DISTINCT
+                // actors in the collision check.
                 for h in &descriptor.handlers {
                     let span = ad
                         .receive_fns
                         .iter()
                         .find(|rf| rf.name == h.name)
                         .map_or(0..0, |rf| rf.span.clone());
-                    cross_actor_seen.push((h.msg_id, identity.clone(), h.name.clone(), span));
+                    cross_actor_seen.push((
+                        h.msg_id,
+                        collision_identity.clone(),
+                        h.name.clone(),
+                        span,
+                    ));
                 }
-                descriptors.insert(identity.clone(), descriptor);
+                descriptors.insert(sigs_key.clone(), descriptor);
             }
             Err(collision) => {
                 // Pin the diagnostic to the second-colliding handler's span

@@ -27392,9 +27392,11 @@ mod every_attribute {
     #[test]
     fn single_nested_module_actor_descriptor_is_published() {
         // Regression probe: an actor in a nested module (path ["a","b"]) must
-        // have its protocol descriptor published. If collect_program_actors
-        // or build_actor_protocol_descriptors fails to resolve the fn_sigs
-        // key, the descriptor is silently absent.
+        // have its protocol descriptor published. The descriptor is keyed by
+        // the module-short form "b.Alpha" (matching `current_module_short()` =
+        // leaf segment used during fn_sigs registration). If collect_program_actors
+        // or build_actor_protocol_descriptors fails to resolve the fn_sigs key,
+        // the descriptor is silently absent.
         let parsed = hew_parser::parse("actor Alpha { receive fn increment() {} }");
         assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
         let root_id = ModuleId::root();
@@ -27422,7 +27424,10 @@ mod every_attribute {
             "single module actor must typecheck cleanly; got: {:#?}",
             output.errors
         );
-        // The actor_protocol_descriptors must contain the module-qualified key "b.Alpha"
+        // The actor_protocol_descriptors must contain the module-short key "b.Alpha".
+        // (Full-path identity "a.b.Alpha" is used only for the cross-actor collision
+        // check; the descriptor map stays keyed by the leaf-qualified form for
+        // downstream compatibility with HIR lowering and coercion checking.)
         let descriptor = output.actor_protocol_descriptors.get("b.Alpha");
         assert!(
             descriptor.is_some(),
@@ -27435,8 +27440,10 @@ mod every_attribute {
     #[test]
     fn two_module_actors_both_get_descriptors() {
         // When two separate modules each contain an actor, BOTH descriptors
-        // must be published. This is a structural prerequisite for cross-actor
-        // collision detection — if either is skipped, the collision is missed.
+        // must be published. The descriptor map uses the module-short-qualified
+        // key (leaf segment) for downstream compatibility. This is a structural
+        // prerequisite for cross-actor collision detection — if either actor's
+        // descriptor is skipped, the collision is missed.
         let output = check_two_module_actors(
             "actor Alpha { receive fn ping() {} }",
             vec!["a".to_string(), "b".to_string()],
@@ -27463,11 +27470,11 @@ mod every_attribute {
     fn nested_module_cross_actor_collision_is_caught() {
         // `b.Alpha::h804959` and `d.Beta::h3600` are a real SipHash-1-3 low-32-bit
         // collision under the module-short-qualified identity form (module path
-        // `["a","b"]` → identity `"b.Alpha"`, path `["c","d"]` → identity `"d.Beta"`).
+        // `["a","b"]` → short `"b"`, path `["c","d"]` → short `"d"`).
         // Pair is pinned in `actor_protocol::tests::module_qualified_cross_actor_handler_names_share_msg_id`.
-        // The whole-program collision checker must detect this even though each actor
-        // lives in a separate nested module — it must not silently skip actors from
-        // the module graph.
+        // The whole-program collision checker must detect this even though each
+        // actor lives in a separate nested module — it must not silently skip
+        // actors from the module graph.
         let output = check_two_module_actors(
             "actor Alpha { receive fn h804959() {} }",
             vec!["a".to_string(), "b".to_string()],
@@ -27497,7 +27504,8 @@ mod every_attribute {
         } = &collision.unwrap().kind
         {
             let actors = [actor_a.as_str(), actor_b.as_str()];
-            // The identity includes the module short-qualifier: "b.Alpha" / "d.Beta"
+            // The identity in the diagnostic is the full-path form ("a.b.Alpha" /
+            // "c.d.Beta") because cross_actor_seen uses collision_identity.
             assert!(
                 actors.iter().any(|a| a.ends_with("Alpha"))
                     && actors.iter().any(|a| a.ends_with("Beta")),

@@ -68,6 +68,7 @@
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-smoke fuzz-oracle fuzz-oracle-selftest
+.PHONY: ll-diff ll-golden ll-identity-selftest
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
@@ -590,6 +591,13 @@ ll-diff: hew
 
 ll-golden: hew
 	bash scripts/ll-corpus.sh golden
+
+# Self-test for the ll-byte-identity normaliser: four independently-failable
+# cases that prove string-content changes are caught and pool-id reorderings
+# are transparent.  No compiler build required — exercises the oracle script
+# against synthetic .ll snippets only.
+ll-identity-selftest:
+	bash scripts/ll-identity-selftest.sh
 
 test-runtime-net:
 	cargo nextest run --profile ci --no-fail-fast \

@@ -2194,10 +2194,12 @@ run_accept_expect_status "opaque_handle_ffi_round_trip" 3
 
 # Reject: direct construction — an opaque handle has no constructible record
 # layout (it lowers to `ptr`); only FFI may produce one.
+# The checker must emit E_OPAQUE_CONSTRUCT (not a downstream MIR NYI).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/opaque_handle_construct.hew" >"${reject_output}" 2>&1; then
   echo "expected opaque_handle_construct fixture to fail" >&2
   exit 1
 fi
+grep -q 'E_OPAQUE_CONSTRUCT' "${reject_output}"
 
 # Reject: field access — an opaque handle has no fields.
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/opaque_handle_field_access.hew" >"${reject_output}" 2>&1; then

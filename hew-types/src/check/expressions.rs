@@ -5848,6 +5848,30 @@ impl Checker {
             }
         }
         let name = qualified_owned.as_deref().unwrap_or(name);
+        // Fail closed on opaque handle direct construction. Opaque handles are
+        // pointer-shaped runtime resources with no user-visible fields and no
+        // constructible record layout; they are produced exclusively by their
+        // stdlib FFI constructors. Admitting `Handle {}` here lets the code
+        // fall through to `lookup_type_def` and then to MIR, where it trips a
+        // misleading `E_NOT_YET_IMPLEMENTED: MIR lowering for record type '...'
+        // (not registered in field-order table)` with a "checker bug" note.
+        // Short-circuit with a clean diagnostic before any lookup occurs.
+        let is_opaque_handle = self.user_opaque_type_names.contains(name)
+            || self.canonical_owned_handle_type_name(name).is_some();
+        if is_opaque_handle {
+            self.report_error(
+                TypeErrorKind::OpaqueDirectConstruct {
+                    type_name: name.to_string(),
+                },
+                span,
+                format!(
+                    "cannot construct opaque type `{name}` directly; \
+                     opaque handles are produced by their stdlib constructors \
+                     [E_OPAQUE_CONSTRUCT]"
+                ),
+            );
+            return Ty::Error;
+        }
         if let Some(td) = self.lookup_type_def(name) {
             // Track inferred type arguments for generic structs.
             // If the caller supplied explicit type args (e.g. `Wrapper<String> { ... }`),

@@ -2,16 +2,16 @@
 // `#[opaque]` runtime handle directly; it is produced only via FFI. An opaque
 // handle has no constructible record layout (it is never registered in the
 // field-order table — it lowers to `ptr`), so a `StructInit` is refused
-// fail-closed at the MIR boundary. It can only be produced by an `extern "C"`
-// function returning the runtime's `*mut T`.
+// fail-closed at the CHECKER boundary with E_OPAQUE_CONSTRUCT. It can only be
+// produced by an `extern "C"` function returning the runtime's `*mut T`.
 //
 // Harness verb: hew check
-// Expected: rejected.
-
+// Expected: rejected with E_OPAQUE_CONSTRUCT (clean checker error, not MIR NYI).
 #[opaque]
-type Handle {}
+type Handle {
+}
 
 fn main() -> i64 {
-    let _h: Handle = Handle {};
+    let _h: Handle = Handle {  };
     0
 }

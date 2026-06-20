@@ -1107,6 +1107,20 @@ run_accept_expect_status "closure_pid_send_controlflow" 42
 # usable after the closure captures it. Exit 42 = 40 (closure) + 2 (parent).
 run_accept_expect_status "closure_pid_alias_parent" 42
 
+# Accept + run: a forwarded fn-typed parameter is stored into a record field
+# and invoked through that field (the builder/handler idiom
+# `fn make_handler(f) -> Handler { Handler { action: f } }`). The closure env
+# is heap-boxed at its literal site, so the parameter transfers env ownership
+# into the record; the record frees the env once at its drop and the stored
+# closure stays callable. Exit 42 = make_adder(7) dispatched on 35 via h.action.
+run_accept_expect_status "closure_param_field_store" 42
+
+# Reject: using a forwarded fn-typed parameter AFTER it has been stored into a
+# record field is use-after-consume — the store is the parameter's single
+# consumption (the record is the sole env owner), so a later read is rejected
+# by the dataflow checker with UseAfterConsume, never a silent double-free.
+reject_check_use_after_consume "closure_param_use_after_store"
+
 # Accept + run: lambda actor capturing a declared-actor pid and forwarding.
 # The pid rides the heap-boxed env as a no-drop field; the state dropper
 # frees env bytes only. Exit 42 = 10 + 32 forwarded.

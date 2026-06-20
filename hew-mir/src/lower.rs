@@ -5734,6 +5734,37 @@ struct Builder {
     /// `ClosurePairBorrowedStore` diagnostic on a use the move checker
     /// already rejects.
     closure_pair_moved: HashSet<BindingId>,
+    /// Fn-typed (`ty_is_closure_pair`) PARAMETER bindings whose closure env is
+    /// provably heap-allocated, and which may therefore transfer env ownership
+    /// into an owning container (a record field, Vec element, tuple, or
+    /// machine payload) when stored — the same sole-owner transfer the closure-
+    /// *literal* and fn-call-*result* ingress paths already perform.
+    ///
+    /// SOUNDNESS PREMISE (the one fact this whole set rests on): a closure that
+    /// reaches a parameter has crossed a call boundary as an argument, so the
+    /// checker classified it `AnonContext::PassedToHigherOrder` →
+    /// `ClosureEscapeKind::Escapes` → `AllocationStrategy::Heap`
+    /// (`hew-types/src/check/mod.rs`; `hew-mir/src/closure_env.rs`). Its env was
+    /// heap-boxed by the CALLER before the call, never a stack/frame address.
+    /// So the conservative "a param pair may carry a stack env, freeing one
+    /// would over-free a frame address" assumption that keeps a bare parameter
+    /// in the `Borrowed` (refuse) class does NOT hold for a fn-typed param — it
+    /// is ownable exactly like a fn-typed call result. If a future change ever
+    /// admits a `Local`/stack-env closure into a parameter position, this
+    /// premise breaks; the field-store would over-free. The leak oracle
+    /// (`hew-cli/tests/closure_in_struct_leak_oracle.rs`) pins it with a
+    /// poisoned-allocator floor-equality / no-double-free check.
+    ///
+    /// This set drives ONLY the ingress classification in
+    /// `classify_closure_pair_ingress` (`Borrowed` → `OwnedBinding`). It is
+    /// deliberately DISJOINT from `closure_pair_owned`: it is NOT a drop
+    /// ledger. Merging it into `closure_pair_owned` would feed
+    /// `derive_closure_pair_drop_allowed` a param that is read only by
+    /// `CallClosure` (the benign callee read), which the aliasing scan does not
+    /// mark, so an UNSTORED-but-invoked param would gain an erroneous scope-exit
+    /// drop — a double-free of an env the param never owned. Two sets, two
+    /// purposes (ingress classification vs `Let`-binding drop admission).
+    closure_pair_param_owned: HashSet<BindingId>,
     /// Reserved context for the later transition-body lowering slice. When
     /// set, the `BindingId` identifies the step function's `self` parameter
     /// slot so `HirExprKind::MachineFieldAccess` can address payload reads
@@ -6528,6 +6559,15 @@ impl Builder {
         for param in &func.params {
             let slot = self.alloc_local(param.ty.clone());
             self.binding_locals.insert(param.id, slot);
+            // A fn-typed parameter's closure env is provably heap (the checker
+            // `Escapes`-classifies any closure crossing a call boundary as an
+            // argument), so it may transfer env ownership into an owning
+            // container on store — see `closure_pair_param_owned`. Check the
+            // substituted type so a monomorphised type parameter that resolves
+            // to a fn type is also admitted.
+            if ty_is_closure_pair(&self.subst_ty(&param.ty)) {
+                self.closure_pair_param_owned.insert(param.id);
+            }
         }
     }
 
@@ -22761,6 +22801,21 @@ impl Builder {
                     // Ownership already left via a rebind; the move checker
                     // flags this read as `UseAfterConsume` on its own.
                     ClosurePairIngress::AlreadyMoved
+                } else if self.closure_pair_param_owned.contains(id) {
+                    // A forwarded fn-typed parameter: its closure env is
+                    // provably heap (the checker `Escapes`-classifies a closure
+                    // crossing a call boundary as an argument — see
+                    // `closure_pair_param_owned`), so the container may own it
+                    // outright. The store is the parameter's move: the
+                    // `OwnedBinding` arm emits the `AggregateAlias` consume
+                    // marker, and any later read of the parameter is rejected
+                    // as `UseAfterConsume`. Ordered AFTER `closure_pair_moved`
+                    // so a parameter already consumed by a prior store routes
+                    // to `AlreadyMoved` (no second `ClosurePairBorrowedStore`).
+                    ClosurePairIngress::OwnedBinding {
+                        id: *id,
+                        name: name.clone(),
+                    }
                 } else {
                     ClosurePairIngress::Borrowed {
                         name: Some(name.clone()),

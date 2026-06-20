@@ -1,0 +1,25 @@
+// Storing a forwarded fn-typed parameter into an owning record field is the
+// parameter's single consumption: the record becomes the sole owner of the
+// closure env. Using `f` AFTER that store would give a second consumer of an
+// env the record now owns, so the dataflow checker must reject the later use
+// as `UseAfterConsume` — not a silent miscompile, not a double-free at run
+// time. Invoking `f` BEFORE the store stays legal (invocation is the borrow
+// the pair exists for); it is the post-store use that is refused.
+type Holder {
+    cb: fn(i64) -> i64;
+}
+
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    |x: i64| x + n
+}
+
+fn stash(f: fn(i64) -> i64) -> i64 {
+    let h = Holder { cb: f };
+    // `f` was consumed by the store above; this read is use-after-consume.
+    let leftover = f(1);
+    h.cb(2) + leftover
+}
+
+fn main() -> i64 {
+    stash(make_adder(7))
+}

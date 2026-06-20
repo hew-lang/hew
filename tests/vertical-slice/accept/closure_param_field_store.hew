@@ -1,0 +1,25 @@
+// A forwarded fn-typed parameter is stored into an owning record field and
+// later invoked through that field. The closure's env is heap-boxed at its
+// literal site (it escapes via the call argument), so the parameter holds a
+// heap env the record may own outright. The store transfers ownership into
+// the record; the record frees the env exactly once at its own drop, and the
+// stored closure stays callable through the field.
+//
+// `make_handler(make_adder(7))` builds a Handler whose `action` adds 7; the
+// final `h.action(35)` dispatches through the field for 35 + 7 = 42.
+type Handler {
+    action: fn(i64) -> i64;
+}
+
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    |x: i64| x + n
+}
+
+fn make_handler(f: fn(i64) -> i64) -> Handler {
+    Handler { action: f }
+}
+
+fn main() -> i64 {
+    let h = make_handler(make_adder(7));
+    h.action(35)
+}

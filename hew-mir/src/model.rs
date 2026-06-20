@@ -1096,9 +1096,8 @@ fn ty_contains_heap_owning_inner(
         // these as heap-owning (`CowValue` / `AffineResource`); this is the
         // matching composite-recursion leaf so the two cannot disagree
         // (`dedup-semantic-boundary`).
-        // `string` / `Bytes` own a refcounted buffer; `CancellationToken` and
-        // the generator handles are owned affine runtime handles (see below).
-        // A `Vec<T>` / `HashMap<K, V>` / `HashSet<T>` is itself a heap-owning
+        //
+        // A `Vec<T>` / `HashMap<K, V>` / `HashSet<T>` is likewise a heap-owning
         // handle regardless of its element types: even `Vec<i64>` owns its
         // backing buffer (`hew_vec_free` releases it). A record/enum/tuple FIELD
         // of such a type therefore makes the whole composite heap-owning — e.g.
@@ -1107,10 +1106,8 @@ fn ty_contains_heap_owning_inner(
         // recursion below answers `false` (the args are BitCopy), the composite
         // is mis-classified non-heap-owning, its `Vec<Boxed>` is built as a plain
         // (shallow `hew_vec_free`) vec, and the per-element `payload` buffers
-        // leak. This matches `ValueClass::of_ty`, which already classifies these
-        // builtins as `CowValue` (heap-owning) for any element type
-        // (`dedup-semantic-boundary`); the two authorities must agree or the
-        // owned-element-Vec drop ABI and the value-class disagree.
+        // leak. `ValueClass::of_ty` already classifies these builtins as
+        // `CowValue` for any element type, so the two authorities must agree.
         ResolvedTy::String
         | ResolvedTy::Bytes
         | ResolvedTy::CancellationToken

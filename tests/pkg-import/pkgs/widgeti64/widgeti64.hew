@@ -5,6 +5,6 @@
 //! module-qualified identity; keying the MIR layout/field registry on the bare
 //! name `Widget` collides across the two packages (last-write-wins).
 
-type Widget {
+pub type Widget {
     v: i64;
 }

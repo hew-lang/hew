@@ -8,6 +8,6 @@
 //! through its module-qualified identity, not the last-write-wins bare key.
 
 /// Narrow `Widget`: a single `i8` field.
-type Widget {
+pub type Widget {
     v: i8;
 }

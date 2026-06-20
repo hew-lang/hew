@@ -1018,6 +1018,23 @@ fn resolve_file_imports_internal(
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
+    // Suppress cwd candidates when cwd is in a different Hew checkout root than
+    // the source file. In that case the Tier-2 logic (build_module_search_paths_for)
+    // already resolves std/ from the source file's own root; the cwd root would add
+    // a second distinct std/ and trigger the ambiguity check spuriously.
+    //
+    // WHY: cross-worktree dogfood regression — `cd <main-checkout> && hew check
+    //   <worktree>/examples/…` hit "import std::fs is ambiguous" in 4/6 sessions.
+    // WHEN obsolete: when stdlib is co-installed with the binary (sysroot model);
+    //   then neither cwd nor source-ancestor scanning is needed for stdlib.
+    // WHAT the real solution is: pin std to the binary's co-located install path.
+    let source_hew_root = hew_types::module_registry::find_enclosing_hew_root(source_file);
+    let cwd_hew_root = hew_types::module_registry::find_enclosing_hew_root(&cwd);
+    let cwd_crosses_root = matches!(
+        (&source_hew_root, &cwd_hew_root),
+        (Some(sr), Some(cr)) if sr != cr
+    );
+
     for idx in &import_indices {
         let canonical = match &items[*idx].0 {
             Item::Import(decl) if decl.file_path.is_some() => {
@@ -1063,12 +1080,12 @@ fn resolve_file_imports_internal(
                     candidates.push(ctx.project_dir.join(&local_flat));
                 }
 
-                candidates.extend([
-                    source_dir.join(&dir_path),
-                    cwd.join(&dir_path),
-                    source_dir.join(&rel_path),
-                    cwd.join(&rel_path),
-                ]);
+                candidates.push(source_dir.join(&dir_path));
+                candidates.push(source_dir.join(&rel_path));
+                if !cwd_crosses_root {
+                    candidates.push(cwd.join(&dir_path));
+                    candidates.push(cwd.join(&rel_path));
+                }
 
                 if let Some(version) = ctx
                     .locked_versions
@@ -2676,6 +2693,69 @@ mod tests {
     ///
     /// Regression guard: if this test starts failing, re-examine
     /// `SpanKey::in_module` stamping in the checker and HIR lowering.
+    /// Cross-root std resolution: source file is inside a fake Hew checkout root
+    /// (has its own `std/builtins.hew` and `std/fs.hew`), while the process cwd
+    /// is the real repo root (also a Hew checkout).  Before the fix, the compiler
+    /// built a cwd candidate pointing at the repo's `std/fs.hew` AND a Tier-2
+    /// candidate pointing at the fake root's `std/fs.hew`, producing two distinct
+    /// canonical paths → "import `std::fs` is ambiguous".
+    ///
+    /// After the fix, `cwd_crosses_root` suppresses the cwd candidates when the
+    /// source file's enclosing root differs from the cwd's root → single candidate
+    /// from the source file's own root → no ambiguity.
+    ///
+    /// This is the dogfood repro: `cd <main-checkout> && hew check <worktree>/…`
+    #[test]
+    fn cross_root_std_import_not_ambiguous() {
+        // Cargo sets cwd to the workspace root during nextest, which is a real Hew
+        // checkout (contains std/builtins.hew).  Confirm before asserting.
+        let cwd = std::env::current_dir().expect("cwd accessible");
+        if !cwd.join("std").join("builtins.hew").exists() {
+            // Running outside the repo (e.g. in CI with a relocated test binary).
+            // Skip rather than fail — the guard logic is still covered by the unit
+            // test for find_enclosing_hew_root in hew-types.
+            return;
+        }
+
+        // Build a second, completely separate fake Hew checkout root in a tempdir.
+        let fake_root = tempfile::tempdir().expect("create fake checkout root");
+        let std_dir = fake_root.path().join("std");
+        fs::create_dir_all(&std_dir).expect("create std dir");
+        fs::write(std_dir.join("builtins.hew"), "// fake builtins\n")
+            .expect("write fake builtins.hew");
+        fs::write(
+            std_dir.join("fs.hew"),
+            "pub fn read_to_string(path: string) -> Result<string> { ask \"stub\" }\n",
+        )
+        .expect("write fake fs.hew");
+
+        // Source file lives inside the fake root.
+        let src_dir = fake_root.path().join("examples");
+        fs::create_dir_all(&src_dir).expect("create examples dir");
+        let source = "import std::fs;\n\nfn main() -> i64 { 0 }\n";
+        let input = write_source(&src_dir, "prog.hew", source);
+
+        let options = FrontendOptions {
+            project_dir: Some(fake_root.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        // Must not produce an ambiguity error.  The compile may fail for
+        // semantic reasons (stub body, NYI, etc.) — but NOT with "is ambiguous".
+        let result = check_file(&input, &options);
+        let err_str = result
+            .as_ref()
+            .err()
+            .map(|e| format!("{e:?}"))
+            .unwrap_or_default();
+        assert!(
+            !err_str.contains("is ambiguous"),
+            "cross-root std::fs import must not be ambiguous; cwd={} fake_root={}: {err_str}",
+            cwd.display(),
+            fake_root.path().display(),
+        );
+    }
+
     #[test]
     fn cross_module_span_key_collision_unary_minus_and_string_lit_do_not_collide() {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

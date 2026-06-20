@@ -144,19 +144,59 @@ fn bootstrap_wasi_runner() -> Result<(), String> {
     })?;
 
     let build_profile = build_profile();
+    build_wasi_runtime_serialized(&target_dir, build_profile)?;
+
+    for (package, archive) in WASI_STDLIB_ARCHIVES {
+        build_wasi_stdlib_archive(&target_dir, build_profile, package, archive)?;
+    }
+
+    Ok(())
+}
+
+/// Build `libhew_runtime.a` for wasm32-wasip1, serialized across parallel
+/// nextest test processes.
+///
+/// The fast path (all artifacts present) skips the lock entirely. Otherwise a
+/// cross-process `fd_lock::RwLock` serializes the build: without it, multiple
+/// test binaries each see the artifact absent and each launch `cargo build`
+/// concurrently; Cargo writes the staticlib non-atomically, so races corrupt
+/// or transiently delete the file and wasm-ld then fails with
+/// "cannot open `libhew_runtime.a`". `bootstrap_codegen` uses the same pattern.
+fn build_wasi_runtime_serialized(target_dir: &Path, build_profile: &str) -> Result<(), String> {
     let runtime_path = target_dir
         .join("wasm32-wasip1")
         .join(build_profile)
         .join("libhew_runtime.a");
-    if runtime_path.is_file()
-        && WASI_STDLIB_ARCHIVES.iter().all(|(_, archive)| {
-            target_dir
-                .join("wasm32-wasip1")
-                .join(build_profile)
-                .join(archive)
-                .is_file()
-        })
-    {
+
+    // Fast path: artifact already present (common case after the CI pre-build
+    // step or after a sibling process completed the build).
+    if runtime_path.is_file() {
+        return Ok(());
+    }
+
+    let lock_path = target_dir.join("hew-cli-wasi-bootstrap.lock");
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| {
+            format!(
+                "failed to open WASI bootstrap lock {}: {error}",
+                lock_path.display()
+            )
+        })?;
+    let mut lock = RwLock::new(lock_file);
+    let _guard = lock.write().map_err(|error| {
+        format!(
+            "failed to lock WASI bootstrap {}: {error}",
+            lock_path.display()
+        )
+    })?;
+
+    // Re-check after acquiring the lock: a sibling may have built while we waited.
+    if runtime_path.is_file() {
         return Ok(());
     }
 
@@ -171,7 +211,7 @@ fn bootstrap_wasi_runner() -> Result<(), String> {
             "wasm32-wasip1",
             "--no-default-features",
         ])
-        .env("CARGO_TARGET_DIR", &target_dir)
+        .env("CARGO_TARGET_DIR", target_dir)
         .current_dir(repo_root());
     if build_profile == "release" {
         command.arg("--release");
@@ -180,36 +220,22 @@ fn bootstrap_wasi_runner() -> Result<(), String> {
     let output = command.output().map_err(|error| {
         format!(
             "failed to invoke `cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features{}`: {error}",
-            if build_profile == "release" {
-                " --release"
-            } else {
-                ""
-            }
+            if build_profile == "release" { " --release" } else { "" }
         )
     })?;
 
     if !output.status.success() {
         return Err(format!(
             "failed to bootstrap WASI runner runtime with `cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features{}`\n{}",
-            if build_profile == "release" {
-                " --release"
-            } else {
-                ""
-            },
+            if build_profile == "release" { " --release" } else { "" },
             describe_output(&output)
         ));
     }
 
-    for (package, archive) in WASI_STDLIB_ARCHIVES {
-        build_wasi_stdlib_archive(&target_dir, build_profile, package, archive)?;
-    }
-
     if !runtime_path.is_file() {
         // Cargo can exit 0 without producing the staticlib when a stale
-        // fingerprint (e.g. from a CI cache hit that only cached the rlib)
-        // convinces it that nothing needs to be rebuilt.  Recover by cleaning
-        // the wasm32-wasip1 artifacts for this package and retrying once.
-        wasi_runtime_clean_and_retry(&target_dir, build_profile)?;
+        // fingerprint convinces it nothing needs rebuilding.  Clean and retry.
+        wasi_runtime_clean_and_retry(target_dir, build_profile)?;
 
         if !runtime_path.is_file() {
             return Err(format!(

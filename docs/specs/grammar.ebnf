@@ -62,9 +62,9 @@ AttrArg        = Ident ( "=" (StringLit | Ident) )?
 (* Module system *)
 Import         = "import" ( StringLit | ModulePath ( "::" ImportSpec )? ) ";" ;
 ModulePath     = Ident { "::" Ident } ;
-ImportSpec     = Ident
-               | "{" ImportName { "," ImportName } "}"
+ImportSpec     = "{" ImportName { "," ImportName } "}"
                | "*" ;
+(* Single-name import uses the brace form: import m::{ Name }; bare Ident is not accepted *)
 ImportName     = Ident ( "as" Ident )? ;
 
 (* Constants and types *)
@@ -92,7 +92,8 @@ TypeBody       = "{" { StructFieldDecl | VariantDecl | FnDecl } "}" ;
 WireBody       = "{" { WireFieldDecl | VariantDecl } "}" ;
 
 StructFieldDecl = Attribute* Ident ":" Type ( ";" | "," ) ;
-ActorFieldDecl  = ("let" | "var") Ident ":" Type ("=" Expr)? ";" ;
+ActorFieldDecl  = ("let" | "var")? Ident ":" Type ("=" Expr)? ";" ;
+(* Without `let`/`var`: bare `ident: type` form; field is immutable (let-like) by default *)
 WireFieldDecl  = Ident ":" Type ( ("@" | "=") IntLit )? WireAttr* ";" ;
 WireAttr       = "optional" | "deprecated" | "repeated"
                | ("default" "(" Expr ")")  (* not yet implemented *)
@@ -120,10 +121,10 @@ ImplDecl       = "impl" TypeParams? TraitBound "for" Type WhereClause? "{" { FnD
 AssociatedTypeImpl = "type" Ident "=" Type ";" ;
 
 (* Actors *)
+(* Actor body members may appear in any order; the parser accepts any interleaving of
+   init, mailbox, fields, receive fns, gen fns, and plain methods. *)
 ActorDecl      = "actor" Ident TraitSuper? "{"
-                   ActorInit?
-                   MailboxDecl?
-                   { ActorFieldDecl | ReceiveFnDecl | ReceiveGenFnDecl | FnDecl | GenFnDecl }
+                   { ActorInit | MailboxDecl | ActorFieldDecl | ReceiveFnDecl | ReceiveGenFnDecl | FnDecl | GenFnDecl }
                  "}" ;
 ActorInit      = "init" "(" Params? ")" Block ;
 MailboxDecl    = "mailbox" IntLit OverflowPolicy? ";" ;
@@ -141,7 +142,8 @@ SupervisorDecl = "supervisor" Ident "{"
 SupervisorField = "strategy" ":" SupervisorStrategy
                 | "intensity" ":" IntLit "within" DurationLit ;
 SupervisorStrategy = "one_for_one" | "one_for_all" | "rest_for_one" | "simple_one_for_one" ;
-ChildSpec      = ( "child" | "pool" ) Ident ":" Ident ( "(" Args ")" )? ChildClause* ;
+ChildSpec      = ( "child" | "pool" ) Ident ":" Ident ( "." Ident )? ( "(" Args ")" )? ChildClause* ;
+(* The optional "." Ident suffix allows module-qualified child types: child w: mod.Worker(...) *)
 ChildClause    = "restart" ":" RestartPolicy
                | "shutdown" ":" ShutdownDirective
                | "wired_to" ":" "{" { Ident ( ":" Ident )? ","? } "}" ;
@@ -235,8 +237,8 @@ BitOrExpr      = BitXorExpr { "|" BitXorExpr } ;
 BitXorExpr     = BitAndExpr { "^" BitAndExpr } ;
 BitAndExpr     = ShiftExpr { "&" ShiftExpr } ;
 ShiftExpr      = AddExpr { ("<<" | ">>") AddExpr } ;
-AddExpr        = MulExpr { ("+" | "-") MulExpr } ;   (* + also concatenates strings *)
-MulExpr        = UnaryExpr { ("*" | "/" | "%") UnaryExpr } ;
+AddExpr        = MulExpr { ("+" | "-" | "&+" | "&-") MulExpr } ;   (* + also concatenates strings; &+/&- are wrapping forms *)
+MulExpr        = UnaryExpr { ("*" | "/" | "%" | "&*") UnaryExpr } ;  (* &* is wrapping multiply *)
 UnaryExpr      = ("!" | "-" | "~" | "await" | "clone") UnaryExpr | PostfixExpr ;
 (* `clone <operand>` is the prefix duplication form. It is contextual: `clone`
    acts as a prefix only when followed immediately by an operand token
@@ -245,6 +247,9 @@ UnaryExpr      = ("!" | "-" | "~" | "await" | "clone") UnaryExpr | PostfixExpr ;
    Binding power matches other unary prefixes, so `clone a + b` parses as
    `(clone a) + b`. See also §3.4.4 for ownership and cloning semantics. *)
 PostfixExpr    = Primary { "?" | "." Ident | "." IntLit | "::" TypeArgs "(" Args? ")" | "::" Ident | "(" Args? ")" | "[" Expr "]" | "as" Type } ;
+
+LambdaActor    = "actor" "move"? "|" LambdaParams? "|" RetType? Block ;
+(* `actor |params| RetType? { body }` — lambda actor literal; spawn is implicit *)
 
 Primary        = Literal
                | InterpolatedStr
@@ -260,6 +265,7 @@ Primary        = Literal
                | IfLetExpr
                | MatchExpr
                | Lambda
+               | LambdaActor                         (* actor |params| RetType? Block *)
                | Spawn
                | SelectExpr                          (* select { ... } *)
                | JoinExpr                            (* join { ... } *)
@@ -282,15 +288,18 @@ Arg            = ( Ident ":" )? Expr ;
 (* Closures *)
 Lambda         = "move"? "|" LambdaParams? "|" Expr
                | "move"? "||" Expr
-               | "move"? "|" LambdaParams? "|" RetType Block
-               | TypeParams "(" LambdaParams? ")" RetType? "=>" (Expr | Block) ;
+               | "move"? "|" LambdaParams? "|" RetType Block ;
+(* Note: TypeParams "(" LambdaParams ")" RetType? "=>" Body (generic lambda) is not valid source syntax;
+   E_CLOSURE_PIPE_SYNTAX is emitted. Type-parameterized lambdas are not supported in edition 2026. *)
 LambdaParams   = LambdaParam { "," LambdaParam } ;
 LambdaParam    = Ident ( ":" Type )? ;
 
 (* Actor operations *)
-Spawn          = "spawn" ( LambdaActor | ActorSpawn ) ;
+Spawn          = "spawn" ActorSpawn ;
 ActorSpawn     = Ident ( "." Ident )? TypeArgs? ( "(" FieldInitList? ")" )? ;  (* Spawn: spawn Counter(count: 0) or spawn Counter *)
-LambdaActor    = "move"? "(" LambdaParams? ")" RetType? "=>" (Expr | Block) ;
+(* Lambda actor literals use `actor` in Primary position, not `spawn`: *)
+(* LambdaActor = "actor" "move"? "|" LambdaParams? "|" RetType? Block ; *)
+(* `spawn (params) => body` was removed; use `actor |params| { body }` instead. *)
 
 (* Concurrency expressions *)
 SelectExpr     = "select" "{" { SelectArm } TimeoutArm? "}" ;
@@ -353,7 +362,8 @@ Pattern        = "_"
                | Ident
                | Ident ( "::" Ident )+ ( "(" PatternList? ")" )?  (* Qualified constructor pattern *)
                | Ident "(" PatternList? ")"           (* Constructor pattern *)
-               | Ident "{" PatternFieldList? "}"       (* Struct pattern *)
+               | Ident "{" PatternFieldList? "}"       (* Named record destructure: Point { x, y } *)
+               | "{" PatternFieldList? "}"             (* Shorthand record destructure: let {a, b} = rec — type inferred; let-position only *)
                | "." Ident ( "(" PatternList? ")" | "{" PatternFieldList? "}" )?  (* Leading-dot variant pattern: enum inferred from scrutinee type *)
                | "(" PatternList ")"                   (* Tuple pattern *)
                | Pattern "|" Pattern ;                 (* Or-pattern *)

@@ -671,13 +671,14 @@ shiftExpr
     : addExpr ( ( '<<' | '>>' ) addExpr )*
     ;
 
-// + also concatenates strings
+// + also concatenates strings; &+ and &- are two's-complement wrapping forms
 addExpr
-    : mulExpr ( ( '+' | '-' ) mulExpr )*
+    : mulExpr ( ( '+' | '-' | '&+' | '&-' ) mulExpr )*
     ;
 
+// &* is two's-complement wrapping multiply
 mulExpr
-    : unaryExpr ( ( '*' | '/' | '%' ) unaryExpr )*
+    : unaryExpr ( ( '*' | '/' | '%' | '&*' ) unaryExpr )*
     ;
 
 unaryExpr
@@ -717,6 +718,7 @@ primary
     | ifLetExpr
     | matchExpr
     | lambda
+    | lambdaActor                               // actor |params| RetType? Block
     | spawn
     | selectExpr
     | joinExpr
@@ -777,7 +779,8 @@ lambda
     : 'move'? '|' lambdaParams? '|' expr
     | 'move'? '||' expr
     | 'move'? '|' lambdaParams? '|' retType block
-    | typeParams '(' lambdaParams? ')' retType? '=>' ( expr | block )
+    // Note: typeParams '(' lambdaParams ')' retType? '=>' body is NOT valid source syntax
+    //       (E_CLOSURE_PIPE_SYNTAX). Generic lambdas are not supported in edition 2026.
     ;
 
 lambdaParams
@@ -793,16 +796,18 @@ lambdaParam
 // ----------------------------------------------------------------
 
 spawn
-    : 'spawn' ( lambdaActor | actorSpawn )
+    : 'spawn' actorSpawn
     ;
 
 actorSpawn
     : ident ( '.' ident )? typeArgs? ( '(' fieldInitList? ')' )?
     ;
 
+// Lambda actors use `actor` in primary expression position — not spawn:
 lambdaActor
-    : 'move'? '(' lambdaParams? ')' retType? '=>' ( expr | block )
+    : 'actor' 'move'? '|' lambdaParams? '|' retType? block
     ;
+// 'spawn (params) => body' was removed; use 'actor |params| { body }' instead.
 
 // ----------------------------------------------------------------
 //  Concurrency expressions
@@ -925,8 +930,11 @@ pattern
     : pattern '|' pattern                       // Or-pattern
     | ident ( '::' ident )+ ( '(' patternList? ')' )?  // Qualified: Mod::Color::Red or Option::Some(x)
     | ident '(' patternList? ')'                // Constructor: Some(x)
-    | ident '{' patternFieldList? '}'           // Struct: Point { x, y }
+    | ident '{' patternFieldList? '}'           // Named record destructure: Point { x, y }
+    | '{' patternFieldList? '}'                 // Shorthand record destructure: let {a, b} = rec (type inferred; let-position only)
+    | '.' ident ( '(' patternList? ')' | '{' patternFieldList? '}' )?  // Leading-dot variant: .Some(x) or .Foo { a, b }
     | '(' patternList ')'                       // Tuple: (a, b, c)
+    | REGEX_LIT                                 // Regex pattern: re"..." in match arm
     | literalPattern
     | '_'                                       // Wildcard
     | ident                                     // Binding

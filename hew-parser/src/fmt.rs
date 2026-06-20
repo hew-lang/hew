@@ -116,8 +116,7 @@ impl<'a> Formatter<'a> {
         match vis {
             Visibility::Private => {}
             Visibility::Pub => self.write("pub "),
-            Visibility::PubPackage => self.write("pub(package) "),
-            Visibility::PubSuper => self.write("pub(super) "),
+            Visibility::Package => self.write("package "),
         }
     }
 

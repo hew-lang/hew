@@ -50,7 +50,7 @@ RecordNamedBody = "{" RecordFieldDecl { "," RecordFieldDecl } ","? "}" ;
 RecordFieldDecl = Ident ":" Type ;
 RecordTupleBody = "(" Type { "," Type } ","? ")" ";" ;
 
-Visibility     = "pub" ( "(" ( "package" | "super" ) ")" )? ;
+Visibility     = ( "pub" | "package" ) ;
 
 (* Attributes *)
 Attribute      = "#[" AttrContent "]" ;

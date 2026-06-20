@@ -131,16 +131,21 @@ fn missing_param_type_reports_error() {
 
 #[test]
 fn invalid_pub_scope_reports_error() {
+    // `pub(package)` and `pub(super)` were removed in favour of standalone
+    // `package` and `pub` keywords.  `pub(anything)` no longer has special
+    // meaning — `pub` parses as a visibility modifier and the trailing `(...)`
+    // is treated as a call expression on the following token, which produces
+    // a parse error because a call expression is not a valid item.
     let source = r"
         pub(invalid) fn demo() {}
     ";
     let result = hew_parser::parse(source);
+    // The parser must produce at least one error; the exact message may vary
+    // because `pub` is consumed as a visibility modifier and the parenthesised
+    // suffix is parsed as a statement, not a qualifier.
     assert!(
-        result.errors.iter().any(|err| err
-            .message
-            .contains("expected 'package' or 'super' after 'pub('")),
-        "expected pub scope error, got {:?}",
-        result.errors
+        !result.errors.is_empty(),
+        "pub(invalid) should not parse as a valid item, got no errors",
     );
 }
 

@@ -1388,6 +1388,7 @@ impl<'src> Parser<'src> {
             tok,
             Token::Fn
                 | Token::Pub
+                | Token::Package
                 | Token::Actor
                 | Token::Type
                 | Token::Trait
@@ -1809,31 +1810,16 @@ impl<'src> Parser<'src> {
 
     /// Parse a visibility modifier.
     ///
-    /// Consumes `pub`, `pub(package)`, or `pub(super)` and returns the
-    /// corresponding [`Visibility`] variant. Must be called when the current
-    /// token is `Token::Pub`.
+    /// Recognises two standalone-keyword forms:
+    /// - `pub`     → [`Visibility::Pub`]
+    /// - `package` → [`Visibility::Package`]
+    ///
+    /// Must be called when the current token is `Token::Pub` or `Token::Package`.
     fn parse_visibility(&mut self) -> Visibility {
-        assert!(self.eat(&Token::Pub));
-        if self.eat(&Token::LeftParen) {
-            let vis = match self.peek() {
-                Some(Token::Package) => {
-                    self.advance();
-                    Visibility::PubPackage
-                }
-                Some(Token::Super) => {
-                    self.advance();
-                    Visibility::PubSuper
-                }
-                _ => {
-                    self.error("expected 'package' or 'super' after 'pub('".to_string());
-                    return Visibility::Private;
-                }
-            };
-            if self.expect(&Token::RightParen).is_none() {
-                return Visibility::Private;
-            }
-            vis
+        if self.eat(&Token::Package) {
+            Visibility::Package
         } else {
+            assert!(self.eat(&Token::Pub));
             Visibility::Pub
         }
     }
@@ -1932,7 +1918,7 @@ impl<'src> Parser<'src> {
                 self.advance();
                 Item::Const(self.parse_const_decl(Visibility::Private, doc_comment)?)
             }
-            Some(Token::Pub) => {
+            Some(Token::Pub | Token::Package) => {
                 let vis = self.parse_visibility();
                 match self.peek() {
                     Some(Token::Fn | Token::Async | Token::Gen) => {
@@ -2010,7 +1996,9 @@ impl<'src> Parser<'src> {
                         Item::Const(self.parse_const_decl(vis, doc_comment)?)
                     }
                     _ => {
-                        self.error("invalid item after 'pub'".to_string());
+                        self.error(
+                            "invalid item after visibility modifier (expected fn, type, trait, actor, machine, supervisor, wire, record, enum, indirect, or const)".to_string(),
+                        );
                         return None;
                     }
                 }
@@ -2904,7 +2892,7 @@ impl<'src> Parser<'src> {
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             let doc_comment = self.collect_doc_comments();
             let method_attrs = self.parse_attributes();
-            let vis = if self.peek() == Some(&Token::Pub) {
+            let vis = if matches!(self.peek(), Some(Token::Pub | Token::Package)) {
                 self.parse_visibility()
             } else {
                 Visibility::Private
@@ -10653,25 +10641,16 @@ fn demo() {}
             panic!("expected function");
         }
 
-        // pub(package) fn → Visibility::PubPackage
-        let r = parse("pub(package) fn bar() {}");
+        // package fn → Visibility::Package
+        let r = parse("package fn bar() {}");
         assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
         if let Item::Function(f) = &r.program.items[0].0 {
-            assert_eq!(f.visibility, Visibility::PubPackage);
+            assert_eq!(f.visibility, Visibility::Package);
         } else {
             panic!("expected function");
         }
 
-        // pub(super) fn → Visibility::PubSuper
-        let r = parse("pub(super) fn baz() {}");
-        assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
-        if let Item::Function(f) = &r.program.items[0].0 {
-            assert_eq!(f.visibility, Visibility::PubSuper);
-        } else {
-            panic!("expected function");
-        }
-
-        // fn (no pub) → Visibility::Private
+        // fn (no modifier) → Visibility::Private
         let r = parse("fn private() {}");
         assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
         if let Item::Function(f) = &r.program.items[0].0 {
@@ -10680,23 +10659,37 @@ fn demo() {}
             panic!("expected function");
         }
 
-        // pub(package) type → Visibility::PubPackage
-        let r = parse("pub(package) type Point { x: i32; y: i32 }");
+        // package type → Visibility::Package
+        let r = parse("package type Point { x: i32; y: i32 }");
         assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
         if let Item::TypeDecl(t) = &r.program.items[0].0 {
-            assert_eq!(t.visibility, Visibility::PubPackage);
+            assert_eq!(t.visibility, Visibility::Package);
         } else {
             panic!("expected type decl");
         }
 
-        // pub(super) const → Visibility::PubSuper
-        let r = parse("pub(super) const X: i32 = 1;");
+        // package const → Visibility::Package
+        let r = parse("package const X: i32 = 1;");
         assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
         if let Item::Const(c) = &r.program.items[0].0 {
-            assert_eq!(c.visibility, Visibility::PubSuper);
+            assert_eq!(c.visibility, Visibility::Package);
         } else {
             panic!("expected const decl");
         }
+
+        // old pub(package) syntax is no longer accepted
+        let r = parse("pub(package) fn old() {}");
+        assert!(
+            !r.errors.is_empty(),
+            "pub(package) should no longer parse cleanly"
+        );
+
+        // old pub(super) syntax is no longer accepted
+        let r = parse("pub(super) fn old() {}");
+        assert!(
+            !r.errors.is_empty(),
+            "pub(super) should no longer parse cleanly"
+        );
     }
     #[test]
     fn parse_generic_lambda_removed_emits_typed_diagnostic() {

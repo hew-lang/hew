@@ -2957,6 +2957,121 @@ impl Checker {
         }
     }
 
+    /// Type-check a method call on `LambdaPid<M, R>` — the lambda-actor handle.
+    ///
+    /// Wired methods (the actor surface, NOT the channel surface):
+    ///   - `.send(msg: M)` → `Result<(), SendError>` (tell-shaped, R = ()) or
+    ///     `Result<R, AskError>` (ask-shaped). Verifies `M: @send`. Secondary
+    ///     surface to the canonical call-syntax `handle(msg)`; both route
+    ///     through `Place::LambdaActorHandle` to `hew_lambda_actor_send` at MIR.
+    ///   - `.close()` → `Result<(), CloseError>` — consuming; moves the handle.
+    ///     Lowers to `hew_lambda_actor_release` via the `Place::LambdaActorHandle`
+    ///     drop discriminator.
+    ///
+    /// `.recv()` / `.try_recv()` / `.try_send()` / `.send_half()` / `.recv_half()`
+    /// are NOT a lambda-actor surface: a lambda actor is not a channel. The caller
+    /// never reads the actor's mailbox, and an actor handle cannot be split in two.
+    /// These names are rejected with a targeted `UndefinedMethod` diagnostic.
+    pub(super) fn check_lambda_pid_method(
+        &mut self,
+        type_args: &[Ty],
+        receiver_ty: &Ty,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[CallArg],
+        span: &Span,
+    ) -> Ty {
+        // Extract M and R from LambdaPid<M, R>; fabricate fresh vars if malformed.
+        let (m_ty, r_ty) = if let [m, r] = type_args {
+            (m.clone(), r.clone())
+        } else {
+            for arg in args {
+                let (expr, sp) = arg.expr();
+                self.synthesize(expr, sp);
+            }
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "internal error: LambdaPid type has wrong arity".to_string(),
+            );
+            return Ty::Error;
+        };
+
+        match method {
+            "send" => {
+                // Check the argument against M (the message type).
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    let ty = self.check_against(expr, sp, &m_ty);
+                    // Enforce Send bound: the message crosses the actor boundary.
+                    let resolved = self.subst.resolve(&ty);
+                    self.enforce_actor_boundary_send(expr, sp, span, &resolved);
+                } else {
+                    self.report_error(
+                        TypeErrorKind::ArityMismatch,
+                        span,
+                        "LambdaPid::send expects one argument (the message)".to_string(),
+                    );
+                }
+                // Synthesize extra args for recovery diagnostics.
+                for arg in args.iter().skip(1) {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                // Records the duplex-send entry hint; MIR's `lower_duplex_send`
+                // re-routes by `Place::LambdaActorHandle` to `hew_lambda_actor_send`
+                // (the two-level checker-type vs MIR-discriminator design).
+                self.record_runtime_method_call_rewrite(span, "hew_duplex_send");
+                // Return type depends on reply direction, mirroring call-syntax dispatch:
+                //   tell-shaped (R = ())  → Result<(), SendError>
+                //   ask-shaped  (R = R)   → Result<R, AskError>
+                let resolved_r = self.subst.resolve(&r_ty);
+                if matches!(resolved_r, Ty::Unit) {
+                    Ty::result(Ty::Unit, Ty::send_error())
+                } else {
+                    Ty::result(resolved_r, Ty::ask_error())
+                }
+            }
+            "close" => {
+                // No arguments expected.
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                // Records the duplex-close entry hint (the seeded fn_registry
+                // symbol); the actual lambda-actor release ritual
+                // (`hew_lambda_actor_release`) is selected by the
+                // `Place::LambdaActorHandle` drop discriminator at MIR drop
+                // elaboration, mirroring `.send`'s two-level routing.
+                self.record_runtime_method_call_rewrite(span, "hew_duplex_close");
+                // Consuming: the LambdaPid<M, R> binding is moved.
+                self.method_call_consumes_receiver
+                    .insert(SpanKey::in_module(span, self.current_module_idx));
+                let resolved_recv = self.subst.resolve(receiver_ty);
+                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
+                Ty::result(Ty::Unit, Ty::duplex_close_error())
+            }
+            _ => {
+                // Synthesize args for error recovery.
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedMethod,
+                    span,
+                    format!(
+                        "no method `{method}` on `{}`; \
+                         a lambda actor is not a channel — supported methods: \
+                         send / close (the canonical call surface is `handle(msg)`)",
+                        receiver_ty.user_facing()
+                    ),
+                );
+                Ty::Error
+            }
+        }
+    }
+
     /// Type-check a method call on `SendHalf<S>`.
     ///
     /// Wired methods:
@@ -6098,15 +6213,11 @@ impl Checker {
                     Ty::Error
                 }
             }
-            // Duplex<S, R>: bidirectional channel handle.
+            // Duplex<S, R>: bidirectional channel handle (raw channel substrate
+            // from `duplex` / `duplex_pair`).
             //
-            // Methods: .send(msg) / .recv() / .send_half() / .recv_half() / .close()
-            //
-            // Lambda-actor handles are also typed as `Duplex<S, R>` underneath, so
-            // this arm handles both raw-duplex and lambda-actor method calls.
-            // Call-syntax `handle(msg)` is canonical for lambda-actor handles;
-            // `.send(msg)` is an allowed-secondary surface — both route to the same
-            // runtime symbol (`hew_duplex_send`).
+            // Methods: .send(msg) / .recv() / .try_send() / .try_recv() /
+            //          .send_half() / .recv_half() / .close()
             (
                 Ty::Named {
                     builtin: Some(BuiltinType::Duplex),
@@ -6115,6 +6226,27 @@ impl Checker {
                 },
                 _,
             ) => self.check_duplex_method(type_args, &receiver_ty, receiver, method, args, span),
+            // LambdaPid<M, R>: lambda-actor handle.
+            //
+            // Methods: .send(msg) / .close()
+            //
+            // Call-syntax `handle(msg)` is the canonical lambda-actor surface;
+            // `.send(msg)` is an allowed-secondary tell surface. A lambda actor
+            // is NOT a channel: it has no `.recv()` / `.try_recv()` /
+            // `.send_half()` / `.recv_half()` surface (the caller never reads the
+            // mailbox, and an actor cannot be split in two). The reply (for an
+            // ask-shaped actor) is delivered through the call-site Result, never a
+            // separate `.recv()`.
+            (
+                Ty::Named {
+                    builtin: Some(BuiltinType::LambdaPid),
+                    args: type_args,
+                    ..
+                },
+                _,
+            ) => {
+                self.check_lambda_pid_method(type_args, &receiver_ty, receiver, method, args, span)
+            }
             // SendHalf<S>: send-direction half of a split Duplex<S, R>.
             //
             // Methods: .send(msg) / .close()

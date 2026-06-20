@@ -1088,31 +1088,31 @@ impl Checker {
             let func_ty = binding.ty.clone();
 
             // Explicit fail-closed gate: a regular fn-closure must not capture a
-            // lambda-actor handle (`Duplex<S,R>`) and call it with call syntax.
+            // lambda-actor handle (`LambdaPid<M,R>`) and call it with call syntax.
             //
             // Authority: checker (this site). MIR has a defence-in-depth guard at
             // `materialize_closure_env` that names this site as authoritative. The
             // rejection is deliberate: there is no env-materialization protocol for
-            // Duplex handles yet — the MIR routing discriminator
+            // lambda-actor handles yet — the MIR routing discriminator
             // (`Place::LambdaActorHandle`) is bound to the spawning-scope slot, not
             // to an env-loaded copy, so emitting the capture would silently
             // misroute to `hew_duplex_send` instead of `hew_lambda_actor_send`.
             //
             // When this restriction is lifted (full env-materialization protocol
-            // for Duplex captures), remove this guard AND the MIR assert in
+            // for lambda-actor captures), remove this guard AND the MIR assert in
             // `materialize_closure_env`.
             let resolved_func_ty = self.subst.resolve(&func_ty);
             if matches!(
                 &resolved_func_ty,
                 Ty::Named {
-                    builtin: Some(crate::BuiltinType::Duplex),
+                    builtin: Some(crate::BuiltinType::LambdaPid),
                     ..
                 }
             ) {
                 if let Some(capture_depth) = self.lambda_capture_depth {
-                    // Allow the lambda-actor body to call its own Duplex handle
+                    // Allow the lambda-actor body to call its own handle
                     // recursively (self-send pattern). Regular fn-closures must not
-                    // capture Duplex handles — no env-materialization protocol exists yet.
+                    // capture lambda-actor handles — no env-materialization protocol exists yet.
                     if binding_depth < capture_depth && !self.in_lambda_actor_body {
                         self.report_error(
                             TypeErrorKind::ClosureCapturesDuplexHandle {
@@ -1122,7 +1122,7 @@ impl Checker {
                             format!(
                                 "fn-closure captures lambda-actor handle `{func_name}` \
                                  from enclosing scope — no env-materialization protocol \
-                                 exists for Duplex captures yet; call the handle directly \
+                                 exists for lambda-actor handle captures yet; call the handle directly \
                                  from the enclosing scope or spawn a dedicated forwarding actor \
                                  (E_CLOSURE_CAPTURES_LAMBDA_HANDLE)"
                             ),
@@ -1223,22 +1223,22 @@ impl Checker {
                 self.check_arity(args, 0, "this function", span);
                 Ty::Unit
             }
-            // Duplex<Msg, Reply>: lambda-actor handle — call-syntax dispatch.
+            // LambdaPid<Msg, Reply>: lambda-actor handle — call-syntax dispatch.
             //
-            // tell-shaped: `Duplex<Msg, ()>` — `handle(msg)` returns `Result<(), SendError>`
-            // ask-shaped:  `Duplex<Msg, R>`  — `handle(msg)` returns `Result<R, AskError>`
+            // tell-shaped: `LambdaPid<Msg, ()>` — `handle(msg)` returns `Result<(), SendError>`
+            // ask-shaped:  `LambdaPid<Msg, R>`  — `handle(msg)` returns `Result<R, AskError>`
             //
             // Exactly one argument required (the message). The message type must match
-            // the Duplex send-side type (S). The message must be Send (crosses actor boundary).
+            // the handle's message type (M). The message must be Send (crosses actor boundary).
             Ty::Named {
                 args: ref type_args,
-                builtin: Some(crate::BuiltinType::Duplex),
+                builtin: Some(crate::BuiltinType::LambdaPid),
                 ..
             } if type_args.len() == 2 => {
                 let msg_ty = type_args[0].clone();
                 let reply_ty = type_args[1].clone();
                 // A multi-param lambda actor carries a Tuple message type
-                // (`actor |a: i64, b: string| { .. }` → `Duplex<(i64, string), R>`).
+                // (`actor |a: i64, b: string| { .. }` → `LambdaPid<(i64, string), R>`).
                 // Its call surface is the N-arg form `handle(a, b)`: each call
                 // argument checks against its tuple component and each crosses
                 // the actor boundary independently (per-arg Send enforcement).

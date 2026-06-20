@@ -7179,6 +7179,19 @@ impl Checker {
                             );
                         }
                     }
+                    // Record visibility for all traits (both pub and non-pub) so a
+                    // cross-module qualified reference to a non-pub trait produces a
+                    // precise E_VISIBILITY at the reference site instead of leaking an
+                    // `E_MIR: unknown type` at the MIR boundary. Mirrors the TypeDecl
+                    // and Machine registration above; traits share the type-namespace
+                    // and the same qualified-reference enforcement path in resolution.
+                    let qualified_type = format!("{module_short}.{}", tr.name);
+                    self.type_visibility
+                        .entry(qualified_type.clone())
+                        .or_insert((tr.visibility, Some(module_short.to_string())));
+                    self.type_def_spans
+                        .entry(qualified_type)
+                        .or_insert_with(|| span.clone());
                     if !tr.visibility.is_pub() {
                         continue;
                     }
@@ -7222,6 +7235,19 @@ impl Checker {
                     }
                 }
                 Item::Actor(ad) => {
+                    // Record visibility for all actors (both pub and non-pub) so a
+                    // cross-module qualified reference to a non-pub actor produces a
+                    // precise E_VISIBILITY at the reference site instead of leaking an
+                    // `E_MIR: unknown type` at the MIR boundary. Mirrors the TypeDecl,
+                    // Machine, and Trait registration above; actors share the
+                    // type-namespace and the same qualified-reference enforcement path.
+                    let qualified_type = format!("{module_short}.{}", ad.name);
+                    self.type_visibility
+                        .entry(qualified_type.clone())
+                        .or_insert((ad.visibility, Some(module_short.to_string())));
+                    self.type_def_spans
+                        .entry(qualified_type)
+                        .or_insert_with(|| span.clone());
                     if !self.register_type_namespace_name(Some(module_short), &ad.name, span) {
                         continue;
                     }
@@ -7234,6 +7260,19 @@ impl Checker {
                 // `module.CONST` field access resolves in the type checker via
                 // the same `env.lookup_ref("{module}.{field}")` guard in
                 // `check_field_access`.
+                //
+                // SHIM (visibility): non-pub consts are not registered, so a
+                // cross-module `module.PRIVATE_CONST` reference fails closed with
+                // "module has no exported constant" rather than a dedicated
+                // E_VISIBILITY. WHY: const references resolve through the value
+                // env / field-access path, which has no visibility-enforcement
+                // consult point — unlike traits/actors/types which share the
+                // type-reference path. WHEN obsolete: when a const-visibility
+                // table + a field-access enforcement consult are added. WHAT the
+                // real solution is: record (visibility, decl_module) for every
+                // const here and check access_allowed in check_field_access,
+                // emitting visibility_violation. Tracked as a follow-on; the
+                // current message is already a clean fail-closed diagnostic.
                 Item::Const(cd) => {
                     if !cd.visibility.is_pub() {
                         continue;
@@ -7885,6 +7924,19 @@ impl Checker {
                             self.mark_imported_trait_used(Some(module_short), &super_trait.name);
                         }
                     }
+                    // Record visibility for all traits so the enforcement check can
+                    // distinguish "private, not accessible" from "unknown symbol".
+                    // Use module_full_path (matching TypeDecl/Machine) so cross-package
+                    // checks compare full paths. Without this a cross-module qualified
+                    // reference to a non-pub trait leaks an `E_MIR: unknown type` at the
+                    // MIR boundary instead of a precise E_VISIBILITY at the reference site.
+                    let qualified_trait = format!("{module_short}.{}", tr.name);
+                    self.type_visibility
+                        .entry(qualified_trait.clone())
+                        .or_insert((tr.visibility, Some(module_full_path.to_string())));
+                    self.type_def_spans
+                        .entry(qualified_trait)
+                        .or_insert_with(|| span.clone());
                     if !tr.visibility.is_pub() {
                         continue;
                     }
@@ -8027,6 +8079,18 @@ impl Checker {
                     }
                 }
                 Item::Actor(ad) => {
+                    // Record visibility for all actors so a cross-module qualified
+                    // reference to a non-pub actor produces a precise E_VISIBILITY at
+                    // the reference site instead of leaking an `E_MIR: unknown type` at
+                    // the MIR boundary. Use module_full_path (matching TypeDecl/Machine/
+                    // Trait) so cross-package checks compare full paths.
+                    let qualified_actor = format!("{module_short}.{}", ad.name);
+                    self.type_visibility
+                        .entry(qualified_actor.clone())
+                        .or_insert((ad.visibility, Some(module_full_path.to_string())));
+                    self.type_def_spans
+                        .entry(qualified_actor)
+                        .or_insert_with(|| span.clone());
                     // Skip non-pub actors (enforce visibility), matching every
                     // other item kind in this loop. A private actor must never
                     // become a module type export, qualified alias, or registered

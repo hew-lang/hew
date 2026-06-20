@@ -298,3 +298,51 @@ fn package_type_same_package_accepted() {
         describe_output(&output),
     );
 }
+
+/// A `package type` referenced from a different package must be rejected.
+///
+/// Layout: main.hew at tmp root (package root);
+/// subpkg/shapes.hew at a subdirectory (package subpkg).
+/// A qualified type reference across the package boundary must emit
+/// `E_VISIBILITY_PACKAGE` — the type path's `Package` branch in resolution.rs.
+#[test]
+fn package_type_cross_package_rejected() {
+    let dir = support::tempdir();
+    let subpkg = dir.path().join("subpkg");
+    fs::create_dir(&subpkg).expect("create subpkg dir");
+    fs::write(
+        subpkg.join("shapes.hew"),
+        "package type Point { x: i64, y: i64 }\n\
+         pub fn origin() -> i64 { 0 }\n",
+    )
+    .expect("write shapes");
+    fs::write(
+        dir.path().join("main.hew"),
+        "import subpkg::shapes;\n\
+         fn locate(p: shapes.Point) -> i64 { 0 }\n\
+         fn main() {}\n",
+    )
+    .expect("write main");
+
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(dir.path().join("main.hew"))
+        .output()
+        .expect("hew binary must run");
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert!(
+        !output.status.success(),
+        "package type referenced from a different package must be rejected\n{}",
+        describe_output(&output),
+    );
+    assert!(
+        stderr.contains("is package-visible") || stderr.contains("E_VISIBILITY"),
+        "error must mention package visibility restriction; got:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("Point"),
+        "error must name the symbol; got:\n{stderr}",
+    );
+}

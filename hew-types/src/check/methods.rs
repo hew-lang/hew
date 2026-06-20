@@ -5089,29 +5089,15 @@ impl Checker {
                             }
                             let acc_module_str =
                                 acc_module_owned.as_deref().unwrap_or("(root)").to_string();
-                            let err = match vis {
-                                hew_parser::ast::Visibility::Private => {
-                                    TypeError::visibility_violation_private(
-                                        span.clone(),
-                                        method,
-                                        decl_module.unwrap_or("(root)"),
-                                        &acc_module_str,
-                                        decl_span_owned,
-                                        acc_module_owned,
-                                    )
-                                }
-                                hew_parser::ast::Visibility::Package => {
-                                    TypeError::visibility_violation_package(
-                                        span.clone(),
-                                        method,
-                                        decl_module.unwrap_or("(root)"),
-                                        &acc_module_str,
-                                        decl_span_owned,
-                                        acc_module_owned,
-                                    )
-                                }
-                                hew_parser::ast::Visibility::Pub => unreachable!(),
-                            };
+                            let err = TypeError::visibility_violation(
+                                vis,
+                                span.clone(),
+                                method,
+                                decl_module.unwrap_or("(root)"),
+                                &acc_module_str,
+                                decl_span_owned,
+                                acc_module_owned,
+                            );
                             self.errors.push(err);
                             return Ty::Error;
                         }

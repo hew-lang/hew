@@ -1514,29 +1514,15 @@ impl Checker {
                                     .get(&resolved_name)
                                     .cloned()
                                     .unwrap_or_else(|| te.1.clone());
-                                let err = match vis {
-                                    hew_parser::ast::Visibility::Private => {
-                                        TypeError::visibility_violation_private(
-                                            te.1.clone(),
-                                            symbol,
-                                            decl_module.unwrap_or("(root)"),
-                                            acc_module.unwrap_or("(root)"),
-                                            decl_span,
-                                            self.current_module.clone(),
-                                        )
-                                    }
-                                    hew_parser::ast::Visibility::Package => {
-                                        TypeError::visibility_violation_package(
-                                            te.1.clone(),
-                                            symbol,
-                                            decl_module.unwrap_or("(root)"),
-                                            acc_module.unwrap_or("(root)"),
-                                            decl_span,
-                                            self.current_module.clone(),
-                                        )
-                                    }
-                                    hew_parser::ast::Visibility::Pub => unreachable!(),
-                                };
+                                let err = TypeError::visibility_violation(
+                                    vis,
+                                    te.1.clone(),
+                                    symbol,
+                                    decl_module.unwrap_or("(root)"),
+                                    acc_module.unwrap_or("(root)"),
+                                    decl_span,
+                                    self.current_module.clone(),
+                                );
                                 self.errors.push(err);
                             }
                             return Ty::Error;

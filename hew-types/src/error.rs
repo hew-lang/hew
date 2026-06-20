@@ -311,7 +311,8 @@ impl TypeError {
             },
             acc_span,
             format!(
-                "`{symbol}` is private to module `{decl_module}`; not accessible from `{acc_module}`"
+                "E_VISIBILITY_PRIVATE: `{symbol}` is private to module `{decl_module}`; \
+                 not accessible from `{acc_module}`"
             ),
         )
         .with_note(decl_span, "declared private here");
@@ -349,7 +350,7 @@ impl TypeError {
             },
             acc_span,
             format!(
-                "`{symbol}` is package-visible (package `{decl_package}`); \
+                "E_VISIBILITY_PACKAGE: `{symbol}` is package-visible (package `{decl_package}`); \
                  not accessible from `{acc_module}`"
             ),
         )
@@ -358,6 +359,56 @@ impl TypeError {
             err = err.with_source_module(m);
         }
         err
+    }
+
+    /// Construct the visibility-violation diagnostic for a non-`pub` symbol
+    /// accessed across a module/package boundary, dispatching on `vis`.
+    ///
+    /// Shared by every reference-site enforcement path (function calls,
+    /// module-qualified method calls, and type references) so the
+    /// `Private` → [`visibility_violation_private`] /
+    /// `Package` → [`visibility_violation_package`] mapping lives in one place.
+    ///
+    /// # Panics
+    ///
+    /// Panics on [`Visibility::Pub`]: callers only reach this after
+    /// `access_allowed` has rejected the reference, which never happens for a
+    /// `pub` symbol.
+    ///
+    /// [`visibility_violation_private`]: Self::visibility_violation_private
+    /// [`visibility_violation_package`]: Self::visibility_violation_package
+    /// [`Visibility::Pub`]: hew_parser::ast::Visibility::Pub
+    #[must_use]
+    pub fn visibility_violation(
+        vis: hew_parser::ast::Visibility,
+        acc_span: Span,
+        symbol: &str,
+        decl_module: &str,
+        acc_module: &str,
+        decl_span: Span,
+        source_module: Option<String>,
+    ) -> Self {
+        match vis {
+            hew_parser::ast::Visibility::Private => Self::visibility_violation_private(
+                acc_span,
+                symbol,
+                decl_module,
+                acc_module,
+                decl_span,
+                source_module,
+            ),
+            hew_parser::ast::Visibility::Package => Self::visibility_violation_package(
+                acc_span,
+                symbol,
+                decl_module,
+                acc_module,
+                decl_span,
+                source_module,
+            ),
+            hew_parser::ast::Visibility::Pub => {
+                unreachable!("visibility_violation called for a pub symbol")
+            }
+        }
     }
 
     /// Create an actor reference cycle warning.
@@ -1151,8 +1202,8 @@ impl TypeErrorKind {
             Self::IntrinsicOnMethod { .. } => "IntrinsicOnMethod",
             Self::RefutableLetPattern { .. } => "RefutableLetPattern",
             Self::OpaqueDirectConstruct { .. } => "OpaqueDirectConstruct",
-            Self::VisibilityViolationPrivate { .. } => "E_VISIBILITY_PRIVATE",
-            Self::VisibilityViolationPackage { .. } => "E_VISIBILITY_PACKAGE",
+            Self::VisibilityViolationPrivate { .. } => "VisibilityViolationPrivate",
+            Self::VisibilityViolationPackage { .. } => "VisibilityViolationPackage",
         }
     }
 }

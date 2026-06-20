@@ -970,29 +970,15 @@ impl Checker {
                             .fn_def_spans
                             .get(&resolved_fn_name)
                             .map_or_else(|| span.clone(), |(s, _)| s.clone());
-                        let err = match vis {
-                            hew_parser::ast::Visibility::Private => {
-                                TypeError::visibility_violation_private(
-                                    span.clone(),
-                                    symbol,
-                                    decl_module.unwrap_or("(root)"),
-                                    acc_module.unwrap_or("(root)"),
-                                    decl_span,
-                                    self.current_module.clone(),
-                                )
-                            }
-                            hew_parser::ast::Visibility::Package => {
-                                TypeError::visibility_violation_package(
-                                    span.clone(),
-                                    symbol,
-                                    decl_module.unwrap_or("(root)"),
-                                    acc_module.unwrap_or("(root)"),
-                                    decl_span,
-                                    self.current_module.clone(),
-                                )
-                            }
-                            hew_parser::ast::Visibility::Pub => unreachable!(),
-                        };
+                        let err = TypeError::visibility_violation(
+                            vis,
+                            span.clone(),
+                            symbol,
+                            decl_module.unwrap_or("(root)"),
+                            acc_module.unwrap_or("(root)"),
+                            decl_span,
+                            self.current_module.clone(),
+                        );
                         self.errors.push(err);
                         return Ty::Error;
                     }

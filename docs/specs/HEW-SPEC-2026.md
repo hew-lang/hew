@@ -4655,7 +4655,7 @@ let result = await task | after 5s;        // Timeout after 5 seconds
 DurationLit = IntLit ("ns" | "us" | "ms" | "s" | "m" | "h") ;
 ```
 
-### 12.4 Labelled Loops and Break-with-Value
+### 12.4 Labelled Loops
 
 Loops (`loop`, `while`, `for`) may carry an optional **label** prefixed with `@`. Targeted `break @label` and `continue @label` are fully supported and transfer control to the enclosing loop that carries the matching label.
 
@@ -4676,20 +4676,22 @@ Loops (`loop`, `while`, `for`) may carry an optional **label** prefixed with `@`
 
 Labels are scoped to the loop they annotate.
 
-**Break-with-value:**
+**Loops are statements, not expressions.**
 
-`break` may carry an expression whose value becomes the result of the loop when used in a value-producing position (e.g., the last statement in a block):
+`loop`, `while`, and `for` are statements — they do not produce a value. To carry a result out of a loop, declare a `var` binding before the loop and assign to it inside the body:
 
 ```hew
 var result: i64 = 0;
 loop {
     if found {
-        break result;    // the loop "returns" result via the break value
+        result = computed_value;
+        break;
     }
 }
+// use result here
 ```
 
-The break value is stored in a compiler-managed temporary and loaded after the loop exits.
+`break` and `continue` are pure control-flow statements. A `break` may carry an expression (`break expr;`) — the parser accepts this syntax, but the expression is evaluated for side effects only and its value is **discarded**. Loop-as-expression (`let x = loop { break 42; }`) is not supported.
 
 **Grammar:**
 

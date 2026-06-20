@@ -1,0 +1,25 @@
+//! @name Compound Assignment
+//! @description Compound assignment operators +=, -=, *=, /=, %= for integers and floats
+
+fn main() {
+    var x: i64 = 10;
+    x += 5;
+    println(x);
+    x -= 3;
+    println(x);
+    x *= 2;
+    println(x);
+    x /= 3;
+    println(x);
+    x %= 3;
+    println(x);
+    var f: f64 = 1.0;
+    f += 0.5;
+    println(f);
+    f -= 0.25;
+    println(f);
+    f *= 4.0;
+    println(f);
+    f /= 2.0;
+    println(f);
+}

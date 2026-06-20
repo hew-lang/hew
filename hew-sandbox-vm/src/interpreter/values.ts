@@ -67,6 +67,67 @@ export function valueFromLiteral(value: JsonValue): VmValue {
   }
 }
 
+/// Render an f64 value to a string matching native Hew output.
+///
+/// Native uses `printf("%g", x)` which produces:
+/// - `inf`, `-inf`, `nan` for non-finite values (lowercase)
+/// - Negative zero as `-0`
+/// - 6 significant digits with trailing-zero removal
+/// - Scientific notation (`e+NN`/`e-NN`, at least 2 exponent digits) when the
+///   exponent is < -4 or >= 6; fixed notation otherwise
+///
+/// JavaScript's `String()` diverges from `%g` in several ways:
+/// - `String(-0)` → `"0"` (drops the sign)
+/// - Uses shortest round-trip digits (Ryu), not 6 sig-figs
+/// - Switches between fixed/scientific at different thresholds
+///
+/// This function replicates `printf("%g")` semantics for all finite cases.
+export function renderF64(value: number): string {
+  if (Number.isNaN(value)) return "nan";
+  if (value === Infinity) return "inf";
+  if (value === -Infinity) return "-inf";
+  // Negative zero: %g outputs "-0"; JavaScript's String() outputs "0".
+  if (Object.is(value, -0)) return "-0";
+  if (value === 0) return "0";
+
+  const absVal = Math.abs(value);
+  // `%g` precision is 6 significant digits; the format choice (fixed vs
+  // scientific) is based on the exponent of the *rounded* value, not the
+  // original. For example, 999999.5 rounds to 1000000 (exp=6) → scientific;
+  // 0.00009999995 rounds to 0.0001 (exp=-4) → fixed.
+  // Computing exp directly from Math.log10(absVal) gives the wrong answer at
+  // rounding boundaries, so we round first and recompute.
+  const rounded = parseFloat(absVal.toPrecision(6));
+  const exp = Math.floor(Math.log10(rounded));
+
+  let s: string;
+  if (exp < -4 || exp >= 6) {
+    // Scientific path: toExponential(5) gives 5 digits after the decimal
+    // point = 6 significant digits, then we strip trailing zeros and
+    // normalise the exponent to at least 2 digits with an explicit sign.
+    s = rounded.toExponential(5);
+    const eIdx = s.indexOf("e");
+    let mantissa = s.slice(0, eIdx);
+    const expPart = s.slice(eIdx + 1); // e.g. "+20" or "-324"
+    if (mantissa.includes(".")) {
+      mantissa = mantissa.replace(/\.?0+$/, "");
+    }
+    const sign = expPart[0]; // "+" or "-"
+    let digits = expPart.slice(1);
+    if (digits.length < 2) digits = "0" + digits;
+    s = (value < 0 ? "-" : "") + mantissa + "e" + sign + digits;
+  } else {
+    // Fixed path: toPrecision(6) gives 6 significant digits; strip trailing
+    // zeros (and the decimal point if it becomes empty).
+    s = absVal.toPrecision(6);
+    if (s.includes(".")) {
+      s = s.replace(/\.?0+$/, "");
+    }
+    if (value < 0) s = "-" + s;
+  }
+  return s;
+}
+
 export function renderStdout(value: VmValue): string {
   switch (value.kind) {
     case "unit":
@@ -76,7 +137,7 @@ export function renderStdout(value: VmValue): string {
     case "i64":
       return value.value.toString();
     case "f64":
-      return String(value.value);
+      return renderF64(value.value);
     case "string":
       return value.value;
     case "actor":

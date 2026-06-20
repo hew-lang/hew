@@ -61,6 +61,22 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     "fieldless_enum_eq",
     "match_guard_parity",
     "match_guard_catch_all_fallthrough",
+    // Structural `==`/`!=` on user-defined record types and payload enums.
+    // Profile now admits these; canonicalComparable handles records structurally.
+    "record_equality",
+    // `clone expr` produces an independent deep copy via local.set cloneValue.
+    "clone_value",
+    // Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) for i64 and f64.
+    "compound_assign",
+    // Non-finite f64 rendering: overflow → `inf` / `-inf`, 0/0 → `nan`.
+    // Pins the sandbox VM's renderF64 path against native printf %g.
+    "f64_nonfinite_render",
+    // Finite f64 rendering: negative zero, %g fixed/scientific thresholds,
+    // 6-sig-fig rounding. Pins renderF64's %g-equivalent finite path.
+    "f64_finite_render",
+    // Tuple construction and positional let-destructure lowered as anonymous
+    // records with fields _0, _1, … using record.new / record.get.
+    "tuple_values",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";
@@ -851,14 +867,11 @@ fn main() {
     }
 
     #[test]
-    fn clone_prefix_is_profile_rejected() {
-        // `clone x` type-checks (string clone is supported by the checker) and
-        // so reaches the sandbox profile gate. The emitter has no lowering for
-        // it, so the profile must reject it here — proving the export fails
-        // closed to `bytecode: None` instead of emitting an
-        // `unsupported_instruction` trap. The matched kind also guarantees the
-        // rejection comes from the profile gate, not an earlier parse/type one.
-        assert_profile_rejection(
+    fn clone_prefix_is_admitted_and_emits_bytecode() {
+        // `clone x` is now admitted by the profile and lowered by the emitter.
+        // The emitter writes the operand into a fresh temp via `local.set`, which
+        // calls `cloneValue` in the VM — a deep recursive copy.
+        let output = compile_to_sandbox_bytecode(
             r#"
 fn main() {
     let original = "hi";
@@ -866,14 +879,28 @@ fn main() {
     println(duplicate);
 }
 "#,
-            "reserved_runtime_feature",
+            Some("sandbox-vm-export"),
+        )
+        .expect("compile_to_sandbox_bytecode should not throw");
+        let no_errors = output.diagnostics.iter().all(|d| d.severity != "error");
+        assert!(
+            no_errors,
+            "clone prefix should not produce error diagnostics; got:\n{:#?}",
+            output.diagnostics
+        );
+        assert!(
+            output.bytecode.is_some(),
+            "clone prefix should emit bytecode; diagnostics:\n{:#?}",
+            output.diagnostics
         );
     }
 
     #[test]
-    fn structural_eq_is_profile_rejected_until_vm_compare_exists() {
-        assert_profile_rejection(
-            r"
+    fn structural_eq_is_admitted_and_emits_bytecode() {
+        // Structural `==`/`!=` on records and payload enums is now admitted.
+        // `lower_binary` emits `cmp.eq`/`cmp.ne`; the VM's `canonicalComparable`
+        // handles these structurally.
+        let record_source = r"
 type Point { x: i64; y: i64; }
 
 fn main() {
@@ -881,23 +908,45 @@ fn main() {
     let b = Point { x: 1, y: 2 };
     println(a == b);
 }
-",
-            "reserved_runtime_feature",
+";
+        let output = compile_to_sandbox_bytecode(record_source, Some("sandbox-vm-export"))
+            .expect("compile_to_sandbox_bytecode should not throw");
+        let no_errors = output.diagnostics.iter().all(|d| d.severity != "error");
+        assert!(
+            no_errors,
+            "record equality should not produce error diagnostics; got:\n{:#?}",
+            output.diagnostics
         );
-        assert_profile_rejection(
-            r"
+        assert!(
+            output.bytecode.is_some(),
+            "record equality should emit bytecode; diagnostics:\n{:#?}",
+            output.diagnostics
+        );
+
+        let enum_source = r"
 enum Shape {
     Circle(i64);
     Empty;
 }
 
 fn main() {
-    let a: Shape = Shape::Circle(1);
-    let b: Shape = Shape::Circle(1);
+    let a: Shape = Circle(1);
+    let b: Shape = Circle(1);
     println(a == b);
 }
-",
-            "reserved_runtime_feature",
+";
+        let output = compile_to_sandbox_bytecode(enum_source, Some("sandbox-vm-export"))
+            .expect("compile_to_sandbox_bytecode should not throw");
+        let no_errors = output.diagnostics.iter().all(|d| d.severity != "error");
+        assert!(
+            no_errors,
+            "payload enum equality should not produce error diagnostics; got:\n{:#?}",
+            output.diagnostics
+        );
+        assert!(
+            output.bytecode.is_some(),
+            "payload enum equality should emit bytecode; diagnostics:\n{:#?}",
+            output.diagnostics
         );
     }
 

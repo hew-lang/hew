@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use hew_parser::ast::{
-    ActorDecl, BinaryOp, Block as AstBlock, CallArg, ElseBlock, Expr, FnDecl, Item, Literal,
-    MatchArm, Pattern, Program, ReceiveFnDecl, Spanned, Stmt, TypeBodyItem, TypeDeclKind,
-    VariantKind,
+    ActorDecl, BinaryOp, Block as AstBlock, CallArg, CompoundAssignOp, ElseBlock, Expr, FnDecl,
+    Item, Literal, MatchArm, Pattern, Program, ReceiveFnDecl, Spanned, Stmt, TypeBodyItem,
+    TypeDeclKind, VariantKind,
 };
 use hew_types::check::{SpanKey, TypeDefKind, VariantDef};
 use hew_types::Ty;
@@ -839,9 +839,36 @@ impl<'a> PackageEmitter<'a> {
                         .collect::<Vec<_>>()
                         .join(".")
                 );
+                // Register a RecordLayout with positional fields _0, _1, … so
+                // the VM's `record.new` / `record.get` ops can handle tuples.
+                // `or_insert` is idempotent — repeated calls for the same
+                // tuple shape are no-ops.
+                let fields: Vec<FieldLayout> = params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, ty_id)| FieldLayout {
+                        name: format!("_{i}"),
+                        ty: ty_id.clone(),
+                        index: i,
+                    })
+                    .collect();
+                let mut indexes = BTreeMap::new();
+                for i in 0..items.len() {
+                    indexes.insert(format!("_{i}"), i);
+                }
+                self.record_field_indexes
+                    .entry(id.clone())
+                    .or_insert(indexes);
+                self.record_layouts
+                    .entry(id.clone())
+                    .or_insert(RecordLayout {
+                        id: id.clone(),
+                        name: ty.user_facing().to_string(),
+                        fields,
+                    });
                 (
                     id,
-                    "opaque".to_string(),
+                    "record".to_string(),
                     ty.user_facing().to_string(),
                     params,
                 )
@@ -1257,6 +1284,54 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                         );
                         self.bindings.insert(name.clone(), local);
                     }
+                } else if let Pattern::Tuple(sub_patterns) = &pattern.0 {
+                    // Tuple destructure: `let (a, b, c) = expr;`
+                    // The tuple was lowered as an anonymous record with positional
+                    // fields _0, _1, …; emit `record.get` at each index and bind
+                    // each sub-pattern's identifier.  Only `Pattern::Identifier`
+                    // and `Pattern::Wildcard` sub-patterns are supported here;
+                    // nested destructure hits emit_unsupported.
+                    if let Some(value) = value {
+                        let value_local = self.lower_expr(value)?;
+                        let tuple_ty = self.ty_for_expr(value);
+                        let elem_tys: Vec<Ty> = match &tuple_ty {
+                            Ty::Tuple(items) => items.clone(),
+                            _ => vec![],
+                        };
+                        let sub_patterns = sub_patterns.clone();
+                        for (i, sub_pat) in sub_patterns.iter().enumerate() {
+                            match &sub_pat.0 {
+                                Pattern::Identifier(name) => {
+                                    let elem_ty = elem_tys.get(i).cloned().unwrap_or(Ty::Unit);
+                                    let dst = self.declare_local(
+                                        Some(name.clone()),
+                                        &elem_ty,
+                                        false,
+                                        Some(sub_pat.1.clone()),
+                                    );
+                                    self.emit_instruction(
+                                        "record.get",
+                                        Some(dst.clone()),
+                                        vec![
+                                            Operand::local(value_local.clone()),
+                                            Operand::literal(i as u64),
+                                        ],
+                                        Some(span.clone()),
+                                        None,
+                                    );
+                                    self.bindings.insert(name.clone(), dst);
+                                }
+                                Pattern::Wildcard => {
+                                    // discard element — no binding needed
+                                }
+                                _ => {
+                                    // nested destructure not yet supported
+                                    self.emit_unsupported(Some(span.clone()));
+                                    return Ok(());
+                                }
+                            }
+                        }
+                    }
                 } else {
                     self.emit_unsupported(Some(span));
                 }
@@ -1347,14 +1422,68 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             Stmt::Expression(expr) => {
                 self.lower_expr(expr)?;
             }
-            Stmt::Assign { target, value, .. } => {
-                let value_local = self.lower_expr(value)?;
+            Stmt::Assign { target, op, value } => {
                 if let Expr::Identifier(name) = &target.0 {
                     if let Some(local) = self.bindings.get(name).cloned() {
+                        let rhs_local = self.lower_expr(value)?;
+                        let result_local = if let Some(compound_op) = op {
+                            // Compound assignment (`x += v`, `x -= v`, …).
+                            // Read the current binding, combine with rhs using the
+                            // type-directed opcode family, then write the result back.
+                            let target_ty = self.ty_for_expr(target);
+                            let operand_is_float = target_ty.is_float();
+                            let opcode = match compound_op {
+                                CompoundAssignOp::Add if operand_is_float => "f64.add",
+                                CompoundAssignOp::Subtract if operand_is_float => "f64.sub",
+                                CompoundAssignOp::Multiply if operand_is_float => "f64.mul",
+                                CompoundAssignOp::Divide if operand_is_float => "f64.div",
+                                CompoundAssignOp::Modulo if operand_is_float => "f64.rem",
+                                CompoundAssignOp::Add => "i64.checked_add",
+                                CompoundAssignOp::Subtract => "i64.checked_sub",
+                                CompoundAssignOp::Multiply => "i64.checked_mul",
+                                CompoundAssignOp::Divide => "i64.checked_div",
+                                CompoundAssignOp::Modulo => "i64.checked_rem",
+                                // Bitwise and shift forms are integer-only; admit them
+                                // to the arithmetic path when an opcode exists, trap
+                                // otherwise so learners get a named failure.
+                                CompoundAssignOp::BitAnd
+                                | CompoundAssignOp::BitOr
+                                | CompoundAssignOp::BitXor
+                                | CompoundAssignOp::Shl
+                                | CompoundAssignOp::Shr => {
+                                    self.emit_unsupported(Some(span));
+                                    return Ok(());
+                                }
+                            };
+                            // Emit `local.get current, binding` to read the current value.
+                            let current_ty = self.ty_for_expr(target);
+                            let current = self.temp_local(&current_ty, Some(span.clone()));
+                            self.emit_instruction(
+                                "local.get",
+                                Some(current.clone()),
+                                vec![Operand::local(local.clone())],
+                                Some(span.clone()),
+                                None,
+                            );
+                            // Emit the binary op: `result = current op rhs`.
+                            let result_ty = self.ty_for_expr(target);
+                            let result = self.temp_local(&result_ty, Some(span.clone()));
+                            self.emit_instruction(
+                                opcode,
+                                Some(result.clone()),
+                                vec![Operand::local(current), Operand::local(rhs_local)],
+                                Some(span.clone()),
+                                None,
+                            );
+                            result
+                        } else {
+                            // Plain assignment — value is already lowered.
+                            rhs_local
+                        };
                         self.emit_instruction(
                             "local.set",
                             None,
-                            vec![Operand::local(local), Operand::local(value_local)],
+                            vec![Operand::local(local), Operand::local(result_local)],
                             Some(span),
                             None,
                         );
@@ -1855,8 +1984,52 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 else_body.as_ref(),
                 span.clone(),
             ),
-            Expr::Tuple(_)
-            | Expr::ArrayRepeat { .. }
+            Expr::Clone(operand) => {
+                // `clone expr` produces an independent deep copy of the value.
+                // The sandbox VM's `local.set` always calls `cloneValue` (a deep
+                // recursive copy), so writing the evaluated operand into a fresh
+                // temp local via `local.set` is sufficient to produce an
+                // independent copy. This correctly handles vector aliasing: a
+                // cloned vector is a distinct object whose items are independent
+                // from the original.
+                let inner = self.lower_expr(operand)?;
+                let ty = self.ty_for_expr(expr);
+                let dst = self.temp_local(&ty, Some(span.clone()));
+                // `local.set dst, inner` calls cloneValue(resolve(inner)) in the
+                // VM, producing a deep copy stored in `dst`.
+                self.emit_instruction(
+                    "local.set",
+                    None,
+                    vec![Operand::local(dst.clone()), Operand::local(inner)],
+                    Some(span.clone()),
+                    None,
+                );
+                Ok(dst)
+            }
+            Expr::Tuple(items) => {
+                // Tuples are lowered as anonymous records with positional fields
+                // _0, _1, … so the VM's `record.new` / `record.get` ops handle
+                // them the same way as named structs.  `type_id_for_ty` already
+                // registers the RecordLayout and field-index map for every
+                // Ty::Tuple it encounters.
+                let ty = self.ty_for_expr(expr);
+                let type_id = self.package.type_id_for_ty(&ty);
+                let mut args = vec![Operand::ty(type_id)];
+                for item in items {
+                    let local = self.lower_expr(item)?;
+                    args.push(Operand::local(local));
+                }
+                let dst = self.temp_local(&ty, Some(span.clone()));
+                self.emit_instruction(
+                    "record.new",
+                    Some(dst.clone()),
+                    args,
+                    Some(span.clone()),
+                    None,
+                );
+                Ok(dst)
+            }
+            Expr::ArrayRepeat { .. }
             | Expr::MapLiteral { .. }
             | Expr::Lambda { .. }
             | Expr::SpawnLambdaActor { .. }
@@ -1872,7 +2045,6 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::This
             | Expr::Cast { .. }
             | Expr::PostfixTry(_)
-            | Expr::Clone(_)
             | Expr::Range { .. }
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
@@ -2489,7 +2661,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 );
                 Ok(dst)
             }
-            // WASM-TODO: record `.clone()` lowers to a real deep-copy thunk on
+            // WASM-TODO(#1451): record `.clone()` lowers to a real deep-copy thunk on
             // the native path (`__hew_record_clone_inplace_<R>`), but the
             // sandbox emitter has no record-clone opcode yet. It falls through
             // here to `emit_unsupported` (fail-closed marker), so a playground

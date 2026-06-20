@@ -1,0 +1,15 @@
+//! @name Clone Value
+//! @description `clone` produces an independent deep copy; mutations to the original do not affect the clone
+
+fn main() {
+    let a = "hello";
+    let b = clone a;
+    println(a);
+    println(b);
+    println(a == b);
+    let xs = [1, 2, 3];
+    let ys = clone xs;
+    xs.push(4);
+    println(xs.len());
+    println(ys.len());
+}

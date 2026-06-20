@@ -377,10 +377,7 @@ const CONSTRUCTS: &[Construct] = &[
     Construct {
         id: "tuple value + tuple-let destructure",
         probe: "fn main() {\n    let t = (1, 2, 3);\n    let (a, b, c) = t;\n    println(a + b + c);\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "Expr::Tuple has no emit arm and tuple-pattern Let hits emit_unsupported -> trap",
-        },
+        coverage: Coverage::Parity("tuple_values"),
     },
     Construct {
         id: "expression-statement if-let (result discarded)",
@@ -421,6 +418,30 @@ const CONSTRUCTS: &[Construct] = &[
         // #1987 and pinned to the fieldless_enum_eq parity case.
         probe: "enum Colour { Red; Green; Blue; }\nfn check(c: Colour) {\n    if c == Colour::Red { println(\"red\"); } else { println(\"other\"); }\n    if c != Colour::Blue { println(\"not-blue\"); } else { println(\"blue\"); }\n}\nfn main() {\n    check(Colour::Red);\n    check(Colour::Blue);\n}\n",
         coverage: Coverage::Parity("fieldless_enum_eq"),
+    },
+    Construct {
+        id: "structural record `==` / `!=`",
+        // `BinaryOp::Equal` / `NotEqual` on a user-defined record (struct)
+        // type. The profile previously rejected these with a
+        // `reserved_runtime_feature` diagnostic; they are now admitted.
+        // `lower_binary` emits `cmp.eq`/`cmp.ne`; the VM's `canonicalComparable`
+        // serialises `{ type, fields: [...] }` to a canonical JSON string,
+        // giving structural field-by-field equality that mirrors native Hew.
+        // Pinned to the record_equality parity case.
+        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let a = Point { x: 1, y: 2 };\n    let b = Point { x: 1, y: 2 };\n    let c = Point { x: 3, y: 4 };\n    println(a == b);\n    println(a == c);\n}\n",
+        coverage: Coverage::Parity("record_equality"),
+    },
+    Construct {
+        id: "payload enum `==` / `!=`",
+        // `BinaryOp::Equal` / `NotEqual` on an enum with data-carrying variants.
+        // The profile previously rejected these as `reserved_runtime_feature`.
+        // `lower_binary` emits `cmp.eq`/`cmp.ne`; `canonicalComparable`
+        // serialises `{ type, tag, payload: [...] }` so same-tag same-payload
+        // variants compare equal and any difference compares unequal — matching
+        // native structural equality semantics. Subsumed by the record_equality
+        // parity case which exercises both records and payload enums.
+        probe: "enum Shape { Circle(i64); Square(i64); }\nfn main() {\n    let s1 = Circle(5);\n    let s2 = Circle(5);\n    let s3 = Square(5);\n    println(s1 == s2);\n    println(s1 == s3);\n}\n",
+        coverage: Coverage::Parity("record_equality"),
     },
     Construct {
         id: "numeric cast (`as`)",
@@ -470,12 +491,38 @@ const CONSTRUCTS: &[Construct] = &[
     Construct {
         id: "compound assignment (`x += v`)",
         // Was a silent-wrong-answer hole: the emitter ignored `Stmt::Assign.op`,
-        // so `x += 5` became `x = 5`. Now rejected fail-closed until SP-1
-        // type-aware lowering can combine `x op v` for both i64 and f64.
+        // so `x += 5` became `x = 5`. Now admitted and correctly lowered: the
+        // emitter reads the current binding, applies the type-directed opcode
+        // (i64.checked_* or f64.*), and writes the result back. Pinned to the
+        // compound_assign parity case which exercises +=, -=, *=, /=, %= for
+        // both i64 and f64.
         probe: "fn main() {\n    var x: i64 = 10;\n    x += 5;\n    println(x);\n}\n",
-        coverage: Coverage::RejectedByProfile {
-            diagnostic_kind: "compound_assignment_rejected",
-        },
+        coverage: Coverage::Parity("compound_assign"),
+    },
+    Construct {
+        id: "non-finite f64 rendering (inf / -inf / nan)",
+        // Sandbox VM's renderF64 must match native printf("%g"): lowercase
+        // `inf`, `-inf`, `nan`. JavaScript's `String()` produces capitalised
+        // `Infinity` / `-Infinity` / `NaN`, which mismatches native. The
+        // renderF64 helper intercepts the non-finite cases before `String()`.
+        // Overflow via *= 10 on 1e308 yields +inf; -1e308 * 10 yields -inf;
+        // 0.0/0.0 yields nan. Pinned to the f64_nonfinite_render parity case.
+        probe: "fn main() {\n    var big: f64 = 1.0e308;\n    big *= 10.0;\n    println(big);\n    let z: f64 = 0.0;\n    println(z / z);\n}\n",
+        coverage: Coverage::Parity("f64_nonfinite_render"),
+    },
+    Construct {
+        id: "finite f64 rendering (%g thresholds, neg-zero, 6-sig-fig)",
+        // Sandbox VM's renderF64 must match native printf("%g") for finite
+        // values. JavaScript's `String()` uses Ryu shortest-round-trip digits
+        // and different fixed/scientific thresholds: `-0.0` renders as `"0"`
+        // (not `"-0"`), large values like `1.23457e+20` render as the long
+        // decimal string, and small values like `1.23457e-06` render as
+        // `"0.00000123456789"`. The renderF64 now implements %g semantics:
+        // 6 sig figs via toExponential(5)/toPrecision(6), scientific when
+        // exp < -4 or >= 6, and explicit sign for negative zero.
+        // Pinned to the f64_finite_render parity case.
+        probe: "fn main() {\n    let n: f64 = -0.0;\n    println(n);\n    let big: f64 = 1.23456789e20;\n    println(big);\n    let small: f64 = 1.23456789e-6;\n    println(small);\n}\n",
+        coverage: Coverage::Parity("f64_finite_render"),
     },
     Construct {
         id: "top-level type alias (`type T = U;`)",
@@ -519,10 +566,12 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "`clone` prefix",
+        // `clone expr` is now admitted and correctly lowered. The emitter
+        // evaluates the operand then writes it into a fresh temp via
+        // `local.set`, which calls `cloneValue` in the VM — a deep recursive
+        // copy. Pinned to the clone_value parity case.
         probe: "fn main() {\n    let a = \"hi\";\n    let b = clone a;\n    println(b);\n}\n",
-        coverage: Coverage::RejectedByProfile {
-            diagnostic_kind: "reserved_runtime_feature",
-        },
+        coverage: Coverage::Parity("clone_value"),
     },
     Construct {
         id: "identity comparison (`is`)",
@@ -644,7 +693,7 @@ fn every_required_parity_case_backs_a_construct() {
 /// justifying a removed admission in the same commit.
 #[test]
 fn runnable_coverage_does_not_shrink() {
-    const RUNNABLE_BASELINE: usize = 34;
+    const RUNNABLE_BASELINE: usize = 40; // +1: f64_finite_render
     let runnable = CONSTRUCTS
         .iter()
         .filter(|c| matches!(c.coverage, Coverage::Parity(_)))

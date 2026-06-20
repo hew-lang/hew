@@ -1,0 +1,24 @@
+// Owned-element array-repeat with a record element: [r; 3] must produce 3
+// independent record clones. Each slot must hold independent data.
+type Point {
+    x: i64;
+    y: i64;
+}
+
+fn main() -> i64 {
+    let p = Point { x: 10, y: 20 };
+    let pts = [p; 3];
+    if pts.len() != 3 {
+        return 70;
+    }
+    if pts[0].x != 10 {
+        return 71;
+    }
+    if pts[1].y != 20 {
+        return 72;
+    }
+    if pts[2].x != 10 {
+        return 73;
+    }
+    0
+}

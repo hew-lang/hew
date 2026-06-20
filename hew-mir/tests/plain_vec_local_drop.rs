@@ -181,6 +181,69 @@ fn plain_vec_local_drop_array_literal_frees_exactly_once() {
     );
 }
 
+/// A local `Vec<Point>` whose element is an all-`BitCopy` value record
+/// (`type Point { x: i64, y: i64 }`) earns the same single `hew_vec_free` drop.
+/// Such a Vec is constructed inline via `hew_vec_new_with_layout` (NOT the
+/// owned-element descriptor) and its element owns no heap, so the buffer-only
+/// `hew_vec_free` is the matching release. Pre-fix the `BitCopy` record element
+/// fell into the gap between the owned-element arm (heap-owning records only)
+/// and the plain arm (scalars/string only) and earned NO drop — the backing
+/// buffer leaked on every exit. LESSONS: `cleanup-all-exits`,
+/// `drop-allowset-from-value-flow`.
+#[test]
+fn plain_vec_local_drop_admits_local_bitcopy_record_vec_on_return() {
+    let pipeline = pipeline_with_tc(
+        r"
+        type Point { x: i64, y: i64 }
+        fn main() -> i64 {
+            let pts: Vec<Point> = Vec::new();
+            pts.push(Point { x: 10, y: 20 });
+            pts.len()
+        }
+        ",
+    );
+    let drops = return_drops(&pipeline, "main");
+    assert_eq!(
+        count_free(&drops, "hew_vec_free"),
+        1,
+        "a local non-escaping Vec<Point> (BitCopy value record element) must \
+         earn exactly one scope-exit hew_vec_free drop; got {drops:?}"
+    );
+    assert_eq!(
+        count_free(&drops, "hew_vec_free_owned"),
+        0,
+        "a BitCopy record element owns no heap, so the owned-element descriptor \
+         release must NOT fire (it would walk a descriptor the layout Vec never \
+         carries); got {drops:?}"
+    );
+}
+
+/// An array-repeat of a `BitCopy` value record (`[Point { .. }; 3]`) routes the
+/// fresh handle through the array-repeat desugar plus whole-value `Move`s into
+/// the user binding — exactly ONE `hew_vec_free` must fire on the final owner,
+/// never two releases of the one handle. The array-repeat-of-records gate's own
+/// MIR-level invariant. LESSONS: `raii-null-after-move`.
+#[test]
+fn plain_vec_local_drop_bitcopy_record_array_repeat_frees_exactly_once() {
+    let pipeline = pipeline_with_tc(
+        r"
+        type Point { x: i64, y: i64 }
+        fn main() -> i64 {
+            let pts = [Point { x: 1, y: 2 }; 3];
+            pts.len()
+        }
+        ",
+    );
+    let drops = all_exit_drops(&pipeline, "main");
+    assert_eq!(
+        count_free(&drops, "hew_vec_free"),
+        1,
+        "an array-repeat of a BitCopy record must free exactly once across all \
+         exits — the desugar binding and the user binding share ONE handle; \
+         got {drops:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Cancel parity — cancellation frees what normal return frees.
 // ---------------------------------------------------------------------------

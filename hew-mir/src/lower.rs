@@ -7011,23 +7011,39 @@ impl Builder {
 
     /// True when `ty` is the builtin `Vec<T>` whose element `T` is a PLAIN
     /// element — a `BitCopy` scalar (`i64`, `u8`, `bool`, `f64`, `char`,
-    /// `Duration`, …) or `string` (whose element release lives inside the
-    /// runtime's `ElemKind::String` walk). These are exactly the Vecs codegen
-    /// constructs WITHOUT an owned-element descriptor, so the matching
-    /// scope-exit release is the plain `hew_vec_free` (buffer + handle; the
-    /// runtime walks string elements itself). Substitutes through the
-    /// monomorphisation map first (mirroring `vec_receiver_has_owned_element`)
-    /// so a polymorphic binding type resolves to its concrete element.
+    /// `Duration`, …), `string` (whose element release lives inside the
+    /// runtime's `ElemKind::String` walk), or a `BitCopy` value aggregate
+    /// (a record / direct enum / tuple whose fields are all `BitCopy`, e.g.
+    /// `type Point { x: i64, y: i64 }`). These are exactly the Vecs codegen
+    /// constructs WITHOUT an owned-element descriptor — the scalar/string ABIs
+    /// and the inline value-aggregate `hew_vec_new_with_layout` /
+    /// `hew_vec_get_layout` path — so the matching scope-exit release is the
+    /// plain `hew_vec_free` (buffer + handle; the runtime walks string elements
+    /// itself, and a `BitCopy` aggregate element owns no heap so no per-element
+    /// drop is needed). Substitutes through the monomorphisation map first
+    /// (mirroring `vec_receiver_has_owned_element`) so a polymorphic binding
+    /// type resolves to its concrete element.
     ///
-    /// Default-deny: ONLY the positively enumerated plain element shapes
-    /// admit. An owned-element Vec and a closure-pair Vec have their own
-    /// dedicated release arms (`hew_vec_free_owned` /
-    /// `hew_vec_free_closure_pairs`) and are structurally excluded here (their
-    /// elements are `Named` / fn-typed, never a scalar leaf). A `bytes` /
-    /// container / composite element, or an unresolved type parameter, is NOT
-    /// plain — those stay on the leak-as-before posture rather than risking a
-    /// wrong-ABI free against a descriptor-constructed handle
-    /// (`boundary-fail-closed`).
+    /// Default-deny: ONLY the positively enumerated plain element shapes admit.
+    /// The `BitCopy` value-aggregate arm is the precise complement of the owned
+    /// arm: an owned-element Vec (record/enum/tuple with a string/bytes/nested-
+    /// collection field) is never admitted here and continues to route to its
+    /// dedicated `hew_vec_free_owned` release; a closure-pair `Vec<fn>` is
+    /// also excluded and routes to `hew_vec_free_closure_pairs`.
+    ///
+    /// For named records/enums the `ValueClass::of_ty(Named{..}) == BitCopy`
+    /// check is the exact discriminant. For tuples it cannot be used:
+    /// `ValueClass::of_ty(Tuple(_))` ALWAYS returns `CowValue` regardless of
+    /// field types, so the tuple path delegates instead to `tuple_is_all_bitcopy`,
+    /// which recurses structurally: a tuple element is all-`BitCopy` iff every
+    /// field is a `BitCopy` scalar, a `Named` type with `ValueClass::of_ty ==
+    /// BitCopy`, or a nested tuple that satisfies the same predicate. This is the
+    /// correct complement of the owned authority; using `!is_owned_vec_element`
+    /// is unsound here because its backing `ty_contains_heap_owning` omits
+    /// `record_field_resolved_tys` and can mis-classify a named record inside a
+    /// tuple as non-heap-owning. An unresolved type parameter has no known value
+    /// class and stays on the leak-as-before posture rather than risking a
+    /// wrong-ABI free (`boundary-fail-closed`).
     fn binding_ty_is_plain_vec(&self, ty: &ResolvedTy) -> bool {
         let ResolvedTy::Named {
             args,
@@ -7038,7 +7054,7 @@ impl Builder {
             return false;
         };
         args.first().is_some_and(|elem| {
-            matches!(
+            if matches!(
                 elem,
                 ResolvedTy::I8
                     | ResolvedTy::I16
@@ -7056,7 +7072,88 @@ impl Builder {
                     | ResolvedTy::Char
                     | ResolvedTy::Duration
                     | ResolvedTy::String
-            )
+            ) {
+                return true;
+            }
+            // BitCopy value aggregate (record / direct enum): constructed
+            // inline via `hew_vec_new_with_layout`, owns no heap, so the
+            // buffer-only `hew_vec_free` is the matching release.
+            // `ValueClass::of_ty(Named{..}) == BitCopy` is the exact complement
+            // of `is_owned_vec_element` for named types — a heap-owning or
+            // closure-bearing aggregate is never `BitCopy` — so this never
+            // claims a binding the owned/closure-pair arms own.
+            //
+            // Tuple: `ValueClass::of_ty(Tuple(_))` ALWAYS returns `CowValue`
+            // (it does not inspect element types), so using that path for a
+            // tuple element would make this arm permanently dead. Instead,
+            // recurse structurally via `tuple_is_all_bitcopy`: a tuple is
+            // all-BitCopy iff every element is a BitCopy scalar, a Named type
+            // whose `ValueClass::of_ty` is `BitCopy`, or a nested tuple that
+            // also satisfies the same predicate recursively. This is the
+            // correct complement of the owned authority for tuples; using
+            // `!is_owned_vec_element` is UNSOUND here because
+            // `ty_contains_heap_owning` (which backs the tuple arm of
+            // `is_owned_vec_element`) only consults `enum_layouts` for Named
+            // types but NOT `record_field_resolved_tys`, so a named record
+            // type nested inside a tuple can be mis-classified non-heap-owning
+            // even when it transitively contains a `string` field. The
+            // `ValueClass::of_ty` path for Named types is the correct authority
+            // — it is what `harvest_vec_owned_element_key` and codegen's
+            // `resolved_ty_contains_heap_leaf` agree on — so the plain and
+            // owned allow-sets stay disjoint (`dedup-semantic-boundary`).
+            (matches!(elem, ResolvedTy::Named { .. })
+                && ValueClass::of_ty(elem, &self.type_classes) == ValueClass::BitCopy)
+                || (matches!(elem, ResolvedTy::Tuple(_)) && self.tuple_is_all_bitcopy(elem))
+        })
+    }
+
+    /// True when `ty` is a `Tuple` whose every element is all-`BitCopy` by
+    /// structural recursion.
+    ///
+    /// A tuple element is all-`BitCopy` if it is:
+    /// - a `BitCopy` scalar (same allow-list as the scalar arm of
+    ///   `binding_ty_is_plain_vec`),
+    /// - a `Named` type whose `ValueClass::of_ty` is `BitCopy` (the correct
+    ///   authority for records and direct enums — it is what
+    ///   `harvest_vec_owned_element_key` consults; a heap-owning record is never
+    ///   `BitCopy`), or
+    /// - a nested `Tuple` that also satisfies this predicate recursively.
+    ///
+    /// This is the correct complement of the owned authority for tuples.
+    /// Using `!is_owned_vec_element(Tuple)` is UNSOUND: `ty_contains_heap_owning`
+    /// (its backing check) only consults `enum_layouts` for `Named` types and
+    /// misses `record_field_resolved_tys`, so a named record nested inside a
+    /// tuple that transitively owns a `string` field can be mis-classified as
+    /// non-heap-owning, silently admitting a `Vec<(Rec, i64)>` (where `Rec` has
+    /// a `string` field) to the plain-Vec path and emitting `hew_vec_free`
+    /// where `hew_vec_free_owned` is required. `ValueClass::of_ty` for `Named`
+    /// types is the correct, complete authority and agrees with codegen's
+    /// `resolved_ty_contains_heap_leaf` (`dedup-semantic-boundary`).
+    fn tuple_is_all_bitcopy(&self, ty: &ResolvedTy) -> bool {
+        let ResolvedTy::Tuple(elems) = ty else {
+            return false;
+        };
+        elems.iter().all(|e| match e {
+            ResolvedTy::I8
+            | ResolvedTy::I16
+            | ResolvedTy::I32
+            | ResolvedTy::I64
+            | ResolvedTy::U8
+            | ResolvedTy::U16
+            | ResolvedTy::U32
+            | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
+            | ResolvedTy::F32
+            | ResolvedTy::F64
+            | ResolvedTy::Bool
+            | ResolvedTy::Char
+            | ResolvedTy::Duration => true,
+            ResolvedTy::Named { .. } => {
+                ValueClass::of_ty(e, &self.type_classes) == ValueClass::BitCopy
+            }
+            ResolvedTy::Tuple(_) => self.tuple_is_all_bitcopy(e),
+            _ => false,
         })
     }
 
@@ -25508,6 +25605,27 @@ fn is_borrowing_string_call_callee(callee: &str) -> bool {
         || matches!(callee, "print" | "println" | "print_str" | "println_str")
 }
 
+/// `true` when `instr` is a string comparison (`==`/`!=`/`<`/`<=`/`>`/`>=`)
+/// that **borrows** the leaf-`string` temp `t` as an operand. String compares
+/// lower to `Instr::IntCmp { pred, lhs, rhs }` (see `lower_binary`); codegen
+/// routes string-typed `IntCmp` operands through `hew_string_equals` /
+/// `hew_string_compare` (`hew-codegen-rs/src/llvm.rs`), both of which `strcmp`
+/// their arguments WITHOUT consuming the refcount (verified in
+/// `hew-runtime/src/string.rs`: `CStr`/`strcmp` read, never free). So a fresh
+/// `+1`-retained `hew_vec_get_str` temp fed into a compare still owns its single
+/// drop obligation afterwards — `xs[i] == "hello"` leaked the retain before this
+/// admission. The leaf-`string` type gate (rule 1) guarantees the operand takes
+/// codegen's borrowing string-`icmp` path, not the aggregate structural-eq thunk
+/// (which only fires for `Named`/struct operands a `hew_vec_get_str` temp can
+/// never be).
+fn is_borrowing_string_cmp_instr(instr: &Instr, t: u32) -> bool {
+    matches!(
+        instr,
+        Instr::IntCmp { lhs, rhs, .. }
+            if place_refs_local(*lhs, t) || place_refs_local(*rhs, t)
+    )
+}
+
 /// W5.011 P3 — `true` when an instruction transfers ownership of a fresh-owned
 /// `string` `local` out of its slot, so a scope-exit drop of `local` would be a
 /// double-free (over-decrement of the shared refcount).
@@ -25694,10 +25812,12 @@ enum NestedDefSite {
 }
 
 /// A source-operand use site of a fresh-`string` temporary (deduplicated per
-/// instruction/terminator, so `f(t, t)` is one use site, not two).
+/// instruction/terminator, so `f(t, t)` is one use site, not two). The `Instr`
+/// arm carries `block`/`idx` so the admission can locate the using instruction
+/// and prove the def dominates it (a straight-line same-block use).
 #[derive(Clone, Copy)]
 enum NestedUseSite {
-    Instr,
+    Instr { block: u32, idx: usize },
     Term { block: u32 },
 }
 
@@ -25811,7 +25931,7 @@ fn collect_nested_fresh_string_temp_drops(
     // instruction/terminator so a temp referenced twice by one call counts once.
     let mut source_uses: HashMap<u32, Vec<NestedUseSite>> = HashMap::new();
     for block in blocks {
-        for instr in &block.instructions {
+        for (idx, instr) in block.instructions.iter().enumerate() {
             let mut here: HashSet<u32> = HashSet::new();
             for p in instr_source_places(instr) {
                 if let Some(l) = base_local(p) {
@@ -25819,7 +25939,13 @@ fn collect_nested_fresh_string_temp_drops(
                 }
             }
             for l in here {
-                source_uses.entry(l).or_default().push(NestedUseSite::Instr);
+                source_uses
+                    .entry(l)
+                    .or_default()
+                    .push(NestedUseSite::Instr {
+                        block: block.id,
+                        idx,
+                    });
             }
         }
         let mut here: HashSet<u32> = HashSet::new();
@@ -25971,9 +26097,39 @@ fn nested_fresh_string_temp_drop(
             };
             def_dominates.then_some((*next, 0, drop_place, drop_ty))
         }
-        // A single instruction use is not covered by the dominance reasoning
-        // above; fail closed (leak, never double-free).
-        (_, Some(NestedUseSite::Instr)) => None,
+        // Single instruction use: admit ONLY a borrowing string compare
+        // (`xs[i] == "hello"`, `xs[i] != s`, and the ordering family) where the
+        // def dominates the use, and drop right after the compare consumed
+        // (read) the temp. String compares lower to `Instr::IntCmp` whose
+        // string operands codegen routes through `hew_string_equals` /
+        // `hew_string_compare` — pure `strcmp` borrows that never free the
+        // operand (see `is_borrowing_string_cmp_instr`). Any other instruction
+        // use stays fail-closed (leak, never double-free): a `Move`/store/
+        // user-call/closure-call may take ownership, and the conservative leak
+        // is the safe side.
+        (_, Some(NestedUseSite::Instr { block: ub, idx: ui })) => {
+            let ub = *ub;
+            let use_instr = block_by_id(blocks, ub)?.instructions.get(*ui)?;
+            if !is_borrowing_string_cmp_instr(use_instr, t) {
+                return None;
+            }
+            let def_dominates = match def {
+                // Instruction def must be an EARLIER instruction in the use's
+                // own block: same-block straight-line execution means reaching
+                // the use (which reads `t`) implies the def ran.
+                NestedDefSite::Instr { block, idx } => block == ub && idx < *ui,
+                // Terminator def `Call(next = U)`: a single-predecessor `U` is
+                // reached only from the def block, so the def ran before the use.
+                NestedDefSite::Term { block } => {
+                    call_terminator_next(&block_by_id(blocks, block)?.terminator) == Some(ub)
+                        && pred_count.get(&ub).copied().unwrap_or(0) == 1
+                }
+            };
+            // Drop immediately after the compare instruction (straight-line in
+            // its block), so the release runs exactly once on the path that
+            // produced and borrowed the temp.
+            def_dominates.then_some((ub, ui + 1, drop_place, drop_ty))
+        }
     }
 }
 
@@ -34966,6 +35122,128 @@ mod plain_vec_drop_interior_alias_and_escape {
             allowed.contains(&xs),
             "a fresh sole-owner local Vec must stay admitted for its scope-exit \
              hew_vec_free (the leak the lane closes); allowed: {allowed:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod binding_ty_is_plain_vec_tuple {
+    //! MIR invariant tests for the tuple arm of `binding_ty_is_plain_vec`.
+    //!
+    //! `ValueClass::of_ty(Tuple(_))` ALWAYS returns `CowValue` regardless of
+    //! element types, so the tuple arm uses `tuple_is_all_bitcopy` instead.
+    //! These tests pin the exact boundary:
+    //!
+    //! - `Vec<(i64, i64)>`: all `BitCopy` scalars → admitted as plain Vec →
+    //!   scope-exit release is buffer-only `hew_vec_free`.
+    //! - `Vec<(string, i64)>`: the `string` field owns heap → NOT admitted here
+    //!   → routes to `hew_vec_free_owned` via the owned arm.
+    //! - `Vec<((Rec, i64), bool)>`: a `Named` type inside a nested tuple that is
+    //!   not registered as `BitCopy` → NOT admitted here (regression guard for
+    //!   the `!is_owned_vec_element` soundness bug where `ty_contains_heap_owning`
+    //!   mis-classifies unregistered Named types as non-heap-owning).
+    //!
+    //! The negative tests are the anti-regression guards: admitting a
+    //! `Vec<(string,i64)>` or `Vec<((Rec,i64),bool)>` to `hew_vec_free` would
+    //! skip the per-element owned drop and leak or corrupt heap.
+    use super::*;
+
+    fn vec_of_ty(elem: ResolvedTy) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: "Vec".to_string(),
+            args: vec![elem],
+            builtin: Some(BuiltinType::Vec),
+            is_opaque: false,
+        }
+    }
+
+    fn unregistered_named(name: &str) -> ResolvedTy {
+        ResolvedTy::Named {
+            name: name.to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        }
+    }
+
+    /// `Vec<(i64, i64)>` — an all-`BitCopy` tuple element. `tuple_is_all_bitcopy`
+    /// returns `true` (both fields are `BitCopy` scalars), so
+    /// `binding_ty_is_plain_vec` must return `true` and the Vec earns a
+    /// buffer-only `hew_vec_free` on scope exit. Pre-fix this returned `false`
+    /// (the Tuple arm used `ValueClass::of_ty` which always returned `CowValue`),
+    /// leaving the Vec in neither the plain nor the owned allow-set → leak.
+    #[test]
+    fn all_bitcopy_tuple_element_is_admitted_as_plain_vec() {
+        let builder = Builder::default();
+        let ty = vec_of_ty(ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]));
+        assert!(
+            builder.binding_ty_is_plain_vec(&ty),
+            "Vec<(i64,i64)>: an all-`BitCopy` tuple element owns no heap; \
+             `binding_ty_is_plain_vec` must return true so the buffer gets \
+             a scope-exit `hew_vec_free` (not leaked)"
+        );
+    }
+
+    /// `Vec<(string, i64)>` — the `string` field owns heap. `tuple_is_all_bitcopy`
+    /// returns `false`, so `binding_ty_is_plain_vec` must return `false` and the
+    /// Vec routes to `hew_vec_free_owned` instead. Admitting it here would emit a
+    /// buffer-only free, skipping the per-element string drop → string heap leak.
+    #[test]
+    fn heap_owning_tuple_element_is_not_admitted_as_plain_vec() {
+        let builder = Builder::default();
+        let ty = vec_of_ty(ResolvedTy::Tuple(vec![ResolvedTy::String, ResolvedTy::I64]));
+        assert!(
+            !builder.binding_ty_is_plain_vec(&ty),
+            "Vec<(string,i64)>: the `string` field owns heap; \
+             `binding_ty_is_plain_vec` must return false so the Vec routes \
+             to `hew_vec_free_owned` (per-element string drop runs)"
+        );
+    }
+
+    /// Regression guard: `Vec<((Rec, i64), bool)>` where `Rec` is a user Named
+    /// type not in `type_classes` (so `ValueClass::of_ty` returns `CowValue`,
+    /// not `BitCopy`). `tuple_is_all_bitcopy` returns `false` for the nested
+    /// tuple because `Rec` is not `BitCopy`-proven. Pre-`tuple_is_all_bitcopy`
+    /// the old `!is_owned_vec_element` path returned `true` (soundness bug:
+    /// `ty_contains_heap_owning` omits `record_field_resolved_tys` so it
+    /// mis-classifies unregistered Named types as non-heap-owning), admitting
+    /// the Vec to `hew_vec_free` when `hew_vec_free_owned` is required.
+    #[test]
+    fn nested_tuple_with_unregistered_named_is_not_admitted() {
+        let builder = Builder::default();
+        let inner_tuple = ResolvedTy::Tuple(vec![unregistered_named("Rec"), ResolvedTy::I64]);
+        let outer_tuple = ResolvedTy::Tuple(vec![inner_tuple, ResolvedTy::Bool]);
+        let ty = vec_of_ty(outer_tuple);
+        assert!(
+            !builder.binding_ty_is_plain_vec(&ty),
+            "Vec<((Rec,i64),bool)> where Rec is not proven BitCopy must NOT be \
+             admitted as plain Vec — `tuple_is_all_bitcopy` must return false \
+             for any Named element whose ValueClass is not BitCopy"
+        );
+    }
+
+    /// Negative: a `Vec<string>` plain element (already covered by the scalar
+    /// arm in `binding_ty_is_plain_vec`) must still be admitted after the tuple
+    /// change. Pins that widening the tuple arm does not narrow the scalar arm.
+    #[test]
+    fn string_scalar_element_still_admitted_after_tuple_change() {
+        let builder = Builder::default();
+        let ty = vec_of_ty(ResolvedTy::String);
+        assert!(
+            builder.binding_ty_is_plain_vec(&ty),
+            "Vec<string> must still be admitted as a plain Vec after the tuple \
+             arm change (scalar arm must be unaffected)"
+        );
+    }
+
+    /// Negative control: `Vec<i64>` (a `BitCopy` scalar element) is admitted.
+    #[test]
+    fn i64_scalar_element_admitted() {
+        let builder = Builder::default();
+        let ty = vec_of_ty(ResolvedTy::I64);
+        assert!(
+            builder.binding_ty_is_plain_vec(&ty),
+            "Vec<i64> must be admitted as a plain Vec (scalar `BitCopy` arm)"
         );
     }
 }

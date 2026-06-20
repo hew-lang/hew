@@ -814,6 +814,30 @@ impl Checker {
                 );
             }
         }
+        // Owned (non-Copy) elements are cloned per slot at runtime (N independent
+        // owned copies, source dropped once at block exit — matching `vec![x; n]`
+        // semantics). Gate on clone admissibility: `string` and `bytes` always
+        // admit (push_str / push_bytes copies independently); record/enum/Vec
+        // admit when the owned-element thunk path exists. Anything else fails
+        // closed with a clear diagnostic rather than a silent double-free.
+        if !self.vec_element_has_copy_layout(&elem_ty) {
+            let resolved_elem = self.subst.resolve(&elem_ty);
+            let clonable = matches!(resolved_elem, Ty::String | Ty::Bytes)
+                || self.vec_owned_element_admissible(&elem_ty);
+            if !clonable {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "`[{elem}; N]` array repeat requires the element type to be Clone, \
+                         but `{elem}` has no clone path (not a string, bytes, record, enum, \
+                         or Vec/HashMap/HashSet element with a thunk); \
+                         use an explicit loop with `.clone()` or a Copy element type",
+                        elem = resolved_elem.user_facing()
+                    ),
+                );
+            }
+        }
         self.make_vec_type(elem_ty, span)
     }
 

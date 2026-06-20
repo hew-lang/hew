@@ -6278,6 +6278,8 @@ mod suspend_terminator_tests {
             cleanup: 2,
             is_final: false,
         };
-        assert!(crate::lower::terminator_source_places(&term).is_empty());
+        // A bare `Suspend` with NO side-table entry (a generator / synthetic
+        // suspend) reads nothing across the block edge.
+        assert!(crate::lower::terminator_source_places(&term, None).is_empty());
     }
 }

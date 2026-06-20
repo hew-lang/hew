@@ -25426,7 +25426,10 @@ fn has_unhandled_borrow_escape(func: &RawMirFunction, tainted: &HashSet<u32>) ->
         // read a tainted view (Call args, Ask payload, Select-ask payload,
         // Yield) carry the handle into an untracked owner — fail closed.
         if !matches!(block.terminator, Terminator::Send { .. })
-            && reads_tainted(terminator_source_places(&block.terminator))
+            && reads_tainted(terminator_source_places(
+                &block.terminator,
+                func.suspend_kinds.get(&block.id),
+            ))
         {
             return true;
         }

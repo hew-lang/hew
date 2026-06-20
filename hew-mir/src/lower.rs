@@ -4758,6 +4758,7 @@ fn lower_function(
     // single-predecessor-dominated temps earn an inline `hew_string_drop`.
     apply_nested_fresh_string_temp_drops(
         &mut blocks,
+        &builder.suspend_kinds,
         &builder.locals,
         &builder.binding_locals,
         &mut builder.instr_spans,
@@ -4911,6 +4912,7 @@ fn lower_function(
     source_excluded.extend(consumed_local_aggregate_members);
     let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
         &raw.blocks,
+        &raw.suspend_kinds,
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.locals,
@@ -4919,6 +4921,7 @@ fn lower_function(
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
     let owned_record_drop_allowed = derive_owned_record_drop_allowed(
         &raw.blocks,
+        &raw.suspend_kinds,
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.locals,
@@ -12211,7 +12214,11 @@ impl Builder {
             let escapes_here = block.instructions[start..]
                 .iter()
                 .any(|instr| generator_yield_instr_escapes(instr, local))
-                || generator_yield_terminator_escapes(&block.terminator, local);
+                || generator_yield_terminator_escapes(
+                    &block.terminator,
+                    self.suspend_kinds.get(&block.id),
+                    local,
+                );
             if escapes_here {
                 false
             } else {
@@ -23386,6 +23393,7 @@ fn elaborate(
     // drop on a branch where the buffer was already moved out.
     let mut cow_drop_allowed = derive_cow_sole_owner(
         &checked.blocks,
+        &builder.suspend_kinds,
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.match_project_consumed_binder_locals,
@@ -23402,6 +23410,7 @@ fn elaborate(
     // string-field-load fresh-producer admission.
     cow_drop_allowed.extend(derive_cow_fresh_borrowed_owner(
         &checked.blocks,
+        &builder.suspend_kinds,
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.locals,
@@ -23426,6 +23435,7 @@ fn elaborate(
     // synthetic test pipelines), so those bodies keep the pre-W5.020 posture.
     let enum_composite_drop_allowed = derive_enum_composite_drop_allowed(
         &checked.blocks,
+        &builder.suspend_kinds,
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.binding_scope,
@@ -23507,6 +23517,7 @@ fn elaborate(
     // double-freed (`boundary-fail-closed`, `cleanup-all-exits`).
     let mut local_collection_drop_allowed = derive_local_collection_drop_allowed(
         &checked.blocks,
+        &builder.suspend_kinds,
         &builder.owned_locals,
         &builder.binding_locals,
         ty_is_local_collection_handle,
@@ -23536,6 +23547,7 @@ fn elaborate(
     // double-freed (`boundary-fail-closed`, `cleanup-all-exits`).
     let mut local_bytes_drop_allowed = derive_local_bytes_drop_allowed(
         &checked.blocks,
+        &builder.suspend_kinds,
         &builder.owned_locals,
         &builder.binding_locals,
     );
@@ -23559,6 +23571,7 @@ fn elaborate(
     // double-frees.
     let mut closure_vec_drop_allowed = derive_local_collection_drop_allowed(
         &checked.blocks,
+        &builder.suspend_kinds,
         &builder.owned_locals,
         &builder.binding_locals,
         ty_is_closure_pair_vec,
@@ -23592,6 +23605,7 @@ fn elaborate(
     // double-frees (`boundary-fail-closed`, `cleanup-all-exits`).
     let mut plain_vec_drop_allowed = derive_local_collection_drop_allowed(
         &checked.blocks,
+        &builder.suspend_kinds,
         &builder.owned_locals,
         &builder.binding_locals,
         |ty| builder.binding_ty_is_plain_vec(ty),
@@ -23643,6 +23657,7 @@ fn elaborate(
     let is_owned_record = |ty: &ResolvedTy| builder.is_owned_aggregate_record_ty(ty);
     let owned_record_drop_allowed = derive_owned_record_drop_allowed(
         &checked.blocks,
+        &builder.suspend_kinds,
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.locals,
@@ -23662,6 +23677,7 @@ fn elaborate(
     // double-frees.
     let tuple_composite_drop_allowed = derive_tuple_composite_drop_allowed(
         &checked.blocks,
+        &builder.suspend_kinds,
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.locals,
@@ -23701,6 +23717,7 @@ fn elaborate(
     // (`boundary-fail-closed`, `cleanup-all-exits`).
     let mut closure_pair_drop_allowed = derive_closure_pair_drop_allowed(
         &checked.blocks,
+        &builder.suspend_kinds,
         &builder.closure_pair_owned,
         &builder.binding_locals,
     );
@@ -25097,6 +25114,77 @@ pub fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
     )
 }
 
+/// Source operands the per-arm payload of a `select{}` reads across its block
+/// edge (the same for `Terminator::Select` and `Terminator::SuspendingSelect`,
+/// whose `arms` payloads are identical). Each arm's `binding` is the slot the
+/// won value is written into — a write, not a source.
+#[must_use]
+fn select_arm_source_places(arms: &[SelectArm]) -> Vec<Place> {
+    let mut places = Vec::new();
+    for arm in arms {
+        match &arm.kind {
+            SelectArmKind::StreamNext { stream } => places.push(*stream),
+            SelectArmKind::ActorAsk {
+                actor, args, value, ..
+            } => {
+                places.push(*actor);
+                places.extend(args.iter().copied());
+                places.push(*value);
+            }
+            SelectArmKind::TaskAwait { task } => places.push(*task),
+            SelectArmKind::ChannelRecv { receiver, .. } => places.push(*receiver),
+            SelectArmKind::AfterTimer { duration } => places.push(*duration),
+        }
+    }
+    places
+}
+
+/// Source operands a collapsed suspension carrier reads across its block edge,
+/// recovered from the [`SuspendKind`] side-table payload. This is the
+/// bare-[`Terminator::Suspend`] analogue of the per-carrier arms in
+/// [`terminator_source_places`]: each variant returns the SAME places the
+/// dedicated `Suspending*` terminator did (the readiness sources / forwarded
+/// args; the result/reply/error dests are write slots bound on the resume edge,
+/// not sources). The exhaustive match is the fail-closed guarantee that a new
+/// `SuspendKind` variant forces a source-classification decision.
+#[must_use]
+pub fn suspend_kind_source_places(kind: &SuspendKind) -> Vec<Place> {
+    match kind {
+        // `actor` + `value` are the reads; result/reply/error dests are writes.
+        SuspendKind::Ask { actor, value, .. } => vec![*actor, *value],
+        // `conn` is the read source; `result_dest` is a resume-edge write.
+        SuspendKind::Read { conn, .. } => vec![*conn],
+        // `listener` is the accept source; `result_dest` is a resume-edge write.
+        SuspendKind::Accept { listener, .. } => vec![*listener],
+        // `stream` is the recv source; `result_dest` is a resume-edge write.
+        SuspendKind::StreamNext { stream, .. } => vec![*stream],
+        // `receiver` is the recv source; `result_dest` is a resume-edge write.
+        SuspendKind::ChannelRecv { receiver, .. } => vec![*receiver],
+        // `sink` + `value` are the send sources.
+        SuspendKind::StreamSend { sink, value } => vec![*sink, *value],
+        // The closure pair (`callee`) + forwarded `args` are reads; `result_dest`
+        // is a completion-edge write.
+        SuspendKind::CallClosure { callee, args, .. } => {
+            let mut places = Vec::with_capacity(args.len() + 1);
+            places.push(*callee);
+            places.extend(args.iter().copied());
+            places
+        }
+        // `actor` + `value` + `timeout_ms` are reads; the dests are writes.
+        SuspendKind::RemoteAsk {
+            actor,
+            value,
+            timeout_ms,
+            ..
+        } => vec![*actor, *value, *timeout_ms],
+        // `scope` (scope-scoped observer registration) + `task` (await source)
+        // are reads; `result_dest` is a resume-edge write.
+        SuspendKind::TaskAwait { scope, task, .. } => vec![*scope, *task],
+        // `duration_ms` is the deadline source; the resume edge binds nothing.
+        SuspendKind::Sleep { duration_ms } => vec![*duration_ms],
+    }
+}
+
 #[allow(
     clippy::match_same_arms,
     reason = "exhaustive match over every Terminator variant; Send and Ask \
@@ -25106,7 +25194,10 @@ pub fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
               fail-closed guarantee"
 )]
 #[must_use]
-pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
+pub fn terminator_source_places(
+    term: &Terminator,
+    suspend_kind: Option<&SuspendKind>,
+) -> Vec<Place> {
     match term {
         Terminator::Return | Terminator::Goto { .. } | Terminator::Trap { .. } => Vec::new(),
         Terminator::Branch { cond, .. } => vec![*cond],
@@ -25120,10 +25211,15 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
         // present) is READ — codegen heap-boxes its bytes — so it is a
         // source operand.
         Terminator::MakeLambdaActor { env, .. } => env.iter().copied().collect(),
-        // `Suspend` has no source operands: the value channel is the explicit
-        // coro frame out-pointer (spike-pinned null promise), not a `Place`, so
-        // the suspend point reads nothing across the block edge.
-        Terminator::Suspend { .. } => Vec::new(),
+        // A bare `Suspend` reads what its collapsed carrier read: the
+        // [`SuspendKind`] side-table payload supplies the readiness sources /
+        // forwarded args (`suspend_kind_source_places`). A `Suspend` with NO
+        // side-table entry is a generator / synthetic substrate suspend whose
+        // value channel is the coro frame out-pointer (not a `Place`), so it
+        // reads nothing across the block edge.
+        Terminator::Suspend { .. } => {
+            suspend_kind.map_or_else(Vec::new, suspend_kind_source_places)
+        }
         Terminator::Send { actor, value, .. } => vec![*actor, *value],
         // `reply_dest` is the slot the reply is written into — a write, not
         // a source.
@@ -25187,25 +25283,7 @@ pub fn terminator_source_places(term: &Terminator) -> Vec<Place> {
         // The suspending select carries the identical `arms` payload, so its
         // per-arm source operands are read the same way as the blocking select.
         Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
-            let mut places = Vec::new();
-            for arm in arms {
-                match &arm.kind {
-                    SelectArmKind::StreamNext { stream } => places.push(*stream),
-                    SelectArmKind::ActorAsk {
-                        actor, args, value, ..
-                    } => {
-                        places.push(*actor);
-                        places.extend(args.iter().copied());
-                        places.push(*value);
-                    }
-                    SelectArmKind::TaskAwait { task } => places.push(*task),
-                    SelectArmKind::ChannelRecv { receiver, .. } => places.push(*receiver),
-                    SelectArmKind::AfterTimer { duration } => places.push(*duration),
-                }
-                // `arm.binding` is the slot the won arm's value is written
-                // into — a write, not a source.
-            }
-            places
+            select_arm_source_places(arms)
         }
         Terminator::Join { branches, .. } => {
             let mut places = Vec::new();
@@ -25403,71 +25481,109 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
               separate so a future terminator forces an explicit classification — the \
               exhaustiveness is the fail-closed guarantee"
 )]
-fn generator_yield_terminator_escapes(term: &Terminator, local: u32) -> bool {
+/// Does a collapsed suspension carrier (recovered from the [`SuspendKind`]
+/// side-table) transfer a generator-yielded `local` OUT across the suspend?
+/// Only the value-moving carriers (`Ask` / `StreamSend` / `RemoteAsk` move their
+/// `value` payload into the message / channel / wire) can; the handle-read and
+/// result-binding carriers never carry a yielded value. The bare-`Suspend`
+/// analogue of the per-carrier arms in [`generator_yield_terminator_escapes`].
+fn suspend_kind_yield_escapes(kind: &SuspendKind, local: u32) -> bool {
+    match kind {
+        SuspendKind::Ask { value, .. }
+        | SuspendKind::StreamSend { value, .. }
+        | SuspendKind::RemoteAsk { value, .. } => place_refs_local(*value, local),
+        // Handle reads + result-binding carriers transfer no yielded value out.
+        SuspendKind::Read { .. }
+        | SuspendKind::Accept { .. }
+        | SuspendKind::StreamNext { .. }
+        | SuspendKind::ChannelRecv { .. }
+        | SuspendKind::CallClosure { .. }
+        | SuspendKind::TaskAwait { .. }
+        | SuspendKind::Sleep { .. } => false,
+    }
+}
+
+#[allow(
+    clippy::match_same_arms,
+    reason = "exhaustive match over every Terminator variant; the value-moving \
+              suspension carriers share a body with Send/Ask and the \
+              handle-read carriers share the false body, but each is kept a \
+              separate arm so a future terminator cannot be folded into an \
+              existing escape classification by accident — the exhaustiveness \
+              is the fail-closed guarantee"
+)]
+fn generator_yield_terminator_escapes(
+    term: &Terminator,
+    suspend_kind: Option<&SuspendKind>,
+    local: u32,
+) -> bool {
     match term {
         // A `Call`'s args are borrows (same posture as `Instr::Call*`).
-        // `Suspend` carries no operand (value channel is the frame out-pointer),
-        // so it never escapes `local`.
         Terminator::Call { .. }
         | Terminator::Goto { .. }
         | Terminator::Branch { .. }
         | Terminator::Trap { .. }
-        | Terminator::Suspend { .. }
-        // `SuspendingRead` carries only `conn` (a connection handle read), never
-        // a generator-yielded `local`, so it never escapes one.
-        | Terminator::SuspendingRead { .. }
-        // `SuspendingAccept` carries only `listener` (a listener handle read),
-        // never a generator-yielded `local`, so it never escapes one.
+        | Terminator::MakeGenerator { .. } => false,
+        // A bare `Suspend` escapes a yielded `local` exactly when its collapsed
+        // carrier did — only the value-moving carriers (Ask/StreamSend/
+        // RemoteAsk) do, recovered from the side-table. A `Suspend` with no
+        // side-table entry is a generator / synthetic suspend whose value
+        // channel is the frame out-pointer, so it escapes nothing.
+        Terminator::Suspend { .. } => {
+            suspend_kind.is_some_and(|k| suspend_kind_yield_escapes(k, local))
+        }
+        // The handle-read / result-binding suspension carriers carry no
+        // generator-yielded `local` (only handle reads + write-back dests), so
+        // none escapes one. Mirrors the false arm of `suspend_kind_yield_escapes`.
+        Terminator::SuspendingRead { .. }
         | Terminator::SuspendingAccept { .. }
-        // `SuspendingStreamNext` carries only `stream` (a stream handle read),
-        // never a generator-yielded `local`, so it never escapes one.
         | Terminator::SuspendingStreamNext { .. }
-        // `SuspendingChannelRecv` carries only `receiver` (a channel handle read),
-        // never a generator-yielded `local`, so it never escapes one.
         | Terminator::SuspendingChannelRecv { .. }
-        // The suspendable-callee driver's `args` are borrows (same posture as
-        // `Call`/`Instr::Call*`); the closure callee does not retain a fresh
-        // yielded value, so this terminator never escapes `local`.
         | Terminator::SuspendingCallClosure { .. }
-        // `SuspendingTaskAwait` carries `scope` + `task` (handle reads),
-        // `SuspendingSleep` a `duration_ms` scalar, and
-        // `SuspendingScopeDeadline` `scope` + `duration_ms` — none is a
-        // generator-yielded `local`, so none escapes one.
         | Terminator::SuspendingTaskAwait { .. }
         | Terminator::SuspendingSleep { .. }
-        | Terminator::SuspendingScopeDeadline { .. }
-        | Terminator::MakeGenerator { .. } => false,
+        // `SuspendingScopeDeadline` carries `scope` + `duration_ms` — neither is
+        // a generator-yielded `local`, so it never escapes one.
+        | Terminator::SuspendingScopeDeadline { .. } => false,
+        // The value-moving suspension carriers transfer their `value` payload
+        // into the message / channel / wire — escaping it if it refs `local`.
+        // Mirrors `suspend_kind_yield_escapes`' value-moving arm.
+        Terminator::SuspendingAsk { value, .. }
+        | Terminator::SuspendingStreamSend { value, .. }
+        | Terminator::SuspendingRemoteAsk { value, .. } => place_refs_local(*value, local),
         // Lambda-actor construction: body/state-drop are static symbols,
         // but the capture env (when present) escapes into the actor's
         // heap-boxed state — a yielded value reachable through it must
         // not be body-end dropped.
-        Terminator::MakeLambdaActor { env, .. } => {
-            env.is_some_and(|p| place_refs_local(p, local))
-        }
+        Terminator::MakeLambdaActor { env, .. } => env.is_some_and(|p| place_refs_local(p, local)),
         // A bare `Return` moves the function's ReturnSlot (already written by an
         // earlier `Move`, caught by the instr scan); `Return` itself carries no
         // operand. Re-yield / send / ask / select transfer the value out.
         Terminator::Return => false,
         Terminator::Yield { value, .. } => place_refs_local(*value, local),
-        Terminator::Send { value, .. }
-        | Terminator::Ask { value, .. }
-        | Terminator::SuspendingAsk { value, .. }
-        | Terminator::SuspendingStreamSend { value, .. } => place_refs_local(*value, local),
-        Terminator::RemoteAsk { value, .. }
-        | Terminator::SuspendingRemoteAsk { value, .. } => place_refs_local(*value, local),
-        Terminator::Select { .. } | Terminator::SuspendingSelect { .. } => {
-            terminator_source_places(term)
+        Terminator::Send { value, .. } | Terminator::Ask { value, .. } => {
+            place_refs_local(*value, local)
+        }
+        Terminator::RemoteAsk { value, .. } => place_refs_local(*value, local),
+        Terminator::Select { arms, .. } | Terminator::SuspendingSelect { arms, .. } => {
+            select_arm_source_places(arms)
                 .into_iter()
                 .any(|p| place_refs_local(p, local))
         }
-        Terminator::Join { .. } => terminator_source_places(term)
-            .into_iter()
-            .any(|p| place_refs_local(p, local)),
+        Terminator::Join { branches, .. } => branches.iter().any(|branch| {
+            place_refs_local(branch.actor, local)
+                || branch.args.iter().any(|a| place_refs_local(*a, local))
+                || place_refs_local(branch.value, local)
+        }),
     }
 }
 
-fn retained_string_terminator_drop_safe(term: &Terminator, local: u32) -> bool {
-    let reads_binding = terminator_source_places(term)
+fn retained_string_terminator_drop_safe(
+    term: &Terminator,
+    suspend_kind: Option<&SuspendKind>,
+    local: u32,
+) -> bool {
+    let reads_binding = terminator_source_places(term, suspend_kind)
         .into_iter()
         .any(|place| place_refs_local(place, local));
     if !reads_binding {
@@ -25656,6 +25772,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
 #[must_use]
 fn derive_cow_sole_owner(
     blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     match_project_consumed_binder_locals: &HashSet<u32>,
@@ -25672,7 +25789,7 @@ fn derive_cow_sole_owner(
                 }
             }
         }
-        for p in terminator_source_places(&block.terminator) {
+        for p in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
             if let Some(l) = base_local(p) {
                 read_locals.insert(l);
             }
@@ -26030,8 +26147,12 @@ fn cow_owned_string_instr_escapes(instr: &Instr, local: u32) -> bool {
 /// `Terminator::Call` as a borrow. This refines the `Call` arm: a call
 /// referencing `local` escapes unless its callee is a verified borrowing string
 /// call (covers user-fn calls and `hew_hashmap_insert_layout` → escape).
-fn cow_owned_string_terminator_escapes(term: &Terminator, local: u32) -> bool {
-    if generator_yield_terminator_escapes(term, local) {
+fn cow_owned_string_terminator_escapes(
+    term: &Terminator,
+    suspend_kind: Option<&SuspendKind>,
+    local: u32,
+) -> bool {
+    if generator_yield_terminator_escapes(term, suspend_kind, local) {
         return true;
     }
     match term {
@@ -26091,6 +26212,7 @@ fn cow_owned_string_terminator_escapes(term: &Terminator, local: u32) -> bool {
 #[must_use]
 fn derive_cow_fresh_borrowed_owner(
     blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     locals: &[ResolvedTy],
@@ -26169,7 +26291,11 @@ fn derive_cow_fresh_borrowed_owner(
                 .instructions
                 .iter()
                 .all(|instr| !cow_owned_string_instr_escapes(instr, local))
-                && !cow_owned_string_terminator_escapes(&block.terminator, local)
+                && !cow_owned_string_terminator_escapes(
+                    &block.terminator,
+                    suspend_kinds.get(&block.id),
+                    local,
+                )
         });
         if all_uses_borrow {
             allowed.insert(*binding);
@@ -26271,6 +26397,7 @@ fn block_by_id(blocks: &[BasicBlock], id: u32) -> Option<&BasicBlock> {
 #[must_use]
 fn collect_nested_fresh_string_temp_drops(
     blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     locals: &[ResolvedTy],
     binding_locals: &HashMap<BindingId, Place>,
 ) -> Vec<(u32, usize, Place, ResolvedTy)> {
@@ -26327,7 +26454,7 @@ fn collect_nested_fresh_string_temp_drops(
             }
         }
         let mut here: HashSet<u32> = HashSet::new();
-        for p in terminator_source_places(&block.terminator) {
+        for p in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
             if let Some(l) = base_local(p) {
                 here.insert(l);
             }
@@ -26519,11 +26646,13 @@ fn nested_fresh_string_temp_drop(
 /// earlier splice does not shift a later (lower-index) one.
 fn apply_nested_fresh_string_temp_drops(
     blocks: &mut [BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     locals: &[ResolvedTy],
     binding_locals: &HashMap<BindingId, Place>,
     instr_spans: &mut BTreeMap<(u32, u32), (u32, u32)>,
 ) {
-    let insertions = collect_nested_fresh_string_temp_drops(blocks, locals, binding_locals);
+    let insertions =
+        collect_nested_fresh_string_temp_drops(blocks, suspend_kinds, locals, binding_locals);
     if insertions.is_empty() {
         return;
     }
@@ -26654,6 +26783,7 @@ fn shift_instr_spans_on_insert(
 )]
 fn derive_enum_composite_drop_allowed(
     blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     binding_scope: &HashMap<BindingId, ScopeId>,
@@ -26962,20 +27092,28 @@ fn derive_enum_composite_drop_allowed(
         // payload binder passed there is a transient read, NOT an escape —
         // the same borrow-only-sink exemption W5.011's
         // `retained_string_terminator_drop_safe` encodes.
-        for p in terminator_source_places(&block.terminator) {
+        for p in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
             if let Some(l) = base_local(p) {
                 if alias_of.contains_key(&l) && matches!(p, Place::Local(_) | Place::ReturnSlot) {
                     // A whole composite passed to a borrowing print sink is
                     // not how composites are consumed, but apply the same
                     // borrow exemption for symmetry; any non-print read of a
                     // whole composite escapes.
-                    if !retained_string_terminator_drop_safe(&block.terminator, l) {
+                    if !retained_string_terminator_drop_safe(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        l,
+                    ) {
                         note_alias_escape(l, &mut excluded_roots);
                     }
                 }
                 if payload_binders.contains_key(&l)
                     && !place_is_tag_read(p)
-                    && !retained_string_terminator_drop_safe(&block.terminator, l)
+                    && !retained_string_terminator_drop_safe(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        l,
+                    )
                 {
                     note_payload_escape(
                         &payload_binders,
@@ -27050,6 +27188,7 @@ fn derive_enum_composite_drop_allowed(
 )]
 fn derive_owned_record_drop_allowed(
     blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     local_tys: &[ResolvedTy],
@@ -27262,16 +27401,24 @@ fn derive_owned_record_drop_allowed(
         // Terminator reads. A return / send / ask of a whole record or an owned
         // field binder escapes. `print`/`println` borrows its string arg, so a
         // field binder passed there is a transient read, not an escape.
-        for p in terminator_source_places(&block.terminator) {
+        for p in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
             if let Some(l) = base_local(p) {
                 if alias_of.contains_key(&l)
                     && matches!(p, Place::Local(_) | Place::ReturnSlot)
-                    && !retained_string_terminator_drop_safe(&block.terminator, l)
+                    && !retained_string_terminator_drop_safe(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        l,
+                    )
                 {
                     note_alias_escape(l, &mut excluded_roots);
                 }
                 if field_binders.contains(&l)
-                    && !retained_string_terminator_drop_safe(&block.terminator, l)
+                    && !retained_string_terminator_drop_safe(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        l,
+                    )
                 {
                     note_field_escape(&mut excluded_roots);
                 }
@@ -27365,6 +27512,7 @@ fn derive_owned_record_drop_allowed(
 )]
 fn derive_local_collection_drop_allowed(
     blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     ty_filter: impl Fn(&ResolvedTy) -> bool,
@@ -27528,7 +27676,7 @@ fn derive_local_collection_drop_allowed(
                 }
             }
             other => {
-                for p in terminator_source_places(other) {
+                for p in terminator_source_places(other, suspend_kinds.get(&block.id)) {
                     if let Some(l) = base_local(p) {
                         if alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
@@ -27702,6 +27850,7 @@ fn is_bytes_receiver_borrow_callee(callee: &str) -> bool {
 )]
 fn derive_local_bytes_drop_allowed(
     blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
 ) -> HashSet<BindingId> {
@@ -27838,7 +27987,7 @@ fn derive_local_bytes_drop_allowed(
                 scan_places(&args[1..], &alias_of, &mut excluded_roots);
             }
             other => {
-                for p in terminator_source_places(other) {
+                for p in terminator_source_places(other, suspend_kinds.get(&block.id)) {
                     if let Some(l) = base_local(p) {
                         if alias_of.contains_key(&l)
                             && matches!(p, Place::Local(_) | Place::ReturnSlot)
@@ -27910,6 +28059,7 @@ fn derive_local_bytes_drop_allowed(
 )]
 fn derive_tuple_composite_drop_allowed(
     blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     local_tys: &[ResolvedTy],
@@ -28152,16 +28302,24 @@ fn derive_tuple_composite_drop_allowed(
         // Terminator reads. A return / send / ask of a whole tuple or an owned
         // element binder escapes. `print`/`println` borrows its string arg, so
         // an element binder passed there is a transient read, not an escape.
-        for p in terminator_source_places(&block.terminator) {
+        for p in terminator_source_places(&block.terminator, suspend_kinds.get(&block.id)) {
             if let Some(l) = base_local(p) {
                 if alias_of.contains_key(&l)
                     && matches!(p, Place::Local(_) | Place::ReturnSlot)
-                    && !retained_string_terminator_drop_safe(&block.terminator, l)
+                    && !retained_string_terminator_drop_safe(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        l,
+                    )
                 {
                     note_alias_escape(l, &mut excluded_roots);
                 }
                 if elem_binders.contains(&l)
-                    && !retained_string_terminator_drop_safe(&block.terminator, l)
+                    && !retained_string_terminator_drop_safe(
+                        &block.terminator,
+                        suspend_kinds.get(&block.id),
+                        l,
+                    )
                 {
                     note_elem_escape(&mut excluded_roots);
                 }
@@ -30025,6 +30183,7 @@ fn ty_is_closure_pair(ty: &ResolvedTy) -> bool {
 /// Excluded bindings leak (as before this lane); they never double-free.
 fn derive_closure_pair_drop_allowed(
     blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     closure_pair_owned: &HashSet<BindingId>,
     binding_locals: &HashMap<BindingId, Place>,
 ) -> HashSet<BindingId> {
@@ -30060,7 +30219,7 @@ fn derive_closure_pair_drop_allowed(
                 }
             }
             other => {
-                for p in terminator_source_places(other) {
+                for p in terminator_source_places(other, suspend_kinds.get(&block.id)) {
                     mark(p, &mut aliased);
                 }
             }
@@ -33619,6 +33778,7 @@ mod cow_sole_owner_derivation {
 
         let allowed = derive_cow_sole_owner(
             &[block(vec![])],
+            &std::collections::HashMap::new(),
             &owned,
             &binding_locals,
             &HashSet::new(),
@@ -33668,6 +33828,7 @@ mod cow_sole_owner_derivation {
 
         let allowed = derive_cow_sole_owner(
             &[block(instrs)],
+            &std::collections::HashMap::new(),
             &owned,
             &binding_locals,
             &HashSet::new(),
@@ -33714,6 +33875,7 @@ mod cow_sole_owner_derivation {
 
         let allowed = derive_cow_sole_owner(
             &[block(instrs)],
+            &std::collections::HashMap::new(),
             &owned,
             &binding_locals,
             &HashSet::new(),
@@ -33748,6 +33910,7 @@ mod cow_sole_owner_derivation {
 
         let allowed = derive_cow_sole_owner(
             &[block(instrs)],
+            &std::collections::HashMap::new(),
             &owned,
             &binding_locals,
             &HashSet::new(),
@@ -33803,7 +33966,15 @@ mod owned_record_drop_derivation {
         binding_locals: &HashMap<BindingId, Place>,
         local_tys: &[ResolvedTy],
     ) -> HashSet<BindingId> {
-        derive_owned_record_drop_allowed(blocks, owned, binding_locals, local_tys, &is_rec, &[])
+        derive_owned_record_drop_allowed(
+            blocks,
+            &HashMap::new(),
+            owned,
+            binding_locals,
+            local_tys,
+            &is_rec,
+            &[],
+        )
     }
 
     /// A record local that is never read (no construction-site escape, no field
@@ -34881,6 +35052,7 @@ mod f1_suspending_escape_poison {
 
         let allowed = derive_local_collection_drop_allowed(
             &[block],
+            &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
             ty_is_local_collection_handle,
@@ -34944,6 +35116,7 @@ mod f1_suspending_escape_poison {
 
         let allowed = derive_local_collection_drop_allowed(
             &[block],
+            &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
             ty_is_local_collection_handle,
@@ -34989,7 +35162,12 @@ mod f1_suspending_escape_poison {
             instructions: vec![],
             terminator: Terminator::Return,
         };
-        let allowed = derive_local_bytes_drop_allowed(&[block], &owned_locals, &binding_locals);
+        let allowed = derive_local_bytes_drop_allowed(
+            &[block],
+            &std::collections::HashMap::new(),
+            &owned_locals,
+            &binding_locals,
+        );
         assert!(
             allowed.contains(&binding),
             "a never-read bytes local must earn its scope-exit drop; allowed: {allowed:?}"
@@ -35016,7 +35194,12 @@ mod f1_suspending_escape_poison {
                 alias_mode: crate::model::SendAliasMode::Copy,
             },
         };
-        let allowed = derive_local_bytes_drop_allowed(&[block], &owned_locals, &binding_locals);
+        let allowed = derive_local_bytes_drop_allowed(
+            &[block],
+            &std::collections::HashMap::new(),
+            &owned_locals,
+            &binding_locals,
+        );
         assert!(
             !allowed.contains(&binding),
             "a send-consumed bytes local must NOT earn a sender-side drop — the \
@@ -35044,7 +35227,12 @@ mod f1_suspending_escape_poison {
             instructions: vec![Instr::CallRuntimeAbi(call)],
             terminator: Terminator::Return,
         };
-        let allowed = derive_local_bytes_drop_allowed(&[block], &owned_locals, &binding_locals);
+        let allowed = derive_local_bytes_drop_allowed(
+            &[block],
+            &std::collections::HashMap::new(),
+            &owned_locals,
+            &binding_locals,
+        );
         assert!(
             allowed.contains(&binding),
             "a borrow-listed receiver read must not exclude the binding; \
@@ -35067,7 +35255,12 @@ mod f1_suspending_escape_poison {
             instructions: vec![Instr::CallRuntimeAbi(call)],
             terminator: Terminator::Return,
         };
-        let allowed = derive_local_bytes_drop_allowed(&[block], &owned_locals, &binding_locals);
+        let allowed = derive_local_bytes_drop_allowed(
+            &[block],
+            &std::collections::HashMap::new(),
+            &owned_locals,
+            &binding_locals,
+        );
         assert!(
             !allowed.contains(&binding),
             "an unlisted runtime read must default-deny (leak, never \
@@ -35092,7 +35285,12 @@ mod f1_suspending_escape_poison {
             }],
             terminator: Terminator::Return,
         };
-        let allowed = derive_local_bytes_drop_allowed(&[block], &owned_locals, &binding_locals);
+        let allowed = derive_local_bytes_drop_allowed(
+            &[block],
+            &std::collections::HashMap::new(),
+            &owned_locals,
+            &binding_locals,
+        );
         assert!(
             !allowed.contains(&binding),
             "a field-loaded bytes triple aliases its parent aggregate's buffer \
@@ -35122,7 +35320,12 @@ mod f1_suspending_escape_poison {
             }],
             terminator: Terminator::Return,
         };
-        let allowed = derive_local_bytes_drop_allowed(&[block], &owned_locals, &binding_locals);
+        let allowed = derive_local_bytes_drop_allowed(
+            &[block],
+            &std::collections::HashMap::new(),
+            &owned_locals,
+            &binding_locals,
+        );
         assert!(
             !allowed.contains(&binding),
             "an aggregate-ingress bytes triple must not earn a producer-side \
@@ -35216,6 +35419,7 @@ mod plain_vec_drop_interior_alias_and_escape {
 
         let allowed = derive_local_collection_drop_allowed(
             &blocks,
+            &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
             ty_is_vec_handle,
@@ -35278,6 +35482,7 @@ mod plain_vec_drop_interior_alias_and_escape {
 
         let allowed = derive_local_collection_drop_allowed(
             &blocks,
+            &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
             ty_is_vec_handle,
@@ -35345,6 +35550,7 @@ mod plain_vec_drop_interior_alias_and_escape {
 
         let allowed = derive_local_collection_drop_allowed(
             &blocks,
+            &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
             ty_is_vec_handle,
@@ -35418,6 +35624,7 @@ mod plain_vec_drop_interior_alias_and_escape {
 
         let allowed = derive_local_collection_drop_allowed(
             &blocks,
+            &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
             ty_is_vec_handle,
@@ -35461,6 +35668,7 @@ mod plain_vec_drop_interior_alias_and_escape {
 
         let allowed = derive_local_collection_drop_allowed(
             &blocks,
+            &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
             ty_is_vec_handle,
@@ -35514,6 +35722,7 @@ mod plain_vec_drop_interior_alias_and_escape {
 
         let allowed = derive_local_collection_drop_allowed(
             &blocks,
+            &std::collections::HashMap::new(),
             &owned_locals,
             &binding_locals,
             ty_is_vec_handle,

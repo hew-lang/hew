@@ -750,6 +750,21 @@ test-surface-examples: hew runtime stdlib
 	  exit 1; \
 	fi
 
+# Check ```hew fenced blocks in docs/ against hew check.
+# Extracts each fence from docs/hew-language-guide.md and docs/specs/HEW-SPEC-2026.md
+# into .tmp/doc-fences/, runs `hew check` on each, and applies the ratchet
+# from scripts/doc-test-expected-failures.txt so known-failing fences do not
+# block the gate while new failures always do.
+#
+# Skip-annotated fences (<!-- doctest: skip --> or preceding NYI callout) are
+# never compiled — they describe aspirational or not-yet-implemented surfaces.
+# Fail-closed default: a fence is compiled unless explicitly skipped.
+#
+# Run `make test-doc-examples` after any docs/ change to confirm no fence
+# regressions were introduced.
+test-doc-examples: hew
+	@scripts/extract-doc-fences.sh
+
 # Release sanitizer gate validator self-test.
 check-sanitizer-gate:
 	@set -e; \

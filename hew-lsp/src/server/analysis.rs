@@ -1911,20 +1911,20 @@ mod tests {
         assert_eq!(hard_type_diagnostic(&doc), None);
         let hover = surface_hover(&doc, source, "tls.read");
         assert!(
-            hover.contains("Result<bytes,") && hover.contains("IoError"),
-            "hover over tls.read should report Result<bytes, fs.IoError>, got: {hover}",
+            hover.contains("Result<bytes,") && hover.contains("NetError"),
+            "hover over tls.read should report Result<bytes, net.NetError>, got: {hover}",
         );
         let sig = surface_sighelp(&doc, source, "tls.read");
         assert!(
             sig.iter()
                 .any(|s| s.contains("read(") && s.contains("Result<bytes,")),
-            "signature help should label tls.read -> Result<bytes, fs.IoError>, got: {sig:?}",
+            "signature help should label tls.read -> Result<bytes, net.NetError>, got: {sig:?}",
         );
         assert!(
             surface_inlays(&doc)
                 .iter()
-                .any(|l| l.contains("Result<bytes,") && l.contains("IoError")),
-            "inlay hint for `chunk` should show the Result<bytes, fs.IoError> type",
+                .any(|l| l.contains("Result<bytes,") && l.contains("NetError")),
+            "inlay hint for `chunk` should show the Result<bytes, net.NetError> type",
         );
     }
 

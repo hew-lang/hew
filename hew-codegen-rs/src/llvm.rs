@@ -22732,14 +22732,15 @@ pub(crate) fn emit_read_deadline_timeout_err(
     result_dest: Place,
     error_dest: Place,
 ) -> CodegenResult<()> {
-    let error_local = composite_dest_local(error_dest, "SuspendingRead IoError")?;
-    // `IoError::TimedOut` is variant index 5 in `std/fs.hew`.
-    store_composite_tag(fn_ctx, error_local, 5, "SuspendingRead IoError::TimedOut")?;
+    let error_local = composite_dest_local(error_dest, "SuspendingRead NetError")?;
+    // `NetError::TimedOut` is variant index 3 in `std/net/net.hew`
+    // (ConnectionRefused=0, AddressInUse=1, AddressNotAvailable=2, TimedOut=3).
+    store_composite_tag(fn_ctx, error_local, 3, "SuspendingRead NetError::TimedOut")?;
     let (payload_ptr, payload_ty) = place_pointer(
         fn_ctx,
         Place::MachineVariant {
             local: error_local,
-            variant_idx: 5,
+            variant_idx: 3,
             field_idx: 0,
         },
     )?;
@@ -22747,14 +22748,14 @@ pub(crate) fn emit_read_deadline_timeout_err(
         BasicTypeEnum::IntType(t) => t,
         other => {
             return Err(CodegenError::FailClosed(format!(
-                "SuspendingRead IoError::TimedOut payload must be integer, got {other:?}"
+                "SuspendingRead NetError::TimedOut payload must be integer, got {other:?}"
             )));
         }
     };
     fn_ctx
         .builder
         .build_store(payload_ptr, payload_int_ty.const_zero())
-        .llvm_ctx("store SuspendingRead IoError::TimedOut payload")?;
+        .llvm_ctx("store SuspendingRead NetError::TimedOut payload")?;
     emit_result_err(fn_ctx, result_dest, error_dest)
 }
 

@@ -9,8 +9,6 @@
 //
 // Exit-code contract: timeout Err(TimedOut) -> 7; unexpected Ok -> 42;
 // wrong NetError variant -> 8; no actor exit -> main fallback 99.
-import std::net;
-
 import std::net::{Listener};
 
 extern "C" {

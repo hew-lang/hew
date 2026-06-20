@@ -1300,7 +1300,7 @@ pub enum HirExprKind {
     /// `read_string` is `await conn.read()` + `hew_bytes_to_string`, so the HIR
     /// node carries only the bytes read; the string conversion wraps it. A raw
     /// `read()` may carry a literal deadline and then resolves to
-    /// `Result<bytes, IoError>` with MIR/codegen binding `Err(TimedOut)` if the
+    /// `Result<bytes, NetError>` with MIR/codegen binding `Err(TimedOut)` if the
     /// timer wins.
     ConnAwaitRead {
         /// The connection receiver expression (`conn`).
@@ -1324,8 +1324,8 @@ pub enum HirExprKind {
         listener: Box<HirExpr>,
         /// NEW-6d `await ln.accept() | after d` deadline, in nanoseconds. `None`
         /// preserves the plain-accept `Connection` result and unconditional read-slot
-        /// wake. `Some(ns)` produces `Result<Connection, IoError>` with
-        /// `IoError::TimedOut` on the deadline arm — parallel to `ConnAwaitRead`.
+        /// wake. `Some(ns)` produces `Result<Connection, NetError>` with
+        /// `NetError::TimedOut` on the deadline arm — parallel to `ConnAwaitRead`.
         deadline_ns: Option<i64>,
     },
     /// `await rx.recv() | after d` — a suspending channel recv with a deadline

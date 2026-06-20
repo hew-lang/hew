@@ -20218,8 +20218,9 @@ impl LowerCtx {
             return self.unsupported_expr(span.clone(), "non-await deadline combinator");
         };
         // The suspendable awaits whose timeout `Result` is concretely specced are
-        // local actor asks (`Result<R, AskError>`, `AskError::Timeout`) and raw
-        // connection reads (`Result<bytes, IoError>`, `IoError::TimedOut`).
+        // local actor asks (`Result<R, AskError>`, `AskError::Timeout`), raw
+        // connection reads (`Result<bytes, NetError>`, `NetError::TimedOut`), and
+        // listener accepts (`Result<Connection, NetError>`, `NetError::TimedOut`).
         let inner_key = self.mk_key(&await_inner.1);
         let is_local_ask = matches!(
             self.actor_method_dispatch.get(&inner_key),
@@ -20255,13 +20256,13 @@ impl LowerCtx {
                 let is_to_string = *to_string;
                 *slot = Some(deadline_ns);
                 let io_error_ty = ResolvedTy::Named {
-                    name: "IoError".to_string(),
+                    name: "NetError".to_string(),
                     args: Vec::new(),
                     builtin: None,
                     is_opaque: false,
                 };
-                // `read_string | after d` yields `Result<string, IoError>`;
-                // raw `read | after d` yields `Result<bytes, IoError>`.
+                // `read_string | after d` yields `Result<string, NetError>`;
+                // raw `read | after d` yields `Result<bytes, NetError>`.
                 let ok_ty = if is_to_string {
                     ResolvedTy::String
                 } else {
@@ -20293,12 +20294,12 @@ impl LowerCtx {
             {
                 *slot = Some(deadline_ns);
                 let io_error_ty = ResolvedTy::Named {
-                    name: "IoError".to_string(),
+                    name: "NetError".to_string(),
                     args: Vec::new(),
                     builtin: None,
                     is_opaque: false,
                 };
-                // `await ln.accept() | after d` yields `Result<Connection, IoError>`;
+                // `await ln.accept() | after d` yields `Result<Connection, NetError>`;
                 // the Ok arm carries the accepted connection type from the plain accept.
                 let ok_ty = accept_expr.ty.clone();
                 accept_expr.ty = ResolvedTy::Named {

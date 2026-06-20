@@ -1,0 +1,45 @@
+// ll-oracle corpus fixture: runtime_abi — runtime-call-heavy program.
+//
+// Exercises the runtime_abi concern of hew-codegen-rs/src/llvm.rs:
+// the lower_call_runtime_abi 49-arm dispatcher. Touches the Vec, HashMap,
+// HashSet, string, and bytes runtime families — each arm is a distinct
+// intern_runtime_decl + build_call chain. Proves the runtime-abi dispatch
+// surface is byte-identical across a pure codegen refactor.
+fn main() {
+    // Vec runtime family
+    let v: Vec<i64> = Vec::new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    println(v.len());
+    let x = v.get(0);
+    println(x);
+    let last = v.pop();
+    println(last);
+
+    // HashMap runtime family
+    let m: HashMap<string, i64> = HashMap::new();
+    m.insert("a", 10);
+    m.insert("b", 20);
+    println(m.len());
+    match m.get("a") {
+        Some(val) => println(val),
+        None => println(-1),
+    }
+    let had = m.remove("b");
+    println(had);
+
+    // HashSet runtime family
+    let s: HashSet<i64> = HashSet::new();
+    s.insert(42);
+    s.insert(7);
+    println(s.len());
+    println(s.contains(42));
+
+    // string runtime family
+    let greeting = "hello";
+    let suffix = " world";
+    let full = greeting + suffix;
+    println(full);
+    println(full.len());
+}

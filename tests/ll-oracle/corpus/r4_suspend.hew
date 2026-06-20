@@ -1,0 +1,26 @@
+// ll-oracle corpus fixture: suspend/coro — actor spawn + ask + await.
+//
+// Exercises the suspend concern of hew-codegen-rs/src/llvm.rs:
+// emit_suspend_point (the consolidated suspension seam), coroutine
+// frame setup/teardown, hew_actor_spawn, hew_actor_ask, and the
+// coro-resume dispatcher. Proves the suspension surface is byte-identical
+// across a pure codegen refactor.
+actor Adder {
+    var base: i64 = 0;
+    receive fn set_base(n: i64) {
+        base = n;
+    }
+    receive fn add(n: i64) -> i64 {
+        base + n
+    }
+}
+
+fn main() {
+    let a = spawn Adder(base: 10);
+    a.set_base(100);
+    let r = await a.add(42);
+    match r {
+        Ok(v) => println(v),
+        Err(_) => println(-1),
+    }
+}

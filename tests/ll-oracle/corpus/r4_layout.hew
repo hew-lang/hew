@@ -1,0 +1,49 @@
+// ll-oracle corpus fixture: layout — record + enum lowering.
+//
+// Exercises the layout concern of hew-codegen-rs/src/llvm.rs:
+// record field stores/loads (get_field_value / store_field_value),
+// enum tag emission, Vec<record> layout path (hew_vec_new_with_layout,
+// hew_vec_push_layout, hew_vec_get_layout), and HashMap<string,record>
+// layout path (hew_hashmap_new_with_layout, hew_hashmap_insert_layout,
+// hew_hashmap_get_layout). Proves the layout-dispatch surface is
+// byte-identical across a pure codegen refactor.
+type Point {
+    x: i64;
+    y: i64;
+}
+
+enum Color {
+    Red;
+    Green;
+    Blue;
+}
+
+fn make_point(x: i64, y: i64) -> Point {
+    Point { x: x, y: y }
+}
+
+fn color_code(c: Color) -> i64 {
+    match c {
+        Color::Red => 0,
+        Color::Green => 1,
+        Color::Blue => 2,
+    }
+}
+
+fn main() -> i64 {
+    let p = make_point(3, 4);
+    println(p.x + p.y);
+    let xs: Vec<Point> = Vec::new();
+    xs.push(Point { x: 10, y: 20 });
+    xs.push(Point { x: 5, y: 5 });
+    let q = xs[0];
+    println(q.x);
+    let tbl: HashMap<string, Point> = HashMap::new();
+    tbl.insert("origin", Point { x: 0, y: 0 });
+    match tbl.get("origin") {
+        Some(v) => println(v.x + v.y),
+        None => println(-1),
+    }
+    println(color_code(Color::Green));
+    0
+}

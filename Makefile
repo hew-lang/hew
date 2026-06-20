@@ -68,6 +68,7 @@
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-smoke fuzz-oracle fuzz-oracle-selftest
+.PHONY: ll-diff ll-golden ll-identity-selftest
 
 # ── Configuration ───────────────────────────────────────────────────────────
 
@@ -578,6 +579,25 @@ checked-mir-verify: hew
 
 checked-mir-golden: hew
 	bash scripts/checked-mir-corpus.sh golden
+
+# Per-function .ll byte-identity oracle (tests/ll-oracle/corpus/): proves a
+# pure codegen refactor (dedup, extract-helper, file-split) emits zero changed
+# IR.  `ll-diff` recompiles every fixture and diffs per-function bodies against
+# the committed goldens; `ll-golden` recaptures them (only in a commit that
+# justifies the IR change, with the diff in the commit body).  Both native and
+# wasm32 targets are covered.
+ll-diff: hew
+	bash scripts/ll-corpus.sh verify
+
+ll-golden: hew
+	bash scripts/ll-corpus.sh golden
+
+# Self-test for the ll-byte-identity normaliser: four independently-failable
+# cases that prove string-content changes are caught and pool-id reorderings
+# are transparent.  No compiler build required — exercises the oracle script
+# against synthetic .ll snippets only.
+ll-identity-selftest:
+	bash scripts/ll-identity-selftest.sh
 
 test-runtime-net:
 	cargo nextest run --profile ci --no-fail-fast \

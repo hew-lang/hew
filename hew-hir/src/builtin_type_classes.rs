@@ -165,12 +165,17 @@ pub fn crash_info_type_registration() -> &'static BuiltinTypeRegistration {
 /// compiler-known records carry their marker and shape here so downstream
 /// lowering can query the registry instead of matching user-visible names.
 ///
-/// WHY: `Duplex<S,R>`, `Sink<T>`, `Stream<T>`, etc. are constructed via
-/// builtin functions (`duplex_pair`, `channel`) registered in
-/// `hew-types/src/check/registration.rs`.  Those builtins return `Ty::Duplex { .. }`
-/// which crosses the checker boundary as `ResolvedTy::Named { name: "Duplex", .. }`.
+/// WHY: `Duplex<S,R>` is constructed via the `duplex_pair` / `duplex` builtin
+/// functions registered in `hew-types/src/check/registration.rs`.  Those
+/// builtins return `Ty::Duplex { .. }` which crosses the checker boundary as
+/// `ResolvedTy::Named { name: "Duplex", .. }`.  `Sink<T>` and `Stream<T>` have
+/// no builtin constructors (the `channel()` builtin was retired in favour of
+/// `std::channel::channel.new`, which yields `(Sender<T>, Receiver<T>)`) but are
+/// still registered here so that `ValueClass::of_ty` resolves them correctly for
+/// drop elaboration when they appear as values from std / runtime surfaces.
 /// Without this seeding, `ValueClass::of_ty` returns `Unknown` for every
-/// `Named { "Duplex", .. }` binding, and drop elaboration never fires.
+/// `Named { "Duplex", .. }` / `Named { "Sink", .. }` etc. binding, and drop
+/// elaboration never fires.
 ///
 /// WHEN-OBSOLETE: when user-level `@resource` type declarations become the
 /// canonical authority for all substrate types (i.e. when `std/duplex.hew`

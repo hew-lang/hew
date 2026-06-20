@@ -873,13 +873,12 @@ impl Checker {
             Ty::I64,
         );
 
-        // Duplex / channel constructors — compiler builtins.
+        // Duplex constructors — compiler builtins.
         //
-        // WHY: slice 5 codegen and the HIR-level accept fixtures below need these
-        //   names resolvable without importing a stdlib module.
-        // WHEN-OBSOLETE: once `std::channel` (stdlib slice 6) ships, the stdlib
-        //   module replaces these registrations and these calls are removed.
-        // WHAT-REAL-SOLUTION: `std/channel.hew` module with proper source definitions.
+        // WHY: `duplex_pair` and `duplex` are constructor-only surfaces with no
+        //   stdlib module equivalent yet; they must remain resolvable without an
+        //   explicit import. The former `channel` builtin constructor was removed;
+        //   callers use `std::channel::channel.new` instead.
         //
         // `duplex_pair<S: Send, R: Send>(capacity: int) -> (Duplex<S, R>, Duplex<R, S>)`
         // Returns a cross-wired pair of Duplex handles backed by a shared buffer.
@@ -945,27 +944,6 @@ impl Checker {
                     args: vec![],
                 },
             ),
-        );
-
-        // `channel<T: Send>(capacity: int) -> (Sink<T>, Stream<T>)`
-        // Constructs a unidirectional channel pair: the Sink writes, the Stream reads.
-        self.register_builtin_fn_with_bounds(
-            "channel",
-            vec!["T".to_string()],
-            HashMap::from([("T".to_string(), vec!["Send".to_string()])]),
-            vec![Ty::I64],
-            Ty::Tuple(vec![
-                Ty::sink(Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                }),
-                Ty::stream(Ty::Named {
-                    builtin: None,
-                    name: "T".to_string(),
-                    args: vec![],
-                }),
-            ]),
         );
 
         // Register the compiled-in primitive/builtin receiver impls that must

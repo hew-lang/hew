@@ -23105,18 +23105,22 @@ fn elaborate(
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.match_project_consumed_binder_locals,
+        &builder.locals,
     );
     // W5.011 P3 — additively admit fresh-owned `string` locals used only in
     // borrowing reads (`let y = a + b; y.len()`, `let y = s.to_uppercase();
-    // y.len()`, `let y = xs.get(i); y.len()`). `derive_cow_sole_owner` excludes
-    // every read local, so those proven-fresh sole owners would otherwise leak.
-    // The two allow-sets are disjoint by construction (never-read vs read-by-
-    // borrow); the union is gated by the same consume-exit filter below so a
-    // binding moved out on any path is still removed (fail-closed).
+    // y.len()`, `let y = xs.get(i); y.len()`, and now `let c = r.field;
+    // c.len()`). `derive_cow_sole_owner` excludes every read local, so those
+    // proven-fresh sole owners would otherwise leak. The two allow-sets are
+    // disjoint by construction (never-read vs read-by-borrow); the union is
+    // gated by the same consume-exit filter below so a binding moved out on any
+    // path is still removed (fail-closed). `builder.locals` types the
+    // string-field-load fresh-producer admission.
     cow_drop_allowed.extend(derive_cow_fresh_borrowed_owner(
         &checked.blocks,
         &builder.owned_locals,
         &builder.binding_locals,
+        &builder.locals,
     ));
     for states in dataflow_result.exit_states.values() {
         for (binding, state) in states {
@@ -25229,6 +25233,22 @@ fn retained_string_terminator_drop_safe(term: &Terminator, local: u32) -> bool {
 /// exhaustive with no wildcard so a future aggregate-projection load
 /// cannot be added without deciding whether its dest aliases parent
 /// storage — the same fail-closed guarantee `instr_source_places` carries.
+///
+/// CODEGEN-RETAIN PREMISE (string `*FieldLoad`): this classifier is purely
+/// structural and still names `RecordFieldLoad` / `TupleFieldLoad` here, but a
+/// *string-typed* `*FieldLoad` dest is NO LONGER a no-retain alias — codegen
+/// emits `hew_string_clone` on it (`retain_string_field_load`, hew-codegen-rs),
+/// making it a genuine fresh `+1` owner. `compute_projection_alias_taint`
+/// therefore EXCLUDES string-typed `*FieldLoad` dests from the taint seed (via
+/// the `locals` type gate) and `string_field_load_producer_dest` admits them as
+/// fresh producers, so they earn exactly one balancing scope-exit drop — the
+/// same class `hew_vec_get_str` (`xs.get(i)`) already occupies. NON-string
+/// `*FieldLoad` dests (`bytes` / `Vec<T>` / nested record) are NOT retained by
+/// codegen and stay tainted here (leak, never double-free) until the
+/// retain-on-share spine lands. The two sides are coupled: if the codegen retain
+/// is ever conditionally skipped for a string field load, the taint exclusion
+/// and the fresh-producer admission must be skipped in lockstep, or the leak
+/// inverts back into a double-free.
 #[must_use]
 fn projection_alias_dest(instr: &Instr) -> Option<Place> {
     match instr {
@@ -25355,6 +25375,7 @@ fn derive_cow_sole_owner(
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     match_project_consumed_binder_locals: &HashSet<u32>,
+    locals: &[ResolvedTy],
 ) -> HashSet<BindingId> {
     // 1. Every local read as a source operand anywhere — i.e. every local
     //    whose pointer is copied/aliased out of its slot.
@@ -25378,7 +25399,8 @@ fn derive_cow_sole_owner(
     //    exclusion. Computed by `compute_projection_alias_taint`, exempting the
     //    consume-marked match-destructure binders this derivation is allowed to
     //    admit. (See that helper for the full seed/propagation/exemption model.)
-    let tainted = compute_projection_alias_taint(blocks, match_project_consumed_binder_locals);
+    let tainted =
+        compute_projection_alias_taint(blocks, match_project_consumed_binder_locals, locals);
 
     // 3. Allow-set: leaf `string` owned locals that are neither aliased out
     //    (read) nor aliased in (projection-tainted). Fail-closed: a binding
@@ -25430,17 +25452,35 @@ fn derive_cow_sole_owner(
 /// Move-from-interior seed (enum/machine destructures) is never exempted.
 /// Passing an empty set is the conservative choice — it taints strictly more,
 /// which only ever excludes more bindings (fail-closed).
+///
+/// `locals` is the function's declared local-type table. A `string`-typed
+/// `*FieldLoad` dest is NOT seeded as a projection alias: codegen now retains it
+/// (`retain_string_field_load`), so it is a genuine fresh `+1` owner admitted via
+/// `string_field_load_producer_dest`, not a no-retain interior alias. Excluding
+/// it from the taint is what lets `derive_cow_fresh_borrowed_owner` admit it for
+/// its one balancing drop — the two-sided coupling. Non-string `*FieldLoad` dests
+/// are NOT retained by codegen, so they stay tainted here (leak, never
+/// double-free) until the retain-on-share spine lands. This exclusion is a
+/// provable no-op for the collection/Vec callers (a string-typed local is never a
+/// Vec/owned-record/HashMap drop candidate), so threading `locals` keeps one
+/// taint authority with consistent semantics across all consumers.
 #[must_use]
 fn compute_projection_alias_taint(
     blocks: &[BasicBlock],
     exempt_seed_locals: &HashSet<u32>,
+    locals: &[ResolvedTy],
 ) -> HashSet<u32> {
     let mut tainted: HashSet<u32> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
             if let Some(dest) = projection_alias_dest(instr) {
                 if let Some(l) = base_local(dest) {
-                    if !exempt_seed_locals.contains(&l) {
+                    // A `string` field-load dest is a retained fresh producer, not
+                    // a no-retain alias — exclude it from the taint so its
+                    // balancing drop is admitted (see the doc above).
+                    let is_retained_string_field_load =
+                        string_field_load_producer_dest(instr, locals).is_some();
+                    if !exempt_seed_locals.contains(&l) && !is_retained_string_field_load {
                         tainted.insert(l);
                     }
                 }
@@ -25519,9 +25559,18 @@ fn is_vec_interior_borrow_getter(callee: &str) -> bool {
 /// Fail-closed: an empty exempt set is passed to the projection-alias seed
 /// (taint strictly more), and over-tainting only ever over-EXCLUDES a binding
 /// from drop (a leak, never a double-free).
+///
+/// An EMPTY `locals` slice is passed to `compute_projection_alias_taint`, which
+/// disables its string `*FieldLoad` retain-exclusion: this collection taint must
+/// keep tainting EVERY `*FieldLoad` dest (a Vec/owned-record/HashMap loaded from
+/// a record field is an interior borrow that must never earn its own free). A
+/// string-typed `*FieldLoad` dest is never a collection drop candidate, so NOT
+/// excluding it here changes nothing — the string exclusion belongs only to the
+/// string provers (`derive_cow_sole_owner` / `derive_cow_fresh_borrowed_owner`),
+/// which pass the real `locals`.
 #[must_use]
 fn compute_collection_interior_alias_taint(blocks: &[BasicBlock]) -> HashSet<u32> {
-    let mut tainted = compute_projection_alias_taint(blocks, &HashSet::new());
+    let mut tainted = compute_projection_alias_taint(blocks, &HashSet::new(), &[]);
     // Seed the borrowing vector element getters (both lowering shapes).
     for block in blocks {
         for instr in &block.instructions {
@@ -25591,6 +25640,38 @@ fn fresh_string_producer_term_dest(term: &Terminator) -> Option<Place> {
         {
             *dest
         }
+        _ => None,
+    }
+}
+
+/// The dest of a `string`-typed record/tuple field load — a fresh `+1` owner
+/// once codegen retains it (`retain_string_field_load`, hew-codegen-rs).
+///
+/// A `string` loaded from a record field (`RecordFieldLoad`) or tuple element
+/// (`TupleFieldLoad`) is emitted by codegen with a `hew_string_clone` retain, so
+/// the loaded local is an independent `+1` owner — the identical ownership shape
+/// as the `Vec<string>` getter `hew_vec_get_str` (`xs.get(i)`), which is already
+/// admitted as a fresh producer. This classifier moves the string field-load
+/// dest from the "projection alias, never drop" class into the "fresh `+1`, drop
+/// once when sole owner" class so `derive_cow_fresh_borrowed_owner` admits it for
+/// exactly one balancing scope-exit `hew_string_drop`.
+///
+/// The two sides are coupled and MUST move together: codegen retains ONLY
+/// string-typed `*FieldLoad` dests (detected by the dest's `ResolvedTy`), so this
+/// classifier admits ONLY string-typed `*FieldLoad` dests (same type gate). A
+/// non-string field load (`bytes` / `Vec<T>` / nested record) is NOT retained by
+/// codegen and stays a projection alias here — it leaks rather than double-frees,
+/// the safe default, until the retain-on-share spine lands. The type gate uses
+/// the function's `locals` table (the dest local's declared `ResolvedTy`), the
+/// same precise string distinguisher codegen uses.
+fn string_field_load_producer_dest(instr: &Instr, locals: &[ResolvedTy]) -> Option<Place> {
+    let dest = match instr {
+        Instr::RecordFieldLoad { dest, .. } | Instr::TupleFieldLoad { dest, .. } => *dest,
+        _ => return None,
+    };
+    let local = base_local(dest)?;
+    match locals.get(local as usize) {
+        Some(ResolvedTy::String) => Some(dest),
         _ => None,
     }
 }
@@ -25728,14 +25809,25 @@ fn derive_cow_fresh_borrowed_owner(
     blocks: &[BasicBlock],
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
+    locals: &[ResolvedTy],
 ) -> HashSet<BindingId> {
     // 1. Fresh-owner locals: the dest of a known fresh `string` producer,
     //    propagated forward through `Move` (a `let y = <producer temp>` rebind
-    //    transfers the single drop obligation from the temp to `y`).
+    //    transfers the single drop obligation from the temp to `y`). The
+    //    string-typed `*FieldLoad` dest is a fresh producer too now that codegen
+    //    retains it (`retain_string_field_load`): it is the identical retained-
+    //    interior-load shape as `hew_vec_get_str` (`xs.get(i)`), so it earns the
+    //    same one balancing drop. The companion taint exclusion below keeps it
+    //    admissible (a string field-load dest is no longer projection-tainted).
     let mut fresh: HashSet<u32> = HashSet::new();
     for block in blocks {
         for instr in &block.instructions {
             if let Some(dest) = fresh_string_producer_dest(instr) {
+                if let Some(l) = base_local(dest) {
+                    fresh.insert(l);
+                }
+            }
+            if let Some(dest) = string_field_load_producer_dest(instr, locals) {
                 if let Some(l) = base_local(dest) {
                     fresh.insert(l);
                 }
@@ -25767,8 +25859,10 @@ fn derive_cow_fresh_borrowed_owner(
 
     // 2. Projection-alias taint — never admit an interior pointer of a live
     //    aggregate even if it traced through a producer-shaped `Move`. No
-    //    consumed-binder exemption (conservative: taint strictly more).
-    let tainted = compute_projection_alias_taint(blocks, &HashSet::new());
+    //    consumed-binder exemption (conservative: taint strictly more). String
+    //    `*FieldLoad` dests are excluded from the seed (they are retained fresh
+    //    producers, admitted in step 1) via the `locals` type gate.
+    let tainted = compute_projection_alias_taint(blocks, &HashSet::new(), locals);
 
     // 3. Admit a leaf-`string` owned binding iff it is a proven fresh owner, not
     //    a projection alias, and every use is a verified borrow.
@@ -33237,8 +33331,13 @@ mod cow_sole_owner_derivation {
         let mut binding_locals: HashMap<BindingId, Place> = HashMap::new();
         binding_locals.insert(b, Place::Local(7));
 
-        let allowed =
-            derive_cow_sole_owner(&[block(vec![])], &owned, &binding_locals, &HashSet::new());
+        let allowed = derive_cow_sole_owner(
+            &[block(vec![])],
+            &owned,
+            &binding_locals,
+            &HashSet::new(),
+            &[],
+        );
         assert!(
             allowed.contains(&b),
             "an untouched string local is its own sole owner and must be admitted"
@@ -33281,8 +33380,13 @@ mod cow_sole_owner_derivation {
         binding_locals.insert(f, Place::Local(20));
         binding_locals.insert(g, Place::Local(21));
 
-        let allowed =
-            derive_cow_sole_owner(&[block(instrs)], &owned, &binding_locals, &HashSet::new());
+        let allowed = derive_cow_sole_owner(
+            &[block(instrs)],
+            &owned,
+            &binding_locals,
+            &HashSet::new(),
+            &[],
+        );
         assert!(
             !allowed.contains(&f) && !allowed.contains(&g),
             "payload-destructure binders alias parent storage (no retain) and \
@@ -33322,8 +33426,13 @@ mod cow_sole_owner_derivation {
         binding_locals.insert(payload, Place::Local(40));
         binding_locals.insert(copy, Place::Local(41));
 
-        let allowed =
-            derive_cow_sole_owner(&[block(instrs)], &owned, &binding_locals, &HashSet::new());
+        let allowed = derive_cow_sole_owner(
+            &[block(instrs)],
+            &owned,
+            &binding_locals,
+            &HashSet::new(),
+            &[],
+        );
         assert!(
             allowed.is_empty(),
             "the enum-variant binder and the local it is moved into both alias \
@@ -33351,8 +33460,13 @@ mod cow_sole_owner_derivation {
         binding_locals.insert(src, Place::Local(60));
         binding_locals.insert(dst, Place::Local(61));
 
-        let allowed =
-            derive_cow_sole_owner(&[block(instrs)], &owned, &binding_locals, &HashSet::new());
+        let allowed = derive_cow_sole_owner(
+            &[block(instrs)],
+            &owned,
+            &binding_locals,
+            &HashSet::new(),
+            &[],
+        );
         assert!(
             !allowed.contains(&src),
             "the move source is aliased out and must be excluded"

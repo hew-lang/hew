@@ -19,7 +19,6 @@ fn main() {
     println(a == c);
     println(a != c);
     println(a != b);
-
     let s1 = Circle(5);
     let s2 = Circle(5);
     let s3 = Square(5);

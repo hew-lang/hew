@@ -2564,7 +2564,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 );
                 Ok(dst)
             }
-            // WASM-TODO: record `.clone()` lowers to a real deep-copy thunk on
+            // WASM-TODO(#1451): record `.clone()` lowers to a real deep-copy thunk on
             // the native path (`__hew_record_clone_inplace_<R>`), but the
             // sandbox emitter has no record-clone opcode yet. It falls through
             // here to `emit_unsupported` (fail-closed marker), so a playground

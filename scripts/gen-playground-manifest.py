@@ -49,6 +49,7 @@ EXAMPLE_ORDER = {
         "stmt_if_let",
         "stmt_match",
         "string_interpolation",
+        "clone_value",
     ),
     "concurrency": (
         "actor_pipeline",
@@ -66,6 +67,9 @@ EXAMPLE_ORDER = {
         "while_loop",
         "wildcard_match",
         "match_guard",
+        "compound_assign",
+        "f64_nonfinite_render",
+        "f64_finite_render",
     ),
     "machines": ("traffic_light",),
     "types": (
@@ -74,6 +78,7 @@ EXAMPLE_ORDER = {
         "record_types",
         "wire_types",
         "structural_bounds",
+        "record_equality",
     ),
 }
 
@@ -155,6 +160,16 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     "language/while_loop": "runnable",
     "language/wildcard_match": "runnable",
     "language/match_guard": "runnable",
+    # Compound assignment (+=, -=, *=, /=, %=) for i64 and f64.
+    "language/compound_assign": "runnable",
+    # Non-finite f64 rendering: inf, -inf, nan match native printf %g.
+    "language/f64_nonfinite_render": "runnable",
+    # Finite f64 rendering: negative zero, %g thresholds, 6-sig-fig rounding.
+    "language/f64_finite_render": "runnable",
+    # basics/clone_value: `clone expr` produces an independent deep copy.
+    "basics/clone_value": "runnable",
+    # types/record_equality: structural == / != on records and payload enums.
+    "types/record_equality": "runnable",
 }
 
 # Entries omitted from WASI_CAPABILITY default to "runnable".

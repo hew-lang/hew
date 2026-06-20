@@ -7,7 +7,6 @@ fn main() {
     println(a);
     println(b);
     println(a == b);
-
     let xs = [1, 2, 3];
     let ys = clone xs;
     xs.push(4);

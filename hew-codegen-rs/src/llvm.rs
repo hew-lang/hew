@@ -91,8 +91,8 @@ use inkwell::types::{
     BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FloatType, FunctionType, IntType, StructType,
 };
 use inkwell::values::{
-    BasicMetadataValueEnum, BasicValueEnum, FunctionValue, GlobalValue, IntValue, PointerValue,
-    StructValue,
+    BasicMetadataValueEnum, BasicValueEnum, CallSiteValue, FunctionValue, GlobalValue, IntValue,
+    PointerValue, StructValue,
 };
 use inkwell::AddressSpace;
 use inkwell::{FloatPredicate, IntPredicate};
@@ -2709,6 +2709,93 @@ fn intern_runtime_decl<'ctx>(
     let fv = llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External));
     decls.insert(symbol.to_string(), fv);
     Ok(fv)
+}
+
+impl<'a, 'ctx> FnCtx<'a, 'ctx> {
+    /// Declare-then-call the runtime symbol `sym`, returning the raw
+    /// `CallSiteValue`. This is the single seam that collapses the canonical
+    /// runtime-call idiom
+    /// (`intern_runtime_decl` → `build_call` → `llvm_ctx`) restated by hand at
+    /// ~160 sites. `name` is the `build_call` SSA-value name — inkwell embeds it
+    /// verbatim into the IR, so it MUST be threaded per-site (never derived from
+    /// `sym`, which diverges the `.ll`). `err_ctx` is the `llvm_ctx` context for
+    /// the LLVM-error path, also preserved per-site.
+    ///
+    /// Void-returning calls use this directly (or `call_runtime_void`); the
+    /// typed variants (`call_runtime_basic`/`_int`/`_ptr`) layer the
+    /// fail-closed "returned void" unwrap so that guard lives in ONE place.
+    fn call_runtime(
+        &self,
+        sym: &str,
+        args: &[BasicMetadataValueEnum<'ctx>],
+        name: &str,
+        err_ctx: &'static str,
+    ) -> CodegenResult<CallSiteValue<'ctx>> {
+        let callee = intern_runtime_decl(
+            self.ctx,
+            self.llvm_mod,
+            &mut self.runtime_decls.borrow_mut(),
+            sym,
+        )?;
+        self.builder
+            .build_call(callee, args, name)
+            .llvm_ctx(err_ctx)
+    }
+
+    /// Declare-then-call a void-returning runtime symbol, discarding the result.
+    fn call_runtime_void(
+        &self,
+        sym: &str,
+        args: &[BasicMetadataValueEnum<'ctx>],
+        name: &str,
+        err_ctx: &'static str,
+    ) -> CodegenResult<()> {
+        self.call_runtime(sym, args, name, err_ctx)?;
+        Ok(())
+    }
+
+    /// Declare-then-call a value-returning runtime symbol and extract its basic
+    /// value, failing closed if the runtime fn returned void. This is the single
+    /// authority for the "typed runtime call returned void" fail-closed guard
+    /// that was hand-copied at every value-returning site.
+    fn call_runtime_basic(
+        &self,
+        sym: &str,
+        args: &[BasicMetadataValueEnum<'ctx>],
+        name: &str,
+        err_ctx: &'static str,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
+        self.call_runtime(sym, args, name, err_ctx)?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed(format!("{sym} returned void")))
+    }
+
+    /// `call_runtime_basic` + `.into_int_value()`.
+    fn call_runtime_int(
+        &self,
+        sym: &str,
+        args: &[BasicMetadataValueEnum<'ctx>],
+        name: &str,
+        err_ctx: &'static str,
+    ) -> CodegenResult<IntValue<'ctx>> {
+        Ok(self
+            .call_runtime_basic(sym, args, name, err_ctx)?
+            .into_int_value())
+    }
+
+    /// `call_runtime_basic` + `.into_pointer_value()`.
+    fn call_runtime_ptr(
+        &self,
+        sym: &str,
+        args: &[BasicMetadataValueEnum<'ctx>],
+        name: &str,
+        err_ctx: &'static str,
+    ) -> CodegenResult<PointerValue<'ctx>> {
+        Ok(self
+            .call_runtime_basic(sym, args, name, err_ctx)?
+            .into_pointer_value())
+    }
 }
 
 fn fn_type_for_return<'ctx>(
@@ -6196,20 +6283,12 @@ fn emit_wasm_actor_metadata_registration<'ctx>(
             .llvm_ctx("actor metadata field store")?;
     }
 
-    let register = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    fn_ctx.call_runtime_void(
         "hew_wasm_register_actor_meta",
+        &[actor_meta_slot.into()],
+        "hew_wasm_register_actor_meta_call",
+        "hew_wasm_register_actor_meta call",
     )?;
-    fn_ctx
-        .builder
-        .build_call(
-            register,
-            &[actor_meta_slot.into()],
-            "hew_wasm_register_actor_meta_call",
-        )
-        .llvm_ctx("hew_wasm_register_actor_meta call")?;
     Ok(())
 }
 
@@ -6236,20 +6315,12 @@ fn emit_native_actor_metadata_registration<'ctx>(
     )?;
     let dispatch_ptr = dispatch.as_global_value().as_pointer_value();
 
-    let register_type = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    fn_ctx.call_runtime_void(
         "hew_actor_register_type",
+        &[dispatch_ptr.into(), actor_name_ptr.into()],
+        "hew_actor_register_type_call",
+        "hew_actor_register_type call",
     )?;
-    fn_ctx
-        .builder
-        .build_call(
-            register_type,
-            &[dispatch_ptr.into(), actor_name_ptr.into()],
-            "hew_actor_register_type_call",
-        )
-        .llvm_ctx("hew_actor_register_type call")?;
 
     if layout.handlers.is_empty() {
         return Ok(());
@@ -6394,35 +6465,19 @@ fn emit_actor_state_clone_drop_registration<'ctx>(
     let clone_fn_ptr = lookup_or_declare_state_clone_fn(fn_ctx.ctx, fn_ctx.llvm_mod, clone_sym);
     let drop_fn_ptr = lookup_or_declare_state_drop_fn(fn_ctx.ctx, fn_ctx.llvm_mod, drop_sym);
 
-    let set_drop = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    fn_ctx.call_runtime_void(
         "hew_actor_set_state_drop",
+        &[spawned.into(), drop_fn_ptr.into()],
+        "hew_actor_set_state_drop_call",
+        "hew_actor_set_state_drop call",
     )?;
-    fn_ctx
-        .builder
-        .build_call(
-            set_drop,
-            &[spawned.into(), drop_fn_ptr.into()],
-            "hew_actor_set_state_drop_call",
-        )
-        .llvm_ctx("hew_actor_set_state_drop call")?;
 
-    let set_clone = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    fn_ctx.call_runtime_void(
         "hew_actor_set_state_clone",
+        &[spawned.into(), clone_fn_ptr.into()],
+        "hew_actor_set_state_clone_call",
+        "hew_actor_set_state_clone call",
     )?;
-    fn_ctx
-        .builder
-        .build_call(
-            set_clone,
-            &[spawned.into(), clone_fn_ptr.into()],
-            "hew_actor_set_state_clone_call",
-        )
-        .llvm_ctx("hew_actor_set_state_clone call")?;
 
     Ok(())
 }
@@ -6467,16 +6522,12 @@ fn emit_spawn_actor(
                 "spawn `{actor_name}` requires dispatch trampoline `{dispatch_name}`"
             ))
         })?;
-    let sched_init = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    fn_ctx.call_runtime_void(
         "hew_sched_init",
+        &[],
+        "hew_sched_init_call",
+        "hew_sched_init call",
     )?;
-    fn_ctx
-        .builder
-        .build_call(sched_init, &[], "hew_sched_init_call")
-        .llvm_ctx("hew_sched_init call")?;
     emit_wasm_actor_metadata_registration(fn_ctx, actor_name)?;
     emit_native_actor_metadata_registration(fn_ctx, actor_name, dispatch)?;
 
@@ -6540,32 +6591,14 @@ fn emit_spawn_actor(
                 .build_store(gep, value)
                 .llvm_ctx_with(|| format!("HewActorOpts store field {field_idx}"))?;
         }
-        let spawn_opts_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
+        fn_ctx.call_runtime_ptr(
             "hew_actor_spawn_opts",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                spawn_opts_fn,
-                &[opts_slot.into()],
-                "hew_actor_spawn_opts_call",
-            )
-            .llvm_ctx("hew_actor_spawn_opts call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_actor_spawn_opts returned void".into()))?
-            .into_pointer_value()
+            &[opts_slot.into()],
+            "hew_actor_spawn_opts_call",
+            "hew_actor_spawn_opts call",
+        )?
     } else {
         // No arena cap — use the lighter 3-arg `hew_actor_spawn` path.
-        let spawn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_actor_spawn",
-        )?;
         // `state_size` is built as i64; `hew_actor_spawn`'s `state_size`
         // param is `usize`/`size_t` (i32 on wasm32). Reconcile the value to
         // the target-correct width so the call matches the declaration.
@@ -6576,22 +6609,16 @@ fn emit_spawn_actor(
             size_ty.into(),
             "spawn state_size",
         )?;
-        fn_ctx
-            .builder
-            .build_call(
-                spawn,
-                &[
-                    state_ptr.into(),
-                    spawn_state_size.into(),
-                    dispatch.as_global_value().as_pointer_value().into(),
-                ],
-                "hew_actor_spawn_call",
-            )
-            .llvm_ctx("hew_actor_spawn call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_actor_spawn returned void".into()))?
-            .into_pointer_value()
+        fn_ctx.call_runtime_ptr(
+            "hew_actor_spawn",
+            &[
+                state_ptr.into(),
+                spawn_state_size.into(),
+                dispatch.as_global_value().as_pointer_value().into(),
+            ],
+            "hew_actor_spawn_call",
+            "hew_actor_spawn call",
+        )?
     };
 
     // W2.002 Stage 2: register state_clone + state_drop on the freshly
@@ -14260,24 +14287,12 @@ fn lower_instruction(
                     .build_load(lhs_ty, rhs_ptr, "string_cmp_rhs")
                     .llvm_ctx("string cmp rhs load")?
                     .into_pointer_value();
-                let callee = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                let eq_i32 = fn_ctx.call_runtime_int(
                     "hew_string_equals",
+                    &[lhs_v.into(), rhs_v.into()],
+                    "hew_string_equals",
+                    "hew_string_equals call",
                 )?;
-                let eq_i32 = fn_ctx
-                    .builder
-                    .build_call(callee, &[lhs_v.into(), rhs_v.into()], "hew_string_equals")
-                    .llvm_ctx("hew_string_equals call")?
-                    .try_as_basic_value()
-                    .basic()
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed(
-                            "hew_string_equals unexpectedly returned void".into(),
-                        )
-                    })?
-                    .into_int_value();
                 let zero = eq_i32.get_type().const_zero();
                 let predicate = if *pred == CmpPred::Eq {
                     IntPredicate::NE
@@ -28885,16 +28900,12 @@ fn emit_suspending_read_terminator<'ctx>(
         .build_call(slot_free, &[slot.into()], "suspending_read_err_free")
         .llvm_ctx("hew_read_slot_free (register err) call")?;
     if let Some(reg) = reg {
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
+        fn_ctx.call_runtime_void(
             "hew_await_cancel_free",
+            &[reg.into()],
+            "suspending_read_err_reg_free",
+            "hew_await_cancel_free (register err) call",
         )?;
-        fn_ctx
-            .builder
-            .build_call(reg_free, &[reg.into()], "suspending_read_err_reg_free")
-            .llvm_ctx("hew_await_cancel_free (register err) call")?;
     }
     if let (Some(result_dest), Some(error_dest)) = (term.deadline_result_dest, term.error_dest) {
         emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
@@ -52338,6 +52349,87 @@ mod tests {
             .unwrap();
         assert_eq!(out, 42);
         assert!(!called.get(), "lazy closure must not run on Ok");
+    }
+
+    // ── FnCtx::call_runtime* typed-unwrap tests ──────────────────────────────
+    //
+    // Pin the single fail-closed "returned void" guard that the typed helpers
+    // (`call_runtime_basic`/`_int`/`_ptr`) collapse from ~189 hand-copies: a
+    // typed helper over a void-returning runtime symbol must return
+    // `Err(FailClosed("<sym> returned void"))` — the EXACT string the
+    // hand-written sites used — and a typed helper over a value-returning symbol
+    // must return the extracted value, never a panic or a silent zero.
+
+    #[test]
+    fn call_runtime_int_extracts_value_from_typed_symbol() {
+        let ctx = Context::create();
+        let m = ctx.create_module("call_runtime_int_test");
+        let harness = build_harness(&ctx, &[], &[]);
+        let fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "call_runtime_int_fn");
+
+        // `hew_vec_len(ptr) -> i64` is a real value-returning runtime symbol.
+        let null_ptr = ctx.ptr_type(AddressSpace::default()).const_null();
+        let len = fn_ctx
+            .call_runtime_int(
+                "hew_vec_len",
+                &[null_ptr.into()],
+                "hew_vec_len_call",
+                "hew_vec_len call",
+            )
+            .expect("call_runtime_int over a typed symbol returns Ok");
+        // The extracted value is the i64 SSA result of the call.
+        assert_eq!(len.get_type(), ctx.i64_type());
+        finish_test_fn(&fn_ctx);
+        m.verify().expect("module verifies");
+    }
+
+    #[test]
+    fn call_runtime_basic_fails_closed_on_void_with_exact_message() {
+        let ctx = Context::create();
+        let m = ctx.create_module("call_runtime_void_test");
+        let harness = build_harness(&ctx, &[], &[]);
+        let fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "call_runtime_void_fn");
+
+        // `hew_task_complete_threaded(ptr) -> void` is a real void runtime
+        // symbol. A typed unwrap over it MUST fail closed.
+        let null_ptr = ctx.ptr_type(AddressSpace::default()).const_null();
+        let err = fn_ctx
+            .call_runtime_basic(
+                "hew_task_complete_threaded",
+                &[null_ptr.into()],
+                "hew_task_complete_threaded_call",
+                "hew_task_complete_threaded call",
+            )
+            .expect_err("typed unwrap over a void symbol must fail closed");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert_eq!(msg, "hew_task_complete_threaded returned void");
+            }
+            other => panic!("expected FailClosed; got {other:?}"),
+        }
+        // The void call still emitted (declare + call), so the body verifies.
+        finish_test_fn(&fn_ctx);
+        m.verify().expect("module verifies");
+    }
+
+    #[test]
+    fn call_runtime_void_discards_result() {
+        let ctx = Context::create();
+        let m = ctx.create_module("call_runtime_void_discard_test");
+        let harness = build_harness(&ctx, &[], &[]);
+        let fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "call_runtime_void_discard_fn");
+
+        let null_ptr = ctx.ptr_type(AddressSpace::default()).const_null();
+        fn_ctx
+            .call_runtime_void(
+                "hew_task_complete_threaded",
+                &[null_ptr.into()],
+                "hew_task_complete_threaded_call",
+                "hew_task_complete_threaded call",
+            )
+            .expect("call_runtime_void over a void symbol returns Ok(())");
+        finish_test_fn(&fn_ctx);
+        m.verify().expect("module verifies");
     }
 
     // ── Actor-drain epilogue gate tests ──────────────────────────────────────

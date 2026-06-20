@@ -22271,18 +22271,14 @@ fn lower_call_runtime_abi(
             // kind at this seam (fail-closed; not a silent shim).
             let out_a = duplex_handle_out_addr(fn_ctx, args[2], "hew_duplex_pair arg2")?;
             let out_b = duplex_handle_out_addr(fn_ctx, args[3], "hew_duplex_pair arg3")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
             let llvm_args: [BasicMetadataValueEnum; 4] =
                 [cap0.into(), cap1.into(), out_a.into(), out_b.into()];
-            fn_ctx
-                .builder
-                .build_call(fv, &llvm_args, "hew_duplex_pair_call")
-                .llvm_ctx("hew_duplex_pair call")?;
+            fn_ctx.call_runtime_void(
+                symbol,
+                &llvm_args,
+                "hew_duplex_pair_call",
+                "hew_duplex_pair call",
+            )?;
             // Producer emits dest: None — i32 return is discarded.
             // Defence in depth: if a future producer ever wires a
             // dest, fail-closed rather than silently dropping it.
@@ -22315,18 +22311,14 @@ fn lower_call_runtime_abi(
             // arg2: byte length. Producer emits `ConstI64 { value: 8 }`
             // into this local; load it as i64 (== usize on 64-bit).
             let len = load_int_arg(fn_ctx, args[2], i64_ty, "duplex_send_len")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
             let llvm_args: [BasicMetadataValueEnum; 3] =
                 [handle.into(), msg_ptr.into(), len.into()];
-            let call_site = fn_ctx
-                .builder
-                .build_call(fv, &llvm_args, "hew_duplex_send_call")
-                .llvm_ctx("hew_duplex_send call")?;
+            let call_site = fn_ctx.call_runtime(
+                symbol,
+                &llvm_args,
+                "hew_duplex_send_call",
+                "hew_duplex_send call",
+            )?;
             // Statement context (dest=None) discards the rc — fire-and-forget
             // delivery. Value context materializes `Result<(), SendError>` from
             // the i32 status through the single D1 mapping authority.
@@ -22368,18 +22360,14 @@ fn lower_call_runtime_abi(
             }
             let handle = load_duplex_handle(fn_ctx, args[0], "hew_lambda_actor_send arg0")?;
             let (msg_ptr, len) = lambda_msg_ptr_len(fn_ctx, args[1], args[2], "lambda_send_msg")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
             let llvm_args: [BasicMetadataValueEnum; 3] =
                 [handle.into(), msg_ptr.into(), len.into()];
-            let call_site = fn_ctx
-                .builder
-                .build_call(fv, &llvm_args, "hew_lambda_actor_send_call")
-                .llvm_ctx("hew_lambda_actor_send call")?;
+            let call_site = fn_ctx.call_runtime(
+                symbol,
+                &llvm_args,
+                "hew_lambda_actor_send_call",
+                "hew_lambda_actor_send call",
+            )?;
             // Statement context (dest=None) discards the rc — fire-and-forget
             // delivery. Value context materializes `Result<(), SendError>` from
             // the i32 status through the single D1 mapping authority (shared
@@ -22425,12 +22413,6 @@ fn lower_call_runtime_abi(
             // materialises `Result::Err(AskError::<variant>)` through this
             // local via `emit_result_err`. NOT passed to the runtime call.
             let error_dest = args[5];
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
             let llvm_args: [BasicMetadataValueEnum; 5] = [
                 handle.into(),
                 msg_ptr.into(),
@@ -22447,10 +22429,12 @@ fn lower_call_runtime_abi(
             // status: Ok → reply-decode; Err → materialise
             // `Result::Err(AskError::<variant>)` without touching the
             // null reply pointer. (Security review fix 2026-06-08.)
-            let call_site = fn_ctx
-                .builder
-                .build_call(fv, &llvm_args, "hew_lambda_actor_ask_call")
-                .llvm_ctx("hew_lambda_actor_ask call")?;
+            let call_site = fn_ctx.call_runtime(
+                symbol,
+                &llvm_args,
+                "hew_lambda_actor_ask_call",
+                "hew_lambda_actor_ask call",
+            )?;
             if let Some(d) = dest {
                 let status_val = call_site
                     .try_as_basic_value()
@@ -22877,16 +22861,12 @@ fn lower_call_runtime_abi(
                 )));
             }
             let handle = load_duplex_handle(fn_ctx, args[0], "hew_lambda_actor_release arg0")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            fn_ctx.call_runtime_void(
                 symbol,
+                &[handle.into()],
+                "hew_lambda_actor_release_call",
+                "hew_lambda_actor_release call",
             )?;
-            fn_ctx
-                .builder
-                .build_call(fv, &[handle.into()], "hew_lambda_actor_release_call")
-                .llvm_ctx("hew_lambda_actor_release call")?;
             if let Some(d) = dest {
                 return Err(CodegenError::FailClosed(format!(
                     "hew_lambda_actor_release returns i32 (discarded); \
@@ -22944,20 +22924,12 @@ fn lower_call_runtime_abi(
                 )
             })?;
             let (triple_ptr, _triple_ty) = place_pointer(fn_ctx, args[0])?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let len_val = fn_ctx.call_runtime_basic(
                 symbol,
+                &[triple_ptr.into()],
+                "hew_bytes_len_call",
+                "hew_bytes_len call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[triple_ptr.into()], "hew_bytes_len_call")
-                .llvm_ctx("hew_bytes_len call")?;
-            let len_val = call
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_bytes_len returned void".into()))?;
             let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
             fn_ctx
                 .builder
@@ -23071,20 +23043,12 @@ fn lower_call_runtime_abi(
             let (bytes_slot, _bytes_ty) = place_pointer(fn_ctx, args[0])?;
             // The byte param is now typed u8 (i8 in LLVM); load directly as i8.
             let byte_i8 = load_int_arg(fn_ctx, args[1], i8_ty, "hew_bytes_push byte")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            fn_ctx.call_runtime_void(
                 symbol,
+                &[bytes_slot.into(), byte_i8.into()],
+                "hew_bytes_push_call",
+                "hew_bytes_push call",
             )?;
-            fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[bytes_slot.into(), byte_i8.into()],
-                    "hew_bytes_push_call",
-                )
-                .llvm_ctx("hew_bytes_push call")?;
             if let Some(d) = dest {
                 return Err(CodegenError::FailClosed(format!(
                     "hew_bytes_push returns void; producer must not supply dest={d:?}"
@@ -23161,30 +23125,17 @@ fn lower_call_runtime_abi(
                 .llvm_ctx("hew_bytes_index len load")?
                 .into_int_value();
             let index_val = load_int_arg(fn_ctx, args[1], i64_ty, "hew_bytes_index index")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let byte_val = fn_ctx.call_runtime_int(
                 symbol,
+                &[
+                    data_ptr.into(),
+                    offset_val.into(),
+                    len_val.into(),
+                    index_val.into(),
+                ],
+                "hew_bytes_index_call",
+                "hew_bytes_index call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[
-                        data_ptr.into(),
-                        offset_val.into(),
-                        len_val.into(),
-                        index_val.into(),
-                    ],
-                    "hew_bytes_index_call",
-                )
-                .llvm_ctx("hew_bytes_index call")?;
-            let byte_val = call
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_bytes_index returned void".into()))?
-                .into_int_value();
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
             let BasicTypeEnum::IntType(dest_int_ty) = dest_ty else {
                 return Err(CodegenError::FailClosed(format!(
@@ -23237,17 +23188,13 @@ fn lower_call_runtime_abi(
             let parent = load_duplex_handle(fn_ctx, args[0], "link_parent")?;
             // arg1: child actor handle (opaque ptr).
             let child = load_duplex_handle(fn_ctx, args[1], "link_child")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
             let llvm_args: [BasicMetadataValueEnum; 2] = [parent.into(), child.into()];
-            fn_ctx
-                .builder
-                .build_call(fv, &llvm_args, "hew_actor_link_call")
-                .llvm_ctx("hew_actor_link call")?;
+            fn_ctx.call_runtime_void(
+                symbol,
+                &llvm_args,
+                "hew_actor_link_call",
+                "hew_actor_link call",
+            )?;
             // SHIM(B3→Cluster2): `link()` returns Result<(), LinkError>.
             // Composite-type construction is not yet available in the Cluster 1
             // spine. Until the Cluster 2 spine lands, producers must not wire a
@@ -23273,17 +23220,13 @@ fn lower_call_runtime_abi(
             let watcher = load_duplex_handle(fn_ctx, args[0], "monitor_watcher")?;
             // arg1: target actor handle (opaque ptr).
             let target = load_duplex_handle(fn_ctx, args[1], "monitor_target")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
             let llvm_args: [BasicMetadataValueEnum; 2] = [watcher.into(), target.into()];
-            fn_ctx
-                .builder
-                .build_call(fv, &llvm_args, "hew_actor_monitor_call")
-                .llvm_ctx("hew_actor_monitor call")?;
+            fn_ctx.call_runtime_void(
+                symbol,
+                &llvm_args,
+                "hew_actor_monitor_call",
+                "hew_actor_monitor call",
+            )?;
             // SHIM(B3→Cluster2): `monitor()` returns MonitorRef { ref_id: i64 }.
             // Struct-literal construction requires the Cluster 2 spine.
             // Producers must not wire a dest until that lands.
@@ -23328,22 +23271,12 @@ fn lower_call_runtime_abi(
                     )));
                 }
             }
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let self_ptr = fn_ctx.call_runtime_ptr(
                 symbol,
+                &[],
+                "hew_actor_self_call",
+                "hew_actor_self call",
             )?;
-            let self_ptr = fn_ctx
-                .builder
-                .build_call(fv, &[], "hew_actor_self_call")
-                .llvm_ctx("hew_actor_self call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("hew_actor_self returned void".into())
-                })?
-                .into_pointer_value();
             fn_ctx
                 .builder
                 .build_store(dest_ptr, self_ptr)
@@ -23363,16 +23296,12 @@ fn lower_call_runtime_abi(
                 )));
             }
             let sup_ptr = load_duplex_handle(fn_ctx, args[0], "supervisor_stop_arg0")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            fn_ctx.call_runtime_void(
                 symbol,
+                &[sup_ptr.into()],
+                "hew_supervisor_stop_call",
+                "hew_supervisor_stop call",
             )?;
-            fn_ctx
-                .builder
-                .build_call(fv, &[sup_ptr.into()], "hew_supervisor_stop_call")
-                .llvm_ctx("hew_supervisor_stop call")?;
             // Void return — producer supplies dest: None; fail-closed if not.
             if let Some(d) = dest {
                 return Err(CodegenError::FailClosed(format!(
@@ -23425,19 +23354,12 @@ fn lower_call_runtime_abi(
             // Checker-authority: branch on `args[0]`'s `ResolvedTy::Bytes`.
             if matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
                 let (triple_ptr, _triple_ty) = place_pointer(fn_ctx, args[0])?;
-                let fv = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                let len_val = fn_ctx.call_runtime_basic(
                     "hew_bytes_len",
+                    &[triple_ptr.into()],
+                    "hew_bytes_len_call",
+                    "hew_bytes_len call",
                 )?;
-                let call = fn_ctx
-                    .builder
-                    .build_call(fv, &[triple_ptr.into()], "hew_bytes_len_call")
-                    .llvm_ctx("hew_bytes_len call")?;
-                let len_val = call.try_as_basic_value().basic().ok_or_else(|| {
-                    CodegenError::FailClosed("hew_bytes_len returned void".into())
-                })?;
                 fn_ctx
                     .builder
                     .build_store(dest_ptr, len_val)
@@ -23446,20 +23368,12 @@ fn lower_call_runtime_abi(
                 return Ok(());
             }
             let vec_ptr = load_duplex_handle(fn_ctx, args[0], "hew_vec_len arg0")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let len_val = fn_ctx.call_runtime_basic(
                 symbol,
+                &[vec_ptr.into()],
+                "hew_vec_len_call",
+                "hew_vec_len call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[vec_ptr.into()], "hew_vec_len_call")
-                .llvm_ctx("hew_vec_len call")?;
-            let len_val = call
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_vec_len returned void".into()))?;
             fn_ctx
                 .builder
                 .build_store(dest_ptr, len_val)
@@ -23723,23 +23637,12 @@ fn lower_call_runtime_abi(
             }
             let lhs_ptr = load_duplex_handle(fn_ctx, args[0], "hew_string_concat arg0")?;
             let rhs_ptr = load_duplex_handle(fn_ctx, args[1], "hew_string_concat arg1")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let result_val = fn_ctx.call_runtime_basic(
                 symbol,
+                &[lhs_ptr.into(), rhs_ptr.into()],
+                "hew_string_concat_call",
+                "hew_string_concat call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[lhs_ptr.into(), rhs_ptr.into()],
-                    "hew_string_concat_call",
-                )
-                .llvm_ctx("hew_string_concat call")?;
-            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
-                CodegenError::FailClosed("hew_string_concat returned void".into())
-            })?;
             let dest_place = dest.ok_or_else(|| {
                 CodegenError::FailClosed(
                     "hew_string_concat: producer must supply a dest place".into(),
@@ -23760,19 +23663,12 @@ fn lower_call_runtime_abi(
                 )));
             }
             let name_ptr = load_duplex_handle(fn_ctx, args[0], "hew_observe_read_u64 arg0")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let result_val = fn_ctx.call_runtime_basic(
                 symbol,
+                &[name_ptr.into()],
+                "hew_observe_read_u64_call",
+                "hew_observe_read_u64 call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[name_ptr.into()], "hew_observe_read_u64_call")
-                .llvm_ctx("hew_observe_read_u64 call")?;
-            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
-                CodegenError::FailClosed("hew_observe_read_u64 returned void".into())
-            })?;
             if let Some(dest_place) = dest {
                 let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
                 fn_ctx
@@ -23783,17 +23679,15 @@ fn lower_call_runtime_abi(
             let _ = i32_ty;
         }
         F::ObserveScrape | F::ObserveSeries => {
-            let (call_name, call_ctx, returned_void_ctx, store_ctx) = match symbol {
+            let (call_name, call_ctx, store_ctx) = match symbol {
                 "hew_observe_scrape" => (
                     "hew_observe_scrape_call",
                     "hew_observe_scrape call",
-                    "hew_observe_scrape returned void",
                     "hew_observe_scrape store",
                 ),
                 "hew_observe_series" => (
                     "hew_observe_series_call",
                     "hew_observe_series call",
-                    "hew_observe_series returned void",
                     "hew_observe_series store",
                 ),
                 _ => unreachable!("observe ABI branch only matches scrape/series"),
@@ -23804,20 +23698,7 @@ fn lower_call_runtime_abi(
                     args.len()
                 )));
             }
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[], call_name)
-                .llvm_ctx(call_ctx)?;
-            let result_val = call
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed(returned_void_ctx.into()))?;
+            let result_val = fn_ctx.call_runtime_basic(symbol, &[], call_name, call_ctx)?;
             if let Some(dest_place) = dest {
                 let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
                 fn_ctx
@@ -23834,19 +23715,12 @@ fn lower_call_runtime_abi(
                     args.len()
                 )));
             }
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let result_val = fn_ctx.call_runtime_basic(
                 symbol,
+                &[],
+                "hew_observe_barrier_call",
+                "hew_observe_barrier call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[], "hew_observe_barrier_call")
-                .llvm_ctx("hew_observe_barrier call")?;
-            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
-                CodegenError::FailClosed("hew_observe_barrier returned void".into())
-            })?;
             if let Some(dest_place) = dest {
                 let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
                 fn_ctx
@@ -23870,19 +23744,12 @@ fn lower_call_runtime_abi(
                 )));
             }
             let name_ptr = load_duplex_handle(fn_ctx, args[0], "metric register name")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let result_val = fn_ctx.call_runtime_basic(
                 symbol,
+                &[name_ptr.into()],
+                "metric_register_call",
+                "metric register call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[name_ptr.into()], "metric_register_call")
-                .llvm_ctx("metric register call")?;
-            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
-                CodegenError::FailClosed(format!("{symbol} returned void"))
-            })?;
             if let Some(dest_place) = dest {
                 let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
                 fn_ctx
@@ -23900,16 +23767,12 @@ fn lower_call_runtime_abi(
                 )));
             }
             let handle = load_int_arg(fn_ctx, args[0], i64_ty, "metric mutate handle")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            fn_ctx.call_runtime_void(
                 symbol,
+                &[handle.into()],
+                "metric_mutate_call",
+                "metric mutate call",
             )?;
-            fn_ctx
-                .builder
-                .build_call(fv, &[handle.into()], "metric_mutate_call")
-                .llvm_ctx("metric mutate call")?;
             let _ = i32_ty;
         }
         F::MetricCounterAdd | F::MetricGaugeSet | F::MetricGaugeAdd => {
@@ -23921,16 +23784,12 @@ fn lower_call_runtime_abi(
             }
             let handle = load_int_arg(fn_ctx, args[0], i64_ty, "metric mutate handle")?;
             let n = load_int_arg(fn_ctx, args[1], i64_ty, "metric mutate value")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            fn_ctx.call_runtime_void(
                 symbol,
+                &[handle.into(), n.into()],
+                "metric_mutate2_call",
+                "metric mutate2 call",
             )?;
-            fn_ctx
-                .builder
-                .build_call(fv, &[handle.into(), n.into()], "metric_mutate2_call")
-                .llvm_ctx("metric mutate2 call")?;
             let _ = i32_ty;
         }
         F::MetricHistogramRecord => {
@@ -23942,16 +23801,12 @@ fn lower_call_runtime_abi(
             }
             let handle = load_int_arg(fn_ctx, args[0], i64_ty, "histogram record handle")?;
             let value = load_math_f64_arg(fn_ctx, args[1], "histogram record value", symbol)?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            fn_ctx.call_runtime_void(
                 symbol,
+                &[handle.into(), value.into()],
+                "histogram_record_call",
+                "histogram record call",
             )?;
-            fn_ctx
-                .builder
-                .build_call(fv, &[handle.into(), value.into()], "histogram_record_call")
-                .llvm_ctx("histogram record call")?;
             let _ = i32_ty;
         }
         F::StringCharCount => {
@@ -23962,19 +23817,12 @@ fn lower_call_runtime_abi(
                 )));
             }
             let s_ptr = load_duplex_handle(fn_ctx, args[0], "hew_string_char_count arg0")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let result_val = fn_ctx.call_runtime_basic(
                 symbol,
+                &[s_ptr.into()],
+                "hew_string_char_count_call",
+                "hew_string_char_count call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[s_ptr.into()], "hew_string_char_count_call")
-                .llvm_ctx("hew_string_char_count call")?;
-            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
-                CodegenError::FailClosed("hew_string_char_count returned void".into())
-            })?;
             if let Some(dest_place) = dest {
                 let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
                 fn_ctx
@@ -24097,20 +23945,12 @@ fn lower_call_runtime_abi(
             }
             let s_ptr = load_duplex_handle(fn_ctx, args[0], "hew_string_index arg0")?;
             let i_val = load_int_arg(fn_ctx, args[1], i64_ty, "hew_string_index arg1")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let result_val = fn_ctx.call_runtime_basic(
                 symbol,
+                &[s_ptr.into(), i_val.into()],
+                "hew_string_index_call",
+                "hew_string_index call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[s_ptr.into(), i_val.into()], "hew_string_index_call")
-                .llvm_ctx("hew_string_index call")?;
-            let result_val = call
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_string_index returned void".into()))?;
             let dest_place = dest.ok_or_else(|| {
                 CodegenError::FailClosed(
                     "hew_string_index: producer must supply a dest place".into(),
@@ -24138,23 +23978,12 @@ fn lower_call_runtime_abi(
                 load_int_arg(fn_ctx, args[1], i64_ty, "hew_string_slice_codepoints arg1")?;
             let end_val =
                 load_int_arg(fn_ctx, args[2], i64_ty, "hew_string_slice_codepoints arg2")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let result_val = fn_ctx.call_runtime_basic(
                 symbol,
+                &[s_ptr.into(), start_val.into(), end_val.into()],
+                "hew_string_slice_codepoints_call",
+                "hew_string_slice_codepoints call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[s_ptr.into(), start_val.into(), end_val.into()],
-                    "hew_string_slice_codepoints_call",
-                )
-                .llvm_ctx("hew_string_slice_codepoints call")?;
-            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
-                CodegenError::FailClosed("hew_string_slice_codepoints returned void".into())
-            })?;
             let dest_place = dest.ok_or_else(|| {
                 CodegenError::FailClosed(
                     "hew_string_slice_codepoints: producer must supply a dest place".into(),
@@ -24176,20 +24005,12 @@ fn lower_call_runtime_abi(
                     args.len()
                 )));
             }
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let task_ptr = fn_ctx.call_runtime_basic(
                 symbol,
+                &[],
+                "hew_task_new_call",
+                "hew_task_new call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[], "hew_task_new_call")
-                .llvm_ctx("hew_task_new call")?;
-            let task_ptr = call
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_task_new returned void".into()))?;
             let dest_place = dest.ok_or_else(|| {
                 CodegenError::FailClosed(
                     "hew_task_new: producer must supply a dest place for the task ptr".into(),
@@ -24209,19 +24030,12 @@ fn lower_call_runtime_abi(
                     args.len()
                 )));
             }
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let scope_ptr = fn_ctx.call_runtime_basic(
                 symbol,
+                &[],
+                "hew_task_scope_new_call",
+                "hew_task_scope_new call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[], "hew_task_scope_new_call")
-                .llvm_ctx("hew_task_scope_new call")?;
-            let scope_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
-                CodegenError::FailClosed("hew_task_scope_new returned void".into())
-            })?;
             let dest_place = dest.ok_or_else(|| {
                 CodegenError::FailClosed("hew_task_scope_new requires a dest".into())
             })?;
@@ -24240,16 +24054,12 @@ fn lower_call_runtime_abi(
                 )));
             }
             let scope_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_scope_set_current arg0")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let call = fn_ctx.call_runtime(
                 symbol,
+                &[scope_ptr.into()],
+                "hew_task_scope_set_current_call",
+                "hew_task_scope_set_current call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[scope_ptr.into()], "hew_task_scope_set_current_call")
-                .llvm_ctx("hew_task_scope_set_current call")?;
             if let Some(dest_place) = dest {
                 let prev = call.try_as_basic_value().basic().ok_or_else(|| {
                     CodegenError::FailClosed("hew_task_scope_set_current returned void".into())
@@ -24296,20 +24106,12 @@ fn lower_call_runtime_abi(
             }
             let scope_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_scope_spawn arg0")?;
             let task_ptr = load_duplex_handle(fn_ctx, args[1], "hew_task_scope_spawn arg1")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            fn_ctx.call_runtime_void(
                 symbol,
+                &[scope_ptr.into(), task_ptr.into()],
+                "hew_task_scope_spawn_call",
+                "hew_task_scope_spawn call",
             )?;
-            fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[scope_ptr.into(), task_ptr.into()],
-                    "hew_task_scope_spawn_call",
-                )
-                .llvm_ctx("hew_task_scope_spawn call")?;
             let _ = (i32_ty, ptr_ty);
         }
         F::TaskScopeCancelAfterNs => {
@@ -24327,20 +24129,12 @@ fn lower_call_runtime_abi(
                 i64_ty,
                 "hew_task_scope_cancel_after_ns duration",
             )?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            fn_ctx.call_runtime_void(
                 symbol,
+                &[scope_ptr.into(), nanos.into()],
+                "hew_task_scope_cancel_after_ns_call",
+                "hew_task_scope_cancel_after_ns call",
             )?;
-            fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[scope_ptr.into(), nanos.into()],
-                    "hew_task_scope_cancel_after_ns_call",
-                )
-                .llvm_ctx("hew_task_scope_cancel_after_ns call")?;
             let _ = (i32_ty, ptr_ty);
         }
         // hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void
@@ -24380,16 +24174,12 @@ fn lower_call_runtime_abi(
                 )));
             }
             let task_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_await_blocking arg0")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let call = fn_ctx.call_runtime(
                 symbol,
+                &[task_ptr.into()],
+                "hew_task_await_blocking_call",
+                "hew_task_await_blocking call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[task_ptr.into()], "hew_task_await_blocking_call")
-                .llvm_ctx("hew_task_await_blocking call")?;
             // Result pointer — optional; void-result tasks may pass dest: None.
             if let Some(dest_place) = dest {
                 let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
@@ -24415,19 +24205,12 @@ fn lower_call_runtime_abi(
                 )));
             }
             let task_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_get_result arg0")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let result_val = fn_ctx.call_runtime_basic(
                 symbol,
+                &[task_ptr.into()],
+                "hew_task_get_result_call",
+                "hew_task_get_result call",
             )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[task_ptr.into()], "hew_task_get_result_call")
-                .llvm_ctx("hew_task_get_result call")?;
-            let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
-                CodegenError::FailClosed("hew_task_get_result returned void".into())
-            })?;
             let dest_place = dest.ok_or_else(|| {
                 CodegenError::FailClosed(
                     "hew_task_get_result: producer must supply a dest place for the result ptr"
@@ -24451,16 +24234,12 @@ fn lower_call_runtime_abi(
                 )));
             }
             let task_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_free arg0")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            fn_ctx.call_runtime_void(
                 symbol,
+                &[task_ptr.into()],
+                "hew_task_free_call",
+                "hew_task_free call",
             )?;
-            fn_ctx
-                .builder
-                .build_call(fv, &[task_ptr.into()], "hew_task_free_call")
-                .llvm_ctx("hew_task_free call")?;
             if let Some(d) = dest {
                 return Err(CodegenError::FailClosed(format!(
                     "hew_task_free returns void; producer must not supply dest={d:?}"
@@ -24676,21 +24455,13 @@ fn lower_call_runtime_abi(
                 .llvm_ctx("hew_regex_match handle load")?
                 .into_pointer_value();
             // Call hew_regex_match(handle, text) -> i32.
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
             let llvm_args: [BasicMetadataValueEnum; 2] = [handle.into(), text_ptr.into()];
-            let call_site = fn_ctx
-                .builder
-                .build_call(fv, &llvm_args, "hew_regex_match_call")
-                .llvm_ctx("hew_regex_match call")?;
-            let result_i32 = call_site
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_regex_match returned void".into()))?;
+            let result_i32 = fn_ctx.call_runtime_basic(
+                symbol,
+                &llvm_args,
+                "hew_regex_match_call",
+                "hew_regex_match call",
+            )?;
             // Store i32 into dest.
             let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
             fn_ctx
@@ -24762,23 +24533,14 @@ fn lower_call_runtime_abi(
             // arg2: capture_idx — i64.
             let cap_idx = load_int_arg(fn_ctx, args[2], i64_ty, "hew_regex_capture cap_idx")?;
             // Call hew_regex_capture(handle, text, cap_idx) -> *mut c_char.
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
             let llvm_args: [BasicMetadataValueEnum; 3] =
                 [handle.into(), text_ptr.into(), cap_idx.into()];
-            let call_site = fn_ctx
-                .builder
-                .build_call(fv, &llvm_args, "hew_regex_capture_call")
-                .llvm_ctx("hew_regex_capture call")?;
-            let cap_ptr = call_site
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_regex_capture returned void".into()))?
-                .into_pointer_value();
+            let cap_ptr = fn_ctx.call_runtime_ptr(
+                symbol,
+                &llvm_args,
+                "hew_regex_capture_call",
+                "hew_regex_capture call",
+            )?;
             // Convert *mut c_char → i64 (ptrtoint) so the capture place (ResolvedTy::I64)
             // receives the pointer bit-pattern. The MIR null-check (IntCmp Eq 0) fires on
             // null return (group did not participate → branch to next arm, fail-closed).
@@ -24817,16 +24579,12 @@ fn lower_call_runtime_abi(
                 .builder
                 .build_int_to_ptr(cap_as_i64, ptr_ty, "hew_regex_free_cap_ptr")
                 .llvm_ctx("hew_regex_free_capture inttoptr")?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            fn_ctx.call_runtime_void(
                 symbol,
+                &[cap_ptr.into()],
+                "hew_regex_free_capture_call",
+                "hew_regex_free_capture call",
             )?;
-            fn_ctx
-                .builder
-                .build_call(fv, &[cap_ptr.into()], "hew_regex_free_capture_call")
-                .llvm_ctx("hew_regex_free_capture call")?;
         }
 
         // Allowlisted but not wired (no codegen lowering arm yet), plus the

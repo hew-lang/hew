@@ -19,17 +19,21 @@
 //!   returns scribbled memory, changing the output. The string equality plus the
 //!   clean exit pin both regression directions.
 //!
-//! - **Per-frame leak slope** (macOS-only via `leaks(1)`): build a
-//!   `Vec<Name>`, get the element via the generic helper, and drop both — once
-//!   per frame. Post-fix the leak-node count is flat across frame counts. A
-//!   regression that drops the Vec shallowly (no `hew_vec_free_owned`, no per-
-//!   element `label` drop) shows a per-frame slope this catches. This is the
-//!   committed oracle the cross-ecosystem review identified as missing — the
-//!   agent ran `leaks(1)` manually but did not assert 0/0 in a committed test.
+//! - **Exact zero-leak assertion** (macOS-only via `leaks(1)`): run a SINGLE
+//!   owned-record `Vec<T>.get` fixture (one allocation cycle) under the leak
+//!   detector and assert exactly `0 leaks for 0 total leaked bytes`. The
+//!   fixture wraps the push-get-drop in a helper function so the stack slot is
+//!   not live at process exit, making any leaked heap genuinely unreachable.
+//!   Post-fix: `hew_vec_free_owned` runs `__hew_record_drop_inplace_Name` over
+//!   every live slot, freeing each `label` buffer before the Vec handle is
+//!   released — both the count and the byte total are exactly 0.
+//!   A regression that omits the per-element drop thunk (no
+//!   `__hew_record_drop_inplace_Name` synthesis for a type-parameter-bound
+//!   element type) leaks the `label` buffer and fails at `!= 0`.
 //!
 //! ## Skip behaviour
 //!
-//! The slope oracle is macOS-only (`leaks(1)` is Darwin's allocator inspector);
+//! The zero-leak oracle is macOS-only (`leaks(1)` is Darwin's allocator inspector);
 //! elsewhere it logs `skip:` and returns. The scribble correctness pin runs on
 //! any unix host.
 
@@ -41,21 +45,6 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use support::{describe_output, hew_binary, repo_root, require_codegen};
-
-/// Low frame count: exercises the loop back-edge at least twice while staying
-/// near the constant-overhead floor.
-const LOW_FRAMES: usize = 3;
-
-/// High frame count for the slope check. A per-frame leak of one heap string
-/// per `Name` record (one `label` buffer not freed by the element drop thunk)
-/// accumulates well above tolerance over the `HIGH_FRAMES - LOW_FRAMES = 47`
-/// delta.
-const HIGH_FRAMES: usize = 50;
-
-/// Maximum permitted leak-node delta between the HIGH and LOW probes. Absorbs
-/// one-off scheduler/runtime allocations that appear only in the HIGH run while
-/// still catching a slope of ~0.1 leaks/frame (same headroom as sibling oracles).
-const SLOPE_TOLERANCE: usize = 5;
 
 // ── fixtures ──────────────────────────────────────────────────────────────
 
@@ -83,36 +72,35 @@ fn main() {\n\
 /// aliasing or UAF changes the `got.label` read.
 const GENERIC_GET_SINGLE_ROUNDTRIP_EXPECTED: &str = "owned-ok";
 
-/// Per-frame build-and-drop shape for the leak slope: each iteration pushes one
-/// owned `Name`, gets it back through the generic helper, reads the label
-/// length (forces a live read of the slot before drop), and lets both the
-/// returned record and the Vec drop on the back-edge. Post-fix the Vec drop
-/// runs `hew_vec_free_owned` → `__hew_record_drop_inplace_Name` → frees
-/// `label`, so the leak count is flat across frame counts.
-fn generic_get_drop_loop_source(frames: usize) -> String {
-    format!(
-        "type Name {{ label: string; }}\n\
-         \n\
-         fn first<T>(v: Vec<T>) -> T {{\n\
-         \x20   v.get(0)\n\
-         }}\n\
-         \n\
-         fn main() -> i64 {{\n\
-         \x20   var total: i64 = 0;\n\
-         \x20   var i: i64 = 0;\n\
-         \x20   while i < {frames} {{\n\
-         \x20       let vn: Vec<Name> = Vec::new();\n\
-         \x20       vn.push(Name {{ label: \"owned-ok\" }});\n\
-         \x20       let got = first(vn);\n\
-         \x20       total = total + got.label.len();\n\
-         \x20       i = i + 1;\n\
-         \x20   }}\n\
-         \x20   total\n\
-         }}\n"
-    )
-}
+/// Zero-leak fixture: the push-get-drop cycle lives inside a helper function
+/// (`run_one_cycle`) so the stack slot holding the Vec and the returned record
+/// are gone by the time `leaks --atExit` inspects the heap. Any allocation that
+/// `hew_vec_free_owned` fails to release (e.g. a `label` buffer whose drop thunk
+/// was not synthesised for the type-parameter-bound element) becomes genuinely
+/// unreachable and is counted by `leaks(1)`.
+///
+/// Post-fix: `hew_vec_free_owned` runs `__hew_record_drop_inplace_Name` on the
+/// single live slot → frees `label` → releases the Vec handle. Zero live heap
+/// at process exit: `0 leaks for 0 total leaked bytes`.
+const GENERIC_GET_ZERO_LEAK_SOURCE: &str = "\
+type Name { label: string; }\n\
+\n\
+fn first<T>(v: Vec<T>) -> T {\n\
+\x20   v.get(0)\n\
+}\n\
+\n\
+fn run_one_cycle() {\n\
+\x20   let vn: Vec<Name> = Vec::new();\n\
+\x20   vn.push(Name { label: \"owned-ok\" });\n\
+\x20   let got = first(vn);\n\
+\x20   print(got.label);\n\
+}\n\
+\n\
+fn main() {\n\
+\x20   run_one_cycle();\n\
+}\n";
 
-// ── leak measurement plumbing (same shape as vec_record_collection_field_leak_oracle) ──
+// ── leak measurement plumbing ─────────────────────────────────────────────────
 
 /// Compile `source` to a native binary via `hew compile --emit-dir` and return
 /// the binary path.
@@ -147,10 +135,18 @@ fn compile_to_native(source: &str, dir: &std::path::Path, name: &str) -> PathBuf
 }
 
 /// Run `bin` under the poisoned-allocator triple + `leaks --atExit` and return
-/// `Some(leak_count)` when `leaks` produced a usable report. Returns `None` and
-/// emits a `skip:` notice when `leaks(1)` declines to attach or does not emit
-/// the expected summary line.
-fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
+/// `Some((leak_count, leaked_bytes))` when `leaks` produced a usable summary.
+///
+/// The parsed summary line has the form:
+/// ```text
+/// Process <pid>: N leaks for B total leaked bytes.
+/// ```
+/// where `N` is the leak count and `B` is the total leaked bytes. Both are
+/// extracted so the caller can assert exactly `(0, 0)`.
+///
+/// Returns `None` (with a `skip:` notice on stderr) when `leaks(1)` declines
+/// to attach or does not emit the expected summary line.
+fn measure_leaks_exact(bin: &std::path::Path) -> Option<(usize, usize)> {
     let output = Command::new("leaks")
         .arg("--atExit")
         .arg("--")
@@ -169,99 +165,57 @@ fn measure_leaks(bin: &std::path::Path) -> Option<usize> {
         return None;
     }
     let report = String::from_utf8_lossy(&output.stdout);
-    let mut parsed: Option<usize> = None;
     for line in report.lines() {
+        // Match: "Process <pid>: N leak(s) for B total leaked bytes."
         if !line.contains(" leaks for ") && !line.contains(" leak for ") {
             continue;
         }
-        if let Some(rest) = line.strip_prefix("Process ") {
-            if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) {
-                if let Some(n) = after_colon.split_whitespace().next() {
-                    if let Ok(n) = n.parse::<usize>() {
-                        eprintln!("  parsed leak count from line: {line}");
-                        parsed = Some(n);
-                        break;
-                    }
-                }
-            }
+        let Some(rest) = line.strip_prefix("Process ") else {
+            continue;
+        };
+        if !rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            continue;
         }
+        // rest = "<pid>: N leaks for B total leaked bytes."
+        let Some(after_colon) = rest.split_once(": ").map(|(_, s)| s) else {
+            continue;
+        };
+        // after_colon = "N leaks for B total leaked bytes."
+        let mut words = after_colon.split_whitespace();
+        let Some(count_str) = words.next() else {
+            continue;
+        };
+        let Ok(count) = count_str.parse::<usize>() else {
+            continue;
+        };
+        // skip "leaks" / "leak", "for"
+        let _ = words.next(); // "leaks" or "leak"
+        let _ = words.next(); // "for"
+        let Some(bytes_str) = words.next() else {
+            // No bytes field — can't form an exact assertion; skip gracefully.
+            eprintln!(
+                "skip: leaks summary for {} has count ({count}) but no bytes field: {line}",
+                bin.display()
+            );
+            return None;
+        };
+        let Ok(bytes) = bytes_str.parse::<usize>() else {
+            eprintln!(
+                "skip: leaks summary for {} bytes field not a number ({bytes_str}): {line}",
+                bin.display()
+            );
+            return None;
+        };
+        eprintln!("  leaks(1) summary: count={count} bytes={bytes} (from: {line})");
+        return Some((count, bytes));
     }
-    if parsed.is_none() {
-        eprintln!(
-            "skip: leaks did not emit a `Process <pid>: N leak(s) for B total leaked bytes.` \
-             summary for {}: stderr=\n{}",
-            bin.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    parsed
-}
-
-/// Build `shape_name` at `low_frames` and `high_frames`, measure leak NODE
-/// counts via `leaks(1)`, and assert the delta stays within `SLOPE_TOLERANCE`.
-fn assert_frame_slope_below_tolerance(
-    shape_name: &str,
-    source_fn: fn(usize) -> String,
-    low_frames: usize,
-    high_frames: usize,
-) {
-    if !cfg!(target_os = "macos") {
-        eprintln!("skip: {shape_name}: leaks(1) is macOS-only");
-        return;
-    }
-    let leaks_avail = Command::new("which")
-        .arg("leaks")
-        .output()
-        .is_ok_and(|o| o.status.success());
-    if !leaks_avail {
-        eprintln!("skip: {shape_name}: `leaks` binary not on PATH");
-        return;
-    }
-
-    require_codegen();
-
-    let dir = tempfile::Builder::new()
-        .prefix(&format!("vec-generic-get-owned-leak-{shape_name}-"))
-        .tempdir()
-        .expect("tempdir");
-
-    let bin_low = compile_to_native(
-        &source_fn(low_frames),
-        dir.path(),
-        &format!("{shape_name}_low"),
-    );
-    let bin_high = compile_to_native(
-        &source_fn(high_frames),
-        dir.path(),
-        &format!("{shape_name}_high"),
-    );
-
-    let Some(low_leaks) = measure_leaks(&bin_low) else {
-        return;
-    };
-    let Some(high_leaks) = measure_leaks(&bin_high) else {
-        return;
-    };
-
     eprintln!(
-        "{shape_name}: low_frames={low_frames} low_leaks={low_leaks} \
-         high_frames={high_frames} high_leaks={high_leaks} \
-         tolerance={SLOPE_TOLERANCE}"
+        "skip: leaks did not emit a `Process <pid>: N leak(s) for B total leaked bytes.` \
+         summary for {}: stderr=\n{}",
+        bin.display(),
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        high_leaks <= low_leaks + SLOPE_TOLERANCE,
-        "{shape_name}: per-frame leak SLOPE — low_frames={low_frames} low_leaks={low_leaks}, \
-         high_frames={high_frames} high_leaks={high_leaks}. Excess of {} NODES over the \
-         tolerance of {SLOPE_TOLERANCE} indicates that `Vec<T>.get` for an owned record element \
-         leaks the element's heap string — `hew_vec_free_owned` must run the per-element record \
-         drop thunk (`__hew_record_drop_inplace_Name`) to free the `label` buffer. Re-run with \
-         `MallocStackLogging=1 leaks --atExit -- {}` to see the leaked allocation stack.",
-        high_leaks.saturating_sub(low_leaks + SLOPE_TOLERANCE),
-        bin_high.display()
-    );
+    None
 }
 
 /// Compile `source`, run it under the poisoned-allocator triple, and assert it
@@ -299,6 +253,64 @@ fn assert_exact_under_malloc_scribble(name: &str, source: &str, expected: &str) 
     );
 }
 
+/// Compile `source`, run it under `leaks --atExit`, and assert exactly
+/// `0 leaks for 0 total leaked bytes`. Any non-zero count or non-zero byte
+/// total fails immediately — no tolerance, no slope.
+///
+/// The fixture must wrap the allocation cycle in a helper function so stack
+/// slots holding the Vec and returned record are gone at process exit, making
+/// any un-dropped heap genuinely unreachable and visible to `leaks(1)`.
+fn assert_zero_leaks_exact(name: &str, source: &str) {
+    if !cfg!(target_os = "macos") {
+        eprintln!("skip: {name}: leaks(1) is macOS-only");
+        return;
+    }
+    let leaks_avail = Command::new("which")
+        .arg("leaks")
+        .output()
+        .is_ok_and(|o| o.status.success());
+    if !leaks_avail {
+        eprintln!("skip: {name}: `leaks` binary not on PATH");
+        return;
+    }
+
+    require_codegen();
+
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("vec-generic-get-owned-zero-leak-{name}-"))
+        .tempdir()
+        .expect("tempdir");
+    let bin = compile_to_native(source, dir.path(), name);
+
+    let Some((leak_count, leaked_bytes)) = measure_leaks_exact(&bin) else {
+        return;
+    };
+
+    assert_eq!(
+        leak_count,
+        0,
+        "{name}: leaks(1) reported {leak_count} leak(s) — expected exactly 0. \
+         A non-zero count means `hew_vec_free_owned` did not run \
+         `__hew_record_drop_inplace_Name` on the live slot, leaving the `label` buffer \
+         unreachable. Re-run with `MallocStackLogging=1 leaks --atExit -- {}` to see \
+         the leaked allocation stack.",
+        bin.display()
+    );
+    assert_eq!(
+        leaked_bytes,
+        0,
+        "{name}: leaks(1) reported 0 leak nodes but {leaked_bytes} total leaked bytes — \
+         expected exactly 0 bytes. The per-element record drop thunk \
+         (`__hew_record_drop_inplace_Name`) must free the `label` heap buffer completely. \
+         Re-run with `MallocStackLogging=1 leaks --atExit -- {}` to see the leaked stack.",
+        bin.display()
+    );
+
+    eprintln!(
+        "{name}: leaks(1) confirmed 0 leaks for 0 total leaked bytes — exact zero-leak oracle PASS"
+    );
+}
+
 // ── oracles ─────────────────────────────────────────────────────────────────
 
 /// Exact-contents pin: a single push-get-read-drop round-trip through a
@@ -315,19 +327,16 @@ fn vec_generic_get_owned_element_exact_contents_under_malloc_scribble() {
     );
 }
 
-/// Forward leak guard: pushing one owned `Name`, getting it via a generic
-/// helper, and dropping both per frame must not grow the leak-node count with
-/// the frame count. Post-fix `hew_vec_free_owned` runs
-/// `__hew_record_drop_inplace_Name` on the slot, releasing the `label` buffer.
-/// A regression that makes the element drop thunk a no-op (missing record-drop
-/// synthesis for a type-parameter-bound element type) shows a per-frame slope
-/// this catches.
+/// Exact zero-leak oracle: a push-get-drop cycle through a generic `first<T>`
+/// helper (wrapped in a `run_one_cycle()` function so stack slots are gone at
+/// process exit) must report exactly `0 leaks for 0 total leaked bytes` under
+/// `leaks --atExit`. Post-fix `hew_vec_free_owned` runs
+/// `__hew_record_drop_inplace_Name` on the single live slot, freeing the `label`
+/// buffer before the Vec handle is released. A regression that omits the per-
+/// element drop thunk synthesis for a type-parameter-bound element type leaves
+/// the `label` buffer unreachable and fails the `== 0` assertion on ANY leaked
+/// byte.
 #[test]
-fn vec_generic_get_owned_element_no_per_frame_leak_slope() {
-    assert_frame_slope_below_tolerance(
-        "vec_generic_get_drop_loop",
-        generic_get_drop_loop_source,
-        LOW_FRAMES,
-        HIGH_FRAMES,
-    );
+fn vec_generic_get_owned_element_zero_leaks_exact() {
+    assert_zero_leaks_exact("vec_generic_get_zero_leak", GENERIC_GET_ZERO_LEAK_SOURCE);
 }

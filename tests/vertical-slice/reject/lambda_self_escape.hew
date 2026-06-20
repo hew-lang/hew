@@ -1,7 +1,7 @@
 // Reject fixture: E_LAMBDA_SELF_ESCAPE
-// An actor lambda body must not return a Duplex handle (actor handle escape).
+// An actor lambda body must not return an actor handle (actor handle escape).
 // The actor handle's lifetime is bound to the let-binding site, not to values
-// the body produces. Returning a Duplex leaks a strong reference outside the
+// the body produces. Returning a LambdaPid leaks a strong reference outside the
 // actor boundary.
 // Expected: type error containing "E_LAMBDA_SELF_ESCAPE"
 fn main() {
@@ -10,7 +10,7 @@ fn main() {
     };
     // The outer actor body returns inner — leaking a lambda-actor handle.
     // This is rejected at the checker level (E_LAMBDA_SELF_ESCAPE).
-    let _outer = actor |_n: i64| -> Duplex<i64, ()> {
+    let _outer = actor |_n: i64| -> LambdaPid<i64, ()> {
         inner
     };
 }

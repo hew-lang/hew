@@ -1968,8 +1968,19 @@ fn intern_runtime_decl<'ctx>(
         // hew_actor_send_by_id(actor_id: u64, msg_type: i32, data: *mut c_void,
         //                      size: usize) -> c_int (`hew-runtime/src/actor.rs:2489`).
         // `size` is `usize`/`size_t` → target-correct width (i32 on wasm32).
+        // hew_actor_send_by_id(pid, dispatch, msg_type, data, size). `dispatch`
+        // is the target actor TYPE's dispatch global — the `(dispatch, msg_type)`
+        // cross-node serialize codec key on the remote path (null/unused for a
+        // purely local send). codegen-offset-mirror-drift: must match the runtime
+        // `#[no_mangle]` signature.
         "hew_actor_send_by_id" => i32_ty.fn_type(
-            &[i64_ty.into(), i32_ty.into(), ptr_ty.into(), size_ty.into()],
+            &[
+                i64_ty.into(),
+                ptr_ty.into(),
+                i32_ty.into(),
+                ptr_ty.into(),
+                size_ty.into(),
+            ],
             false,
         ),
         // hew_tcp_attach_local(conn: c_int, actor: *mut HewActor,
@@ -1987,9 +1998,15 @@ fn intern_runtime_decl<'ctx>(
             &[ptr_ty.into(), ptr_ty.into(), i32_ty.into(), i32_ty.into()],
             false,
         ),
+        // hew_node_api_ask(pid, dispatch, msg_type, data, size, timeout_ms,
+        //                  reply_size). `dispatch` is the target actor TYPE's
+        // dispatch global — the `(dispatch, msg_type)` codec key for both the
+        // request encode and the reply decode (codegen-offset-mirror-drift: must
+        // match the runtime `#[no_mangle]` signature).
         "hew_node_api_ask" => ptr_ty.fn_type(
             &[
                 i64_ty.into(),
+                ptr_ty.into(),
                 i32_ty.into(),
                 ptr_ty.into(),
                 i64_ty.into(),
@@ -1999,15 +2016,17 @@ fn intern_runtime_decl<'ctx>(
             false,
         ),
         "hew_node_ask_take_last_error" => i32_ty.fn_type(&[], false),
-        // hew_node_api_ask_async(pid, msg_type, data, size, timeout_ms,
-        //                        caller_actor) -> *mut c_void
+        // hew_node_api_ask_async(pid, dispatch, msg_type, data, size,
+        //                        timeout_ms, caller_actor) -> *mut c_void
         // (`hew-runtime/src/hew_node.rs`). NEW-5 suspendable submit: parks the
         // caller's coroutine on the reply table and returns an opaque pending
         // handle (null on setup failure). `caller_actor` is the `hew_actor_self`
-        // pointer the wire reply resumes through `enqueue_resume`.
+        // pointer the wire reply resumes through `enqueue_resume`. `dispatch`
+        // keys the request encode.
         "hew_node_api_ask_async" => ptr_ty.fn_type(
             &[
                 i64_ty.into(),
+                ptr_ty.into(),
                 i32_ty.into(),
                 ptr_ty.into(),
                 i64_ty.into(),
@@ -2016,12 +2035,16 @@ fn intern_runtime_decl<'ctx>(
             ],
             false,
         ),
-        // hew_node_api_ask_finish(pending_handle, msg_type, reply_size)
+        // hew_node_api_ask_finish(pending_handle, dispatch, msg_type, reply_size)
         //   -> *mut c_void (`hew-runtime/src/hew_node.rs`). Drains the reply
         // deposited for a suspended remote ask on the resume edge; null is the
         // typed-failure sentinel (read via hew_node_ask_take_last_error).
+        // `dispatch` keys the reply decode.
         "hew_node_api_ask_finish" => {
-            ptr_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), i64_ty.into()], false)
+            ptr_ty.fn_type(
+                &[ptr_ty.into(), ptr_ty.into(), i32_ty.into(), i64_ty.into()],
+                false,
+            )
         }
         // hew_node_api_ask_cancel(pending_handle) -> void
         // (`hew-runtime/src/hew_node.rs`). Abandons a suspended remote ask on
@@ -27516,6 +27539,57 @@ fn emit_send_result_from_rc<'ctx>(
     Ok(())
 }
 
+/// Resolve a target actor TYPE's dispatch global `__hew_actor_dispatch_<name>`
+/// as a `ptr` value, for use as the `(dispatch, msg_type)` cross-node codec key
+/// at an originating remote send / ask site. The trampoline is emitted by
+/// `emit_actor_dispatch_trampoline` ahead of function-body lowering, so it is
+/// present here; a missing symbol is wrong-code territory — fail closed rather
+/// than pass a null key that would mis-route the codec lookup.
+fn remote_actor_dispatch_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    actor_name: &str,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let dispatch_name = format!("__hew_actor_dispatch_{}", mangle_dotted_name(actor_name));
+    let dispatch_fn = fn_ctx
+        .llvm_mod
+        .get_function(&dispatch_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "remote send/ask on `{actor_name}` requires dispatch trampoline \
+             `{dispatch_name}` (the cross-node codec key); it was not declared"
+            ))
+        })?;
+    Ok(dispatch_fn.as_global_value().as_pointer_value())
+}
+
+/// Resolve the target actor TYPE name `T` from a `RemotePid<T>` pid place, then
+/// its dispatch global ptr (the `(dispatch, msg_type)` cross-node codec key for
+/// the originating remote ask). Mirrors the `RemotePid<T>` unwrap in
+/// `emit_remote_pid_tell_call`.
+fn remote_ask_dispatch_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    pid_place: Place,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let pid_ty = place_resolved_ty(fn_ctx, pid_place)?;
+    let actor_name = match pid_ty {
+        ResolvedTy::Named { name, args, .. } if name == "RemotePid" => match args.first() {
+            Some(ResolvedTy::Named { name: t_name, .. }) => t_name.clone(),
+            other => {
+                return Err(CodegenError::FailClosed(format!(
+                    "RemoteAsk pid `RemotePid<T>` inner T must be a named actor type, \
+                     got {other:?}"
+                )));
+            }
+        },
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "RemoteAsk pid must have resolved type RemotePid<T>, got {other:?}"
+            )));
+        }
+    };
+    remote_actor_dispatch_ptr(fn_ctx, &actor_name)
+}
+
 /// Emit the call sequence for `RemotePid<T>::tell(pid, msg) -> Result<(), SendError>`.
 ///
 /// The checker rewrites `pid.tell(msg)` on a `RemotePid<T>` receiver into a
@@ -27672,7 +27746,15 @@ fn emit_remote_pid_tell_call<'ctx>(
     let (payload_ptr, payload_size) =
         actor_payload_ptr_size(fn_ctx, *msg_arg, "remote_tell_payload")?;
 
-    // Call `hew_actor_send_by_id(pid: u64, msg_type: i32, data: ptr, size: usize) -> i32`.
+    // Resolve the TARGET actor type's dispatch global — the `(dispatch,
+    // msg_type)` cross-node serialize codec key. The codec seeder registered
+    // this actor's serializer under THIS module's same dispatch global, so the
+    // remote-send encode selects the right codec even when another actor type's
+    // `msg_type` SipHash-collides. Same symbol the spawn path uses
+    // (`emit_spawn_actor`); fail closed if the trampoline is missing.
+    let dispatch_ptr = remote_actor_dispatch_ptr(fn_ctx, &actor_name)?;
+
+    // Call `hew_actor_send_by_id(pid, dispatch, msg_type, data, size) -> i32`.
     let send_fn = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
@@ -27694,6 +27776,7 @@ fn emit_remote_pid_tell_call<'ctx>(
             send_fn,
             &[
                 pid_val.into(),
+                dispatch_ptr.into(),
                 msg_type_const.into(),
                 payload_ptr.into(),
                 payload_size.into(),
@@ -33817,6 +33900,9 @@ fn emit_suspending_remote_actor_ask_terminator<'ctx>(
         )));
     }
     let reply_size = static_type_size_i64(fn_ctx, term.reply_ty, "remote_ask_reply")?;
+    // Target actor type's dispatch global — the `(dispatch, msg_type)` codec key
+    // for both the request encode (ask_async) and the reply decode (ask_finish).
+    let dispatch_ptr = remote_ask_dispatch_ptr(fn_ctx, term.actor)?;
 
     // self = the current actor — the parked-continuation waiter the wire reply
     // re-enqueues. MUST come from `hew_actor_self()` (the live thread-local
@@ -33852,6 +33938,7 @@ fn emit_suspending_remote_actor_ask_terminator<'ctx>(
             ask_async_fn,
             &[
                 pid_val.into(),
+                dispatch_ptr.into(),
                 msg_type.into(),
                 payload_ptr.into(),
                 payload_size.into(),
@@ -33938,7 +34025,12 @@ fn emit_suspending_remote_actor_ask_terminator<'ctx>(
             // sentinel. ─────────────────────────────────────────────────────────
             let reply_ptr = fn_ctx.call_runtime_ptr(
                 "hew_node_api_ask_finish",
-                &[pending_handle.into(), msg_type.into(), reply_size.into()],
+                &[
+                    pending_handle.into(),
+                    dispatch_ptr.into(),
+                    msg_type.into(),
+                    reply_size.into(),
+                ],
                 "hew_node_api_ask_finish_call",
                 "hew_node_api_ask_finish call",
             )?;
@@ -34034,6 +34126,9 @@ fn emit_remote_actor_ask_terminator<'ctx>(
         )));
     }
     let reply_size = static_type_size_i64(fn_ctx, term.reply_ty, "remote_ask_reply")?;
+    // Target actor type's dispatch global — the `(dispatch, msg_type)` codec key
+    // for BOTH the request encode and the reply decode on this ask.
+    let dispatch_ptr = remote_ask_dispatch_ptr(fn_ctx, term.actor)?;
     let ask_fn = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
@@ -34047,6 +34142,7 @@ fn emit_remote_actor_ask_terminator<'ctx>(
             ask_fn,
             &[
                 pid_val.into(),
+                dispatch_ptr.into(),
                 msg_type.into(),
                 payload_ptr.into(),
                 payload_size.into(),
@@ -36513,12 +36609,19 @@ fn lower_terminator<'ctx>(
             // the message. We must not silently proceed — that could leave the
             // caller operating on stale state or attempting a follow-up ask
             // on a dead actor.
+            // `Terminator::Send` targets a LOCAL actor handle (`ActorRef`/`Pid`);
+            // it delivers into a local mailbox and never reaches the cross-node
+            // serialize path (that is the `RemotePid<T>` `emit_remote_pid_tell_call`
+            // spine). So the `(dispatch, msg_type)` codec key is irrelevant here —
+            // pass a null dispatch, which the local send path ignores.
+            let null_dispatch = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
             let send_status = fn_ctx
                 .builder
                 .build_call(
                     send,
                     &[
                         actor_id.into(),
+                        null_dispatch.into(),
                         msg_type.into(),
                         payload_ptr.into(),
                         payload_size.into(),
@@ -45335,10 +45438,30 @@ fn emit_xnode_codec_module_init<'ctx>(
     pipeline_records: &[RecordLayout],
     enum_layouts: &[EnumLayout],
 ) -> CodegenResult<Option<FunctionValue<'ctx>>> {
-    // Collect (msg_type, msg_ty, reply_ty) for every handler. Dedup by msg_type:
-    // a handler's msg_type is unique per (actor, handler).
-    let mut entries: Vec<(i32, ResolvedTy, ResolvedTy)> = Vec::new();
+    // Collect (dispatch global, msg_type, msg_ty, reply_ty) for every handler.
+    // The codec registry is keyed by `(dispatch, msg_type)` — the owning actor
+    // TYPE's dispatch function pointer plus the discriminant — so two distinct
+    // actor types whose handler names SipHash-collide on the low 32 bits of
+    // `msg_type` register SEPARATE codecs (no silent displacement / cross-node
+    // type-confusion). Dedup is therefore by `(dispatch, msg_type)`, NOT
+    // `msg_type` alone; a handler still appears once per actor type.
+    let mut entries: Vec<(FunctionValue<'ctx>, i32, ResolvedTy, ResolvedTy)> = Vec::new();
     for actor in actor_layouts {
+        // Resolve the actor TYPE's dispatch global, the same symbol the spawn
+        // path stores into `HewActor.dispatch` and the runtime decode paths
+        // resolve from `target_actor_id`. It is emitted by
+        // `emit_actor_dispatch_trampoline` ahead of this pass; a missing symbol
+        // is wrong-code territory — fail closed rather than seed an unkeyable
+        // codec.
+        let dispatch_name = format!("__hew_actor_dispatch_{}", mangle_dotted_name(&actor.name));
+        let dispatch_fn = llvm_mod.get_function(&dispatch_name).ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "xnode codec seeder: actor `{}` requires dispatch trampoline \
+                 `{dispatch_name}` (the codec-registry key); it was not declared \
+                 before the codec module-init pass",
+                actor.name
+            ))
+        })?;
         for h in &actor.handlers {
             // Single-parameter handlers only. A multi-arg handler's wire
             // payload is the packed-args anonymous record; seeding a codec
@@ -45372,10 +45495,16 @@ fn emit_xnode_codec_module_init<'ctx>(
             {
                 continue;
             }
-            if entries.iter().any(|(mt, _, _)| *mt == h.msg_type) {
+            // Dedup by (dispatch, msg_type): the SAME actor type can list a
+            // handler once; distinct actor types with a colliding msg_type each
+            // seed their own codec under their own dispatch key.
+            if entries
+                .iter()
+                .any(|(d, mt, _, _)| *d == dispatch_fn && *mt == h.msg_type)
+            {
                 continue;
             }
-            entries.push((h.msg_type, msg_ty.clone(), h.return_ty.clone()));
+            entries.push((dispatch_fn, h.msg_type, msg_ty.clone(), h.return_ty.clone()));
         }
     }
     if entries.is_empty() {
@@ -45389,7 +45518,7 @@ fn emit_xnode_codec_module_init<'ctx>(
     // Emit thunk bodies for every distinct msg AND reply type first.
     // (Best-effort: a type outside the Serializable floor fails closed here,
     // surfacing the codegen error rather than shipping raw bytes.)
-    for (_mt, msg_ty, reply_ty) in &entries {
+    for (_dispatch, _mt, msg_ty, reply_ty) in &entries {
         emit_xnode_codec_thunks(
             ctx,
             llvm_mod,
@@ -45422,23 +45551,32 @@ fn emit_xnode_codec_module_init<'ctx>(
     let entry_bb = ctx.append_basic_block(init_fn, "entry");
     builder.position_at_end(entry_bb);
 
-    // hew_xnode_register_codec(msg_type: i32, ser: ptr, de: ptr).
+    // hew_xnode_register_codec(dispatch: ptr, msg_type: i32, ser: ptr, de: ptr).
+    // The leading `dispatch` ptr is the codec-registry key (codegen-offset-mirror
+    // -drift: this declare MUST match the runtime `#[no_mangle]` signature).
     let reg_fn = declare_codec_prim(
         ctx,
         llvm_mod,
         "hew_xnode_register_codec",
-        void_ty.fn_type(&[i32_ty.into(), ptr_ty.into(), ptr_ty.into()], false),
+        void_ty.fn_type(
+            &[ptr_ty.into(), i32_ty.into(), ptr_ty.into(), ptr_ty.into()],
+            false,
+        ),
     );
-    // hew_xnode_register_reply_codec(msg_type: i32, ser: ptr, de: ptr) — the
-    // reply codec for the ask path, keyed by the request's msg_type.
+    // hew_xnode_register_reply_codec(dispatch: ptr, msg_type: i32, ser, de) — the
+    // reply codec for the ask path, keyed by (dispatch, request msg_type).
     let reg_reply_fn = declare_codec_prim(
         ctx,
         llvm_mod,
         "hew_xnode_register_reply_codec",
-        void_ty.fn_type(&[i32_ty.into(), ptr_ty.into(), ptr_ty.into()], false),
+        void_ty.fn_type(
+            &[ptr_ty.into(), i32_ty.into(), ptr_ty.into(), ptr_ty.into()],
+            false,
+        ),
     );
 
-    for (mt, msg_ty, reply_ty) in &entries {
+    for (dispatch_fn, mt, msg_ty, reply_ty) in &entries {
+        let dispatch_ptr = dispatch_fn.as_global_value().as_pointer_value();
         let mt_const = i32_ty.const_int(*mt as u64, true);
         let msg_key = xnode_codec_key(msg_ty);
         let ser = get_or_declare_serialize_thunk(ctx, llvm_mod, &msg_key);
@@ -45447,6 +45585,7 @@ fn emit_xnode_codec_module_init<'ctx>(
             .build_call(
                 reg_fn,
                 &[
+                    dispatch_ptr.into(),
                     mt_const.into(),
                     ser.as_global_value().as_pointer_value().into(),
                     de.as_global_value().as_pointer_value().into(),
@@ -45462,6 +45601,7 @@ fn emit_xnode_codec_module_init<'ctx>(
                 .build_call(
                     reg_reply_fn,
                     &[
+                        dispatch_ptr.into(),
                         mt_const.into(),
                         rser.as_global_value().as_pointer_value().into(),
                         rde.as_global_value().as_pointer_value().into(),

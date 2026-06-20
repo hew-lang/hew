@@ -3842,10 +3842,30 @@ fn register_enum_layouts<'ctx>(
             }
         }
         if order.len() != n {
-            // Cycle detected (indirect enum recursion or a bug). Fall back to
-            // input order — the original behaviour — rather than silently
-            // dropping entries.
-            order = (0..n).collect();
+            // Cycle detected: indirect enum recursion is not supported (all
+            // Hew enums are finite-size value types; a cycle would produce a
+            // zero-byte payload alloca and silently miscompile).  Fail closed
+            // with a diagnostic so the user sees a clear error rather than
+            // corrupted output.
+            //
+            // WHY: the fallback to input order was the original behaviour and
+            // produced a zero-byte alloca for the cyclic variant — a latent
+            // miscompile that escaped the verifier.
+            // WHEN OBSOLETE: if recursive enum types are ever added to Hew
+            // (requiring heap-boxing of the cyclic variant), this error must be
+            // replaced by a proper indirect-layout emitter.
+            let cycle_names: Vec<&str> = enum_layouts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !order.contains(i))
+                .map(|(_, l)| l.name.as_str())
+                .collect();
+            return Err(CodegenError::FailClosed(format!(
+                "cyclic enum layout detected — Hew enums must be non-recursive (finite value types); \
+                 the following enum name(s) form a layout cycle: {}. \
+                 Use an opaque handle or actor reference to break the cycle.",
+                cycle_names.join(", ")
+            )));
         }
     }
 
@@ -51296,6 +51316,67 @@ mod tests {
             machine_layouts.contains_key("Option$$u8"),
             "metadata for the deduplicated enum must be registered exactly once"
         );
+    }
+
+    /// A mutually-recursive enum pair (A references B, B references A)
+    /// must produce a `FailClosed` error, not a silent miscompile via a
+    /// zero-byte payload alloca.
+    ///
+    /// The Kahn's-sort cycle detector in `register_enum_layouts` fails closed
+    /// when `order.len() != n`; this test pins that behaviour so a regression
+    /// to the old input-order fallback is caught immediately.
+    #[test]
+    fn cyclic_enum_layout_fails_closed_with_diagnostic() {
+        let ctx = Context::create();
+        // `enum A { Wrap(B) }` and `enum B { Wrap(A) }` — a mutual layout cycle.
+        let enum_fixtures = vec![
+            MirEnumLayout {
+                name: "A".to_string(),
+                tag_width: 1,
+                variants: vec![MachineVariantLayout {
+                    name: "Wrap".to_string(),
+                    field_tys: vec![ResolvedTy::Named {
+                        name: "B".to_string(),
+                        args: vec![],
+                        builtin: None,
+                        is_opaque: false,
+                    }],
+                }],
+                is_indirect: false,
+            },
+            MirEnumLayout {
+                name: "B".to_string(),
+                tag_width: 1,
+                variants: vec![MachineVariantLayout {
+                    name: "Wrap".to_string(),
+                    field_tys: vec![ResolvedTy::Named {
+                        name: "A".to_string(),
+                        args: vec![],
+                        builtin: None,
+                        is_opaque: false,
+                    }],
+                }],
+                is_indirect: false,
+            },
+        ];
+        let mut map = predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
+            .expect("predeclare must succeed even for cyclic names");
+        let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
+        let err = register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
+            .expect_err("cyclic enum layout must fail-closed, not silently miscompile");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("cyclic enum layout"),
+                    "diagnostic must name the cyclic-layout cause, got: {msg}"
+                );
+                assert!(
+                    msg.contains('A') || msg.contains('B'),
+                    "diagnostic must name at least one participating enum, got: {msg}"
+                );
+            }
+            other => panic!("expected FailClosed for cyclic enum, got {other:?}"),
+        }
     }
 
     // ---------------------------------------------------------------

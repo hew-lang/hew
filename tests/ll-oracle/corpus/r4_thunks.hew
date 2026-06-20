@@ -1,0 +1,40 @@
+// ll-oracle corpus fixture: thunks — closures (native + wasm32).
+//
+// Exercises the thunks concern of hew-codegen-rs/src/llvm.rs:
+// closure capture, higher-order fn passing, the closure call thunk
+// emitters, and the inplace clone/drop thunk declarations
+// (get_or_declare_*_clone_inplace / *_overwrite_release). Stays within
+// the wasm32-safe surface (no lambda-actor spawn; that is native-only
+// per issue #1451). Proves the thunk-emission surface is byte-identical
+// across a pure codegen refactor.
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(x)
+}
+
+fn apply_twice(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(f(x))
+}
+
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    |x| x + n
+}
+
+fn make_multiplier(n: i64) -> fn(i64) -> i64 {
+    |x| x * n
+}
+
+fn main() {
+    let double = |x: i64| x * 2;
+    println(apply(double, 21));
+    println(apply_twice(double, 3));
+    let add10 = make_adder(10);
+    println(add10(32));
+    let triple = make_multiplier(3);
+    println(apply(triple, 7));
+
+    // closure capturing two variables
+    let base = 100;
+    let step = 5;
+    let stepper = |n: i64| base + n * step;
+    println(stepper(4));
+}

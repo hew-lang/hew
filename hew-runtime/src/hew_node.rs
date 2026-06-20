@@ -3458,30 +3458,40 @@ mod tests {
         dst.cast::<std::ffi::c_void>()
     }
 
-    /// Stable per-test stand-in for an actor type's `__hew_actor_dispatch_*`
-    /// global — the `(dispatch, msg_type)` codec-registry key. The test
-    /// registers its codec under this key and threads the SAME pointer into the
-    /// ask/send FFIs so encode/decode resolve the matching codec.
-    static TEST_DISPATCH: u8 = 0;
-    fn test_dispatch() -> *const c_void {
-        std::ptr::addr_of!(TEST_DISPATCH).cast()
+    /// The codec-registry key `(dispatch, msg_type)` uses the TARGET actor
+    /// TYPE's dispatch function pointer. In these tests the echo actor is spawned
+    /// with a concrete dispatch fn (e.g. `ask_probe_dispatch`); the inbound
+    /// decode resolves THAT pointer from the target actor, so the codec must be
+    /// registered under the SAME dispatch and the originating ask must pass it.
+    /// This helper casts a dispatch fn to the opaque `*const c_void` key.
+    fn dispatch_key(f: crate::internal::types::HewDispatchFn) -> *const c_void {
+        f as *const c_void
     }
 
-    /// Register the test u32 codec for `(test_dispatch(), msg_type)` as both the
-    /// request and reply codec, so the two-process send/ask paths can serialize
-    /// their controlled payloads. Idempotent across helper processes (each
-    /// registers in its own process).
-    fn register_test_u32_codec(msg_type: i32) {
+    /// Canonical codec key for the single-process two-node round-trip tests and
+    /// the two-process client side: the echo actor is spawned with
+    /// `ask_probe_dispatch`, so its inbound decode resolves that pointer. The
+    /// register, the ask FFI arg, and the spawned-actor dispatch all use this.
+    fn test_dispatch() -> *const c_void {
+        dispatch_key(ask_probe_dispatch)
+    }
+
+    /// Register the test u32 codec for `(dispatch, msg_type)` as both the
+    /// request and reply codec, so the send/ask paths can serialize their
+    /// controlled payloads. `dispatch` MUST be the dispatch fn the target echo
+    /// actor is spawned with (the inbound decode resolves it from the actor).
+    /// Idempotent across helper processes (each registers in its own process).
+    fn register_test_u32_codec(dispatch: *const c_void, msg_type: i32) {
         // SAFETY: the thunks match the codec ABI.
         unsafe {
             crate::xnode_serial::hew_xnode_register_codec(
-                test_dispatch(),
+                dispatch,
                 msg_type,
                 test_u32_serialize,
                 test_u32_deserialize,
             );
             crate::xnode_serial::hew_xnode_register_reply_codec(
-                test_dispatch(),
+                dispatch,
                 msg_type,
                 test_u32_serialize,
                 test_u32_deserialize,
@@ -3933,8 +3943,10 @@ mod tests {
         hold_after_observed: Duration,
     ) {
         // The inbound-ask path decodes the request and encodes the reply via the
-        // registered codec (fail-closed). Register the test u32 codec.
-        register_test_u32_codec(TWO_PROCESS_REGISTRY_MSG_TYPE);
+        // registered codec (fail-closed), keyed by the target actor's dispatch.
+        // Register under the SAME dispatch fn this server spawns its echo actor
+        // with so the inbound decode resolves the matching codec.
+        register_test_u32_codec(dispatch_key(dispatch), TWO_PROCESS_REGISTRY_MSG_TYPE);
         reset_two_process_ask_observed();
         // Install the runtime before touching the name registry (helper
         // subprocess holds no `runtime_test_guard`).
@@ -4058,7 +4070,7 @@ mod tests {
     ) -> (TestNode, u64) {
         // The cross-node send/ask path requires a registered codec for the
         // payload's msg_type (fail-closed). Register the test u32 codec.
-        register_test_u32_codec(TWO_PROCESS_REGISTRY_MSG_TYPE);
+        register_test_u32_codec(test_dispatch(), TWO_PROCESS_REGISTRY_MSG_TYPE);
         // Install the runtime before touching the name registry (helper
         // subprocess holds no `runtime_test_guard`).
         init_real_scheduler();
@@ -5946,7 +5958,7 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
         // Remote ask requires a registered codec for the payload msg_type.
-        register_test_u32_codec(1);
+        register_test_u32_codec(test_dispatch(), 1);
 
         // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 311.
         // Node 2 (responder) starts after; CURRENT_NODE stays as node1.
@@ -6042,7 +6054,7 @@ mod tests {
         // routed at the parked caller through `enqueue_resume`.
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
-        register_test_u32_codec(1);
+        register_test_u32_codec(test_dispatch(), 1);
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
         // SAFETY: bind address is a valid C string for this scope.
@@ -7128,7 +7140,7 @@ mod tests {
     fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
-        register_test_u32_codec(1);
+        register_test_u32_codec(test_dispatch(), 1);
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
 
@@ -7315,7 +7327,7 @@ mod tests {
     fn over_limit_nonvoid_ask_fails_closed_with_worker_at_capacity() {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
-        register_test_u32_codec(1);
+        register_test_u32_codec(test_dispatch(), 1);
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
 

@@ -2,7 +2,8 @@
 ///
 /// Each test parses Hew source, formats via `format_source`, and checks that
 /// the result is idempotent (formatting already-formatted code is a no-op).
-use hew_parser::ast::{Expr, Item, Stmt};
+use hew_parser::ast::{Expr, Item, Stmt, Visibility};
+use hew_parser::ast_eq::program_eq_ignoring_spans;
 use hew_parser::fmt::{format_program, format_source};
 use hew_parser::parse;
 
@@ -1209,6 +1210,174 @@ impl Foo {
     let out = roundtrip(src);
     assert!(out.contains("pub fn make"), "output: {out}");
     assert!(out.contains("fn private_helper"), "output: {out}");
+}
+
+// -----------------------------------------------------------------------
+// package visibility — formatter / AST round-trip
+// -----------------------------------------------------------------------
+//
+// These tests verify that `Visibility::Package` survives the full cycle:
+//   parse(src) → format → re-parse → AST equal (spans ignored)
+// and that the formatter emits the `package` keyword (not `pub`) so the
+// re-parsed AST carries `Visibility::Package`, not `Visibility::Pub`.
+
+#[test]
+fn fmt_package_fn_roundtrip_preserves_visibility() {
+    let src = "package fn f() {}\n";
+    let r1 = parse(src);
+    assert!(
+        r1.errors.is_empty(),
+        "initial parse failed: {:?}",
+        r1.errors
+    );
+
+    // Verify the parser set the visibility to Package.
+    let vis1 = match r1.program.items.first().map(|(i, _)| i) {
+        Some(Item::Function(f)) => f.visibility,
+        other => panic!("expected Function item, got {other:?}"),
+    };
+    assert_eq!(
+        vis1,
+        Visibility::Package,
+        "parser did not set Visibility::Package"
+    );
+
+    let formatted = format_source(src, &r1.program);
+
+    // Formatter must emit `package fn`, not `pub fn` or bare `fn`.
+    assert!(
+        formatted.contains("package fn f"),
+        "formatter dropped `package` keyword; output: {formatted:?}"
+    );
+
+    let r2 = parse(&formatted);
+    assert!(
+        r2.errors.is_empty(),
+        "re-parse of formatted output failed: {:?}\nFormatted:\n{formatted}",
+        r2.errors,
+    );
+
+    // AST must be structurally equal (ignoring spans).
+    assert!(
+        program_eq_ignoring_spans(&r1.program, &r2.program),
+        "AST mismatch after format → re-parse"
+    );
+
+    // Explicit visibility check on the re-parsed tree.
+    let vis2 = match r2.program.items.first().map(|(i, _)| i) {
+        Some(Item::Function(f)) => f.visibility,
+        other => panic!("expected Function item in re-parsed tree, got {other:?}"),
+    };
+    assert_eq!(
+        vis2,
+        Visibility::Package,
+        "re-parsed visibility is {vis2:?}, expected Package"
+    );
+
+    // Idempotency.
+    let formatted2 = format_source(&formatted, &r2.program);
+    assert_eq!(
+        formatted, formatted2,
+        "formatter is not idempotent for `package fn`"
+    );
+}
+
+#[test]
+fn fmt_package_type_roundtrip_preserves_visibility() {
+    let src = "package type Point {\n    x: i64;\n    y: i64;\n}\n";
+    let r1 = parse(src);
+    assert!(
+        r1.errors.is_empty(),
+        "initial parse failed: {:?}",
+        r1.errors
+    );
+
+    let vis1 = match r1.program.items.first().map(|(i, _)| i) {
+        Some(Item::TypeDecl(t)) => t.visibility,
+        other => panic!("expected TypeDecl item, got {other:?}"),
+    };
+    assert_eq!(
+        vis1,
+        Visibility::Package,
+        "parser did not set Visibility::Package for type"
+    );
+
+    let formatted = format_source(src, &r1.program);
+    assert!(
+        formatted.contains("package type Point"),
+        "formatter dropped `package` keyword for type; output: {formatted:?}"
+    );
+
+    let r2 = parse(&formatted);
+    assert!(
+        r2.errors.is_empty(),
+        "re-parse of formatted type failed: {:?}\nFormatted:\n{formatted}",
+        r2.errors,
+    );
+
+    assert!(
+        program_eq_ignoring_spans(&r1.program, &r2.program),
+        "AST mismatch after format → re-parse for `package type`"
+    );
+
+    let vis2 = match r2.program.items.first().map(|(i, _)| i) {
+        Some(Item::TypeDecl(t)) => t.visibility,
+        other => panic!("expected TypeDecl item in re-parsed tree, got {other:?}"),
+    };
+    assert_eq!(
+        vis2,
+        Visibility::Package,
+        "re-parsed type visibility is {vis2:?}, expected Package"
+    );
+}
+
+#[test]
+fn fmt_package_const_roundtrip_preserves_visibility() {
+    let src = "package const MAX: i64 = 100;\n";
+    let r1 = parse(src);
+    assert!(
+        r1.errors.is_empty(),
+        "initial parse failed: {:?}",
+        r1.errors
+    );
+
+    let vis1 = match r1.program.items.first().map(|(i, _)| i) {
+        Some(Item::Const(c)) => c.visibility,
+        other => panic!("expected Const item, got {other:?}"),
+    };
+    assert_eq!(
+        vis1,
+        Visibility::Package,
+        "parser did not set Visibility::Package for const"
+    );
+
+    let formatted = format_source(src, &r1.program);
+    assert!(
+        formatted.contains("package const MAX"),
+        "formatter dropped `package` keyword for const; output: {formatted:?}"
+    );
+
+    let r2 = parse(&formatted);
+    assert!(
+        r2.errors.is_empty(),
+        "re-parse of formatted const failed: {:?}\nFormatted:\n{formatted}",
+        r2.errors,
+    );
+
+    assert!(
+        program_eq_ignoring_spans(&r1.program, &r2.program),
+        "AST mismatch after format → re-parse for `package const`"
+    );
+
+    let vis2 = match r2.program.items.first().map(|(i, _)| i) {
+        Some(Item::Const(c)) => c.visibility,
+        other => panic!("expected Const item in re-parsed tree, got {other:?}"),
+    };
+    assert_eq!(
+        vis2,
+        Visibility::Package,
+        "re-parsed const visibility is {vis2:?}, expected Package"
+    );
 }
 
 // -----------------------------------------------------------------------

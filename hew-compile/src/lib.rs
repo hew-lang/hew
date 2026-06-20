@@ -1337,6 +1337,18 @@ fn parse_and_resolve_file_internal(
 fn check_duplicate_pub_names(items: &[Spanned<Item>], module_name: &str) -> Result<(), String> {
     use hew_parser::ast::Visibility;
 
+    // Only `Visibility::Pub` items are checked here — intentionally.
+    //
+    // `Visibility::Package` items are scoped to the package boundary: two
+    // modules within the same package can each define `package fn foo()` in
+    // their own namespace without creating a global API conflict.  The
+    // duplicate-name guard exists to catch clashes in the *globally-exported*
+    // interface (i.e. items a downstream package could import by name), which
+    // only `pub` items contribute to.
+    //
+    // If/when package-boundary enforcement is added (a future edition), a
+    // separate within-package duplicate check will be needed at that boundary,
+    // not here.
     let mut seen: HashMap<&str, usize> = HashMap::new();
     for (item, _) in items {
         let name = match item {

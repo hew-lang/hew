@@ -1108,6 +1108,12 @@ run_accept_expect_stdout "lambda_method_send"
 # fixture above this covers both send contexts.
 run_accept_expect_status_and_stdout "lambda_send_result_ok" 7
 
+# Accept + run: explicit `.close()` on a LambdaPid handle — statement context.
+# Sends a message then explicitly releases the handle via `hew_lambda_actor_release`
+# (routed by Place::LambdaActorHandle in lower_duplex_close). Stdout "42" proves
+# the message was delivered before the release.
+run_accept_expect_stdout "lambda_close"
+
 # Reject: ask-shaped actor body return type mismatch (E_LAMBDA_RETURN_TYPE_MISMATCH).
 if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/lambda_return_mismatch.hew" >"${reject_output}" 2>&1; then
   echo "expected lambda-return-mismatch fixture to fail" >&2

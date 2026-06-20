@@ -18049,6 +18049,7 @@ impl Builder {
         match symbol {
             "hew_duplex_pair" => self.lower_duplex_pair(hir_args, site),
             "hew_duplex_send" => self.lower_duplex_send(hir_args, site, context, result_ty),
+            "hew_duplex_close" => self.lower_duplex_close(hir_args, site, context, result_ty),
             "hew_supervisor_stop" => self.lower_supervisor_stop(hir_args, site),
             "hew_actor_link" | "hew_actor_monitor" => {
                 self.lower_actor_link_or_monitor(symbol, hir_args, site, context)
@@ -19027,6 +19028,92 @@ impl Builder {
         ));
 
         dest
+    }
+
+    /// Lower an explicit `.close()` call rewritten to `hew_duplex_close`.
+    ///
+    /// The checker records `"hew_duplex_close"` for every `.close()` call on a
+    /// `Duplex<S,R>`-typed receiver, including `LambdaPid<M,R>` handles (which
+    /// surface as `Duplex<M,R>`).  The `Place` variant on the receiver is the
+    /// authority for which runtime symbol to invoke:
+    ///
+    ///   - `Place::LambdaActorHandle(N)` → `hew_lambda_actor_release`.
+    ///     The release ABI takes only the handle pointer; codegen rejects
+    ///     `dest: Some(...)` for this symbol, so the call is always `dest: None`.
+    ///     The checker records `Unit` as the return type (the release never
+    ///     fails), so in value context a unit literal is produced.
+    ///
+    ///   - Any other `Place` → raw `Duplex` explicit close; not yet lowered.
+    ///     Fails closed so the pipeline rejects the program before codegen runs.
+    ///
+    /// The checker marks the receiver as consumed (`method_call_consumes_receiver`
+    /// + `mark_expr_moved_if_non_copy`), so drop elaboration at scope exit will
+    ///   not re-drop the released handle.
+    fn lower_duplex_close(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+        _result_ty: Option<&ResolvedTy>,
+    ) -> Option<Place> {
+        let Some(receiver_expr) = hir_args.first() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "hew_duplex_close with no receiver arg".to_string(),
+                    site,
+                },
+                note: "hew_duplex_close requires at least one argument (the handle)".to_string(),
+            });
+            return None;
+        };
+        let recv_place = self.lower_value(receiver_expr)?;
+
+        if let Place::LambdaActorHandle(_) = recv_place {
+            // Explicit LambdaPid::close() → hew_lambda_actor_release.
+            //
+            // The release ABI is: hew_lambda_actor_release(handle: *mut HewLambdaActorHandle)
+            // Codegen rejects dest: Some(_) for this symbol (the i32 rc is always
+            // discarded), so we never pass a dest — the handle is released and the
+            // result, if needed in value context, is a unit literal (the checker
+            // records `()` for LambdaPid::close() since the release is
+            // unconditionally successful).
+            self.push_instr(Instr::CallRuntimeAbi(
+                crate::model::RuntimeCall::new("hew_lambda_actor_release", vec![recv_place], None)
+                    .expect("hew_lambda_actor_release is an allowlisted runtime symbol"),
+            ));
+
+            // The checker records `Unit` as the return type for LambdaPid::close()
+            // (the release never fails). In value context, bind a unit literal so
+            // any `let _ = handle.close()` binding has a well-typed Place.
+            if context == RuntimeCallContext::ValueNeeded {
+                let unit_place = self.alloc_local(ResolvedTy::Unit);
+                self.push_instr(Instr::UnitLit { dest: unit_place });
+                Some(unit_place)
+            } else {
+                None
+            }
+        } else {
+            // Raw Duplex explicit close is not yet lowered by this producer.
+            // The scope-exit implicit close goes through drop elaboration
+            // (`place_aware_drop_fn` → DuplexClose) and is already correct.
+            // This path fires only for an explicit `handle.close()` on a raw
+            // `Duplex<S,R>` binding; it is uncommon and will land in a
+            // follow-on slice. Fail closed so the pipeline does not silently
+            // skip the close.
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!(
+                        "explicit Duplex::close() on non-lambda handle ({recv_place:?})"
+                    ),
+                    site,
+                },
+                note: "explicit `Duplex::close()` on a raw `Duplex<S,R>` binding is not yet \
+                       lowered; the handle is closed implicitly at scope exit by drop \
+                       elaboration. Remove the explicit `.close()` call to compile."
+                    .to_string(),
+            });
+            None
+        }
     }
 
     fn lower_actor_payload(

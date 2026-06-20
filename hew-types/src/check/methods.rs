@@ -3038,18 +3038,28 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                // Records the duplex-close entry hint (the seeded fn_registry
-                // symbol); the actual lambda-actor release ritual
-                // (`hew_lambda_actor_release`) is selected by the
-                // `Place::LambdaActorHandle` drop discriminator at MIR drop
-                // elaboration, mirroring `.send`'s two-level routing.
+                // Records the duplex-close rewrite symbol.  MIR's
+                // `lower_duplex_close` routes by the receiver's `Place` variant:
+                //   - `Place::LambdaActorHandle` → `hew_lambda_actor_release`
+                //     (the lambda stop-on-last-drop ritual).
+                //   - anything else → raw `Duplex` close (not yet lowered).
+                // Mirrors `.send`'s two-level routing: checker records one symbol;
+                // MIR selects the real ABI from the Place discriminator.
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_close");
                 // Consuming: the LambdaPid<M, R> binding is moved.
                 self.method_call_consumes_receiver
                     .insert(SpanKey::in_module(span, self.current_module_idx));
                 let resolved_recv = self.subst.resolve(receiver_ty);
                 self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
-                Ty::result(Ty::Unit, Ty::duplex_close_error())
+                // Returns `()` — the lambda-actor release is unconditionally
+                // successful (the runtime refcount decrement / stop signal never
+                // fails for a well-formed handle). Using `Unit` rather than
+                // `Result<(), CloseError>` avoids registering the `CloseError`
+                // enum instantiation in HIR, which would require a codegen layout
+                // for the `CloseError` payload that the pipeline does not yet have.
+                // A raw `Duplex::close()` keeps `Result<(), CloseError>` because
+                // its close CAN fail (I/O flush errors on streams and connections).
+                Ty::Unit
             }
             _ => {
                 // Synthesize args for error recovery.

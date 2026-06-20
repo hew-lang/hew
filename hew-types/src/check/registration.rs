@@ -4245,8 +4245,11 @@ impl Checker {
                         prev_span.clone(),
                     ));
                 } else {
-                    self.fn_def_spans
-                        .insert(scoped_name, (span.clone(), self.current_module.clone()));
+                    self.fn_def_spans.insert(
+                        scoped_name.clone(),
+                        (span.clone(), self.current_module.clone()),
+                    );
+                    self.fn_visibility.insert(scoped_name, fd.visibility);
                 }
                 self.register_fn_sig(fd);
             }
@@ -7078,6 +7081,12 @@ impl Checker {
         for (item, span) in items {
             match item {
                 Item::TypeDecl(td) => {
+                    // Record visibility for all TypeDecls (both pub and non-pub)
+                    // so the enforcement check can distinguish "private" from "unknown".
+                    let qualified_type = format!("{module_short}.{}", td.name);
+                    self.type_visibility
+                        .entry(qualified_type)
+                        .or_insert((td.visibility, Some(module_short.to_string())));
                     if !td.visibility.is_pub() {
                         continue;
                     }
@@ -7106,6 +7115,11 @@ impl Checker {
                     }
                 }
                 Item::Machine(md) => {
+                    // Record visibility for all Machines (both pub and non-pub).
+                    let qualified_type = format!("{module_short}.{}", md.name);
+                    self.type_visibility
+                        .entry(qualified_type)
+                        .or_insert((md.visibility, Some(module_short.to_string())));
                     if !md.visibility.is_pub() {
                         continue;
                     }
@@ -7175,10 +7189,18 @@ impl Checker {
                     }
                 }
                 Item::Function(fd) => {
+                    let qualified = format!("{module_short}.{}", fd.name);
+                    // Record visibility for all functions (both pub and non-pub).
+                    // The is_pub() gate below still applies for registration into
+                    // fn_sigs (import surface); the visibility table covers all
+                    // declarations so the enforcement check can distinguish
+                    // "private, not accessible" from "unknown symbol".
+                    self.fn_visibility
+                        .entry(qualified.clone())
+                        .or_insert(fd.visibility);
                     if !fd.visibility.is_pub() {
                         continue;
                     }
-                    let qualified = format!("{module_short}.{}", fd.name);
                     if !self.fn_sigs.contains_key(&qualified) {
                         let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
                         self.module_fn_exports.insert(qualified.clone());
@@ -7696,13 +7718,18 @@ impl Checker {
         for (item, span) in items {
             match item {
                 Item::Function(fd) => {
+                    let qualified = format!("{module_short}.{}", fd.name);
+                    // Record visibility for all functions so the enforcement check
+                    // can distinguish "private, not accessible" from "unknown symbol".
+                    self.fn_visibility
+                        .entry(qualified.clone())
+                        .or_insert(fd.visibility);
                     // Skip non-pub functions (enforce visibility)
                     if !fd.visibility.is_pub() {
                         continue;
                     }
 
                     let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
-                    let qualified = format!("{module_short}.{}", fd.name);
                     self.module_fn_exports.insert(qualified.clone());
                     self.fn_type_param_assoc_bindings
                         .insert(qualified.clone(), assoc_bindings.clone());
@@ -7722,6 +7749,12 @@ impl Checker {
                     }
                 }
                 Item::TypeDecl(td) => {
+                    // Record visibility for all TypeDecls so the enforcement check
+                    // can distinguish "private, not accessible" from "unknown symbol".
+                    let qualified_type = format!("{module_short}.{}", td.name);
+                    self.type_visibility
+                        .entry(qualified_type)
+                        .or_insert((td.visibility, Some(module_short.to_string())));
                     if !td.visibility.is_pub() {
                         continue;
                     }
@@ -7752,6 +7785,12 @@ impl Checker {
                     }
                 }
                 Item::Machine(md) => {
+                    // Record visibility for all Machines so the enforcement check
+                    // can distinguish "private, not accessible" from "unknown symbol".
+                    let qualified_machine = format!("{module_short}.{}", md.name);
+                    self.type_visibility
+                        .entry(qualified_machine)
+                        .or_insert((md.visibility, Some(module_short.to_string())));
                     if !md.visibility.is_pub() {
                         continue;
                     }

@@ -545,9 +545,28 @@ jobs:
           command -v wasm-ld
           wasm-ld --version
 
-      - name: Build hew-runtime for wasm32-wasip1
+      - name: Build hew-runtime for wasm32-wasip1 (release)
         if: env.RUN_CODE_PATH == 'true'
         run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features --release
+
+      - name: Build hew-runtime for wasm32-wasip1 (debug)
+        # The platform smoke tests run as debug binaries (cargo nextest run, no
+        # --release). bootstrap_wasi_runner in support/mod.rs derives the build
+        # profile from the test binary path and looks for the same profile's
+        # libhew_runtime.a before falling back to an on-demand build. Without
+        # this step the debug staticlib is absent at test startup, causing
+        # multiple parallel test processes to each launch `cargo build` for it
+        # concurrently — Cargo writes the archive non-atomically, so races
+        # corrupt or transiently delete the file and wasm-ld then fails with
+        # "cannot open .../wasm32-wasip1/debug/libhew_runtime.a".
+        if: env.RUN_CODE_PATH == 'true'
+        run: cargo build -p hew-runtime --target wasm32-wasip1 --no-default-features
+
+      - name: Build hew-std for wasm32-wasip1 (debug)
+        # Pre-build the stdlib WASI archive for the same reason: bootstrap_wasi_runner
+        # builds libhew_std.a on demand if absent, same concurrent-write race applies.
+        if: env.RUN_CODE_PATH == 'true'
+        run: cargo build -p hew-std --target wasm32-wasip1
 
       - name: Run platform smoke tests
         # Default macOS path: prove the Apple Silicon build links and the

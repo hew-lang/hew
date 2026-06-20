@@ -122,6 +122,7 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(ActorState, BuiltinTypeShape::Opaque),
     registration!(MachineState, BuiltinTypeShape::Opaque),
     registration!(LambdaActorHandle, BuiltinTypeShape::Opaque),
+    registration!(LambdaPid, BuiltinTypeShape::Opaque),
     registration!(SendHalf, BuiltinTypeShape::Opaque),
     registration!(RecvHalf, BuiltinTypeShape::Opaque),
     registration!(CrashInfo, BuiltinTypeShape::Struct(CRASH_INFO_FIELDS)),
@@ -242,6 +243,16 @@ mod tests {
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("LambdaActorHandle"),
+            Some(&(ResourceMarker::Resource, Some("close".to_string())))
+        );
+    }
+
+    #[test]
+    fn lambda_pid_is_seeded_as_resource() {
+        let mut table: TypeClassTable = HashMap::default();
+        seed_builtin_type_classes(&mut table);
+        assert_eq!(
+            table.get("LambdaPid"),
             Some(&(ResourceMarker::Resource, Some("close".to_string())))
         );
     }

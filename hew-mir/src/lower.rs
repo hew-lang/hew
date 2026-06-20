@@ -8777,7 +8777,7 @@ impl Builder {
                 //
                 // A user `let log = actor |s|{..}; log("hi")` produces a
                 // binding `log` whose MIR `Place` is `LambdaActorHandle(N)`
-                // and whose HIR type is `Duplex<Msg, Reply>`. Two problems
+                // and whose HIR type is `LambdaPid<Msg, Reply>`. Two problems
                 // collide here without an early intercept:
                 //
                 // 1. `log` is also the name of a `stdlib_catalog` math
@@ -8792,8 +8792,8 @@ impl Builder {
                 //    need the same lambda-actor dispatch.
                 //
                 // The intercept is gated on the binding's MIR Place,
-                // NOT on the type alone: a `Duplex<>`-typed binding that
-                // was built from `Duplex::pair()` lives in a generic
+                // NOT on the type alone: a raw `Duplex<>`-typed binding that
+                // was built from `duplex` / `duplex_pair` lives in a generic
                 // `Place::DuplexHandle`, not a `LambdaActorHandle`, and
                 // its call surface is `.send()` / `.recv()` method calls,
                 // not call-syntax. The Place-variant guard is the
@@ -8811,14 +8811,14 @@ impl Builder {
                     }
                     // Body-side captured-handle dispatch: inside a lambda-actor
                     // body, the forward-bound self binding (and any captured
-                    // Duplex handle) resolves through `capture_env_sources`,
-                    // not `binding_locals`. The callee's Duplex type plus the
+                    // lambda-actor handle) resolves through `capture_env_sources`,
+                    // not `binding_locals`. The callee's `LambdaPid` type plus the
                     // env-source entry is the routing signal — the loaded env
                     // field is the handle value.
                     if self.capture_env_sources.contains_key(binding_id)
                         && matches!(
                             &callee.ty,
-                            ResolvedTy::Named { name, .. } if name == "Duplex"
+                            ResolvedTy::Named { name, .. } if name == "LambdaPid"
                         )
                     {
                         return self.lower_lambda_actor_call(callee, args, &expr.ty, expr.site);
@@ -20824,7 +20824,7 @@ impl Builder {
             let offset =
                 FieldOffset(u32::try_from(idx).expect("closure capture count exceeds u32::MAX"));
 
-            // Defence-in-depth gate: a Duplex<S,R> (lambda-actor handle) must
+            // Defence-in-depth gate: a `LambdaPid<M,R>` (lambda-actor handle) must
             // never appear as a fn-closure capture env field. The authoritative
             // rejection is `TypeErrorKind::ClosureCapturesDuplexHandle` in the
             // checker's `check_call`; if MIR sees one here, the checker gate
@@ -20832,7 +20832,7 @@ impl Builder {
             // misrouting to `hew_duplex_send` (wrong runtime ABI).
             if matches!(
                 &capture.ty,
-                ResolvedTy::Named { name, .. } if name == "Duplex"
+                ResolvedTy::Named { name, .. } if name == "LambdaPid"
             ) {
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::ClosureCapturesDuplexHandle {
@@ -20840,7 +20840,7 @@ impl Builder {
                         site: expr.site,
                     },
                     note: format!(
-                        "closure capture `{}` has type Duplex<_,_>; no env-materialization \
+                        "closure capture `{}` has type LambdaPid<_,_>; no env-materialization \
                          protocol exists — checker gate in `check_call` must have been bypassed",
                         capture.name
                     ),

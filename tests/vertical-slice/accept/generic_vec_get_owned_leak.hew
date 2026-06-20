@@ -10,7 +10,9 @@
 // heap string a double-free would SIGABRT within a few iterations; a missed drop
 // would grow RSS linearly across 100k iterations. A clean run with flat RSS is
 // the exactly-once witness for the generic owned-element ABI.
-type Name { label: string; }
+type Name {
+    label: string;
+}
 
 fn first<T>(v: Vec<T>) -> T {
     v.get(0)
@@ -18,7 +20,7 @@ fn first<T>(v: Vec<T>) -> T {
 
 fn roundtrip(print_it: bool) -> i64 {
     let vn: Vec<Name> = Vec::new();
-    vn.push(Name { label: "owned" });
+    vn.push(Name { label: "owned-ok" });
     let got = first(vn);
     if print_it {
         println(got.label);

@@ -231,19 +231,35 @@ ActorSpawn      = "spawn" Ident TypeArgs? "(" FieldInitList? ")" ;  (* spawn Cou
 
 **Type system:**
 
-Lambda actors return `LocalPid<Actor<M>>` for fire-and-forget or `LocalPid<Actor<M, R>>` for request-response, where:
+A lambda actor expression evaluates to a `LambdaPid<M, R>` handle — a PID-like
+handle in the same family as `LocalPid` / `RemotePid` ("a pid you ask, `M` in →
+`R` out"), where:
 
-- `M` is the message type (from parameter)
-- `R` is the return type (from annotation or inference)
+- `M` is the message type (from the parameter list: a single param's type, a
+  tuple of the param types for multiple params, or `()` for no params)
+- `R` is the reply type (from the `-> R` annotation, or `()` when omitted)
 
-**Spawning returns LocalPid:**
+`LambdaPid<M, ()>` is tell-shaped (fire-and-forget); `LambdaPid<M, R>` with a
+non-unit `R` is ask-shaped (request-response). `LambdaPid` is a move-only
+resource handle: it is `Send`/`Sync` iff both `M` and `R` are `Send`, and the
+runtime stops the actor when the last strong handle drops.
+
+A lambda actor is an actor, not a channel: `LambdaPid` exposes only the actor
+surface (`handle(msg)` call-syntax, `.send(msg)`, `.close()`). It deliberately
+has no `.recv()` / `.send_half()` / `.recv_half()` surface — the caller never
+reads the actor's mailbox, and an actor handle cannot be split in two. The reply
+for an ask-shaped actor is delivered through the call-site `Result`, never a
+separate receive.
+
+**Spawning:**
 
 ```hew
 // Named actor spawn returns LocalPid<ActorType>
 let counter: LocalPid<Counter> = spawn Counter(count: 0);
 
-// Lambda actor expression returns LocalPid<Actor<M>>
-let worker: LocalPid<Actor<i64>> = actor |msg: i64| { println(msg); };
+// Lambda actor expression returns LambdaPid<M, R>
+let worker: LambdaPid<i64, ()> = actor |msg: i64| { println(msg); };   // tell
+let adder: LambdaPid<i64, i64> = actor |x: i64| -> i64 { x + 1 };      // ask
 ```
 
 **Capture semantics:**

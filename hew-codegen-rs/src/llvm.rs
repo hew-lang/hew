@@ -25850,6 +25850,44 @@ fn emit_one_elab_drop_borrow_aware(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> C
     emit_one_elab_drop_unguarded(fn_ctx, drop)
 }
 
+/// Shared conditional-drop CFG region: emit the `body` only on the live edge of
+/// a `cond != 0`-vs-`== 0` branch, then converge. The single skeleton behind
+/// every path-sensitive drop predicate (flag-gated exactly-once close,
+/// borrow-mode copy-only release): append `drop_bb`+`merge_bb`, branch on the
+/// caller-computed `cond` (true → `drop_bb`), fill `drop_bb` with `body`, then
+/// converge to `merge_bb`. The caller owns the PREDICATE (it computes `cond`)
+/// and supplies the IR block-name pair `(drop_label, merge_label)` verbatim —
+/// inkwell stamps those names into the `.ll`, so each predicate keeps its own.
+/// The body is a closure (the flag path nests the borrow-aware emitter; the
+/// borrow path runs the unguarded emitter), mirroring `emit_suspend_point`'s
+/// closure-parameterised CFG seam.
+fn emit_gated_drop_region<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    cond: IntValue<'ctx>,
+    labels: (&str, &str),
+    body: impl FnOnce() -> CodegenResult<()>,
+) -> CodegenResult<()> {
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::Llvm("gated drop has no parent function".into()))?;
+    let drop_bb = fn_ctx.ctx.append_basic_block(parent, labels.0);
+    let merge_bb = fn_ctx.ctx.append_basic_block(parent, labels.1);
+    fn_ctx
+        .builder
+        .build_conditional_branch(cond, drop_bb, merge_bb)
+        .llvm_ctx("gated drop branch")?;
+    fn_ctx.builder.position_at_end(drop_bb);
+    body()?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(merge_bb)
+        .llvm_ctx("gated drop merge br")?;
+    fn_ctx.builder.position_at_end(merge_bb);
+    Ok(())
+}
+
 /// #1933 / #1941 — emit `drop` only when its path-sensitive drop-flag reads
 /// 0 (not-yet-consumed on this control-flow path). The flag is a MIR `i64`
 /// local, zero-initialised at the resource's `let` and set to 1 at each
@@ -25862,11 +25900,6 @@ fn emit_flag_gated_elab_drop(
     flag: Place,
     drop: &ElabDrop,
 ) -> CodegenResult<()> {
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| CodegenError::Llvm("flag-gated drop has no parent function".into()))?;
     let (flag_ptr, flag_ty) = place_pointer(fn_ctx, flag)?;
     let int_ty = match flag_ty {
         BasicTypeEnum::IntType(i) => i,
@@ -25881,10 +25914,6 @@ fn emit_flag_gated_elab_drop(
         .build_load(int_ty, flag_ptr, "resource_drop_flag")
         .llvm_ctx("resource drop-flag load")?
         .into_int_value();
-    let drop_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "resource_drop_live_only");
-    let merge_bb = fn_ctx.ctx.append_basic_block(parent, "resource_drop_merge");
     let zero = int_ty.const_zero();
     let not_consumed = fn_ctx
         .builder
@@ -25895,18 +25924,12 @@ fn emit_flag_gated_elab_drop(
             "resource_drop_not_consumed",
         )
         .llvm_ctx("resource drop-flag cmp")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(not_consumed, drop_bb, merge_bb)
-        .llvm_ctx("resource drop-flag branch")?;
-    fn_ctx.builder.position_at_end(drop_bb);
-    emit_one_elab_drop_borrow_aware(fn_ctx, drop)?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(merge_bb)
-        .llvm_ctx("resource drop-flag merge br")?;
-    fn_ctx.builder.position_at_end(merge_bb);
-    Ok(())
+    emit_gated_drop_region(
+        fn_ctx,
+        not_consumed,
+        ("resource_drop_live_only", "resource_drop_merge"),
+        || emit_one_elab_drop_borrow_aware(fn_ctx, drop),
+    )
 }
 
 /// P5-RX Stage 2a (A625): emit `drop` only when `borrow_mode == 0` (copy
@@ -25919,32 +25942,17 @@ fn emit_borrow_gated_elab_drop<'ctx>(
     borrow_mode: IntValue<'ctx>,
     drop: &ElabDrop,
 ) -> CodegenResult<()> {
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| CodegenError::Llvm("borrow-gated drop has no parent function".into()))?;
-    let drop_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "borrow_drop_copy_only");
-    let merge_bb = fn_ctx.ctx.append_basic_block(parent, "borrow_drop_merge");
     let zero = borrow_mode.get_type().const_zero();
     let is_copy = fn_ctx
         .builder
         .build_int_compare(IntPredicate::EQ, borrow_mode, zero, "borrow_drop_is_copy")
         .llvm_ctx("borrow-drop cmp")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(is_copy, drop_bb, merge_bb)
-        .llvm_ctx("borrow-drop branch")?;
-    fn_ctx.builder.position_at_end(drop_bb);
-    emit_one_elab_drop_unguarded(fn_ctx, drop)?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(merge_bb)
-        .llvm_ctx("borrow-drop merge br")?;
-    fn_ctx.builder.position_at_end(merge_bb);
-    Ok(())
+    emit_gated_drop_region(
+        fn_ctx,
+        is_copy,
+        ("borrow_drop_copy_only", "borrow_drop_merge"),
+        || emit_one_elab_drop_unguarded(fn_ctx, drop),
+    )
 }
 
 fn record_inplace_drop_name(ty: &ResolvedTy) -> CodegenResult<String> {
@@ -50038,6 +50046,100 @@ mod tests {
             ir.matches("store ptr null,").count(),
             1,
             "expected EXACTLY ONE null-store after the drop call; got:\n{ir}"
+        );
+    }
+
+    /// LLC-5: a flag-guarded `ElabDrop` (`guard: Some(flag)`) must emit the
+    /// shared gated-drop conditional region — an `icmp eq i64 … 0` into a
+    /// `resource_drop_live_only` block that holds the actual drop, converging at
+    /// `resource_drop_merge`. The drop body must NOT appear on the entry path.
+    /// This pins that `emit_gated_drop_region` preserves the flag predicate +
+    /// the exactly-once block structure.
+    #[test]
+    fn flag_gated_drop_emits_eq_zero_conditional_region() {
+        use hew_mir::{DropKind, ElabDrop};
+        let ctx = Context::create();
+        let m = ctx.create_module("flag_gated_drop_test");
+        let harness = build_harness(&ctx, &[], &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+        // The drop-flag is an i64 local zero-initialised by the binding intro.
+        alloc_local(&mut fn_ctx, 1, ResolvedTy::I64);
+        let drop = ElabDrop {
+            place: Place::Local(0),
+            ty: ResolvedTy::String,
+            drop_fn: None,
+            kind: DropKind::CowHeap {
+                drop_fn: "hew_string_drop",
+            },
+            guard: Some(Place::Local(1)),
+        };
+        emit_one_elab_drop(&fn_ctx, &drop).expect("flag-gated drop must emit");
+        finish_test_fn(&fn_ctx);
+        let ir = m.print_to_string().to_string();
+        assert_eq!(
+            ir.matches("icmp eq i64").count(),
+            1,
+            "flag-gated drop must emit EXACTLY ONE `icmp eq i64 … 0` gate; got:\n{ir}"
+        );
+        assert!(
+            ir.contains("resource_drop_live_only"),
+            "flag-gated drop must branch into a `resource_drop_live_only` block; got:\n{ir}"
+        );
+        assert!(
+            ir.contains("resource_drop_merge"),
+            "flag-gated drop must converge at `resource_drop_merge`; got:\n{ir}"
+        );
+        // The drop body (the call) lives in the live-only block, gated behind
+        // the compare — exactly once, never on the unconditional entry path.
+        assert_eq!(
+            ir.matches("call void @hew_string_drop(").count(),
+            1,
+            "the gated drop body must appear exactly once; got:\n{ir}"
+        );
+    }
+
+    /// LLC-5: a borrow-tainted `ElabDrop` under `borrow_mode = Some(iv)` must
+    /// emit the borrow-gated region — an `icmp eq` into a `borrow_drop_copy_only`
+    /// block converging at `borrow_drop_merge`. Pins that the borrow predicate +
+    /// its block labels survive the `emit_gated_drop_region` extraction.
+    #[test]
+    fn borrow_gated_drop_emits_copy_only_conditional_region() {
+        use hew_mir::{DropKind, ElabDrop};
+        let ctx = Context::create();
+        let m = ctx.create_module("borrow_gated_drop_test");
+        let harness = build_harness(&ctx, &[], &[]);
+        let mut fn_ctx = make_test_fn_ctx(&ctx, &m, &harness, "drv");
+        alloc_local(&mut fn_ctx, 0, ResolvedTy::String);
+        // Install a borrow_mode i64 value and taint the local's base so the
+        // borrow-aware emitter routes through the gated region.
+        let borrow_mode = fn_ctx.ctx.i64_type().const_int(0, false);
+        fn_ctx.borrow_mode = Some(borrow_mode);
+        fn_ctx.borrow_tainted.insert(0);
+        let drop = ElabDrop {
+            place: Place::Local(0),
+            ty: ResolvedTy::String,
+            drop_fn: None,
+            kind: DropKind::CowHeap {
+                drop_fn: "hew_string_drop",
+            },
+            guard: None,
+        };
+        emit_one_elab_drop(&fn_ctx, &drop).expect("borrow-gated drop must emit");
+        finish_test_fn(&fn_ctx);
+        let ir = m.print_to_string().to_string();
+        assert!(
+            ir.contains("borrow_drop_copy_only"),
+            "borrow-gated drop must branch into a `borrow_drop_copy_only` block; got:\n{ir}"
+        );
+        assert!(
+            ir.contains("borrow_drop_merge"),
+            "borrow-gated drop must converge at `borrow_drop_merge`; got:\n{ir}"
+        );
+        assert_eq!(
+            ir.matches("call void @hew_string_drop(").count(),
+            1,
+            "the borrow-gated drop body must appear exactly once; got:\n{ir}"
         );
     }
 

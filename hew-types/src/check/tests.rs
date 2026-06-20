@@ -10906,12 +10906,17 @@ fn typecheck_integer_literal_coerces_in_arithmetic() {
 }
 
 #[test]
-fn i32_coerces_to_bool_in_condition_position() {
+fn i32_in_condition_position_is_type_error() {
+    // §12.1: no implicit numeric→bool coercion. `if flag` where `flag: i32`
+    // must be rejected; the programmer must write `if flag != 0`.
     let (errors, _warnings) =
         parse_and_check("fn foo(flag: i32) -> i32 { if flag { 1 } else { 0 } }");
     assert!(
-        errors.is_empty(),
-        "i32 in bool position must be allowed: {errors:?}"
+        errors.iter().any(
+            |e| matches!(&e.kind, TypeErrorKind::Mismatch { expected, actual }
+                if expected.contains("bool") && actual.contains("i32"))
+        ),
+        "i32 in bool (condition) position must be a type error: {errors:?}"
     );
 }
 

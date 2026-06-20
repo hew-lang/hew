@@ -1320,6 +1320,18 @@ impl Checker {
                         {
                             return ty;
                         }
+                        // `base_name` is not a type parameter in scope, so
+                        // `base_name::Type` cannot be an associated-type
+                        // projection. In Hew, module-qualified type references
+                        // use `.` not `::` (e.g. `geometry.Point`). Emit a
+                        // targeted hint so users don't see a bare UndefinedType.
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedType,
+                            &te.1,
+                            format!("unknown type `{name}`; `::` is not the module separator in type position"),
+                            vec![format!("use `{base_name}.{assoc_name}` instead of `{name}`")],
+                        );
+                        return Ty::Error;
                     }
                 }
                 // Reject user-written `Task<T>` in any type-annotation position.

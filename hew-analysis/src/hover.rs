@@ -2142,7 +2142,6 @@ mod tests {
     fn hover_expr_reports_resolved_ty_boundary_failure() {
         use hew_types::ty::TypeVar;
 
-        TypeVar::reset();
         let var = TypeVar::fresh();
         let rendered = render_expr_hover("value", &Ty::Var(var));
         let body = rendered.split("\n\n").next().unwrap();

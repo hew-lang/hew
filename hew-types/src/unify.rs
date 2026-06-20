@@ -410,7 +410,6 @@ mod tests {
 
     #[test]
     fn test_unify_type_var_left() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         assert!(unify(&mut subst, &Ty::Var(v), &Ty::I32).is_ok());
@@ -419,7 +418,6 @@ mod tests {
 
     #[test]
     fn test_unify_type_var_right() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         assert!(unify(&mut subst, &Ty::Bool, &Ty::Var(v)).is_ok());
@@ -436,7 +434,6 @@ mod tests {
 
     #[test]
     fn test_unify_tuples_with_var() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         let a = Ty::Tuple(vec![Ty::Var(v), Ty::Bool]);
@@ -470,7 +467,6 @@ mod tests {
 
     #[test]
     fn test_occurs_check() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         let ty = Ty::Tuple(vec![Ty::Var(v), Ty::I32]);
@@ -480,7 +476,6 @@ mod tests {
 
     #[test]
     fn test_unify_functions() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         let a = Ty::Function {
@@ -497,7 +492,6 @@ mod tests {
 
     #[test]
     fn test_unify_named_types() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         let a = Ty::Named {
@@ -544,7 +538,6 @@ mod tests {
 
     #[test]
     fn test_unify_promotes_var_bound_to_int_literal() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         subst.insert(v, &Ty::IntLiteral).unwrap();
@@ -554,7 +547,6 @@ mod tests {
 
     #[test]
     fn test_unify_promotes_var_bound_to_float_literal() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         subst.insert(v, &Ty::FloatLiteral).unwrap();
@@ -600,7 +592,6 @@ mod tests {
 
     #[test]
     fn test_unify_closure_with_closure() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         let a = Ty::Closure {
@@ -685,7 +676,6 @@ mod tests {
 
     #[test]
     fn test_unify_chained_vars() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v1 = TypeVar::fresh();
         let v2 = TypeVar::fresh();
@@ -696,7 +686,6 @@ mod tests {
 
     #[test]
     fn test_literal_promotion_preserves_alias_equivalence() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v1 = TypeVar::fresh();
         let v2 = TypeVar::fresh();
@@ -748,7 +737,6 @@ mod tests {
 
     #[test]
     fn test_resolve_deeply_nested() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         let ty = Ty::Named {
@@ -781,7 +769,6 @@ mod tests {
 
     #[test]
     fn task_unifies_inner_var() {
-        TypeVar::reset();
         let mut subst = Substitution::new();
         let v = TypeVar::fresh();
         let a = Ty::Task(Box::new(Ty::Var(v)));

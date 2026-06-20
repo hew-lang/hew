@@ -79,6 +79,7 @@ EXAMPLE_ORDER = {
         "wire_types",
         "structural_bounds",
         "record_equality",
+        "tuple_values",
     ),
 }
 
@@ -170,6 +171,9 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     "basics/clone_value": "runnable",
     # types/record_equality: structural == / != on records and payload enums.
     "types/record_equality": "runnable",
+    # types/tuple_values: tuple construction and positional let-destructure;
+    # lowered as anonymous records with _0/_1/… fields — sandbox-runnable.
+    "types/tuple_values": "runnable",
 }
 
 # Entries omitted from WASI_CAPABILITY default to "runnable".

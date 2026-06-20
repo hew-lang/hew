@@ -946,6 +946,53 @@ impl Checker {
                             _ => {}
                         }
                     }
+                    // Fail-closed: a non-final `return <CrashAction>;` inside an
+                    // `#[on(crash)]` hook (e.g. inside an `if` branch, followed by
+                    // more code) hits the same unimplemented lowering path as a
+                    // tail-expression or final-return form.  Gate it here so no
+                    // `return CrashAction::X;` anywhere in the hook body escapes to
+                    // codegen regardless of its position.
+                    //
+                    // This mirrors the identical gate in `check_stmt_as_expr`'s
+                    // `Stmt::Return` arm (which covers final/tail-position returns).
+                    // Together they close every path a `CrashAction` value can travel
+                    // through a `return` statement inside `#[on(crash)]`.  The third
+                    // path — a CrashAction tail-expression without a `return` keyword —
+                    // is caught by the `body_is_crash_action` check in `check_crash_hook`
+                    // in `items.rs` after `check_block` returns.
+                    //
+                    // Exit inventory (all gated):
+                    //   (1) non-final `return CrashAction`  → THIS guard
+                    //   (2) final/tail `return CrashAction` → check_stmt_as_expr gate
+                    //   (3) tail-expr CrashAction (no return keyword) → items.rs body_is_crash_action
+                    //   (4) if/match expr whose arms all yield CrashAction → flows into (3)
+                    //   (5) let-bound CrashAction, then returned → flows into (1) or (2)
+                    //
+                    // WHEN obsolete: when v0.6 wires CrashAction return-shape
+                    // through HIR lowering, remove this guard together with the
+                    // `in_crash_hook` field, the `check_stmt_as_expr` gate, and the
+                    // `body_is_crash_action` check in `check_crash_hook` in `items.rs`.
+                    if self.in_crash_hook
+                        && matches!(
+                            self.subst.resolve(&effective_expected),
+                            Ty::Named { name, .. } if name == "CrashAction"
+                        )
+                    {
+                        let fn_name = self
+                            .current_function
+                            .clone()
+                            .unwrap_or_else(|| "<unknown>".to_string());
+                        self.errors.push(TypeError::new(
+                            TypeErrorKind::CrashActionReturnNotYetWired,
+                            span.clone(),
+                            format!(
+                                "`#[on(crash)]` hook `{fn_name}` uses `return CrashAction::…`; \
+                                 `CrashAction` enum-variant construction is not yet wired through \
+                                 the compiler — use `panic(...)` (a diverging expression) as the \
+                                 hook body for now",
+                            ),
+                        ));
+                    }
                 }
             }
             Stmt::Loop { label, body } => {

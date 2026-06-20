@@ -12447,20 +12447,12 @@ fn emit_spawn_task_closure(
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_rc_new returned void".into()))?
         .into_pointer_value();
-    let set_env = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    fn_ctx.call_runtime_void(
         "hew_task_set_env",
+        &[task_ptr.into(), rc_env.into()],
+        "hew_task_set_env_call",
+        "hew_task_set_env call",
     )?;
-    fn_ctx
-        .builder
-        .build_call(
-            set_env,
-            &[task_ptr.into(), rc_env.into()],
-            "hew_task_set_env_call",
-        )
-        .llvm_ctx("hew_task_set_env call")?;
 
     let wrapper = get_or_create_task_closure_wrapper(fn_ctx, fn_symbol)?;
     let spawn = intern_runtime_decl(
@@ -28206,25 +28198,17 @@ fn emit_tcp_attach_local_call<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, args: &[Place]) ->
 
     // Call the 4-arg runtime ABI:
     //   hew_tcp_attach_local(conn: i32, actor: *mut HewActor, on_data: i32, on_close: i32) -> i32
-    let attach_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    fn_ctx.call_runtime_void(
         "hew_tcp_attach_local",
+        &[
+            metadata_value_from_basic(conn_val),
+            metadata_value_from_basic(actor_ptr),
+            on_data_const.into(),
+            on_close_const.into(),
+        ],
+        "attach_rc",
+        "hew_tcp_attach_local call",
     )?;
-    fn_ctx
-        .builder
-        .build_call(
-            attach_fn,
-            &[
-                metadata_value_from_basic(conn_val),
-                metadata_value_from_basic(actor_ptr),
-                on_data_const.into(),
-                on_close_const.into(),
-            ],
-            "attach_rc",
-        )
-        .llvm_ctx("hew_tcp_attach_local call")?;
     Ok(())
 }
 
@@ -28768,20 +28752,12 @@ fn emit_suspending_read_terminator<'ctx>(
         .into_pointer_value();
     let conn_ptr = load_duplex_handle(fn_ctx, term.conn, "suspending_read conn")?;
 
-    let slot_new = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    let slot = fn_ctx.call_runtime_ptr(
         "hew_read_slot_new",
+        &[],
+        "suspending_read_slot",
+        "hew_read_slot_new call",
     )?;
-    let slot = fn_ctx
-        .builder
-        .build_call(slot_new, &[], "suspending_read_slot")
-        .llvm_ctx("hew_read_slot_new call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
-        .into_pointer_value();
 
     let i32_ty = fn_ctx.ctx.i32_type();
     let i64_ty = fn_ctx.ctx.i64_type();
@@ -28830,24 +28806,12 @@ fn emit_suspending_read_terminator<'ctx>(
         None
     };
 
-    let await_read = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    let rc = fn_ctx.call_runtime_int(
         "hew_conn_await_read",
+        &[conn_ptr.into(), self_actor.into(), slot.into()],
+        "suspending_read_register",
+        "hew_conn_await_read call",
     )?;
-    let rc = fn_ctx
-        .builder
-        .build_call(
-            await_read,
-            &[conn_ptr.into(), self_actor.into(), slot.into()],
-            "suspending_read_register",
-        )
-        .llvm_ctx("hew_conn_await_read call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_conn_await_read returned void".into()))?
-        .into_int_value();
 
     let parent = fn_ctx
         .builder
@@ -29497,24 +29461,12 @@ fn emit_suspending_accept_terminator<'ctx>(
         None
     };
 
-    let await_accept = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    let rc = fn_ctx.call_runtime_int(
         "hew_listener_await_accept",
+        &[listener_ptr.into(), self_actor.into(), slot.into()],
+        "suspending_accept_register",
+        "hew_listener_await_accept call",
     )?;
-    let rc = fn_ctx
-        .builder
-        .build_call(
-            await_accept,
-            &[listener_ptr.into(), self_actor.into(), slot.into()],
-            "suspending_accept_register",
-        )
-        .llvm_ctx("hew_listener_await_accept call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_listener_await_accept returned void".into()))?
-        .into_int_value();
 
     let parent = fn_ctx
         .builder
@@ -29936,21 +29888,12 @@ fn emit_suspending_accept_bind<'ctx>(
 
         fn_ctx.builder.position_at_end(accept_proceed_bb);
     }
-    let slot_take_handle = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    let conn = fn_ctx.call_runtime_basic(
         "hew_read_slot_take_handle",
+        &[slot.into()],
+        "suspending_accept_take",
+        "hew_read_slot_take_handle call",
     )?;
-    let conn = fn_ctx
-        .builder
-        .build_call(slot_take_handle, &[slot.into()], "suspending_accept_take")
-        .llvm_ctx("hew_read_slot_take_handle call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| {
-            CodegenError::FailClosed("hew_read_slot_take_handle returned void".into())
-        })?;
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, term.result_dest)?;
     if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
         return Err(CodegenError::FailClosed(format!(
@@ -30196,24 +30139,12 @@ fn emit_suspending_stream_next_terminator<'ctx>(
         None
     };
 
-    let await_next = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    let rc = fn_ctx.call_runtime_int(
         "hew_stream_await_next",
+        &[stream_ptr.into(), self_actor.into(), slot.into()],
+        "suspending_stream_next_register",
+        "hew_stream_await_next call",
     )?;
-    let rc = fn_ctx
-        .builder
-        .build_call(
-            await_next,
-            &[stream_ptr.into(), self_actor.into(), slot.into()],
-            "suspending_stream_next_register",
-        )
-        .llvm_ctx("hew_stream_await_next call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_stream_await_next returned void".into()))?
-        .into_int_value();
 
     let parent = fn_ctx
         .builder
@@ -30885,24 +30816,12 @@ fn emit_suspending_channel_recv_terminator<'ctx>(
         None
     };
 
-    let await_recv = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    let rc = fn_ctx.call_runtime_int(
         "hew_channel_await_recv",
+        &[rx_ptr.into(), self_actor.into(), slot.into()],
+        "suspending_channel_recv_register",
+        "hew_channel_await_recv call",
     )?;
-    let rc = fn_ctx
-        .builder
-        .build_call(
-            await_recv,
-            &[rx_ptr.into(), self_actor.into(), slot.into()],
-            "suspending_channel_recv_register",
-        )
-        .llvm_ctx("hew_channel_await_recv call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_channel_await_recv returned void".into()))?
-        .into_int_value();
 
     let parent = fn_ctx
         .builder
@@ -31455,29 +31374,17 @@ fn emit_suspending_task_await_terminator<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
         .into_pointer_value();
 
-    let await_suspend = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    let rc = fn_ctx.call_runtime_int(
         "hew_task_await_suspend",
+        &[
+            scope_ptr.into(),
+            task_ptr.into(),
+            self_actor.into(),
+            slot.into(),
+        ],
+        "suspending_task_await_register",
+        "hew_task_await_suspend call",
     )?;
-    let rc = fn_ctx
-        .builder
-        .build_call(
-            await_suspend,
-            &[
-                scope_ptr.into(),
-                task_ptr.into(),
-                self_actor.into(),
-                slot.into(),
-            ],
-            "suspending_task_await_register",
-        )
-        .llvm_ctx("hew_task_await_suspend call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_task_await_suspend returned void".into()))?
-        .into_int_value();
 
     let parent = fn_ctx
         .builder
@@ -31576,26 +31483,12 @@ fn emit_suspending_task_await_terminator<'ctx>(
             // deref behind a future feature. WHEN obsolete: never — the runtime
             // contract permits a null result buffer regardless of surface.
             if let Some(result_dest) = term.result_dest {
-                let get_result = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                let result_buf = fn_ctx.call_runtime_ptr(
                     "hew_task_get_result",
+                    &[task_ptr.into()],
+                    "suspending_task_await_result",
+                    "hew_task_get_result (bind) call",
                 )?;
-                let result_buf = fn_ctx
-                    .builder
-                    .build_call(
-                        get_result,
-                        &[task_ptr.into()],
-                        "suspending_task_await_result",
-                    )
-                    .llvm_ctx("hew_task_get_result (bind) call")?
-                    .try_as_basic_value()
-                    .basic()
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed("hew_task_get_result returned void".into())
-                    })?
-                    .into_pointer_value();
                 let copy_bb = fn_ctx
                     .ctx
                     .append_basic_block(parent, "suspending_task_await_result_copy");
@@ -32495,29 +32388,17 @@ fn emit_suspending_stream_send_terminator<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
         .into_pointer_value();
 
-    let await_send = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    let rc = fn_ctx.call_runtime_int(
         "hew_stream_await_send",
+        &[
+            sink_ptr.into(),
+            self_actor.into(),
+            slot.into(),
+            value_ptr.into(),
+        ],
+        "suspending_stream_send_register",
+        "hew_stream_await_send call",
     )?;
-    let rc = fn_ctx
-        .builder
-        .build_call(
-            await_send,
-            &[
-                sink_ptr.into(),
-                self_actor.into(),
-                slot.into(),
-                value_ptr.into(),
-            ],
-            "suspending_stream_send_register",
-        )
-        .llvm_ctx("hew_stream_await_send call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_stream_await_send returned void".into()))?
-        .into_int_value();
 
     let parent = fn_ctx
         .builder
@@ -32823,20 +32704,12 @@ fn emit_suspending_ask_terminator<'ctx>(
         .basic()
         .ok_or_else(|| CodegenError::FailClosed("hew_reply_channel_new returned void".into()))?
         .into_pointer_value();
-    let set_waiter = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    fn_ctx.call_runtime_void(
         "hew_reply_channel_set_parked_waiter",
+        &[ch.into(), self_actor.into()],
+        "suspending_ask_set_waiter",
+        "hew_reply_channel_set_parked_waiter call",
     )?;
-    fn_ctx
-        .builder
-        .build_call(
-            set_waiter,
-            &[ch.into(), self_actor.into()],
-            "suspending_ask_set_waiter",
-        )
-        .llvm_ctx("hew_reply_channel_set_parked_waiter call")?;
 
     // #1739: register the reply type R's destructor on the channel before the
     // ask submits. This is THE timeout/cancel leak path — an `await … | after d`
@@ -33467,26 +33340,12 @@ fn emit_suspending_ask_reply_bind<'ctx>(
     // TLS last-error, which never carries the channel-local orphaned fact, so
     // mailbox-teardown asks reported the wrong error variant.
     fn_ctx.builder.position_at_end(ask_err_bb);
-    let ch_is_orphaned_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    let orphaned_i32 = fn_ctx.call_runtime_int(
         "hew_reply_channel_is_orphaned",
+        &[ch.into()],
+        "suspending_ask_is_orphaned",
+        "hew_reply_channel_is_orphaned call",
     )?;
-    let orphaned_i32 = fn_ctx
-        .builder
-        .build_call(
-            ch_is_orphaned_fn,
-            &[ch.into()],
-            "suspending_ask_is_orphaned",
-        )
-        .llvm_ctx("hew_reply_channel_is_orphaned call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| {
-            CodegenError::FailClosed("hew_reply_channel_is_orphaned returned void".into())
-        })?
-        .into_int_value();
     // Free the caller-side ref AFTER reading the orphaned flag.
     fn_ctx
         .builder
@@ -33513,26 +33372,12 @@ fn emit_suspending_ask_reply_bind<'ctx>(
             "suspending_ask_orphaned_flag",
         )
         .llvm_ctx("suspending ask orphaned compare")?;
-    let take_last_error_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    let last_error = fn_ctx.call_runtime_int(
         "hew_actor_ask_take_last_error",
+        &[],
+        "suspending_ask_err_take_last_error",
+        "hew_actor_ask_take_last_error call",
     )?;
-    let last_error = fn_ctx
-        .builder
-        .build_call(
-            take_last_error_fn,
-            &[],
-            "suspending_ask_err_take_last_error",
-        )
-        .llvm_ctx("hew_actor_ask_take_last_error call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| {
-            CodegenError::FailClosed("hew_actor_ask_take_last_error returned void".into())
-        })?
-        .into_int_value();
     // AskError::OrphanedAsk = 11 (hew-runtime internal::types::AskError); the Hew
     // AskError enum tag uses the same discriminants the blocking path stores.
     let orphaned_ask_code = i32_ty.const_int(11, false);
@@ -33721,16 +33566,12 @@ fn emit_suspending_call_closure_terminator<'ctx>(
     // exactly two refs whenever the child has NOT deposited (the abandon and the
     // crash-unwind edges both free two), so trap/cancel/unwind teardown is a
     // single uniform rule.
-    let ch_retain = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    fn_ctx.call_runtime_void(
         "hew_reply_channel_retain",
+        &[ch.into()],
+        "suspending_closure_ch_retain",
+        "hew_reply_channel_retain call",
     )?;
-    fn_ctx
-        .builder
-        .build_call(ch_retain, &[ch.into()], "suspending_closure_ch_retain")
-        .llvm_ctx("hew_reply_channel_retain call")?;
 
     let swap_push_fn = intern_runtime_decl(
         fn_ctx.ctx,
@@ -34327,46 +34168,24 @@ fn emit_suspending_remote_actor_ask_terminator<'ctx>(
         || {
             // ── abandon_cleanup: cancel the pending reply, then join the shared
             // coro cleanup (frame-free + coro.end). ─────────────────────────────
-            let ask_cancel_fn = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            fn_ctx.call_runtime_void(
                 "hew_node_api_ask_cancel",
+                &[pending_handle.into()],
+                "suspending_remote_ask_cancel",
+                "hew_node_api_ask_cancel call",
             )?;
-            fn_ctx
-                .builder
-                .build_call(
-                    ask_cancel_fn,
-                    &[pending_handle.into()],
-                    "suspending_remote_ask_cancel",
-                )
-                .llvm_ctx("hew_node_api_ask_cancel call")?;
             Ok(())
         },
         || {
             // ── reply_bind: the wire reply (or peer-drop / timeout failure)
             // resumed us. Drain the deposited outcome; null is the typed-failure
             // sentinel. ─────────────────────────────────────────────────────────
-            let ask_finish_fn = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let reply_ptr = fn_ctx.call_runtime_ptr(
                 "hew_node_api_ask_finish",
+                &[pending_handle.into(), msg_type.into(), reply_size.into()],
+                "hew_node_api_ask_finish_call",
+                "hew_node_api_ask_finish call",
             )?;
-            let reply_ptr = fn_ctx
-                .builder
-                .build_call(
-                    ask_finish_fn,
-                    &[pending_handle.into(), msg_type.into(), reply_size.into()],
-                    "hew_node_api_ask_finish_call",
-                )
-                .llvm_ctx("hew_node_api_ask_finish call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("hew_node_api_ask_finish returned void".into())
-                })?
-                .into_pointer_value();
 
             let ok_bb = fn_ctx
                 .ctx
@@ -35301,16 +35120,12 @@ fn lower_terminator<'ctx>(
             // actors before `main` returns. The standalone-WASM analogue of the
             // native drain+cleanup exit path; see `emit_wasm_runtime_exit`.
             if fn_ctx.emit_wasm_runtime_exit {
-                let wasm_runtime_exit = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                fn_ctx.call_runtime_void(
                     "hew_wasm_runtime_exit",
+                    &[],
+                    "hew_wasm_runtime_exit_call",
+                    "hew_wasm_runtime_exit call",
                 )?;
-                fn_ctx
-                    .builder
-                    .build_call(wasm_runtime_exit, &[], "hew_wasm_runtime_exit_call")
-                    .llvm_ctx("hew_wasm_runtime_exit call")?;
             }
             // Lambda-actor drain: each lambda actor runs on its own OS
             // thread outside the work-stealing scheduler, so the
@@ -35324,20 +35139,12 @@ fn lower_terminator<'ctx>(
             // `main` is cheap.
             if fn_ctx.emit_lambda_drain_epilogue {
                 let i64_ty = fn_ctx.ctx.i64_type();
-                let drain_all = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                fn_ctx.call_runtime_void(
                     "hew_lambda_drain_all",
+                    &[i64_ty.const_int(0, false).into()],
+                    "hew_lambda_drain_all_call",
+                    "hew_lambda_drain_all call",
                 )?;
-                fn_ctx
-                    .builder
-                    .build_call(
-                        drain_all,
-                        &[i64_ty.const_int(0, false).into()],
-                        "hew_lambda_drain_all_call",
-                    )
-                    .llvm_ctx("hew_lambda_drain_all call")?;
             }
             // Coroutine completion (W6.010 value routing): a suspendable handler
             // does NOT `ret` its Hew value — the ramp returns the `coro.begin`
@@ -36324,22 +36131,12 @@ fn lower_terminator<'ctx>(
                     "generator coro companion struct has no static size".into(),
                 )
             })?;
-            let alloc_fn = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let companion = fn_ctx.call_runtime_ptr(
                 "hew_cont_frame_alloc",
+                &[companion_size.into()],
+                "gen_companion_alloc",
+                "gen companion hew_cont_frame_alloc call",
             )?;
-            let companion = fn_ctx
-                .builder
-                .build_call(alloc_fn, &[companion_size.into()], "gen_companion_alloc")
-                .llvm_ctx("gen companion hew_cont_frame_alloc call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("hew_cont_frame_alloc returned void".into())
-                })?
-                .into_pointer_value();
 
             // ── 2. Init the `started` gate (field 3) to 0: the consumer's first
             // `.next()` reads the pre-positioned first value WITHOUT resuming.
@@ -36822,31 +36619,18 @@ fn lower_terminator<'ctx>(
                 )));
             }
             let shape_const = i32_ty.const_int(u64::from(shape_u32), false);
-            let new_fn = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
+            let handle = fn_ctx.call_runtime_basic(
                 "hew_lambda_actor_new",
+                &[
+                    mailbox_const.into(),
+                    shape_const.into(),
+                    body_fn_ptr.into(),
+                    state_arg.into(),
+                    drop_fn_ptr.into(),
+                ],
+                "hew_lambda_actor_new_call",
+                "hew_lambda_actor_new call",
             )?;
-            let handle = fn_ctx
-                .builder
-                .build_call(
-                    new_fn,
-                    &[
-                        mailbox_const.into(),
-                        shape_const.into(),
-                        body_fn_ptr.into(),
-                        state_arg.into(),
-                        drop_fn_ptr.into(),
-                    ],
-                    "hew_lambda_actor_new_call",
-                )
-                .llvm_ctx("hew_lambda_actor_new call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("hew_lambda_actor_new returned void".into())
-                })?;
             let (dest_slot, _dest_ty) = place_pointer(fn_ctx, *dest)?;
             fn_ctx
                 .builder
@@ -36862,27 +36646,12 @@ fn lower_terminator<'ctx>(
                     let field_idx = u32::try_from(idx).map_err(|_| {
                         CodegenError::FailClosed("lambda env field count exceeds u32::MAX".into())
                     })?;
-                    let downgrade_fn = intern_runtime_decl(
-                        fn_ctx.ctx,
-                        fn_ctx.llvm_mod,
-                        &mut fn_ctx.runtime_decls.borrow_mut(),
+                    let weak = fn_ctx.call_runtime_basic(
                         "hew_lambda_actor_downgrade",
+                        &[handle.into()],
+                        &format!("lambda_env_weak_{idx}_downgrade"),
+                        "hew_lambda_actor_downgrade call",
                     )?;
-                    let weak = fn_ctx
-                        .builder
-                        .build_call(
-                            downgrade_fn,
-                            &[handle.into()],
-                            &format!("lambda_env_weak_{idx}_downgrade"),
-                        )
-                        .llvm_ctx("hew_lambda_actor_downgrade call")?
-                        .try_as_basic_value()
-                        .basic()
-                        .ok_or_else(|| {
-                            CodegenError::FailClosed(
-                                "hew_lambda_actor_downgrade returned void".into(),
-                            )
-                        })?;
                     let field_ptr = fn_ctx
                         .builder
                         .build_struct_gep(
@@ -40267,21 +40036,12 @@ fn emit_cooperate_check<'ctx>(
     block_id: u32,
     drop_plans: &[(ExitPath, hew_mir::DropPlan)],
 ) -> CodegenResult<()> {
-    let cooperate_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
+    let signal = fn_ctx.call_runtime_int(
         "hew_actor_cooperate",
+        &[],
+        "hew_actor_cooperate",
+        "hew_actor_cooperate call",
     )?;
-    let call = fn_ctx
-        .builder
-        .build_call(cooperate_fn, &[], "hew_actor_cooperate")
-        .llvm_ctx("hew_actor_cooperate call")?;
-    let signal = call
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_cooperate returned void".into()))?
-        .into_int_value();
     let cancel_code = fn_ctx.ctx.i32_type().const_int(2, false);
     let is_cancel = fn_ctx
         .builder

@@ -211,8 +211,11 @@ run_asan_fixture() {
   done
 
   # An ASan/LSan finding always contains one of these marker strings.
-  if printf '%s' "${asan_output}" \
-       | grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)|SUMMARY: (AddressSanitizer|LeakSanitizer)"; then
+  # Use a here-string to avoid a printf | grep -q pipeline: under set -o pipefail
+  # grep -q closes stdin after the first match, sending SIGPIPE to printf, which
+  # makes the pipeline exit 141 (false negative) on large reports.
+  if grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)|SUMMARY: (AddressSanitizer|LeakSanitizer)" \
+       <<< "${asan_output}"; then
     echo "    FAIL ${label}: ASan/LSan reported findings:" >&2
     printf '%s\n' "${asan_output}" | sed 's/^/    /' >&2
     return 1
@@ -259,9 +262,14 @@ run_asan_fixture_expect_leak() {
   asan_stderr="$(cat "${log_prefix}.stderr" 2>/dev/null || true)"
   rm -f "${log_prefix}.stderr"
 
+  # Combine both capture buffers into one string so we can use a here-string
+  # predicate.  A printf | grep -q pipeline is unsafe under set -o pipefail:
+  # grep -q closes stdin after the first match, SIGPIPE reaches printf, and the
+  # pipeline exits 141 instead of 0 on any large report (false negative).
+  local combined_asan="${asan_output}"$'\n'"${asan_stderr}"
   local gate_fired=false
-  if printf '%s\n%s' "${asan_output}" "${asan_stderr}" \
-       | grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)|detected memory leaks|SUMMARY: (AddressSanitizer|LeakSanitizer)"; then
+  if grep -qE "ERROR: (AddressSanitizer|LeakSanitizer)|detected memory leaks|SUMMARY: (AddressSanitizer|LeakSanitizer)" \
+       <<< "${combined_asan}"; then
     gate_fired=true
   elif [[ "${actual_exit}" -ne 0 ]]; then
     # LSan exits non-zero when leaks are detected even without matching text

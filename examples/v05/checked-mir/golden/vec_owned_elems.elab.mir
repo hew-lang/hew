@@ -131,6 +131,7 @@ fn main -> ()
     return[bb33] ->
       drop _51 ty=Tag kind=record_in_place
       drop _45 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _33 ty=Vec<Point> kind=cow_heap(hew_vec_free)
       drop _18 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)

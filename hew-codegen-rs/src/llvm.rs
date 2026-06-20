@@ -8046,6 +8046,68 @@ fn drop_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<Drop
     }
 }
 
+/// The shape of a synthesised in-place clone/drop/overwrite thunk. Each shape
+/// maps to exactly one LLVM function type; the helper derives the type from the
+/// shape so no caller can declare a thunk with the wrong width
+/// (`ffi-abi-width-mirror`). The symbol-name fragment (`clone_inplace` /
+/// `drop_inplace` / `overwrite_release`) is part of the shape so the declare
+/// mechanic is the single source for both the type AND the name segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThunkShape {
+    /// `fn(*const src, *mut dst) -> i32` (0 = success, non-zero = rollback).
+    CloneInplace,
+    /// `fn(*mut)` — drop the owned leaves in place; does not free the wrapper.
+    DropInplace,
+    /// `fn(*mut old, *const new)` — neutralise aliased old leaves, then drop.
+    OverwriteRelease,
+}
+
+impl ThunkShape {
+    /// The symbol-name fragment for this shape (`__hew_{kind}_{fragment}_{name}`).
+    fn name_fragment(self) -> &'static str {
+        match self {
+            ThunkShape::CloneInplace => "clone_inplace",
+            ThunkShape::DropInplace => "drop_inplace",
+            ThunkShape::OverwriteRelease => "overwrite_release",
+        }
+    }
+
+    /// The LLVM function type for this shape (the single ABI-width source).
+    fn fn_type<'ctx>(self, ctx: &'ctx Context) -> FunctionType<'ctx> {
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        match self {
+            ThunkShape::CloneInplace => ctx
+                .i32_type()
+                .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+            ThunkShape::DropInplace => ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            ThunkShape::OverwriteRelease => ctx
+                .void_type()
+                .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        }
+    }
+}
+
+/// Lookup-or-declare a synthesised in-place thunk for `name` of `kind`
+/// (`record` / `enum` / `tuple` / `collection`) with the given `shape`. Returns
+/// the cached `FunctionValue` on repeat lookups so the declare is idempotent.
+/// The symbol is `__hew_{kind}_{shape}_{name}` and the LLVM signature + internal
+/// linkage are derived from `shape` — this is the single declare mechanic the
+/// ten per-(kind,shape) wrappers delegate to, so a future thunk family adds a
+/// `ThunkShape` variant or a `kind` string, not another copied function.
+fn get_or_declare_inplace_thunk<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    kind: &str,
+    name: &str,
+    shape: ThunkShape,
+) -> FunctionValue<'ctx> {
+    let sym = format!("__hew_{kind}_{}_{name}", shape.name_fragment());
+    if let Some(fv) = llvm_mod.get_function(&sym) {
+        return fv;
+    }
+    llvm_mod.add_function(&sym, shape.fn_type(ctx), Some(Linkage::Internal))
+}
+
 /// Lookup-or-declare the synthesised per-record in-place clone helper. The
 /// per-record helper signature is `fn(*const, *mut) -> i32` (0 = success,
 /// non-zero = partial-clone rollback complete). Declaring here lets a
@@ -8056,16 +8118,12 @@ fn get_or_declare_record_clone_inplace<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     record_name: &str,
 ) -> FunctionValue<'ctx> {
-    let sym = format!("__hew_record_clone_inplace_{record_name}");
-    if let Some(fv) = llvm_mod.get_function(&sym) {
-        return fv;
-    }
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let i32_ty = ctx.i32_type();
-    llvm_mod.add_function(
-        &sym,
-        i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        Some(Linkage::Internal),
+    get_or_declare_inplace_thunk(
+        ctx,
+        llvm_mod,
+        "record",
+        record_name,
+        ThunkShape::CloneInplace,
     )
 }
 
@@ -8077,15 +8135,12 @@ fn get_or_declare_record_drop_inplace<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     record_name: &str,
 ) -> FunctionValue<'ctx> {
-    let sym = format!("__hew_record_drop_inplace_{record_name}");
-    if let Some(fv) = llvm_mod.get_function(&sym) {
-        return fv;
-    }
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    llvm_mod.add_function(
-        &sym,
-        ctx.void_type().fn_type(&[ptr_ty.into()], false),
-        Some(Linkage::Internal),
+    get_or_declare_inplace_thunk(
+        ctx,
+        llvm_mod,
+        "record",
+        record_name,
+        ThunkShape::DropInplace,
     )
 }
 
@@ -8103,17 +8158,7 @@ fn get_or_declare_enum_clone_inplace<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     enum_name: &str,
 ) -> FunctionValue<'ctx> {
-    let sym = format!("__hew_enum_clone_inplace_{enum_name}");
-    if let Some(fv) = llvm_mod.get_function(&sym) {
-        return fv;
-    }
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let i32_ty = ctx.i32_type();
-    llvm_mod.add_function(
-        &sym,
-        i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        Some(Linkage::Internal),
-    )
+    get_or_declare_inplace_thunk(ctx, llvm_mod, "enum", enum_name, ThunkShape::CloneInplace)
 }
 
 /// Lookup-or-declare the synthesised per-enum in-place drop helper. Mirrors
@@ -8126,16 +8171,7 @@ fn get_or_declare_enum_drop_inplace<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     enum_name: &str,
 ) -> FunctionValue<'ctx> {
-    let sym = format!("__hew_enum_drop_inplace_{enum_name}");
-    if let Some(fv) = llvm_mod.get_function(&sym) {
-        return fv;
-    }
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    llvm_mod.add_function(
-        &sym,
-        ctx.void_type().fn_type(&[ptr_ty.into()], false),
-        Some(Linkage::Internal),
-    )
+    get_or_declare_inplace_thunk(ctx, llvm_mod, "enum", enum_name, ThunkShape::DropInplace)
 }
 
 /// Lookup-or-declare the synthesised per-record overwrite-release helper
@@ -8150,16 +8186,12 @@ fn get_or_declare_record_overwrite_release<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     record_name: &str,
 ) -> FunctionValue<'ctx> {
-    let sym = format!("__hew_record_overwrite_release_{record_name}");
-    if let Some(fv) = llvm_mod.get_function(&sym) {
-        return fv;
-    }
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    llvm_mod.add_function(
-        &sym,
-        ctx.void_type()
-            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        Some(Linkage::Internal),
+    get_or_declare_inplace_thunk(
+        ctx,
+        llvm_mod,
+        "record",
+        record_name,
+        ThunkShape::OverwriteRelease,
     )
 }
 
@@ -8171,16 +8203,12 @@ fn get_or_declare_enum_overwrite_release<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     enum_name: &str,
 ) -> FunctionValue<'ctx> {
-    let sym = format!("__hew_enum_overwrite_release_{enum_name}");
-    if let Some(fv) = llvm_mod.get_function(&sym) {
-        return fv;
-    }
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    llvm_mod.add_function(
-        &sym,
-        ctx.void_type()
-            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        Some(Linkage::Internal),
+    get_or_declare_inplace_thunk(
+        ctx,
+        llvm_mod,
+        "enum",
+        enum_name,
+        ThunkShape::OverwriteRelease,
     )
 }
 
@@ -17856,17 +17884,7 @@ fn get_or_declare_tuple_clone_inplace<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     tuple_key: &str,
 ) -> FunctionValue<'ctx> {
-    let sym = format!("__hew_tuple_clone_inplace_{tuple_key}");
-    if let Some(fv) = llvm_mod.get_function(&sym) {
-        return fv;
-    }
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let i32_ty = ctx.i32_type();
-    llvm_mod.add_function(
-        &sym,
-        i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        Some(Linkage::Internal),
-    )
+    get_or_declare_inplace_thunk(ctx, llvm_mod, "tuple", tuple_key, ThunkShape::CloneInplace)
 }
 
 /// Lookup-or-declare the synthesised per-tuple in-place drop helper.
@@ -17876,16 +17894,7 @@ fn get_or_declare_tuple_drop_inplace<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     tuple_key: &str,
 ) -> FunctionValue<'ctx> {
-    let sym = format!("__hew_tuple_drop_inplace_{tuple_key}");
-    if let Some(fv) = llvm_mod.get_function(&sym) {
-        return fv;
-    }
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    llvm_mod.add_function(
-        &sym,
-        ctx.void_type().fn_type(&[ptr_ty.into()], false),
-        Some(Linkage::Internal),
-    )
+    get_or_declare_inplace_thunk(ctx, llvm_mod, "tuple", tuple_key, ThunkShape::DropInplace)
 }
 
 fn emit_tuple_kind_inplace_thunk_bodies<'ctx>(
@@ -17990,17 +17999,7 @@ fn get_or_declare_collection_clone_inplace<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     key: &str,
 ) -> FunctionValue<'ctx> {
-    let sym = format!("__hew_collection_clone_inplace_{key}");
-    if let Some(fv) = llvm_mod.get_function(&sym) {
-        return fv;
-    }
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let i32_ty = ctx.i32_type();
-    llvm_mod.add_function(
-        &sym,
-        i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
-        Some(Linkage::Internal),
-    )
+    get_or_declare_inplace_thunk(ctx, llvm_mod, "collection", key, ThunkShape::CloneInplace)
 }
 
 /// Lookup-or-declare the synthesized per-collection in-place drop helper.
@@ -18011,16 +18010,7 @@ fn get_or_declare_collection_drop_inplace<'ctx>(
     llvm_mod: &LlvmModule<'ctx>,
     key: &str,
 ) -> FunctionValue<'ctx> {
-    let sym = format!("__hew_collection_drop_inplace_{key}");
-    if let Some(fv) = llvm_mod.get_function(&sym) {
-        return fv;
-    }
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    llvm_mod.add_function(
-        &sym,
-        ctx.void_type().fn_type(&[ptr_ty.into()], false),
-        Some(Linkage::Internal),
-    )
+    get_or_declare_inplace_thunk(ctx, llvm_mod, "collection", key, ThunkShape::DropInplace)
 }
 
 /// Emit the bodies of the collection-handle clone/drop wrapper thunks (#1722),
@@ -54218,6 +54208,77 @@ fn main() {
         let builder = ctx.create_builder();
         builder.position_at_end(entry);
         builder.build_return(None).expect("stub drop ret");
+    }
+
+    // ── get_or_declare_inplace_thunk unit tests ──────────────────────────────
+    //
+    // Pin the single declare mechanic the ten per-(kind,shape) wrappers delegate
+    // to: the symbol name is `__hew_{kind}_{shape}_{name}`, the declare is
+    // idempotent, the LLVM signature is derived from `ThunkShape` (the single
+    // ABI-width source), and the linkage is always Internal. A wrong width or a
+    // CamelCase-vs-snake_case name fragment goes red here, not silently in IR.
+
+    #[test]
+    fn inplace_thunk_symbol_name_matches_kind_shape_name() {
+        let ctx = Context::create();
+        let m = ctx.create_module("inplace_thunk_name");
+        let fv =
+            get_or_declare_inplace_thunk(&ctx, &m, "record", "MyRecord", ThunkShape::CloneInplace);
+        assert_eq!(
+            fv.get_name().to_str().unwrap(),
+            "__hew_record_clone_inplace_MyRecord"
+        );
+        let dv = get_or_declare_inplace_thunk(&ctx, &m, "enum", "St", ThunkShape::DropInplace);
+        assert_eq!(
+            dv.get_name().to_str().unwrap(),
+            "__hew_enum_drop_inplace_St"
+        );
+        let ov =
+            get_or_declare_inplace_thunk(&ctx, &m, "record", "Rec", ThunkShape::OverwriteRelease);
+        assert_eq!(
+            ov.get_name().to_str().unwrap(),
+            "__hew_record_overwrite_release_Rec"
+        );
+    }
+
+    #[test]
+    fn inplace_thunk_declare_is_idempotent() {
+        let ctx = Context::create();
+        let m = ctx.create_module("inplace_thunk_idem");
+        let a = get_or_declare_inplace_thunk(&ctx, &m, "tuple", "T0", ThunkShape::CloneInplace);
+        let b = get_or_declare_inplace_thunk(&ctx, &m, "tuple", "T0", ThunkShape::CloneInplace);
+        assert_eq!(a, b, "repeat declare must return the cached FunctionValue");
+    }
+
+    #[test]
+    fn inplace_thunk_shape_derives_function_type() {
+        let ctx = Context::create();
+        let m = ctx.create_module("inplace_thunk_types");
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let i32_ty = ctx.i32_type();
+        let void_ty = ctx.void_type();
+
+        let clone = get_or_declare_inplace_thunk(&ctx, &m, "record", "C", ThunkShape::CloneInplace);
+        assert_eq!(
+            clone.get_type(),
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)
+        );
+        let drop = get_or_declare_inplace_thunk(&ctx, &m, "record", "D", ThunkShape::DropInplace);
+        assert_eq!(drop.get_type(), void_ty.fn_type(&[ptr_ty.into()], false));
+        let ow =
+            get_or_declare_inplace_thunk(&ctx, &m, "record", "O", ThunkShape::OverwriteRelease);
+        assert_eq!(
+            ow.get_type(),
+            void_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)
+        );
+    }
+
+    #[test]
+    fn inplace_thunk_declares_internal_linkage() {
+        let ctx = Context::create();
+        let m = ctx.create_module("inplace_thunk_linkage");
+        let fv = get_or_declare_inplace_thunk(&ctx, &m, "enum", "L", ThunkShape::CloneInplace);
+        assert_eq!(fv.get_linkage(), Linkage::Internal);
     }
 
     /// Happy path: a record `{ string, bytes, i64 }`. The synthesised body

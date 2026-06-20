@@ -15512,11 +15512,80 @@ fn lower_record_field_load(
         .builder
         .build_load(field_ty, field_ptr, &format!("field_{idx}_load"))
         .llvm_ctx_with(|| format!("RecordFieldLoad field {idx} load"))?;
+    // A `string` field read out of a still-live record is a `+1` retained owner,
+    // NOT a raw alias of the parent's field buffer. The M-COW spine emits no
+    // retain-on-share, so without this `hew_string_clone` the loaded local would
+    // alias the parent's refcount-un-bumped buffer; consuming it (a container
+    // move, a duplicate return) then frees the same buffer from both ends — the
+    // double-free this retain closes. The retained `+1` is balanced by exactly
+    // one scope-exit `hew_string_drop`: the MIR side registers this dest as a
+    // fresh string producer (`fresh_string_producer_dest`) and excludes it from
+    // the projection-alias taint, mirroring the already-shipped `hew_vec_get_str`
+    // (`xs.get(i)`) retained-interior-load precedent. The two sides MUST move
+    // together — a retain here without the MIR admission inverts the double-free
+    // into a leak.
+    let field_val = retain_string_field_load(fn_ctx, dest, field_val, &format!("field_{idx}"))?;
     fn_ctx
         .builder
         .build_store(dest_ptr, field_val)
         .llvm_ctx_with(|| format!("RecordFieldLoad field {idx} store"))?;
     Ok(())
+}
+
+/// Retain a `string`-typed aggregate field/element value as a fresh `+1` owner
+/// when `dest` is a `string` local, else pass the loaded value through unchanged.
+///
+/// A `string` loaded out of a record field / tuple element is an interior
+/// pointer of the still-live parent aggregate. The M-COW spine emits no
+/// retain-on-share, so the loaded value bit-aliases the parent's buffer with its
+/// refcount un-bumped. Emitting `hew_string_clone` here makes the loaded local a
+/// genuine independent `+1` owner — the premise that made the MIR side suppress
+/// its scope-exit drop (`projection_alias_dest`) is then false, and the MIR side
+/// admits the dest for exactly one balancing `hew_string_drop`
+/// (`fresh_string_producer_dest`). This is the identical ownership shape as the
+/// `Vec<string>` getter `hew_vec_get_str` (`xs.get(i)`), which is also a retained
+/// interior load admitted past the same taint.
+///
+/// Scope is `string`-ONLY: a `bytes` / `Vec<T>` / nested-record field currently
+/// LEAKS rather than double-frees (`cow_value_leaf_drop_symbol` returns `None`
+/// for them, so the MIR side never schedules their drop), and retaining them here
+/// without a balancing drop would invert that safe leak into one too — so they
+/// are deliberately passed through un-retained until the retain-on-share spine
+/// lands. Detection is by the dest local's `ResolvedTy` (the precise string
+/// distinguisher), never the raw LLVM pointer type (which a `Vec`/record field
+/// shares).
+fn retain_string_field_load<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: Place,
+    field_val: BasicValueEnum<'ctx>,
+    label: &str,
+) -> CodegenResult<BasicValueEnum<'ctx>> {
+    if !is_codegen_string_ty(place_resolved_ty(fn_ctx, dest)?) {
+        return Ok(field_val);
+    }
+    let clone_fn = get_or_declare_clone_helper(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &CloneHelper::Allocating {
+            name: "hew_string_clone",
+        },
+    );
+    let retained = fn_ctx
+        .builder
+        .build_call(
+            clone_fn,
+            &[field_val.into()],
+            &format!("{label}_str_retain"),
+        )
+        .llvm_ctx_with(|| format!("hew_string_clone retain for {label} field load"))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "hew_string_clone returned void retaining {label} field load"
+            ))
+        })?;
+    Ok(retained)
 }
 
 /// Lower `Instr::RecordFieldStore { record, field_offset, src }` to a
@@ -17134,6 +17203,13 @@ fn lower_tuple_field_load(
         .builder
         .build_load(field_ty, field_ptr, &format!("tuple_{idx}_load"))
         .llvm_ctx_with(|| format!("TupleFieldLoad element {idx} load"))?;
+    // A `string` tuple element read out of a still-live tuple is a `+1` retained
+    // owner, not a raw alias of the parent's element buffer — same ownership
+    // shape and same two-sided retain/admission coupling as the record field
+    // load above (see `retain_string_field_load`). Without this retain the
+    // `t.0 : string` (`scanner.next_line` shape) loaded into two consume
+    // positions double-frees the shared buffer.
+    let field_val = retain_string_field_load(fn_ctx, dest, field_val, &format!("tuple_{idx}"))?;
     fn_ctx
         .builder
         .build_store(dest_ptr, field_val)

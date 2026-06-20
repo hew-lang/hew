@@ -313,7 +313,7 @@ if [[ ! -f "${CLI_LINK_BIN}" ]]; then
   exit 1
 fi
 echo "  VERIFY   CLI-linked binary contains ASan/LSan runtime symbols"
-if ! nm "${CLI_LINK_BIN}" 2>/dev/null | grep -q "__asan_init\|__lsan_"; then
+if ! nm -D "${CLI_LINK_BIN}" 2>/dev/null | grep -q "__asan_init\|__lsan_"; then
   echo "asan-fixture-check: CLI-linked binary does not contain __asan_init / __lsan_ symbols" >&2
   echo "    Check: HEW_SANITIZE_ADDRESS=1 must add -fsanitize=address at the clang link step." >&2
   exit 1

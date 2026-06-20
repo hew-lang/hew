@@ -2740,16 +2740,26 @@ pub unsafe extern "C" fn hew_actor_send_wire(
 /// Returns 0 on success, -1 if the actor ID is not currently live on this
 /// node or the local send fails.
 ///
+/// `dispatch` is the TARGET actor TYPE's dispatch function pointer
+/// (`__hew_actor_dispatch_<Actor>`), supplied by codegen at the remote-tell
+/// site (it knows the target type statically from `RemotePid<T>`). It keys the
+/// cross-node serialize codec `(dispatch, msg_type)` so a colliding `msg_type`
+/// on another actor type cannot select the wrong serializer for the value being
+/// shipped. It is unused on the LOCAL send path (the local mailbox copies the
+/// in-memory value directly); local-only callers may pass null.
+///
 /// # Safety
 ///
 /// `data` must point to at least `size` readable bytes, or be null when
 /// `size` is 0. For local actors, callers must only send to actor IDs whose
 /// lifetime they still coordinate; once the live lookup succeeds, this path
-/// shares the same liveness contract as [`hew_actor_send`].
+/// shares the same liveness contract as [`hew_actor_send`]. `dispatch` is an
+/// opaque codec key, never dereferenced.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_send_by_id(
     actor_id: u64,
+    dispatch: *const c_void,
     msg_type: i32,
     data: *mut c_void,
     size: usize,
@@ -2769,10 +2779,13 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     }
 
     // Actor not found locally. If the PID belongs to a remote node,
-    // route through the distributed node infrastructure.
+    // route through the distributed node infrastructure (which serializes the
+    // payload under the `(dispatch, msg_type)` codec key).
     if crate::pid::hew_pid_is_local(actor_id) == 0 {
         // SAFETY: data validity is guaranteed by caller contract.
-        return unsafe { crate::hew_node::try_remote_send(actor_id, msg_type, data, size) };
+        return unsafe {
+            crate::hew_node::try_remote_send(actor_id, dispatch, msg_type, data, size)
+        };
     }
     -1
 }
@@ -6055,7 +6068,9 @@ mod tests {
                 start.wait();
                 for _ in 0..sends_per_thread {
                     // SAFETY: actor remains live until all sender threads join.
-                    let rc = unsafe { hew_actor_send_by_id(actor_id, 1, ptr::null_mut(), 0) };
+                    let rc = unsafe {
+                        hew_actor_send_by_id(actor_id, ptr::null(), 1, ptr::null_mut(), 0)
+                    };
                     assert_eq!(rc, 0);
                 }
             }));
@@ -6099,7 +6114,7 @@ mod tests {
 
         // SAFETY: caller only provides message bytes; the runtime should reject
         // the now-untracked actor ID instead of crashing.
-        let rc = unsafe { hew_actor_send_by_id(actor_id, 1, ptr::null_mut(), 0) };
+        let rc = unsafe { hew_actor_send_by_id(actor_id, ptr::null(), 1, ptr::null_mut(), 0) };
         assert_eq!(rc, -1);
     }
 
@@ -6715,7 +6730,9 @@ mod tests {
                 start.wait();
                 for _ in 0..sends_per_thread {
                     // SAFETY: actor remains live until all worker threads join.
-                    let rc = unsafe { hew_actor_send_by_id(actor_id, 1, ptr::null_mut(), 0) };
+                    let rc = unsafe {
+                        hew_actor_send_by_id(actor_id, ptr::null(), 1, ptr::null_mut(), 0)
+                    };
                     assert_eq!(rc, 0);
                 }
             }));

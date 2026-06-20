@@ -2656,3 +2656,47 @@ fn vec_len_and_is_empty_on_layout_element_do_not_fire_fence() {
         "`Vec::len` and `Vec::is_empty` must not trigger the layout fence: {layout_fence_errors:?}",
     );
 }
+
+// ── NTC-01 — no implicit i32 → bool coercion ─────────────────────────────────
+
+#[test]
+fn i32_where_bool_expected_is_type_error() {
+    // Passing an i32 directly where bool is required must be a type error.
+    // Hew has no implicit numeric-to-bool coercion (§12.1).
+    let output = typecheck(
+        r"
+        fn check(x: bool) -> bool { x }
+        fn main() {
+            let n: i32 = 1;
+            check(n);
+        }
+    ",
+    );
+    assert!(
+        output.errors.iter().any(
+            |e| matches!(&e.kind, TypeErrorKind::Mismatch { expected, actual }
+                if expected.contains("bool") && actual.contains("i32"))
+        ),
+        "Expected Mismatch(bool, i32) for implicit i32→bool coercion, got errors: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn explicit_ne_zero_coercion_to_bool_is_accepted() {
+    // Explicit `n != 0` comparison yields bool — no error.
+    let output = typecheck(
+        r"
+        fn check(x: bool) -> bool { x }
+        fn main() {
+            let n: i32 = 1;
+            check(n != 0);
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "Explicit != 0 comparison must typecheck without error, got: {:?}",
+        output.errors
+    );
+}

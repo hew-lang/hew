@@ -1,0 +1,12 @@
+// CAP-02 slice 2: a lambda whose body wraps a direct call to an imported
+// generic free function, then invoked. Reproduced the identical "function
+// call" NYI at the same MIR site (the lambda body wraps the same call
+// expression). Same root cause, same fix — the monomorphisation recording
+// walks the lambda body's call sites the same way.
+import hew::genhelpers;
+
+fn main() {
+    let f = || genhelpers.first([1, 2, 3]);
+    let x = f();
+    println(f"{x}");
+}

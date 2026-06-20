@@ -1,0 +1,18 @@
+// CAP-02 slice 2: a `Vec<owned-record>` argument crossing the imported-generic
+// `genhelpers.first` call. The element `Boxed` owns a heap array (`[i64]`), so
+// the Vec arg and the returned element exercise the owned-element drop ABI at
+// the cross-module monomorphisation boundary. The caller and the emitted
+// specialised body must agree on owned-vs-BitCopy, or the drop falls through
+// the codegen fail-closed (guards `container-abi-ctor-op-agreement`). Reading
+// `b.payload[0]` back proves the element survived the call end-to-end.
+import hew::genhelpers;
+
+type Boxed {
+    payload: [i64];
+}
+
+fn main() {
+    let xs = [Boxed { payload: [10, 20] }, Boxed { payload: [30] }];
+    let b = genhelpers.first(xs);
+    println(f"{b.payload[0]}");
+}

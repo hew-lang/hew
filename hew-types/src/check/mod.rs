@@ -43,6 +43,7 @@ mod statements;
 mod tests;
 mod types;
 mod util;
+mod visibility;
 
 use self::types::{
     ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,

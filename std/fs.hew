@@ -32,14 +32,13 @@
 //! ```
 
 // ── Error type ───────────────────────────────────────────────────────
-/// Structured error type for file-system and network operations.
+/// Structured error type for file-system operations.
 ///
 /// Define `Result<T, IoError>` return types in your own functions for
 /// structured error handling with the `?` operator.
 ///
-/// Variants below cover both file-system and TCP/network failure codes so
-/// callers can handle connection errors uniformly across `fs`, `net`, `quic`,
-/// `http`, `tls`, `dns`, and `websocket` modules.
+/// For network errors (`ConnectionRefused`, `AddressInUse`, etc.) see
+/// `net.NetError` in `std::net`.
 pub enum IoError {
     /// The target path does not exist.
     NotFound(i64);
@@ -47,20 +46,13 @@ pub enum IoError {
     PermissionDenied(i64);
     /// A file or directory already exists at the target path.
     AlreadyExists(i64);
-    /// The remote host actively refused the connection (ECONNREFUSED).
-    ConnectionRefused(i64);
-    /// The local address is already in use (EADDRINUSE).
-    AddressInUse(i64);
-    /// The connection attempt or I/O operation timed out (ETIMEDOUT).
+    /// The operation timed out (e.g. the blocking pool exceeded its deadline).
     TimedOut(i64);
-    /// Operation was cancelled (e.g., a deadline expired before the I/O could complete).
+    /// Operation was cancelled (e.g., the blocking pool was shut down mid-call).
     ///
     /// Distinct from `TimedOut`: `TimedOut` means the deadline expired; `Cancelled`
-    /// means the operation was abandoned for another reason (e.g. the blocking
-    /// pool was shut down mid-call).
+    /// means the operation was abandoned for another reason.
     Cancelled(i64);
-    /// The address or hostname could not be resolved (EADDRNOTAVAIL).
-    AddressNotAvailable(i64);
     /// Any other OS-level I/O failure.
     Other(i64);
 }
@@ -71,9 +63,8 @@ pub enum IoError {
 /// The i64 payload carried in each variant is the raw OS errno so callers
 /// can inspect the platform value. errno=0 (no OS error) maps to `Other(0)`.
 ///
-/// Covers both file-system and network errno values so this function can be
-/// shared across `fs`, `net`, `stream`, `http`, `tls`, `quic`, `dns`, and
-/// `websocket` modules.
+/// Covers file-system errno values. For network errno values use
+/// `net.net_error_from_errno` in `std::net`.
 pub fn io_error_from_errno(errno: i64) -> IoError {
     // ENOENT: Linux=2, macOS=2
     if errno == 2 {
@@ -84,21 +75,12 @@ pub fn io_error_from_errno(errno: i64) -> IoError {
     // EEXIST: Linux=17, macOS=17
     } else if errno == 17 {
         IoError::AlreadyExists(errno)
-    // ECONNREFUSED: Linux=111, macOS=61
-    } else if errno == 111 || errno == 61 {
-        IoError::ConnectionRefused(errno)
-    // EADDRINUSE: Linux=98, macOS=48
-    } else if errno == 98 || errno == 48 {
-        IoError::AddressInUse(errno)
     // ETIMEDOUT: Linux=110, macOS=60
     } else if errno == 110 || errno == 60 {
         IoError::TimedOut(errno)
     // ECANCELED: Linux=125, macOS=89
     } else if errno == 125 || errno == 89 {
         IoError::Cancelled(errno)
-    // EADDRNOTAVAIL: Linux=99, macOS=49
-    } else if errno == 99 || errno == 49 {
-        IoError::AddressNotAvailable(errno)
     } else {
         IoError::Other(errno)
     }
@@ -107,7 +89,8 @@ pub fn io_error_from_errno(errno: i64) -> IoError {
 /// Return a human-readable description of an `IoError`.
 ///
 /// The returned string includes the variant name and the raw OS errno so
-/// callers can log or surface structured errors without matching on every arm:
+/// callers can log or surface structured errors without matching on every arm.
+/// For network errors use `net.net_error_message` in `std::net`.
 ///
 /// ```
 /// match result {
@@ -120,11 +103,8 @@ pub fn io_error_message(e: IoError) -> string {
         IoError::NotFound(code) => f"NotFound({code})",
         IoError::PermissionDenied(code) => f"PermissionDenied({code})",
         IoError::AlreadyExists(code) => f"AlreadyExists({code})",
-        IoError::ConnectionRefused(code) => f"ConnectionRefused({code})",
-        IoError::AddressInUse(code) => f"AddressInUse({code})",
         IoError::TimedOut(code) => f"TimedOut({code})",
         IoError::Cancelled(code) => f"Cancelled({code})",
-        IoError::AddressNotAvailable(code) => f"AddressNotAvailable({code})",
         IoError::Other(code) => f"Other({code})",
     }
 }

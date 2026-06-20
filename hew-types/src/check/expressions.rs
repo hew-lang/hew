@@ -5848,16 +5848,29 @@ impl Checker {
             }
         }
         let name = qualified_owned.as_deref().unwrap_or(name);
-        // Fail closed on opaque handle direct construction. Opaque handles are
-        // pointer-shaped runtime resources with no user-visible fields and no
-        // constructible record layout; they are produced exclusively by their
-        // stdlib FFI constructors. Admitting `Handle {}` here lets the code
-        // fall through to `lookup_type_def` and then to MIR, where it trips a
-        // misleading `E_NOT_YET_IMPLEMENTED: MIR lowering for record type '...'
-        // (not registered in field-order table)` with a "checker bug" note.
-        // Short-circuit with a clean diagnostic before any lookup occurs.
-        let is_opaque_handle = self.user_opaque_type_names.contains(name)
-            || self.canonical_owned_handle_type_name(name).is_some();
+        // Fail closed on opaque handle direct construction — but ONLY for
+        // cross-module constructions. The module that DECLARES an `#[opaque]`
+        // type is the producer: its impl blocks contain the legitimate FFI
+        // constructors (`extern "C"` stubs returning the handle) and must be
+        // allowed to write `Handle { }` as the return value stub. Only OTHER
+        // modules (importers / users) see it as opaque and must use the
+        // declared constructor functions.
+        //
+        // `local_type_defs` is seeded (in `mod.rs`) with every type NAME
+        // declared in the current module before body-checking begins. A bare
+        // name that is present there means "this module declared it", so the
+        // construction is in-module / producer-side and is ALLOWED.
+        //
+        // `name` at this point may be qualified (`module.Handle`) after
+        // `published_bare_type_qualified` resolves a bare import reference.
+        // `user_opaque_type_names` stores only unqualified names (from `td.name`),
+        // so we must also check the unqualified component of the qualified name.
+        let unqualified = name.split_once('.').map_or(name, |(_, unqual)| unqual);
+        let is_declaring_module = self.local_type_defs.contains(unqualified);
+        let is_opaque_handle = !is_declaring_module
+            && (self.user_opaque_type_names.contains(name)
+                || self.user_opaque_type_names.contains(unqualified)
+                || self.canonical_owned_handle_type_name(name).is_some());
         if is_opaque_handle {
             self.report_error(
                 TypeErrorKind::OpaqueDirectConstruct {

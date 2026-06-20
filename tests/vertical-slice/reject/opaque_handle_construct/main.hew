@@ -1,0 +1,16 @@
+// Reject fixture: opaque_handle_construct — a cross-module consumer cannot
+// construct an `#[opaque]` handle directly; only the declaring module (the
+// producer) may do so. An opaque handle has no constructible record layout
+// and lowers to `ptr`; construction is refused at the checker boundary with
+// E_OPAQUE_CONSTRUCT rather than producing a misleading downstream MIR error.
+//
+// Harness verb: hew check
+// Expected: rejected with E_OPAQUE_CONSTRUCT (clean checker error, not MIR NYI).
+import handles::{ Handle };
+
+fn main() -> i64 {
+    // Cross-module construction of an opaque handle is forbidden; only the
+    // declaring module (handles.hew) can produce a Handle value.
+    let _h: Handle = Handle {  };
+    0
+}

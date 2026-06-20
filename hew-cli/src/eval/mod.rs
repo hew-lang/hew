@@ -260,14 +260,30 @@ fn eval_result_to_json(
             exit_code,
             signal,
         }) => {
-            // When the child died without writing stderr (e.g. a signal-killed
-            // arithmetic trap), synthesise a message so the JSON contract's
-            // `stderr` and `diagnostics` are not both silently empty. A child
-            // that DID write stderr keeps its own message and an empty
-            // `diagnostics`, preserving the panic-path contract.
+            // Determine the stderr and diagnostics fields for the JSON output.
+            //
+            // Three cases:
+            // 1. Child wrote nothing to stderr and was signal-killed (pre-F1.3
+            //    behaviour for arithmetic traps): synthesise a user-facing message
+            //    into both `stderr` and `diagnostics`.
+            // 2. Child wrote a runtime-internal diagnostic to stderr AND was
+            //    killed by a signal (F1.3 path: `hew_trap_with_code` emits
+            //    "hew: trap in main context: …" before the process dies via the
+            //    default SIGILL handler). Preserve the child's stderr but also
+            //    synthesise a user-facing description into `diagnostics` so the
+            //    JSON contract's cause field is never empty for signal-killed
+            //    programs.
+            // 3. Child exited with a non-zero code (e.g. `panic()` → exit 101)
+            //    and wrote its own stderr: preserve both, keep `diagnostics`
+            //    empty (the child's message IS the diagnostic).
             let (stderr, diagnostics) = if stderr.is_empty() {
                 let synth = format!("{}\n", repl::describe_runtime_failure(exit_code, signal));
                 (synth.clone(), synth)
+            } else if signal.is_some() {
+                // Signal-killed with child-written stderr: synthesise the
+                // user-facing description for `diagnostics`.
+                let synth = format!("{}\n", repl::describe_runtime_failure(exit_code, signal));
+                (stderr, synth)
             } else {
                 (stderr, String::new())
             };

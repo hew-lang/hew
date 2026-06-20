@@ -243,9 +243,18 @@ pub(crate) fn emit_runtime_failure_output(
         print!("{stdout}");
     }
     if stderr.is_empty() {
-        // The child died without saying why (e.g. a signal-killed arithmetic
-        // trap). Synthesise an explanation so the failure is not silent.
+        // The child died silently (e.g. classic signal-killed arithmetic trap
+        // with no stderr). Synthesise an explanation.
         eprintln!("{}", describe_runtime_failure(exit_code, signal));
+    } else if signal.is_some() {
+        // Child was killed by a signal AND wrote a runtime-internal diagnostic
+        // to stderr (F1.3 path: `hew_trap_with_code` emits "hew: trap in main
+        // context: …" before the default signal handler terminates the process).
+        // Emit the synthesised user-facing description first so the output
+        // always contains "runtime error" and the named cause, then forward
+        // the child's raw diagnostic for additional context.
+        eprintln!("{}", describe_runtime_failure(exit_code, signal));
+        eprint!("{stderr}");
     } else {
         eprint!("{stderr}");
     }

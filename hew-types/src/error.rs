@@ -469,6 +469,21 @@ pub enum TypeErrorKind {
     PlatformLimitation,
     /// `#[on(upgrade)]` is parsed but rejected: it is reserved and not supported.
     OnUpgradeNotYetWired,
+    /// `#[on(crash)]` body returns a `CrashAction` value rather than diverging.
+    ///
+    /// The v0.5 MIR crash-hook lowering coerces the handler return type to
+    /// `i32` because the `CrashAction` enum-variant return path is not yet
+    /// wired through HIR→MIR→codegen.  A non-diverging crash hook body (one
+    /// that constructs `CrashAction::Restart`, `::Escalate`, or `::Kill`)
+    /// produces a type mismatch at codegen time.  Fail-closed: surface this as
+    /// a compile-time diagnostic so the user sees a clear message rather than an
+    /// internal `E_NOT_YET_IMPLEMENTED` codegen panic.
+    ///
+    /// WHEN obsolete: when v0.6 wires `CrashAction` enum-variant return-shape
+    /// through HIR lowering and removes the `I32` coercion in
+    /// `hew-mir/src/lower.rs` (`lower_actor_lifecycle_hooks`), remove this
+    /// variant and the gate in `check_crash_hook`.
+    CrashActionReturnNotYetWired,
     /// Machine state × event exhaustiveness violation
     MachineExhaustivenessError,
     /// Import cannot be resolved: module not found or failed to parse
@@ -1004,6 +1019,7 @@ impl TypeErrorKind {
             Self::OrphanImpl => "OrphanImpl",
             Self::PlatformLimitation => "PlatformLimitation",
             Self::OnUpgradeNotYetWired => "OnUpgradeNotYetWired",
+            Self::CrashActionReturnNotYetWired => "CrashActionReturnNotYetWired",
             Self::MachineExhaustivenessError => "MachineExhaustivenessError",
             Self::UnresolvedImport => "UnresolvedImport",
             Self::BlockingCallInReceiveFn => "BlockingCallInReceiveFn",

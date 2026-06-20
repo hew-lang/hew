@@ -198,23 +198,27 @@ fn reject_unknown_hook_kind() {
 
 #[test]
 fn on_crash_still_works() {
+    // `#[on(crash)]` with a diverging body (`panic(...)`) must type-check
+    // cleanly.  The hook itself is live — only the non-diverging
+    // `CrashAction`-return path is fail-closed (see
+    // `reject_crash_action_return_not_yet_wired`).
     let output = typecheck(
-        r"
+        r#"
         actor Worker {
             let count: i32;
 
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
-                CrashAction::Restart
+                panic("handled")
             }
         }
 
         fn main() {}
-        ",
+        "#,
     );
     assert!(
         output.errors.is_empty(),
-        "well-formed `#[on(crash)]` should type-check cleanly: {:?}",
+        "well-formed `#[on(crash)]` with diverging body should type-check cleanly: {:?}",
         output.errors
     );
 }
@@ -304,6 +308,226 @@ fn reject_on_upgrade_with_extra_args() {
     );
 }
 
+// ── E1b: `#[on(crash)]` fail-closed for non-diverging body ───────────
+//
+// `CrashAction` enum-variant return is not yet wired through the compiler
+// (the MIR lowering coerces the handler return type to `i32` and a
+// `CrashAction` value causes a codegen Move type mismatch).  Surfaced here
+// at check-time so the user sees a clear compile error.
+//
+// WHEN obsolete: when v0.6 wires the full CrashAction return path.
+
+#[test]
+fn reject_crash_action_return_not_yet_wired() {
+    // Reject twin: `CrashAction::Restart` in the hook body must fail closed
+    // with `CrashActionReturnNotYetWired`, not produce a runtime
+    // `E_NOT_YET_IMPLEMENTED` codegen panic.
+    let source = r"
+        actor Worker {
+            #[on(crash)]
+            fn on_crash(info: CrashInfo) -> CrashAction {
+                CrashAction::Restart
+            }
+        }
+
+        fn main() {}
+        ";
+    let output = typecheck(source);
+    let error = output
+        .errors
+        .iter()
+        .find(|e| matches!(&e.kind, TypeErrorKind::CrashActionReturnNotYetWired))
+        .expect("`CrashAction::Restart` body should produce CrashActionReturnNotYetWired");
+    assert!(
+        error.message.contains("not yet wired") && error.message.contains("panic"),
+        "diagnostic should mention 'not yet wired' and suggest panic: {:?}",
+        error.message
+    );
+}
+
+#[test]
+fn reject_crash_action_return_stmt_not_yet_wired() {
+    // Reject twin (explicit `return` form): `return CrashAction::Restart;`
+    // inside a `#[on(crash)]` hook body must also fail closed with
+    // `CrashActionReturnNotYetWired` — same lowering gap, same diagnostic.
+    // The cross-eco review named this the `CrashActionReturnNotYetWired`
+    // case for explicit-return; it was missing from the original gate which
+    // only checked the block tail-expression type.
+    let source = r"
+        actor Worker {
+            #[on(crash)]
+            fn on_crash(info: CrashInfo) -> CrashAction {
+                return CrashAction::Restart;
+            }
+        }
+
+        fn main() {}
+        ";
+    let output = typecheck(source);
+    let error = output
+        .errors
+        .iter()
+        .find(|e| matches!(&e.kind, TypeErrorKind::CrashActionReturnNotYetWired))
+        .expect("`return CrashAction::Restart;` should produce CrashActionReturnNotYetWired");
+    assert!(
+        error.message.contains("not yet wired") && error.message.contains("panic"),
+        "diagnostic should mention 'not yet wired' and suggest panic: {:?}",
+        error.message
+    );
+}
+
+// ── E1c: non-final `return CrashAction` inside control flow ──────────
+//
+// A `return CrashAction::X;` that is NOT the last statement in the hook body
+// (e.g. inside an `if` branch, followed by more code) was previously missed by
+// the fail-closed gate (which only covered tail-position and final-return paths).
+// These fixtures pin the completed coverage.
+
+#[test]
+fn reject_crash_action_nonfinal_return_before_more_stmts() {
+    // A `return CrashAction::Restart;` that is NOT the last statement in the
+    // hook body (followed by unreachable code) was the escape that the previous
+    // gates missed.  `check_stmt` processes non-last statements; the tail-position
+    // gate in `check_stmt_as_expr` was never reached for this path.
+    //
+    // The statement is processed by `check_stmt`'s `Stmt::Return` arm, which now
+    // carries the same `in_crash_hook` gate as `check_stmt_as_expr`.
+    let source = r#"
+        actor Worker {
+            #[on(crash)]
+            fn on_crash(info: CrashInfo) -> CrashAction {
+                return CrashAction::Restart;
+                panic("dead code — makes the return non-final in its block")
+            }
+        }
+
+        fn main() {}
+        "#;
+    let output = typecheck(source);
+    let error = output
+        .errors
+        .iter()
+        .find(|e| matches!(&e.kind, TypeErrorKind::CrashActionReturnNotYetWired))
+        .expect(
+            "non-final `return CrashAction::Restart;` (followed by more stmts) \
+             should produce CrashActionReturnNotYetWired",
+        );
+    assert!(
+        error.message.contains("not yet wired") && error.message.contains("panic"),
+        "diagnostic should mention 'not yet wired' and suggest panic: {:?}",
+        error.message
+    );
+}
+
+#[test]
+fn reject_crash_action_return_inside_if_then_more_code() {
+    // A `return CrashAction::Restart;` inside an `if` body where the `if` itself
+    // is NOT the last statement in the hook body: the `if` is routed through
+    // `check_stmt_as_expr`, which calls `check_block` on the then-block.  Inside
+    // that inner block, the `return` IS the last statement, so it goes through
+    // `check_stmt_as_expr` — which the existing gate already covers.
+    //
+    // This test confirms the accept/reject boundary is consistent: the if-branch
+    // `return` is caught by the pre-existing gate, pinning that neither the old
+    // nor the new path leaks.
+    let source = r#"
+        actor Worker {
+            let flag: i32;
+
+            #[on(crash)]
+            fn on_crash(info: CrashInfo) -> CrashAction {
+                if flag == 1 {
+                    return CrashAction::Escalate;
+                }
+                panic("fallthrough")
+            }
+        }
+
+        fn main() {}
+        "#;
+    let output = typecheck(source);
+    // The `return CrashAction::Escalate;` is the last stmt in the if-body, so
+    // `check_stmt_as_expr`'s gate fires — same `CrashActionReturnNotYetWired`.
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(&e.kind, TypeErrorKind::CrashActionReturnNotYetWired)),
+        "`return CrashAction::Escalate` inside an `if` branch should produce \
+         CrashActionReturnNotYetWired: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn accept_crash_hook_with_if_and_diverging_body() {
+    // Accept twin: an `#[on(crash)]` hook that uses an `if` branch with a
+    // diverging expression (`panic(...)`) in each arm still type-checks cleanly.
+    let output = typecheck(
+        r#"
+        actor Worker {
+            let flag: i32;
+
+            #[on(crash)]
+            fn on_crash(info: CrashInfo) -> CrashAction {
+                if flag == 1 {
+                    panic("restart path")
+                } else {
+                    panic("kill path")
+                }
+            }
+        }
+
+        fn main() {}
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "`#[on(crash)]` hook with diverging `if` branches should type-check cleanly: {:?}",
+        output.errors
+    );
+}
+
+// ── E1d: closure nested inside `#[on(crash)]` must not inherit flag ──
+//
+// A closure defined inside an `#[on(crash)]` hook body is NOT the hook itself.
+// `in_crash_hook` must be cleared for the closure's body so that a valid
+// `return CrashAction::X;` INSIDE that nested closure does not produce a
+// false-positive `CrashActionReturnNotYetWired`.  (The closure would only be
+// called from user code — it is not the hook's return path at all.)
+
+#[test]
+fn accept_closure_inside_crash_hook_returning_crash_action() {
+    // The closure captures context from the hook but has its OWN return type
+    // annotation of `CrashAction`.  Because `check_lambda` now clears
+    // `in_crash_hook` for the closure body, the `return CrashAction::Restart;`
+    // inside the closure is NOT gated — it is a valid closure return statement,
+    // not a hook body return.  This was a false-positive before the fix.
+    let output = typecheck(
+        r#"
+        actor Worker {
+            let flag: i32;
+
+            #[on(crash)]
+            fn on_crash(info: CrashInfo) -> CrashAction {
+                let handler = || -> CrashAction {
+                    return CrashAction::Restart;
+                };
+                panic("diverging hook body")
+            }
+        }
+
+        fn main() {}
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a closure inside `#[on(crash)]` that returns CrashAction should not produce \
+         CrashActionReturnNotYetWired (false-positive): {:?}",
+        output.errors
+    );
+}
+
 // ── E2: `#[on(crash)]` signature pinning ─────────────────────────────
 //
 // Failure-philosophy slice E2 pins the crash hook signature shape:
@@ -314,24 +538,28 @@ fn reject_on_upgrade_with_extra_args() {
 
 #[test]
 fn on_crash_signature_pinned() {
-    // Accept twin: the canonical shape.
+    // Accept twin: the canonical shape with a diverging body.
+    // The `CrashAction` return type is correctly validated; the body uses
+    // `panic(...)` to avoid `CrashActionReturnNotYetWired` (see the
+    // `crash_action_variants_recognised_by_type_checker` test for the
+    // non-diverging case).
     let output = typecheck(
-        r"
+        r#"
         actor Worker {
             let count: i32;
 
             #[on(crash)]
             fn on_crash(info: CrashInfo) -> CrashAction {
-                CrashAction::Escalate
+                panic("crash")
             }
         }
 
         fn main() {}
-        ",
+        "#,
     );
     assert!(
         output.errors.is_empty(),
-        "canonical `#[on(crash)]` shape should type-check: {:?}",
+        "canonical `#[on(crash)]` shape with diverging body should type-check: {:?}",
         output.errors
     );
 }
@@ -433,11 +661,17 @@ fn reject_on_crash_wrong_return_type() {
 }
 
 #[test]
-fn accept_on_crash_all_three_variants_assignable() {
+fn crash_action_variants_recognised_by_type_checker() {
     // The `CrashAction` enum carries three variants per Q46/A23:
-    // `Restart | Escalate | Kill`. Pin them here so the variant set
-    // can't silently regress (e.g. someone deleting `Kill` because
-    // E3 supervisor logic only consults `Restart`/`Escalate`).
+    // `Restart | Escalate | Kill`. The type-checker must recognise each
+    // variant as a valid `CrashAction` expression so the signature check
+    // doesn't fire a "wrong type" error — the fail-closed gate
+    // (`CrashActionReturnNotYetWired`) fires AFTER the type check succeeds,
+    // confirming the checker sees the correct type.
+    //
+    // Each variant produces `CrashActionReturnNotYetWired`, not any
+    // signature/type-mismatch error, pinning that the checker knows the
+    // variant set even while the return path is wired fail-closed.
     for variant in ["Restart", "Escalate", "Kill"] {
         let src = format!(
             "
@@ -453,8 +687,21 @@ fn accept_on_crash_all_three_variants_assignable() {
         );
         let output = typecheck(&src);
         assert!(
-            output.errors.is_empty(),
-            "`CrashAction::{variant}` should be a valid return value: {:?}",
+            output
+                .errors
+                .iter()
+                .any(|e| matches!(&e.kind, TypeErrorKind::CrashActionReturnNotYetWired)),
+            "`CrashAction::{variant}` should produce CrashActionReturnNotYetWired: {:?}",
+            output.errors
+        );
+        // No signature or type-mismatch error — the checker accepts the type,
+        // only the lowering gate fires.
+        assert!(
+            !output.errors.iter().any(|e| {
+                e.message.contains("must return `CrashAction`")
+                    || e.message.contains("undefined variable")
+            }),
+            "`CrashAction::{variant}` should not produce a type-mismatch error: {:?}",
             output.errors
         );
     }

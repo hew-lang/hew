@@ -235,8 +235,33 @@ impl Checker {
         ty
     }
 
+    /// Emit `CrashActionReturnNotYetWired` for a `return CrashAction::…;` inside
+    /// an `#[on(crash)]` hook body.  Called from both `Stmt::Return` arms
+    /// (`check_stmt` and `check_stmt_as_expr`) after the type of the returned
+    /// expression is confirmed to be `CrashAction`.
+    ///
+    /// WHEN obsolete: when v0.6 wires the full `CrashAction` return path through
+    /// HIR lowering, remove this helper together with the `in_crash_hook` field
+    /// and the `body_is_crash_action` check in `check_crash_hook` in `items.rs`.
+    fn emit_crash_action_return_error(&mut self, span: &Span, fn_name: &str) {
+        self.errors.push(TypeError::new(
+            TypeErrorKind::CrashActionReturnNotYetWired,
+            span.clone(),
+            format!(
+                "`#[on(crash)]` hook `{fn_name}` uses `return CrashAction::…`; \
+                 `CrashAction` enum-variant construction is not yet wired through \
+                 the compiler — use `panic(...)` (a diverging expression) as the \
+                 hook body for now",
+            ),
+        ));
+    }
+
     /// Check a statement that may serve as a block's trailing expression.
     /// Returns the "expression type" of the statement.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "statement-as-expr covers many Stmt variants including the crash-hook return gate"
+    )]
     pub(super) fn check_stmt_as_expr(
         &mut self,
         stmt: &Stmt,
@@ -332,6 +357,22 @@ impl Checker {
                             }
                             _ => {}
                         }
+                    }
+                    // Fail-closed: a `return <CrashAction>;` inside a
+                    // `#[on(crash)]` hook is equivalent to the tail-expression
+                    // form and hits the same unimplemented lowering path.
+                    // Reject it here so the user never reaches codegen.
+                    if self.in_crash_hook
+                        && matches!(
+                            self.subst.resolve(&effective_expected),
+                            Ty::Named { name, .. } if name == "CrashAction"
+                        )
+                    {
+                        let fn_name = self
+                            .current_function
+                            .clone()
+                            .unwrap_or_else(|| "<unknown>".to_string());
+                        self.emit_crash_action_return_error(span, &fn_name);
                     }
                 }
                 Ty::Never
@@ -910,6 +951,28 @@ impl Checker {
                             }
                             _ => {}
                         }
+                    }
+                    // Fail-closed: a non-final `return <CrashAction>;` inside an
+                    // `#[on(crash)]` hook (e.g. inside an `if` branch, followed by
+                    // more code) hits the same unimplemented lowering path.
+                    //
+                    // Exit inventory (all gated):
+                    //   (1) non-final `return CrashAction`  → THIS guard
+                    //   (2) final/tail `return CrashAction` → check_stmt_as_expr gate
+                    //   (3) tail-expr CrashAction (no return keyword) → items.rs body_is_crash_action
+                    //   (4) if/match expr whose arms all yield CrashAction → flows into (3)
+                    //   (5) let-bound CrashAction, then returned → flows into (1) or (2)
+                    if self.in_crash_hook
+                        && matches!(
+                            self.subst.resolve(&effective_expected),
+                            Ty::Named { name, .. } if name == "CrashAction"
+                        )
+                    {
+                        let fn_name = self
+                            .current_function
+                            .clone()
+                            .unwrap_or_else(|| "<unknown>".to_string());
+                        self.emit_crash_action_return_error(span, &fn_name);
                     }
                 }
             }

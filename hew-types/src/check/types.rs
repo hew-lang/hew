@@ -2499,6 +2499,11 @@ pub struct Checker {
     /// failure precisely (e.g. `module 'm' has no exported type 'T'`) instead of
     /// leaking through to the bare-identifier "undefined variable" fallback.
     pub(super) module_type_exports: HashMap<String, HashSet<String>>,
+    /// Qualified type names (`module.Type`) for which a visibility-violation
+    /// diagnostic has already been emitted in the current check pass.  Prevents
+    /// duplicate `E_VISIBILITY` errors when the same private/package type appears in
+    /// multiple positions (e.g. both a parameter and the return type of one fn).
+    pub(super) reported_type_visibility_violations: HashSet<String>,
     /// Maps (`owner_module`, `unqualified_name`) to the module short name the name
     /// was imported from.  Used to mark the owning import as used when an
     /// unqualified function/type is referenced.
@@ -2916,6 +2921,7 @@ impl Checker {
             user_modules: HashSet::new(),
             module_fn_exports: HashSet::new(),
             module_type_exports: HashMap::new(),
+            reported_type_visibility_violations: HashSet::new(),
             unqualified_to_module: HashMap::new(),
             published_bare_type_owners: HashMap::new(),
             published_bare_trait_owners: HashMap::new(),

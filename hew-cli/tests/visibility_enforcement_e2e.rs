@@ -222,3 +222,79 @@ fn package_fn_same_package_accepted() {
         describe_output(&output),
     );
 }
+
+/// A `package fn` accessed from a different package must be rejected.
+///
+/// Layout: main.hew at tmp root (package root);
+/// subpkg/helper.hew at a subdirectory (package subpkg).
+/// Cross-package access must emit `E_VISIBILITY_PACKAGE`.
+#[test]
+fn package_fn_cross_package_rejected() {
+    let dir = support::tempdir();
+    let subpkg = dir.path().join("subpkg");
+    fs::create_dir(&subpkg).expect("create subpkg dir");
+    fs::write(
+        subpkg.join("helper.hew"),
+        "package fn secret() -> i64 { 99 }\n",
+    )
+    .expect("write helper");
+    fs::write(
+        dir.path().join("main.hew"),
+        "import subpkg::helper;\nfn main() -> i64 { helper.secret() }\n",
+    )
+    .expect("write main");
+
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(dir.path().join("main.hew"))
+        .output()
+        .expect("hew binary must run");
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert!(
+        !output.status.success(),
+        "package fn accessed from a different package must be rejected\n{}",
+        describe_output(&output),
+    );
+    assert!(
+        stderr.contains("is package-visible") || stderr.contains("E_VISIBILITY"),
+        "error must mention package visibility restriction; got:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("secret"),
+        "error must name the symbol; got:\n{stderr}",
+    );
+}
+
+/// A `package type` accessed from the same package must be accepted.
+///
+/// This verifies that the same-package predicate does not produce
+/// false positives for types declared in a sibling module file.
+#[test]
+fn package_type_same_package_accepted() {
+    let dir = support::tempdir();
+    fs::write(
+        dir.path().join("mod_a.hew"),
+        "package type Hidden { value: i64 }\n\
+         pub fn make_hidden(v: i64) -> Hidden { Hidden { value: v } }\n",
+    )
+    .expect("write mod_a");
+    fs::write(
+        dir.path().join("main.hew"),
+        "import mod_a;\nfn main() -> i64 { let h: mod_a.Hidden = mod_a.make_hidden(1); 0 }\n",
+    )
+    .expect("write main");
+
+    let output = Command::new(hew_binary())
+        .arg("check")
+        .arg(dir.path().join("main.hew"))
+        .output()
+        .expect("hew binary must run");
+
+    assert!(
+        output.status.success(),
+        "package type must be accessible from within the same package\n{}",
+        describe_output(&output),
+    );
+}

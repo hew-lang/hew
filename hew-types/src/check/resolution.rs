@@ -1498,38 +1498,47 @@ impl Checker {
                         let decl_module = decl_module_opt.as_deref();
                         let acc_module = self.current_module.as_deref();
                         if !visibility::access_allowed(decl_module, acc_module, vis) {
-                            let symbol = resolved_name
-                                .rsplit_once('.')
-                                .map_or(resolved_name.as_str(), |(_, n)| n);
-                            let decl_span = self
-                                .type_def_spans
-                                .get(&resolved_name)
-                                .cloned()
-                                .unwrap_or_else(|| te.1.clone());
-                            let err = match vis {
-                                hew_parser::ast::Visibility::Private => {
-                                    TypeError::visibility_violation_private(
-                                        te.1.clone(),
-                                        symbol,
-                                        decl_module.unwrap_or("(root)"),
-                                        acc_module.unwrap_or("(root)"),
-                                        decl_span,
-                                        self.current_module.clone(),
-                                    )
-                                }
-                                hew_parser::ast::Visibility::Package => {
-                                    TypeError::visibility_violation_package(
-                                        te.1.clone(),
-                                        symbol,
-                                        decl_module.unwrap_or("(root)"),
-                                        acc_module.unwrap_or("(root)"),
-                                        decl_span,
-                                        self.current_module.clone(),
-                                    )
-                                }
-                                hew_parser::ast::Visibility::Pub => unreachable!(),
-                            };
-                            self.errors.push(err);
+                            // Deduplicate: emit at most one E_VISIBILITY per qualified
+                            // type name per check pass so a private type appearing in
+                            // multiple positions (e.g. param + return) doesn't produce
+                            // a wall of identical diagnostics.
+                            if self
+                                .reported_type_visibility_violations
+                                .insert(resolved_name.clone())
+                            {
+                                let symbol = resolved_name
+                                    .rsplit_once('.')
+                                    .map_or(resolved_name.as_str(), |(_, n)| n);
+                                let decl_span = self
+                                    .type_def_spans
+                                    .get(&resolved_name)
+                                    .cloned()
+                                    .unwrap_or_else(|| te.1.clone());
+                                let err = match vis {
+                                    hew_parser::ast::Visibility::Private => {
+                                        TypeError::visibility_violation_private(
+                                            te.1.clone(),
+                                            symbol,
+                                            decl_module.unwrap_or("(root)"),
+                                            acc_module.unwrap_or("(root)"),
+                                            decl_span,
+                                            self.current_module.clone(),
+                                        )
+                                    }
+                                    hew_parser::ast::Visibility::Package => {
+                                        TypeError::visibility_violation_package(
+                                            te.1.clone(),
+                                            symbol,
+                                            decl_module.unwrap_or("(root)"),
+                                            acc_module.unwrap_or("(root)"),
+                                            decl_span,
+                                            self.current_module.clone(),
+                                        )
+                                    }
+                                    hew_parser::ast::Visibility::Pub => unreachable!(),
+                                };
+                                self.errors.push(err);
+                            }
                             return Ty::Error;
                         }
                     }

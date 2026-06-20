@@ -47,39 +47,35 @@ pub(super) fn same_module(decl_module: Option<&str>, acc_module: Option<&str>) -
 /// Return true iff `decl_module` and `acc_module` are in the same package.
 ///
 /// Package = the parent-directory path: all segments except the last.
-/// Two modules share a package iff their paths agree up to the second-to-last
-/// segment.  Root modules (`path = []`) are in a package with themselves only,
-/// which is the same as `same_module` for flat-file programs.
+/// Two modules share a package iff their parent segment vectors are equal.
 ///
-/// Decision (from plan): package = immediate parent directory.  The spec says
-/// "package is the directory the module file lives in", so `std::net::http`
-/// → package `std::net`.  Two modules in the same package have paths that
-/// share all segments except the last (their file stem).
+/// Decision: package = immediate parent directory.  `std::net::http`
+/// → package `["std", "net"]`.  Single-segment modules (e.g. `"mod_a"`)
+/// have parent `[]` — the root package — which is also the parent of the
+/// root compilation unit (`None`).  Therefore a root file and its sibling
+/// top-level module files share the root package, as do any two top-level
+/// sibling module files in the same directory.
 #[must_use]
 pub(super) fn same_package(decl_module: Option<&str>, acc_module: Option<&str>) -> bool {
-    match (decl_module, acc_module) {
-        // Root module is in a package with itself (same as same_module for root).
-        (None, None) => true,
-        (None, Some(_)) | (Some(_), None) => false,
-        (Some(d), Some(a)) => {
-            let d_segs = path_segments(d);
-            let a_segs = path_segments(a);
-            // Single-segment modules (e.g. "http") have parent package = [].
-            // They share a package only if both are single-segment (both at
-            // "package root level").  Two modules at "net.http" and "net.smtp"
-            // share package "net" — their parent is the same.
-            match (d_segs.len(), a_segs.len()) {
-                (0, 0) => true,
-                (1, 1) => {
-                    // Both are top-level modules, no parent → same package only
-                    // if they are the same module.
-                    d == a
-                }
-                (d_len, a_len) if d_len >= 1 && a_len >= 1 => {
-                    // Package = all segments except the last.
-                    d_segs[..d_len - 1] == a_segs[..a_len - 1]
-                }
-                _ => false,
+    parent_package(decl_module) == parent_package(acc_module)
+}
+
+/// The package (parent-directory) of a module, as a segment vector.
+///
+/// - `None` (root compilation unit) → `[]`
+/// - `Some("")` (unusual empty path) → `[]`
+/// - `Some("mod_a")` (single segment) → `[]` (lives in the root package)
+/// - `Some("net.http")` (multi-segment) → `["net"]`
+fn parent_package(module: Option<&str>) -> Vec<&str> {
+    match module {
+        None => vec![],
+        Some(m) => {
+            let segs = path_segments(m);
+            if segs.len() <= 1 {
+                // Single-segment or empty → root package.
+                vec![]
+            } else {
+                segs[..segs.len() - 1].to_vec()
             }
         }
     }
@@ -144,9 +140,10 @@ mod tests {
     }
 
     #[test]
-    fn same_package_root_vs_module() {
-        assert!(!same_package(None, Some("net")));
-        assert!(!same_package(Some("net"), None));
+    fn same_package_root_vs_top_level_module() {
+        // Root file (None) and a top-level sibling module share the root package.
+        assert!(same_package(None, Some("net")));
+        assert!(same_package(Some("net"), None));
     }
 
     #[test]
@@ -167,15 +164,28 @@ mod tests {
     }
 
     #[test]
-    fn same_package_top_level_modules_are_not_same_package() {
-        // "http" and "smtp" are both top-level modules; they have no shared parent
-        assert!(!same_package(Some("http"), Some("smtp")));
+    fn same_package_top_level_modules_share_root_package() {
+        // "http" and "smtp" are both single-segment modules → parent = [] → same root package
+        assert!(same_package(Some("http"), Some("smtp")));
     }
 
     #[test]
     fn same_package_top_level_module_with_itself() {
         // A module is in the same package as itself
         assert!(same_package(Some("http"), Some("http")));
+    }
+
+    #[test]
+    fn same_package_root_vs_root() {
+        assert!(same_package(None, None));
+    }
+
+    #[test]
+    fn same_package_top_level_cross_package_nested() {
+        // A nested module and a top-level module are NOT in the same package.
+        // "net.http" has parent ["net"]; root has parent [] → different packages.
+        assert!(!same_package(Some("net.http"), None));
+        assert!(!same_package(None, Some("net.http")));
     }
 
     // ── access_allowed ───────────────────────────────────────────────────────

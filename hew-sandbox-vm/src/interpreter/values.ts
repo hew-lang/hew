@@ -91,16 +91,21 @@ export function renderF64(value: number): string {
   if (value === 0) return "0";
 
   const absVal = Math.abs(value);
-  // `%g` precision is 6 significant digits; it uses scientific notation when
-  // the exponent is < -4 or >= 6 (the precision), fixed notation otherwise.
-  const exp = Math.floor(Math.log10(absVal));
+  // `%g` precision is 6 significant digits; the format choice (fixed vs
+  // scientific) is based on the exponent of the *rounded* value, not the
+  // original. For example, 999999.5 rounds to 1000000 (exp=6) → scientific;
+  // 0.00009999995 rounds to 0.0001 (exp=-4) → fixed.
+  // Computing exp directly from Math.log10(absVal) gives the wrong answer at
+  // rounding boundaries, so we round first and recompute.
+  const rounded = parseFloat(absVal.toPrecision(6));
+  const exp = Math.floor(Math.log10(rounded));
 
   let s: string;
   if (exp < -4 || exp >= 6) {
     // Scientific path: toExponential(5) gives 5 digits after the decimal
     // point = 6 significant digits, then we strip trailing zeros and
     // normalise the exponent to at least 2 digits with an explicit sign.
-    s = absVal.toExponential(5);
+    s = rounded.toExponential(5);
     const eIdx = s.indexOf("e");
     let mantissa = s.slice(0, eIdx);
     const expPart = s.slice(eIdx + 1); // e.g. "+20" or "-324"

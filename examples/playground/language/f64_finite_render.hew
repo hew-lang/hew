@@ -33,4 +33,12 @@ fn main() {
     // 6-sig-fig rounding: 1/3 rounds to 0.333333.
     let one_third: f64 = 1.0 / 3.0;
     println(one_third);
+
+    // Rounding-boundary cases: format is determined by the rounded exponent,
+    // not the raw exponent.  999999.5 rounds to 1e6 (exp=6) → scientific.
+    // 0.00009999995 rounds to 0.0001 (exp=-4) → fixed.
+    let round_to_million: f64 = 999999.5;
+    println(round_to_million);
+    let round_to_tenth_milli: f64 = 0.00009999995;
+    println(round_to_tenth_milli);
 }

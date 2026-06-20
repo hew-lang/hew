@@ -1,0 +1,21 @@
+// Reject fixture: #[on(crash)] body that constructs a CrashAction variant
+// must be rejected at check time with CrashActionReturnNotYetWired.
+//
+// The MIR lowering coerces the crash-hook return type to i32 because the
+// CrashAction enum-variant return path is not yet wired through HIR/MIR/codegen.
+// This fixture verifies fail-closed doctrine: the user sees a compile error
+// instead of an internal E_NOT_YET_IMPLEMENTED panic.
+//
+// WHEN obsolete: when v0.6 wires CrashAction return-shape through HIR lowering
+// and removes the I32 coercion in hew-mir/src/lower.rs, delete this fixture and
+// its run.sh entry, and add an accept fixture for CrashAction::Restart.
+import std::failure;
+
+actor Worker {
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        CrashAction::Restart
+    }
+}
+
+fn main() {}

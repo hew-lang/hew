@@ -691,6 +691,18 @@ run_accept_expect_status "on_crash_basic" 42
 # FieldAccess lowering succeeds.  The supervisor boots and main returns 42.
 run_accept_expect_status "on_crash_info_code" 42
 
+# Reject: #[on(crash)] body that constructs a CrashAction variant must be
+# rejected at check time (CrashActionReturnNotYetWired).  The MIR lowering
+# coerces the crash-hook return type to i32; a non-diverging body that
+# constructs CrashAction::Restart would hit an internal E_NOT_YET_IMPLEMENTED
+# codegen panic without this gate.  Remove when v0.6 wires the full path.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/on_crash_action_return_nyt.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected on_crash_action_return_nyt fixture to fail" >&2
+  exit 1
+fi
+grep -q 'enum-variant construction is not yet wired' "${reject_output}"
+
 # `#[max_heap(N)]` wire-through — direct spawn path:
 #   1. MIR dump confirms SpawnActor carries max_heap=65536,
 #      proving the annotation propagated from HIR through MIR.

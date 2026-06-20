@@ -6806,7 +6806,26 @@ impl Builder {
     /// path) is NOT treated as an owned-Vec element.
     fn named_elem_owns_heap(&self, ty: &ResolvedTy, visiting: &mut HashSet<String>) -> bool {
         match ty {
-            ResolvedTy::String | ResolvedTy::Bytes => true,
+            // `string` / `bytes` are heap leaves. A `Vec` / `HashMap` /
+            // `HashSet` is a heap-owning handle regardless of element type: a
+            // record/enum field of one of these owns heap even when every
+            // element is BitCopy (`type Boxed { payload: [i64] }` owns its
+            // `payload` buffer). Mirror the same arm in
+            // `crate::model::ty_contains_heap_owning` and codegen's
+            // `resolved_ty_contains_heap_leaf`, and `ValueClass::of_ty` (all
+            // classify these builtins as heap-owning for any element)
+            // (`dedup-semantic-boundary`).
+            ResolvedTy::String
+            | ResolvedTy::Bytes
+            | ResolvedTy::Named {
+                builtin:
+                    Some(
+                        hew_types::BuiltinType::Vec
+                        | hew_types::BuiltinType::HashMap
+                        | hew_types::BuiltinType::HashSet,
+                    ),
+                ..
+            } => true,
             ResolvedTy::Tuple(elems) => {
                 elems.iter().any(|e| self.named_elem_owns_heap(e, visiting))
             }

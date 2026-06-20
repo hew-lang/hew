@@ -26081,7 +26081,26 @@ fn resolved_ty_contains_heap_leaf(
     visiting: &mut HashSet<String>,
 ) -> bool {
     match ty {
-        ResolvedTy::String | ResolvedTy::Bytes => true,
+        // `string` / `bytes` are heap leaves. A `Vec` / `HashMap` / `HashSet`
+        // is a heap-owning handle for any element type: a record/enum field of
+        // one of these owns heap even when every element is BitCopy
+        // (`type Boxed { payload: [i64] }` owns its `payload` buffer). Must
+        // mirror the MIR `named_elem_owns_heap` / `ty_contains_heap_owning` arm
+        // and `ValueClass::of_ty` so the constructor's owned-descriptor decision
+        // and the elaborator's drop_fn agree (`dedup-semantic-boundary`).
+        // Without the collection arm a `Vec<Boxed>` is built as a plain
+        // (shallow) vec and the per-element buffers leak.
+        ResolvedTy::String
+        | ResolvedTy::Bytes
+        | ResolvedTy::Named {
+            builtin:
+                Some(
+                    hew_types::BuiltinType::Vec
+                    | hew_types::BuiltinType::HashMap
+                    | hew_types::BuiltinType::HashSet,
+                ),
+            ..
+        } => true,
         ResolvedTy::Tuple(elems) => elems
             .iter()
             .any(|e| resolved_ty_contains_heap_leaf(fn_ctx, e, visiting)),

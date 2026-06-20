@@ -168,6 +168,36 @@ mod shared {
         }
     }
 
+    /// Emit a crash diagnostic to stderr using only async-signal-safe operations.
+    ///
+    /// This function must only call `write(2)` (POSIX async-signal-safe) and
+    /// perform no heap allocation, no locking, and no I/O buffering — it is
+    /// safe to call from a signal handler.
+    ///
+    /// Used when a synchronous fault signal is caught and there is no recovery
+    /// context (main/free-fn context), so the process is about to `_exit`. A
+    /// diagnostic is always emitted before process termination.
+    ///
+    /// `eprintln!` is NOT async-signal-safe (it acquires a lock on the stderr
+    /// handle). `write(2)` on fd 2 is the correct alternative here.
+    #[cfg(unix)]
+    pub(super) fn emit_crash_diagnostic_sig_safe(sig: i32) {
+        // Write fixed prefix, then signal name, then newline — no allocation.
+        // Each write is a separate syscall; partial writes are acceptable for
+        // a terminal diagnostic before _exit.
+        const PREFIX: &[u8] = b"hew: crash in main context: ";
+        const SUFFIX: &[u8] = b"\n";
+        let name = signal_name(sig).as_bytes();
+        // SAFETY: write(2) is POSIX async-signal-safe. fd 2 (STDERR_FILENO) is
+        // always open. The byte slices are valid static/stack data. We ignore
+        // the return value — a failed write before _exit is not actionable.
+        unsafe {
+            libc::write(2, PREFIX.as_ptr().cast(), PREFIX.len());
+            libc::write(2, name.as_ptr().cast(), name.len());
+            libc::write(2, SUFFIX.as_ptr().cast(), SUFFIX.len());
+        }
+    }
+
     /// Store dispatch metadata in the recovery state.
     ///
     /// Called at the start of each dispatch to record the actor and message
@@ -227,20 +257,21 @@ mod shared {
         // Cache actor data before supervisor notification to avoid race.
         // After hew_actor_trap, another thread could process the supervisor
         // notification and call hew_actor_free before we dereference actor.
-        let (actor_id, cached_pid, report) = if actor.is_null() {
-            (0, 0, None)
+        let (actor_id, cached_pid, dispatch_ptr, report) = if actor.is_null() {
+            (0u64, 0u64, 0usize, None)
         } else {
             // SAFETY: actor pointer was stored in prepare_dispatch_recovery
             // and the actor is still alive (it's Running — only the current
             // worker thread can transition it, and we haven't freed it).
             unsafe {
                 let id = (*actor).id;
+                let dispatch_ptr = (*actor).dispatch.map_or(0, |f| f as usize);
                 let report = crate::crash::build_crash_report(
                     actor, signal,
                     0, // signal_code - not available from siginfo_t in current handler
                     fault_addr, msg_type, worker_id,
                 );
-                (id, id, Some(report))
+                (id, id, dispatch_ptr, Some(report))
             }
         };
 
@@ -260,15 +291,45 @@ mod shared {
         // longjmp marker, which reuses signal 11) from a genuine hardware fault
         // so a real null-deref SIGSEGV is reported distinctly instead of being
         // masked by the identical-looking supervised panic-and-restart traffic.
+        //
+        // A diagnostic is always emitted — actor_id == 0 means the trap
+        // occurred in main/free-fn context (outside any actor dispatch) and
+        // is equally important to surface.
         if actor_id != 0 {
+            // Resolve a human-readable context name: prefer the registered
+            // handler name ("ActorType::handler") for the (dispatch_fn, msg_type)
+            // pair, fall back to the actor type name, then the raw msg_type.
+            let context =
+                crate::profiler::actor_registry::handler_name_by_ptr(dispatch_ptr, msg_type)
+                    .unwrap_or_else(|| {
+                        let type_name =
+                            crate::profiler::actor_registry::lookup_dispatch_type_by_ptr(
+                                dispatch_ptr,
+                            );
+                        if type_name == "Actor" {
+                            format!("msg_type={msg_type}")
+                        } else {
+                            format!("{type_name} (msg_type={msg_type})")
+                        }
+                    });
             if intentional {
                 eprintln!(
-                    "hew: actor {actor_id} (pid={cached_pid}) panicked (trap code {signal}), msg_type={msg_type}, worker={worker_id}"
+                    "hew: actor {actor_id} (pid={cached_pid}) panicked in {context}, worker={worker_id}"
                 );
             } else {
-                let name = signal_name(signal);
+                let sig_name = signal_name(signal);
                 eprintln!(
-                    "hew: actor {actor_id} (pid={cached_pid}) crashed with {name} at {fault_addr:#x}, msg_type={msg_type}, worker={worker_id}"
+                    "hew: actor {actor_id} (pid={cached_pid}) crashed with {sig_name} at {fault_addr:#x} in {context}, worker={worker_id}"
+                );
+            }
+        } else {
+            // Trap in main/free-fn context (no actor dispatch active).
+            if intentional {
+                eprintln!("hew: panic in main context (trap code {signal}), worker={worker_id}");
+            } else {
+                let sig_name = signal_name(signal);
+                eprintln!(
+                    "hew: crash in main context: {sig_name} at {fault_addr:#x}, worker={worker_id}"
                 );
             }
         }
@@ -535,7 +596,10 @@ mod platform {
         // SAFETY: pthread_getspecific is async-signal-safe.
         let ctx = unsafe { get_recovery_ctx() };
         if ctx.is_null() {
-            // No recovery context — can't recover. Terminate immediately.
+            // No recovery context (main/free-fn context) — emit a diagnostic
+            // then terminate. F1.3: a crash must never be silent.
+            // write(2) is POSIX async-signal-safe; see emit_crash_diagnostic_sig_safe.
+            super::shared::emit_crash_diagnostic_sig_safe(sig);
             // SAFETY: _exit is async-signal-safe.
             unsafe { libc::_exit(128 + sig) };
         }

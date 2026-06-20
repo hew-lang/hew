@@ -635,6 +635,30 @@ pub enum TypeErrorKind {
         /// The 32-bit `msg_id` both handlers hashed to.
         msg_id: u32,
     },
+    /// Two `receive fn`s in DISTINCT actors hash to the same `msg_id`.
+    ///
+    /// `msg_id` is the 32-bit transport discriminant carried on every
+    /// cross-node frame. Two distinct actor types whose handlers collide on it
+    /// share a wire discriminant; while the runtime codec registry keys by
+    /// `(actor-type, msg_id)` and so routes each correctly within one process,
+    /// the collision leaves the wire protocol itself ambiguous — a future
+    /// relay, a peer on an older binary, or any path that keys on `msg_id`
+    /// alone could re-weaponize it into cross-node type-confusion. Refused at
+    /// compile time (defense-in-depth) so the source of truth stays
+    /// unambiguous. The user renames one handler; `#[msg_id(N)]` pinning is
+    /// reserved for a later release.
+    CrossActorProtocolCollision {
+        /// First actor in the colliding pair.
+        actor_a: String,
+        /// First actor's colliding handler name.
+        handler_a: String,
+        /// Second actor in the colliding pair.
+        actor_b: String,
+        /// Second actor's colliding handler name.
+        handler_b: String,
+        /// The 32-bit `msg_id` both handlers hashed to.
+        msg_id: u32,
+    },
     /// An `extern "rt"` function declaration names a symbol that is not in
     /// the `stable` section of `scripts/jit-symbol-classification.toml`.
     ///
@@ -1000,6 +1024,7 @@ impl TypeErrorKind {
             Self::ClosureCapturesDuplexHandle { .. } => "ClosureCapturesDuplexHandle",
             Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
             Self::ActorProtocolCollision { .. } => "ActorProtocolCollision",
+            Self::CrossActorProtocolCollision { .. } => "CrossActorProtocolCollision",
             Self::ExternRtSymbolUnclassified { .. } => "ExternRtSymbolUnclassified",
             Self::GenBlockInActorReceive => "GenBlockInActorReceive",
             Self::GenBlockInMachineTransition => "GenBlockInMachineTransition",

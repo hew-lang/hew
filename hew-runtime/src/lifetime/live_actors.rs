@@ -267,6 +267,37 @@ pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
     .flatten()
 }
 
+/// Resolve the per-actor-TYPE dispatch function pointer for a live actor id,
+/// returned as an opaque `*const c_void` codec-registry key.
+///
+/// The dispatch pointer is `HewActor.dispatch` — the same
+/// `__hew_actor_dispatch_<Actor>` global the codegen codec seeder registers the
+/// actor's codecs under. The cross-node decode paths resolve it here from the
+/// wire's `target_actor_id` so an inbound frame is decoded ONLY by the codec
+/// belonging to its target actor's type (`(dispatch, msg_type)` keying), never
+/// by a different actor type whose `msg_type` SipHash-collides.
+///
+/// Reads the dispatch field UNDER the liveness lock (via `with_live_actors_opt`)
+/// so a concurrent teardown cannot free the actor mid-read. Returns `None` when
+/// the actor is not live (the caller then takes the existing fail-closed drop /
+/// `DecodeFailure` path — never a fabricated key) or has no dispatch set.
+// live on not(wasm32) — cross-node inbound decode; dead on wasm32.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn dispatch_ptr_by_id(actor_id: u64) -> Option<*const std::ffi::c_void> {
+    with_live_actors_opt(|map| {
+        let actor_ptr = map
+            .as_ref()
+            .and_then(|m| m.get(&actor_id).map(|ptr| ptr.0))
+            .filter(|ptr| !ptr.is_null())?;
+        // SAFETY: `actor_ptr` is tracked-live under the lock held for this
+        // closure; a concurrent free must remove the entry (under the same lock)
+        // before reclaiming the allocation, so the dispatch field read is valid.
+        let dispatch = unsafe { (*actor_ptr).dispatch }?;
+        Some(dispatch as *const std::ffi::c_void)
+    })
+    .flatten()
+}
+
 /// Check whether an actor pointer is still live (tracked and not yet freed).
 ///
 /// Pointer-identity only: a freed allocation whose address is reused by a

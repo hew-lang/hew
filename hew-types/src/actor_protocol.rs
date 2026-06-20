@@ -296,6 +296,38 @@ mod tests {
     }
 
     #[test]
+    fn cross_actor_colliding_handler_names_share_msg_id() {
+        // `Alpha::h69862` and `Beta::h103299` are a real SipHash-1-3 low-32-bit
+        // collision (found by brute-force search; see the cross-actor checker
+        // test in `check::mod`). Pin the pair here so an accidental hash-impl
+        // change lights up at this anchor, not in a downstream wire break.
+        let a = compute_default_msg_id("Alpha::h69862");
+        let b = compute_default_msg_id("Beta::h103299");
+        assert_eq!(
+            a, b,
+            "the pinned cross-actor collision pair must still collide"
+        );
+        assert_eq!(a, 0xc0f6_cc98);
+    }
+
+    #[test]
+    fn module_qualified_cross_actor_handler_names_share_msg_id() {
+        // `b.Alpha::h804959` and `d.Beta::h3600` are a SipHash-1-3 low-32-bit
+        // collision under the module-short-qualified identity form used for
+        // module-graph actors (module path `["a","b"]` → short `"b"`).
+        // Found by brute-force search over 2M candidates; pinned here so a hash-impl
+        // change is caught at this anchor before it silently breaks the nested-module
+        // cross-actor collision test in `check::mod`.
+        let a = compute_default_msg_id("b.Alpha::h804959");
+        let b = compute_default_msg_id("d.Beta::h3600");
+        assert_eq!(
+            a, b,
+            "the pinned module-qualified cross-actor collision pair must still collide"
+        );
+        assert_eq!(a, 0x3e59_ee08);
+    }
+
+    #[test]
     fn msg_id_for_returns_descriptor_id() {
         let descriptor = ActorProtocolDescriptor::from_handlers(
             "Counter",

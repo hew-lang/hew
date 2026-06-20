@@ -27250,4 +27250,272 @@ mod every_attribute {
              got: {opaque_errors:#?}",
         );
     }
+
+    #[test]
+    fn cross_actor_msg_id_collision_is_rejected() {
+        // `Alpha::h69862` and `Beta::h103299` are a real SipHash-1-3 low-32-bit
+        // collision (pinned in `actor_protocol::tests`). Two DISTINCT actors
+        // sharing the 32-bit cross-node wire discriminant must be refused at
+        // compile time (defense-in-depth: the runtime keys its codec registry by
+        // (actor-type, msg_id) and routes correctly in-process, but the wire
+        // discriminant itself is ambiguous for relays / mixed-binary peers).
+        let output = check_source(
+            r"
+            actor Alpha {
+                receive fn h69862() {}
+            }
+            actor Beta {
+                receive fn h103299() {}
+            }
+
+            fn main() {}
+            ",
+        );
+
+        let collision = output.errors.iter().find(|e| {
+            matches!(
+                &e.kind,
+                TypeErrorKind::CrossActorProtocolCollision { msg_id, .. } if *msg_id == 0xc0f6_cc98
+            )
+        });
+        assert!(
+            collision.is_some(),
+            "two distinct actors with msg_id-colliding handlers must be rejected \
+             with CrossActorProtocolCollision; got: {:#?}",
+            output.errors
+        );
+        let err = collision.unwrap();
+        if let TypeErrorKind::CrossActorProtocolCollision {
+            actor_a,
+            handler_a,
+            actor_b,
+            handler_b,
+            ..
+        } = &err.kind
+        {
+            // Both actors and both handlers are named (order: first-seen, then
+            // the later offender).
+            let actors = [actor_a.as_str(), actor_b.as_str()];
+            assert!(actors.contains(&"Alpha") && actors.contains(&"Beta"));
+            let handlers = [handler_a.as_str(), handler_b.as_str()];
+            assert!(handlers.contains(&"h69862") && handlers.contains(&"h103299"));
+        }
+    }
+
+    #[test]
+    fn distinct_actor_non_colliding_handlers_are_clean() {
+        // Negative control: two actors whose handler names do NOT collide on the
+        // 32-bit msg_id must produce no cross-actor collision diagnostic.
+        let output = check_source(
+            r"
+            actor Alpha {
+                receive fn ping() {}
+            }
+            actor Beta {
+                receive fn pong() {}
+            }
+
+            fn main() {}
+            ",
+        );
+
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| matches!(&e.kind, TypeErrorKind::CrossActorProtocolCollision { .. })),
+            "non-colliding actor handlers must not produce a cross-actor collision; \
+             got: {:#?}",
+            output.errors
+        );
+    }
+
+    /// Build a program with two distinct non-root modules, each containing one
+    /// actor, and a root with just `fn main()`. Used to prove the cross-actor
+    /// collision checker covers actors in separate modules (not just root actors).
+    fn check_two_module_actors(
+        alpha_src: &str,
+        alpha_path: Vec<String>,
+        beta_src: &str,
+        beta_path: Vec<String>,
+    ) -> TypeCheckOutput {
+        let alpha_parsed = hew_parser::parse(alpha_src);
+        assert!(
+            alpha_parsed.errors.is_empty(),
+            "alpha module must parse cleanly, got: {:#?}",
+            alpha_parsed.errors
+        );
+        let beta_parsed = hew_parser::parse(beta_src);
+        assert!(
+            beta_parsed.errors.is_empty(),
+            "beta module must parse cleanly, got: {:#?}",
+            beta_parsed.errors
+        );
+        let root_parsed = hew_parser::parse("fn main() {}");
+        assert!(root_parsed.errors.is_empty());
+
+        let root_id = ModuleId::root();
+        let alpha_id = ModuleId::new(alpha_path);
+        let beta_id = ModuleId::new(beta_path);
+
+        let alpha_module = Module {
+            id: alpha_id.clone(),
+            items: alpha_parsed.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let beta_module = Module {
+            id: beta_id.clone(),
+            items: beta_parsed.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(alpha_module).unwrap();
+        mg.add_module(beta_module).unwrap();
+        // topo: both non-root modules before root
+        mg.topo_order = vec![alpha_id, beta_id, root_id];
+
+        let program = Program {
+            module_graph: Some(mg),
+            items: root_parsed.program.items,
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker.check_program(&program)
+    }
+
+    #[test]
+    fn single_nested_module_actor_descriptor_is_published() {
+        // Regression probe: an actor in a nested module (path ["a","b"]) must
+        // have its protocol descriptor published. The descriptor is keyed by
+        // the module-short form "b.Alpha" (matching `current_module_short()` =
+        // leaf segment used during fn_sigs registration). If collect_program_actors
+        // or build_actor_protocol_descriptors fails to resolve the fn_sigs key,
+        // the descriptor is silently absent.
+        let parsed = hew_parser::parse("actor Alpha { receive fn increment() {} }");
+        assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
+        let root_id = ModuleId::root();
+        let mod_id = ModuleId::new(vec!["a".to_string(), "b".to_string()]);
+        let module = Module {
+            id: mod_id.clone(),
+            items: parsed.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(module).unwrap();
+        mg.topo_order = vec![mod_id, root_id];
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        };
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&program);
+
+        assert!(
+            output.errors.is_empty(),
+            "single module actor must typecheck cleanly; got: {:#?}",
+            output.errors
+        );
+        // The actor_protocol_descriptors must contain the module-short key "b.Alpha".
+        // (Full-path identity "a.b.Alpha" is used only for the cross-actor collision
+        // check; the descriptor map stays keyed by the leaf-qualified form for
+        // downstream compatibility with HIR lowering and coercion checking.)
+        let descriptor = output.actor_protocol_descriptors.get("b.Alpha");
+        assert!(
+            descriptor.is_some(),
+            "actor in module [\"a\",\"b\"] must be published under identity \"b.Alpha\"; \
+             known keys: {:?}",
+            output.actor_protocol_descriptors.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn two_module_actors_both_get_descriptors() {
+        // When two separate modules each contain an actor, BOTH descriptors
+        // must be published. The descriptor map uses the module-short-qualified
+        // key (leaf segment) for downstream compatibility. This is a structural
+        // prerequisite for cross-actor collision detection — if either actor's
+        // descriptor is skipped, the collision is missed.
+        let output = check_two_module_actors(
+            "actor Alpha { receive fn ping() {} }",
+            vec!["a".to_string(), "b".to_string()],
+            "actor Beta { receive fn pong() {} }",
+            vec!["c".to_string(), "d".to_string()],
+        );
+        assert!(
+            output.errors.is_empty(),
+            "two non-colliding module actors must typecheck cleanly; got: {:#?}",
+            output.errors
+        );
+        let all_keys: Vec<_> = output.actor_protocol_descriptors.keys().collect();
+        assert!(
+            output.actor_protocol_descriptors.contains_key("b.Alpha"),
+            "b.Alpha descriptor must be present; known keys: {all_keys:?}"
+        );
+        assert!(
+            output.actor_protocol_descriptors.contains_key("d.Beta"),
+            "d.Beta descriptor must be present; known keys: {all_keys:?}"
+        );
+    }
+
+    #[test]
+    fn nested_module_cross_actor_collision_is_caught() {
+        // `b.Alpha::h804959` and `d.Beta::h3600` are a real SipHash-1-3 low-32-bit
+        // collision under the module-short-qualified identity form (module path
+        // `["a","b"]` → short `"b"`, path `["c","d"]` → short `"d"`).
+        // Pair is pinned in `actor_protocol::tests::module_qualified_cross_actor_handler_names_share_msg_id`.
+        // The whole-program collision checker must detect this even though each
+        // actor lives in a separate nested module — it must not silently skip
+        // actors from the module graph.
+        let output = check_two_module_actors(
+            "actor Alpha { receive fn h804959() {} }",
+            vec!["a".to_string(), "b".to_string()],
+            "actor Beta { receive fn h3600() {} }",
+            vec!["c".to_string(), "d".to_string()],
+        );
+
+        let collision = output.errors.iter().find(|e| {
+            matches!(
+                &e.kind,
+                TypeErrorKind::CrossActorProtocolCollision { msg_id, .. } if *msg_id == 0x3e59_ee08
+            )
+        });
+        assert!(
+            collision.is_some(),
+            "two distinct module-nested actors with msg_id-colliding handlers \
+             must be rejected with CrossActorProtocolCollision (0x3e59_ee08); \
+             got: {:#?}",
+            output.errors
+        );
+        if let TypeErrorKind::CrossActorProtocolCollision {
+            actor_a,
+            handler_a,
+            actor_b,
+            handler_b,
+            ..
+        } = &collision.unwrap().kind
+        {
+            let actors = [actor_a.as_str(), actor_b.as_str()];
+            // The identity in the diagnostic is the full-path form ("a.b.Alpha" /
+            // "c.d.Beta") because cross_actor_seen uses collision_identity.
+            assert!(
+                actors.iter().any(|a| a.ends_with("Alpha"))
+                    && actors.iter().any(|a| a.ends_with("Beta")),
+                "collision diagnostic must name both actors (qualified); got: {actor_a}, {actor_b}"
+            );
+            let handlers = [handler_a.as_str(), handler_b.as_str()];
+            assert!(
+                handlers.contains(&"h804959") && handlers.contains(&"h3600"),
+                "collision diagnostic must name both handlers; got: {handler_a}, {handler_b}"
+            );
+        }
+    }
 }

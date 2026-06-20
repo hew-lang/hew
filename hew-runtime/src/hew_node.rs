@@ -863,6 +863,7 @@ fn remote_reply_data_to_ptr(reply_data: &[u8], reply_size: usize) -> *mut c_void
 /// `data` must be valid for `size` bytes (or null when size is 0).
 pub(crate) unsafe fn try_remote_send(
     target_pid: u64,
+    dispatch: *const c_void,
     msg_type: c_int,
     data: *mut c_void,
     size: usize,
@@ -873,7 +874,16 @@ pub(crate) unsafe fn try_remote_send(
         }
         let node = *guard as *mut HewNode;
         // SAFETY: read lock pins CURRENT_NODE pointer for this send.
-        unsafe { hew_node_send(node, target_pid, msg_type, data.cast::<u8>(), size) }
+        unsafe {
+            hew_node_send(
+                node,
+                target_pid,
+                dispatch,
+                msg_type,
+                data.cast::<u8>(),
+                size,
+            )
+        }
     })
 }
 
@@ -1185,55 +1195,84 @@ unsafe extern "C" fn node_inbound_router(
         });
     } else {
         // Fire-and-forget message — reconstruct the value into THIS node's
-        // address space before delivering it to the local mailbox. The inbound
-        // `data` is the serialized wire form; feeding it raw to the mailbox would
-        // make the actor handler dereference sender-side heap pointers and crash.
-        //
-        // Fail closed: if no codec is registered for `msg_type`, or the decode
-        // reports failure, drop the message rather than deliver garbage. An empty
-        // payload (size == 0) is a genuine zero-field message and bypasses decode.
-        if size == 0 {
-            // SAFETY: zero-length payload; mailbox handles null+0.
-            let _ = unsafe {
-                crate::actor::hew_actor_send_by_id(
-                    target_actor_id,
-                    msg_type,
-                    std::ptr::null_mut(),
-                    0,
-                )
-            };
-        } else {
-            // SAFETY: data is valid for `size` bytes (reader_loop contract).
-            let (value, struct_size) =
-                unsafe { crate::xnode_serial::decode_payload(msg_type, data.cast_const(), size) };
-            if value.is_null() {
-                // No codec or decode failure — drop the message fail-closed.
-                set_last_error(format!(
-                    "cross-node tell dropped: no codec or decode failure for msg_type={msg_type}"
-                ));
-            } else {
-                // The reconstructed value lives in a malloc'd buffer of
-                // `struct_size` bytes (the in-memory struct size, NOT the wire
-                // length). hew_actor_send_by_id deep-copies `struct_size` bytes
-                // into the mailbox, MOVING the owned heap fields (strings/bytes)
-                // into the mailbox copy — exactly the move semantics of a local
-                // send where the caller's stack value is byte-copied. We then
-                // free the reconstructed struct SHELL only (not its fields, now
-                // owned by the mailbox copy).
-                // SAFETY: value is a valid reconstructed struct for msg_type.
-                let _ = unsafe {
-                    crate::actor::hew_actor_send_by_id(
-                        target_actor_id,
-                        msg_type,
-                        value,
-                        struct_size,
-                    )
-                };
-                // SAFETY: value came from decode_payload (libc::malloc).
-                unsafe { libc::free(value) };
-            }
-        }
+        // address space before delivering it to the local mailbox.
+        // SAFETY: data is valid for `size` bytes (reader_loop contract).
+        unsafe { deliver_inbound_tell(target_actor_id, msg_type, data, size) };
     }
+}
+
+/// Deliver an inbound fire-and-forget (`tell`) frame to its target actor's local
+/// mailbox, reconstructing the value into THIS node's address space first. The
+/// inbound `data` is the serialized wire form; feeding it raw to the mailbox
+/// would make the actor handler dereference sender-side heap pointers and crash.
+///
+/// Fail closed throughout: an unregistered codec, a decode failure, or a
+/// target actor that is no longer live all DROP the message rather than deliver
+/// garbage. An empty payload (`size == 0`) is a genuine zero-field message and
+/// bypasses decode.
+///
+/// # Safety
+/// `data` must be valid for `size` bytes (or null when `size == 0`).
+unsafe fn deliver_inbound_tell(target_actor_id: u64, msg_type: i32, data: *mut u8, size: usize) {
+    if size == 0 {
+        // Local delivery into THIS node's mailbox — no cross-node encode, so no
+        // codec key needed (null dispatch).
+        // SAFETY: zero-length payload; mailbox handles null+0.
+        let _ = unsafe {
+            crate::actor::hew_actor_send_by_id(
+                target_actor_id,
+                std::ptr::null(),
+                msg_type,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        return;
+    }
+    // Resolve the TARGET actor type's dispatch pointer from the wire's
+    // `target_actor_id` and decode under `(dispatch, msg_type)`, so the frame is
+    // reconstructed ONLY by the codec belonging to its target actor's type —
+    // never by a different actor whose `msg_type` SipHash-collides (remote
+    // type-confusion).
+    let Some(dispatch) = crate::lifetime::live_actors::dispatch_ptr_by_id(target_actor_id) else {
+        // Target actor not live (torn down between frame arrival and decode, or
+        // never existed). No dispatch pointer resolvable → no codec selectable →
+        // drop the message fail-closed rather than fabricate a key.
+        set_last_error(format!(
+            "cross-node tell dropped: target actor {target_actor_id} not live \
+             for msg_type={msg_type}"
+        ));
+        return;
+    };
+    // SAFETY: data is valid for `size` bytes (caller contract).
+    let (value, struct_size) =
+        unsafe { crate::xnode_serial::decode_payload(dispatch, msg_type, data.cast_const(), size) };
+    if value.is_null() {
+        // No codec or decode failure — drop the message fail-closed.
+        set_last_error(format!(
+            "cross-node tell dropped: no codec or decode failure for msg_type={msg_type}"
+        ));
+        return;
+    }
+    // The reconstructed value lives in a malloc'd buffer of `struct_size` bytes
+    // (the in-memory struct size, NOT the wire length). hew_actor_send_by_id
+    // deep-copies `struct_size` bytes into the mailbox, MOVING the owned heap
+    // fields (strings/bytes) into the mailbox copy — exactly the move semantics
+    // of a local send where the caller's stack value is byte-copied. We then
+    // free the reconstructed struct SHELL only (not its fields, now owned by the
+    // mailbox copy). Local mailbox delivery — null dispatch (no re-encode here).
+    // SAFETY: value is a valid reconstructed struct for msg_type.
+    let _ = unsafe {
+        crate::actor::hew_actor_send_by_id(
+            target_actor_id,
+            std::ptr::null(),
+            msg_type,
+            value,
+            struct_size,
+        )
+    };
+    // SAFETY: value came from decode_payload (libc::malloc).
+    unsafe { libc::free(value) };
 }
 
 /// Handle an inbound remote ask by performing a local blocking ask and
@@ -1299,6 +1338,16 @@ fn handle_inbound_ask(
         Some(unsafe { connection::hew_connmgr_feature_flags_for_node(conn_mgr.0, source_node_id) })
     });
 
+    // Resolve the TARGET actor type's dispatch pointer from `target_actor_id`.
+    // Both the request DECODE and the reply ENCODE key their codec by
+    // `(dispatch, msg_type)` so a frame is reconstructed / a reply is encoded
+    // ONLY by the codec belonging to this target actor's type — never by a
+    // different actor whose `msg_type` SipHash-collides. When the target is not
+    // live, `dispatch` is null: `decode_payload` finds no codec under a null key
+    // and fails closed below (the standard decode-failure rejection), so no
+    // separate not-live branch is needed.
+    let target_dispatch = crate::lifetime::live_actors::dispatch_ptr_by_id(target_actor_id);
+
     // Reconstruct the request value into THIS node's address space before the
     // local ask — the inbound `payload` is the serialized wire form, not the
     // in-memory struct. Feeding it raw to the handler would dereference
@@ -1307,9 +1356,10 @@ fn handle_inbound_ask(
     let decoded_request: Option<(*mut c_void, usize)> = if payload.is_empty() {
         None
     } else {
+        let dispatch = target_dispatch.unwrap_or(std::ptr::null());
         // SAFETY: payload is a valid slice for payload.len() bytes.
         let (value, struct_size) = unsafe {
-            crate::xnode_serial::decode_payload(msg_type, payload.as_ptr(), payload.len())
+            crate::xnode_serial::decode_payload(dispatch, msg_type, payload.as_ptr(), payload.len())
         };
         if value.is_null() {
             // No codec or decode failure — fail closed: send a rejection (if the
@@ -1372,15 +1422,21 @@ fn handle_inbound_ask(
         // `reply_ptr` points to the in-memory reply VALUE (a struct that may
         // contain heap pointers). Serialize its CONTENTS for transport rather
         // than shipping the raw struct bytes — the originating node reconstructs
-        // the value into its own address space. The reply codec is keyed by the
-        // request `msg_type` (a handler's reply type maps 1:1 to its msg_type).
+        // the value into its own address space. The reply codec is keyed by
+        // `(target dispatch, request msg_type)` — the same target actor type that
+        // just produced the reply, so a colliding `msg_type` on another actor
+        // type cannot select the wrong reply codec.
         // SAFETY: reply_ptr came from hew_reply which malloc'd the reply struct.
         let size = unsafe { crate::actor::hew_reply_data_size(reply_ptr) };
         if size > 0 {
             let mut out_len: usize = 0;
+            // The local ask succeeded against `target_actor_id`, so its dispatch
+            // resolved above; a null fallback fails closed in `encode_reply`.
+            let dispatch = target_dispatch.unwrap_or(std::ptr::null());
             // SAFETY: reply_ptr is a valid reply value for msg_type; out_len valid.
-            let bytes =
-                unsafe { crate::xnode_serial::encode_reply(msg_type, reply_ptr, &raw mut out_len) };
+            let bytes = unsafe {
+                crate::xnode_serial::encode_reply(dispatch, msg_type, reply_ptr, &raw mut out_len)
+            };
             // SAFETY: reply_ptr was malloc'd by hew_reply; free after encoding.
             // NOTE (robustness gap): `reply_ptr` is a flat memcpy of the actor's
             // reply value.  If the reply type has owned string/bytes fields, their
@@ -2369,14 +2425,20 @@ pub unsafe extern "C" fn hew_node_lookup(node: *mut HewNode, name: *const c_char
 
 /// Send a message to a target PID, routing local vs remote by PID node ID.
 ///
+/// `dispatch` is the TARGET actor TYPE's dispatch function pointer, keying the
+/// cross-node serialize codec `(dispatch, msg_type)` on the remote path. Unused
+/// on the local path. May be null for a local-only send.
+///
 /// # Safety
 ///
 /// - `node` must be valid.
 /// - `payload` must be valid for `payload_len` bytes, or null when len is 0.
+/// - `dispatch` is an opaque codec key, never dereferenced.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_send(
     node: *mut HewNode,
     target_pid: u64,
+    dispatch: *const c_void,
     msg_type: i32,
     payload: *const u8,
     payload_len: usize,
@@ -2396,6 +2458,7 @@ pub unsafe extern "C" fn hew_node_send(
         return unsafe {
             crate::actor::hew_actor_send_by_id(
                 target_pid,
+                dispatch,
                 msg_type,
                 payload.cast_mut().cast::<c_void>(),
                 payload_len,
@@ -2423,8 +2486,12 @@ pub unsafe extern "C" fn hew_node_send(
     let serialized: Option<(*mut u8, usize)> = if payload_len > 0 {
         let mut out_len: usize = 0;
         // SAFETY: payload points to a valid value of the message type; out_len valid.
+        // Keyed by `(dispatch, msg_type)` — the target actor TYPE's serializer,
+        // so a colliding `msg_type` on another actor type cannot select the
+        // wrong codec for the value being shipped.
         let bytes = unsafe {
             crate::xnode_serial::encode_payload(
+                dispatch,
                 msg_type,
                 payload.cast::<std::ffi::c_void>(),
                 &raw mut out_len,
@@ -2907,6 +2974,7 @@ enum RemoteAskSetupResult {
 ///   about to park on the reply.
 fn setup_remote_ask(
     pid: u64,
+    dispatch: *const c_void,
     msg_type: i32,
     data: *mut c_void,
     size: usize,
@@ -2938,8 +3006,16 @@ fn setup_remote_ask(
         let serialized_req: Option<(*mut u8, usize)> = if size > 0 {
             let mut out_len: usize = 0;
             // SAFETY: data is a valid value of the message type; out_len valid.
+            // Keyed by `(dispatch, msg_type)` — the target actor TYPE's request
+            // serializer; a colliding `msg_type` on another actor type cannot
+            // select the wrong codec.
             let bytes = unsafe {
-                crate::xnode_serial::encode_payload(msg_type, data.cast_const(), &raw mut out_len)
+                crate::xnode_serial::encode_payload(
+                    dispatch,
+                    msg_type,
+                    data.cast_const(),
+                    &raw mut out_len,
+                )
             };
             if bytes.is_null() {
                 return RemoteAskSetupResult::Error(AskError::EncodeFailed);
@@ -3038,6 +3114,7 @@ fn spawn_remote_ask_timeout(request_id: u64, timeout_ms: u64) -> Result<(), AskE
 /// finish paths. Records the exact [`AskError`] in the node ask-error slot on
 /// failure.
 fn finish_remote_ask_outcome(
+    dispatch: *const c_void,
     msg_type: i32,
     reply_size: usize,
     reply: &ReplyOutcome,
@@ -3057,13 +3134,16 @@ fn finish_remote_ask_outcome(
         };
     }
     // Non-void reply: `reply.data` holds the SERIALIZED reply bytes. Reconstruct
-    // the reply VALUE into this node's address space using the reply codec
-    // (keyed by the request `msg_type`). codegen's ask terminator then memcpy-
-    // loads the reconstructed struct into the reply dest — `reply_size` matches
-    // the reconstructed struct size.
+    // the reply VALUE into this node's address space using the reply codec keyed
+    // by `(dispatch, request msg_type)` — `dispatch` is THIS node's local
+    // dispatch global for the ask's statically-known target actor type (supplied
+    // by codegen at the ask site), so a colliding `msg_type` on another local
+    // actor type cannot select the wrong reply codec. codegen's ask terminator
+    // then memcpy-loads the reconstructed struct into the reply dest —
+    // `reply_size` matches the reconstructed struct size.
     // SAFETY: reply.data is a valid slice for its length.
     let (value, struct_size) = unsafe {
-        crate::xnode_serial::decode_reply(msg_type, reply.data.as_ptr(), reply.data.len())
+        crate::xnode_serial::decode_reply(dispatch, msg_type, reply.data.as_ptr(), reply.data.len())
     };
     if value.is_null() {
         // No reply codec or decode failure — fail closed with a typed error.
@@ -3102,6 +3182,7 @@ fn finish_remote_ask_outcome(
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_ask(
     pid: u64,
+    dispatch: *const c_void,
     msg_type: i32,
     data: *mut c_void,
     size: usize,
@@ -3126,10 +3207,14 @@ pub unsafe extern "C" fn hew_node_api_ask(
     }
 
     // Remote path: send message over mesh with request_id, block on the reply.
-    let (request_id, pending) = match setup_remote_ask(pid, msg_type, data, size, ptr::null_mut()) {
-        RemoteAskSetupResult::Ok(pair) => pair,
-        RemoteAskSetupResult::Error(e) => return ask_null(e),
-    };
+    // `dispatch` keys both the request encode and the reply decode `(dispatch,
+    // msg_type)` — it is THIS node's local dispatch global for the ask's
+    // statically-known target actor type (supplied by codegen).
+    let (request_id, pending) =
+        match setup_remote_ask(pid, dispatch, msg_type, data, size, ptr::null_mut()) {
+            RemoteAskSetupResult::Ok(pair) => pair,
+            RemoteAskSetupResult::Error(e) => return ask_null(e),
+        };
 
     // Block until the reply arrives or the caller-supplied timeout elapses.
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
@@ -3160,7 +3245,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
         ask_error: AskError::ConnectionDropped,
     });
     drop(outcome_guard);
-    finish_remote_ask_outcome(msg_type, reply_size, &reply)
+    finish_remote_ask_outcome(dispatch, msg_type, reply_size, &reply)
 }
 
 /// Start a non-blocking remote ask for a SUSPENDABLE caller (NEW-5).
@@ -3185,6 +3270,7 @@ pub unsafe extern "C" fn hew_node_api_ask(
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_ask_async(
     pid: u64,
+    dispatch: *const c_void,
     msg_type: i32,
     data: *mut c_void,
     size: usize,
@@ -3200,10 +3286,14 @@ pub unsafe extern "C" fn hew_node_api_ask_async(
         return ask_null(AskError::NoRunnableWork);
     }
 
-    let (request_id, pending) = match setup_remote_ask(pid, msg_type, data, size, caller_actor) {
-        RemoteAskSetupResult::Ok(pair) => pair,
-        RemoteAskSetupResult::Error(e) => return ask_null(e),
-    };
+    // `dispatch` keys the request encode `(dispatch, msg_type)`; the matching
+    // reply decode key is re-supplied to `hew_node_api_ask_finish` at the resume
+    // site (codegen knows the target actor type at both ends of the suspend).
+    let (request_id, pending) =
+        match setup_remote_ask(pid, dispatch, msg_type, data, size, caller_actor) {
+            RemoteAskSetupResult::Ok(pair) => pair,
+            RemoteAskSetupResult::Error(e) => return ask_null(e),
+        };
 
     if let Err(e) = spawn_remote_ask_timeout(request_id, timeout_ms) {
         reply_table().remove(request_id);
@@ -3227,6 +3317,7 @@ pub unsafe extern "C" fn hew_node_api_ask_async(
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_ask_finish(
     pending_handle: *mut c_void,
+    dispatch: *const c_void,
     msg_type: i32,
     reply_size: usize,
 ) -> *mut c_void {
@@ -3247,7 +3338,9 @@ pub unsafe extern "C" fn hew_node_api_ask_finish(
             ask_error: AskError::ConnectionDropped,
         })
     };
-    finish_remote_ask_outcome(msg_type, reply_size, &reply)
+    // `dispatch` keys the reply decode `(dispatch, msg_type)` — the target actor
+    // type's local dispatch global, re-supplied by codegen at the resume site.
+    finish_remote_ask_outcome(dispatch, msg_type, reply_size, &reply)
 }
 
 /// Abandon a SUSPENDED remote ask whose coroutine frame is being destroyed
@@ -3365,19 +3458,40 @@ mod tests {
         dst.cast::<std::ffi::c_void>()
     }
 
-    /// Register the test u32 codec for `msg_type` as both the request and reply
-    /// codec, so the two-process send/ask paths can serialize their controlled
-    /// payloads. Idempotent across helper processes (each registers in its own
-    /// process).
-    fn register_test_u32_codec(msg_type: i32) {
+    /// The codec-registry key `(dispatch, msg_type)` uses the TARGET actor
+    /// TYPE's dispatch function pointer. In these tests the echo actor is spawned
+    /// with a concrete dispatch fn (e.g. `ask_probe_dispatch`); the inbound
+    /// decode resolves THAT pointer from the target actor, so the codec must be
+    /// registered under the SAME dispatch and the originating ask must pass it.
+    /// This helper casts a dispatch fn to the opaque `*const c_void` key.
+    fn dispatch_key(f: crate::internal::types::HewDispatchFn) -> *const c_void {
+        f as *const c_void
+    }
+
+    /// Canonical codec key for the single-process two-node round-trip tests and
+    /// the two-process client side: the echo actor is spawned with
+    /// `ask_probe_dispatch`, so its inbound decode resolves that pointer. The
+    /// register, the ask FFI arg, and the spawned-actor dispatch all use this.
+    fn test_dispatch() -> *const c_void {
+        dispatch_key(ask_probe_dispatch)
+    }
+
+    /// Register the test u32 codec for `(dispatch, msg_type)` as both the
+    /// request and reply codec, so the send/ask paths can serialize their
+    /// controlled payloads. `dispatch` MUST be the dispatch fn the target echo
+    /// actor is spawned with (the inbound decode resolves it from the actor).
+    /// Idempotent across helper processes (each registers in its own process).
+    fn register_test_u32_codec(dispatch: *const c_void, msg_type: i32) {
         // SAFETY: the thunks match the codec ABI.
         unsafe {
             crate::xnode_serial::hew_xnode_register_codec(
+                dispatch,
                 msg_type,
                 test_u32_serialize,
                 test_u32_deserialize,
             );
             crate::xnode_serial::hew_xnode_register_reply_codec(
+                dispatch,
                 msg_type,
                 test_u32_serialize,
                 test_u32_deserialize,
@@ -3800,6 +3914,7 @@ mod tests {
             hew_node_send(
                 node.as_ptr(),
                 remote_pid,
+                ptr::null(),
                 TWO_PROCESS_REGISTRY_MSG_TYPE,
                 ptr::null(),
                 0,
@@ -3828,8 +3943,10 @@ mod tests {
         hold_after_observed: Duration,
     ) {
         // The inbound-ask path decodes the request and encodes the reply via the
-        // registered codec (fail-closed). Register the test u32 codec.
-        register_test_u32_codec(TWO_PROCESS_REGISTRY_MSG_TYPE);
+        // registered codec (fail-closed), keyed by the target actor's dispatch.
+        // Register under the SAME dispatch fn this server spawns its echo actor
+        // with so the inbound decode resolves the matching codec.
+        register_test_u32_codec(dispatch_key(dispatch), TWO_PROCESS_REGISTRY_MSG_TYPE);
         reset_two_process_ask_observed();
         // Install the runtime before touching the name registry (helper
         // subprocess holds no `runtime_test_guard`).
@@ -3878,6 +3995,7 @@ mod tests {
         let reply_ptr = unsafe {
             hew_node_api_ask(
                 remote_pid,
+                test_dispatch(),
                 TWO_PROCESS_REGISTRY_MSG_TYPE,
                 (&raw const send_value).cast::<c_void>().cast_mut(),
                 std::mem::size_of::<u32>(),
@@ -3919,6 +4037,7 @@ mod tests {
         let reply_ptr = unsafe {
             hew_node_api_ask(
                 remote_pid,
+                test_dispatch(),
                 TWO_PROCESS_REGISTRY_MSG_TYPE,
                 (&raw const send_value).cast::<c_void>().cast_mut(),
                 std::mem::size_of::<u32>(),
@@ -3951,7 +4070,7 @@ mod tests {
     ) -> (TestNode, u64) {
         // The cross-node send/ask path requires a registered codec for the
         // payload's msg_type (fail-closed). Register the test u32 codec.
-        register_test_u32_codec(TWO_PROCESS_REGISTRY_MSG_TYPE);
+        register_test_u32_codec(test_dispatch(), TWO_PROCESS_REGISTRY_MSG_TYPE);
         // Install the runtime before touching the name registry (helper
         // subprocess holds no `runtime_test_guard`).
         init_real_scheduler();
@@ -4664,6 +4783,7 @@ mod tests {
         let reply = unsafe {
             hew_node_api_ask(
                 remote_pid,
+                test_dispatch(),
                 7,
                 ptr::null_mut(),
                 0,
@@ -4854,7 +4974,7 @@ mod tests {
 
         assert!(reply_table().complete(id, Vec::new()));
         // SAFETY: `handle` is the live creator ref from register_parked.
-        let reply = unsafe { hew_node_api_ask_finish(handle, 7, 0) };
+        let reply = unsafe { hew_node_api_ask_finish(handle, test_dispatch(), 7, 0) };
 
         assert_eq!(reply, remote_void_reply_sentinel());
         assert_eq!(hew_node_ask_take_last_error(), AskError::None as i32);
@@ -4873,7 +4993,7 @@ mod tests {
 
         assert!(reply_table().fail(id, AskError::Timeout));
         // SAFETY: `handle` is the live creator ref from register_parked.
-        let reply = unsafe { hew_node_api_ask_finish(handle, 7, 0) };
+        let reply = unsafe { hew_node_api_ask_finish(handle, test_dispatch(), 7, 0) };
 
         assert!(reply.is_null());
         assert_eq!(hew_node_ask_take_last_error(), AskError::Timeout as i32);
@@ -4892,7 +5012,7 @@ mod tests {
 
         reply_table().fail_connection(key);
         // SAFETY: `handle` is the live creator ref from register_parked.
-        let reply = unsafe { hew_node_api_ask_finish(handle, 7, 0) };
+        let reply = unsafe { hew_node_api_ask_finish(handle, test_dispatch(), 7, 0) };
 
         assert!(reply.is_null());
         assert_eq!(
@@ -5432,7 +5552,16 @@ mod tests {
         // Fire-and-forget from node1 to the actor on node2.
         let msg_type_sent: i32 = 77;
         // SAFETY: null payload / size 0 is valid for a bare signal message.
-        let rc = unsafe { hew_node_send(node1.as_ptr(), actor_id, msg_type_sent, ptr::null(), 0) };
+        let rc = unsafe {
+            hew_node_send(
+                node1.as_ptr(),
+                actor_id,
+                ptr::null(),
+                msg_type_sent,
+                ptr::null(),
+                0,
+            )
+        };
         assert_eq!(rc, 0, "hew_node_send should succeed");
 
         let delivered = (0..100).any(|_| {
@@ -5564,7 +5693,16 @@ mod tests {
         // mesh transport — not just process startup.
         let msg_type_sent: i32 = 91;
         // SAFETY: null payload / size 0 is valid for a bare signal message.
-        let rc = unsafe { hew_node_send(node1.as_ptr(), actor_id, msg_type_sent, ptr::null(), 0) };
+        let rc = unsafe {
+            hew_node_send(
+                node1.as_ptr(),
+                actor_id,
+                ptr::null(),
+                msg_type_sent,
+                ptr::null(),
+                0,
+            )
+        };
         assert_eq!(rc, 0, "hew_node_send should succeed");
 
         let delivered = (0..200).any(|_| {
@@ -5791,6 +5929,7 @@ mod tests {
         let reply_ptr = unsafe {
             hew_node_api_ask(
                 actor_id,
+                test_dispatch(),
                 1,
                 ptr::null_mut(),
                 0,
@@ -5819,7 +5958,7 @@ mod tests {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
         // Remote ask requires a registered codec for the payload msg_type.
-        register_test_u32_codec(1);
+        register_test_u32_codec(test_dispatch(), 1);
 
         // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 311.
         // Node 2 (responder) starts after; CURRENT_NODE stays as node1.
@@ -5873,6 +6012,7 @@ mod tests {
         let reply_ptr = unsafe {
             hew_node_api_ask(
                 actor_id,
+                test_dispatch(),
                 1,
                 (&raw const send_value).cast::<c_void>().cast_mut(),
                 std::mem::size_of::<u32>(),
@@ -5914,7 +6054,7 @@ mod tests {
         // routed at the parked caller through `enqueue_resume`.
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
-        register_test_u32_codec(1);
+        register_test_u32_codec(test_dispatch(), 1);
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
         // SAFETY: bind address is a valid C string for this scope.
@@ -5959,6 +6099,7 @@ mod tests {
         let handle = unsafe {
             hew_node_api_ask_async(
                 actor_id,
+                test_dispatch(),
                 1,
                 (&raw const send_value).cast::<c_void>().cast_mut(),
                 std::mem::size_of::<u32>(),
@@ -5997,7 +6138,9 @@ mod tests {
         }
 
         // SAFETY: `handle` is the live creator ref; finish consumes it exactly once.
-        let reply_ptr = unsafe { hew_node_api_ask_finish(handle, 1, std::mem::size_of::<u32>()) };
+        let reply_ptr = unsafe {
+            hew_node_api_ask_finish(handle, test_dispatch(), 1, std::mem::size_of::<u32>())
+        };
         assert!(
             !reply_ptr.is_null(),
             "resumed async ask should bind a non-null reply"
@@ -6062,6 +6205,7 @@ mod tests {
         let reply_ptr = unsafe {
             hew_node_api_ask(
                 actor_id,
+                test_dispatch(),
                 1,
                 ptr::null_mut(),
                 0,
@@ -6132,6 +6276,7 @@ mod tests {
         let reply_ptr = unsafe {
             hew_node_api_ask(
                 actor_id,
+                test_dispatch(),
                 1,
                 ptr::null_mut(),
                 0,
@@ -6219,6 +6364,7 @@ mod tests {
         let reply_ptr = unsafe {
             hew_node_api_ask(
                 actor_id,
+                test_dispatch(),
                 1,
                 ptr::null_mut(),
                 0,
@@ -6288,6 +6434,7 @@ mod tests {
         let reply_ptr = unsafe {
             hew_node_api_ask(
                 actor_id,
+                test_dispatch(),
                 1,
                 ptr::null_mut(),
                 0,
@@ -6383,6 +6530,7 @@ mod tests {
         let reply_ptr = unsafe {
             hew_node_api_ask(
                 actor_id,
+                test_dispatch(),
                 1,
                 ptr::null_mut(),
                 0,
@@ -6457,6 +6605,7 @@ mod tests {
         let reply_ptr = unsafe {
             hew_node_api_ask(
                 actor_id,
+                test_dispatch(),
                 1,
                 ptr::null_mut(),
                 0,
@@ -6525,6 +6674,7 @@ mod tests {
         let reply_ptr = unsafe {
             hew_node_api_ask(
                 actor_id,
+                test_dispatch(),
                 1,
                 ptr::null_mut(),
                 0,
@@ -6596,6 +6746,7 @@ mod tests {
         let ask_handle = thread::spawn(move || unsafe {
             let ptr = hew_node_api_ask(
                 actor_id,
+                test_dispatch(),
                 1,
                 ptr::null_mut(),
                 0,
@@ -6713,6 +6864,7 @@ mod tests {
         let ask_handle = thread::spawn(move || unsafe {
             let ptr = hew_node_api_ask(
                 actor_id,
+                test_dispatch(),
                 1,
                 ptr::null_mut(),
                 0,
@@ -6988,7 +7140,7 @@ mod tests {
     fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
-        register_test_u32_codec(1);
+        register_test_u32_codec(test_dispatch(), 1);
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
 
@@ -7030,6 +7182,7 @@ mod tests {
         let reply_ptr = unsafe {
             hew_node_api_ask(
                 actor_id,
+                test_dispatch(),
                 1,
                 std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
                 std::mem::size_of::<u32>(),
@@ -7135,6 +7288,7 @@ mod tests {
         let reply_ptr = unsafe {
             hew_node_api_ask(
                 actor_id,
+                test_dispatch(),
                 1,
                 ptr::null_mut(),
                 0,
@@ -7173,7 +7327,7 @@ mod tests {
     fn over_limit_nonvoid_ask_fails_closed_with_worker_at_capacity() {
         let _guard = crate::runtime_test_guard();
         crate::registry::hew_registry_clear();
-        register_test_u32_codec(1);
+        register_test_u32_codec(test_dispatch(), 1);
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
 
@@ -7214,6 +7368,7 @@ mod tests {
         let reply_ptr = unsafe {
             hew_node_api_ask(
                 actor_id,
+                test_dispatch(),
                 1,
                 std::ptr::from_ref(&payload).cast_mut().cast::<c_void>(),
                 std::mem::size_of::<u32>(),

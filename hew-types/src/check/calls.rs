@@ -947,6 +947,61 @@ impl Checker {
             .filter(|qualified| self.fn_sigs.contains_key(qualified))
             .unwrap_or_else(|| func_name.clone());
         if let Some(sig) = self.fn_sigs.get(&resolved_fn_name).cloned() {
+            // Visibility enforcement: check that the caller's module is allowed
+            // to reference this function.  We only check when the resolved key
+            // is module-qualified (contains '.') because root-level functions
+            // have no cross-module boundary, and fn_visibility only covers
+            // items registered through the import-surface or collect_function
+            // passes.  The root/flat single-file path (current_module == None,
+            // no '.' in key) is a deliberate no-op (plan risk: root/flat caveat).
+            if resolved_fn_name.contains('.')
+                && !resolved_fn_name.contains("::")
+                && self.current_module.is_some()
+            {
+                if let Some(&vis) = self.fn_visibility.get(&resolved_fn_name) {
+                    let decl_module = self
+                        .fn_def_spans
+                        .get(&resolved_fn_name)
+                        .and_then(|(_, m)| m.as_deref());
+                    let acc_module = self.current_module.as_deref();
+                    if !visibility::access_allowed(decl_module, acc_module, vis) {
+                        // Extract just the function name (last segment after '.').
+                        let symbol = resolved_fn_name
+                            .rsplit_once('.')
+                            .map_or(resolved_fn_name.as_str(), |(_, n)| n);
+                        let decl_span = self
+                            .fn_def_spans
+                            .get(&resolved_fn_name)
+                            .map_or_else(|| span.clone(), |(s, _)| s.clone());
+                        let err = match vis {
+                            hew_parser::ast::Visibility::Private => {
+                                TypeError::visibility_violation_private(
+                                    span.clone(),
+                                    symbol,
+                                    decl_module.unwrap_or("(root)"),
+                                    acc_module.unwrap_or("(root)"),
+                                    decl_span,
+                                    self.current_module.clone(),
+                                )
+                            }
+                            hew_parser::ast::Visibility::Package => {
+                                TypeError::visibility_violation_package(
+                                    span.clone(),
+                                    symbol,
+                                    decl_module.unwrap_or("(root)"),
+                                    acc_module.unwrap_or("(root)"),
+                                    decl_span,
+                                    self.current_module.clone(),
+                                )
+                            }
+                            hew_parser::ast::Visibility::Pub => unreachable!(),
+                        };
+                        self.errors.push(err);
+                        return Ty::Error;
+                    }
+                }
+            }
+
             if let Some(caller) = &self.current_function {
                 self.call_graph
                     .entry(caller.clone())

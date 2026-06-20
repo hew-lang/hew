@@ -390,11 +390,14 @@ fn test_private_items_not_visible() {
 
     assert!(
         !output.fn_sigs.contains_key("private_fn"),
-        "private fn must not appear in fn_sigs (unqualified)"
+        "private fn must not appear unqualified (no bare binding)"
     );
+    // Private functions ARE registered under their qualified name so the
+    // reference-site enforcement check can emit E_VISIBILITY instead of a
+    // generic "unknown function" error.
     assert!(
-        !output.fn_sigs.contains_key("mod_a.private_fn"),
-        "private fn must not appear in fn_sigs (qualified)"
+        output.fn_sigs.contains_key("mod_a.private_fn"),
+        "private fn must be registered under its qualified name for enforcement"
     );
     assert!(
         output.fn_sigs.contains_key("public_fn"),

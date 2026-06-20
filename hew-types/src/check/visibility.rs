@@ -1,15 +1,5 @@
 //! Module/package visibility boundary predicates.
 //!
-// The three exported predicates (path_segments, same_module, same_package,
-// access_allowed) are used only by the enforcement wiring in calls.rs /
-// resolution.rs (slice 4) and by the tests in this file.  Until slice 4
-// lands, the functions are dead to the non-test build; suppress the lint
-// here rather than with #[expect] on each item.
-#![allow(
-    dead_code,
-    reason = "predicate functions are wired in slice 4; tests exercise them now"
-)]
-//!
 //! Implements the three-level access model for Hew's `Visibility` enum:
 //!
 //! | `Visibility` | Allowed from                       |

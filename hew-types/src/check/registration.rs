@@ -7190,20 +7190,20 @@ impl Checker {
                 }
                 Item::Function(fd) => {
                     let qualified = format!("{module_short}.{}", fd.name);
-                    // Record visibility for all functions (both pub and non-pub).
-                    // The is_pub() gate below still applies for registration into
-                    // fn_sigs (import surface); the visibility table covers all
-                    // declarations so the enforcement check can distinguish
-                    // "private, not accessible" from "unknown symbol".
+                    // Record visibility for all functions in the visibility table.
                     self.fn_visibility
                         .entry(qualified.clone())
                         .or_insert(fd.visibility);
-                    if !fd.visibility.is_pub() {
-                        continue;
-                    }
                     if !self.fn_sigs.contains_key(&qualified) {
                         let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
-                        self.module_fn_exports.insert(qualified.clone());
+                        // Only track pub functions as module exports (for dead-code
+                        // analysis and call-graph completeness). Non-pub functions are
+                        // registered into fn_sigs so the enforcement check at the
+                        // reference site can produce a precise E_VISIBILITY diagnostic
+                        // instead of a generic "unknown function" error.
+                        if fd.visibility.is_pub() {
+                            self.module_fn_exports.insert(qualified.clone());
+                        }
                         self.fn_type_param_assoc_bindings
                             .insert(qualified.clone(), assoc_bindings);
                         self.fn_sigs.insert(qualified, sig);
@@ -7719,24 +7719,28 @@ impl Checker {
             match item {
                 Item::Function(fd) => {
                     let qualified = format!("{module_short}.{}", fd.name);
-                    // Record visibility for all functions so the enforcement check
-                    // can distinguish "private, not accessible" from "unknown symbol".
+                    // Record visibility for all functions in the visibility table.
                     self.fn_visibility
                         .entry(qualified.clone())
                         .or_insert(fd.visibility);
-                    // Skip non-pub functions (enforce visibility)
-                    if !fd.visibility.is_pub() {
-                        continue;
-                    }
 
                     let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
-                    self.module_fn_exports.insert(qualified.clone());
+                    // Only track pub functions as module exports (for dead-code
+                    // analysis and call-graph completeness). Non-pub functions are
+                    // registered into fn_sigs so the enforcement check at the
+                    // reference site can produce a precise E_VISIBILITY diagnostic
+                    // instead of a generic "unknown function" error.
+                    if fd.visibility.is_pub() {
+                        self.module_fn_exports.insert(qualified.clone());
+                    }
                     self.fn_type_param_assoc_bindings
                         .insert(qualified.clone(), assoc_bindings.clone());
                     self.fn_sigs.insert(qualified, sig.clone());
 
-                    // If named import or glob, also register unqualified (using alias if present)
-                    if Self::should_import_name(&fd.name, spec) {
+                    // If named import or glob, also register unqualified (using alias if present).
+                    // Only pub functions are eligible for unqualified import bindings — private
+                    // functions cannot be imported bare even if they appear in a glob import spec.
+                    if fd.visibility.is_pub() && Self::should_import_name(&fd.name, spec) {
                         let binding_name = Self::resolve_import_name(spec, &fd.name)
                             .unwrap_or_else(|| fd.name.clone());
                         self.fn_type_param_assoc_bindings

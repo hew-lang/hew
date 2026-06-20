@@ -1485,6 +1485,56 @@ impl Checker {
                         .borrow_mut()
                         .insert(ImportKey::new(self.current_module.clone(), module.clone()));
                 }
+                // Visibility enforcement for qualified type references.
+                // Only fires when the resolved name is module-qualified (contains
+                // '.') and the accessor is in a module context. Root/flat programs
+                // (current_module == None) have no cross-module boundary.
+                if resolved_name.contains('.')
+                    && !resolved_name.contains("::")
+                    && self.current_module.is_some()
+                {
+                    if let Some(&(vis, ref decl_module_opt)) =
+                        self.type_visibility.get(&resolved_name)
+                    {
+                        let decl_module = decl_module_opt.as_deref();
+                        let acc_module = self.current_module.as_deref();
+                        if !visibility::access_allowed(decl_module, acc_module, vis) {
+                            let symbol = resolved_name
+                                .rsplit_once('.')
+                                .map_or(resolved_name.as_str(), |(_, n)| n);
+                            let decl_span = self
+                                .type_def_spans
+                                .get(&resolved_name)
+                                .cloned()
+                                .unwrap_or_else(|| te.1.clone());
+                            let err = match vis {
+                                hew_parser::ast::Visibility::Private => {
+                                    TypeError::visibility_violation_private(
+                                        te.1.clone(),
+                                        symbol,
+                                        decl_module.unwrap_or("(root)"),
+                                        acc_module.unwrap_or("(root)"),
+                                        decl_span,
+                                        self.current_module.clone(),
+                                    )
+                                }
+                                hew_parser::ast::Visibility::Package => {
+                                    TypeError::visibility_violation_package(
+                                        te.1.clone(),
+                                        symbol,
+                                        decl_module.unwrap_or("(root)"),
+                                        acc_module.unwrap_or("(root)"),
+                                        decl_span,
+                                        self.current_module.clone(),
+                                    )
+                                }
+                                hew_parser::ast::Visibility::Pub => unreachable!(),
+                            };
+                            self.errors.push(err);
+                            return Ty::Error;
+                        }
+                    }
+                }
                 // Auto-parameterise channel handle types: bare `Sender`
                 // becomes `Sender<T>` with a fresh type variable so that
                 // function parameters accept any channel element type.

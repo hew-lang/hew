@@ -8535,7 +8535,11 @@ fn named_import_registers_specified_names_only() {
 // -- Pub visibility enforcement --
 
 #[test]
-fn non_pub_functions_not_registered() {
+fn non_pub_functions_registered_for_enforcement_but_not_bare() {
+    // Private functions ARE registered in fn_sigs under their qualified name so
+    // the reference-site enforcement check can produce a precise E_VISIBILITY
+    // diagnostic instead of a generic "unknown function" error.  They must NOT
+    // receive an unqualified (bare) binding even when the import is a glob.
     let priv_fn = make_priv_fn("secret");
     let pub_fn = make_pub_fn(
         "visible",
@@ -8547,7 +8551,7 @@ fn non_pub_functions_not_registered() {
     );
     let import = make_user_import(
         &["myapp", "utils"],
-        Some(ImportSpec::Glob), // even glob shouldn't expose private fns
+        Some(ImportSpec::Glob), // even glob should not expose private fns unqualified
         vec![
             (Item::Function(priv_fn), 0..0),
             (Item::Function(pub_fn), 0..0),
@@ -8556,12 +8560,12 @@ fn non_pub_functions_not_registered() {
     let output = check_items(vec![(Item::Import(import), 0..0)]);
 
     assert!(
-        !output.fn_sigs.contains_key("utils.secret"),
-        "non-pub function should not be registered as qualified"
+        output.fn_sigs.contains_key("utils.secret"),
+        "private function must be registered under its qualified name for enforcement"
     );
     assert!(
         !output.fn_sigs.contains_key("secret"),
-        "non-pub function should not be registered as unqualified"
+        "private function must NOT receive an unqualified (bare) binding"
     );
     assert!(output.fn_sigs.contains_key("utils.visible"));
     assert!(output.fn_sigs.contains_key("visible"));

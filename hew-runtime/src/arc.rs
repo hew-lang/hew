@@ -192,7 +192,10 @@ pub unsafe extern "C" fn hew_arc_drop(ptr: *mut u8) {
     // Release: ensure all writes before this drop are visible to the
     // thread that observes strong == 0.
     let old = inner.strong.fetch_sub(1, Ordering::Release);
-    debug_assert!(old > 0, "Arc double-free");
+    // Refcount invariant: the pre-decrement value must be > 0. A zero-or-
+    // underflowed strong count means a double-free — a memory-safety violation
+    // that must abort in release, not wrap silently past a debug_assert.
+    assert!(old > 0, "Arc double-free: strong refcount was already 0");
 
     if old != 1 {
         return; // Not the last strong reference.
@@ -352,7 +355,12 @@ pub unsafe extern "C" fn hew_weak_drop_arc(weak_ptr: *mut u8) {
     let inner = unsafe { &*header };
 
     let old = inner.weak.fetch_sub(1, Ordering::Release);
-    debug_assert!(old > 0, "Weak<Arc> double-free");
+    // Same rationale as the strong-count assert in hew_arc_drop: a zero weak
+    // count before decrement is a double-free and must abort in release.
+    assert!(
+        old > 0,
+        "Weak<Arc> double-free: weak refcount was already 0"
+    );
 
     if old != 1 {
         return;

@@ -3842,10 +3842,35 @@ fn register_enum_layouts<'ctx>(
             }
         }
         if order.len() != n {
-            // Cycle detected (indirect enum recursion or a bug). Fall back to
-            // input order — the original behaviour — rather than silently
-            // dropping entries.
-            order = (0..n).collect();
+            // Cycle detected: a non-indirect (inline, value-typed) enum field
+            // creates a circular inline layout. Fail closed with a diagnostic.
+            //
+            // Non-indirect enum values are laid out inline (finite-size tagged
+            // unions). A layout cycle among non-indirect enums would produce a
+            // zero-byte payload alloca — a silent miscompile that the LLVM
+            // verifier does not catch. Indirect (boxed) enums are already
+            // excluded from cycle edges by `collect_named_enum_deps`; only a
+            // genuine inline-layout cycle reaches this branch.
+            //
+            // WHY: the fallback to input order was the original behaviour and
+            // produced a zero-byte alloca for the cyclic variant.
+            // WHEN OBSOLETE: never — an inline layout cycle is structurally
+            // unrepresentable. If the type is boxed, declare it `indirect enum`
+            // so the pointer-shaped layout eliminates the cycle.
+            let cycle_names: Vec<&str> = enum_layouts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !order.contains(i))
+                .map(|(_, l)| l.name.as_str())
+                .collect();
+            return Err(CodegenError::FailClosed(format!(
+                "cyclic enum layout detected — non-indirect Hew enums are inline value types \
+                 and cannot form a layout cycle; \
+                 the following enum name(s) form a layout cycle: {}. \
+                 Declare the enum(s) as `indirect enum` to break the cycle (indirect enums \
+                 are heap-boxed and hold a pointer, which has a fixed finite size).",
+                cycle_names.join(", ")
+            )));
         }
     }
 
@@ -3880,6 +3905,14 @@ fn register_enum_layouts<'ctx>(
 /// `ResolvedTy::Named` type args are walked — struct fields inside a
 /// record-typed variant are not expanded (records have their bodies set
 /// before any enum layout is processed, so they are never opaque here).
+///
+/// `indirect enum` types are **excluded** from the dependency set even when
+/// they appear as field types. An `indirect enum` variable is represented as a
+/// heap pointer (ptr-sized), so its concrete LLVM tagged-union body does not
+/// need to be laid out before the enclosing enum's payload size can be
+/// calculated. Including indirect dependencies as layout edges would incorrectly
+/// classify a valid mutually-recursive `indirect enum` pair (A ↔ B, both
+/// boxed) as a layout cycle and fail-closed.
 fn collect_named_enum_deps(
     field_ty: &ResolvedTy,
     names: &HashSet<&str>,
@@ -3900,7 +3933,13 @@ fn collect_named_enum_deps(
     };
     if names.contains(key.as_str()) {
         if let Some(idx) = enum_layouts.iter().position(|l| l.name == key) {
-            out.push(idx);
+            // Skip indirect (boxed) enum dependencies: the field is
+            // pointer-shaped and has a fixed, finite size regardless of the
+            // target enum's own layout. Only inline (non-indirect) enum fields
+            // contribute a real layout ordering constraint.
+            if !enum_layouts[idx].is_indirect {
+                out.push(idx);
+            }
         }
     }
     // Recurse into type args for nested generics (e.g. `Option<T>` inside
@@ -51295,6 +51334,139 @@ mod tests {
         assert!(
             machine_layouts.contains_key("Option$$u8"),
             "metadata for the deduplicated enum must be registered exactly once"
+        );
+    }
+
+    /// A mutually-recursive enum pair (A references B, B references A)
+    /// must produce a `FailClosed` error, not a silent miscompile via a
+    /// zero-byte payload alloca.
+    ///
+    /// The Kahn's-sort cycle detector in `register_enum_layouts` fails closed
+    /// when `order.len() != n`; this test pins that behaviour so a regression
+    /// to the old input-order fallback is caught immediately.
+    #[test]
+    fn cyclic_enum_layout_fails_closed_with_diagnostic() {
+        let ctx = Context::create();
+        // `enum A { Wrap(B) }` and `enum B { Wrap(A) }` — a mutual layout cycle.
+        let enum_fixtures = vec![
+            MirEnumLayout {
+                name: "A".to_string(),
+                tag_width: 1,
+                variants: vec![MachineVariantLayout {
+                    name: "Wrap".to_string(),
+                    field_tys: vec![ResolvedTy::Named {
+                        name: "B".to_string(),
+                        args: vec![],
+                        builtin: None,
+                        is_opaque: false,
+                    }],
+                }],
+                is_indirect: false,
+            },
+            MirEnumLayout {
+                name: "B".to_string(),
+                tag_width: 1,
+                variants: vec![MachineVariantLayout {
+                    name: "Wrap".to_string(),
+                    field_tys: vec![ResolvedTy::Named {
+                        name: "A".to_string(),
+                        args: vec![],
+                        builtin: None,
+                        is_opaque: false,
+                    }],
+                }],
+                is_indirect: false,
+            },
+        ];
+        let mut map = predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
+            .expect("predeclare must succeed even for cyclic names");
+        let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
+        let err = register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
+            .expect_err("cyclic enum layout must fail-closed, not silently miscompile");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(
+                    msg.contains("cyclic enum layout"),
+                    "diagnostic must name the cyclic-layout cause, got: {msg}"
+                );
+                assert!(
+                    msg.contains('A') || msg.contains('B'),
+                    "diagnostic must name at least one participating enum, got: {msg}"
+                );
+            }
+            other => panic!("expected FailClosed for cyclic enum, got {other:?}"),
+        }
+    }
+
+    /// A mutually-recursive pair where BOTH enums are `indirect` (boxed)
+    /// must compile successfully. Each field of type `A` or `B` is held as a
+    /// heap pointer — the field has a fixed pointer size regardless of the
+    /// target's own layout, so there is no layout cycle.
+    ///
+    /// This is the primary user-visible case: `indirect enum A { ALeaf(i64); AWrap(B); }`
+    /// paired with `indirect enum B { BLeaf(i64); BWrap(A); }` must compile.
+    ///
+    /// The self-recursive `indirect enum Expr { Lit(i64); Neg(Expr); }` pattern
+    /// is already handled; this test pins the mutual (cross-type) case.
+    #[test]
+    fn mutual_indirect_enum_pair_compiles_successfully() {
+        let ctx = Context::create();
+        // `indirect enum A { ALeaf(i64); AWrap(B); }` and
+        // `indirect enum B { BLeaf(i64); BWrap(A); }` — both boxed.
+        let enum_fixtures = vec![
+            MirEnumLayout {
+                name: "A".to_string(),
+                tag_width: 1,
+                variants: vec![
+                    MachineVariantLayout {
+                        name: "ALeaf".to_string(),
+                        field_tys: vec![ResolvedTy::I64],
+                    },
+                    MachineVariantLayout {
+                        name: "AWrap".to_string(),
+                        field_tys: vec![ResolvedTy::Named {
+                            name: "B".to_string(),
+                            args: vec![],
+                            builtin: None,
+                            is_opaque: false,
+                        }],
+                    },
+                ],
+                is_indirect: true,
+            },
+            MirEnumLayout {
+                name: "B".to_string(),
+                tag_width: 1,
+                variants: vec![
+                    MachineVariantLayout {
+                        name: "BLeaf".to_string(),
+                        field_tys: vec![ResolvedTy::I64],
+                    },
+                    MachineVariantLayout {
+                        name: "BWrap".to_string(),
+                        field_tys: vec![ResolvedTy::Named {
+                            name: "A".to_string(),
+                            args: vec![],
+                            builtin: None,
+                            is_opaque: false,
+                        }],
+                    },
+                ],
+                is_indirect: true,
+            },
+        ];
+        let mut map = predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
+            .expect("predeclare must succeed for mutual indirect enum pair");
+        let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
+        register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
+            .expect("mutual indirect enum pair must compile: both fields are pointer-shaped");
+        assert!(
+            machine_layouts.contains_key("A"),
+            "layout for indirect enum A must be registered"
+        );
+        assert!(
+            machine_layouts.contains_key("B"),
+            "layout for indirect enum B must be registered"
         );
     }
 

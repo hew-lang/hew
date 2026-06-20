@@ -267,21 +267,22 @@ fn eval_result_to_json(
             //    behaviour for arithmetic traps): synthesise a user-facing message
             //    into both `stderr` and `diagnostics`.
             // 2. Child wrote a runtime-internal diagnostic to stderr AND was
-            //    killed by a signal (F1.3 path: `hew_trap_with_code` emits
-            //    "hew: trap in main context: …" before the process dies via the
-            //    default SIGILL handler). Preserve the child's stderr but also
-            //    synthesise a user-facing description into `diagnostics` so the
-            //    JSON contract's cause field is never empty for signal-killed
-            //    programs.
+            //    killed by a signal (Unix F1.3 path) OR the stderr begins with
+            //    the "hew: trap in main context:" prefix (Windows F1.3 path —
+            //    no Unix signal is available, but the cause is named in stderr
+            //    and the NTSTATUS exit code maps via describe_runtime_failure).
+            //    Preserve the child's stderr but also synthesise a user-facing
+            //    description into `diagnostics` so the JSON contract's cause
+            //    field is never empty for runtime-trap programs on any platform.
             // 3. Child exited with a non-zero code (e.g. `panic()` → exit 101)
             //    and wrote its own stderr: preserve both, keep `diagnostics`
             //    empty (the child's message IS the diagnostic).
             let (stderr, diagnostics) = if stderr.is_empty() {
                 let synth = format!("{}\n", repl::describe_runtime_failure(exit_code, signal));
                 (synth.clone(), synth)
-            } else if signal.is_some() {
-                // Signal-killed with child-written stderr: synthesise the
-                // user-facing description for `diagnostics`.
+            } else if signal.is_some() || repl::is_runtime_trap_stderr(&stderr) {
+                // Signal-killed (Unix) or runtime-trap stderr (Windows): synthesise
+                // the user-facing description for `diagnostics`.
                 let synth = format!("{}\n", repl::describe_runtime_failure(exit_code, signal));
                 (stderr, synth)
             } else {

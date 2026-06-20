@@ -1487,12 +1487,11 @@ impl Checker {
                 }
                 // Visibility enforcement for qualified type references.
                 // Only fires when the resolved name is module-qualified (contains
-                // '.') and the accessor is in a module context. Root/flat programs
-                // (current_module == None) have no cross-module boundary.
-                if resolved_name.contains('.')
-                    && !resolved_name.contains("::")
-                    && self.current_module.is_some()
-                {
+                // '.').  Root programs (current_module == None) are subject to
+                // the same check: referencing a private type via a qualified
+                // name is a cross-module access regardless of caller context.
+                // access_allowed handles the None caller correctly.
+                if resolved_name.contains('.') && !resolved_name.contains("::") {
                     if let Some(&(vis, ref decl_module_opt)) =
                         self.type_visibility.get(&resolved_name)
                     {

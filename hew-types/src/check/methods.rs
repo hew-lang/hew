@@ -5065,6 +5065,46 @@ impl Checker {
                         let (expr, sp) = arg.expr();
                         self.synthesize(expr, sp);
                     }
+                    // Check if the function exists but is not accessible due to
+                    // visibility: emit a precise E_VISIBILITY diagnostic instead of
+                    // the generic "no function" error when the key is in fn_sigs
+                    // but was not exported (only pub functions enter fn_exports).
+                    if let Some(&vis) = self.fn_visibility.get(&key) {
+                        let decl_module =
+                            self.fn_def_spans.get(&key).and_then(|(_, m)| m.as_deref());
+                        let acc_module = self.current_module.as_deref();
+                        if !visibility::access_allowed(decl_module, acc_module, vis) {
+                            let err = match vis {
+                                hew_parser::ast::Visibility::Private => {
+                                    TypeError::visibility_violation_private(
+                                        span.clone(),
+                                        method,
+                                        decl_module.unwrap_or("(root)"),
+                                        acc_module.unwrap_or("(root)"),
+                                        self.fn_def_spans
+                                            .get(&key)
+                                            .map_or_else(|| span.clone(), |(s, _)| s.clone()),
+                                        self.current_module.clone(),
+                                    )
+                                }
+                                hew_parser::ast::Visibility::Package => {
+                                    TypeError::visibility_violation_package(
+                                        span.clone(),
+                                        method,
+                                        decl_module.unwrap_or("(root)"),
+                                        acc_module.unwrap_or("(root)"),
+                                        self.fn_def_spans
+                                            .get(&key)
+                                            .map_or_else(|| span.clone(), |(s, _)| s.clone()),
+                                        self.current_module.clone(),
+                                    )
+                                }
+                                hew_parser::ast::Visibility::Pub => unreachable!(),
+                            };
+                            self.errors.push(err);
+                            return Ty::Error;
+                        }
+                    }
                     self.report_error(
                         TypeErrorKind::UndefinedMethod,
                         span,

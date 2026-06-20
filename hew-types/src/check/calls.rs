@@ -949,15 +949,12 @@ impl Checker {
         if let Some(sig) = self.fn_sigs.get(&resolved_fn_name).cloned() {
             // Visibility enforcement: check that the caller's module is allowed
             // to reference this function.  We only check when the resolved key
-            // is module-qualified (contains '.') because root-level functions
-            // have no cross-module boundary, and fn_visibility only covers
-            // items registered through the import-surface or collect_function
-            // passes.  The root/flat single-file path (current_module == None,
-            // no '.' in key) is a deliberate no-op (plan risk: root/flat caveat).
-            if resolved_fn_name.contains('.')
-                && !resolved_fn_name.contains("::")
-                && self.current_module.is_some()
-            {
+            // is module-qualified (contains '.') because bare calls have no
+            // cross-module boundary.  Root programs (current_module == None)
+            // are subject to the same check: a root caller referencing
+            // `module.private_fn()` is a cross-module access and must be
+            // rejected.  access_allowed handles the None caller correctly.
+            if resolved_fn_name.contains('.') && !resolved_fn_name.contains("::") {
                 if let Some(&vis) = self.fn_visibility.get(&resolved_fn_name) {
                     let decl_module = self
                         .fn_def_spans

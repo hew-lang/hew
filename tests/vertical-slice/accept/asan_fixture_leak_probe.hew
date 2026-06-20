@@ -1,0 +1,37 @@
+// ASan fixture gate: deliberately-leaky Hew probe.
+//
+// This fixture MUST produce an ASan/LSan finding when run under
+// `ASAN_OPTIONS=detect_leaks=1`.  It calls `malloc` via an `extern "C"`
+// declaration without ever calling `free`.  The call to `malloc` is emitted in
+// the LLVM IR produced by hew codegen — this is a genuine generated-code leak,
+// not a standalone C program.  The gate uses this to prove that an intentional
+// leak in the generated code path is caught by ASan/LSan on Linux.
+//
+// Historical context: the Vec<string> index-into-compare leak and the owned
+// array-repeat Vec<string>/Vec<record> clone leaks were both missed by
+// `make asan` (which instruments the Rust crate only) and were only caught by
+// the macOS `leaks --atExit` oracle.  This fixture exercises the same kind of
+// proof — that a leak reachable via compiled Hew code would fail this gate.
+//
+// The fixture exits 0 so LSan's at-exit check is what catches the leak (same
+// as the historical array-repeat shapes: the process exits cleanly but LSan
+// reports the unreachable malloc'd block at process termination).
+//
+// This file is intentionally leaky.  It must NOT be run in the normal vertical-
+// slice accept harness.  It is only compiled and run by
+// `scripts/asan-fixture-check.sh` under ASAN_OPTIONS=detect_leaks=1, where a
+// non-zero exit / LeakSanitizer report is the expected (pass) outcome for the
+// gate.
+extern "C" {
+    fn malloc(size: i64) -> i64;
+}
+
+fn main() -> i64 {
+    // Allocate 1 KiB via the standard C allocator and intentionally never free
+    // it.  The LLVM IR produced by hew codegen contains the `call malloc`
+    // instruction; LSan's at-exit scan must report this as a leak.
+    let _p: i64 = unsafe {
+        malloc(1024)
+    };
+    0
+}

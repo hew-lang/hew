@@ -1,0 +1,50 @@
+// ASan fixture gate: clean probe.
+//
+// This fixture is compiled against an ASan/LSan-instrumented libhew.a by
+// `scripts/asan-fixture-check.sh` and run with ASAN_OPTIONS=detect_leaks=1.
+// It must produce ZERO ASan/LSan findings — any regression in the drop
+// elaboration for these shapes will reopen a leak the gate catches on Linux.
+//
+// Shapes covered:
+//   Vec<string> index-into-compare — each `xs[i] == "..."` previously leaked
+//   one retained hew_vec_get_str node (a constant leak independent of any
+//   loop, invisible to slope oracles).  Fixed by the nested_fresh_string_temp_
+//   drop admission arm in hew-mir/src/lower.rs.
+//
+//   Vec<string> local drop — a local Vec<string> that goes out of scope must
+//   have its backing buffer and all element strings freed.  Previously leaked
+//   because plain Vec locals had no drop class.
+fn main() -> i64 {
+    // Vec<string> index-into-compare: the pre-fix shape leaked one retained
+    // hew_vec_get_str node per indexed compare.  Post-fix, the inline
+    // hew_string_drop balances each borrowing-compare operand.
+    let xs: Vec<string> = Vec::new();
+    xs.push("hello");
+    xs.push("world");
+    var hits: i64 = 0;
+    if xs[0] == "hello" {
+        hits = hits + 1;
+    }
+    if xs[1] == "world" {
+        hits = hits + 1;
+    }
+    if xs[0] != "world" {
+        hits = hits + 1;
+    }
+    if hits != 3 {
+        return 1;
+    }
+    // Vec<string> local drop: create and destroy a Vec<string> in a loop
+    // to confirm per-iteration strings + backing buffer are freed.
+    var i: i64 = 0;
+    while i < 5 {
+        let v: Vec<string> = Vec::new();
+        v.push("alpha");
+        v.push("beta");
+        if v.len() != 2 {
+            return 2;
+        }
+        i = i + 1;
+    }
+    0
+}

@@ -296,6 +296,21 @@ mod tests {
     }
 
     #[test]
+    fn cross_actor_colliding_handler_names_share_msg_id() {
+        // `Alpha::h69862` and `Beta::h103299` are a real SipHash-1-3 low-32-bit
+        // collision (found by brute-force search; see the cross-actor checker
+        // test in `check::mod`). Pin the pair here so an accidental hash-impl
+        // change lights up at this anchor, not in a downstream wire break.
+        let a = compute_default_msg_id("Alpha::h69862");
+        let b = compute_default_msg_id("Beta::h103299");
+        assert_eq!(
+            a, b,
+            "the pinned cross-actor collision pair must still collide"
+        );
+        assert_eq!(a, 0xc0f6_cc98);
+    }
+
+    #[test]
     fn msg_id_for_returns_descriptor_id() {
         let descriptor = ActorProtocolDescriptor::from_handlers(
             "Counter",

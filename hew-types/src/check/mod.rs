@@ -1802,6 +1802,14 @@ fn build_actor_protocol_descriptors(
 ) -> HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> {
     let mut descriptors: HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> =
         HashMap::new();
+    // Cross-actor collision tracking (defense-in-depth): every published
+    // handler's `(msg_id, actor, handler, span)`. `msg_id` is the 32-bit
+    // transport discriminant on every cross-node frame; two DISTINCT actors
+    // sharing it leave the wire protocol ambiguous. The runtime keys its codec
+    // registry by `(actor-type, msg_id)` so routing is correct in-process, but
+    // refusing the collision at the source of truth keeps the wire unambiguous
+    // for relays / mixed-binary peers (the `boundary-fail-closed` invariant).
+    let mut cross_actor_seen: Vec<(u32, String, String, std::ops::Range<usize>)> = Vec::new();
     for (identity, ad) in collect_program_actors(program) {
         if ad.receive_fns.is_empty() {
             continue;
@@ -1859,6 +1867,15 @@ fn build_actor_protocol_descriptors(
             &specs,
         ) {
             Ok(descriptor) => {
+                // Record each handler's msg_id for the cross-actor pass below.
+                for h in &descriptor.handlers {
+                    let span = ad
+                        .receive_fns
+                        .iter()
+                        .find(|rf| rf.name == h.name)
+                        .map_or(0..0, |rf| rf.span.clone());
+                    cross_actor_seen.push((h.msg_id, identity.clone(), h.name.clone(), span));
+                }
                 descriptors.insert(identity.clone(), descriptor);
             }
             Err(collision) => {
@@ -1901,5 +1918,58 @@ fn build_actor_protocol_descriptors(
             }
         }
     }
+
+    report_cross_actor_msg_id_collisions(&cross_actor_seen, errors);
+
     descriptors
+}
+
+/// Defense-in-depth cross-actor pass: a `msg_id` shared by two DISTINCT actors
+/// is a 32-bit cross-node wire-discriminant collision. Emits one
+/// `CrossActorProtocolCollision` per colliding `msg_id` — the first
+/// distinct-actor pair found — pinned to the later actor's handler span. `seen`
+/// is every published handler's `(msg_id, actor, handler, span)` over the WHOLE
+/// program's actor set (so cross-module collisions are caught); intra-actor dups
+/// were already refused before this runs, so each entry is from a collision-free
+/// (within-its-actor) descriptor.
+fn report_cross_actor_msg_id_collisions(
+    seen: &[(u32, String, String, std::ops::Range<usize>)],
+    errors: &mut Vec<TypeError>,
+) {
+    let mut reported_msg_ids: Vec<u32> = Vec::new();
+    for i in 0..seen.len() {
+        let (msg_id_i, actor_i, handler_i, span_i) = &seen[i];
+        if reported_msg_ids.contains(msg_id_i) {
+            continue;
+        }
+        let Some((_, actor_j, handler_j, _)) = seen[..i]
+            .iter()
+            .find(|(mid, actor_j, _, _)| mid == msg_id_i && actor_j != actor_i)
+        else {
+            continue;
+        };
+        reported_msg_ids.push(*msg_id_i);
+        let message = format!(
+            "actors `{actor_j}` and `{actor_i}` have `receive fn`s with the same \
+             cross-node msg_id 0x{msg_id_i:08x}: `{actor_j}::{handler_j}` and \
+             `{actor_i}::{handler_i}` — the 32-bit wire discriminant is ambiguous"
+        );
+        let mut err = TypeError::new(
+            TypeErrorKind::CrossActorProtocolCollision {
+                actor_a: actor_j.clone(),
+                handler_a: handler_j.clone(),
+                actor_b: actor_i.clone(),
+                handler_b: handler_i.clone(),
+                msg_id: *msg_id_i,
+            },
+            span_i.clone(),
+            message,
+        );
+        err = err.with_suggestion(format!(
+            "rename `{actor_j}::{handler_j}` or `{actor_i}::{handler_i}` so their \
+             fully-qualified names hash to distinct msg_ids; explicit `#[msg_id(N)]` \
+             pinning is reserved for a future release (not yet supported)"
+        ));
+        errors.push(err);
+    }
 }

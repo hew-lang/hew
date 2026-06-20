@@ -27250,4 +27250,83 @@ mod every_attribute {
              got: {opaque_errors:#?}",
         );
     }
+
+    #[test]
+    fn cross_actor_msg_id_collision_is_rejected() {
+        // `Alpha::h69862` and `Beta::h103299` are a real SipHash-1-3 low-32-bit
+        // collision (pinned in `actor_protocol::tests`). Two DISTINCT actors
+        // sharing the 32-bit cross-node wire discriminant must be refused at
+        // compile time (defense-in-depth: the runtime keys its codec registry by
+        // (actor-type, msg_id) and routes correctly in-process, but the wire
+        // discriminant itself is ambiguous for relays / mixed-binary peers).
+        let output = check_source(
+            r"
+            actor Alpha {
+                receive fn h69862() {}
+            }
+            actor Beta {
+                receive fn h103299() {}
+            }
+
+            fn main() {}
+            ",
+        );
+
+        let collision = output.errors.iter().find(|e| {
+            matches!(
+                &e.kind,
+                TypeErrorKind::CrossActorProtocolCollision { msg_id, .. } if *msg_id == 0xc0f6_cc98
+            )
+        });
+        assert!(
+            collision.is_some(),
+            "two distinct actors with msg_id-colliding handlers must be rejected \
+             with CrossActorProtocolCollision; got: {:#?}",
+            output.errors
+        );
+        let err = collision.unwrap();
+        if let TypeErrorKind::CrossActorProtocolCollision {
+            actor_a,
+            handler_a,
+            actor_b,
+            handler_b,
+            ..
+        } = &err.kind
+        {
+            // Both actors and both handlers are named (order: first-seen, then
+            // the later offender).
+            let actors = [actor_a.as_str(), actor_b.as_str()];
+            assert!(actors.contains(&"Alpha") && actors.contains(&"Beta"));
+            let handlers = [handler_a.as_str(), handler_b.as_str()];
+            assert!(handlers.contains(&"h69862") && handlers.contains(&"h103299"));
+        }
+    }
+
+    #[test]
+    fn distinct_actor_non_colliding_handlers_are_clean() {
+        // Negative control: two actors whose handler names do NOT collide on the
+        // 32-bit msg_id must produce no cross-actor collision diagnostic.
+        let output = check_source(
+            r"
+            actor Alpha {
+                receive fn ping() {}
+            }
+            actor Beta {
+                receive fn pong() {}
+            }
+
+            fn main() {}
+            ",
+        );
+
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| matches!(&e.kind, TypeErrorKind::CrossActorProtocolCollision { .. })),
+            "non-colliding actor handlers must not produce a cross-actor collision; \
+             got: {:#?}",
+            output.errors
+        );
+    }
 }

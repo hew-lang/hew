@@ -336,7 +336,7 @@ pub mod profiler {
         /// Stub handler-name lookup when profiler registry is unavailable.
         ///
         /// Always returns `None` — the same default the real registry returns
-        /// for unregistered (dispatch_fn, msg_type) pairs.
+        /// for unregistered (`dispatch_fn`, `msg_type`) pairs.
         #[must_use]
         pub fn handler_name_by_ptr(_dispatch_ptr: usize, _msg_type: i32) -> Option<String> {
             None

@@ -376,6 +376,22 @@ fn run_indirect_tree_sum_fixture_executes() {
     run_enum_fixture_executes("run_indirect_tree_sum");
 }
 
+/// End-to-end proof that a MUTUALLY-recursive `indirect enum` pair compiles
+/// and evaluates correctly.
+///
+/// `indirect enum A { ALeaf(i64); AWrap(B); }` and
+/// `indirect enum B { BLeaf(i64); BWrap(A); }` each hold a pointer-sized
+/// reference to the other. The layout cycle detector must skip indirect
+/// dependencies (they are pointer-shaped, not inline), so this pair must
+/// compile — NOT fail with "cyclic enum layout detected".
+///
+/// This is the e2e counterpart of the unit test
+/// `mutual_indirect_enum_pair_compiles_successfully` in `llvm::tests`.
+#[test]
+fn run_mutual_indirect_enum_fixture_executes() {
+    run_enum_fixture_executes("run_mutual_indirect_enum");
+}
+
 /// Shared helper: run `examples/enums/<name>.hew` through the in-tree
 /// `hew` binary and diff stdout against `<name>.expected`.
 fn run_enum_fixture_executes(name: &str) {

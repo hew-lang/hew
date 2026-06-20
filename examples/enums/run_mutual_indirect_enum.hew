@@ -1,0 +1,42 @@
+// Exercises mutually-recursive `indirect enum` compilation (spec §3.7.4).
+//
+// `indirect enum A` and `indirect enum B` each reference the other as a
+// variant payload.  Both are heap-boxed (pointer-sized fields), so there is
+// no infinite-layout cycle — the pair must compile and produce correct output.
+//
+// This fixture reproduces the pattern from the cross-ecosystem review finding:
+//   indirect enum A { ALeaf(i64); AWrap(B); }
+//   indirect enum B { BLeaf(i64); BWrap(A); }
+indirect enum A {
+    ALeaf(i64);
+    AWrap(B);
+}
+
+indirect enum B {
+    BLeaf(i64);
+    BWrap(A);
+}
+
+fn eval_a(a: A) -> i64 {
+    match a {
+        ALeaf(n) => n,
+        AWrap(b) => eval_b(b),
+    }
+}
+
+fn eval_b(b: B) -> i64 {
+    match b {
+        BLeaf(n) => n,
+        BWrap(a) => eval_a(a),
+    }
+}
+
+fn main() {
+    // ALeaf(7) → 7
+    println(eval_a(ALeaf(7)));
+    // AWrap(BLeaf(42)) → 42
+    println(eval_a(AWrap(BLeaf(42))));
+    // BWrap(ALeaf(3)) → 3
+    println(eval_b(BWrap(ALeaf(3))));
+    println("ok");
+}

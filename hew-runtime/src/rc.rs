@@ -183,24 +183,43 @@ pub unsafe extern "C" fn hew_rc_drop(ptr: *mut u8) {
     }
     // SAFETY: caller guarantees ptr is a valid Rc data pointer.
     let header = unsafe { header_from_data(ptr) };
-    // SAFETY: header is valid.
-    let inner = unsafe { &mut *header };
 
-    debug_assert!(inner.strong > 0, "Rc double-free");
-    inner.strong -= 1;
+    // Decrement the strong count and snapshot every field the post-drop path
+    // needs (`drop_fn`, `weak`, `data_size`, `data_align`) into locals while
+    // the `&mut` borrow is alive, then END the borrow before calling
+    // `drop_fn`. `drop_fn` is an opaque caller-supplied callback that may
+    // reach this same allocation; holding a live `&mut *header` across that
+    // call is aliasing UB (FND-01). After this block no reference into the
+    // allocation is live — only the raw `header` pointer and the locals.
+    let (strong_now, drop_fn, weak, data_size, data_align) = {
+        // SAFETY: header is valid; the borrow is confined to this block and
+        // dropped before any opaque call or deallocation below.
+        let inner = unsafe { &mut *header };
+        debug_assert!(inner.strong > 0, "Rc double-free");
+        inner.strong -= 1;
+        (
+            inner.strong,
+            inner.drop_fn,
+            inner.weak,
+            inner.data_size,
+            inner.data_align,
+        )
+    };
 
-    if inner.strong == 0 {
-        // Call destructor on the data.
-        if let Some(drop_fn) = inner.drop_fn {
+    if strong_now == 0 {
+        // Call destructor on the data. No reference into the allocation is
+        // live here, so `drop_fn` may freely reach back into it.
+        if let Some(drop_fn) = drop_fn {
             // SAFETY: drop_fn contract per hew_rc_new.
             unsafe { drop_fn(ptr) };
         }
 
-        if inner.weak == 0 {
+        if weak == 0 {
             // SAFETY: data_size was validated at construction time.
-            let (layout, _) = alloc_layout(inner.data_size, inner.data_align)
-                .expect("layout was valid at construction");
-            // SAFETY: header was allocated with this layout.
+            let (layout, _) =
+                alloc_layout(data_size, data_align).expect("layout was valid at construction");
+            // SAFETY: header was allocated with this layout; no borrow of the
+            // allocation is live (the `&mut *header` ended above).
             unsafe { dealloc(header.cast(), layout) };
         }
         // If weak > 0, the allocation stays alive for weak references
@@ -437,6 +456,55 @@ mod tests {
 
             hew_rc_drop(rc);
             assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1); // dropped!
+        }
+    }
+
+    #[test]
+    fn rc_drop_fn_may_reach_allocation() {
+        // FND-01 regression: the destructor is an opaque callback that may
+        // read the very allocation being dropped. `hew_rc_drop` must NOT hold
+        // a live `&mut *header` across `drop_fn(ptr)` — doing so is aliasing
+        // UB that Miri (Stacked/Tree Borrows) flags. This drop_fn reads its
+        // own data region AND reaches the header via the public FFI, so a live
+        // mutable borrow across the call would be detected as a conflict.
+        use std::sync::atomic::{AtomicI32, Ordering};
+        static OBSERVED: AtomicI32 = AtomicI32::new(0);
+
+        unsafe extern "C" fn drop_reads_self(data: *mut u8) {
+            // SAFETY: `data` is this Rc's data region; it is still valid while
+            // the destructor runs (dealloc happens strictly after drop_fn).
+            let v = unsafe { data.cast::<i32>().read() };
+            OBSERVED.store(v, Ordering::SeqCst);
+            // Reach the header from the same allocation and WRITE to it. If
+            // `hew_rc_drop` still held a live `&mut *header` across this call,
+            // this aliasing write pops the Unique tag (Stacked Borrows) /
+            // disables the mutable borrow (Tree Borrows), so the drop's own
+            // post-call read of `weak`/`data_size` would be flagged as UB by
+            // Miri. This is the exact window FND-01 closes.
+            // SAFETY: `data` is a valid Rc data pointer for this allocation.
+            let header = unsafe { header_from_data(data) };
+            // SAFETY: header is valid; strong is 0 here (decremented before the
+            // call), so the allocation is still live and writable. Bump weak up
+            // and back so the value is preserved but the WRITE actually occurs.
+            unsafe {
+                (*header).weak += 1;
+                (*header).weak -= 1;
+            }
+        }
+
+        // SAFETY: exercises Rc FFI with a destructor that reads the allocation.
+        unsafe {
+            OBSERVED.store(0, Ordering::SeqCst);
+            let val: i32 = 1234;
+            let rc = hew_rc_new(
+                (&raw const val).cast(),
+                size_of::<i32>(),
+                align_of::<i32>(),
+                Some(drop_reads_self),
+            );
+            // The destructor stores the payload value (1234) into OBSERVED.
+            hew_rc_drop(rc);
+            assert_eq!(OBSERVED.load(Ordering::SeqCst), 1234);
         }
     }
 

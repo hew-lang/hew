@@ -527,7 +527,7 @@ pub fn is_ascii(s: string) -> bool {
     let len = s.len();
     for i in 0 .. len {
         let ch = s.char_at(i);
-        if ch > 126 {
+        if ch > 127 {
             return false;
         }
     }

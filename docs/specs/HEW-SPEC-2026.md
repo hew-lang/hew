@@ -225,7 +225,7 @@ let multiplier = actor move |x: i64| {
 **Syntax:**
 
 ```ebnf
-LambdaActorExpr = "actor" "move"? "|" LambdaParams? "|" Block ;
+LambdaActorExpr = "actor" "move"? "|" LambdaParams? "|" RetType? Block ;
 ActorSpawn      = "spawn" Ident TypeArgs? "(" FieldInitList? ")" ;  (* spawn Counter(count: 0) *)
 ```
 
@@ -240,7 +240,7 @@ Lambda actors return `LocalPid<Actor<M>>` for fire-and-forget or `LocalPid<Actor
 
 ```hew
 // Named actor spawn returns LocalPid<ActorType>
-let counter: LocalPid<Counter> = spawn Counter(0);
+let counter: LocalPid<Counter> = spawn Counter(count: 0);
 
 // Lambda actor expression returns LocalPid<Actor<M>>
 let worker: LocalPid<Actor<i64>> = actor |msg: i64| { println(msg); };
@@ -404,7 +404,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 
 | Type                               | `Send` if...                               |
 | ---------------------------------- | ------------------------------------------ |
-| Value types (i32, f64, bool, char) | Always `Send`                              |
+| Value types (i32, f64, bool, char, isize, usize) | Always `Send`                |
 | `string`                           | Always `Send` (immutable-shareable owned type; alias-shared by refcount retain on send — not deep-copied) |
 | `LocalPid<A>`                      | Always `Send`                              |
 | `type S { f1: T1; f2: T2; ... }`   | All fields are `Send`                      |
@@ -435,7 +435,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 
 ### 3.3.2 The `bytes` Type
 
-`bytes` is a standard library type (not a language primitive): a mutable, heap-allocated byte buffer — semantically a `Vec<u8>` — but with a dedicated type name:
+`bytes` is a built-in compiler type with stdlib-registered methods: a mutable, heap-allocated byte buffer — semantically a `Vec<u8>` — but with a dedicated type name:
 
 ```hew
 let buf: bytes = bytes::new();
@@ -891,13 +891,17 @@ A working example is at
 For imports outside the current source tree, Hew builds an ordered search-path
 list and uses the first matching module root. The search order is:
 
-1. `HEWPATH` — a colon-separated list of module roots, where each entry is the
+1. In-worktree root — the enclosing Hew checkout root (identified by containing `std/builtins.hew`), when the source file being compiled is inside a checkout. This tier ensures that stdlib resolution is always scoped to the checkout that owns the file.
+2. `HEWPATH` — a colon-separated list of module roots, where each entry is the
    parent directory that contains `std/`
-2. `HEW_STD` — a direct path to the `std/` directory; Hew uses its parent as the
+3. `HEW_STD` — a direct path to the `std/` directory; Hew uses its parent as the
    module root
-3. The installed FHS-style location `<prefix>/share/hew` relative to the `hew`
+4. The installed FHS-style location `<prefix>/share/hew` relative to the `hew`
    binary
-4. A development fallback to the repo root when `std/` exists two levels above
+5. XDG user data: `~/.local/share/hew`
+6. User home dotdir: `~/.hew`
+7. System paths: `/usr/local/share/hew`, `/usr/share/hew`
+8. A development fallback to the repo root when `std/` exists two levels above
    the binary
 
 `HEWPATH` and `HEW_STD` are the supported user overrides. `hew.toml` does not
@@ -921,15 +925,15 @@ This produces an index plus per-module pages for the shipped `std/` sources.
 
 Types defined in different modules are distinct even if they share a name. A
 `Point` defined in `geometry` and a `Point` defined in `graphics` are unrelated
-types; the qualified names `geometry::Point` and `graphics::Point` disambiguate
+types; the qualified names `geometry.Point` and `graphics.Point` disambiguate
 them everywhere — in type annotations, `match` patterns, and struct literals.
 
 ```hew
 import geometry;
 import graphics;
 
-let gp: geometry::Point = geometry::Point { x: 0.0, y: 0.0 };
-let sp: graphics::Point = graphics::Point { x: 0,   y: 0   };
+let gp: geometry.Point = geometry.Point { x: 0.0, y: 0.0 };
+let sp: graphics.Point = graphics.Point { x: 0,   y: 0   };
 ```
 
 **Import aliasing** resolves ambiguity at the module level:
@@ -938,8 +942,8 @@ let sp: graphics::Point = graphics::Point { x: 0,   y: 0   };
 import geometry as geo;
 import graphics  as gfx;
 
-let p1: geo::Point = geo::Point { x: 1.0, y: 2.0 };
-let p2: gfx::Point = gfx::Point { x: 10, y: 20 };
+let p1: geo.Point = geo.Point { x: 1.0, y: 2.0 };
+let p2: gfx.Point = gfx.Point { x: 10, y: 20 };
 ```
 
 Within a module, all locally-defined types are in scope unqualified. The
@@ -989,13 +993,17 @@ impl Display for Point {
   - `Frozen` types (deeply immutable)
   - `LocalPid<A>`
 
-- `Frozen` - Type is deeply immutable and thus safely shareable. Implies `Send`.
+- `Sync` - Type is safe to share across concurrent actors without synchronisation. Derived structurally from field types; the compiler determines this automatically. A type is `Sync` if all its fields are `Sync`. Value types are always `Sync`; mutable containers (`Vec<T>`, `HashMap<K,V>`) are not.
+
+- `Frozen` - Type is deeply immutable and thus safely shareable. Implies `Send`. `Frozen ⊇ Send` holds by structural coincidence — every type whose fields are all deeply immutable is also send-admissible — not via an explicit impl chain.
   - Runtime-internal shared immutable handles (the planned `Arc<T>` surface is not yet exposed in Hew source)
   - Structs where all fields are `Frozen`
 
 - `Copy` - Type is copied on assignment rather than moved.
   - Only value types (integers, floats, bool, char)
   - Small fixed-size aggregates
+
+- `PartialOrd` - Type supports `<`, `<=`, `>`, `>=` comparisons. In edition 2026, satisfied only by primitive numeric types (`i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `isize`, `usize`, `char`); user-defined types do not derive it automatically.
 
 **Named receivers (Go-style):**
 
@@ -1697,10 +1705,7 @@ impl Iterator for RangeIter {
 }
 ```
 
-Edition 2026 admits a single associated type per trait at most. Multi-
-type traits (`Container { type Item; type Iter: Iterator[Item = ...]; }`)
-and the bound-projection surface land in the next edition. See
-HEW-FUTURE.md §2.2.
+Traits with associated types do not participate in structural trait satisfaction checks (the "E1 guard"). A type can only satisfy a trait with associated types through an explicit `impl` block that provides the required `type Item = ...` declaration. Multi-associated-type traits and the bound-projection surface (`where T: Iterator<Item = i64>` equality-binding works; projection form `where T::Item: Display` is deferred) land in the next edition. See HEW-FUTURE.md §2.2.
 
 #### 3.8.5 Send/Frozen Specialization for Actors
 
@@ -3252,7 +3257,7 @@ implementable `Awaitable` trait — the three forms are exhaustive.
 select {
     reply   from worker.call(x)        => use(reply),     // actor ask
     item    from inbox.recv()          => use(item),      // channel receive
-    after 5.seconds                    => abort(),        // timer
+    after 5s                           => abort(),        // timer
 }
 ```
 
@@ -3460,7 +3465,7 @@ Hew's supervision is modeled after OTP concepts with first-class language syntax
 
 - Supervisor owns children; children fail independently.
 - Restart classification: `permanent`, `transient`, `temporary`. ([Erlang.org][2])
-- Supervisor strategy: `one_for_one`, `one_for_all`, `rest_for_one`.
+- Supervisor strategy: `one_for_one`, `one_for_all`, `rest_for_one`, `simple_one_for_one`.
 - Crash isolation via signal handling: SEGV/BUS/FPE/ILL in an actor is caught by the runtime, the actor is marked as Crashed, and the supervisor is notified for restart.
 
 ### 5.1 Supervisor Declaration
@@ -3519,11 +3524,12 @@ Then:
 
 ### 5.3 Restart Strategies
 
-| Strategy       | Behaviour                                                           |
-| -------------- | ------------------------------------------------------------------- |
-| `one_for_one`  | Only the crashed child is restarted.                                |
-| `one_for_all`  | All children are stopped and restarted.                             |
-| `rest_for_one` | The crashed child and all children declared after it are restarted. |
+| Strategy              | Behaviour                                                           |
+| --------------------- | ------------------------------------------------------------------- |
+| `one_for_one`         | Only the crashed child is restarted.                                |
+| `one_for_all`         | All children are stopped and restarted.                             |
+| `rest_for_one`        | The crashed child and all children declared after it are restarted. |
+| `simple_one_for_one`  | A pool-oriented strategy; only the specific crashed `pool` child instance is restarted. Required for supervisors that use `pool` declarations. |
 
 ### 5.4 Restart Budget and Escalation
 
@@ -4517,9 +4523,7 @@ When the grammar files and this specification disagree, the parser implementatio
 
 **Type aliases** (compile-time synonyms only — the aliased type is what the checker sees):
 
-| Alias  | Resolves to | Description |
-| ------ | ----------- | ----------- |
-| `byte` | `u8`        | Single byte |
+> **No active aliases.** The `byte` alias was retired in v0.5 and is now a compile-time error. Use `u8` directly.
 
 Integer literals default to `i64`. Float literals default to `f64`.
 
@@ -4578,20 +4582,26 @@ These are compiler intrinsics on all numeric types: `.to_i8()`, `.to_i16()`, `.t
 ### 12.2 Operator Precedence (highest to lowest)
 
 1. Postfix: `?`, `.field`, `(args)`, `[index]`
-2. Unary: `!`, `-`, `~`, `await`, `clone` (contextual prefix — see §3.4.4)
-3. Multiplicative: `*`, `/`, `%`
-4. Additive: `+`, `-` (`+` also concatenates strings)
+2. Unary: `!` (logical NOT, bool-only), `-` (negate), `~` (bitwise complement, integer-only), `await`, `clone` (contextual prefix — see §3.4.4)
+3. Multiplicative: `*`, `/`, `%`, `&*` (wrapping multiply)
+4. Additive: `+`, `-` (`+` also concatenates strings), `&+` (wrapping add), `&-` (wrapping subtract)
 5. Shift: `<<`, `>>`
 6. Bitwise AND: `&`
 7. Bitwise XOR: `^`
 8. Bitwise OR: `|`
 9. Relational: `<`, `<=`, `>`, `>=`
-10. Equality: `==`, `!=`, `is` (value equality for strings; `is` tests structural type membership; regex matching is via `Pattern.is_match`)
+10. Equality: `==`, `!=`, `is` (`is` = reference identity on heap handles; `expr is TypeName` = static-only type check; rejected on string/scalars/records/tuples; regex matching is via `Pattern.is_match`)
 11. Logical AND: `&&`
 12. Logical OR: `||`
-13. Range: `..`, `..=`
+13. Range: `..`, `..=` (only lowered inside `for` loop iterables; standalone range value expressions are not lowered)
 14. Timeout: `| after`
 15. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+
+> **Wrapping arithmetic:** `&+`, `&-`, `&*` are two's-complement wrapping versions of `+`, `-`, `*`. They lower to the same LLVM `IntAdd`/`IntSub`/`IntMul` instructions as the plain operators (LLVM integers wrap by default), and exist as explicit source forms for documentation of intentional wrapping. All three have the same precedence as their plain counterparts.
+
+> **Comparison associativity:** comparison operators are left-associative. `a < b < c` parses as `(a < b) < c`, which compares a bool against an integer and is almost certainly a bug. Use `a < b && b < c` for chained comparisons.
+
+> **Float context widening:** In a float-typed context, an integer literal widens to the contextual float type. `let f: f64 = 1;` is accepted and `1` is treated as `1.0`. This does not affect type annotations or wire shapes.
 
 ### 12.3 Duration Literals
 
@@ -4647,18 +4657,18 @@ DurationLit = IntLit ("ns" | "us" | "ms" | "s" | "m" | "h") ;
 
 ### 12.4 Labelled Loops and Break-with-Value
 
-Loops (`loop`, `while`, `for`) may carry an optional **label** prefixed with `@`. Labels parse successfully; targeted `break @label` and `continue @label` are **not yet implemented** (`E_NOT_YET_IMPLEMENTED: labeled-break-continue`). Unlabelled `break` and `continue` work as expected in all loop forms.
+Loops (`loop`, `while`, `for`) may carry an optional **label** prefixed with `@`. Targeted `break @label` and `continue @label` are fully supported and transfer control to the enclosing loop that carries the matching label.
 
-**Syntax (labels parse; targeted break/continue not yet wired):**
+**Syntax:**
 
 ```hew
 @outer: loop {
     @inner: while condition {
         if done {
-            break @outer;      // not yet implemented
+            break @outer;
         }
         if skip {
-            continue @outer;   // not yet implemented
+            continue @outer;
         }
     }
 }
@@ -4692,7 +4702,7 @@ Label          = "@" Ident ":" ;
 LoopStmt       = "loop" Block ;
 WhileStmt      = "while" Expr Block ;
 WhileLetStmt   = "while" "let" Pattern "=" Expr Block ;
-ForStmt        = "for" Pattern "in" Expr Block ;
+ForStmt        = "for" "await"? Pattern "in" Expr Block ;
 BreakStmt      = "break" ("@" Ident)? Expr? ";" ;
 ContinueStmt   = "continue" ("@" Ident)? ";" ;
 ```
@@ -4735,8 +4745,9 @@ while let Some(v) = m.get("a") {
 }
 ```
 
-Both forms are syntactic sugar over `match`. `if let P = expr { body }` is
-equivalent to `match expr { P => { body }, _ => {} }`.
+Both forms are semantically equivalent to the corresponding `match` form; they are compiled through dedicated IR paths rather than being desugared at the AST level. `if let P = expr { body }` corresponds to `match expr { P => { body }, _ => {} }`, but the lowering is a first-class HIR node, not a transformation.
+
+> **Supported patterns:** Only payload-bearing constructor patterns (e.g. `Some(x)`, `Ok(v)`, `Err(e)`) and literal patterns work in `if let`/`while let`. Unit-variant, record, tuple, and or-patterns fail closed at HIR time.
 
 ```ebnf
 IfLetExpr   = "if" "let" Pattern "=" Expr Block ("else" Block)? ;

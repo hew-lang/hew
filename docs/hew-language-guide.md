@@ -190,7 +190,7 @@ fn main() {
 }
 ```
 
-`0..n` iterates 0 through n-1; `0..=n` includes n. The loop binding must be a named identifier — `for _ in ...` is rejected; use a real name even if unused.
+`0..n` iterates 0 through n-1; `0..=n` includes n. The loop binding may be a named identifier or `_` (wildcard). Use `_` when the loop body does not need the iteration value.
 
 ### for x in collection
 

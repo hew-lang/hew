@@ -579,6 +579,18 @@ checked-mir-verify: hew
 checked-mir-golden: hew
 	bash scripts/checked-mir-corpus.sh golden
 
+# Per-function .ll byte-identity oracle (tests/ll-oracle/corpus/): proves a
+# pure codegen refactor (dedup, extract-helper, file-split) emits zero changed
+# IR.  `ll-diff` recompiles every fixture and diffs per-function bodies against
+# the committed goldens; `ll-golden` recaptures them (only in a commit that
+# justifies the IR change, with the diff in the commit body).  Both native and
+# wasm32 targets are covered.
+ll-diff: hew
+	bash scripts/ll-corpus.sh verify
+
+ll-golden: hew
+	bash scripts/ll-corpus.sh golden
+
 test-runtime-net:
 	cargo nextest run --profile ci --no-fail-fast \
 		-p hew-runtime \

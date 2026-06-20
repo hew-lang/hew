@@ -6689,6 +6689,16 @@ impl Builder {
         dead_code,
         reason = "Slice 1 declares cursor helpers; Slice 2 is the first caller"
     )]
+    /// Record the [`SuspendKind`] payload of a collapsed suspension carrier in
+    /// the per-function side-table, keyed by the block currently being built —
+    /// the block whose terminator is (or will collapse to) the bare
+    /// [`Terminator::Suspend`]. Called immediately before the matching
+    /// `finish_current_block(Terminator::Suspending*)`, mirroring the
+    /// `await_deadline_ns.insert(self.current_block_id, ns)` precedent.
+    fn record_suspend_kind(&mut self, kind: SuspendKind) {
+        self.suspend_kinds.insert(self.current_block_id, kind);
+    }
+
     fn finish_current_block(&mut self, terminator: Terminator) {
         self.record_terminator_span();
         let block = BasicBlock {
@@ -8915,6 +8925,12 @@ impl Builder {
                         // reuses `resume` exactly as `SuspendingRead`/`Ask` do
                         // (the carrier owns no separate MIR cleanup block).
                         let next = self.alloc_block();
+                        self.record_suspend_kind(SuspendKind::CallClosure {
+                            callee: callee_place,
+                            args: arg_places.clone(),
+                            ret_ty: ret_ty.clone(),
+                            result_dest: dest,
+                        });
                         self.finish_current_block(Terminator::SuspendingCallClosure {
                             callee: callee_place,
                             args: arg_places,
@@ -17490,6 +17506,11 @@ impl Builder {
                 let next = self.alloc_block();
                 // The carrier rides the multi-suspend epilogue, so `cleanup`
                 // reuses `next` exactly as the recv/ask carriers do.
+                self.record_suspend_kind(SuspendKind::TaskAwait {
+                    scope: scope_place,
+                    task: task_place,
+                    result_dest,
+                });
                 self.finish_current_block(Terminator::SuspendingTaskAwait {
                     scope: scope_place,
                     task: task_place,
@@ -17857,129 +17878,19 @@ impl Builder {
             Some(self.alloc_local(ret_ty.clone()))
         };
 
-        // Suspendable-caller flip (NEW-7): `await stream.recv()` resolves to
-        // the extern stream-recv entries. In a caller that carries the
-        // execution context (actor handler / closure / task entry) the recv
-        // SUSPENDS over the channel-await substrate instead of blocking the
-        // worker — emit `Terminator::SuspendingStreamNext` carrying the
-        // checker-resolved element type derived from the recv's `Option<T>`
-        // binding (the callee's declared return type) — never from the
-        // runtime symbol name, which is a presentation detail of the HIR
-        // symbol selection (`checker-authority`/`type-info-survival`). A
-        // `FunctionCallConv::Default` caller (`main`, free fn) has no parkable
-        // continuation and keeps the blocking `hew_stream_next_*` call (the
-        // codegen `Terminator::Call` intercept materialises `Option<T>`).
-        // This reuses the SAME `carries_execution_context` discriminator as
-        // `lower_conn_await_read` (DI-019/DI-020) — not a parallel predicate.
-        if builtin == Some(hew_types::runtime_call::RuntimeCallFamily::StreamNextLayout)
-            && self.current_function_call_conv.carries_execution_context()
-        {
-            if let (Some(result_dest), [stream], Some(elem_ty)) =
-                (dest, arg_places.as_slice(), option_payload_ty(ret_ty))
-            {
-                let next = self.alloc_block();
-                // `SuspendingStreamNext` carries no separate MIR cleanup block —
-                // it rides the multi-suspend epilogue, so `cleanup` reuses `next`
-                // exactly as `SuspendingRead`/`SuspendingAsk` do.
-                self.finish_current_block(Terminator::SuspendingStreamNext {
-                    stream: *stream,
-                    result_dest,
-                    elem_ty: elem_ty.clone(),
-                    deadline_result_dest: None,
-                    error_dest: None,
-                    resume: next,
-                    cleanup: next,
-                });
-                self.start_block(next);
-                return dest;
-            }
-        }
-
-        // Suspendable-caller flip (NEW-4): `await rx.recv()` over a
-        // `std::channel` `Receiver<T>` resolves to the extern channel-recv
-        // entries. In a caller that carries the execution context (actor
-        // handler / closure / task entry) the recv SUSPENDS over the
-        // channel-await substrate instead of blocking the worker — emit
-        // `Terminator::SuspendingChannelRecv` carrying the checker-resolved
-        // element type derived from the recv's `Option<T>` binding (the
-        // callee's declared return type) — never from the runtime symbol
-        // name (`checker-authority`/`type-info-survival`). A
-        // `FunctionCallConv::Default` caller (`main`, free fn) has no parkable
-        // continuation and keeps the blocking `hew_channel_recv_layout` call (codegen
-        // intercepts the `Terminator::Call` by name and materialises
-        // `Option<T>`). `try_recv` never suspends and always keeps the blocking
-        // (immediate) call. This reuses the SAME `carries_execution_context`
-        // discriminator as the stream-recv flip above (DI-019/DI-020).
-        if builtin == Some(hew_types::runtime_call::RuntimeCallFamily::ChannelRecvLayout)
-            && self.current_function_call_conv.carries_execution_context()
-        {
-            if let (Some(result_dest), [receiver], Some(elem_ty)) =
-                (dest, arg_places.as_slice(), option_payload_ty(ret_ty))
-            {
-                let next = self.alloc_block();
-                // `SuspendingChannelRecv` carries no separate MIR cleanup block —
-                // it rides the multi-suspend epilogue, so `cleanup` reuses `next`
-                // exactly as `SuspendingStreamNext`/`SuspendingRead` do.
-                self.finish_current_block(Terminator::SuspendingChannelRecv {
-                    receiver: *receiver,
-                    result_dest,
-                    elem_ty: elem_ty.clone(),
-                    deadline_result_dest: None,
-                    error_dest: None,
-                    resume: next,
-                    cleanup: next,
-                });
-                self.start_block(next);
-                return dest;
-            }
-        }
-
-        // context caller the send SUSPENDS on a full ring (backpressure-aware)
-        // instead of blocking the worker — emit
-        // `Terminator::SuspendingStreamSend`. A non-full ring binds immediately
-        // (fast path, no suspend). Context-free callers keep the blocking call.
-        if builtin.as_ref().and_then(|f| f.is_async_suspending())
-            == Some(hew_types::runtime_call::AsyncSuspendKind::SinkSendBytes)
-            && self.current_function_call_conv.carries_execution_context()
-        {
-            if let [sink, value] = arg_places.as_slice() {
-                let next = self.alloc_block();
-                self.finish_current_block(Terminator::SuspendingStreamSend {
-                    sink: *sink,
-                    value: *value,
-                    resume: next,
-                    cleanup: next,
-                });
-                self.start_block(next);
-                return dest;
-            }
-        }
-
-        // Suspendable-caller flip: native `sleep_ms(d)` blocks the worker in
-        // `hew_sleep_ms` (a `std::thread::sleep`). In a caller that carries the
-        // execution context, the sleep SUSPENDS on a timer-wheel deadline instead
-        // — emit `Terminator::SuspendingSleep`. A `FunctionCallConv::Default`
-        // caller (`main`, free fn) has no parkable continuation and keeps the
-        // blocking call. `sleep_ms` is a `RuntimeFfiShim` with no
-        // `RuntimeCallFamily`, so it is identified by its resolved callee name
-        // (the FFI-shim boundary) rather than a builtin family — `lower_direct_call`
-        // receives the bare catalog name `sleep_ms`, which `module_fn_names`
-        // carries alongside the `hew_sleep_ms` symbol.
-        if (callee_symbol == "sleep_ms" || callee_symbol == "hew_sleep_ms")
-            && self.current_function_call_conv.carries_execution_context()
-        {
-            if let [duration_ms] = arg_places.as_slice() {
-                let next = self.alloc_block();
-                // The carrier rides the multi-suspend epilogue, so `cleanup`
-                // reuses `next` exactly as the recv/ask carriers do.
-                self.finish_current_block(Terminator::SuspendingSleep {
-                    duration_ms: *duration_ms,
-                    resume: next,
-                    cleanup: next,
-                });
-                self.start_block(next);
-                return dest;
-            }
+        // Suspendable-caller flip: in an execution-context caller, the four
+        // builtin recv/send/sleep families SUSPEND on the coro substrate instead
+        // of blocking the worker. Factored into one helper so the per-family
+        // shapes sit together (the suspend-flip surface this lane collapses onto
+        // the SuspendKind side-table). `Break(dest)` when a flip fired.
+        if let std::ops::ControlFlow::Break(dest) = self.try_lower_suspending_builtin_flip(
+            callee_symbol,
+            builtin,
+            ret_ty,
+            dest,
+            &arg_places,
+        ) {
+            return dest;
         }
 
         let next = self.alloc_block();
@@ -17993,6 +17904,142 @@ impl Builder {
         self.start_block(next);
 
         dest
+    }
+
+    /// Suspendable-caller flip for the four builtin recv/send/sleep families.
+    /// In a caller that carries the execution context (actor handler / closure /
+    /// task entry), each blocking builtin call SUSPENDS on the coro substrate
+    /// instead of pinning an OS worker — emitting the matching `Suspending*`
+    /// carrier and recording its [`SuspendKind`] payload. A
+    /// `FunctionCallConv::Default` caller (`main`, a free fn) has no parkable
+    /// continuation and keeps the blocking call, so this returns `None` and
+    /// `lower_direct_call` falls through to the plain `Terminator::Call`.
+    ///
+    /// `ControlFlow::Break(dest)` when a flip fired (the resolved result, which
+    /// the caller propagates as its own return); `ControlFlow::Continue(())`
+    /// when no family matched or the arg/result shape did not fit a flip, so the
+    /// caller falls through to the blocking `Terminator::Call`.
+    fn try_lower_suspending_builtin_flip(
+        &mut self,
+        callee_symbol: &str,
+        builtin: Option<hew_types::runtime_call::RuntimeCallFamily>,
+        ret_ty: &ResolvedTy,
+        dest: Option<Place>,
+        arg_places: &[Place],
+    ) -> std::ops::ControlFlow<Option<Place>> {
+        use std::ops::ControlFlow;
+        if !self.current_function_call_conv.carries_execution_context() {
+            return ControlFlow::Continue(());
+        }
+
+        // `await stream.recv()` (NEW-7): SUSPENDS over the channel-await
+        // substrate, carrying the checker-resolved element type from the recv's
+        // `Option<T>` binding (never the runtime symbol name —
+        // `checker-authority`/`type-info-survival`). Reuses the SAME
+        // `carries_execution_context` discriminator as `lower_conn_await_read`
+        // (DI-019/DI-020).
+        if builtin == Some(hew_types::runtime_call::RuntimeCallFamily::StreamNextLayout) {
+            if let (Some(result_dest), [stream], Some(elem_ty)) =
+                (dest, arg_places, option_payload_ty(ret_ty))
+            {
+                let next = self.alloc_block();
+                // The carrier rides the multi-suspend epilogue, so `cleanup`
+                // reuses `next` exactly as `SuspendingRead`/`SuspendingAsk` do.
+                self.record_suspend_kind(SuspendKind::StreamNext {
+                    stream: *stream,
+                    result_dest,
+                    elem_ty: elem_ty.clone(),
+                    deadline_result_dest: None,
+                    error_dest: None,
+                });
+                self.finish_current_block(Terminator::SuspendingStreamNext {
+                    stream: *stream,
+                    result_dest,
+                    elem_ty: elem_ty.clone(),
+                    deadline_result_dest: None,
+                    error_dest: None,
+                    resume: next,
+                    cleanup: next,
+                });
+                self.start_block(next);
+                return ControlFlow::Break(dest);
+            }
+        }
+
+        // `await rx.recv()` over a `std::channel` `Receiver<T>` (NEW-4):
+        // SUSPENDS over the channel-await substrate. `try_recv` never suspends
+        // and keeps the blocking call (it is a different family).
+        if builtin == Some(hew_types::runtime_call::RuntimeCallFamily::ChannelRecvLayout) {
+            if let (Some(result_dest), [receiver], Some(elem_ty)) =
+                (dest, arg_places, option_payload_ty(ret_ty))
+            {
+                let next = self.alloc_block();
+                self.record_suspend_kind(SuspendKind::ChannelRecv {
+                    receiver: *receiver,
+                    result_dest,
+                    elem_ty: elem_ty.clone(),
+                    deadline_result_dest: None,
+                    error_dest: None,
+                });
+                self.finish_current_block(Terminator::SuspendingChannelRecv {
+                    receiver: *receiver,
+                    result_dest,
+                    elem_ty: elem_ty.clone(),
+                    deadline_result_dest: None,
+                    error_dest: None,
+                    resume: next,
+                    cleanup: next,
+                });
+                self.start_block(next);
+                return ControlFlow::Break(dest);
+            }
+        }
+
+        // `await sink.send(x)`: SUSPENDS on a full ring (backpressure-aware); a
+        // non-full ring binds immediately (the runtime fast path). Context-free
+        // callers keep the blocking call.
+        if builtin.as_ref().and_then(|f| f.is_async_suspending())
+            == Some(hew_types::runtime_call::AsyncSuspendKind::SinkSendBytes)
+        {
+            if let [sink, value] = arg_places {
+                let next = self.alloc_block();
+                self.record_suspend_kind(SuspendKind::StreamSend {
+                    sink: *sink,
+                    value: *value,
+                });
+                self.finish_current_block(Terminator::SuspendingStreamSend {
+                    sink: *sink,
+                    value: *value,
+                    resume: next,
+                    cleanup: next,
+                });
+                self.start_block(next);
+                return ControlFlow::Break(dest);
+            }
+        }
+
+        // Native `sleep_ms(d)` blocks the worker in `hew_sleep_ms`
+        // (`std::thread::sleep`); in an execution-context caller it SUSPENDS on
+        // a timer-wheel deadline. `sleep_ms` is a `RuntimeFfiShim` with no
+        // `RuntimeCallFamily`, so it is identified by its resolved callee name
+        // (the FFI-shim boundary) rather than a builtin family.
+        if callee_symbol == "sleep_ms" || callee_symbol == "hew_sleep_ms" {
+            if let [duration_ms] = arg_places {
+                let next = self.alloc_block();
+                self.record_suspend_kind(SuspendKind::Sleep {
+                    duration_ms: *duration_ms,
+                });
+                self.finish_current_block(Terminator::SuspendingSleep {
+                    duration_ms: *duration_ms,
+                    resume: next,
+                    cleanup: next,
+                });
+                self.start_block(next);
+                return ControlFlow::Break(dest);
+            }
+        }
+
+        ControlFlow::Continue(())
     }
 
     fn lower_runtime_call(
@@ -19704,6 +19751,14 @@ impl Builder {
             if let Some(ns) = deadline_ns {
                 self.await_deadline_ns.insert(self.current_block_id, ns);
             }
+            self.record_suspend_kind(SuspendKind::Ask {
+                actor,
+                msg_type: info.msg_type,
+                value,
+                result_dest,
+                reply_dest,
+                error_dest,
+            });
             self.finish_current_block(Terminator::SuspendingAsk {
                 actor,
                 msg_type: info.msg_type,
@@ -19795,6 +19850,13 @@ impl Builder {
             // `SuspendingRead` carries no separate MIR cleanup block — it rides
             // the multi-suspend epilogue, so `cleanup` reuses `next` (exactly as
             // `SuspendingAsk` does).
+            self.record_suspend_kind(SuspendKind::Read {
+                conn: conn_place,
+                result_dest: bytes_dest,
+                deadline_result_dest,
+                error_dest,
+                to_string: to_string && deadline_result_dest.is_some(),
+            });
             self.finish_current_block(Terminator::SuspendingRead {
                 conn: conn_place,
                 result_dest: bytes_dest,
@@ -19918,6 +19980,13 @@ impl Builder {
             if let Some(ns) = deadline_ns {
                 self.await_deadline_ns.insert(self.current_block_id, ns);
             }
+            self.record_suspend_kind(SuspendKind::ChannelRecv {
+                receiver: receiver_place,
+                result_dest,
+                elem_ty: elem_ty.clone(),
+                deadline_result_dest,
+                error_dest,
+            });
             self.finish_current_block(Terminator::SuspendingChannelRecv {
                 receiver: receiver_place,
                 result_dest,
@@ -20019,6 +20088,13 @@ impl Builder {
             if let Some(ns) = deadline_ns {
                 self.await_deadline_ns.insert(self.current_block_id, ns);
             }
+            self.record_suspend_kind(SuspendKind::StreamNext {
+                stream: stream_place,
+                result_dest,
+                elem_ty: elem_ty.clone(),
+                deadline_result_dest,
+                error_dest,
+            });
             self.finish_current_block(Terminator::SuspendingStreamNext {
                 stream: stream_place,
                 result_dest,
@@ -20121,6 +20197,12 @@ impl Builder {
             // `SuspendingAccept` carries no separate MIR cleanup block — it rides
             // the multi-suspend epilogue, so `cleanup` reuses `next` (exactly as
             // `SuspendingRead` does).
+            self.record_suspend_kind(SuspendKind::Accept {
+                listener: listener_place,
+                result_dest: conn_dest,
+                deadline_result_dest,
+                error_dest,
+            });
             self.finish_current_block(Terminator::SuspendingAccept {
                 listener: listener_place,
                 result_dest: conn_dest,
@@ -20280,6 +20362,16 @@ impl Builder {
         // `cleanup` reuses `next` as the multi-suspend drop-elaboration seam,
         // exactly as `SuspendingAsk` does.
         if self.current_function_call_conv.carries_execution_context() {
+            self.record_suspend_kind(SuspendKind::RemoteAsk {
+                actor,
+                msg_type: info.msg_type,
+                value,
+                timeout_ms,
+                result_dest,
+                reply_dest,
+                error_dest,
+                reply_ty: reply_ty.clone(),
+            });
             self.finish_current_block(Terminator::SuspendingRemoteAsk {
                 actor,
                 msg_type: info.msg_type,

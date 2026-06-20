@@ -136,7 +136,7 @@ extract_doc() {
         # Detect opening fence: line is exactly "```hew" (possibly with trailing CR).
         local stripped="${line%%$'\r'}"
         if [[ "$stripped" != '```hew' ]]; then
-            (( i++ ))
+            (( i += 1 ))
             continue
         fi
 
@@ -158,17 +158,17 @@ extract_doc() {
         done
 
         # Collect fence content lines (up to the closing ```).
-        (( i++ ))
+        (( i += 1 ))
         local content=""
         while (( i < total )); do
             local fline="${lines[$i]}"
             local fstripped="${fline%%$'\r'}"
             if [[ "$fstripped" == '```' ]]; then
-                (( i++ ))
+                (( i += 1 ))
                 break
             fi
             content="${content}${fline}"$'\n'
-            (( i++ ))
+            (( i += 1 ))
         done
 
         # Emit to outdir.

@@ -37,14 +37,14 @@
 #             pool reserved-word clash, or a checker-boundary HIR error.
 #             Fix: compiler follow-on; annotate fence for now.
 #
-# Baseline: 132 pass, 109 fail, 1 skip (NYI-annotated) out of 242 total fences.
+# Baseline: 132 pass, 108 fail, 1 skip (NYI-annotated) out of 241 total fences.
 # Recorded against docs/ @ HEAD on 2026-06-19.
 #
 # ─── Guide failures (1) ─────────────────────────────────────────────────────────
 
 guide-0107  # NYI: scope/fork/await concurrency construct not yet lowered to MIR
 
-# ─── Spec failures (108) ─────────────────────────────────────────────────────────
+# ─── Spec failures (107) ─────────────────────────────────────────────────────────
 
 spec-0002   # SNIPPET: bare `let counter = spawn Counter(...)` — actor spawn illustration
 spec-0003   # SNIPPET: bare lambda-actor messaging code — lambda actor call illustration

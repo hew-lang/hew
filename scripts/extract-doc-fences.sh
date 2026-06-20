@@ -140,7 +140,7 @@ extract_doc() {
             continue
         fi
 
-        (( fence_num++ ))
+        fence_num=$(( fence_num + 1 ))
         local fence_id
         printf -v fence_id "%s-%04d" "$prefix" "$fence_num"
 
@@ -221,7 +221,7 @@ for (( idx=0; idx < ${#FENCE_IDS[@]}; idx++ )); do
     outfile="$OUTDIR/${fence_id}.hew"
 
     if [[ "$is_skip" == "1" ]]; then
-        (( skip++ ))
+        skip=$(( skip + 1 ))
         continue
     fi
 
@@ -229,9 +229,9 @@ for (( idx=0; idx < ${#FENCE_IDS[@]}; idx++ )); do
     "$HEW_BIN" check "$outfile" >/dev/null 2>&1 || check_rc=$?
 
     if [[ "$check_rc" == "0" ]]; then
-        (( pass++ ))
+        pass=$(( pass + 1 ))
     else
-        (( fail++ ))
+        fail=$(( fail + 1 ))
         ACTUAL_STR="${ACTUAL_STR}${fence_id}"$'\n'
     fi
 done
@@ -295,8 +295,11 @@ if [[ $count_unexpected_fail -gt 0 ]]; then
     while IFS= read -r name; do
         [[ -z "$name" ]] && continue
         # Print the first error line for diagnosis.
+        # hew check is expected to fail here; capture without letting the
+        # non-zero exit abort the script under set -e / pipefail.
         outfile="$OUTDIR/${name}.hew"
-        first_err="$("$HEW_BIN" check "$outfile" 2>&1 | head -1)"
+        first_err="$("$HEW_BIN" check "$outfile" 2>&1 || true)"
+        first_err="${first_err%%$'\n'*}"
         echo "  UNEXPECTED: $name  ($first_err)"
     done <<< "$unexpected_failures"
     echo ""

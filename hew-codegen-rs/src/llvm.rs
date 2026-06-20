@@ -11990,9 +11990,26 @@ fn emit_actor_lifecycle_wrapper<'ctx>(
     )?;
 
     if let Some(init_fn) = init_fn {
-        builder
-            .build_call(init_fn, &[ctx_slot.into()], &format!("call_{init_name}"))
-            .llvm_ctx("supervised actor init call")?;
+        // The wrapper is ZERO-ARG (SHIM, see the doc comment): it can only call
+        // a parameter-less `init` — one whose LLVM signature is the lone leading
+        // `*mut HewExecutionContext`. An `init(p: T, ...)` takes its params from
+        // the spawn args, which the supervised path seeds into the spec's
+        // `init_state` TEMPLATE (the existing template-seeding SHIM), not through
+        // this wrapper. Calling such an `init` with only the context would pass
+        // the wrong argument count — LLVM-verify wrong-code. So we run `init`
+        // only when it is ctx-only; a parameterized init's field initialisation
+        // is already covered by the seeded template (verified by
+        // `supervised_actor_init_block`, whose `init(value: i64)` body is empty
+        // and reads `value` from the template).
+        //
+        // WHEN obsolete: when a supervised-init-args lane threads the spawn args
+        // through the wrapper (or a richer spec carrier); then call init here
+        // with the threaded args regardless of arity.
+        if init_fn.count_params() == 1 {
+            builder
+                .build_call(init_fn, &[ctx_slot.into()], &format!("call_{init_name}"))
+                .llvm_ctx("supervised actor init call")?;
+        }
     }
     if let Some(start_fn) = start_fn {
         builder

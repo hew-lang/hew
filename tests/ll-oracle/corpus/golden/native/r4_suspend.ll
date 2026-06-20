@@ -409,7 +409,7 @@ bb0:                                              ; preds = %entry
   %"actor_send receiver" = load ptr, ptr %local_2, align 8
   %actor_id_slot = getelementptr i8, ptr %"actor_send receiver", i64 8
   %actor_id = load i64, ptr %actor_id_slot, align 4
-  %hew_actor_send_by_id_call = call i32 @hew_actor_send_by_id(i64 %actor_id, i32 1995638644, ptr %local_3, i64 ptrtoint (ptr getelementptr (i64, ptr null, i32 1) to i64))
+  %hew_actor_send_by_id_call = call i32 @hew_actor_send_by_id(i64 %actor_id, ptr null, i32 1995638644, ptr %local_3, i64 ptrtoint (ptr getelementptr (i64, ptr null, i32 1) to i64))
   %actor_send_failed = icmp ne i32 %hew_actor_send_by_id_call, 0
   br i1 %actor_send_failed, label %actor_send_fail, label %bb1
 
@@ -885,7 +885,7 @@ declare void @hew_actor_set_state_drop(ptr, ptr)
 
 declare void @hew_actor_set_state_clone(ptr, ptr)
 
-declare i32 @hew_actor_send_by_id(i64, i32, ptr, i64)
+declare i32 @hew_actor_send_by_id(i64, ptr, i32, ptr, i64)
 
 declare ptr @hew_actor_ask(ptr, i32, ptr, i64)
 
@@ -961,15 +961,15 @@ declare i32 @hew_de_failed(ptr)
 
 define private void @hew_module_init_xnode_codecs() {
 entry:
-  call void @hew_xnode_register_codec(i32 1995638644, ptr @__hew_serialize_i64, ptr @__hew_deserialize_i64)
-  call void @hew_xnode_register_codec(i32 311929158, ptr @__hew_serialize_i64, ptr @__hew_deserialize_i64)
-  call void @hew_xnode_register_reply_codec(i32 311929158, ptr @__hew_serialize_i64, ptr @__hew_deserialize_i64)
+  call void @hew_xnode_register_codec(ptr @__hew_actor_dispatch_Adder, i32 1995638644, ptr @__hew_serialize_i64, ptr @__hew_deserialize_i64)
+  call void @hew_xnode_register_codec(ptr @__hew_actor_dispatch_Adder, i32 311929158, ptr @__hew_serialize_i64, ptr @__hew_deserialize_i64)
+  call void @hew_xnode_register_reply_codec(ptr @__hew_actor_dispatch_Adder, i32 311929158, ptr @__hew_serialize_i64, ptr @__hew_deserialize_i64)
   ret void
 }
 
-declare void @hew_xnode_register_codec(i32, ptr, ptr)
+declare void @hew_xnode_register_codec(ptr, i32, ptr, ptr)
 
-declare void @hew_xnode_register_reply_codec(i32, ptr, ptr)
+declare void @hew_xnode_register_reply_codec(ptr, i32, ptr, ptr)
 
 attributes #0 = { cold noreturn nounwind memory(inaccessiblemem: write) }
 attributes #1 = { nocallback nofree nounwind willreturn memory(argmem: readwrite) }

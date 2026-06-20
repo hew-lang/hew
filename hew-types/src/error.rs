@@ -919,6 +919,24 @@ pub enum TypeErrorKind {
         /// the attribute. Used by tests to pin diagnostic precision.
         method_key: String,
     },
+    /// A struct-init expression attempted to directly construct an `#[opaque]`
+    /// handle type.
+    ///
+    /// Opaque handles are pointer-shaped runtime resources (e.g. `Deque`,
+    /// `net.Listener`) with no user-visible fields. They carry no constructible
+    /// record layout — the type is lowered to a bare pointer in codegen, and
+    /// the field-order table has no entry for it. Attempting to construct one
+    /// with `Handle {}` syntax reaches the MIR lowering path and trips a
+    /// misleading `E_NOT_YET_IMPLEMENTED` note. This error is emitted at the
+    /// checker layer to replace that downstream noise with a clean, actionable
+    /// diagnostic.
+    ///
+    /// Envelope code: `E_OPAQUE_CONSTRUCT`.
+    OpaqueDirectConstruct {
+        /// The resolved type name of the opaque handle (e.g. `"Deque"`,
+        /// `"net.Listener"`).
+        type_name: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -1003,6 +1021,7 @@ impl TypeErrorKind {
             Self::IntrinsicOutsideFloor { .. } => "IntrinsicOutsideFloor",
             Self::IntrinsicOnMethod { .. } => "IntrinsicOnMethod",
             Self::RefutableLetPattern { .. } => "RefutableLetPattern",
+            Self::OpaqueDirectConstruct { .. } => "OpaqueDirectConstruct",
         }
     }
 }

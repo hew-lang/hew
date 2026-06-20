@@ -1,0 +1,7 @@
+// Declares an opaque handle type that is exported for use by other modules.
+// The declaring module is the sole legitimate producer; importers receive a
+// handle only via the declared constructor functions, never by direct construction.
+
+#[opaque]
+pub type Handle {
+}

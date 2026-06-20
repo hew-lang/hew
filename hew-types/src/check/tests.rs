@@ -27006,4 +27006,197 @@ mod every_attribute {
             output.errors
         );
     }
+
+    // ── Opaque handle direct-construction guard ──────────────────────────────
+    //
+    // An `#[opaque]` type is a pointer-shaped runtime handle with no user-
+    // visible fields. Direct construction with `Handle {}` is allowed ONLY
+    // within the DECLARING module (the producer). Cross-module construction
+    // must be rejected with OpaqueDirectConstruct before reaching MIR, where
+    // it would otherwise trip a misleading E_NOT_YET_IMPLEMENTED note.
+
+    #[test]
+    fn opaque_handle_same_module_construct_is_allowed() {
+        // The module that DECLARES an `#[opaque]` type is the producer.
+        // Its `#[extern_symbol]` impl stubs must be able to write `Handle {}`
+        // as the stub body — the checker allows this. Only importers are
+        // barred from direct construction.
+        let output = check_source(
+            r"
+            #[opaque]
+            type Handle {}
+
+            fn make_handle() -> Handle {
+                Handle {}
+            }
+
+            fn main() -> i64 {
+                0
+            }
+            ",
+        );
+        let opaque_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(&e.kind, TypeErrorKind::OpaqueDirectConstruct { .. }))
+            .collect();
+        assert!(
+            opaque_errors.is_empty(),
+            "same-module construction of an #[opaque] type must be allowed (producer \
+             semantics); got unexpected errors: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn opaque_handle_cross_module_construct_emits_opaque_direct_construct_error() {
+        // Cross-module construction of an `#[opaque]` type must produce exactly
+        // one `OpaqueDirectConstruct` error with the correct (qualified) type name.
+        // The opaque type is declared in module `handles`; the root imports it
+        // and tries to construct it directly — this must be rejected.
+        //
+        // Pattern: parse both sources, patch the root's ImportDecl's
+        // `resolved_items` to the handles module's items, then check_program.
+        // This mirrors the real check pipeline without needing disk module resolution.
+        let handles_src = hew_parser::parse(
+            r"
+            #[opaque]
+            pub type Handle {}
+            ",
+        );
+        assert!(handles_src.errors.is_empty());
+        let mut root = hew_parser::parse(
+            r"
+            import handles::{ Handle };
+            fn main() -> i64 {
+                let _h: Handle = Handle {};
+                0
+            }
+            ",
+        );
+        assert!(root.errors.is_empty());
+
+        // Patch the import to have its module items pre-resolved (no disk lookup).
+        let import_decl = root
+            .program
+            .items
+            .iter_mut()
+            .find_map(|(item, _)| match item {
+                Item::Import(imp) => Some(imp),
+                _ => None,
+            })
+            .expect("root should have an import");
+        import_decl.resolved_items = Some(handles_src.program.items.clone());
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&root.program);
+
+        let opaque_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(&e.kind, TypeErrorKind::OpaqueDirectConstruct { .. }))
+            .collect();
+        assert_eq!(
+            opaque_errors.len(),
+            1,
+            "cross-module construction of an opaque type must emit exactly one \
+             OpaqueDirectConstruct error; got: {:#?}",
+            output.errors
+        );
+        // The error message must carry the E_OPAQUE_CONSTRUCT envelope code.
+        assert!(
+            opaque_errors[0].message.contains("E_OPAQUE_CONSTRUCT"),
+            "OpaqueDirectConstruct error message must contain E_OPAQUE_CONSTRUCT; \
+             got: {:?}",
+            opaque_errors[0].message
+        );
+    }
+
+    #[test]
+    fn opaque_handle_cross_module_construct_no_downstream_mir_errors() {
+        // The checker must short-circuit cleanly on cross-module opaque construction
+        // — no UndefinedVariable or UndefinedType cascade from the rejected construct.
+        let handles_src = hew_parser::parse(
+            r"
+            #[opaque]
+            pub type Handle {}
+            ",
+        );
+        assert!(handles_src.errors.is_empty());
+        let mut root = hew_parser::parse(
+            r"
+            import handles::{ Handle };
+            fn main() -> i64 {
+                let _h: Handle = Handle {};
+                0
+            }
+            ",
+        );
+        assert!(root.errors.is_empty());
+        let import_decl = root
+            .program
+            .items
+            .iter_mut()
+            .find_map(|(item, _)| match item {
+                Item::Import(imp) => Some(imp),
+                _ => None,
+            })
+            .expect("root should have an import");
+        import_decl.resolved_items = Some(handles_src.program.items.clone());
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&root.program);
+
+        // Must have the OpaqueDirectConstruct error.
+        let has_opaque_error = output
+            .errors
+            .iter()
+            .any(|e| matches!(&e.kind, TypeErrorKind::OpaqueDirectConstruct { .. }));
+        assert!(
+            has_opaque_error,
+            "expected OpaqueDirectConstruct on cross-module construction; got: {:#?}",
+            output.errors
+        );
+        // Must not cascade into UndefinedVariable or UndefinedType.
+        let cascade_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.kind,
+                    TypeErrorKind::UndefinedVariable | TypeErrorKind::UndefinedType
+                )
+            })
+            .collect();
+        assert!(
+            cascade_errors.is_empty(),
+            "OpaqueDirectConstruct must not cascade into UndefinedVariable/UndefinedType; \
+             got cascade: {cascade_errors:#?}",
+        );
+    }
+
+    #[test]
+    fn non_opaque_struct_construct_is_not_affected() {
+        // A plain struct (not `#[opaque]`) must still construct without error.
+        let output = check_source(
+            r"
+            type Point { x: i64; y: i64; }
+
+            fn main() -> i64 {
+                let p = Point { x: 1, y: 2 };
+                p.x
+            }
+            ",
+        );
+        let opaque_errors: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(&e.kind, TypeErrorKind::OpaqueDirectConstruct { .. }))
+            .collect();
+        assert!(
+            opaque_errors.is_empty(),
+            "non-opaque struct construction must not produce OpaqueDirectConstruct; \
+             got: {opaque_errors:#?}",
+        );
+    }
 }

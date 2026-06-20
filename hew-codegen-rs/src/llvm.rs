@@ -33121,97 +33121,119 @@ fn emit_suspending_ask_terminator<'ctx>(
     let reply_bind_bb = fn_ctx
         .ctx
         .append_basic_block(parent, "suspending_ask_reply_bind");
-    // Abandon-cleanup edge (S2): when a parked SuspendingAsk continuation is
+    // ── abandon_cleanup edge (S2): when a parked SuspendingAsk continuation is
     // DESTROYED without resuming (actor stop/crash while suspended, begin_park
     // refusal, the C1 free-path destroy_parked), `coro.suspend`'s case-1 edge
     // runs. The shared `coro.cleanup_block` only frees the coro frame — it never
     // sees `ch` (a codegen-local SSA value with no MIR Place), so without this
-    // interposition `ch` leaks. Route case 1 to a SuspendingAsk-specific block
-    // that CANCELS + FREES the creator ref before joining the shared cleanup.
-    // Cancel-then-free mirrors the blocking-ask timeout abandon (actor.rs): the
-    // cancel makes a late replier (the callee still holds the sender ref) release
-    // its own ref and skip the wake; the free releases this abandoned caller's
-    // creator-side ref. The late wake itself is independently fail-safe (the
-    // caller-actor UAF guard in enqueue_resume drops a wake to a freed caller).
-    let abandon_cleanup_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_ask_abandon_cleanup");
-    let cc = crate::coro::CoroContext {
-        ctx: fn_ctx.ctx,
-        llvm_mod: fn_ctx.llvm_mod,
-        builder: &fn_ctx.builder,
-        function: parent,
-        handle: coro.handle,
-        id_token: coro.id_token,
-    };
-    cc.emit_suspend(
+    // interposition `ch` leaks. The abandon continuation CANCELS + FREES the
+    // creator ref before joining the shared cleanup. Cancel-then-free mirrors the
+    // blocking-ask timeout abandon (actor.rs): the cancel makes a late replier
+    // (the callee still holds the sender ref) release its own ref and skip the
+    // wake; the free releases this abandoned caller's creator-side ref. The late
+    // wake itself is independently fail-safe (the caller-actor UAF guard in
+    // enqueue_resume drops a wake to a freed caller).
+    emit_suspend_point(
+        fn_ctx,
+        coro,
+        parent,
         reply_bind_bb,
-        abandon_cleanup_bb,
-        coro.suspend_return_block,
-        false,
         "suspending_ask",
+        "suspending_ask_abandon_cleanup",
+        "suspending ask abandon -> shared cleanup br",
+        || {
+            // ── abandon_cleanup: free the awaited reply channel, then join the
+            // shared coro cleanup (frame-free + coro.end). ──────────────────────
+            if let Some(reg) = reg {
+                // Parked continuation destroyed without resuming: force the
+                // registration terminal (disarms the deadline timer, releasing its
+                // retained ref and running the channel-tombstone cleanup while `ch`
+                // is still live), then release the creator ref. wake_actor = 0: we
+                // are tearing down, not resuming. The channel's own retained ref
+                // drops at its final free below.
+                let reg_cancel = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_await_cancel_cancel",
+                )?;
+                let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
+                let no_wake = i32_ty.const_zero();
+                fn_ctx
+                    .builder
+                    .build_call(
+                        reg_cancel,
+                        &[reg.into(), cancelled_status.into(), no_wake.into()],
+                        "suspending_ask_abandon_reg_cancel",
+                    )
+                    .llvm_ctx("hew_await_cancel_cancel (abandon) call")?;
+                let reg_free = intern_runtime_decl(
+                    fn_ctx.ctx,
+                    fn_ctx.llvm_mod,
+                    &mut fn_ctx.runtime_decls.borrow_mut(),
+                    "hew_await_cancel_free",
+                )?;
+                fn_ctx
+                    .builder
+                    .build_call(reg_free, &[reg.into()], "suspending_ask_abandon_reg_free")
+                    .llvm_ctx("hew_await_cancel_free (abandon) call")?;
+            }
+            let ch_cancel = intern_runtime_decl(
+                fn_ctx.ctx,
+                fn_ctx.llvm_mod,
+                &mut fn_ctx.runtime_decls.borrow_mut(),
+                "hew_reply_channel_cancel",
+            )?;
+            fn_ctx
+                .builder
+                .build_call(ch_cancel, &[ch.into()], "suspending_ask_abandon_cancel")
+                .llvm_ctx("hew_reply_channel_cancel (abandon) call")?;
+            fn_ctx
+                .builder
+                .build_call(ch_free, &[ch.into()], "suspending_ask_abandon_free")
+                .llvm_ctx("hew_reply_channel_free (abandon) call")?;
+            Ok(())
+        },
+        || emit_suspending_ask_reply_bind(fn_ctx, &term, ch, reg, resume_bb, parent),
     )?;
 
-    // ── abandon_cleanup: free the awaited reply channel, then join the shared
-    // coro cleanup (frame-free + coro.end). ──────────────────────────────────
-    fn_ctx.builder.position_at_end(abandon_cleanup_bb);
-    if let Some(reg) = reg {
-        // Parked continuation destroyed without resuming: force the registration
-        // terminal (disarms the deadline timer, releasing its retained ref and
-        // running the channel-tombstone cleanup while `ch` is still live), then
-        // release the creator ref. wake_actor = 0: we are tearing down, not
-        // resuming. The channel's own retained ref drops at its final free below.
-        let reg_cancel = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_cancel",
-        )?;
-        let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
-        let no_wake = i32_ty.const_zero();
-        fn_ctx
-            .builder
-            .build_call(
-                reg_cancel,
-                &[reg.into(), cancelled_status.into(), no_wake.into()],
-                "suspending_ask_abandon_reg_cancel",
-            )
-            .llvm_ctx("hew_await_cancel_cancel (abandon) call")?;
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(reg_free, &[reg.into()], "suspending_ask_abandon_reg_free")
-            .llvm_ctx("hew_await_cancel_free (abandon) call")?;
-    }
+    let _ = ptr_ty;
+    Ok(())
+}
+
+/// Resume-bind continuation of [`emit_suspending_ask_terminator`]: the executor
+/// resumed us (enqueue_resume). The reply is already deposited on `ch`;
+/// `hew_reply_wait` returns it on the fast path. Bind Ok(reply)/Err(AskError)
+/// exactly as Terminator::Ask does, then free the reply payload + the channel,
+/// and branch to the MIR resume block. Split out so the suspend-point seam owns
+/// the suspend + abandon scaffolding while this owns the value routing.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the full reply-bind edge — deadline-vs-reply resolution + the \
+              Ok/Err binding — is kept in one place so the deadline arbiter and \
+              the value routing it gates are read together"
+)]
+fn emit_suspending_ask_reply_bind<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    term: &SuspendingAskEmit,
+    ch: inkwell::values::PointerValue<'ctx>,
+    reg: Option<inkwell::values::PointerValue<'ctx>>,
+    resume_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    parent: FunctionValue<'ctx>,
+) -> CodegenResult<()> {
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let ch_free = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_reply_channel_free",
+    )?;
     let ch_cancel = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
         &mut fn_ctx.runtime_decls.borrow_mut(),
         "hew_reply_channel_cancel",
     )?;
-    fn_ctx
-        .builder
-        .build_call(ch_cancel, &[ch.into()], "suspending_ask_abandon_cancel")
-        .llvm_ctx("hew_reply_channel_cancel (abandon) call")?;
-    fn_ctx
-        .builder
-        .build_call(ch_free, &[ch.into()], "suspending_ask_abandon_free")
-        .llvm_ctx("hew_reply_channel_free (abandon) call")?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(coro.cleanup_block)
-        .llvm_ctx("suspending ask abandon -> shared cleanup br")?;
-
-    // ── reply_bind: the executor resumed us (enqueue_resume). The reply is
-    // already deposited on `ch`; `hew_reply_wait` returns it on the fast path.
-    // Bind Ok(reply)/Err(AskError) exactly as Terminator::Ask does, then free
-    // the reply payload + the channel, and branch to the MIR resume block. ────
-    fn_ctx.builder.position_at_end(reply_bind_bb);
     // ── NEW-6b deadline-vs-reply resolution at the single resume convergence
     // point. Whichever wake fired (reply deposit or deadline timer), the one-shot
     // registration is authoritative: `complete` claims the reply if still pending
@@ -33461,7 +33483,6 @@ fn emit_suspending_ask_terminator<'ctx>(
         .build_unconditional_branch(resume_bb)
         .llvm_ctx("suspending ask err br")?;
 
-    let _ = ptr_ty;
     Ok(())
 }
 

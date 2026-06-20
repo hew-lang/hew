@@ -488,6 +488,46 @@ fn accept_crash_hook_with_if_and_diverging_body() {
     );
 }
 
+// ── E1d: closure nested inside `#[on(crash)]` must not inherit flag ──
+//
+// A closure defined inside an `#[on(crash)]` hook body is NOT the hook itself.
+// `in_crash_hook` must be cleared for the closure's body so that a valid
+// `return CrashAction::X;` INSIDE that nested closure does not produce a
+// false-positive `CrashActionReturnNotYetWired`.  (The closure would only be
+// called from user code — it is not the hook's return path at all.)
+
+#[test]
+fn accept_closure_inside_crash_hook_returning_crash_action() {
+    // The closure captures context from the hook but has its OWN return type
+    // annotation of `CrashAction`.  Because `check_lambda` now clears
+    // `in_crash_hook` for the closure body, the `return CrashAction::Restart;`
+    // inside the closure is NOT gated — it is a valid closure return statement,
+    // not a hook body return.  This was a false-positive before the fix.
+    let output = typecheck(
+        r#"
+        actor Worker {
+            let flag: i32;
+
+            #[on(crash)]
+            fn on_crash(info: CrashInfo) -> CrashAction {
+                let handler = || -> CrashAction {
+                    return CrashAction::Restart;
+                };
+                panic("diverging hook body")
+            }
+        }
+
+        fn main() {}
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a closure inside `#[on(crash)]` that returns CrashAction should not produce \
+         CrashActionReturnNotYetWired (false-positive): {:?}",
+        output.errors
+    );
+}
+
 // ── E2: `#[on(crash)]` signature pinning ─────────────────────────────
 //
 // Failure-philosophy slice E2 pins the crash hook signature shape:

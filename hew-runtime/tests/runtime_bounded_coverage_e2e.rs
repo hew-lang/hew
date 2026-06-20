@@ -234,6 +234,7 @@ fn single_worker_message_budget_and_restart_budget_bound_execution() {
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
+            lifecycle_fn: None,
         };
         assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
         assert_eq!(hew_supervisor_start(sup), 0);

@@ -921,12 +921,8 @@ pub(crate) unsafe fn encode_reply(
 /// registry contents must reset them to stay hermetic.
 #[cfg(test)]
 pub(crate) fn clear_codec_registries_for_test() {
-    if let Ok(mut reg) = THUNK_REGISTRY.lock() {
-        reg.clear();
-    }
-    if let Ok(mut reg) = REPLY_REGISTRY.lock() {
-        reg.clear();
-    }
+    THUNK_REGISTRY.lock().unwrap().clear();
+    REPLY_REGISTRY.lock().unwrap().clear();
 }
 
 #[cfg(test)]

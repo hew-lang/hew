@@ -100,7 +100,7 @@ pub struct DocConst {
     /// Best-effort string form of the const value. Literals are rendered
     /// verbatim; non-literal expressions render as `…`.
     pub value: String,
-    /// Rendered visibility prefix (`pub `, `pub(package) `, `pub(super) `),
+    /// Rendered visibility prefix (`pub `, `package `, or `""`),
     /// trailing space included so renderers can paste it before `const`.
     pub visibility: String,
     pub doc: Option<String>,
@@ -257,8 +257,7 @@ fn visibility_prefix(v: Visibility) -> &'static str {
     match v {
         Visibility::Private => "",
         Visibility::Pub => "pub ",
-        Visibility::PubPackage => "pub(package) ",
-        Visibility::PubSuper => "pub(super) ",
+        Visibility::Package => "package ",
     }
 }
 
@@ -724,28 +723,28 @@ const PRIVATE_C: i32 = 2;
     }
 
     #[test]
-    fn pub_package_and_pub_super_are_emitted() {
-        let source = r"pub(package) fn pp_fn() {}
-pub(super) fn ps_fn() {}
-pub(package) const PP_C: i32 = 1;
+    fn package_visibility_items_are_emitted() {
+        let source = r"package fn pkg_fn() {}
+pub fn pub_fn() {}
+package const PKG_C: i32 = 1;
 ";
         let result = hew_parser::parse(source);
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         let module = extract_docs(&result.program, "test");
         assert_eq!(module.functions.len(), 2);
         let names: Vec<&str> = module.functions.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"pp_fn"));
-        assert!(names.contains(&"ps_fn"));
-        // Signature carries the actual visibility, not a hardcoded `pub `.
-        let pp_sig = &module
+        assert!(names.contains(&"pkg_fn"));
+        assert!(names.contains(&"pub_fn"));
+        // Signature carries the actual visibility keyword.
+        let pkg_sig = &module
             .functions
             .iter()
-            .find(|f| f.name == "pp_fn")
+            .find(|f| f.name == "pkg_fn")
             .unwrap()
             .signature;
-        assert!(pp_sig.starts_with("pub(package) "), "sig: {pp_sig}");
+        assert!(pkg_sig.starts_with("package "), "sig: {pkg_sig}");
         assert_eq!(module.consts.len(), 1);
-        assert_eq!(module.consts[0].visibility, "pub(package) ");
+        assert_eq!(module.consts[0].visibility, "package ");
     }
 
     #[test]

@@ -762,6 +762,14 @@ pub struct WherePredicate {
 // ── Visibility ───────────────────────────────────────────────────────
 
 /// Item visibility level.
+///
+/// Three tiers (D18 — standalone keyword design):
+/// - `fn foo()`          → `Private`  (no keyword; module-private)
+/// - `package fn foo()`  → `Package`  (visible within the package)
+/// - `pub fn foo()`      → `Pub`      (globally public)
+///
+/// Enforcement of `Package` vs `Pub` is deferred to a future edition; both
+/// currently resolve identically at all call sites that inspect `is_pub()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Visibility {
     /// Not visible outside the defining module.
@@ -770,21 +778,16 @@ pub enum Visibility {
     /// Fully public.
     Pub,
     /// Visible within the same package.
-    PubPackage,
-    /// Visible to the parent module.
-    PubSuper,
+    Package,
 }
 
 impl Visibility {
-    /// Returns `true` when the item has any public visibility (`pub`, `pub(package)`, or `pub(super)`).
+    /// Returns `true` when the item has any public visibility (`pub` or `package`).
     ///
-    /// **v0.5 note:** `pub(package)` and `pub(super)` are parsed but treated as
-    /// fully public — they resolve to the same visibility as bare `pub` at this
-    /// call site and everywhere the compiler inspects item visibility.  Stricter
-    /// enforcement of the restricted forms is forward-compatible: code that
-    /// compiles today will keep compiling when the restriction is applied, because
-    /// callers that are already within the allowed scope won't be affected.
-    /// Planned for v0.6.
+    /// `Package` and `Pub` are treated identically here — enforcement of the
+    /// package boundary is deferred to a future edition.  Code written with
+    /// `package` visibility today will keep compiling after the restriction is
+    /// applied, because callers within the package are unaffected.
     #[must_use]
     pub fn is_pub(self) -> bool {
         self != Self::Private

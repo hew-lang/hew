@@ -799,17 +799,21 @@ Predicate functions (`fs.exists`, `path.exists`, `regex.is_match`, `os.has_env`,
 
 **Visibility modifiers:**
 
-- `pub` - public to all modules
-- `pub(package)` - public within the same package
-- `pub(super)` - public to parent module only
-- (no modifier) - private to this module
+Three-tier model — written as a prefix keyword before the item keyword:
 
-> **Implementation note:** `pub(package)` and `pub(super)` are parsed and
-> accepted by the compiler but are currently treated as fully public — they
-> behave identically to bare `pub`.  Enforcement of the restricted forms is
-> planned for a future edition.  Code written with restricted visibility today
-> will keep compiling after the restriction is applied, because callers within
-> the allowed scope are unaffected.
+| Syntax              | Meaning                                    |
+|---------------------|--------------------------------------------|
+| `fn foo()`          | Private — visible only within this module  |
+| `package fn foo()`  | Package — visible within the same package  |
+| `pub fn foo()`      | Public — visible to all modules            |
+
+The same prefix applies to any item kind: `package type`, `package const`, `package actor`, etc.
+
+> **Implementation note:** `package` visibility is accepted and parsed correctly.
+> Enforcement of the package boundary (rejecting callers outside the package) is
+> planned for a future edition.  Code written with `package` visibility today will
+> keep compiling after the restriction is applied, because callers within the
+> package are unaffected.
 
 #### 3.5.1 Directory-form modules (peer-file composition)
 

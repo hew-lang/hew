@@ -899,7 +899,7 @@ See [migration guide](docs/migrations/v0.4.0.md) for upgrade steps.
 - `s.spawn {}` parallel task syntax for structured concurrency
 - Custom type indexing via `get()` method (`obj[key]` desugars to `obj.get(key)`)
 - HashSet data structure with insert, contains, remove, len operations
-- Granular visibility modifiers: `pub(package)` and `pub(super)`
+- Granular visibility modifiers: `package fn` (package-visible) alongside `pub fn` (public) and bare `fn` (private)
 - Bare `self` parameter in methods (no type annotation required)
 - Label support on `for` loops (@label: for ...)
 - Char literal support (`'a'`, `'\n'`, escape sequences)

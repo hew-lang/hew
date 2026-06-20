@@ -323,6 +323,24 @@ pub mod profiler {
         pub fn runnable_coroutine_count() -> u64 {
             0
         }
+
+        /// Stub dispatch-type lookup when profiler registry is unavailable.
+        ///
+        /// Always returns `"Actor"` — the same default the real registry returns
+        /// for unregistered pointers.
+        #[must_use]
+        pub fn lookup_dispatch_type_by_ptr(_dispatch_ptr: usize) -> &'static str {
+            "Actor"
+        }
+
+        /// Stub handler-name lookup when profiler registry is unavailable.
+        ///
+        /// Always returns `None` — the same default the real registry returns
+        /// for unregistered (dispatch_fn, msg_type) pairs.
+        #[must_use]
+        pub fn handler_name_by_ptr(_dispatch_ptr: usize, _msg_type: i32) -> Option<String> {
+            None
+        }
     }
 
     pub mod allocator {

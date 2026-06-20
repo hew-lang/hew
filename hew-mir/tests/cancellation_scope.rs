@@ -336,24 +336,23 @@ fn fork_value_task_await_lowers_through_result_channel() {
         "value-task await must lower cleanly through the result channel; diagnostics: {:#?}",
         mir.diagnostics
     );
-    // And the carrier must actually be emitted (no silent drop): a
-    // SuspendingTaskAwait terminator with a result_dest appears in the handler.
-    let has_value_carrier = mir
-        .raw_mir
-        .iter()
-        .flat_map(|func| &func.blocks)
-        .any(|block| {
+    // And the carrier must actually be emitted (no silent drop): the value-task
+    // await collapses to a bare `Suspend` whose `SuspendKind::TaskAwait` payload
+    // (in the per-function side-table) carries a `result_dest`.
+    let has_value_carrier = mir.raw_mir.iter().any(|func| {
+        func.suspend_kinds.values().any(|kind| {
             matches!(
-                &block.terminator,
-                hew_mir::Terminator::SuspendingTaskAwait {
+                kind,
+                hew_mir::SuspendKind::TaskAwait {
                     result_dest: Some(_),
                     ..
                 }
             )
-        });
+        })
+    });
     assert!(
         has_value_carrier,
-        "value-task await must emit a SuspendingTaskAwait carrier carrying a result_dest"
+        "value-task await must emit a Suspend carrier whose SuspendKind::TaskAwait carries a result_dest"
     );
 }
 

@@ -4932,6 +4932,7 @@ fn lower_function(
     composite_drop_allowed.extend(owned_record_drop_allowed);
     for check in detect_unproven_aggregate_handle_double_free(
         &raw.blocks,
+        &raw.suspend_kinds,
         &builder.owned_locals,
         &builder.binding_locals,
         &builder.locals,
@@ -8934,13 +8935,10 @@ impl Builder {
                             ret_ty: ret_ty.clone(),
                             result_dest: dest,
                         });
-                        self.finish_current_block(Terminator::SuspendingCallClosure {
-                            callee: callee_place,
-                            args: arg_places,
-                            ret_ty,
-                            result_dest: dest,
+                        self.finish_current_block(Terminator::Suspend {
                             resume: next,
                             cleanup: next,
+                            is_final: false,
                         });
                         self.start_block(next);
                         return dest;
@@ -12273,16 +12271,6 @@ impl Builder {
                     | Terminator::Ask { .. }
                     | Terminator::RemoteAsk { .. }
                     | Terminator::Suspend { .. }
-                    | Terminator::SuspendingAsk { .. }
-                    | Terminator::SuspendingRead { .. }
-                    | Terminator::SuspendingCallClosure { .. }
-                    | Terminator::SuspendingStreamNext { .. }
-                    | Terminator::SuspendingStreamSend { .. }
-                    | Terminator::SuspendingAccept { .. }
-                    | Terminator::SuspendingChannelRecv { .. }
-                    | Terminator::SuspendingRemoteAsk { .. }
-                    | Terminator::SuspendingTaskAwait { .. }
-                    | Terminator::SuspendingSleep { .. }
                     | Terminator::SuspendingScopeDeadline { .. }
                     | Terminator::Select { .. }
                     | Terminator::SuspendingSelect { .. }
@@ -17518,12 +17506,10 @@ impl Builder {
                     task: task_place,
                     result_dest,
                 });
-                self.finish_current_block(Terminator::SuspendingTaskAwait {
-                    scope: scope_place,
-                    task: task_place,
-                    result_dest,
+                self.finish_current_block(Terminator::Suspend {
                     resume: next,
                     cleanup: next,
+                    is_final: false,
                 });
                 self.start_block(next);
                 if let Some(result_dest) = result_dest {
@@ -17959,14 +17945,10 @@ impl Builder {
                     deadline_result_dest: None,
                     error_dest: None,
                 });
-                self.finish_current_block(Terminator::SuspendingStreamNext {
-                    stream: *stream,
-                    result_dest,
-                    elem_ty: elem_ty.clone(),
-                    deadline_result_dest: None,
-                    error_dest: None,
+                self.finish_current_block(Terminator::Suspend {
                     resume: next,
                     cleanup: next,
+                    is_final: false,
                 });
                 self.start_block(next);
                 return ControlFlow::Break(dest);
@@ -17988,14 +17970,10 @@ impl Builder {
                     deadline_result_dest: None,
                     error_dest: None,
                 });
-                self.finish_current_block(Terminator::SuspendingChannelRecv {
-                    receiver: *receiver,
-                    result_dest,
-                    elem_ty: elem_ty.clone(),
-                    deadline_result_dest: None,
-                    error_dest: None,
+                self.finish_current_block(Terminator::Suspend {
                     resume: next,
                     cleanup: next,
+                    is_final: false,
                 });
                 self.start_block(next);
                 return ControlFlow::Break(dest);
@@ -18014,11 +17992,10 @@ impl Builder {
                     sink: *sink,
                     value: *value,
                 });
-                self.finish_current_block(Terminator::SuspendingStreamSend {
-                    sink: *sink,
-                    value: *value,
+                self.finish_current_block(Terminator::Suspend {
                     resume: next,
                     cleanup: next,
+                    is_final: false,
                 });
                 self.start_block(next);
                 return ControlFlow::Break(dest);
@@ -18036,10 +18013,10 @@ impl Builder {
                 self.record_suspend_kind(SuspendKind::Sleep {
                     duration_ms: *duration_ms,
                 });
-                self.finish_current_block(Terminator::SuspendingSleep {
-                    duration_ms: *duration_ms,
+                self.finish_current_block(Terminator::Suspend {
                     resume: next,
                     cleanup: next,
+                    is_final: false,
                 });
                 self.start_block(next);
                 return ControlFlow::Break(dest);
@@ -19766,15 +19743,10 @@ impl Builder {
                 reply_dest,
                 error_dest,
             });
-            self.finish_current_block(Terminator::SuspendingAsk {
-                actor,
-                msg_type: info.msg_type,
-                value,
-                result_dest,
-                reply_dest,
-                error_dest,
+            self.finish_current_block(Terminator::Suspend {
                 resume: next,
                 cleanup: next,
+                is_final: false,
             });
         } else {
             // A blocking caller (`main`, a free function) has no parkable
@@ -19864,14 +19836,10 @@ impl Builder {
                 error_dest,
                 to_string: to_string && deadline_result_dest.is_some(),
             });
-            self.finish_current_block(Terminator::SuspendingRead {
-                conn: conn_place,
-                result_dest: bytes_dest,
-                deadline_result_dest,
-                error_dest,
-                to_string: to_string && deadline_result_dest.is_some(),
+            self.finish_current_block(Terminator::Suspend {
                 resume: next,
                 cleanup: next,
+                is_final: false,
             });
             self.start_block(next);
             if let Some(result_dest) = deadline_result_dest {
@@ -19994,14 +19962,10 @@ impl Builder {
                 deadline_result_dest,
                 error_dest,
             });
-            self.finish_current_block(Terminator::SuspendingChannelRecv {
-                receiver: receiver_place,
-                result_dest,
-                elem_ty,
-                deadline_result_dest,
-                error_dest,
+            self.finish_current_block(Terminator::Suspend {
                 resume: next,
                 cleanup: next,
+                is_final: false,
             });
             self.start_block(next);
             if let Some(outer_dest) = deadline_result_dest {
@@ -20102,14 +20066,10 @@ impl Builder {
                 deadline_result_dest,
                 error_dest,
             });
-            self.finish_current_block(Terminator::SuspendingStreamNext {
-                stream: stream_place,
-                result_dest,
-                elem_ty,
-                deadline_result_dest,
-                error_dest,
+            self.finish_current_block(Terminator::Suspend {
                 resume: next,
                 cleanup: next,
+                is_final: false,
             });
             self.start_block(next);
             if let Some(outer_dest) = deadline_result_dest {
@@ -20210,13 +20170,10 @@ impl Builder {
                 deadline_result_dest,
                 error_dest,
             });
-            self.finish_current_block(Terminator::SuspendingAccept {
-                listener: listener_place,
-                result_dest: conn_dest,
-                deadline_result_dest,
-                error_dest,
+            self.finish_current_block(Terminator::Suspend {
                 resume: next,
                 cleanup: next,
+                is_final: false,
             });
             self.start_block(next);
             if let Some(result_dest) = deadline_result_dest {
@@ -20379,17 +20336,10 @@ impl Builder {
                 error_dest,
                 reply_ty: reply_ty.clone(),
             });
-            self.finish_current_block(Terminator::SuspendingRemoteAsk {
-                actor,
-                msg_type: info.msg_type,
-                value,
-                timeout_ms,
-                result_dest,
-                reply_dest,
-                error_dest,
-                reply_ty: reply_ty.clone(),
+            self.finish_current_block(Terminator::Suspend {
                 resume: next,
                 cleanup: next,
+                is_final: false,
             });
         } else {
             self.finish_current_block(Terminator::RemoteAsk {
@@ -24382,43 +24332,14 @@ fn validate_cross_block_split_consume(
             | Terminator::Select { next, .. }
             | Terminator::Join { next, .. } => emit(*next),
             // Suspend's default edge exits the function; resume + cleanup are
-            // the in-CFG successor edges.
+            // the in-CFG successor edges. The ten collapsed suspension carriers
+            // all lower to this bare `Suspend` (payload in the SuspendKind
+            // side-table, which carries no CFG edge). The suspending select's
+            // default suspend-return edge likewise exits; resume (winner-scan
+            // join) + cleanup (abandon) are its in-CFG edges.
             Terminator::Suspend {
                 resume, cleanup, ..
             }
-            | Terminator::SuspendingAsk {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingRead {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingCallClosure {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingStreamNext {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingStreamSend {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingAccept {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingChannelRecv {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingRemoteAsk {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingTaskAwait {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingSleep {
-                resume, cleanup, ..
-            }
-            // The suspending select's default suspend-return edge exits the
-            // function; resume (winner-scan join) + cleanup (abandon) are the
-            // in-CFG edges (resume == cleanup == the select join).
             | Terminator::SuspendingSelect {
                 resume, cleanup, ..
             } => {
@@ -24457,38 +24378,10 @@ fn validate_cross_block_split_consume(
             | Terminator::Select { next, .. }
             | Terminator::Join { next, .. } => vec![*next],
             // Suspend's default edge exits the function; resume + cleanup are
-            // the in-CFG successors.
+            // the in-CFG successors. The ten collapsed suspension carriers all
+            // lower to this bare `Suspend`; the suspending select shares the
+            // resume/cleanup edge shape.
             Terminator::Suspend {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingAsk {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingRead {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingCallClosure {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingStreamNext {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingStreamSend {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingAccept {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingChannelRecv {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingRemoteAsk {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingTaskAwait {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingSleep {
                 resume, cleanup, ..
             }
             | Terminator::SuspendingSelect {
@@ -25098,17 +24991,10 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
 pub fn terminator_is_suspend_carrier(term: &Terminator) -> bool {
     matches!(
         term,
+        // The ten pure-{resume,cleanup} carriers all collapse to the bare
+        // `Suspend`; `SuspendingScopeDeadline` and `SuspendingSelect` keep their
+        // distinct terminators (extra CFG edges) but are still suspend carriers.
         Terminator::Suspend { .. }
-            | Terminator::SuspendingAsk { .. }
-            | Terminator::SuspendingRead { .. }
-            | Terminator::SuspendingCallClosure { .. }
-            | Terminator::SuspendingStreamNext { .. }
-            | Terminator::SuspendingStreamSend { .. }
-            | Terminator::SuspendingAccept { .. }
-            | Terminator::SuspendingChannelRecv { .. }
-            | Terminator::SuspendingRemoteAsk { .. }
-            | Terminator::SuspendingTaskAwait { .. }
-            | Terminator::SuspendingSleep { .. }
             | Terminator::SuspendingScopeDeadline { .. }
             | Terminator::SuspendingSelect { .. }
     )
@@ -25224,56 +25110,15 @@ pub fn terminator_source_places(
         // `reply_dest` is the slot the reply is written into — a write, not
         // a source.
         Terminator::Ask { actor, value, .. } => vec![*actor, *value],
-        // `SuspendingAsk` mirrors `Ask`'s operand shape: `actor` + `value` are
-        // the reads; `result_dest`/`reply_dest`/`error_dest` are write slots
-        // bound on the resume edge. Kept a separate arm per the exhaustiveness
-        // fail-closed guarantee above.
-        Terminator::SuspendingAsk { actor, value, .. } => vec![*actor, *value],
-        // `SuspendingRead` reads `conn` (the read source); `result_dest` is a
-        // write slot bound on the resume edge, not a source.
-        Terminator::SuspendingRead { conn, .. } => vec![*conn],
-        // `SuspendingAccept` reads `listener` (the accept source); `result_dest`
-        // is a write slot bound on the resume edge, not a source.
-        Terminator::SuspendingAccept { listener, .. } => vec![*listener],
-        // `SuspendingStreamNext` reads `stream` (the recv source); `result_dest`
-        // is a write slot bound on the resume edge, not a source.
-        Terminator::SuspendingStreamNext { stream, .. } => vec![*stream],
-        // `SuspendingChannelRecv` reads `receiver` (the recv source); `result_dest`
-        // is a write slot bound on the resume edge, not a source.
-        Terminator::SuspendingChannelRecv { receiver, .. } => vec![*receiver],
-        // `SuspendingStreamSend` reads `sink` + `value` (the send sources).
-        Terminator::SuspendingStreamSend { sink, value, .. } => vec![*sink, *value],
-        // The suspendable-callee driver reads the closure pair (`callee`) and
-        // its forwarded `args`; `result_dest` is a write slot bound on the
-        // completion edge, not a source.
-        Terminator::SuspendingCallClosure { callee, args, .. } => {
-            let mut places = Vec::with_capacity(args.len() + 1);
-            places.push(*callee);
-            places.extend(args.iter().copied());
-            places
-        }
+        // The ten pure-{resume,cleanup} suspension carriers collapsed onto the
+        // bare `Suspend` arm above, which recovers their source operands from the
+        // `SuspendKind` side-table via `suspend_kind_source_places`.
         Terminator::RemoteAsk {
             actor,
             value,
             timeout_ms,
             ..
         } => vec![*actor, *value, *timeout_ms],
-        // `SuspendingRemoteAsk` mirrors `RemoteAsk`'s operand shape: `actor` +
-        // `value` + `timeout_ms` are the reads; the result/reply/error dests are
-        // write slots bound on the resume edge.
-        Terminator::SuspendingRemoteAsk {
-            actor,
-            value,
-            timeout_ms,
-            ..
-        } => vec![*actor, *value, *timeout_ms],
-        // `SuspendingTaskAwait` reads `scope` (the observer registration is
-        // scope-scoped) + `task` (the await source); `result_dest` is a write
-        // slot bound on the resume edge, not a source.
-        Terminator::SuspendingTaskAwait { scope, task, .. } => vec![*scope, *task],
-        // `SuspendingSleep` reads `duration_ms` (the deadline source); the resume
-        // edge binds nothing (`sleep` is unit).
-        Terminator::SuspendingSleep { duration_ms, .. } => vec![*duration_ms],
         // `SuspendingScopeDeadline` reads `scope` (the children it joins/cancels)
         // + `duration_ms` (the deadline source); the timeout body block is a CFG
         // edge, not an operand.
@@ -25532,25 +25377,12 @@ fn generator_yield_terminator_escapes(
         Terminator::Suspend { .. } => {
             suspend_kind.is_some_and(|k| suspend_kind_yield_escapes(k, local))
         }
-        // The handle-read / result-binding suspension carriers carry no
-        // generator-yielded `local` (only handle reads + write-back dests), so
-        // none escapes one. Mirrors the false arm of `suspend_kind_yield_escapes`.
-        Terminator::SuspendingRead { .. }
-        | Terminator::SuspendingAccept { .. }
-        | Terminator::SuspendingStreamNext { .. }
-        | Terminator::SuspendingChannelRecv { .. }
-        | Terminator::SuspendingCallClosure { .. }
-        | Terminator::SuspendingTaskAwait { .. }
-        | Terminator::SuspendingSleep { .. }
+        // The ten pure-{resume,cleanup} suspension carriers collapsed onto the
+        // bare `Suspend` arm above (their escape posture is recovered from the
+        // `SuspendKind` side-table via `suspend_kind_yield_escapes`).
         // `SuspendingScopeDeadline` carries `scope` + `duration_ms` — neither is
         // a generator-yielded `local`, so it never escapes one.
-        | Terminator::SuspendingScopeDeadline { .. } => false,
-        // The value-moving suspension carriers transfer their `value` payload
-        // into the message / channel / wire — escaping it if it refs `local`.
-        // Mirrors `suspend_kind_yield_escapes`' value-moving arm.
-        Terminator::SuspendingAsk { value, .. }
-        | Terminator::SuspendingStreamSend { value, .. }
-        | Terminator::SuspendingRemoteAsk { value, .. } => place_refs_local(*value, local),
+        Terminator::SuspendingScopeDeadline { .. } => false,
         // Lambda-actor construction: body/state-drop are static symbols,
         // but the capture env (when present) escapes into the actor's
         // heap-boxed state — a yielded value reachable through it must
@@ -28874,14 +28706,18 @@ fn derive_consumed_local_aggregate_member_bindings(
 /// cleanup-all-exits.
 #[allow(
     clippy::too_many_lines,
+    clippy::too_many_arguments,
     reason = "one IR-grounded free-count model: ctx-origin propagation + the three \
               drop-source tallies (inline consumer drops, source LIFO drops, \
               aggregate member drops) must share the same origin map; splitting \
-              them scatters the exactly-once accounting"
+              them scatters the exactly-once accounting. The suspend_kinds \
+              side-table is threaded alongside the blocks so the bare-Suspend \
+              escape-poison can recover a collapsed carrier's moved-out payload"
 )]
 #[must_use]
 fn detect_unproven_aggregate_handle_double_free(
     blocks: &[BasicBlock],
+    suspend_kinds: &HashMap<u32, SuspendKind>,
     owned_locals: &[(BindingId, String, ResolvedTy)],
     binding_locals: &HashMap<BindingId, Place>,
     local_tys: &[ResolvedTy],
@@ -29175,7 +29011,9 @@ fn detect_unproven_aggregate_handle_double_free(
                 poison(place, &mut poisoned);
             }
         }
-        for place in terminator_escape_places(&block.terminator, local_tys) {
+        for place in
+            terminator_escape_places(&block.terminator, suspend_kinds.get(&block.id), local_tys)
+        {
             poison(place, &mut poisoned);
         }
     }
@@ -29330,13 +29168,43 @@ fn option_payload_ty(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 /// LambdaActorHandle/CancellationToken) and any aggregate that may carry one —
 /// stays poisoned: the container-push / aggregate-store / storing cross-call
 /// double-free shapes the fixpoint cannot model must keep failing closed.
+/// Owned values a collapsed suspension carrier moves OUT across the suspend,
+/// recovered from the [`SuspendKind`] side-table — the bare-[`Terminator::Suspend`]
+/// analogue of the per-carrier escape arms in [`terminator_escape_places`].
+/// MEMORY-SAFETY: the value-moving carriers (`Ask`/`StreamSend` move `value`
+/// into the message/channel queue; `RemoteAsk` serialises `value` onto the wire;
+/// `CallClosure` forwards `args` by value into the callee coroutine) MUST be
+/// poisoned, or a source-side drop double-frees an owned-handle payload the
+/// message/channel/callee also releases. The read-back carriers
+/// (`Read`/`Accept`/`StreamNext`/`ChannelRecv`/`TaskAwait`/`Sleep`) move no
+/// owned value into a sink the fixpoint cannot model, so they escape nothing.
+#[must_use]
+fn suspend_kind_escape_places(kind: &SuspendKind) -> Vec<Place> {
+    match kind {
+        SuspendKind::Ask { value, .. }
+        | SuspendKind::StreamSend { value, .. }
+        | SuspendKind::RemoteAsk { value, .. } => vec![*value],
+        SuspendKind::CallClosure { args, .. } => args.clone(),
+        SuspendKind::Read { .. }
+        | SuspendKind::Accept { .. }
+        | SuspendKind::StreamNext { .. }
+        | SuspendKind::ChannelRecv { .. }
+        | SuspendKind::TaskAwait { .. }
+        | SuspendKind::Sleep { .. } => Vec::new(),
+    }
+}
+
 #[allow(
     clippy::match_same_arms,
     reason = "Yield and the actor Send/Ask/RemoteAsk payloads share an escape \
               shape but are kept as separate arms so the deliberate exclusion \
               of the borrowed actor-pid / timeout operands stays explicit"
 )]
-fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<Place> {
+fn terminator_escape_places(
+    term: &Terminator,
+    suspend_kind: Option<&SuspendKind>,
+    local_tys: &[ResolvedTy],
+) -> Vec<Place> {
     let arg_is_borrowed =
         |builtin: Option<hew_types::runtime_call::RuntimeCallFamily>, place: &Place| -> bool {
             let arg_ty = base_local(*place).and_then(|l| local_tys.get(l as usize));
@@ -29388,60 +29256,27 @@ fn terminator_escape_places(term: &Terminator, local_tys: &[ResolvedTy]) -> Vec<
         // payload into its actor message queue exactly as the `select`
         // ActorAsk arms above do — poison each so the escape gate refuses
         // or poisons an owned-handle payload identically.
-        Terminator::Join { branches, .. } => {
-            branches.iter().map(|branch| branch.value).collect()
+        Terminator::Join { branches, .. } => branches.iter().map(|branch| branch.value).collect(),
+        // The ten pure-{resume,cleanup} suspension carriers collapsed onto the
+        // bare `Suspend` arm below, which recovers their escaping payload from the
+        // `SuspendKind` side-table via `suspend_kind_escape_places` (the
+        // value-moving Ask/StreamSend/RemoteAsk/CallClosure carriers poison their
+        // payload; the read-back carriers poison nothing — the double-free guard).
+        // `SuspendingScopeDeadline` carries only a `scope` handle + a duration
+        // scalar, moving no owned value into an un-modellable sink.
+        Terminator::SuspendingScopeDeadline { .. } => Vec::new(),
+        // Control-flow / non-transferring terminators escape nothing. A bare
+        // `Suspend` with a side-table entry is a collapsed carrier — poison its
+        // moved-out payload; a `Suspend` with no entry is a generator / synthetic
+        // suspend whose value channel is the frame out-pointer (escapes nothing).
+        Terminator::Suspend { .. } => {
+            suspend_kind.map_or_else(Vec::new, suspend_kind_escape_places)
         }
-        // F-1: a SUSPENDABLE `await peer.method(owned)` / `await sink.send(owned)`
-        // transfers its `value` payload into the message / channel queue exactly
-        // as the blocking `Ask`/`Send` above do. Before this arm both fell into a
-        // `_ => Vec::new()` catch-all and were NOT poisoned, so a suspendable
-        // handler whose payload was an owned handle double-freed (the source
-        // body-end drop plus the message consumption both released it). Poison the
-        // payload so the escape gate refuses-or-poisons it like the blocking forms.
-        Terminator::SuspendingAsk { value, .. }
-        | Terminator::SuspendingStreamSend { value, .. }
-        // A SUSPENDABLE cross-node `await remote.ask(owned)` transfers its
-        // `value` payload onto the wire (serialized into the ask envelope)
-        // exactly as the blocking `RemoteAsk` above does — poison it so the
-        // escape gate refuses-or-poisons the owned payload identically.
-        | Terminator::SuspendingRemoteAsk { value, .. } => vec![*value],
-        // A SUSPENDABLE `await closure(args...)` forwards `args` BY VALUE into the
-        // callee coroutine, exactly as the non-suspending [`Instr::CallClosure`]
-        // does (`instr_escape_places` poisons its `args`). An owned-handle arg
-        // therefore escapes to the callee while the source-side drop is still
-        // live — the same double-free family as the suspending ask/send above —
-        // so the forwarded `args` must be poisoned identically. The closure pair
-        // (`callee`) is a borrowed read, not a transfer, so it is excluded.
-        Terminator::SuspendingCallClosure { args, .. } => args.clone(),
-        // The remaining suspending carriers transfer no owned value OUT: their
-        // operands are read-back result slots (`SuspendingRead`/`Accept`/
-        // `StreamNext`/`ChannelRecv`), never a payload moved into a sink the
-        // fixpoint cannot model. They were already empty under the old catch-all;
-        // they stay empty here EXPLICITLY so the match is exhaustive and a future
-        // terminator variant forces a compile-time escape-poison decision instead
-        // of silently slipping through unpoisoned.
-        Terminator::SuspendingRead { .. }
-        | Terminator::SuspendingAccept { .. }
-        | Terminator::SuspendingStreamNext { .. }
-        | Terminator::SuspendingChannelRecv { .. }
-        // `SuspendingTaskAwait` BORROWS `task` (the scope-join owns its free) +
-        // `scope` for the result read-back; `SuspendingSleep` /
-        // `SuspendingScopeDeadline` carry only a duration scalar + the scope
-        // handle. None moves an owned value into a sink the fixpoint cannot
-        // model — the linear `await t` consume is recorded by the
-        // `MirStatement::Use{Consume}` in lowering, not by terminator-escape —
-        // so they poison nothing here. Kept explicit so a future variant forces
-        // a compile-time escape-poison decision.
-        | Terminator::SuspendingTaskAwait { .. }
-        | Terminator::SuspendingSleep { .. }
-        | Terminator::SuspendingScopeDeadline { .. } => Vec::new(),
-        // Control-flow / non-transferring terminators escape nothing.
         Terminator::Return
         | Terminator::Goto { .. }
         | Terminator::Branch { .. }
         | Terminator::Trap { .. }
-        | Terminator::MakeGenerator { .. }
-        | Terminator::Suspend { .. } => Vec::new(),
+        | Terminator::MakeGenerator { .. } => Vec::new(),
         // Lambda-actor construction: body_fn and state_drop_fn are static
         // symbols and the `dest` handle slot is the WRITE — but the capture
         // env (when present) transfers into the actor's heap-boxed state,
@@ -30213,9 +30048,22 @@ fn derive_closure_pair_drop_allowed(
             }
         }
         match &block.terminator {
-            Terminator::SuspendingCallClosure { args, .. } => {
-                for p in args {
-                    mark(*p, &mut aliased);
+            // The suspendable-callee driver (now a bare `Suspend` carrying a
+            // `SuspendKind::CallClosure`) marks only its forwarded `args` as
+            // aliased — the closure pair (`callee`) is a borrowed read, NOT
+            // aliased out, so it stays drop-eligible. Folding it into the `other`
+            // arm below would over-mark `callee` (which `terminator_source_places`
+            // reports as a CallClosure source), wrongly excluding the pair.
+            Terminator::Suspend { .. }
+                if matches!(
+                    suspend_kinds.get(&block.id),
+                    Some(SuspendKind::CallClosure { .. })
+                ) =>
+            {
+                if let Some(SuspendKind::CallClosure { args, .. }) = suspend_kinds.get(&block.id) {
+                    for p in args {
+                        mark(*p, &mut aliased);
+                    }
                 }
             }
             other => {
@@ -31487,87 +31335,6 @@ fn enumerate_exits(
             // site. Function-wide DropPlan is intentionally empty, mirroring
             // `ExitPath::Yield`/`Goto`.
             Terminator::Suspend {
-                resume, cleanup, ..
-            }
-            // `SuspendingAsk` is a suspend point with the identical drop posture:
-            // live state (including the reply channel) is preserved in the coro
-            // frame across the suspend, dropped exactly once by the `cleanup`
-            // outline on `coro.destroy`, never at the suspend site.
-            | Terminator::SuspendingAsk {
-                resume, cleanup, ..
-            }
-            // `SuspendingRead` has the identical drop posture: the read slot +
-            // any live-across-suspend state ride the coro frame, dropped exactly
-            // once by the `cleanup` outline on `coro.destroy` (the abandon edge
-            // additionally cancels + frees the read slot), never at the suspend
-            // site.
-            | Terminator::SuspendingRead {
-                resume, cleanup, ..
-            }
-            // The suspendable-callee driver is a suspend point with the
-            // identical drop posture: live state (the child handle + driver
-            // reply channel) rides the coro frame across the park, dropped
-            // exactly once by the `cleanup` outline on `coro.destroy` (the
-            // abandon edge additionally destroys the child handle + frees the
-            // channel), never at the suspend site.
-            | Terminator::SuspendingCallClosure {
-                resume, cleanup, ..
-            }
-            // `SuspendingStreamNext` has the identical drop posture: the read
-            // slot + the live-across-suspend stream handle ride the coro frame,
-            // dropped exactly once by the `cleanup` outline on `coro.destroy`
-            // (the abandon edge additionally detaches the channel-await
-            // registration + cancels/frees the slot), never at the suspend site.
-            | Terminator::SuspendingStreamNext {
-                resume, cleanup, ..
-            }
-            // `SuspendingStreamSend` has the identical drop posture: the read
-            // slot + the live-across-suspend sink handle ride the coro frame,
-            // dropped exactly once by the `cleanup` outline (the abandon edge
-            // detaches the channel-await registration, dropping the pending
-            // item, + cancels/frees the slot), never at the suspend site.
-            | Terminator::SuspendingStreamSend {
-                resume, cleanup, ..
-            }
-            // `SuspendingAccept` has the identical drop posture: the read slot +
-            // the live-across-suspend listener handle ride the coro frame, dropped
-            // exactly once by the `cleanup` outline on `coro.destroy` (the abandon
-            // edge additionally cancels + frees the read slot), never at the
-            // suspend site.
-            | Terminator::SuspendingAccept {
-                resume, cleanup, ..
-            }
-            // `SuspendingChannelRecv` has the identical drop posture: the read
-            // slot + the live-across-suspend receiver handle ride the coro frame,
-            // dropped exactly once by the `cleanup` outline on `coro.destroy`
-            // (the abandon edge additionally detaches the channel-await
-            // registration + cancels/frees the slot), never at the suspend site.
-            | Terminator::SuspendingChannelRecv {
-                resume, cleanup, ..
-            }
-            // `SuspendingRemoteAsk` has the identical drop posture: the pending
-            // reply registration + the live-across-suspend state ride the coro
-            // frame, dropped exactly once by the `cleanup` outline on
-            // `coro.destroy` (the abandon edge additionally cancels the pending
-            // reply entry), never at the suspend site.
-            | Terminator::SuspendingRemoteAsk {
-                resume, cleanup, ..
-            }
-            // `SuspendingTaskAwait` has the identical drop posture: the read slot
-            // + the live-across-suspend child task (borrowed; scope-owned) ride
-            // the coro frame, dropped exactly once by the `cleanup` outline on
-            // `coro.destroy` (the abandon edge additionally detaches the
-            // completion observer + cancels/frees the slot), never at the suspend
-            // site.
-            | Terminator::SuspendingTaskAwait {
-                resume, cleanup, ..
-            }
-            // `SuspendingSleep` has the identical drop posture: the live-across-
-            // suspend frame state rides the coro frame, dropped exactly once by
-            // the `cleanup` outline on `coro.destroy` (the abandon edge
-            // additionally cancels the scheduled deadline so a racing fire drops
-            // its wake), never at the suspend site.
-            | Terminator::SuspendingSleep {
                 resume, cleanup, ..
             }
             // `SuspendingScopeDeadline` has the same suspend drop posture: the
@@ -34426,6 +34193,7 @@ mod w3053_aggregate_handle_double_free_gate {
         let composite_drop_allowed = HashSet::new();
         let findings = detect_unproven_aggregate_handle_double_free(
             &[block(instrs)],
+            &std::collections::HashMap::new(),
             &owned,
             &binding_locals,
             &local_tys,
@@ -34478,6 +34246,7 @@ mod w3053_aggregate_handle_double_free_gate {
         composite_drop_allowed.insert(pair);
         let findings = detect_unproven_aggregate_handle_double_free(
             &[block(instrs)],
+            &std::collections::HashMap::new(),
             &owned,
             &binding_locals,
             &local_tys,
@@ -34545,6 +34314,7 @@ mod w3053_aggregate_handle_double_free_gate {
         let composite_drop_allowed = HashSet::new();
         let findings = detect_unproven_aggregate_handle_double_free(
             &[block(instrs)],
+            &std::collections::HashMap::new(),
             &owned,
             &binding_locals,
             &local_tys,
@@ -34598,6 +34368,7 @@ mod w3053_aggregate_handle_double_free_gate {
         local_tys[1] = generator_ty();
         let findings = detect_unproven_aggregate_handle_double_free(
             &[call_block("use_gen", vec![Place::Local(1)])],
+            &std::collections::HashMap::new(),
             &owned,
             &binding_locals,
             &local_tys,
@@ -34627,6 +34398,7 @@ mod w3053_aggregate_handle_double_free_gate {
         local_tys[1] = localpid_ty();
         let findings = detect_unproven_aggregate_handle_double_free(
             &[call_block("use_pid", vec![Place::Local(1)])],
+            &std::collections::HashMap::new(),
             &owned,
             &binding_locals,
             &local_tys,
@@ -34656,6 +34428,7 @@ mod w3053_aggregate_handle_double_free_gate {
         local_tys[1] = localpid_ty();
         let findings = detect_unproven_aggregate_handle_double_free(
             &[call_block("hew_tcp_attach_local", vec![Place::Local(1)])],
+            &std::collections::HashMap::new(),
             &owned,
             &binding_locals,
             &local_tys,
@@ -34857,24 +34630,32 @@ mod f1_suspending_escape_poison {
         ResolvedTy::named_builtin("Sink", BuiltinType::Sink, vec![ResolvedTy::String])
     }
 
+    // A collapsed suspension carrier is a bare `Suspend` whose payload lives in
+    // the side-table; the escape-poison reads it via the `Option<&SuspendKind>`.
+    fn suspend() -> Terminator {
+        Terminator::Suspend {
+            resume: 1,
+            cleanup: 2,
+            is_final: false,
+        }
+    }
+
     #[test]
     fn suspending_ask_poisons_its_owned_payload() {
         let value = Place::Local(3);
-        let term = Terminator::SuspendingAsk {
+        let kind = SuspendKind::Ask {
             actor: Place::Local(1),
             msg_type: 0,
             value,
             result_dest: Place::Local(4),
             reply_dest: Place::Local(5),
             error_dest: Place::Local(6),
-            resume: 1,
-            cleanup: 2,
         };
         let mut local_tys = vec![ResolvedTy::I64; 7];
         local_tys[3] = sink_string_ty();
         assert!(
-            terminator_escape_places(&term, &local_tys).contains(&value),
-            "SuspendingAsk.value (an owned Sink payload) must escape-poison so it \
+            terminator_escape_places(&suspend(), Some(&kind), &local_tys).contains(&value),
+            "Ask.value (an owned Sink payload) must escape-poison so it \
              is excluded from the source body-end drop — else it double-frees"
         );
     }
@@ -34882,18 +34663,16 @@ mod f1_suspending_escape_poison {
     #[test]
     fn suspending_stream_send_poisons_its_owned_payload() {
         let value = Place::Local(2);
-        let term = Terminator::SuspendingStreamSend {
+        let kind = SuspendKind::StreamSend {
             sink: Place::Local(1),
             value,
-            resume: 1,
-            cleanup: 2,
         };
         let mut local_tys = vec![ResolvedTy::I64; 3];
         local_tys[2] = sink_string_ty();
         assert_eq!(
-            terminator_escape_places(&term, &local_tys),
+            terminator_escape_places(&suspend(), Some(&kind), &local_tys),
             vec![value],
-            "SuspendingStreamSend.value must escape-poison like the blocking Send"
+            "StreamSend.value must escape-poison like the blocking Send"
         );
     }
 
@@ -34912,19 +34691,17 @@ mod f1_suspending_escape_poison {
             error_dest: Place::Local(6),
             next: 1,
         };
-        let suspending = Terminator::SuspendingAsk {
+        let kind = SuspendKind::Ask {
             actor: Place::Local(1),
             msg_type: 0,
             value,
             result_dest: Place::Local(4),
             reply_dest: Place::Local(5),
             error_dest: Place::Local(6),
-            resume: 1,
-            cleanup: 2,
         };
         assert_eq!(
-            terminator_escape_places(&blocking, &local_tys),
-            terminator_escape_places(&suspending, &local_tys),
+            terminator_escape_places(&blocking, None, &local_tys),
+            terminator_escape_places(&suspend(), Some(&kind), &local_tys),
             "the suspendable ask must poison the same payload set as the blocking ask"
         );
     }
@@ -34933,26 +34710,22 @@ mod f1_suspending_escape_poison {
     fn non_payload_suspending_carriers_escape_nothing() {
         // The read-back carriers transfer no owned value OUT; they must remain
         // empty (no over-poisoning that would refuse legitimate code).
-        let read = Terminator::SuspendingRead {
+        let read = SuspendKind::Read {
             conn: Place::Local(1),
             result_dest: Place::Local(2),
             deadline_result_dest: None,
             error_dest: None,
             to_string: false,
-            resume: 1,
-            cleanup: 2,
         };
-        let next = Terminator::SuspendingStreamNext {
+        let next = SuspendKind::StreamNext {
             stream: Place::Local(1),
             result_dest: Place::Local(2),
             elem_ty: ResolvedTy::Bytes,
             deadline_result_dest: None,
             error_dest: None,
-            resume: 1,
-            cleanup: 2,
         };
-        assert!(terminator_escape_places(&read, &[]).is_empty());
-        assert!(terminator_escape_places(&next, &[]).is_empty());
+        assert!(terminator_escape_places(&suspend(), Some(&read), &[]).is_empty());
+        assert!(terminator_escape_places(&suspend(), Some(&next), &[]).is_empty());
     }
 
     #[test]
@@ -34965,15 +34738,13 @@ mod f1_suspending_escape_poison {
         let callee = Place::Local(1);
         let arg0 = Place::Local(2);
         let arg1 = Place::Local(3);
-        let term = Terminator::SuspendingCallClosure {
+        let kind = SuspendKind::CallClosure {
             callee,
             args: vec![arg0, arg1],
             ret_ty: ResolvedTy::Unit,
             result_dest: None,
-            resume: 1,
-            cleanup: 2,
         };
-        let escaped = terminator_escape_places(&term, &[]);
+        let escaped = terminator_escape_places(&suspend(), Some(&kind), &[]);
         assert_eq!(
             escaped,
             vec![arg0, arg1],

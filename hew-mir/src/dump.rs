@@ -335,145 +335,6 @@ fn render_terminator(term: &Terminator) -> String {
             render_place(reply_dest),
             render_place(error_dest),
         ),
-        Terminator::SuspendingAsk {
-            actor,
-            msg_type,
-            value,
-            result_dest,
-            reply_dest,
-            error_dest,
-            resume,
-            cleanup,
-        } => format!(
-            "{} = suspend.ask {}[msg={msg_type}] {} reply={} err={} -> resume=bb{resume} cleanup=bb{cleanup}",
-            render_place(result_dest),
-            render_place(actor),
-            render_place(value),
-            render_place(reply_dest),
-            render_place(error_dest),
-        ),
-        Terminator::SuspendingRead {
-            conn,
-            result_dest,
-            deadline_result_dest,
-            error_dest,
-            to_string,
-            resume,
-            cleanup,
-        } => {
-            let deadline = deadline_result_dest
-                .as_ref()
-                .map(|p| format!(" deadline_result={}", render_place(p)))
-                .unwrap_or_default();
-            let err = error_dest
-                .as_ref()
-                .map(|p| format!(" err={}", render_place(p)))
-                .unwrap_or_default();
-            format!(
-                "{} = suspend.read {} to_string={to_string}{deadline}{err} -> resume=bb{resume} cleanup=bb{cleanup}",
-                render_place(result_dest),
-                render_place(conn),
-            )
-        }
-        Terminator::SuspendingAccept {
-            listener,
-            result_dest,
-            deadline_result_dest,
-            error_dest,
-            resume,
-            cleanup,
-        } => {
-            let deadline = deadline_result_dest
-                .as_ref()
-                .map(|p| format!(" deadline_result={}", render_place(p)))
-                .unwrap_or_default();
-            let err = error_dest
-                .as_ref()
-                .map(|p| format!(" err={}", render_place(p)))
-                .unwrap_or_default();
-            format!(
-                "{} = suspend.accept {}{deadline}{err} -> resume=bb{resume} cleanup=bb{cleanup}",
-                render_place(result_dest),
-                render_place(listener),
-            )
-        }
-        Terminator::SuspendingCallClosure {
-            callee,
-            args,
-            ret_ty,
-            result_dest,
-            resume,
-            cleanup,
-        } => {
-            let arg_str = args.iter().map(render_place).collect::<Vec<_>>().join(", ");
-            let dest_str = result_dest
-                .as_ref()
-                .map(|p| format!("{} = ", render_place(p)))
-                .unwrap_or_default();
-            format!(
-                "{dest_str}suspend.call_closure {}({arg_str}) ret_ty={} -> resume=bb{resume} cleanup=bb{cleanup}",
-                render_place(callee),
-                ret_ty.user_facing(),
-            )
-        }
-        Terminator::SuspendingStreamNext {
-            stream,
-            result_dest,
-            elem_ty,
-            deadline_result_dest,
-            error_dest,
-            resume,
-            cleanup,
-        } => {
-            let deadline = deadline_result_dest
-                .as_ref()
-                .map(|p| format!(" deadline_result={}", render_place(p)))
-                .unwrap_or_default();
-            let err = error_dest
-                .as_ref()
-                .map(|p| format!(" err={}", render_place(p)))
-                .unwrap_or_default();
-            format!(
-                "{} = suspend.stream_next {} elem_ty={}{deadline}{err} -> resume=bb{resume} cleanup=bb{cleanup}",
-                render_place(result_dest),
-                render_place(stream),
-                elem_ty.user_facing(),
-            )
-        }
-        Terminator::SuspendingStreamSend {
-            sink,
-            value,
-            resume,
-            cleanup,
-        } => format!(
-            "suspend.stream_send {} {} -> resume=bb{resume} cleanup=bb{cleanup}",
-            render_place(sink),
-            render_place(value),
-        ),
-        Terminator::SuspendingChannelRecv {
-            receiver,
-            result_dest,
-            elem_ty,
-            deadline_result_dest,
-            error_dest,
-            resume,
-            cleanup,
-        } => {
-            let deadline = deadline_result_dest
-                .as_ref()
-                .map(|p| format!(" deadline_result={}", render_place(p)))
-                .unwrap_or_default();
-            let err = error_dest
-                .as_ref()
-                .map(|p| format!(" err={}", render_place(p)))
-                .unwrap_or_default();
-            format!(
-                "{} = suspend.channel_recv {} elem_ty={}{deadline}{err} -> resume=bb{resume} cleanup=bb{cleanup}",
-                render_place(result_dest),
-                render_place(receiver),
-                elem_ty.user_facing(),
-            )
-        }
         Terminator::RemoteAsk {
             actor,
             msg_type,
@@ -486,27 +347,6 @@ fn render_terminator(term: &Terminator) -> String {
             next,
         } => format!(
             "{} = remote_ask {}[msg={msg_type}] {} timeout={} reply={} err={} reply_ty={} -> bb{next}",
-            render_place(result_dest),
-            render_place(actor),
-            render_place(value),
-            render_place(timeout_ms),
-            render_place(reply_dest),
-            render_place(error_dest),
-            reply_ty.user_facing(),
-        ),
-        Terminator::SuspendingRemoteAsk {
-            actor,
-            msg_type,
-            value,
-            timeout_ms,
-            result_dest,
-            reply_dest,
-            error_dest,
-            reply_ty,
-            resume,
-            cleanup,
-        } => format!(
-            "{} = suspend.remote_ask {}[msg={msg_type}] {} timeout={} reply={} err={} reply_ty={} -> resume=bb{resume} cleanup=bb{cleanup}",
             render_place(result_dest),
             render_place(actor),
             render_place(value),
@@ -547,31 +387,6 @@ fn render_terminator(term: &Terminator) -> String {
             cleanup,
             is_final,
         } => format!("suspend is_final={is_final} -> resume=bb{resume} cleanup=bb{cleanup}"),
-        Terminator::SuspendingTaskAwait {
-            scope,
-            task,
-            result_dest,
-            resume,
-            cleanup,
-        } => {
-            let dest = result_dest
-                .as_ref()
-                .map(|p| format!("{} = ", render_place(p)))
-                .unwrap_or_default();
-            format!(
-                "{dest}suspend.task_await scope={} task={} -> resume=bb{resume} cleanup=bb{cleanup}",
-                render_place(scope),
-                render_place(task),
-            )
-        }
-        Terminator::SuspendingSleep {
-            duration_ms,
-            resume,
-            cleanup,
-        } => format!(
-            "suspend.sleep {} -> resume=bb{resume} cleanup=bb{cleanup}",
-            render_place(duration_ms),
-        ),
         Terminator::SuspendingScopeDeadline {
             scope,
             duration_ms,

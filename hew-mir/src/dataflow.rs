@@ -446,38 +446,11 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
                 emit_edge(*cleanup);
             }
             // Suspend's default edge exits the function (returns to the
-            // executor); resume + cleanup are the in-CFG successor edges.
+            // executor); resume + cleanup are the in-CFG successor edges. The ten
+            // collapsed suspension carriers all lower to this bare `Suspend`
+            // (their distinguishing payload lives in the SuspendKind side-table,
+            // which carries no CFG edge).
             Terminator::Suspend {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingAsk {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingRead {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingCallClosure {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingStreamNext {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingStreamSend {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingAccept {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingChannelRecv {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingRemoteAsk {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingTaskAwait {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingSleep {
                 resume, cleanup, ..
             } => {
                 emit_edge(*resume);
@@ -538,38 +511,10 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
             succs
         }
         // Suspend's default edge exits the function; resume + cleanup are the
-        // in-CFG successors.
+        // in-CFG successors. The ten collapsed suspension carriers all lower to
+        // this bare `Suspend` (their payload lives in the SuspendKind side-table,
+        // which carries no CFG edge).
         Terminator::Suspend {
-            resume, cleanup, ..
-        }
-        | Terminator::SuspendingAsk {
-            resume, cleanup, ..
-        }
-        | Terminator::SuspendingRead {
-            resume, cleanup, ..
-        }
-        | Terminator::SuspendingCallClosure {
-            resume, cleanup, ..
-        }
-        | Terminator::SuspendingStreamNext {
-            resume, cleanup, ..
-        }
-        | Terminator::SuspendingStreamSend {
-            resume, cleanup, ..
-        }
-        | Terminator::SuspendingAccept {
-            resume, cleanup, ..
-        }
-        | Terminator::SuspendingChannelRecv {
-            resume, cleanup, ..
-        }
-        | Terminator::SuspendingRemoteAsk {
-            resume, cleanup, ..
-        }
-        | Terminator::SuspendingTaskAwait {
-            resume, cleanup, ..
-        }
-        | Terminator::SuspendingSleep {
             resume, cleanup, ..
         } => vec![*resume, *cleanup],
         // The scope-deadline ramp's timeout-body block (deadline edge) is a real

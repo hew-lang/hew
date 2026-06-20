@@ -2,6 +2,8 @@
 
 import std::fs;
 
+import std::net;
+
 import std::stream;
 
 import std::testing;
@@ -233,52 +235,52 @@ fn test_stream_try_to_file_send_close_and_try_from_file() {
         Err(_) => panic("expected try_to_file to succeed"),
     }
     match stream.try_from_file(file_path) {
-        Ok(_) => {},  // stream handle dropped; Ok(file) binding deferred to v0.5.1
+        Ok(_) => {}, // stream handle dropped; Ok(file) binding deferred to v0.5.1
         Err(_) => panic("expected try_from_file to succeed on the written file"),
     }
     cleanup_file(file_path);
 }
 
-// ── IoError network variants ──────────────────────────────────────────
+// ── NetError variants ─────────────────────────────────────────────────
 #[test]
-fn test_io_error_from_errno_network_variants() {
+fn test_net_error_from_errno_network_variants() {
     // Let-bind each call before matching: direct `match f(x) { ... }` on
     // multiple enum-returning calls in one function body triggers a codegen
     // hang at 2e6fac15 (tracked v0.5.1 under TWO-FROM-FILE-GAP / enum drop).
     //
     // ECONNREFUSED: Linux=111, macOS=61
-    let err111 = fs.io_error_from_errno(111);
+    let err111 = net.net_error_from_errno(111);
     match err111 {
-        IoError::ConnectionRefused(code) => testing.assert_eq(code, 111),
-        _ => panic("expected IoError::ConnectionRefused for errno 111"),
+        NetError::ConnectionRefused(code) => testing.assert_eq(code, 111),
+        _ => panic("expected NetError::ConnectionRefused for errno 111"),
     }
-    let err61 = fs.io_error_from_errno(61);
+    let err61 = net.net_error_from_errno(61);
     match err61 {
-        IoError::ConnectionRefused(code) => testing.assert_eq(code, 61),
-        _ => panic("expected IoError::ConnectionRefused for errno 61"),
+        NetError::ConnectionRefused(code) => testing.assert_eq(code, 61),
+        _ => panic("expected NetError::ConnectionRefused for errno 61"),
     }
     // EADDRINUSE: Linux=98, macOS=48
-    let err98 = fs.io_error_from_errno(98);
+    let err98 = net.net_error_from_errno(98);
     match err98 {
-        IoError::AddressInUse(code) => testing.assert_eq(code, 98),
-        _ => panic("expected IoError::AddressInUse for errno 98"),
+        NetError::AddressInUse(code) => testing.assert_eq(code, 98),
+        _ => panic("expected NetError::AddressInUse for errno 98"),
     }
     // ETIMEDOUT: Linux=110, macOS=60
-    let err110 = fs.io_error_from_errno(110);
+    let err110 = net.net_error_from_errno(110);
     match err110 {
-        IoError::TimedOut(code) => testing.assert_eq(code, 110),
-        _ => panic("expected IoError::TimedOut for errno 110"),
+        NetError::TimedOut(code) => testing.assert_eq(code, 110),
+        _ => panic("expected NetError::TimedOut for errno 110"),
     }
     // EADDRNOTAVAIL: Linux=99, macOS=49
-    let err99 = fs.io_error_from_errno(99);
+    let err99 = net.net_error_from_errno(99);
     match err99 {
-        IoError::AddressNotAvailable(code) => testing.assert_eq(code, 99),
-        _ => panic("expected IoError::AddressNotAvailable for errno 99"),
+        NetError::AddressNotAvailable(code) => testing.assert_eq(code, 99),
+        _ => panic("expected NetError::AddressNotAvailable for errno 99"),
     }
 }
 
 #[test]
-fn test_io_error_message_formats_all_variants() {
+fn test_io_error_message_formats_fs_variants() {
     // Let-bind each call: direct `f(Enum::Variant(...))` on multiple string-
     // returning calls in one function body triggers a codegen hang at 2e6fac15
     // (tracked v0.5.1 under enum drop multi-call pattern).
@@ -288,14 +290,25 @@ fn test_io_error_message_formats_all_variants() {
     testing.assert_eq_str(m2, "PermissionDenied(13)");
     let m3 = fs.io_error_message(IoError::AlreadyExists(17));
     testing.assert_eq_str(m3, "AlreadyExists(17)");
-    let m4 = fs.io_error_message(IoError::ConnectionRefused(111));
-    testing.assert_eq_str(m4, "ConnectionRefused(111)");
-    let m5 = fs.io_error_message(IoError::AddressInUse(98));
-    testing.assert_eq_str(m5, "AddressInUse(98)");
-    let m6 = fs.io_error_message(IoError::TimedOut(110));
-    testing.assert_eq_str(m6, "TimedOut(110)");
-    let m7 = fs.io_error_message(IoError::AddressNotAvailable(99));
-    testing.assert_eq_str(m7, "AddressNotAvailable(99)");
-    let m8 = fs.io_error_message(IoError::Other(0));
-    testing.assert_eq_str(m8, "Other(0)");
+    let m4 = fs.io_error_message(IoError::TimedOut(110));
+    testing.assert_eq_str(m4, "TimedOut(110)");
+    let m5 = fs.io_error_message(IoError::Other(0));
+    testing.assert_eq_str(m5, "Other(0)");
+}
+
+#[test]
+fn test_net_error_message_formats_net_variants() {
+    // Let-bind each call: direct `f(Enum::Variant(...))` on multiple string-
+    // returning calls in one function body triggers a codegen hang at 2e6fac15
+    // (tracked v0.5.1 under enum drop multi-call pattern).
+    let m1 = net.net_error_message(NetError::ConnectionRefused(111));
+    testing.assert_eq_str(m1, "ConnectionRefused(111)");
+    let m2 = net.net_error_message(NetError::AddressInUse(98));
+    testing.assert_eq_str(m2, "AddressInUse(98)");
+    let m3 = net.net_error_message(NetError::TimedOut(110));
+    testing.assert_eq_str(m3, "TimedOut(110)");
+    let m4 = net.net_error_message(NetError::AddressNotAvailable(99));
+    testing.assert_eq_str(m4, "AddressNotAvailable(99)");
+    let m5 = net.net_error_message(NetError::Other(0));
+    testing.assert_eq_str(m5, "Other(0)");
 }

@@ -66,6 +66,7 @@ fn empty_pipeline(raw_mir: Vec<RawMirFunction>) -> IrPipeline {
         checked_mir: vec![],
         elaborated_mir: vec![],
         diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
         record_layouts: vec![],
         actor_layouts: vec![],

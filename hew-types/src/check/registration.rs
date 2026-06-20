@@ -4,6 +4,7 @@
 )]
 use super::*;
 use crate::BuiltinType;
+use hew_parser::ast::{WireFieldMeta, WireMetadata};
 
 /// Whether a stdlib Hew-source registration publishes its types' bare names
 /// into the importer's scope, passed to `register_stdlib_hew_items`.
@@ -1793,6 +1794,7 @@ impl Checker {
         let mut fields = HashMap::new();
         let mut field_order: Vec<String> = Vec::new();
         let mut variants = HashMap::new();
+        let mut variant_order = Vec::new();
         let mut hole_vars = Vec::new();
         let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
@@ -1836,6 +1838,7 @@ impl Checker {
                     fields.insert(name.clone(), field_ty);
                 }
                 TypeBodyItem::Variant(variant) => {
+                    variant_order.push(variant.name.clone());
                     let return_type = Ty::Named {
                         builtin: None,
                         name: td.name.clone(),
@@ -1956,7 +1959,7 @@ impl Checker {
 
         // If this is a wire type, register encode/decode/to_json/from_json/to_yaml/from_yaml methods
         if let Some(ref wire) = td.wire {
-            self.register_wire_methods(&td.name);
+            self.register_wire_methods(&td.name, wire, &variant_order);
             self.validate_wire_version_constraints(&td.name, wire);
         }
 
@@ -2085,7 +2088,12 @@ impl Checker {
     ///
     /// - Wire structs expose binary + JSON/YAML helpers.
     /// - Wire enums expose JSON/YAML helpers.
-    pub(super) fn register_wire_methods(&mut self, type_name: &str) {
+    pub(super) fn register_wire_methods(
+        &mut self,
+        type_name: &str,
+        wire: &WireMetadata,
+        variant_order: &[String],
+    ) {
         let self_ty = Ty::Named {
             builtin: None,
             name: type_name.to_string(),
@@ -2093,10 +2101,31 @@ impl Checker {
         };
         let bytes_ty = Ty::Bytes;
 
-        let Some(type_def) = self.type_defs.get(type_name) else {
+        let Some((is_wire_struct, is_serial_wire_enum, layout_entry)) =
+            self.type_defs.get(type_name).map(|type_def| {
+                let is_wire_struct = type_def.kind == TypeDefKind::Struct;
+                let is_unit_wire_enum = type_def.kind == TypeDefKind::Enum
+                    && type_def
+                        .variants
+                        .values()
+                        .all(|variant| matches!(variant, VariantDef::Unit));
+                let is_payload_wire_enum = type_def.kind == TypeDefKind::Enum
+                    && type_def
+                        .variants
+                        .values()
+                        .any(|variant| !matches!(variant, VariantDef::Unit));
+                let is_serial_wire_enum = is_unit_wire_enum || is_payload_wire_enum;
+                let layout_entry = Self::wire_layout_entry_from_metadata(
+                    type_def,
+                    wire,
+                    is_wire_struct,
+                    variant_order,
+                );
+                (is_wire_struct, is_serial_wire_enum, layout_entry)
+            })
+        else {
             return;
         };
-        let is_wire_struct = type_def.kind == TypeDefKind::Struct;
         // Track wire structs so the method-dispatch arms can recognise the
         // binary `encode`/`decode` codec calls (which lower to the
         // `__hew_serialize_*` / `__hew_deserialize_*` thunks) without
@@ -2105,17 +2134,8 @@ impl Checker {
         if is_wire_struct {
             self.wire_struct_types.insert(type_name.to_string());
         }
-        let is_unit_wire_enum = type_def.kind == TypeDefKind::Enum
-            && type_def
-                .variants
-                .values()
-                .all(|variant| matches!(variant, VariantDef::Unit));
-        let is_payload_wire_enum = type_def.kind == TypeDefKind::Enum
-            && type_def
-                .variants
-                .values()
-                .any(|variant| !matches!(variant, VariantDef::Unit));
-        let is_serial_wire_enum = is_unit_wire_enum || is_payload_wire_enum;
+        self.wire_layouts
+            .insert(type_name.to_string(), layout_entry);
 
         let instance_methods = if is_wire_struct {
             vec![
@@ -2170,6 +2190,76 @@ impl Checker {
                     ..FnSig::default()
                 },
             );
+        }
+    }
+
+    fn wire_layout_entry_from_metadata(
+        type_def: &TypeDef,
+        wire: &WireMetadata,
+        is_wire_struct: bool,
+        variant_order: &[String],
+    ) -> WireLayoutEntry {
+        let fields = if is_wire_struct {
+            wire.field_meta
+                .iter()
+                .map(|field| WireFieldLayout {
+                    name: field.field_name.clone(),
+                    tag: field.field_number,
+                    json_name: field.json_name.clone(),
+                    yaml_name: field.yaml_name.clone(),
+                    optional: field.is_optional,
+                    repeated: field.is_repeated,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let variant_tags: HashMap<&str, u32> = wire
+            .field_meta
+            .iter()
+            .map(|field| (field.field_name.as_str(), field.field_number))
+            .collect();
+        let variant_names: Vec<String> = if variant_order.is_empty() {
+            let mut names: Vec<_> = type_def.variants.keys().cloned().collect();
+            names.sort();
+            names
+        } else {
+            variant_order
+                .iter()
+                .filter(|name| type_def.variants.contains_key(*name))
+                .cloned()
+                .collect()
+        };
+        let variants = if is_wire_struct {
+            Vec::new()
+        } else {
+            variant_names
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "wire enum variant counts are bounded by source size"
+                    )]
+                    let default_tag = index as u32;
+                    let tag = variant_tags
+                        .get(name.as_str())
+                        .copied()
+                        .unwrap_or(default_tag);
+                    (name, tag)
+                })
+                .collect()
+        };
+
+        WireLayoutEntry {
+            is_struct: is_wire_struct,
+            json_case: wire.json_case,
+            yaml_case: wire.yaml_case,
+            version: wire.version,
+            min_version: wire.min_version,
+            fields,
+            variants,
         }
     }
 
@@ -3558,7 +3648,33 @@ impl Checker {
 
         self.type_defs.insert(wd.name.clone(), type_def);
         self.record_type_def_inference_holes(&wd.name, hole_vars);
-        self.register_wire_methods(&wd.name);
+        let wire = WireMetadata {
+            field_meta: wd
+                .fields
+                .iter()
+                .map(|field| WireFieldMeta {
+                    field_name: field.name.clone(),
+                    field_number: field.field_number,
+                    is_optional: field.is_optional,
+                    is_deprecated: field.is_deprecated,
+                    is_repeated: field.is_repeated,
+                    json_name: field.json_name.clone(),
+                    yaml_name: field.yaml_name.clone(),
+                    since: field.since,
+                })
+                .collect(),
+            reserved_numbers: vec![],
+            json_case: wd.json_case,
+            yaml_case: wd.yaml_case,
+            version: None,
+            min_version: None,
+        };
+        let variant_order: Vec<String> = wd
+            .variants
+            .iter()
+            .map(|variant| variant.name.clone())
+            .collect();
+        self.register_wire_methods(&wd.name, &wire, &variant_order);
     }
 
     pub(super) fn trait_info_from_decl(tr: &TraitDecl) -> TraitInfo {

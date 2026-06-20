@@ -11,7 +11,10 @@
               see tests/call_trait_method_static_creation_allowlist.rs"
 )]
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use hew_parser::ast::{
     ActorDecl, AttributeArg, BinaryOp, Block, CallArg, CompoundAssignOp, ConstDecl, Expr, FnDecl,
@@ -3412,6 +3415,7 @@ pub fn lower_program_with_mono_cap(
         module: HirModule {
             items,
             diagnostic_source_modules,
+            wire_layouts: Arc::new(type_check_output.wire_layouts.clone()),
             type_classes: ctx.type_classes,
             monomorphisations,
             call_site_type_args,

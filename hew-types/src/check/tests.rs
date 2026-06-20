@@ -257,6 +257,57 @@ fn wire_text_format_methods_record_no_codec_rewrite() {
 }
 
 #[test]
+fn wire_layout_table_populated_from_wire_struct() {
+    let output = check_source(
+        r"
+        #[wire]
+        struct Point { x: i64 @1, y: i64 @2 }
+        ",
+    );
+
+    assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
+    assert!(output.wire_layouts.contains_key("Point"));
+    let entry = &output.wire_layouts["Point"];
+    assert_eq!(entry.fields.len(), 2);
+    assert_eq!(entry.fields[0].tag, 1);
+    assert_eq!(entry.fields[0].name, "x");
+    assert_eq!(entry.fields[1].tag, 2);
+    assert_eq!(entry.fields[1].name, "y");
+}
+
+#[test]
+fn wire_layout_table_populated_from_wire_enum() {
+    let output = check_source(
+        r"
+        #[wire]
+        enum Status { Active; Inactive; }
+        ",
+    );
+
+    assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
+    assert!(output.wire_layouts.contains_key("Status"));
+    let entry = &output.wire_layouts["Status"];
+    assert_eq!(entry.variants.len(), 2);
+}
+
+#[test]
+fn wire_layout_json_name_override_preserved() {
+    let output = check_source(
+        r#"
+        #[wire]
+        struct Cfg { host: string @1 json_name="hostname" }
+        "#,
+    );
+
+    assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
+    let entry = output
+        .wire_layouts
+        .get("Cfg")
+        .expect("Cfg should have a wire layout entry");
+    assert_eq!(entry.fields[0].json_name, Some("hostname".to_string()));
+}
+
+#[test]
 fn vec_copy_record_new_constructor_typechecks() {
     let output = check_source(
         r"

@@ -93,6 +93,7 @@ fn pipeline_with_call_runtime_abi_parts(
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
         record_layouts: vec![],
         actor_layouts: vec![],

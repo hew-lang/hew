@@ -105,6 +105,7 @@ fn pipeline_with(
         checked_mir: vec![],
         elaborated_mir: vec![],
         diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
         record_layouts,
         actor_layouts: vec![],

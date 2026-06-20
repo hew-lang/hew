@@ -107,6 +107,7 @@ fn pipeline_discard_extern(
         checked_mir: vec![checked],
         elaborated_mir: vec![elab],
         diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
         record_layouts: vec![],
         actor_layouts: vec![],

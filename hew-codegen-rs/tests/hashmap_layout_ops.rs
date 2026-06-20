@@ -99,6 +99,7 @@ fn pipeline_with_entry_terminator(
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
         record_layouts,
         actor_layouts: vec![],

@@ -1,7 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use hew_hir::{sanitize_for_symbol, BindingId, IntentKind, ItemId, SiteId, ValueClass};
-use hew_types::{NumericWidth, ResolvedTy, WireCodecDirection};
+use hew_types::{NumericWidth, ResolvedTy, WireCodecDirection, WireLayoutTable};
 
 pub use crate::runtime_symbols::UnknownRuntimeSymbol;
 
@@ -105,6 +108,8 @@ pub struct IrPipeline {
     pub checked_mir: Vec<CheckedMirFunction>,
     pub elaborated_mir: Vec<ElaboratedMirFunction>,
     pub diagnostics: Vec<MirDiagnostic>,
+    /// Checker-authored wire layout metadata forwarded from HIR.
+    pub wire_layouts: Arc<WireLayoutTable>,
     /// Names of every `#[opaque]` runtime handle declared in the module
     /// (W3.020). Codegen resolves these `Named` types to a bare LLVM `ptr`
     /// (pointer-width opaque handle, ABI-compatible with the runtime's

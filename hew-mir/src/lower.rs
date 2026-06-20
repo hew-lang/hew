@@ -2309,6 +2309,7 @@ pub fn lower_hir_module_with_facts(
         checked_mir,
         elaborated_mir,
         diagnostics,
+        wire_layouts: module.wire_layouts.clone(),
         opaque_handle_names: module
             .items
             .iter()
@@ -33070,6 +33071,7 @@ mod enum_layout_tests {
         HirModule {
             items,
             diagnostic_source_modules: HashMap::default(),
+            wire_layouts: std::sync::Arc::new(HashMap::default()),
             type_classes: hew_hir::TypeClassTable::default(),
             monomorphisations: vec![],
             call_site_type_args: HashMap::<SiteId, _>::default(),

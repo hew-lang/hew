@@ -5,7 +5,7 @@ use crate::module_registry::ModuleRegistry;
 use crate::resolved_ty::ResolvedTy;
 use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
-use hew_parser::ast::{Span, Spanned, TraitBound, TraitMethod, TypeExpr};
+use hew_parser::ast::{NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -145,6 +145,12 @@ pub struct TypeCheckOutput {
     /// consume a single authoritative contract instead of re-resolving C
     /// symbols from receiver types or the module registry.
     pub method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Wire layout metadata keyed by canonical type name.
+    ///
+    /// Populated by `register_wire_methods` for every accepted `#[wire]` type
+    /// so downstream lowering phases consume checker-owned field tags, names,
+    /// casing, and version metadata instead of recovering it from source text.
+    pub wire_layouts: WireLayoutTable,
     /// Checker-owned numeric method lowering decisions keyed by method-call span.
     ///
     /// Populated for accepted integer opt-out methods:
@@ -488,6 +494,48 @@ pub struct TypeCheckOutput {
     /// substrate ownership rationale and downstream consumer ordering.
     pub resolved_calls: HashMap<SpanKey, crate::check::dispatch::ResolvedCall>,
 }
+
+/// Wire layout metadata for a single field, carried from AST through the
+/// compilation pipeline so lowering passes never recover metadata from source
+/// strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireFieldLayout {
+    /// Source-level field name.
+    pub name: String,
+    /// Numeric wire tag (`@N`), the compatibility authority.
+    pub tag: u32,
+    /// Explicit JSON key override, if provided (`json_name = "..."`).
+    pub json_name: Option<String>,
+    /// Explicit YAML key override, if provided (`yaml_name = "..."`).
+    pub yaml_name: Option<String>,
+    /// Whether this field is optional (maps to `Option<T>` absence semantics).
+    pub optional: bool,
+    /// Whether this field is repeated (maps to `Vec<T>`).
+    pub repeated: bool,
+}
+
+/// Wire layout metadata for a single type (struct or enum).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WireLayoutEntry {
+    /// True for `#[wire] struct`, false for `#[wire] enum`.
+    pub is_struct: bool,
+    /// Type-level JSON casing override.
+    pub json_case: Option<NamingCase>,
+    /// Type-level YAML casing override.
+    pub yaml_case: Option<NamingCase>,
+    /// Wire schema version (from `#[wire(version = N)]`).
+    pub version: Option<u32>,
+    /// Minimum compatible reader version.
+    pub min_version: Option<u32>,
+    /// Ordered fields (structs). Empty for enums.
+    pub fields: Vec<WireFieldLayout>,
+    /// Enum variant tags. Each entry is `(variant_name, discriminant_tag)`.
+    /// Empty for structs.
+    pub variants: Vec<(String, u32)>,
+}
+
+/// All wire types registered during type-checking, keyed by canonical type name.
+pub type WireLayoutTable = HashMap<String, WireLayoutEntry>;
 
 /// Capture mode selected by the checker for one closure environment field.
 ///
@@ -967,6 +1015,7 @@ impl Default for TypeCheckOutput {
             lowering_facts: HashMap::new(),
             actor_handler_state_guards: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            wire_layouts: HashMap::new(),
             numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             assign_target_kinds: HashMap::new(),
@@ -2164,6 +2213,8 @@ pub struct Checker {
     /// same variable every time).
     pub(super) deferred_channel_rewrites: HashMap<SpanKey, DeferredChannelMethodRewrite>,
     pub(super) method_call_rewrites: HashMap<SpanKey, MethodCallRewrite>,
+    /// Checker-side accumulator for [`TypeCheckOutput::wire_layouts`].
+    pub(super) wire_layouts: WireLayoutTable,
     /// Checker-side accumulator for [`TypeCheckOutput::resolved_calls`].
     ///
     /// **Stage A:** never populated by production code paths. Reserved
@@ -2780,6 +2831,7 @@ impl Checker {
             deferred_vec_admission: HashMap::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
+            wire_layouts: HashMap::new(),
             resolved_calls: HashMap::new(),
             numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),

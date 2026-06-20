@@ -89,6 +89,7 @@ fn base_pipeline(
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
         record_layouts: vec![RecordLayout {
             name: "Point".to_string(),
@@ -676,6 +677,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
         record_layouts: vec![RecordLayout {
             name: "Point".to_string(),

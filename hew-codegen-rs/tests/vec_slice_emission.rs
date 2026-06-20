@@ -226,6 +226,7 @@ fn vec_slice_i64_pipeline() -> IrPipeline {
             lambda_captures: vec![],
         }],
         diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
         opaque_handle_names: vec![],
         record_layouts: vec![],
         actor_layouts: vec![],

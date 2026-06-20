@@ -61,6 +61,7 @@ pub use self::types::{
     NumericSignedness, NumericWidth, OptionResultMethod, PatternKind, PayloadBinding,
     PayloadVariantPattern, SpanKey, StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
     VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection,
+    WireFieldLayout, WireLayoutEntry, WireLayoutTable,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -631,6 +632,7 @@ impl Checker {
             supervisor_child_slots: std::mem::take(&mut self.supervisor_child_slots),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
+            wire_layouts: std::mem::take(&mut self.wire_layouts),
             // W4.001 Stage A: substrate-only. Field is empty in Stage A
             // (no production populator); Stage B's resolver fills it.
             // See `check::dispatch` module docs and

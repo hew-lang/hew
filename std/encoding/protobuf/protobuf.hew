@@ -84,7 +84,7 @@ impl MessageMethods for Message {
     fn has_field(msg: Message, field_number: i64) -> bool {
         unsafe {
             hew_proto_msg_has_field(msg, field_number as i32)
-        } // INTERNAL-ABI: C ABI field_number is i32
+        } != 0 // INTERNAL-ABI: C ABI returns i32 (1=present, 0=absent); explicit != 0 required (no implicit i32→bool)
     }
     /// Release the message resources.
     fn free(msg: Message) {

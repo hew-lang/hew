@@ -20458,10 +20458,12 @@ mod for_loop_iterable_fail_closed {
 
     #[test]
     fn closure_captures_duplex_handle_function_param_rejected() {
-        // Evasion shape: Duplex parameter captured in a nested closure.
+        // Evasion shape: LambdaPid parameter captured in a nested closure.
+        // (Lambda-actor handles are typed `LambdaPid<M, R>`; call-syntax
+        // `h(n)` is the actor surface, so this routes through the capture gate.)
         let output = check_source(
             r"
-            fn use_handle(h: Duplex<i64, ()>) {
+            fn use_handle(h: LambdaPid<i64, ()>) {
                 let relay = |n: i64| { h(n); };
                 relay(1);
             }
@@ -20473,7 +20475,7 @@ mod for_loop_iterable_fail_closed {
                 .errors
                 .iter()
                 .any(|e| matches!(&e.kind, TypeErrorKind::ClosureCapturesDuplexHandle { name } if name == "h")),
-            "function-param Duplex capture: ClosureCapturesDuplexHandle must fire; got: {:#?}",
+            "function-param LambdaPid capture: ClosureCapturesDuplexHandle must fire; got: {:#?}",
             output.errors
         );
     }

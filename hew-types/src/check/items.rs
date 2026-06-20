@@ -1399,7 +1399,10 @@ impl Checker {
         }
 
         self.current_return_type = Some(return_ty);
+        let prev_in_crash_hook = self.in_crash_hook;
+        self.in_crash_hook = true;
         let body_ty = self.check_block(&hook.body, None);
+        self.in_crash_hook = prev_in_crash_hook;
         self.current_return_type = None;
         self.in_actor_handler_context = prev_actor_handler_context;
 

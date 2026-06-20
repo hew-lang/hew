@@ -345,6 +345,37 @@ fn reject_crash_action_return_not_yet_wired() {
     );
 }
 
+#[test]
+fn reject_crash_action_return_stmt_not_yet_wired() {
+    // Reject twin (explicit `return` form): `return CrashAction::Restart;`
+    // inside a `#[on(crash)]` hook body must also fail closed with
+    // `CrashActionReturnNotYetWired` — same lowering gap, same diagnostic.
+    // The cross-eco review named this the `CrashActionReturnNotYetWired`
+    // case for explicit-return; it was missing from the original gate which
+    // only checked the block tail-expression type.
+    let source = r"
+        actor Worker {
+            #[on(crash)]
+            fn on_crash(info: CrashInfo) -> CrashAction {
+                return CrashAction::Restart;
+            }
+        }
+
+        fn main() {}
+        ";
+    let output = typecheck(source);
+    let error = output
+        .errors
+        .iter()
+        .find(|e| matches!(&e.kind, TypeErrorKind::CrashActionReturnNotYetWired))
+        .expect("`return CrashAction::Restart;` should produce CrashActionReturnNotYetWired");
+    assert!(
+        error.message.contains("not yet wired") && error.message.contains("panic"),
+        "diagnostic should mention 'not yet wired' and suggest panic: {:?}",
+        error.message
+    );
+}
+
 // ── E2: `#[on(crash)]` signature pinning ─────────────────────────────
 //
 // Failure-philosophy slice E2 pins the crash hook signature shape:

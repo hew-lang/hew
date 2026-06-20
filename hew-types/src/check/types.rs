@@ -2553,6 +2553,13 @@ pub struct Checker {
     /// (a Duplex capture called from within its own actor body) while rejecting
     /// fn-closure captures of Duplex handles.
     pub(super) in_lambda_actor_body: bool,
+    /// Whether we are currently inside a `#[on(crash)]` hook body.
+    ///
+    /// Set to `true` for the duration of `check_crash_hook`'s body check so
+    /// that `Stmt::Return` can reject `return <CrashAction>;` with the same
+    /// `CrashActionReturnNotYetWired` diagnostic that the tail-expression gate
+    /// fires — both forms are fail-closed until v0.6 wires the full return path.
+    pub(super) in_crash_hook: bool,
     /// Whether we are currently inside an unsafe block.
     pub(super) in_unsafe: bool,
     /// Nesting depth of `scope { }` structured-concurrency blocks in the
@@ -2912,6 +2919,7 @@ impl Checker {
             in_receive_fn: false,
             in_actor_handler_context: false,
             in_lambda_actor_body: false,
+            in_crash_hook: false,
             in_unsafe: false,
             task_scope_depth: 0,
             current_module: None,

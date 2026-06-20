@@ -551,39 +551,63 @@ fn run_generic_vec_get_copy_record_then_trait_dispatch() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
-/// #1929 Stage 1 fail-closed boundary: an owned / non-Copy element under a type
-/// parameter is DEFERRED. `Vec<Name>` (Name owns a heap `string`) is supported
-/// on the concrete path via the owned ABI, but the generic `Vec<T>`
-/// re-resolution must reject it with a precise diagnostic rather than emit a
-/// `_layout` op that would alias an owner and double-free — never a silent
-/// accept that aborts at run.
+/// #1929 Stage 2: a NON-Copy record element under a type parameter. `Vec<Name>`
+/// (Name owns a heap `string`) re-resolves its element ops to the owned
+/// descriptor family (`hew_vec_get_owned` / `hew_vec_push_owned`) — the same
+/// ABI the concrete owned path uses — through the generic monomorphisation
+/// spine. `first<T>(v) -> T` returns the gotten element (the ownership escape);
+/// the owned getter borrow, the interior-borrow leak taint, and the scope-exit
+/// `hew_vec_free_owned` agree so the round-trip is correct for the owned record
+/// alongside the scalar (`i64`) and copy-on-write (`string`) element ABIs.
 #[test]
-fn run_generic_vec_element_owned_element_fails_closed() {
-    let source =
-        repo_root().join("tests/vertical-slice/reject/vec_generic_elem_owned_deferred.hew");
+fn run_generic_vec_get_owned_record_under_type_param() {
+    require_codegen();
 
-    let output = Command::new(hew_binary())
-        .args(["check", source.to_str().unwrap()])
-        .current_dir(repo_root())
-        .output()
-        .expect("hew binary must run");
+    let source = repo_root().join("tests/vertical-slice/accept/generic_vec_get_owned_record.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/generic_vec_get_owned_record.expected"),
+    )
+    .expect("read generic_vec_get_owned_record.expected");
 
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    let output = run_bounded_hew_run(&source, repo_root());
+
     assert!(
-        !output.status.success(),
-        "owned element under a type parameter must fail closed; stdout: {}\nstderr: {stderr}",
+        output.status.success(),
+        "generic Vec owned-record get should run; stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// #1929 Stage 2 leak proof for the generic owned-element ABI: 100k iterations
+/// of push-an-owned-`Name` into a `Vec<T>`, get it back via a returning generic
+/// helper (the ownership escape), read the field, and drop. A double-free of the
+/// one heap string (the owned getter borrow aliasing the Vec's slot that
+/// `hew_vec_free_owned` also releases) SIGABRTs within a few iterations; a
+/// missed drop grows RSS linearly. A clean run is the exactly-once witness.
+#[test]
+fn run_generic_vec_get_owned_element_is_dropped_once() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/generic_vec_get_owned_leak.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/generic_vec_get_owned_leak.expected"),
+    )
+    .expect("read generic_vec_get_owned_leak.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
     assert!(
-        stderr.contains("E_NOT_YET_IMPLEMENTED")
-            && stderr.contains("Name")
-            && stderr.contains("type-parameter element"),
-        "deferred-element diagnostic should name the element and the Stage 1 boundary; got:\n{stderr}",
+        output.status.success(),
+        "generic Vec owned-element round-trip should run cleanly (a double-free \
+         would abort); stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
     );
-    assert!(
-        !stderr.contains(": OK"),
-        "hew check must not print OK after the fail-closed gate; got:\n{stderr}",
-    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
 /// #1929 Stage 2: `for x in items` over a `Vec<T>` where `T` is a type
@@ -635,6 +659,89 @@ fn run_generic_vec_for_in_count_across_element_abis() {
     assert!(
         output.status.success(),
         "generic Vec<T> for-in count should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// #1929 Stage 3 / #1565: generic `println` / `print` / `to_string` of a value
+/// typed by a `T: Display` type parameter. The builtin print surfaces no longer
+/// re-derive a monomorphic overload from the concrete argument type; instead
+/// they route through the checker-verified `Display` obligation and dispatch to
+/// the concrete `Display::fmt` impl per monomorphisation. Covers a primitive
+/// (`i64` → 42, 7), a string (`hi`, `yo`), and a user `impl Display` (`Color`).
+#[test]
+fn run_generic_display_println_print_to_string() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/generic_display_println.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/generic_display_println.expected"),
+    )
+    .expect("read generic_display_println.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic Display println/print/to_string should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// #1929 Stage 3 / #1565: f-string interpolation `f"{x}"` of a `T: Display`
+/// type parameter (previously rejected by the checker's `require_display_impl`
+/// gate because it did not recognise a type parameter's `Display` bound), plus
+/// generic `println` over a `Vec<T>` — combining Stage 2 generic `for-in` with
+/// Stage 3 Display dispatch. Covers `i64`, `string`, and a user `impl Display`.
+#[test]
+fn run_generic_display_fstring_and_vec_iteration() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/generic_display_fstring.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/generic_display_fstring.expected"),
+    )
+    .expect("read generic_display_fstring.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic Display f-string + Vec<T> iteration should run; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
+}
+
+/// #1929 Stage 3 / #1565: a generic `T: Display` consumer dispatches to a
+/// `Display` impl defined in a different module. The static-trait-dispatch
+/// resolution keys on the canonical `(Display, <concrete>, fmt)` triple, so the
+/// impl's defining module is irrelevant — proving the cross-module Display
+/// receiver acceptance criterion. Also exercises an `i64` receiver in the same
+/// program so the generic and primitive paths coexist.
+#[test]
+fn run_generic_display_cross_module_receiver() {
+    require_codegen();
+
+    let source = repo_root().join("tests/vertical-slice/accept/generic_display_xmod.hew");
+    let expected = std::fs::read_to_string(
+        repo_root().join("tests/vertical-slice/accept/generic_display_xmod.expected"),
+    )
+    .expect("read generic_display_xmod.expected");
+
+    let output = run_bounded_hew_run(&source, repo_root());
+
+    assert!(
+        output.status.success(),
+        "generic Display cross-module receiver should run; stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );

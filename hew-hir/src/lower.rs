@@ -4689,6 +4689,15 @@ struct LowerCtx {
     /// `None` outside an impl-method context — top-level free functions, trait
     /// declarations, and actor/machine method lowerings do not touch this.
     current_impl_self_ty: Option<ResolvedTy>,
+    /// Declared generic type-parameter names of the function whose body is
+    /// currently being lowered (impl-level params concatenated with the
+    /// method's own). Set by `lower_fn_with_name_and_impl_params` around the
+    /// body, restored after. Lets lowering recognise a bare `Named { name,
+    /// args: [] }` operand as an abstract type parameter (the checker lowers
+    /// `T` to `ResolvedTy::Named`, not `ResolvedTy::TypeParam`) so generic
+    /// `Display` dispatch can defer to monomorphisation. Empty outside a
+    /// function body.
+    current_fn_type_params: HashSet<String>,
     /// Default method bodies harvested from every `Item::Trait` in the root
     /// program. Keyed by trait name; values are the `TraitMethod` entries
     /// that carry a `body`. Populated once before the first lowering pass
@@ -4837,6 +4846,7 @@ impl LowerCtx {
             lang_items: tc_output.lang_items.clone(),
             target_arch,
             current_impl_self_ty: None,
+            current_fn_type_params: HashSet::new(),
             trait_default_methods: HashMap::new(),
             trait_super: HashMap::new(),
             trait_declared_methods: HashMap::new(),
@@ -7392,6 +7402,89 @@ impl LowerCtx {
         })
     }
 
+    /// Single construction site for the deprecated, allowlist-gated
+    /// [`HirExprKind::CallTraitMethodStatic`]. Both the
+    /// `MethodCallRewrite::StaticTraitDispatch` arm of `lower_method_call`
+    /// and the abstract-`T` arm of `lower_display_dispatch` route through
+    /// here so the variant keeps exactly one producer (enforced by
+    /// `tests/call_trait_method_static_creation_allowlist.rs`). MIR
+    /// resolves the concrete callee from `(declaring_trait, <substituted
+    /// receiver>, method_name)` per monomorphisation and fails closed when
+    /// no impl is registered.
+    fn make_static_trait_dispatch_call(
+        receiver: HirExpr,
+        receiver_type_param: String,
+        bound_trait: String,
+        declaring_trait: String,
+        method_name: String,
+        args: Vec<HirExpr>,
+        ret_ty: ResolvedTy,
+    ) -> HirExprKind {
+        HirExprKind::CallTraitMethodStatic {
+            receiver: Box::new(receiver),
+            receiver_type_param,
+            bound_trait,
+            declaring_trait,
+            method_name,
+            args,
+            ret_ty,
+        }
+    }
+
+    /// If `ty` is a bare reference to a type parameter of the function
+    /// currently being lowered, return its name. The checker lowers an
+    /// abstract `T` to `ResolvedTy::Named { args: [] }` (a structural
+    /// `ResolvedTy::TypeParam` also appears after substitution), so both
+    /// shapes are recognised. Used to route generic `Display` surfaces to
+    /// per-monomorphisation static dispatch instead of a concrete overload.
+    fn abstract_type_param_name<'a>(&self, ty: &'a ResolvedTy) -> Option<&'a str> {
+        match ty {
+            ResolvedTy::TypeParam { name } => Some(name),
+            ResolvedTy::Named { name, args, .. }
+                if args.is_empty() && self.current_fn_type_params.contains(name) =>
+            {
+                Some(name)
+            }
+            _ => None,
+        }
+    }
+
+    /// Emit a `Display::fmt` static trait-dispatch over an abstract type
+    /// parameter `type_param_name` (#1565). `bound_trait` and
+    /// `declaring_trait` are both the `Display` lang-item trait; the concrete
+    /// `Display` impl is selected per monomorphisation by MIR, which fails
+    /// closed if no impl is registered. Result is always `string`.
+    fn build_display_static_dispatch(
+        &mut self,
+        value: HirExpr,
+        type_param_name: String,
+        method_name: String,
+        span: Span,
+    ) -> HirExpr {
+        let display_trait = self
+            .lang_items
+            .display_trait()
+            .map_or_else(|| "Display".to_string(), str::to_owned);
+        let kind = Self::make_static_trait_dispatch_call(
+            value,
+            type_param_name,
+            display_trait.clone(),
+            display_trait,
+            method_name,
+            Vec::new(),
+            ResolvedTy::String,
+        );
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&ResolvedTy::String, &self.type_classes),
+            ty: ResolvedTy::String,
+            intent: IntentKind::Read,
+            kind,
+            span,
+        }
+    }
+
     /// Lower a single interpolant of an f-string to a `string`-typed HIR
     /// expression by dispatching through `Display`.
     ///
@@ -7471,21 +7564,23 @@ impl LowerCtx {
             | ResolvedTy::F64
             | ResolvedTy::Bool
             | ResolvedTy::Char => {
-                let builtin = match ty {
-                    ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => "to_string_i32",
-                    ResolvedTy::I64 | ResolvedTy::Isize => "to_string_i64",
-                    ResolvedTy::U8 => "to_string_u8",
-                    ResolvedTy::U16 => "to_string_u16",
-                    ResolvedTy::U32 => "to_string_u32",
-                    ResolvedTy::U64 | ResolvedTy::Usize => "to_string_u64",
-                    ResolvedTy::F32 | ResolvedTy::F64 => "to_string_f64",
-                    ResolvedTy::Bool => "to_string_bool",
-                    ResolvedTy::Char => "to_string_char",
-                    _ => unreachable!(),
-                };
+                let builtin = scalar_display_builtin(&ty);
                 self.build_catalog_call(builtin, vec![value], span)
             }
             ResolvedTy::Named { name, .. } => {
+                // An abstract type parameter `T: Display` (the checker lowers
+                // `T` to a bare `Named`) defers to per-monomorphisation static
+                // dispatch; a concrete user type calls its `impl Display` fmt
+                // symbol directly (byte-identical to the pre-#1565 path).
+                if self.current_fn_type_params.contains(name) {
+                    let type_param_name = name.clone();
+                    return self.build_display_static_dispatch(
+                        value,
+                        type_param_name,
+                        method_name,
+                        span,
+                    );
+                }
                 let symbol = crate::node::HirImplBlock::method_symbol(name, &method_name);
                 if let Some(call) = self.build_user_fn_call(&symbol, vec![value], span.clone()) {
                     call
@@ -7512,6 +7607,15 @@ impl LowerCtx {
                     )
                 }
             }
+            ResolvedTy::TypeParam { name } => {
+                // Abstract type parameter `T` carrying a `Display` bound — the
+                // checker's `require_display_impl` / generic-bound gate already
+                // verified it. Defer the concrete `Display::fmt` selection to
+                // monomorphisation (#1565); the concrete type is never
+                // re-derived here.
+                let type_param_name = name.clone();
+                self.build_display_static_dispatch(value, type_param_name, method_name, span)
+            }
             _ => {
                 // Same invariant as the named-type arm: the checker should
                 // have rejected this interpolant via `require_display_impl`.
@@ -7527,6 +7631,55 @@ impl LowerCtx {
                 self.unsupported_expr(span, "f-string display dispatch: unsupported type shape")
             }
         }
+    }
+
+    /// #1565: route `println` / `print` / `to_string` of a value whose type
+    /// is an abstract type parameter `T: Display` through the Display
+    /// static-trait-dispatch spine (`lower_display_dispatch`).
+    ///
+    /// The concrete-ABI overloads (`println_i64`, `to_string_str`, …) are
+    /// resolved earlier by `stdlib_catalog::resolve_overload` and never reach
+    /// here; this only fires when that lookup returned `None` because the
+    /// single argument is a `ResolvedTy::TypeParam`. `to_string` yields the
+    /// rendered string directly; `print` / `println` wrap it in the
+    /// `print_str` / `println_str` catalog builtins.
+    ///
+    /// Returns `Err(args)` (handing the arguments back so the caller can fall
+    /// through to the fail-closed `UnresolvedBuiltinOverload`) when the call
+    /// is not one of those three builtins over exactly one type-parameter
+    /// argument, or when no Display method lang-item is in scope.
+    fn try_lower_generic_display_builtin(
+        &mut self,
+        name: &str,
+        args: Vec<HirExpr>,
+        span: &Span,
+    ) -> Result<(HirExprKind, ResolvedTy), Vec<HirExpr>> {
+        let is_display_surface = matches!(name, "println" | "print" | "to_string");
+        let single_type_param = args.len() == 1
+            && args
+                .first()
+                .is_some_and(|arg| self.abstract_type_param_name(&arg.ty).is_some());
+        if !is_display_surface || !single_type_param || self.lang_items.display_method().is_none() {
+            return Err(args);
+        }
+        let value = args
+            .into_iter()
+            .next()
+            .expect("single argument checked above");
+        let rendered = self.lower_display_dispatch(value, span.clone());
+        let lowered = match name {
+            "to_string" => (rendered.kind, rendered.ty),
+            "print" => {
+                let call = self.build_catalog_call("print_str", vec![rendered], span.clone());
+                (call.kind, call.ty)
+            }
+            // `println`
+            _ => {
+                let call = self.build_catalog_call("println_str", vec![rendered], span.clone());
+                (call.kind, call.ty)
+            }
+        };
+        Ok(lowered)
     }
 
     /// Lower an `Expr::InterpolatedString` to a chain of `string_concat` calls
@@ -8094,6 +8247,16 @@ impl LowerCtx {
             .map_or_else(|| self.ids.item(), |entry| entry.id);
 
         self.push_scope();
+        // Track this function's declared type parameters for the duration of
+        // its body so lowering can recognise abstract-`T` operands (the
+        // checker represents `T` as `ResolvedTy::Named { args: [] }`). Restored
+        // on every return path below.
+        let prior_fn_type_params = std::mem::replace(
+            &mut self.current_fn_type_params,
+            Self::concat_type_params(impl_type_params, func)
+                .into_iter()
+                .collect(),
+        );
         let mut params = Vec::new();
         for param in &func.params {
             let ty = self.lower_type(&param.ty);
@@ -8115,6 +8278,7 @@ impl LowerCtx {
         if func.is_generator {
             let (body, generator_ty) = self.lower_generator_fn_body(func, source_return_ty, &span);
             self.pop_scope();
+            self.current_fn_type_params = prior_fn_type_params;
             return HirFn {
                 id,
                 node: self.ids.node(),
@@ -8145,6 +8309,7 @@ impl LowerCtx {
             source_return_ty
         };
         self.pop_scope();
+        self.current_fn_type_params = prior_fn_type_params;
 
         HirFn {
             id,
@@ -11677,23 +11842,30 @@ impl LowerCtx {
                                 result_ty,
                             )
                         } else {
-                            let arg_ty = arg_tys.first().cloned().unwrap_or(ResolvedTy::Unit);
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::UnresolvedBuiltinOverload {
-                                    name: name.clone(),
-                                    arg_ty,
-                                },
-                                span.clone(),
-                                "builtin call has no registered monomorphic overload for this argument type",
-                            ));
-                            let callee = self.unresolved_builtin_callee(name, function.1.clone());
-                            (
-                                HirExprKind::Call {
-                                    callee: Box::new(callee),
-                                    args,
-                                },
-                                ResolvedTy::Unit,
-                            )
+                            match self.try_lower_generic_display_builtin(name, args, &span) {
+                                Ok(lowered) => lowered,
+                                Err(args) => {
+                                    let arg_ty =
+                                        arg_tys.first().cloned().unwrap_or(ResolvedTy::Unit);
+                                    self.diagnostics.push(HirDiagnostic::new(
+                                        HirDiagnosticKind::UnresolvedBuiltinOverload {
+                                            name: name.clone(),
+                                            arg_ty,
+                                        },
+                                        span.clone(),
+                                        "builtin call has no registered monomorphic overload for this argument type",
+                                    ));
+                                    let callee =
+                                        self.unresolved_builtin_callee(name, function.1.clone());
+                                    (
+                                        HirExprKind::Call {
+                                            callee: Box::new(callee),
+                                            args,
+                                        },
+                                        ResolvedTy::Unit,
+                                    )
+                                }
+                            }
                         }
                     } else {
                         self.lower_regular_call(function, args, &span, site)
@@ -18664,15 +18836,15 @@ impl LowerCtx {
                 let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
                 let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                 (
-                    HirExprKind::CallTraitMethodStatic {
-                        receiver: Box::new(lowered_receiver),
+                    Self::make_static_trait_dispatch_call(
+                        lowered_receiver,
                         receiver_type_param,
                         bound_trait,
                         declaring_trait,
                         method_name,
-                        args: lowered_args,
-                        ret_ty: ret_ty.clone(),
-                    },
+                        lowered_args,
+                        ret_ty.clone(),
+                    ),
                     ret_ty,
                 )
             }
@@ -26563,6 +26735,24 @@ fn scan_expr_for_vec_index_gate(
 
 /// Render a `ResolvedTy` for the user-facing diagnostic. Keep the textual
 /// form compact (`bool`, `char`, `Vec<i32>`, `Foo`) so the diagnostic reads
+/// Map a scalar `ResolvedTy` to its `to_string_*` catalog builtin for Display
+/// dispatch. Only the scalar arm of `lower_display_dispatch` reaches here; any
+/// non-scalar type is a caller bug (the dispatch match never routes it here).
+fn scalar_display_builtin(ty: &ResolvedTy) -> &'static str {
+    match ty {
+        ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => "to_string_i32",
+        ResolvedTy::I64 | ResolvedTy::Isize => "to_string_i64",
+        ResolvedTy::U8 => "to_string_u8",
+        ResolvedTy::U16 => "to_string_u16",
+        ResolvedTy::U32 => "to_string_u32",
+        ResolvedTy::U64 | ResolvedTy::Usize => "to_string_u64",
+        ResolvedTy::F32 | ResolvedTy::F64 => "to_string_f64",
+        ResolvedTy::Bool => "to_string_bool",
+        ResolvedTy::Char => "to_string_char",
+        _ => unreachable!("scalar_display_builtin called on non-scalar type {ty:?}"),
+    }
+}
+
 /// naturally; do not use `{:?}` because that leaks variant punctuation
 /// (`I32`, `Named { name: "Foo", args: [] }`, etc.).
 fn render_elem_ty(ty: &ResolvedTy) -> String {

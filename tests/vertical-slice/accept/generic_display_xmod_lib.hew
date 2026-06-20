@@ -1,0 +1,8 @@
+// Library module for generic_display_xmod.hew: a type with a cross-module
+// `impl Display`, exercised by a generic `T: Display` consumer in the
+// importing module (#1565 cross-module Display receiver criterion).
+type Tag { n: i64; }
+
+impl Display for Tag {
+    fn fmt(t: Tag) -> string { "tag" }
+}

@@ -1,0 +1,34 @@
+// #1929 Stage 2 dogfood proof: `Vec<T>.get(i)` for a NON-Copy record element
+// under a type parameter. `Name` owns a heap `string` field, so `Vec<Name>` is
+// constructed through the owned descriptor ABI and its element ops route to the
+// `hew_vec_*_owned` family. The generic per-monomorphisation re-resolution must
+// reach those same owned symbols so the getter returns the element with the
+// correct ownership.
+//
+// `first<T>(v: Vec<T>) -> T` is the minimal escape shape: `v.get(0)` borrows
+// the Vec's live slot, but RETURNING it makes the caller an independent owner.
+// The owned getter (`hew_vec_get_owned`), the interior-borrow leak taint, and
+// the scope-exit `hew_vec_free_owned` must agree so the returned record and the
+// freed Vec do not double-free the one heap string. Instantiated at the owned
+// record `Name`, at the scalar `i64`, and at the copy-on-write `string`, the
+// generic helper re-resolves each element ABI through the one entry point —
+// proving the owned arm coexists with the value-class verdict path.
+type Name {
+    label: string;
+}
+
+fn first<T>(v: Vec<T>) -> T {
+    v.get(0)
+}
+
+fn main() {
+    let vn: Vec<Name> = Vec::new();
+    vn.push(Name { label: "owned-ok" });
+    println(first(vn).label);
+    let vi: Vec<i64> = Vec::new();
+    vi.push(42);
+    println(first(vi));
+    let vs: Vec<string> = Vec::new();
+    vs.push("ok");
+    println(first(vs));
+}

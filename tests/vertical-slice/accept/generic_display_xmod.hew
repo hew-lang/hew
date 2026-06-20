@@ -1,0 +1,20 @@
+// #1565 / #1929 Stage 3: a generic `T: Display` consumer dispatches to a
+// `Display` impl defined in another module — proving the static-trait-dispatch
+// resolution keys on the canonical `(Display, <concrete>, fmt)` triple
+// regardless of the impl's defining module.
+import "generic_display_xmod_lib.hew";
+
+fn p<T: Display>(x: T) {
+    println(x);
+}
+
+fn inter<T: Display>(x: T) {
+    println(f"<{x}>");
+}
+
+fn main() {
+    let t = Tag { n: 5 };
+    p(t);
+    inter(t);
+    p(42);
+}

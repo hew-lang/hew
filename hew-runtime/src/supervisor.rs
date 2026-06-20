@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::actor::{self, HewActor, HewActorOpts};
-use crate::internal::types::{HewActorState, HewDispatchFn, HewOnCrashFn, HewOverflowPolicy};
+use crate::internal::types::{
+    HewActorState, HewDispatchFn, HewLifecycleFn, HewOnCrashFn, HewOverflowPolicy,
+};
 use crate::io_time::hew_now_ms;
 use crate::mailbox;
 use crate::pool::{HewActorPool, PoolStrategy};
@@ -428,6 +430,20 @@ pub struct HewChildSpec {
     /// `None` / null means no handler. Not read by the runtime in this change;
     /// the invocation path is added in a follow-on change.
     pub on_crash: Option<HewOnCrashFn>,
+    /// Optional lifecycle wrapper that runs the child actor's `init()` /
+    /// `#[on(start)]` hooks. `None` / null when the actor declares neither.
+    ///
+    /// Read during `hew_supervisor_add_child_spec` (exactly as `on_crash` is)
+    /// and copied into the internal spec so it fires on the INITIAL supervised
+    /// spawn — the spawn happens inside `add_child_spec`, before any post-hoc
+    /// setter runs, so the literal field (not the setter) is the load-bearing
+    /// carrier for the initial fire. `restart_child_from_spec` then calls it on
+    /// every spawn (initial and restart) from the one firing site.
+    ///
+    /// ABI: this is the trailing `#[repr(C)]` field; the codegen-emitted
+    /// `hew_child_spec_struct_type` mirror appends a matching `ptr` slot in the
+    /// same position. Field-order drift here is wrong-code at the FFI boundary.
+    pub lifecycle_fn: Option<HewLifecycleFn>,
 }
 
 /// Child lifecycle event (sent as system message payload).
@@ -602,6 +618,12 @@ struct InternalChildSpec {
     /// initial-spawn byte-alias by re-cloning the template in place
     /// (see [`hew_supervisor_set_child_state_clone`] doc).
     state_clone_fn: Option<actor::HewStateCloneFn>,
+    /// Codegen-emitted lifecycle wrapper that runs the child actor's `init()` /
+    /// `#[on(start)]` hooks. Copied from `HewChildSpec::lifecycle_fn` at spec
+    /// registration (so the INITIAL supervised spawn fires it inside
+    /// `add_child_spec`), and re-applied by every restart path. `None` means
+    /// the actor has no lifecycle hook and the spawn fires no wrapper.
+    lifecycle_fn: Option<HewLifecycleFn>,
 }
 
 impl Drop for InternalChildSpec {
@@ -663,6 +685,7 @@ impl Default for InternalChildSpec {
             on_crash: None,
             state_drop_fn: None,
             state_clone_fn: None,
+            lifecycle_fn: None,
         }
     }
 }
@@ -1308,7 +1331,7 @@ unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
 /// caller is responsible for pushing the result onto the `children` vec).
 unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut HewActor {
     // Copy scalar fields out before any mutable borrow of child_specs.
-    let (opts, state_drop_fn, state_clone_fn) = {
+    let (opts, state_drop_fn, state_clone_fn, lifecycle_fn) = {
         let spec = &sup.child_specs[index];
         let opts = HewActorOpts {
             init_state: spec.init_state,
@@ -1322,7 +1345,12 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             arena_cap_bytes: spec.arena_cap_bytes,
             cycle_capable: spec.cycle_capable,
         };
-        (opts, spec.state_drop_fn, spec.state_clone_fn)
+        (
+            opts,
+            spec.state_drop_fn,
+            spec.state_clone_fn,
+            spec.lifecycle_fn,
+        )
     };
 
     // Pick the spawn shape based on whether the actor has a registered
@@ -1435,6 +1463,32 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
         // Record successful restart for circuit breaker.
         let sup_actor_id = supervisor_actor_id(sup);
         circuit_breaker_record_success(&mut sup.child_specs[index], sup_actor_id);
+
+        // Fire the actor's lifecycle wrapper (`init()` / `#[on(start)]`).
+        //
+        // THE single supervised-lifecycle firing site: both the initial
+        // supervised spawn (entered here via `add_child_spec` →
+        // `restart_child_from_spec(index == child_count)`) and every
+        // supervisor-triggered restart (entered via
+        // `restart_with_budget_and_strategy`) flow through this one call, so a
+        // supervised actor runs its init/on_start exactly once per incarnation
+        // — behaviourally identical to a directly-spawned actor at birth.
+        //
+        // Fired AFTER state_drop/clone registration and BEFORE
+        // `store_child_slot`: the slot store is the visibility edge that makes
+        // the child reachable via `sup.<name>`, so init/on_start complete
+        // before any external code can message the child (matching the
+        // direct-spawn invariant that lifecycle runs before the spawn
+        // destination pointer is stored).
+        //
+        // The wrapper itself acquires the actor's state lock; no lock on
+        // `new_child` is held here (the clone path operates on the spec
+        // template, not the new actor's lock), so there is no re-entrancy.
+        if let Some(lifecycle_fn) = lifecycle_fn {
+            // SAFETY: new_child was just spawned and is valid; lifecycle_fn is a
+            // codegen-emitted C-ABI wrapper matching the HewLifecycleFn contract.
+            unsafe { lifecycle_fn(new_child) };
+        }
     }
 
     // Update existing slot (restarts). For initial spawns, the caller
@@ -2079,6 +2133,11 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         state_drop_fn: None,
         // Registered by hew_supervisor_set_child_state_clone after this call.
         state_clone_fn: None,
+        // Carried IN the spec literal (like on_crash) so the initial supervised
+        // spawn — which happens inside this call via restart_child_from_spec —
+        // fires the lifecycle wrapper. A post-hoc setter would run too late to
+        // cover the initial fire (see hew_supervisor_set_child_lifecycle).
+        lifecycle_fn: sp.lifecycle_fn,
     });
 
     // Spawn the child actor.
@@ -2323,6 +2382,7 @@ mod tests {
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
                 on_crash: None,
+                lifecycle_fn: None,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             assert_eq!(hew_supervisor_start(sup), 0);
@@ -3037,6 +3097,7 @@ mod tests {
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
                 on_crash: None,
+                lifecycle_fn: None,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             hew_supervisor_set_child_state_drop(sup, 0, heap_state_drop);
@@ -3414,6 +3475,7 @@ mod tests {
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
                 on_crash: None,
+                lifecycle_fn: None,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             let child = (&(*sup).children)[0];
@@ -4138,6 +4200,10 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         // Registered by the caller via hew_supervisor_set_child_state_clone
         // immediately after this call returns.
         state_clone_fn: None,
+        // Carried IN the spec literal (like on_crash) so the dynamic child's
+        // initial spawn — which also routes through restart_child_from_spec —
+        // fires the lifecycle wrapper.
+        lifecycle_fn: sp.lifecycle_fn,
     });
 
     // Spawn the child if the supervisor is running.
@@ -4299,6 +4365,59 @@ pub unsafe extern "C" fn hew_supervisor_set_child_state_drop(
         // correct signature.
         unsafe { actor::hew_actor_set_state_drop(child, state_drop_fn) };
     }
+}
+
+/// Register the lifecycle wrapper for a child actor spec.
+///
+/// Codegen emits this call after [`hew_supervisor_add_child_spec`] for parity
+/// with the state setters. It stores the wrapper pointer on the spec so it is
+/// available to symmetry consumers and to any future code path that rebuilds a
+/// spec without the literal carrier.
+///
+/// **It does NOT fire the wrapper on the already-spawned child.** UNLIKE
+/// [`hew_supervisor_set_child_state_drop`] (which back-fills the running
+/// actor), the initial supervised spawn's lifecycle fire already happened
+/// inside `add_child_spec` → `restart_child_from_spec`, reading the
+/// `lifecycle_fn` carried IN the `HewChildSpec` literal (copied at spec
+/// registration). Firing here too would run `init()` / `#[on(start)]` a SECOND
+/// time on the initial incarnation. The literal field is the load-bearing
+/// carrier for the initial fire; this setter is back-fill symmetry only.
+///
+/// `child_index` is the zero-based index of the child whose spec should be
+/// updated. Indices are stable until [`hew_supervisor_remove_child`] is called.
+///
+/// # Safety
+///
+/// - `sup` must be a valid pointer returned by [`hew_supervisor_new`].
+/// - `child_index` must be a valid index (0 ≤ index < `child_count`).
+/// - `lifecycle_fn` must be a valid C-ABI function pointer matching the
+///   [`HewLifecycleFn`] contract (takes the actor pointer, runs `init` /
+///   `on_start` under the actor state lock, registers the terminate hook).
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_set_child_lifecycle(
+    sup: *mut HewSupervisor,
+    child_index: c_int,
+    lifecycle_fn: HewLifecycleFn,
+) {
+    if sup.is_null() || child_index < 0 {
+        return;
+    }
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &mut *sup };
+
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "child_index is checked to be non-negative"
+    )]
+    let idx = child_index as usize;
+
+    if idx >= s.child_count {
+        return;
+    }
+
+    // Store only. The initial-spawn fire already ran inside add_child_spec
+    // (reading the literal-carried pointer); do NOT re-fire here.
+    s.child_specs[idx].lifecycle_fn = Some(lifecycle_fn);
 }
 
 /// Register a state-clone callback for a child actor spec, breaking the

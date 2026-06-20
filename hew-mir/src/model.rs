@@ -816,6 +816,24 @@ pub struct SupervisorChildLayout {
     /// (Slice 3) reads this to populate the `on_crash_fn` pointer in the
     /// emitted `HewChildSpec` literal; if `None`, the field is left null.
     pub on_crash_symbol: Option<String>,
+    /// Mangled symbol of the per-actor lifecycle wrapper
+    /// (`__hew_lifecycle_<mangled-actor>`) that codegen emits to run the
+    /// child's `init()` / `#[on(start)]` hooks under supervision. `Some`
+    /// when the child's actor declares an `init` or a start hook; `None`
+    /// when it declares neither (the supervised spawn then fires no
+    /// lifecycle wrapper, matching direct-spawn's no-hook case).
+    ///
+    /// The symbol is derived from the actor name (codegen mangles it), so
+    /// this carries the *intent* (the actor has hooks to run) rather than a
+    /// codegen-minted object symbol. Codegen populates the `lifecycle_fn`
+    /// pointer in the emitted `HewChildSpec` literal from this field; if
+    /// `None`, the field is left null and the runtime skips the call.
+    ///
+    /// Mirrors `on_crash_symbol`: the fn-ptr rides IN the `HewChildSpec`
+    /// literal (read during `hew_supervisor_add_child_spec`), which is the
+    /// load-bearing carrier for the INITIAL supervised spawn — the spawn
+    /// fires inside `add_child_spec`, before any post-hoc setter runs.
+    pub lifecycle_symbol: Option<String>,
     /// Per-actor arena cap in bytes from `#[max_heap(N)]` on this child's
     /// actor type. Mirrored from `ActorLayout.max_heap_bytes` in the
     /// post-loop pass; `None` when the actor declares no `#[max_heap]`.

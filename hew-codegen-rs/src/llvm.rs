@@ -2402,6 +2402,17 @@ fn intern_runtime_decl<'ctx>(
         "hew_supervisor_set_child_state_drop" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
+        // hew_supervisor_set_child_lifecycle(sup: *mut HewSupervisor,
+        //                                    child_index: c_int,
+        //                                    lifecycle_fn: HewLifecycleFn) -> void
+        // (`hew-runtime/src/supervisor.rs`). Stores the codegen-emitted
+        // `__hew_lifecycle_<Actor>` wrapper against a child slot for
+        // parity/back-fill. Same `(ptr, i32, ptr) -> void` shape as the state
+        // setters. The INITIAL-spawn lifecycle fire reads the literal-carried
+        // pointer inside `add_child_spec`; this setter does not re-fire.
+        "hew_supervisor_set_child_lifecycle" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
         // hew_supervisor_start(sup: *mut HewSupervisor) -> c_int
         // (`hew-runtime/src/supervisor.rs:1726`). Marks the supervisor running
         // and spawns its self-actor. Returns 0 on success. The bootstrap
@@ -6757,10 +6768,16 @@ fn restart_policy_to_int(policy: HirRestartPolicy) -> i32 {
 /// - `arena_cap_bytes: usize`               → `i64`
 /// - `cycle_capable: c_int`                 → `i32`
 /// - `on_crash: Option<HewOnCrashFn>`       → `ptr`
+/// - `lifecycle_fn: Option<HewLifecycleFn>` → `ptr`
 ///
 /// The three consecutive `i32` fields followed by `i64`, and the trailing
-/// `cycle_capable: i32` followed by a pointer, produce natural padding under
+/// `cycle_capable: i32` followed by two pointers, produce natural padding under
 /// `#[repr(C)]`; LLVM's default (non-packed) struct alignment matches it.
+///
+/// ABI P0: `lifecycle_fn` is the trailing field — it MUST occupy the same
+/// position as `HewChildSpec.lifecycle_fn` in `hew-runtime/src/supervisor.rs`
+/// (appended after `on_crash`). Field-order drift here is wrong-code at the
+/// FFI boundary; the layout assertion below pins the two struct mirrors.
 fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let i32_ty = ctx.i32_type();
@@ -6777,6 +6794,7 @@ fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
             i64_ty.into(), // arena_cap_bytes (alignment introduces 4B pad after `overflow`)
             i32_ty.into(), // cycle_capable
             ptr_ty.into(), // on_crash fn-pointer: null when child's actor has no #[on(crash)]; otherwise pointer to `{actor_name}__on_crash`
+            ptr_ty.into(), // lifecycle_fn fn-pointer: null when child's actor has no init/#[on(start)]; otherwise pointer to `__hew_lifecycle_{actor_name}`
         ],
         false,
     )
@@ -6931,6 +6949,15 @@ fn emit_supervisor_bootstrap_body<'ctx>(
         &mut runtime_decls,
         "hew_supervisor_set_child_state_clone",
     )?;
+    // Lifecycle setter (parity/back-fill). The load-bearing initial-spawn fire
+    // reads the literal-carried lifecycle_fn inside add_child_spec; this setter
+    // only stores the pointer and never re-fires (see the runtime setter doc).
+    let set_child_lifecycle = intern_runtime_decl(
+        ctx,
+        llvm_mod,
+        &mut runtime_decls,
+        "hew_supervisor_set_child_lifecycle",
+    )?;
     for (idx, child) in layout.children.iter().enumerate() {
         emit_supervisor_child_spec_and_register(
             ctx,
@@ -6941,6 +6968,7 @@ fn emit_supervisor_bootstrap_body<'ctx>(
             add_child_spec,
             set_child_state_drop,
             set_child_state_clone,
+            set_child_lifecycle,
             idx,
             child,
             &layout.name,
@@ -7020,6 +7048,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     add_child_spec: FunctionValue<'ctx>,
     set_child_state_drop: FunctionValue<'ctx>,
     set_child_state_clone: FunctionValue<'ctx>,
+    set_child_lifecycle: FunctionValue<'ctx>,
     idx: usize,
     child: &SupervisorChildLayout,
     sup_name: &str,
@@ -7061,6 +7090,20 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
                 ))
             })?;
             on_crash_fn.as_global_value().as_pointer_value().into()
+        }
+        None => ptr_ty.const_null().into(),
+    };
+
+    // Resolve the lifecycle wrapper fn-pointer. `Some(symbol)` (the MIR layout
+    // marked this child's actor as init/on_start-bearing) → emit the per-actor
+    // wrapper and take its address; `None` → null (the actor has no lifecycle
+    // hook, so the runtime fires nothing). Fail-closed when the symbol is
+    // present but the wrapper cannot be emitted — a null here would silently
+    // skip init/on_start under supervision (the exact bug this lane fixes).
+    let lifecycle_ptr: BasicValueEnum<'ctx> = match &child.lifecycle_symbol {
+        Some(_) => {
+            let wrapper = emit_actor_lifecycle_wrapper(ctx, llvm_mod, &child.actor_name)?;
+            wrapper.as_global_value().as_pointer_value().into()
         }
         None => ptr_ty.const_null().into(),
     };
@@ -7256,7 +7299,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         }
     };
 
-    let field_values: [(u32, BasicValueEnum<'ctx>); 10] = [
+    let field_values: [(u32, BasicValueEnum<'ctx>); 11] = [
         (0, name_ptr.into()),
         (1, init_state_ptr),
         (2, init_state_size),
@@ -7267,6 +7310,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         (7, i64_ty.const_int(arena_cap, false).into()), // arena_cap_bytes from #[max_heap(N)]
         (8, i32_ty.const_int(cycle_flag, false).into()), // cycle_capable from checker side-table
         (9, on_crash_ptr), // on_crash: fn-pointer when child's actor has #[on(crash)], null otherwise
+        (10, lifecycle_ptr), // lifecycle_fn: __hew_lifecycle_<actor> when child's actor has init/#[on(start)], null otherwise
     ];
     for (field_idx, value) in field_values {
         let gep = builder
@@ -7289,6 +7333,26 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
             &format!("hew_supervisor_add_child_spec_call_{idx}"),
         )
         .llvm_ctx("hew_supervisor_add_child_spec call")?;
+
+    // Register the lifecycle wrapper for parity/back-fill symmetry with the
+    // state setters. The INITIAL-spawn lifecycle fire already ran inside the
+    // add_child_spec call above (reading the literal-carried lifecycle_fn); the
+    // setter only stores the pointer and does NOT re-fire (see the runtime
+    // setter doc). Emitted only when the child's actor is hook-bearing.
+    if child.lifecycle_symbol.is_some() {
+        let child_idx_const = i32_ty.const_int(idx as u64, true);
+        builder
+            .build_call(
+                set_child_lifecycle,
+                &[
+                    sup.into(),
+                    child_idx_const.into(),
+                    lifecycle_ptr.into_pointer_value().into(),
+                ],
+                &format!("hew_supervisor_set_child_lifecycle_call_{idx}"),
+            )
+            .llvm_ctx("hew_supervisor_set_child_lifecycle call")?;
+    }
 
     // ── W2.002 Stage 2: register state_drop + state_clone fn pointers
     // against this child slot. Mirrors `__hew_actor_dispatch_<actor>`
@@ -11771,6 +11835,268 @@ fn emit_actor_spawn_lifecycle<'ctx>(
             .llvm_ctx("hew_actor_set_terminate call")?;
     }
 
+    Ok(())
+}
+
+/// Emit the per-actor lifecycle wrapper `__hew_lifecycle_<Actor>(*mut HewActor)`.
+///
+/// The supervisor calls this on every newly spawned child (initial spawn and
+/// restart) through the one firing site in `restart_child_from_spec`. Its body
+/// is the supervised analogue of the direct-spawn `emit_actor_spawn_lifecycle`
+/// site: it builds an execution context FROM the actor pointer, takes the actor
+/// state lock, runs `__init` then `__on_start`, releases the lock, and registers
+/// the terminate trampoline — so a supervised actor runs its lifecycle hooks
+/// exactly once per incarnation, identically to a directly-spawned one.
+///
+/// Returns the wrapper `FunctionValue`. Idempotent: multiple children of the
+/// same actor type share one wrapper (resolved by `get_function`).
+///
+/// SHIM — the wrapper is ZERO-ARG: it threads no `init` parameters. Supervised
+/// init *parameters* are seeded into the spec's `init_state` template (the
+/// existing template-seeding path at `emit_supervisor_child_spec_and_register`),
+/// not passed through this wrapper. WHY: parameterized supervised init needs
+/// arg-threading through the child spec the runtime does not carry yet. WHEN
+/// obsolete: when a supervised-init-args lane lands. WHAT: thread the init args
+/// into the wrapper signature (or a richer spec carrier) and load them here.
+/// The `init_fn` below is still called (with only the context) so a zero-arg
+/// `init()` that reads pre-seeded `self` state runs correctly today.
+///
+/// The body deliberately duplicates the direct-spawn lifecycle logic rather
+/// than sharing it: refactoring the working `emit_actor_spawn_lifecycle` to a
+/// shared `*mut HewActor`-taking core widens the regression surface on the
+/// direct-spawn path. De-duplication is a tracked follow-up.
+fn emit_actor_lifecycle_wrapper<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    actor_name: &str,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    // `actor_name` is the registry key (dotted for module actors); native
+    // symbols use the mangled base, the same authority the direct-spawn site
+    // and MIR's `actor_symbol_base` feed.
+    let symbol_base = mangle_dotted_name(actor_name);
+    let wrapper_name = format!("__hew_lifecycle_{symbol_base}");
+    if let Some(existing) = llvm_mod.get_function(&wrapper_name) {
+        // Only short-circuit when the symbol already has a body. A forward
+        // declaration interned by `lookup_or_declare_lifecycle_fn` (no basic
+        // blocks) must still receive its body here.
+        if existing.count_basic_blocks() > 0 {
+            return Ok(existing);
+        }
+    }
+
+    let init_name = format!("{symbol_base}__init");
+    let start_name = format!("{symbol_base}__on_start");
+    let terminate_name = format!("__terminate_{symbol_base}");
+    let init_fn = llvm_mod.get_function(&init_name);
+    let start_fn = llvm_mod.get_function(&start_name);
+    let terminate_fn = llvm_mod.get_function(&terminate_name);
+
+    // A wrapper is only requested for actors the MIR layout marked as
+    // hook-bearing (init or on_start). If none of the three hooks resolved,
+    // the layout carrier and the module disagree — fail closed rather than
+    // emit an empty wrapper the runtime would call to no effect.
+    if init_fn.is_none() && start_fn.is_none() && terminate_fn.is_none() {
+        return Err(CodegenError::FailClosed(format!(
+            "actor `{actor_name}` requires a supervised lifecycle wrapper \
+             (MIR marked it init/on_start-bearing) but none of `{init_name}`, \
+             `{start_name}`, `{terminate_name}` were declared in the module"
+        )));
+    }
+
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let wrapper_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
+    // Reuse the forward declaration if one exists; otherwise create the fn.
+    let wrapper = llvm_mod.get_function(&wrapper_name).unwrap_or_else(|| {
+        llvm_mod.add_function(&wrapper_name, wrapper_ty, Some(Linkage::External))
+    });
+
+    let builder = ctx.create_builder();
+    let entry = ctx.append_basic_block(wrapper, "entry");
+    builder.position_at_end(entry);
+
+    let actor = wrapper
+        .get_nth_param(0)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "lifecycle wrapper `{wrapper_name}` missing its HewActor* parameter"
+            ))
+        })?
+        .into_pointer_value();
+
+    // Build the execution context FROM the actor pointer — the same 128-byte
+    // context shape `build_spawn_lifecycle_context` builds on the direct-spawn
+    // path: actor ptr at HEW_CTX_OFFSET_ACTOR, actor id at HEW_CTX_OFFSET_ACTOR_ID.
+    let ctx_ty = ctx.i8_type().array_type(128);
+    let ctx_slot = builder
+        .build_alloca(ctx_ty, "lifecycle_ctx")
+        .llvm_ctx("lifecycle ctx alloca")?;
+    // actor ptr → ctx[HEW_CTX_OFFSET_ACTOR]
+    let actor_slot = unsafe {
+        builder
+            .build_gep(
+                ctx.i8_type(),
+                ctx_slot,
+                &[i64_ty.const_int(HEW_CTX_OFFSET_ACTOR as u64, false)],
+                "ctx_actor_slot",
+            )
+            .llvm_ctx("lifecycle ctx actor gep")?
+    };
+    builder
+        .build_store(actor_slot, actor)
+        .llvm_ctx("lifecycle ctx actor store")?;
+    // actor id (loaded from actor[HEW_ACTOR_OFFSET_ID]) → ctx[HEW_CTX_OFFSET_ACTOR_ID]
+    let id_src = unsafe {
+        builder
+            .build_gep(
+                ctx.i8_type(),
+                actor,
+                &[i64_ty.const_int(HEW_ACTOR_OFFSET_ID as u64, false)],
+                "actor_id_src",
+            )
+            .llvm_ctx("lifecycle actor id gep")?
+    };
+    let actor_id = builder
+        .build_load(i64_ty, id_src, "actor_id")
+        .llvm_ctx("lifecycle actor id load")?;
+    let id_dst = unsafe {
+        builder
+            .build_gep(
+                ctx.i8_type(),
+                ctx_slot,
+                &[i64_ty.const_int(HEW_CTX_OFFSET_ACTOR_ID as u64, false)],
+                "ctx_actor_id_slot",
+            )
+            .llvm_ctx("lifecycle ctx actor id gep")?
+    };
+    builder
+        .build_store(id_dst, actor_id)
+        .llvm_ctx("lifecycle ctx actor id store")?;
+
+    let mut runtime_decls = RuntimeDeclMap::new();
+
+    // Acquire the actor state lock (trap on non-zero) before running init /
+    // on_start, matching the direct-spawn ordering. The supervisor holds no
+    // lock on this actor at the fire site, so there is no re-entrancy.
+    emit_lifecycle_lock_call(
+        ctx,
+        llvm_mod,
+        &builder,
+        &mut runtime_decls,
+        wrapper,
+        actor,
+        "hew_actor_state_lock_acquire",
+    )?;
+
+    if let Some(init_fn) = init_fn {
+        // The wrapper is ZERO-ARG (SHIM, see the doc comment): it can only call
+        // a parameter-less `init` — one whose LLVM signature is the lone leading
+        // `*mut HewExecutionContext`. An `init(p: T, ...)` takes its params from
+        // the spawn args, which the supervised path seeds into the spec's
+        // `init_state` TEMPLATE (the existing template-seeding SHIM), not through
+        // this wrapper. Calling such an `init` with only the context would pass
+        // the wrong argument count — LLVM-verify wrong-code. So we run `init`
+        // only when it is ctx-only; a parameterized init's field initialisation
+        // is already covered by the seeded template (verified by
+        // `supervised_actor_init_block`, whose `init(value: i64)` body is empty
+        // and reads `value` from the template).
+        //
+        // WHEN obsolete: when a supervised-init-args lane threads the spawn args
+        // through the wrapper (or a richer spec carrier); then call init here
+        // with the threaded args regardless of arity.
+        if init_fn.count_params() == 1 {
+            builder
+                .build_call(init_fn, &[ctx_slot.into()], &format!("call_{init_name}"))
+                .llvm_ctx("supervised actor init call")?;
+        }
+    }
+    if let Some(start_fn) = start_fn {
+        builder
+            .build_call(start_fn, &[ctx_slot.into()], &format!("call_{start_name}"))
+            .llvm_ctx("supervised actor on(start) call")?;
+    }
+
+    emit_lifecycle_lock_call(
+        ctx,
+        llvm_mod,
+        &builder,
+        &mut runtime_decls,
+        wrapper,
+        actor,
+        "hew_actor_state_lock_release",
+    )?;
+
+    // Register the terminate trampoline AFTER the lock release (outside the
+    // lock), so the registration write is not ordered before any state init
+    // performed by init — matching `emit_actor_spawn_lifecycle`.
+    if let Some(terminate_fn) = terminate_fn {
+        let set_terminate =
+            intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_actor_set_terminate")?;
+        let fn_ptr = terminate_fn.as_global_value().as_pointer_value();
+        builder
+            .build_call(
+                set_terminate,
+                &[actor.into(), fn_ptr.into()],
+                "hew_actor_set_terminate_call",
+            )
+            .llvm_ctx("supervised hew_actor_set_terminate call")?;
+    }
+
+    let _ = i32_ty;
+    builder
+        .build_return(None)
+        .llvm_ctx("lifecycle wrapper ret")?;
+    Ok(wrapper)
+}
+
+/// Self-contained actor-state lock call for the lifecycle wrapper (no `FnCtx`).
+///
+/// Mirrors `emit_actor_state_lock_call`: call the lock fn, compare the result
+/// against zero, branch to a trap block on failure (fail-closed), and continue
+/// in the ok block. Duplicated here because the wrapper has no `FnCtx` to
+/// thread through the shared helper.
+fn emit_lifecycle_lock_call<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    runtime_decls: &mut RuntimeDeclMap<'ctx>,
+    wrapper: FunctionValue<'ctx>,
+    actor: PointerValue<'ctx>,
+    symbol: &str,
+) -> CodegenResult<()> {
+    let lock_fn = intern_runtime_decl(ctx, llvm_mod, runtime_decls, symbol)?;
+    let rc = builder
+        .build_call(lock_fn, &[actor.into()], &format!("{symbol}_call"))
+        .llvm_ctx_with(|| format!("{symbol} call"))?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} returned void")))?
+        .into_int_value();
+    let ok = builder
+        .build_int_compare(
+            inkwell::IntPredicate::EQ,
+            rc,
+            ctx.i32_type().const_zero(),
+            &format!("{symbol}_ok"),
+        )
+        .llvm_ctx_with(|| format!("{symbol} compare"))?;
+    let ok_bb = ctx.append_basic_block(wrapper, &format!("{symbol}_ok_bb"));
+    let trap_bb = ctx.append_basic_block(wrapper, &format!("{symbol}_trap_bb"));
+    builder
+        .build_conditional_branch(ok, ok_bb, trap_bb)
+        .llvm_ctx_with(|| format!("{symbol} branch"))?;
+    builder.position_at_end(trap_bb);
+    let trap = Intrinsic::find("llvm.trap")
+        .and_then(|intrinsic| intrinsic.get_declaration(llvm_mod, &[]))
+        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
+    builder
+        .build_call(trap, &[], &format!("{symbol}_trap"))
+        .llvm_ctx_with(|| format!("{symbol} trap"))?;
+    builder
+        .build_unreachable()
+        .llvm_ctx_with(|| format!("{symbol} unreachable"))?;
+    builder.position_at_end(ok_bb);
     Ok(())
 }
 
@@ -54409,6 +54735,88 @@ fn main() {
              sibling emitter (send, suspending-ask, actor-ask, select-ask) already \
              does this. Removing the reconcile re-opens the wasm32 actor ABI-width \
              bug class."
+        );
+    }
+
+    /// ABI P0 (wire-format parity): the LLVM `hew_child_spec_struct_type` mirror
+    /// must match the `#[repr(C)]` Rust `HewChildSpec` field-for-field, including
+    /// the trailing `lifecycle_fn` pointer added for lifecycle-under-supervision.
+    ///
+    /// The supervisor bootstrap builds a `HewChildSpec` literal from this LLVM
+    /// struct and passes it by pointer to `hew_supervisor_add_child_spec`, which
+    /// reads it as the Rust struct. If the two layouts drift (a field reordered,
+    /// a size or offset mismatch), the runtime reads `lifecycle_fn` from the
+    /// wrong bytes — a silent wrong-code FFI hazard. This test pins every field
+    /// offset and the total size against the host target data, so any future
+    /// edit to either struct that breaks parity fails here, not at runtime.
+    #[test]
+    fn hew_child_spec_struct_matches_runtime_abi() {
+        use hew_runtime::supervisor::HewChildSpec;
+
+        let ctx = Context::create();
+        let td = host_target_data();
+        let llvm_struct = hew_child_spec_struct_type(&ctx);
+
+        // (Rust offset_of, LLVM element index) for every field, in declaration
+        // order. The pairing IS the ABI contract: element N of the LLVM struct
+        // must land at the same byte offset as the matching Rust field.
+        let fields: [(usize, u32, &str); 11] = [
+            (std::mem::offset_of!(HewChildSpec, name), 0, "name"),
+            (
+                std::mem::offset_of!(HewChildSpec, init_state),
+                1,
+                "init_state",
+            ),
+            (
+                std::mem::offset_of!(HewChildSpec, init_state_size),
+                2,
+                "init_state_size",
+            ),
+            (std::mem::offset_of!(HewChildSpec, dispatch), 3, "dispatch"),
+            (
+                std::mem::offset_of!(HewChildSpec, restart_policy),
+                4,
+                "restart_policy",
+            ),
+            (
+                std::mem::offset_of!(HewChildSpec, mailbox_capacity),
+                5,
+                "mailbox_capacity",
+            ),
+            (std::mem::offset_of!(HewChildSpec, overflow), 6, "overflow"),
+            (
+                std::mem::offset_of!(HewChildSpec, arena_cap_bytes),
+                7,
+                "arena_cap_bytes",
+            ),
+            (
+                std::mem::offset_of!(HewChildSpec, cycle_capable),
+                8,
+                "cycle_capable",
+            ),
+            (std::mem::offset_of!(HewChildSpec, on_crash), 9, "on_crash"),
+            (
+                std::mem::offset_of!(HewChildSpec, lifecycle_fn),
+                10,
+                "lifecycle_fn",
+            ),
+        ];
+
+        for (rust_offset, llvm_idx, name) in fields {
+            let llvm_offset = td
+                .offset_of_element(&llvm_struct, llvm_idx)
+                .unwrap_or_else(|| panic!("LLVM struct has no element {llvm_idx} for `{name}`"));
+            assert_eq!(
+                llvm_offset as usize, rust_offset,
+                "HewChildSpec field `{name}` offset mismatch: LLVM {llvm_offset} vs Rust \
+                 {rust_offset} — the #[repr(C)] mirror drifted from the runtime struct"
+            );
+        }
+
+        assert_eq!(
+            td.get_abi_size(&llvm_struct) as usize,
+            std::mem::size_of::<HewChildSpec>(),
+            "HewChildSpec total size mismatch between the LLVM mirror and the Rust struct"
         );
     }
 }

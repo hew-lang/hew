@@ -664,6 +664,17 @@ run_accept_expect_status "supervised_actor_init_block" 42
 # (No WASM check needed: same reason as above.)
 run_accept_expect_status "supervisor_child_after_restart" 7
 
+# Lifecycle-under-supervision: a supervised actor's init() / #[on(start)] must
+# fire on BOTH the initial supervised spawn AND a supervisor-triggered restart.
+# The child is spawned with `value: 7` (the template seed); init() overwrites it
+# to 100 and #[on(start)] adds 10, so `get()` returns 110 only when the hooks
+# actually ran. Exit 220 = 110 (initial) + 110 (after a barrier-driven restart).
+# Pre-fix this read 7 + 7 = 14 (init never fired under supervision) — a distinct,
+# visible failure. This DISTINGUISHES init-firing from template byte-seeding,
+# which the sibling supervised_actor_init_block (empty init, reads the template)
+# cannot. (No WASM check: supervisor fixtures are HIR-gated off wasm32.)
+run_accept_expect_status "supervisor_lifecycle_fires" 220
+
 # Discarded link()/monitor() calls lower to hew_actor_link / hew_actor_monitor
 # with dest=None and reach codegen.
 run_accept_expect_status "link_monitor_discarded" 0

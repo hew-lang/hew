@@ -71,6 +71,26 @@ pub type HewOnCrashFn = unsafe extern "C" fn(
     actor_state_ptr: *mut std::ffi::c_void,
 );
 
+/// Lifecycle wrapper function signature for supervised actors.
+///
+/// Codegen emits one `__hew_lifecycle_<Actor>(*mut HewActor)` per child actor
+/// type that declares an `init` or a `#[on(start)]` hook. The supervisor calls
+/// it on the newly spawned child inside `restart_child_from_spec` — the single
+/// firing site that covers BOTH the initial supervised spawn and every
+/// supervisor-triggered restart — so a supervised actor runs its `init()` /
+/// `#[on(start)]` exactly once per incarnation, identically to a directly
+/// spawned actor.
+///
+/// The wrapper takes only the actor pointer: it builds its own execution
+/// context from the actor (mirroring the direct-spawn lifecycle path), acquires
+/// the actor state lock, runs `__init` then `__on_start`, releases the lock, and
+/// registers the terminate trampoline. It is zero-arg — supervised init
+/// *parameters* are seeded into the spec's `init_state` template, not threaded
+/// through this wrapper.
+///
+/// `void (*lifecycle)(HewActor *actor)`
+pub type HewLifecycleFn = unsafe extern "C" fn(actor: *mut crate::actor::HewActor);
+
 /// Overflow policy for bounded mailboxes.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

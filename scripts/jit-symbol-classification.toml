@@ -567,6 +567,7 @@ stable = [
   "hew_supervisor_nested_get",
   "hew_supervisor_notify_child_event",
   "hew_supervisor_remove_child",
+  "hew_supervisor_set_child_lifecycle",
   "hew_supervisor_set_child_state_clone",
   "hew_supervisor_set_child_state_drop",
   "hew_supervisor_set_circuit_breaker",

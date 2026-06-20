@@ -38,9 +38,10 @@ use hew_runtime::monitor::{hew_actor_demonitor, hew_actor_monitor};
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_dynamic, hew_supervisor_add_child_spec, hew_supervisor_child_count,
     hew_supervisor_get_child_circuit_state, hew_supervisor_get_child_wait,
-    hew_supervisor_set_child_state_drop, hew_supervisor_set_circuit_breaker,
-    hew_supervisor_set_restart_notify, hew_supervisor_wait_restart, HewChildSpec,
-    HEW_CIRCUIT_BREAKER_CLOSED, HEW_CIRCUIT_BREAKER_OPEN, SYS_MSG_DOWN,
+    hew_supervisor_set_child_lifecycle, hew_supervisor_set_child_state_drop,
+    hew_supervisor_set_circuit_breaker, hew_supervisor_set_restart_notify,
+    hew_supervisor_wait_restart, HewChildSpec, HEW_CIRCUIT_BREAKER_CLOSED,
+    HEW_CIRCUIT_BREAKER_OPEN, SYS_MSG_DOWN,
 };
 use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor, TestSupervisor};
 
@@ -335,6 +336,7 @@ fn supervised_actor_crash_and_restart() {
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
+            lifecycle_fn: None,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -398,6 +400,118 @@ fn supervised_actor_crash_and_restart() {
     hew_deterministic_reset();
 }
 
+/// The lifecycle wrapper registered on a child spec fires exactly once on the
+/// INITIAL supervised spawn AND once again on a supervisor-triggered RESTART.
+///
+/// This is the runtime half of the lifecycle-under-supervision contract: the
+/// fn-ptr carried in the `HewChildSpec` literal must be invoked by the single
+/// firing site in `restart_child_from_spec`, which both the initial spawn
+/// (entered via `add_child_spec`) and the restart (entered via
+/// `restart_with_budget_and_strategy`) flow through. The counter must read 1
+/// after the initial spawn (not 0 — proving the literal-carried pointer fired,
+/// not just a post-hoc setter) and 2 after one restart cycle.
+#[test]
+fn lifecycle_wrapper_fires_on_initial_spawn_and_restart() {
+    const STRATEGY_ONE_FOR_ONE: i32 = 0;
+    const RESTART_PERMANENT: i32 = 0;
+    const OVERFLOW_DROP_NEW: i32 = 1;
+
+    static LIFECYCLE_FIRES: AtomicI32 = AtomicI32::new(0);
+
+    // The codegen-emitted wrapper would build a ctx, take the state lock, and
+    // call __init / __on_start. For the runtime firing-site contract we only
+    // need to observe that the supervisor invoked the registered fn-ptr on the
+    // freshly spawned actor, so this stand-in just records the call.
+    unsafe extern "C" fn recording_lifecycle(_actor: *mut hew_runtime::actor::HewActor) {
+        LIFECYCLE_FIRES.fetch_add(1, Ordering::SeqCst);
+    }
+
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    ensure_scheduler();
+    hew_deterministic_reset();
+    DISPATCH_COUNT.store(0, Ordering::SeqCst);
+    DISPATCH_SIGNAL.reset();
+    LIFECYCLE_FIRES.store(0, Ordering::SeqCst);
+
+    let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 5, 60);
+    // SAFETY: sup wraps a live supervisor; child-management FFI is raw.
+    unsafe {
+        hew_supervisor_set_restart_notify(sup.as_ptr());
+
+        let mut state: i32 = 42;
+        let name = cstr("worker");
+        let spec = HewChildSpec {
+            name: name.as_ptr(),
+            init_state: (&raw mut state).cast(),
+            init_state_size: std::mem::size_of::<i32>(),
+            dispatch: Some(counting_dispatch),
+            restart_policy: RESTART_PERMANENT,
+            mailbox_capacity: -1,
+            overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
+            // The load-bearing carrier: the initial-spawn fire reads this
+            // literal field inside add_child_spec, BEFORE the setter below runs.
+            lifecycle_fn: Some(recording_lifecycle),
+        };
+        assert_eq!(
+            hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
+            0
+        );
+        // The setter runs AFTER the initial spawn already fired the wrapper. It
+        // must only STORE the pointer, never re-fire — otherwise the initial
+        // incarnation would see two lifecycle runs. The count below proves it.
+        hew_supervisor_set_child_lifecycle(sup.as_ptr(), 0, recording_lifecycle);
+        assert_eq!(sup.start(), 0);
+        assert_eq!(hew_supervisor_child_count(sup.as_ptr()), 1);
+
+        let child = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
+        assert!(!child.is_null(), "child must be spawned");
+        let original_id = (*child).id;
+
+        // Initial supervised spawn fired the wrapper exactly once — proving the
+        // literal-carried pointer fired AND the setter did not double-fire.
+        assert_eq!(
+            LIFECYCLE_FIRES.load(Ordering::SeqCst),
+            1,
+            "lifecycle wrapper must fire exactly once on the initial supervised spawn"
+        );
+
+        // Crash the child and wait for the supervisor to complete one restart.
+        hew_fault_inject_crash(original_id, 1);
+        hew_actor_send(child, 1, std::ptr::null_mut(), 0);
+        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5_000);
+        assert!(
+            restart_count >= 1,
+            "supervisor should report a completed restart cycle"
+        );
+
+        let restarted = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
+        assert!(
+            !restarted.is_null(),
+            "child should be available after restart"
+        );
+        assert_ne!(
+            (*restarted).id,
+            original_id,
+            "restart should replace the crashed child with a new actor"
+        );
+
+        // The restart flowed through the same firing site, so the wrapper ran
+        // again on the fresh incarnation — exactly twice total, never once
+        // (init skipped on restart) and never thrice (double-fire).
+        assert_eq!(
+            LIFECYCLE_FIRES.load(Ordering::SeqCst),
+            2,
+            "lifecycle wrapper must fire again on the supervisor-triggered restart"
+        );
+    }
+    hew_deterministic_reset();
+}
+
 /// Supervisor with circuit breaker: repeated crashes should trip the breaker.
 #[test]
 fn circuit_breaker_trips_on_repeated_crashes() {
@@ -431,6 +545,7 @@ fn circuit_breaker_trips_on_repeated_crashes() {
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
+            lifecycle_fn: None,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -654,6 +769,7 @@ fn linked_actor_receives_exit_before_supervisor_restarts() {
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
+            lifecycle_fn: None,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -1016,6 +1132,7 @@ fn supervisor_restart_runs_state_drop_on_new_actor() {
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
+            lifecycle_fn: None,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -1102,6 +1219,7 @@ fn dynamic_child_restart_runs_state_drop() {
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
+            lifecycle_fn: None,
         };
 
         let idx = hew_supervisor_add_child_dynamic(sup.as_ptr(), &raw const spec);
@@ -1181,6 +1299,7 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
+            lifecycle_fn: None,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec0),
@@ -1201,6 +1320,7 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
+            lifecycle_fn: None,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec1),

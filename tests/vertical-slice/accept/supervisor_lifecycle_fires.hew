@@ -1,0 +1,86 @@
+// Proving fixture: an actor's init() / #[on(start)] hooks fire under
+// supervision, on BOTH the initial supervised spawn AND a supervisor-triggered
+// restart -- the lifecycle-under-supervision contract.
+//
+// Distinguishing-from-garbage design (the load-bearing test property):
+//   - The child is spawned with `value: 7`, so the byte-copy init_state
+//     TEMPLATE seeds `value = 7`. A value of 100 is reachable ONLY by RUNNING
+//     init(), which OVERWRITES the template seed (`value = 100`).
+//   - #[on(start)] then adds 10 -> 110. So `get()` returns:
+//       * 110 only if BOTH init() and #[on(start)] ran,
+//       * 100 if init ran but on_start did not,
+//       * 7  if neither ran (the PRE-FIX behaviour: init never fired under
+//         supervision, so the field kept its template-seeded spawn value).
+//   The sibling supervised_actor_init_block.hew has an EMPTY init() and reads
+//   its value straight from the spawn-arg template, so it cannot tell
+//   init-firing from template-seeding. This fixture's init() OVERWRITES the
+//   seed, so it can: 7 (template) and 110 (hooks ran) are different numbers.
+//
+// Determinism: the restart is observed via hew_supervisor_wait_restart, the C
+// ABI barrier that blocks until the supervisor's restart counter reaches the
+// target. The counter increments only AFTER restart_child_from_spec +
+// store_child_slot complete, and the lifecycle wrapper fires inside
+// restart_child_from_spec (before store_child_slot), so when the barrier
+// returns the restarted child has already run init()/#[on(start)] and is Live.
+// No sleep_ms; no race.
+//
+// Exit code 220 (= 110 initial + 110 after restart) proves init()+#[on(start)]
+// fired on the initial supervised spawn AND again on the restarted incarnation.
+// A pre-fix run reads 7 + 7 = 14 (init never fires) -- a distinct, visible
+// failure, never a false pass.
+actor Counter {
+    var value: i64;
+    init() {
+        value = 100;
+    }
+    receive fn get() -> i64 {
+        value
+    }
+    receive fn crash_me() {
+        panic("supervised lifecycle restart trigger");
+    }
+    #[on(start)]
+    fn boot() {
+        value = value + 10;
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child counter: Counter(value: 7);
+}
+
+extern "C" {
+    fn hew_supervisor_wait_restart(sup: LocalPid<App>, target: i64, timeout_ms: i64) -> i64;
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let c = sup.counter;
+    let initial = match await c.get() {
+        Ok(v) => v,
+        Err(_) => {
+            return 1;
+        },
+    };
+    if initial != 110 {
+        return initial;
+    }
+    c.crash_me();
+    let restarted = unsafe {
+        hew_supervisor_wait_restart(sup, 1, 5000)
+    };
+    if restarted == 0 {
+        return 2;
+    }
+    let c2 = sup.counter;
+    let after = match await c2.get() {
+        Ok(v) => v,
+        Err(_) => {
+            return 3;
+        },
+    };
+    initial + after
+}

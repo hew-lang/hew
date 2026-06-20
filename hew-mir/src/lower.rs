@@ -1551,6 +1551,18 @@ pub fn lower_hir_module_with_facts(
         for child in &mut sup_layout.children {
             let al = actor_layout_map.get(&child.actor_name);
             child.on_crash_symbol = al.and_then(|al| al.on_crash_symbol.clone());
+            // Lifecycle wrapper: emit a wrapper symbol only when the actor has
+            // an `init` or a `#[on(start)]` hook to run. An actor with neither
+            // needs no supervised-spawn lifecycle call (matching direct-spawn's
+            // no-hook early-return), so the field stays None and codegen leaves
+            // the HewChildSpec.lifecycle_fn pointer null.
+            child.lifecycle_symbol = al.and_then(|al| {
+                if al.init_symbol.is_some() || al.on_start_symbol.is_some() {
+                    Some(mangle_actor_lifecycle_wrapper(&child.actor_name))
+                } else {
+                    None
+                }
+            });
             child.max_heap_bytes = al.and_then(|al| al.max_heap_bytes);
             child.cycle_capable = al.is_some_and(|al| al.cycle_capable);
 
@@ -3023,6 +3035,21 @@ fn mangle_actor_crash_handler(actor_name: &str) -> String {
     format!("{actor_name}__on_crash")
 }
 
+/// Per-actor lifecycle-wrapper symbol: `__hew_lifecycle_<mangled-actor>`.
+///
+/// `actor_name` is the registry key (the dotted qualified name for module
+/// actors); the wrapper symbol mangles it through `mangle_dotted_name` so it
+/// is collision-free across modules, matching the authority codegen uses when
+/// it emits the wrapper body. Stored on `SupervisorChildLayout.lifecycle_symbol`
+/// only when the actor declares an `init` or a `#[on(start)]` hook; codegen
+/// re-derives the same symbol from `child.actor_name` at the wrapper emit site.
+fn mangle_actor_lifecycle_wrapper(actor_name: &str) -> String {
+    format!(
+        "__hew_lifecycle_{}",
+        hew_hir::mangle_dotted_name(actor_name)
+    )
+}
+
 /// Deterministic supervisor-bootstrap symbol mangling.
 ///
 /// Scheme: `<Supervisor>__bootstrap`. The bootstrap function carries
@@ -3839,6 +3866,7 @@ fn build_supervisor_layout(
             // lower_hir_module) to handle any declaration order. Left None
             // here so build_supervisor_layout needs no actor-layout parameter.
             on_crash_symbol: None,
+            lifecycle_symbol: None,
             max_heap_bytes: None,
             cycle_capable: false,
             // Populated in the post-loop pass along with actor layout fields.

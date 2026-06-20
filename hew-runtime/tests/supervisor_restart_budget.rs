@@ -130,6 +130,7 @@ fn concurrent_crashes_decrement_budget_correctly() {
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
                 on_crash: None,
+                lifecycle_fn: None,
             };
             assert_eq!(
                 hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -202,6 +203,7 @@ fn budget_exhaustion_stops_supervisor() {
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
+            lifecycle_fn: None,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -282,6 +284,7 @@ fn delayed_restart_processed_via_mailbox() {
             arena_cap_bytes: 0,
             cycle_capable: 0,
             on_crash: None,
+            lifecycle_fn: None,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -351,6 +354,7 @@ fn multiple_delayed_restarts_budget_consistent() {
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
                 on_crash: None,
+                lifecycle_fn: None,
             };
             assert_eq!(
                 hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),

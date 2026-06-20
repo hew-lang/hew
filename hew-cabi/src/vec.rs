@@ -274,6 +274,10 @@ extern "C" {
     pub fn hew_vec_push_layout(v: *mut HewVec, data: *const c_void, layout: *const HewTypeLayout);
     // Owned-element push (W5.016): memcpy + clone_fn (deep copy in).
     pub fn hew_vec_push_owned(v: *mut HewVec, data: *const c_void);
+    // Owned-element push by MOVE: memcpy only, no clone_fn. For a fresh,
+    // single-use element source (the array-literal desugar) whose heap
+    // ownership transfers to the Vec; the source is dead after the call.
+    pub fn hew_vec_push_owned_move(v: *mut HewVec, data: *const c_void);
 
     // Get
     pub fn hew_vec_get_bool(v: *mut HewVec, index: i64) -> bool;

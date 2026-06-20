@@ -18151,6 +18151,7 @@ fn is_owned_vec_runtime_symbol(symbol: &str) -> bool {
     matches!(
         symbol,
         "hew_vec_push_owned"
+            | "hew_vec_push_owned_move"
             | "hew_vec_get_owned"
             | "hew_vec_set_owned"
             | "hew_vec_pop_owned"
@@ -18170,7 +18171,8 @@ fn owned_vec_fn_type<'ctx>(
     let i32_ty = ctx.i32_type();
     match symbol {
         // void hew_vec_push_owned(ptr vec, ptr data)
-        "hew_vec_push_owned" => Ok(ctx
+        // void hew_vec_push_owned_move(ptr vec, ptr data)
+        "hew_vec_push_owned" | "hew_vec_push_owned_move" => Ok(ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
         // ptr hew_vec_get_owned(ptr vec, i64 index)
@@ -18219,7 +18221,7 @@ fn lower_owned_vec_direct_call(
     next: u32,
 ) -> CodegenResult<()> {
     let expected_arity = match callee {
-        "hew_vec_push_owned" | "hew_vec_get_owned" => 2,
+        "hew_vec_push_owned" | "hew_vec_push_owned_move" | "hew_vec_get_owned" => 2,
         "hew_vec_set_owned" => 3,
         "hew_vec_pop_owned" | "hew_vec_clone_owned" => 1,
         _ => {
@@ -18238,10 +18240,10 @@ fn lower_owned_vec_direct_call(
     let vec_ptr = load_duplex_handle(fn_ctx, args[0], &format!("{callee} arg0"))?;
     let fv = get_or_declare_owned_vec_runtime(fn_ctx.ctx, fn_ctx.llvm_mod, callee)?;
     match callee {
-        "hew_vec_push_owned" => {
+        "hew_vec_push_owned" | "hew_vec_push_owned_move" => {
             if let Some(d) = dest {
                 return Err(CodegenError::FailClosed(format!(
-                    "hew_vec_push_owned returns unit; producer must not supply dest={d:?}"
+                    "{callee} returns unit; producer must not supply dest={d:?}"
                 )));
             }
             let (data_ptr, _elem_ty) = place_pointer(fn_ctx, args[1])?;
@@ -18250,9 +18252,9 @@ fn lower_owned_vec_direct_call(
                 .build_call(
                     fv,
                     &[vec_ptr.into(), data_ptr.into()],
-                    "hew_vec_push_owned_call",
+                    &format!("{callee}_call"),
                 )
-                .llvm_ctx("hew_vec_push_owned call")?;
+                .llvm_ctx_with(|| format!("{callee} call"))?;
         }
         "hew_vec_get_owned" => {
             let dest_place = dest.ok_or_else(|| {

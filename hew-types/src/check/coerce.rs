@@ -338,10 +338,6 @@ impl Checker {
             self.subst.restore(snapshot);
             let expected_resolved = self.subst.resolve(expected);
             let actual_resolved = self.subst.resolve(actual);
-            // Allow i32 where bool is expected (Hew uses i32 for truthiness)
-            if expected_resolved == Ty::Bool && actual_resolved == Ty::I32 {
-                return;
-            }
             // Allow concrete type → dyn Trait coercion when the type implements all traits.
             // Records a `DynCoercion` side-table entry for the downstream MIR and LLVM
             // vtable emitters, and rejects non-object-safe traits at the coercion site

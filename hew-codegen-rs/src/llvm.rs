@@ -43246,15 +43246,15 @@ fn main() {
             .unwrap_or_else(|e| panic!("post-O2 module failed verify: {e}"));
     }
 
-    /// RC9: a trivial (non-coroutine) module run through `run_module_pipeline` at
+    /// A trivial (non-coroutine) module run through `run_module_pipeline` at
     /// `O2` takes the plain `default<O2>` branch and stays verifier-clean. The
     /// post-pass `verify()` inside `run_module_pipeline` is the fail-closed guard;
     /// this pins that the production seam (not just an ad-hoc `run_passes` call)
     /// accepts a real module at O2.
     #[test]
-    fn rc9_run_module_pipeline_o2_noncoro_verifies() {
+    fn o2_pipeline_noncoro_module_verifies() {
         let ctx = Context::create();
-        let module = ctx.create_module("rc9_o2_noncoro");
+        let module = ctx.create_module("o2_noncoro");
         let machine = target_machine_for_triple(&native_emission_triple()).expect("host machine");
         let builder = ctx.create_builder();
 
@@ -43275,14 +43275,14 @@ fn main() {
         module.verify().expect("post-O2 verify");
     }
 
-    /// RC9: `module_has_coroutines` reports `false` for a non-coroutine module, so
+    /// `module_has_coroutines` reports `false` for a non-coroutine module, so
     /// `run_module_pipeline` at O2 selects the plain `default<O2>` branch (not the
     /// folded coro string). Pins the fold-guard predicate the production seam keys
     /// on — a regression that always reported `true` would double-run coro-split.
     #[test]
-    fn rc9_noncoro_module_takes_plain_o2_branch() {
+    fn o2_pipeline_noncoro_takes_default_branch() {
         let ctx = Context::create();
-        let module = ctx.create_module("rc9_fold_guard");
+        let module = ctx.create_module("fold_guard");
         let i64_ty = ctx.i64_type();
         let fn_ty = i64_ty.fn_type(&[], false);
         let f = module.add_function("k", fn_ty, None);
@@ -43298,7 +43298,7 @@ fn main() {
         );
     }
 
-    /// RC9: the `HEW_OPT_LEVEL` env var is a FLOOR — it raises O0 → O2 but never
+    /// The `HEW_OPT_LEVEL` env var is a FLOOR — it raises O0 → O2 but never
     /// lowers O2, and ignores any value other than exactly `"2"`. This is the
     /// test-harness lever the differential-exec gate uses; a regression that let
     /// it demote an explicit O2 build would silently weaken release codegen.
@@ -43307,7 +43307,7 @@ fn main() {
     /// codegen test suite runs in-process, so two env-mutating tests must not
     /// interleave.
     #[test]
-    fn rc9_env_floor_raises_but_never_lowers() {
+    fn opt_level_env_floor_raises_but_never_lowers() {
         use std::sync::Mutex;
         static ENV_LOCK: Mutex<()> = Mutex::new(());
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -43344,10 +43344,10 @@ fn main() {
         restore();
     }
 
-    /// RC9: `OptLevel::from_cli_str` accepts exactly `{"0","2"}` and rejects
-    /// everything else (the fail-closed CLI parse).
+    /// `OptLevel::from_cli_str` accepts exactly `{"0","2"}` and rejects
+    /// everything else — the fail-closed CLI parse.
     #[test]
-    fn rc9_opt_level_from_cli_str_is_closed() {
+    fn opt_level_from_cli_str_is_fail_closed() {
         assert_eq!(OptLevel::from_cli_str("0"), Some(OptLevel::O0));
         assert_eq!(OptLevel::from_cli_str("2"), Some(OptLevel::O2));
         assert_eq!(OptLevel::from_cli_str("1"), None);

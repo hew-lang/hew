@@ -1,5 +1,5 @@
 // Accept fixture: ask-shaped lambda actor with call-syntax dispatch.
-// `actor |n: i64| -> i64 { n*2 }` produces `Duplex<i64, i64>`.
+// `actor |n: i64| -> i64 { n*2 }` produces `LambdaPid<i64, i64>`.
 // Calling `dbl(5)` returns `Result<i64, AskError>` at the type level.
 // Runtime: `hew_lambda_actor_ask` is called, the dispatch thread invokes
 // the synthesised body, the reply is delivered through a one-shot reply
@@ -11,7 +11,9 @@
 // constructs a body panic without UB, so the runtime side is unit-tested
 // in `hew-runtime` rather than driven through a vertical-slice fixture).
 fn main() {
-    let dbl = actor |n: i64| -> i64 { n * 2 };
+    let dbl = actor |n: i64| -> i64 {
+        n * 2
+    };
     let r = dbl(5);
     match r {
         Ok(v) => println(f"ask {v}"),

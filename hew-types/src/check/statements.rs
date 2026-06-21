@@ -460,11 +460,11 @@ impl Checker {
                         let reply_ty = return_type
                             .as_ref()
                             .map_or(Ty::Unit, |ret| self.resolve_type_expr(ret));
-                        let duplex_ty = Ty::duplex(msg_ty, reply_ty);
+                        let handle_ty = Ty::lambda_pid(msg_ty, reply_ty);
                         // Synthetic binding (no source span) — pre-populated for body lookup.
                         // Marked as already-used (read_count=1 in `define`) to avoid a
                         // spurious unused-variable warning at this site.
-                        self.env.define(bind_name.clone(), duplex_ty, false);
+                        self.env.define(bind_name.clone(), handle_ty, false);
                     }
                 }
                 // Set pending_let_closure_name so synthesize_identifier can

@@ -1,11 +1,11 @@
 fn main() -> () [conv=default]
   locals:
-    _0: Duplex<i64, ()>
+    _0: LambdaPid<i64, ()>
     _1: i64
     _2: i64
     _3: i64
     _4: i64
-    _5: Duplex<i64, i64>
+    _5: LambdaPid<i64, i64>
     _6: __hew_lambda_env_main_1
     _7: i64
     _8: i64
@@ -27,8 +27,8 @@ fn main() -> () [conv=default]
   bb0:
     lambda0 = make_lambda_actor __hew_lambda_body_main_0 drop=__hew_lambda_state_drop_noop shape=0 mailbox=64 -> bb1
   bb1:
-    stmt: bind BindingId(0) doubler site=SiteId(0) ty=Duplex<i64, ()>
-    stmt: use BindingId(0) doubler site=SiteId(8) ty=Duplex<i64, ()> intent=Read
+    stmt: bind BindingId(0) doubler site=SiteId(0) ty=LambdaPid<i64, ()>
+    stmt: use BindingId(0) doubler site=SiteId(8) ty=LambdaPid<i64, ()> intent=Read
     stmt: eval site=SiteId(7) ty=Result<(), SendError>
     stmt: bind BindingId(2) factor site=SiteId(11) ty=i64
     _1 = const.i64 21
@@ -39,8 +39,8 @@ fn main() -> () [conv=default]
     _6 = record_init __hew_lambda_env_main_1 { .0=_4 }
     lambda5 = make_lambda_actor __hew_lambda_body_main_1 drop=__hew_lambda_env_drop_main_1 shape=1 mailbox=64, env=_6, env_drops=[none] -> bb2
   bb2:
-    stmt: bind BindingId(3) scale site=SiteId(12) ty=Duplex<i64, i64>
-    stmt: use BindingId(3) scale site=SiteId(19) ty=Duplex<i64, i64> intent=Read
+    stmt: bind BindingId(3) scale site=SiteId(12) ty=LambdaPid<i64, i64>
+    stmt: use BindingId(3) scale site=SiteId(19) ty=LambdaPid<i64, i64> intent=Read
     stmt: bind BindingId(5) a site=SiteId(17) ty=Result<i64, AskError>
     stmt: use BindingId(5) a site=SiteId(21) ty=Result<i64, AskError> intent=Read
     _7 = const.i64 3

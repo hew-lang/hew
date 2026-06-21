@@ -1,0 +1,20 @@
+// Accept + run: explicit `.close()` on a `LambdaPid` handle compiles,
+// lowers, and runs without E_NOT_YET_IMPLEMENTED.
+//
+// `actor |x: i64| { println(x); }` produces `LambdaPid<i64, ()>`.
+// `.send(42)` delivers the message; the explicit `.close()` in statement
+// context invokes `hew_lambda_actor_release` (routed by
+// `Place::LambdaActorHandle` in `lower_duplex_close`). Exit 0 proves
+// the program ran to completion; stdout "42" proves the message was
+// delivered before the handle was released.
+//
+// This fixture guards the blocker: before the fix, the checker accepted
+// `.close()` and recorded `hew_duplex_close`, but the MIR producer had
+// no arm for that symbol → `E_NOT_YET_IMPLEMENTED` at compile time.
+fn main() {
+    let printer = actor |x: i64| {
+        println(x);
+    };
+    printer.send(42);
+    printer.close();
+}

@@ -590,8 +590,9 @@ fn duplex_recv_half_twice_fires_use_after_move() {
 // ---------------------------------------------------------------------------
 
 /// Call-syntax `worker(msg)` and method-syntax `worker.send(msg)` both typecheck
-/// on a lambda-actor handle.  Both route to `hew_duplex_send` because lambda-actor
-/// handles are `Duplex<Msg, Reply>` underneath.
+/// on a lambda-actor handle (typed `LambdaPid<Msg, Reply>`). Both enter the
+/// `hew_duplex_send` rewrite path; MIR re-routes to `hew_lambda_actor_send` via
+/// the `Place::LambdaActorHandle` discriminator.
 ///
 /// Call-syntax remains canonical; `.send()` is an allowed-secondary surface.
 #[test]
@@ -612,13 +613,12 @@ fn lambda_actor_call_syntax_typechecks() {
     );
 }
 
-/// `.send()` on a lambda-actor handle typechecks and records `hew_duplex_send`
-/// in the rewrite table — confirming the Duplex arm fires, not a separate actor arm.
-///
-/// This proves the shared-substrate invariant: the type system cannot distinguish
-/// a lambda-actor Duplex from a raw-duplex Duplex at the method-call site.
+/// `.send()` on a lambda-actor handle (typed `LambdaPid<Msg, Reply>`) typechecks
+/// and records `hew_duplex_send` in the rewrite table — the shared send-entry hint
+/// that MIR re-routes to `hew_lambda_actor_send` via the `Place::LambdaActorHandle`
+/// discriminator (the two-level checker-type vs MIR-discriminator design).
 #[test]
-fn lambda_actor_dot_send_routes_through_duplex_arm() {
+fn lambda_actor_dot_send_records_send_entry_rewrite() {
     let source = r"
         fn main() {
             let worker = actor |msg: i64| {
@@ -630,14 +630,110 @@ fn lambda_actor_dot_send_routes_through_duplex_arm() {
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "`.send()` on lambda-actor handle should typecheck via Duplex::send; got: {:#?}",
+        "`.send()` on lambda-actor handle should typecheck via LambdaPid::send; got: {:#?}",
         output.errors
     );
     assert!(
         has_rewrite(&output, "hew_duplex_send"),
-        "`.send()` on lambda-actor handle must record hew_duplex_send rewrite \
-         (Duplex arm must fire, not a separate actor arm); got: {:#?}",
+        "`.send()` on lambda-actor handle must record the hew_duplex_send entry hint \
+         (MIR re-routes to hew_lambda_actor_send by Place); got: {:#?}",
         output.method_call_rewrites
+    );
+}
+
+/// `.close()` on a lambda-actor handle typechecks (the actor surface includes
+/// `close`) and consumes the handle.
+#[test]
+fn lambda_actor_dot_close_typechecks_and_consumes() {
+    let source = r"
+        fn main() {
+            let worker = actor |msg: i64| {
+                println(msg);
+            };
+            let _ = worker.close();
+        }
+    ";
+    let output = typecheck(source);
+    assert!(
+        output.errors.is_empty(),
+        "`.close()` on lambda-actor handle should typecheck; got: {:#?}",
+        output.errors
+    );
+    assert!(
+        has_rewrite(&output, "hew_duplex_close"),
+        "`.close()` on lambda-actor handle must record the close entry hint; got: {:#?}",
+        output.method_call_rewrites
+    );
+}
+
+/// A lambda actor is NOT a channel: `.recv()` must be rejected with
+/// `UndefinedMethod`. Surfacing `.recv()` would mis-route to `hew_duplex_recv`
+/// (wrong ABI — the caller never reads the actor's mailbox).
+#[test]
+fn lambda_actor_recv_rejected() {
+    let source = r"
+        fn main() {
+            let worker = actor |msg: i64| -> i64 {
+                msg + 1
+            };
+            let _ = worker.recv();
+        }
+    ";
+    let output = typecheck(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::UndefinedMethod)),
+        "`.recv()` on a lambda-actor handle must be rejected (a lambda actor has \
+         no channel recv surface); got: {:#?}",
+        output.errors
+    );
+}
+
+/// A lambda actor cannot be split: `.send_half()` must be rejected with
+/// `UndefinedMethod`.
+#[test]
+fn lambda_actor_send_half_rejected() {
+    let source = r"
+        fn main() {
+            let worker = actor |msg: i64| {
+                println(msg);
+            };
+            let _ = worker.send_half();
+        }
+    ";
+    let output = typecheck(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::UndefinedMethod)),
+        "`.send_half()` on a lambda-actor handle must be rejected (an actor handle \
+         cannot be split in two); got: {:#?}",
+        output.errors
+    );
+}
+
+/// `.recv_half()` on a lambda-actor handle must be rejected with `UndefinedMethod`.
+#[test]
+fn lambda_actor_recv_half_rejected() {
+    let source = r"
+        fn main() {
+            let worker = actor |msg: i64| {
+                println(msg);
+            };
+            let _ = worker.recv_half();
+        }
+    ";
+    let output = typecheck(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::UndefinedMethod)),
+        "`.recv_half()` on a lambda-actor handle must be rejected; got: {:#?}",
+        output.errors
     );
 }
 

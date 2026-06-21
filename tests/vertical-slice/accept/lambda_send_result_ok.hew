@@ -2,7 +2,7 @@
 // `Result<(), SendError>` AND still delivers the message.
 //
 // `actor |x: i64| { println(x); }` produces a lambda-actor handle
-// (`Duplex<i64, ()>` underneath). `.send(msg)` in a value context is
+// (`LambdaPid<i64, ()>`). `.send(msg)` in a value context is
 // tell-shaped (reply type `()`), so the checker types it `Result<(),
 // SendError>`. MIR sizes the dest from that recorded type and routes the
 // call through the lambda-actor ABI; codegen materializes the Result in

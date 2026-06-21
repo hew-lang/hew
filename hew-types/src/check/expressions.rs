@@ -1702,7 +1702,7 @@ impl Checker {
                 // a contextual hint.  This lets us extract the actual body return type
                 // and emit targeted diagnostics rather than generic Mismatch errors:
                 //   - E_LAMBDA_RETURN_TYPE_MISMATCH: body return type ≠ declared reply type.
-                //   - E_LAMBDA_SELF_ESCAPE: body returns a Duplex handle (leaks the actor).
+                //   - E_LAMBDA_SELF_ESCAPE: body returns an actor handle (leaks the actor).
                 // Bidirectional hint for the body is intentionally omitted here (slight
                 // inference degradation for actor bodies) to keep diagnostics clean.
                 // WHEN-OBSOLETE: if a richer bidirectional inference mode is added that
@@ -1743,24 +1743,25 @@ impl Checker {
                     }
                     _ => Ty::Unit,
                 };
-                // E_LAMBDA_SELF_ESCAPE: the lambda body returns a Duplex handle.
-                // A lambda body that produces a Duplex<...> value is leaking an actor
-                // handle outside the actor boundary — the handle's lifetime is bound to
-                // the let-binding site, not to values the body produces.
+                // E_LAMBDA_SELF_ESCAPE: the lambda body returns an actor handle.
+                // A lambda body that produces a `LambdaPid<...>` (lambda-actor handle)
+                // or a raw `Duplex<...>` channel is leaking a move-only handle outside
+                // the actor boundary — the handle's lifetime is bound to the let-binding
+                // site, not to values the body produces.
                 //
-                // CONSERVATIVE APPROXIMATION (slice 2): any Duplex-typed body is rejected,
+                // CONSERVATIVE APPROXIMATION (slice 2): any handle-typed body is rejected,
                 // including the "factory" pattern (actor body returns a *different* actor's
-                // handle). Slice 3 can narrow this to only reject Duplex values that alias
+                // handle). Slice 3 can narrow this to only reject handle values that alias
                 // a capture from the enclosing let-binding, using MIR-level alias analysis.
-                // Until then, returning any Duplex from an actor body is forbidden.
+                // Until then, returning any actor handle from an actor body is forbidden.
                 //
                 // WHEN-OBSOLETE: slice 3 adds MIR-level self-ref weak capture that covers
                 // the runtime dimension of self-escape; this is the static type-level gate.
-                if body_ret.as_duplex().is_some() {
+                if body_ret.as_lambda_pid().is_some() || body_ret.as_duplex().is_some() {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        "actor lambda body returns a Duplex handle — actor handles cannot \
+                        "actor lambda body returns an actor handle — actor handles cannot \
                          escape the actor boundary via a return value (E_LAMBDA_SELF_ESCAPE); \
                          use a tell-shaped actor (no return type) instead"
                             .to_string(),
@@ -1786,9 +1787,9 @@ impl Checker {
                 };
                 // The reply type determines tell vs ask:
                 //   tell-shaped (`actor |p| { ... }` — no explicit return type, or `-> ()`)
-                //     → `Duplex<Msg, ()>` — call-site returns `Result<(), SendError>`
+                //     → `LambdaPid<Msg, ()>` — call-site returns `Result<(), SendError>`
                 //   ask-shaped (`actor |p| -> Reply { ... }`)
-                //     → `Duplex<Msg, Reply>` — call-site returns `Result<Reply, AskError>`
+                //     → `LambdaPid<Msg, Reply>` — call-site returns `Result<Reply, AskError>`
                 let reply_ty = if let Some(ret_ann) = return_type.as_ref() {
                     let resolved = self.resolve_type_expr(ret_ann);
                     if matches!(resolved, Ty::Unit) {
@@ -1849,7 +1850,7 @@ impl Checker {
                         ),
                     );
                 }
-                Ty::duplex(msg_ty, reply_ty)
+                Ty::lambda_pid(msg_ty, reply_ty)
             }
             Expr::Scope { body: block } => {
                 // Type-check the block body for diagnostics; the scope itself is Unit

@@ -8777,7 +8777,7 @@ impl Builder {
                 //
                 // A user `let log = actor |s|{..}; log("hi")` produces a
                 // binding `log` whose MIR `Place` is `LambdaActorHandle(N)`
-                // and whose HIR type is `Duplex<Msg, Reply>`. Two problems
+                // and whose HIR type is `LambdaPid<Msg, Reply>`. Two problems
                 // collide here without an early intercept:
                 //
                 // 1. `log` is also the name of a `stdlib_catalog` math
@@ -8792,8 +8792,8 @@ impl Builder {
                 //    need the same lambda-actor dispatch.
                 //
                 // The intercept is gated on the binding's MIR Place,
-                // NOT on the type alone: a `Duplex<>`-typed binding that
-                // was built from `Duplex::pair()` lives in a generic
+                // NOT on the type alone: a raw `Duplex<>`-typed binding that
+                // was built from `duplex` / `duplex_pair` lives in a generic
                 // `Place::DuplexHandle`, not a `LambdaActorHandle`, and
                 // its call surface is `.send()` / `.recv()` method calls,
                 // not call-syntax. The Place-variant guard is the
@@ -8811,14 +8811,14 @@ impl Builder {
                     }
                     // Body-side captured-handle dispatch: inside a lambda-actor
                     // body, the forward-bound self binding (and any captured
-                    // Duplex handle) resolves through `capture_env_sources`,
-                    // not `binding_locals`. The callee's Duplex type plus the
+                    // lambda-actor handle) resolves through `capture_env_sources`,
+                    // not `binding_locals`. The callee's `LambdaPid` type plus the
                     // env-source entry is the routing signal — the loaded env
                     // field is the handle value.
                     if self.capture_env_sources.contains_key(binding_id)
                         && matches!(
                             &callee.ty,
-                            ResolvedTy::Named { name, .. } if name == "Duplex"
+                            ResolvedTy::Named { name, .. } if name == "LambdaPid"
                         )
                     {
                         return self.lower_lambda_actor_call(callee, args, &expr.ty, expr.site);
@@ -18049,6 +18049,7 @@ impl Builder {
         match symbol {
             "hew_duplex_pair" => self.lower_duplex_pair(hir_args, site),
             "hew_duplex_send" => self.lower_duplex_send(hir_args, site, context, result_ty),
+            "hew_duplex_close" => self.lower_duplex_close(hir_args, site, context, result_ty),
             "hew_supervisor_stop" => self.lower_supervisor_stop(hir_args, site),
             "hew_actor_link" | "hew_actor_monitor" => {
                 self.lower_actor_link_or_monitor(symbol, hir_args, site, context)
@@ -19027,6 +19028,92 @@ impl Builder {
         ));
 
         dest
+    }
+
+    /// Lower an explicit `.close()` call rewritten to `hew_duplex_close`.
+    ///
+    /// The checker records `"hew_duplex_close"` for every `.close()` call on a
+    /// `Duplex<S,R>`-typed receiver, including `LambdaPid<M,R>` handles (which
+    /// surface as `Duplex<M,R>`).  The `Place` variant on the receiver is the
+    /// authority for which runtime symbol to invoke:
+    ///
+    ///   - `Place::LambdaActorHandle(N)` → `hew_lambda_actor_release`.
+    ///     The release ABI takes only the handle pointer; codegen rejects
+    ///     `dest: Some(...)` for this symbol, so the call is always `dest: None`.
+    ///     The checker records `Unit` as the return type (the release never
+    ///     fails), so in value context a unit literal is produced.
+    ///
+    ///   - Any other `Place` → raw `Duplex` explicit close; not yet lowered.
+    ///     Fails closed so the pipeline rejects the program before codegen runs.
+    ///
+    /// The checker marks the receiver as consumed (`method_call_consumes_receiver`
+    /// + `mark_expr_moved_if_non_copy`), so drop elaboration at scope exit will
+    ///   not re-drop the released handle.
+    fn lower_duplex_close(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+        _result_ty: Option<&ResolvedTy>,
+    ) -> Option<Place> {
+        let Some(receiver_expr) = hir_args.first() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "hew_duplex_close with no receiver arg".to_string(),
+                    site,
+                },
+                note: "hew_duplex_close requires at least one argument (the handle)".to_string(),
+            });
+            return None;
+        };
+        let recv_place = self.lower_value(receiver_expr)?;
+
+        if let Place::LambdaActorHandle(_) = recv_place {
+            // Explicit LambdaPid::close() → hew_lambda_actor_release.
+            //
+            // The release ABI is: hew_lambda_actor_release(handle: *mut HewLambdaActorHandle)
+            // Codegen rejects dest: Some(_) for this symbol (the i32 rc is always
+            // discarded), so we never pass a dest — the handle is released and the
+            // result, if needed in value context, is a unit literal (the checker
+            // records `()` for LambdaPid::close() since the release is
+            // unconditionally successful).
+            self.push_instr(Instr::CallRuntimeAbi(
+                crate::model::RuntimeCall::new("hew_lambda_actor_release", vec![recv_place], None)
+                    .expect("hew_lambda_actor_release is an allowlisted runtime symbol"),
+            ));
+
+            // The checker records `Unit` as the return type for LambdaPid::close()
+            // (the release never fails). In value context, bind a unit literal so
+            // any `let _ = handle.close()` binding has a well-typed Place.
+            if context == RuntimeCallContext::ValueNeeded {
+                let unit_place = self.alloc_local(ResolvedTy::Unit);
+                self.push_instr(Instr::UnitLit { dest: unit_place });
+                Some(unit_place)
+            } else {
+                None
+            }
+        } else {
+            // Raw Duplex explicit close is not yet lowered by this producer.
+            // The scope-exit implicit close goes through drop elaboration
+            // (`place_aware_drop_fn` → DuplexClose) and is already correct.
+            // This path fires only for an explicit `handle.close()` on a raw
+            // `Duplex<S,R>` binding; it is uncommon and will land in a
+            // follow-on slice. Fail closed so the pipeline does not silently
+            // skip the close.
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!(
+                        "explicit Duplex::close() on non-lambda handle ({recv_place:?})"
+                    ),
+                    site,
+                },
+                note: "explicit `Duplex::close()` on a raw `Duplex<S,R>` binding is not yet \
+                       lowered; the handle is closed implicitly at scope exit by drop \
+                       elaboration. Remove the explicit `.close()` call to compile."
+                    .to_string(),
+            });
+            None
+        }
     }
 
     fn lower_actor_payload(
@@ -20824,7 +20911,7 @@ impl Builder {
             let offset =
                 FieldOffset(u32::try_from(idx).expect("closure capture count exceeds u32::MAX"));
 
-            // Defence-in-depth gate: a Duplex<S,R> (lambda-actor handle) must
+            // Defence-in-depth gate: a `LambdaPid<M,R>` (lambda-actor handle) must
             // never appear as a fn-closure capture env field. The authoritative
             // rejection is `TypeErrorKind::ClosureCapturesDuplexHandle` in the
             // checker's `check_call`; if MIR sees one here, the checker gate
@@ -20832,7 +20919,7 @@ impl Builder {
             // misrouting to `hew_duplex_send` (wrong runtime ABI).
             if matches!(
                 &capture.ty,
-                ResolvedTy::Named { name, .. } if name == "Duplex"
+                ResolvedTy::Named { name, .. } if name == "LambdaPid"
             ) {
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::ClosureCapturesDuplexHandle {
@@ -20840,7 +20927,7 @@ impl Builder {
                         site: expr.site,
                     },
                     note: format!(
-                        "closure capture `{}` has type Duplex<_,_>; no env-materialization \
+                        "closure capture `{}` has type LambdaPid<_,_>; no env-materialization \
                          protocol exists — checker gate in `check_call` must have been bypassed",
                         capture.name
                     ),

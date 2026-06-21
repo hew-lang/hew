@@ -52,6 +52,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::SendHalf
             | BuiltinType::RecvHalf
             | BuiltinType::LambdaActorHandle
+            | BuiltinType::LambdaPid
             | BuiltinType::CrashInfo
             | BuiltinType::CrashAction
             | BuiltinType::SendError
@@ -857,6 +858,32 @@ impl Ty {
         match self {
             Ty::Named {
                 builtin: Some(BuiltinType::Duplex),
+                args,
+                ..
+            } if args.len() == 2 => Some((&args[0], &args[1])),
+            _ => None,
+        }
+    }
+
+    /// Construct `LambdaPid<M, R>` — the user-visible lambda-actor handle.
+    ///
+    /// `M` is the message type (single param, a `Tuple` for multi-param, or
+    /// `Unit` for a zero-arg actor); `R` is the reply type (`Unit` for a
+    /// tell-shaped actor, or the declared `-> R` reply for an ask-shaped one).
+    /// Send iff both `M` and `R` are Send (the message and reply cross the
+    /// actor boundary). A PID-like handle, distinct from the `Duplex` channel
+    /// substrate: it has no `.recv()` / `.send_half()` / `.recv_half()` surface.
+    #[must_use]
+    pub fn lambda_pid(msg: Ty, reply: Ty) -> Ty {
+        Self::builtin_named(BuiltinType::LambdaPid, vec![msg, reply])
+    }
+
+    /// Extract `(M, R)` from `LambdaPid<M, R>`, or `None` if not a `LambdaPid`.
+    #[must_use]
+    pub fn as_lambda_pid(&self) -> Option<(&Ty, &Ty)> {
+        match self {
+            Ty::Named {
+                builtin: Some(BuiltinType::LambdaPid),
                 args,
                 ..
             } if args.len() == 2 => Some((&args[0], &args[1])),

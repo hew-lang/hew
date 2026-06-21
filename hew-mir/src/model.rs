@@ -2803,8 +2803,8 @@ pub enum Place {
     /// handle closes both directions (design §7.3).
     DuplexHandle(u32),
     /// A lambda-actor handle. The carried `u32` is the `Local(N)` id
-    /// whose `locals[N]` is the lambda-actor's `Duplex<Msg, Reply>`
-    /// (the surface call-syntax dispatches through this Duplex).
+    /// whose `locals[N]` is the lambda-actor's `LambdaPid<Msg, Reply>`
+    /// (the user-visible handle the surface call-syntax dispatches through).
     /// Drop semantics: stop-on-last-handle-drop with weak-ref body
     /// capture (§5.9 ratification 2).
     LambdaActorHandle(u32),

@@ -4304,16 +4304,19 @@ pub(crate) fn primitive_to_llvm<'ctx>(
         ResolvedTy::Named { name, .. }
             if matches!(
                 name.as_str(),
-                "Duplex" | "LocalPid" | "ActorRef" | "Actor" | "Stream" | "Sink"
+                "Duplex" | "LambdaPid" | "LocalPid" | "ActorRef" | "Actor" | "Stream" | "Sink"
             ) =>
         {
-            // M2 substrate duplex handle. The producer (`hew-mir/src/lower.rs`
+            // M2 substrate handle. The producer (`hew-mir/src/lower.rs`
             // `lower_duplex_pair` + `lower_duplex_send`) allocates a
             // `ResolvedTy::Named { name: "Duplex", .. }` local for every
-            // duplex handle; codegen materialises that slot as a raw opaque
-            // `ptr` (an `*mut HewDuplexHandle` in the runtime C-ABI). The
-            // `hew_duplex_pair` out-param protocol writes through this
-            // alloca; `hew_duplex_send` loads from it. LESSONS:
+            // duplex handle; the lambda-actor producer allocates a
+            // `ResolvedTy::Named { name: "LambdaPid", .. }` local re-tagged as
+            // `Place::LambdaActorHandle`. Codegen materialises both slots as a
+            // raw opaque `ptr` (`*mut HewDuplexHandle` / `*mut
+            // HewLambdaActorHandle` in the runtime C-ABI). The `hew_duplex_pair`
+            // out-param protocol writes through this alloca; `hew_duplex_send` /
+            // `hew_lambda_actor_send` loads from it. LESSONS:
             // exhaustive-traversal-and-lowering, boundary-fail-closed.
             Ok(ctx.ptr_type(AddressSpace::default()).into())
         }

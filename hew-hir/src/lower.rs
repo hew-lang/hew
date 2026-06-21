@@ -10564,7 +10564,7 @@ impl LowerCtx {
                 {
                     let binding_ty = match ty.as_ref() {
                         Some(annotation) => self.lower_type(annotation),
-                        None => self.actor_lambda_duplex_ty(lambda_params, return_type.as_ref()),
+                        None => self.actor_lambda_handle_ty(lambda_params, return_type.as_ref()),
                     };
                     // Pre-bind in the current scope; record the id so
                     // we can detect a self-reference inside the body
@@ -13871,7 +13871,7 @@ impl LowerCtx {
         }
     }
 
-    /// Build the `Duplex<Msg, Reply>` `ResolvedTy` for an actor-lambda
+    /// Build the `LambdaPid<Msg, Reply>` `ResolvedTy` for an actor-lambda
     /// from its parameter list and optional return-type annotation.
     /// Mirrors the forward-bind logic in `hew-types::check::statements`:
     /// zero params → Unit message; one param → that param's type;
@@ -13895,7 +13895,7 @@ impl LowerCtx {
     /// - REAL SOLUTION: lift the slice-2 unifier's substitution into a
     ///   `BindingId → Ty` side-table emitted alongside HIR and consumed
     ///   by MIR lowering, so HIR never has to invent a stand-in.
-    fn actor_lambda_duplex_ty(
+    fn actor_lambda_handle_ty(
         &mut self,
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
@@ -13916,9 +13916,9 @@ impl LowerCtx {
             .as_ref()
             .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
         ResolvedTy::Named {
-            name: "Duplex".to_string(),
+            name: "LambdaPid".to_string(),
             args: vec![msg_ty, reply_ty],
-            builtin: Some(hew_types::BuiltinType::Duplex),
+            builtin: Some(hew_types::BuiltinType::LambdaPid),
             is_opaque: false,
         }
     }
@@ -14381,7 +14381,7 @@ impl LowerCtx {
     /// classifies the strength: `id == current_actor_self.0` → Weak
     /// (recursive self-dispatch, §5.9 ratification 2), else → Strong.
     ///
-    /// The HIR `expr.ty` is the Duplex<Msg, Reply> handle type. The
+    /// The HIR `expr.ty` is the `LambdaPid<Msg, Reply>` handle type. The
     /// MIR producer wires this directly into a
     /// `Place::LambdaActorHandle` whose drop selects
     /// `DropKind::LambdaActorRelease`.
@@ -14391,7 +14391,7 @@ impl LowerCtx {
         return_type: Option<&Spanned<TypeExpr>>,
         body: &Spanned<Expr>,
     ) -> (HirExprKind, ResolvedTy) {
-        let actor_ty = self.actor_lambda_duplex_ty(params, return_type);
+        let actor_ty = self.actor_lambda_handle_ty(params, return_type);
         let reply_ty = match &actor_ty {
             ResolvedTy::Named { args, .. } if args.len() == 2 => args[1].clone(),
             _ => ResolvedTy::Unit,

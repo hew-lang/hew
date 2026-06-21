@@ -20998,6 +20998,198 @@ mod for_loop_iterable_fail_closed {
     }
 }
 
+// ── fork-block body type-checking ─────────────────────────────────────────
+
+mod fork_block_body_checks {
+    use super::*;
+
+    #[test]
+    fn fork_block_body_clean_single_call_has_no_type_errors() {
+        // A clean `fork { f() }` body type-checks with no diagnostics: the
+        // checker visits the body but a well-typed unit call is valid.
+        let output = check_source(
+            r"
+            fn worker() {}
+            fn main() {
+                scope {
+                    fork {
+                        worker();
+                    };
+                };
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "clean single-call fork body should produce no type errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_block_arg_bearing_body_is_type_checked() {
+        // Pre-fold the block body was never visited, so a wrong-typed call
+        // argument inside `fork { ... }` was silently accepted. The fold routes
+        // the body through `check_block`, so the mismatch must now surface as a
+        // type error instead of being bypassed.
+        let output = check_source(
+            r#"
+            fn work(n: i64) { let _ = n; }
+            fn main() {
+                scope {
+                    fork {
+                        work("not an int");
+                    };
+                };
+            }
+            "#,
+        );
+        assert!(
+            output.errors.iter().any(|e| {
+                matches!(
+                    &e.kind,
+                    TypeErrorKind::Mismatch { expected, actual }
+                        if expected == "i64" && actual == "string"
+                )
+            }),
+            "arg-bearing fork body must surface the arg type mismatch; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_block_multi_statement_body_is_type_checked() {
+        // A multi-statement fork body is visited statement-by-statement: a bad
+        // call in the second statement is reported even though the first is
+        // well-typed. (HIR lowering separately fails the multi-statement shape
+        // closed; this test pins only the checker's body coverage.)
+        let output = check_source(
+            r#"
+            fn ok() {}
+            fn work(n: i64) { let _ = n; }
+            fn main() {
+                scope {
+                    fork {
+                        ok();
+                        work("nope");
+                    };
+                };
+            }
+            "#,
+        );
+        assert!(
+            output.errors.iter().any(|e| {
+                matches!(
+                    &e.kind,
+                    TypeErrorKind::Mismatch { expected, actual }
+                        if expected == "i64" && actual == "string"
+                )
+            }),
+            "multi-statement fork body must type-check each statement; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_block_string_arg_parent_use_after_fork_block_rejected() {
+        // Ownership hole regression: `fork { shout(greeting) }` must mark
+        // `greeting` (a non-Copy `string`) moved into the child task, so that
+        // parent use after the fork reports `UseAfterMove`.
+        //
+        // The block form `fork { f(args) }` and the named form
+        // `fork ts = f(args)` must be symmetric — the named form already
+        // rejects parent-use-after-move; this test pins the block form.
+        let output = check_source(
+            r#"
+            fn shout(msg: string) {}
+
+            fn main() {
+                let greeting: string = "hello" + " world";
+                scope {
+                    fork {
+                        shout(greeting);
+                    };
+                };
+                // greeting was moved into the fork block — UseAfterMove here.
+                let _x = greeting;
+            }
+            "#,
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::UseAfterMove),
+            "parent use of a string arg after fork-block must be UseAfterMove \
+             (parity with named fork); got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_block_bitcopy_arg_parent_use_after_fork_block_accepted() {
+        // BitCopy scalars (i64) passed to a fork-block must remain live in
+        // the parent scope — no UseAfterMove for Copy types.
+        let output = check_source(
+            r"
+            fn add_print(a: i64, b: i64) {}
+
+            fn main() {
+                let x: i64 = 20;
+                let y: i64 = 22;
+                scope {
+                    fork {
+                        add_print(x, y);
+                    };
+                };
+                // BitCopy scalars remain live in the parent.
+                let _sum = x + y;
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "parent use of i64 args after fork-block must check clean \
+             (BitCopy exemption); got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_block_tail_expr_non_call_emits_actionable_diagnostic() {
+        // `fork { 42 }` — a bare tail-expression with no semicolon — must
+        // emit the actionable fork-shape message ("fork{} bodies must be a
+        // direct function call") rather than a generic type mismatch.
+        // Regression pin: previously the checker deferred to check_block
+        // which emitted "type mismatch: expected `()`, found `i64`".
+        let output = check_source(
+            r"
+            fn main() {
+                scope {
+                    fork { 42 };
+                };
+            }
+            ",
+        );
+        let has_actionable = output.errors.iter().any(|e| {
+            matches!(&e.kind, TypeErrorKind::InvalidOperation)
+                && e.message.contains("fork")
+                && e.message.contains("direct function call")
+        });
+        assert!(
+            has_actionable,
+            "fork {{ 42 }} (tail expr, no semicolon) must emit the actionable fork-shape \
+             diagnostic, not a generic type mismatch; got: {:#?}",
+            output.errors
+        );
+        // Must still be fail-closed (at least one error).
+        assert!(
+            !output.errors.is_empty(),
+            "fork {{ 42 }} must produce at least one error"
+        );
+    }
+}
+
 /// Regression (L23 / `SpanKey` per-module discriminator): a closure literal
 /// living in a *non-root* module must not trip the fail-closed
 /// `ClosureCaptureModeUnresolved` / `ClosureEscapeKindUnresolved` contract

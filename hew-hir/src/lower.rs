@@ -24308,7 +24308,20 @@ fn check_fork_child_shape(
 }
 
 /// Check fork block body shape.
-/// Sites: hew-mir/src/lower.rs:7774, 7787, 7799, 7811 (`ForkBlock` body)
+///
+/// The checker's `synthesize_concurrency` `Expr::ForkBlock` arm now fully
+/// type-checks the body (statements, callee arguments, tail expression), so the
+/// shape restrictions here are NOT type-coverage proxies — they mirror exactly
+/// the body shapes the MIR `lower_fork_block_task` lowering can currently spawn:
+/// a single direct module-function call (any arity). Everything else fails
+/// closed here with an actionable compile-time diagnostic, the earliest clean
+/// point, rather than reaching MIR as a less-legible `NotYetImplemented`.
+///
+/// Unlocking multi-statement / non-call fork bodies is downstream MIR work
+/// (wrap the body in a synthesized anonymous task entry point, mirroring the
+/// lambda-actor path); until then they reject here.
+///
+/// Sites: hew-mir/src/lower.rs `lower_fork_block_task` (`ForkBlock` body).
 fn check_fork_block_shape(
     body: &hew_parser::ast::Block,
     span: &Span,
@@ -24326,7 +24339,9 @@ fn check_fork_block_shape(
                 reason: "empty body".to_string(),
             },
             span.clone(),
-            "fork block body must contain exactly one direct function call".to_string(),
+            "empty `fork { }` spawns nothing; put a function call in the body, \
+             e.g. `fork { work() }`"
+                .to_string(),
         ));
         return;
     }
@@ -24338,7 +24353,9 @@ fn check_fork_block_shape(
                 reason: "multi-statement".to_string(),
             },
             span.clone(),
-            "fork block body must contain exactly one statement or expression".to_string(),
+            "multi-statement `fork { }` bodies are not yet supported; move the work \
+             into a function and spawn it as `fork { the_fn() }`"
+                .to_string(),
         ));
         return;
     }
@@ -24353,7 +24370,7 @@ fn check_fork_block_shape(
         body.trailing_expr.as_ref().map(|e| &e.0)
     };
 
-    if let Some(Expr::Call { function, args, .. }) = call_expr {
+    if let Some(Expr::Call { function, .. }) = call_expr {
         // Must be a direct function identifier
         if let Expr::Identifier(name) = &function.0 {
             // FC-P1-A1 (revision pass 2, Finding 2): strip `mod::` prefix
@@ -24372,25 +24389,12 @@ fn check_fork_block_shape(
             // FC-P1-A1 (revision pass 2, Finding 1): Non-unit return is
             // VALID at spawn time — see `lower_spawned_call` comment.
             //
-            // The block form (`fork { f(…); }`) stays nullary: the checker
-            // never visits block bodies, so arg types are unchecked there.
-            // Argument-bearing spawns must use the named form
-            // (`fork t = f(args)`), where the checker fully type-checks the
-            // call. Any args here would silently bypass type-checking.
-            //
-            // WHY: block bodies are not visited by synthesize_concurrency;
-            // WHEN: remove this gate when ForkBlock bodies are checker-visited;
-            // WHAT: add an Expr::ForkBlock arm to synthesize_concurrency.
-            if !args.is_empty() {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::ForkBlockBodyUnsupported {
-                        site: ctx.ids.site(),
-                        reason: "function has arguments".to_string(),
-                    },
-                    span.clone(),
-                    "fork block callee must have zero arguments; use `fork name = f(args)` for argument-bearing spawns".to_string(),
-                ));
-            }
+            // RETIRED (RI-08 fold): the zero-argument restriction is gone.
+            // The checker's `Expr::ForkBlock` arm now type-checks callee
+            // arguments, and MIR's `lower_spawned_args_call_task` lowers
+            // arg-bearing single-call fork bodies, so `fork { f(args) }` is
+            // a first-class form. The old gate proxied for "the checker does
+            // not visit block bodies"; that premise no longer holds.
         } else {
             ctx.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ForkBlockBodyUnsupported {
@@ -24398,7 +24402,8 @@ fn check_fork_block_shape(
                     reason: "callee is not a direct function identifier".to_string(),
                 },
                 span.clone(),
-                "fork block body must be a direct function call".to_string(),
+                "fork block body must be a direct function call, e.g. `fork { work() }`"
+                    .to_string(),
             ));
         }
     } else {
@@ -24408,7 +24413,9 @@ fn check_fork_block_shape(
                 reason: "not a call expression".to_string(),
             },
             span.clone(),
-            "fork block body must be a direct function call".to_string(),
+            "`fork { }` bodies must be a direct function call, e.g. `fork { work() }`; \
+             other expression forms are not yet supported"
+                .to_string(),
         ));
     }
 }

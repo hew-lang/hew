@@ -1,0 +1,27 @@
+// Reject fixture: fork_block_parent_use_after_move — ownership hole regression.
+//
+// A non-Copy `string` arg passed to `fork { shout(greeting); }` is moved
+// into the child task. Parent use of `greeting` after the fork must report
+// `UseAfterMove`, exactly as the named form `fork t = shout(greeting)` does.
+//
+// This fixture pins the parity between the block and named fork forms. Without
+// the move-marking pass in the ForkBlock checker arm, the block form would
+// silently leave `greeting` live in the parent scope and the second use below
+// would go unreported — contradicting the lowering's ownership contract.
+//
+// Expected diagnostics:
+//   - UseAfterMove: "use of moved value `greeting`"
+fn shout(msg: string) {
+    println(f"{msg}!");
+}
+
+fn main() {
+    let greeting: string = "hello" + " world";
+    scope {
+        fork {
+            shout(greeting);
+        };
+    };
+    // greeting was moved into the fork block — UseAfterMove here.
+    let _x = greeting;
+}

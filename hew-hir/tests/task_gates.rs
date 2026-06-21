@@ -192,6 +192,33 @@ fn fork_block_single_call_accepted() {
 }
 
 #[test]
+fn fork_block_with_args_accepted() {
+    // RI-08 fold: an argument-bearing single-call fork body is now a
+    // first-class form. The checker type-checks the callee arguments and MIR
+    // lowers the arg-bearing spawn, so the old zero-argument gate is retired —
+    // no ForkBlockBodyUnsupported diagnostic must fire.
+    let source = r"
+        fn work(n: i64) {}
+        fn main() {
+            scope {
+                fork { work(5) }
+            }
+        }
+    ";
+    let output = lower(source);
+
+    let has_gate_diagnostic = output
+        .diagnostics
+        .iter()
+        .any(|d| matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. }));
+    assert!(
+        !has_gate_diagnostic,
+        "Arg-bearing single-call fork block must not trigger the shape gate; got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
 fn fork_block_empty_rejected() {
     // Invalid: fork block has empty body
     let source = r"
@@ -222,7 +249,10 @@ fn fork_block_empty_rejected() {
 
 #[test]
 fn fork_block_multi_statement_rejected() {
-    // Invalid: fork block has multiple statements
+    // Fail-closed: a multi-statement fork body is type-checked by the checker
+    // (post RI-08 fold), but MIR cannot yet spawn it. It rejects here at the
+    // earliest clean point with an actionable diagnostic rather than reaching
+    // MIR as a less-legible NotYetImplemented.
     let source = r"
         fn a() {}
         fn b() {}
@@ -237,14 +267,25 @@ fn fork_block_multi_statement_rejected() {
     ";
     let output = lower(source);
 
-    let has_fork_block_unsupported = output
-        .diagnostics
-        .iter()
-        .any(|d| matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. }));
+    // Pin the fail-closed diagnostic: it must be the typed shape gate AND carry
+    // an actionable message that names the workaround, so a future refactor
+    // cannot silently degrade it to an opaque NotYetImplemented.
+    let multi_stmt_gate = output.diagnostics.iter().find(|d| {
+        matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. })
+            && d.note.contains("multi-statement")
+    });
+    let multi_stmt_gate = multi_stmt_gate.unwrap_or_else(|| {
+        panic!(
+            "Multi-statement fork block must emit an actionable ForkBlockBodyUnsupported; \
+             got: {:#?}",
+            output.diagnostics
+        )
+    });
     assert!(
-        has_fork_block_unsupported,
-        "Multi-statement fork block must emit ForkBlockBodyUnsupported; got: {:#?}",
-        output.diagnostics
+        multi_stmt_gate.note.contains("not yet supported")
+            && multi_stmt_gate.note.contains("fork { the_fn() }"),
+        "multi-statement reject must name the workaround; got note: {:?}",
+        multi_stmt_gate.note
     );
 
     let result = output.into_result();
@@ -256,7 +297,9 @@ fn fork_block_multi_statement_rejected() {
 
 #[test]
 fn fork_block_not_call_rejected() {
-    // Invalid: fork block body is not a call expression
+    // Fail-closed: a non-call fork body (here a bare literal) is type-checked by
+    // the checker, but MIR can only spawn a direct function call. It rejects
+    // here with an actionable diagnostic rather than reaching MIR.
     let source = r"
         fn main() {
             scope {

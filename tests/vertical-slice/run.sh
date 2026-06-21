@@ -1297,6 +1297,20 @@ run_accept_expect_stdout "fork_named_await_unit"
 # string on a fork block both transfer through the fork-entry shim env.
 run_accept_expect_stdout "fork_args_spawn"
 
+# Accept (arg-bearing fork-BLOCK form): `fork { f(args) }` with a scalar arg
+# and a heap-string arg. The block form collapses to a nameless scope spawn;
+# the fork-entry shim transfers args the same way as the named form.
+run_accept_expect_stdout "fork_block_args_spawn"
+
+# Reject: parent use of a non-Copy string arg after `fork { f(arg); }` must
+# report UseAfterMove — parity with the named `fork t = f(arg)` form. Without
+# the move-marking pass the block form would silently leave `greeting` live and
+# this use would go unreported, violating the lowering's ownership contract.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/fork_block_parent_use_after_move.hew" \
+  "use of moved value \`greeting\`" \
+  "fork_block_parent_use_after_move"
+
 # Reject: removed `scope |s| { s.launch / s.spawn / s.cancel }` surface.
 # Pins LESSONS row reject-scope-fork-collapse: the handle-based scope API was
 # removed; the parser emits a targeted diagnostic directing users to the new
@@ -1329,15 +1343,22 @@ fi
 grep -q 'E_HIR' "${reject_output}"
 grep -qF 'spawned call must have zero arguments' "${reject_output}"
 
-# Reject: fork-block body with a type-mismatched argument (R1 pin).
-# Pins the HIR fail-closed wall: fork { f(wrongtype); } must produce a
-# source-spanned E_HIR diagnostic, never E_CODEGEN_FRONT.
+# Reject: fork-block body with a type-mismatched argument.
+# Arg-bearing single-call fork blocks are now a first-class form, so the
+# checker visits the body and catches the real type error: `fork { flag(42) }`
+# where `flag: bool` produces a source-spanned `type mismatch` diagnostic at
+# the checker, never E_CODEGEN_FRONT downstream.
 if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_block_arg_type_mismatch.hew" >"${reject_output}" 2>&1; then
   echo "expected fork-block-arg-type-mismatch fixture to fail" >&2
   exit 1
 fi
-grep -q 'E_HIR' "${reject_output}"
-grep -qF 'fork block callee must have zero arguments' "${reject_output}"
+# shellcheck disable=SC2016  # backticks in the pattern are literal — they match
+# the diagnostic text, not a command substitution.
+grep -qF 'type mismatch: expected `bool`, found `i64`' "${reject_output}"
+if grep -q 'E_CODEGEN_FRONT' "${reject_output}"; then
+  echo "fork-block arg type mismatch must fail at the checker, not codegen" >&2
+  exit 1
+fi
 
 # Reject: `fork { ... }` block with multiple statements.
 # Pins the HIR fail-closed fork-block body boundary.
@@ -1346,7 +1367,9 @@ if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/fork_multi_stmt.hew" >"
   exit 1
 fi
 grep -q 'E_HIR' "${reject_output}"
-grep -qF 'fork block body must contain exactly one statement or expression' "${reject_output}"
+# shellcheck disable=SC2016  # backticks in the pattern are literal — they match
+# the diagnostic text, not a command substitution.
+grep -qF 'multi-statement `fork { }` bodies are not yet supported' "${reject_output}"
 
 # Reject: `after(duration) { ... }` with a non-empty timeout body in a
 # CONTEXTLESS caller. The HIR shape gate now admits non-empty bodies (MIR

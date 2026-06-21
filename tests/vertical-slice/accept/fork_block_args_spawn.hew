@@ -1,0 +1,51 @@
+// Accept fixture: arg-bearing fork-BLOCK form compiles and runs correctly.
+// Covers the `fork { f(args) }` surface for both scalar and heap-string args:
+//   1. Block form with BitCopy scalar args: `fork { add_print(20, 22) }`
+//      — expects "42" on stdout.
+//   2. Block form with a moved-in heap `string` arg: `fork { shout(greeting) }`
+//      — expects "hello world!" on stdout.
+//
+// This is the block-form counterpart to fork_args_spawn.hew (which covers the
+// named `fork t = f(args)` form). The block form collapses to a nameless scope
+// spawn; the checker visits the body so arg-type mismatches surface at
+// type-check time (pinned by fork_block_body_checks tests).
+//
+// The ask-shaped go() reply synchronizes main with the handler, ordering all
+// output before process exit.
+//
+// Harness verb: compile + run (exit 0)
+// Expected stdout: see fork_block_args_spawn.expected
+fn add_print(a: i64, b: i64) {
+    println(f"{a + b}");
+}
+
+fn shout(msg: string) {
+    println(f"{msg}!");
+}
+
+actor Driver {
+    receive fn go() -> i64 {
+        scope {
+            fork {
+                add_print(20, 22);
+            };
+        };
+        let greeting = "hello" + " world";
+        scope {
+            fork {
+                shout(greeting);
+            };
+        };
+        7
+    }
+}
+
+fn main() -> i64 {
+    let d = spawn Driver;
+    match await d.go() {
+        // The handler replies 7 after both scopes join; exit 0 on the
+        // expected reply, non-zero otherwise.
+        Ok(v) => v - 7,
+        Err(_e) => 1,
+    }
+}

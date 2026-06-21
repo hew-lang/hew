@@ -1692,6 +1692,111 @@ impl Checker {
                 // The fork statement itself produces no value.
                 Ty::Unit
             }
+            Expr::ForkBlock { body } => {
+                // `fork { ... }` is a fire-and-forget anonymous child task,
+                // `≈ fork _ = (|| { body })()`. Its body is checked here as a
+                // zero-parameter, unit-returning closure context so that body
+                // statements, callee arguments, and the tail expression are all
+                // type-checked — the same coverage the named `fork name = call()`
+                // form already enjoys.
+                //
+                // Position gate (defence-in-depth): like `fork name = call(...)`,
+                // `fork { ... }` is only meaningful inside a `scope { }` body. The
+                // parser already rejects `fork { }` outside a scope, so this gate is
+                // unreachable via a clean parse; it mirrors the `ForkChild` arm so
+                // the checker never silently accepts an out-of-position fork.
+                if self.task_scope_depth == 0 {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "`fork { ... }` is only valid inside a `scope { }` body".to_string(),
+                    );
+                    return Ty::Unit;
+                }
+                // Shape gate: a fork body that is a single bare non-call tail
+                // expression (no stmts, trailing_expr present but not a Call)
+                // must be caught here with the actionable fork-shape message.
+                // Without this gate the body reaches `check_block` against
+                // `Some(&Ty::Unit)`, which emits a generic "type mismatch:
+                // expected `()`, found `<T>`" — unhelpful for the user.
+                //
+                // `fork { 42; }` (with semicolon) becomes a single stmt and
+                // reaches the HIR gate's own ForkBlockBodyUnsupported path,
+                // so we only need to handle the no-semicolon tail case here.
+                if body.stmts.is_empty() {
+                    if let Some(tail) = &body.trailing_expr {
+                        if !matches!(&tail.0, Expr::Call { .. }) {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                "`fork { }` bodies must be a direct function call, \
+                                 e.g. `fork { work() }`; other expression forms are \
+                                 not yet supported"
+                                    .to_string(),
+                            );
+                            return Ty::Unit;
+                        }
+                    }
+                }
+                // Check the body as an anonymous, unit-returning task context.
+                // `task_scope_depth` stays elevated (the body runs inside the
+                // enclosing scope, it does not open a fresh scope boundary), so a
+                // nested `fork name = call()` inside the body still passes its
+                // position gate. Save/restore `current_return_type` exactly as the
+                // `Expr::GenBlock` arm does so the enclosing function's return
+                // type is not polluted.
+                let prev_return_type = self.current_return_type.take();
+                self.current_return_type = Some(Ty::Unit);
+                self.check_block(body, Some(&Ty::Unit));
+                self.current_return_type = prev_return_type;
+                // Mirror the `ForkChild` ownership gate: mark non-Copy call
+                // arguments as moved into this child task so that parent use
+                // after the fork reports `UseAfterMove`.
+                //
+                // `fork { f(a) }` transfers ownership of non-Copy args to the
+                // child task, exactly as `fork name = f(a)` does. The general
+                // `Expr::Call` arm does NOT mark args moved, so without this
+                // pass a heap `string` arg remains live in the parent scope
+                // and a subsequent use goes unreported — contradicting the
+                // lowering's "parent emits NO drop for moved-in args" contract.
+                //
+                // The accepted single-call form appears in two shapes:
+                //   a) `fork { f(args) }`  — tail expression (no semicolon)
+                //   b) `fork { f(args); }` — single stmt with semicolon
+                // For multi-statement bodies the HIR lowering rejects the fork,
+                // so we only encounter those shapes during type-checking; we
+                // still mark them (each call transfers its non-Copy args) to
+                // keep the ownership contract uniform even when HIR will err.
+                //
+                // WHEN-OBSOLETE: if the general call-arg path gains move-
+                // tracking, this pass (and the ForkChild one) become redundant.
+                macro_rules! mark_call_args_moved {
+                    ($args:expr) => {
+                        for arg in $args {
+                            let (arg_expr, arg_span) = arg.expr();
+                            if let Expr::Identifier(arg_name) = arg_expr {
+                                if let Some(binding_ty) =
+                                    self.env.lookup_ref(arg_name).map(|b| b.ty.clone())
+                                {
+                                    let resolved = self.subst.resolve(&binding_ty);
+                                    self.mark_expr_moved_if_non_copy(arg_expr, arg_span, &resolved);
+                                }
+                            }
+                        }
+                    };
+                }
+                if let Some(tail) = &body.trailing_expr {
+                    if let (Expr::Call { args, .. }, _) = tail.as_ref() {
+                        mark_call_args_moved!(args);
+                    }
+                } else if body.stmts.len() == 1 {
+                    if let (Stmt::Expression((Expr::Call { args, .. }, _)), _) = &body.stmts[0] {
+                        mark_call_args_moved!(args);
+                    }
+                }
+                // The fork statement itself produces no value.
+                Ty::Unit
+            }
             Expr::SpawnLambdaActor {
                 is_move,
                 params,

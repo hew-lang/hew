@@ -1,28 +1,19 @@
 // Reject fixture: fork-block body with a type-mismatched argument.
 //
-// R1 pin: the `fork { … }` block form is nullary — the checker never visits
-// block bodies, so argument types there would be unchecked. HIR lowering
-// rejects arg-bearing block callees with a `ForkBlockBodyUnsupported`
-// diagnostic (source span present) BEFORE MIR or codegen see the call.
+// Arg-bearing single-call fork blocks are a first-class form: the checker now
+// visits the body and type-checks the callee arguments. `fork { flag(42); }`
+// (flag: bool, given i64 literal 42) is rejected by the checker with a
+// source-spanned `type mismatch` diagnostic BEFORE MIR or codegen see the
+// call — so it can never escape to a span-less `E_CODEGEN_FRONT … Call
+// parameter type does not match function signature!`.
 //
-// Without this gate, `fork { flag(42); }` (flag: bool → accepts bool, given
-// i64 literal 42) silently miscompiles; `fork { sink("s"); }` (sink: i64)
-// escapes to `E_CODEGEN_FRONT … Call parameter type does not match function
-// signature!` (no source span). Both are blocked here.
-//
-// Argument-bearing spawns must use the named form:
-//   `fork t = flag(true); await t;`
-//
-// This fixture pins the fail-closed boundary at:
-//   hew-hir/src/lower.rs  check_fork_block_shape (args.is_empty gate)
-//
-// When fork-block bodies gain checker coverage, this gate may be relaxed
-// and this fixture moved to accept/.
+// This fixture pins the checker's fork-block body coverage: a bad argument is
+// a real type error, not a blunt shape reject.
 //
 // Harness verb: hew compile
 // Expected diagnostics:
-//   - E_HIR
-//   - "fork block callee must have zero arguments"
+//   - "type mismatch: expected `bool`, found `i64`"
+//   - NOT E_CODEGEN_FRONT
 fn flag(b: bool) {
     println(f"{b}");
 }
@@ -30,7 +21,9 @@ fn flag(b: bool) {
 actor _Worker {
     receive fn run() {
         scope {
-            fork { flag(42); }
+            fork {
+                flag(42);
+            };
         };
     }
 }

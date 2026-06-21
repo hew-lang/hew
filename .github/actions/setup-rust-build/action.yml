@@ -1,9 +1,11 @@
 name: Setup Rust build environment
 description: >
   Install the stable Rust toolchain, optional cargo tools (via
-  taiki-e/install-action), and Swatinem/rust-cache.  Extracts the
-  repeated three-step sequence that every Rust job in ci.yml and
-  release-gate.yml otherwise duplicates.
+  taiki-e/install-action), Swatinem/rust-cache for the registry/deps
+  layer, and mozilla-actions/sccache-action for the workspace-crate
+  compilation cache (GitHub Actions cache backend, content-addressed,
+  disk-safe).  Extracts the repeated setup sequence that every Rust job
+  in ci.yml and release-gate.yml otherwise duplicates.
 
 inputs:
   components:
@@ -52,6 +54,28 @@ runs:
       if: inputs.tools != ''
       with:
         tool: ${{ inputs.tools }}
+
+    # ── sccache: workspace-crate compilation cache ─────────────────────────
+    # Promotes the .cargo/config.toml opt-in annotation to CI reality.
+    # Uses the GitHub Actions cache backend (content-addressed, no blob
+    # expansion — the ENOSPC cause that led to dropping target/ caching in
+    # e9f65f19 was blob size, not sccache).  Swatinem/rust-cache below
+    # continues to handle the registry/deps layer; sccache handles workspace
+    # crate compilation.  The two compose: sccache caches compiler
+    # invocations; Swatinem caches the registry.  SCCACHE_CACHE_SIZE bounds
+    # the on-disk buffer; the GHA cache has its own 10 GB/repo ceiling.
+    - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
+      with:
+        # Always pull the latest released sccache binary unless we need to
+        # pin for a specific fix.  The action itself is SHA-pinned above.
+        version: "v0.10.0"
+
+    - name: Export sccache environment variables
+      shell: bash
+      run: |
+        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        echo "SCCACHE_CACHE_SIZE=2G" >> "$GITHUB_ENV"
 
     - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
       with:

@@ -1297,6 +1297,11 @@ run_accept_expect_stdout "fork_named_await_unit"
 # string on a fork block both transfer through the fork-entry shim env.
 run_accept_expect_stdout "fork_args_spawn"
 
+# Accept (arg-bearing fork-BLOCK form): `fork { f(args) }` with a scalar arg
+# and a heap-string arg. The block form collapses to a nameless scope spawn;
+# the fork-entry shim transfers args the same way as the named form.
+run_accept_expect_stdout "fork_block_args_spawn"
+
 # Reject: removed `scope |s| { s.launch / s.spawn / s.cancel }` surface.
 # Pins LESSONS row reject-scope-fork-collapse: the handle-based scope API was
 # removed; the parser emits a targeted diagnostic directing users to the new

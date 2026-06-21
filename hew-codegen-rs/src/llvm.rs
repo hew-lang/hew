@@ -13027,7 +13027,10 @@ fn lower_instruction(
                 .into_float_value();
             let llvm_pred = match pred {
                 CmpPred::Eq => FloatPredicate::OEQ,
-                CmpPred::NotEq => FloatPredicate::ONE,
+                // UNE (unordered-not-equal): returns true when either operand is NaN,
+                // matching IEEE-754 — `NaN != NaN` must be true.  ONE (ordered-not-equal)
+                // was wrong here because it returns false whenever either operand is NaN.
+                CmpPred::NotEq => FloatPredicate::UNE,
                 CmpPred::SignedLess => FloatPredicate::OLT,
                 CmpPred::SignedLessEq => FloatPredicate::OLE,
                 CmpPred::SignedGreater => FloatPredicate::OGT,

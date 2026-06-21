@@ -18,7 +18,7 @@ fn main() {
     // -0.0 and 0.0 are equal under IEEE-754.
     println(f"neg_zero==zero {neg_zero == zero}");
 
-    // Ordered not-equal: false whenever a NaN is involved.
+    // Unordered not-equal: true whenever a NaN is involved (IEEE-754 UNE).
     println(f"nan!=nan {nan != nan}");
     println(f"nan!=inf {nan != inf}");
     println(f"inf!=neg_inf {inf != neg_inf}");

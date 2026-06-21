@@ -29,8 +29,13 @@
 /// LLVM switched-resume coroutine emission — the codegen side of Hew's
 /// stackless continuation substrate (W6.007). The `llvm.coro.*` token-call
 /// helper, the switched-resume skeleton emitter, and the coro-pass runner.
+pub(crate) mod arith;
 pub mod coro;
+pub(crate) mod layout;
 pub mod llvm;
+pub(crate) mod runtime_abi;
+pub(crate) mod suspend;
+pub(crate) mod thunks;
 
 pub use llvm::{
     emit_module, emit_module_objects, validate_codegen_front, verify_pipeline, CodegenError,

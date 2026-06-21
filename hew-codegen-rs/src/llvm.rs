@@ -6,6 +6,19 @@
 //! `experiments/c1-backend-shootout/src/bin/probe_c.rs` against the real MIR
 //! shapes in `hew-mir`.
 //!
+//! ## Concern modules
+//!
+//! This file is the coordinating core: the `pub` API surface, the shared
+//! `FnCtx` / `FnSymbol` / `CoroState` context types, and the central
+//! `lower_instruction` / `lower_terminator` dispatch. Cohesive free-function
+//! clusters live in sibling concern-modules and are called back via `crate::`:
+//! [`crate::coro`] (switched-resume skeleton), [`crate::arith`] (saturating /
+//! floor-intrinsic helpers), [`crate::runtime_abi`] (the runtime-call dispatch),
+//! [`crate::suspend`] (suspending-terminator lowering), [`crate::thunks`]
+//! (eq/hash/closure/task/trampoline emitters), and [`crate::layout`]
+//! (named-type layout registration). Each shares this crate's scope, so the
+//! references are bidirectional with no module cycle.
+//!
 //! ## Shape
 //!
 //! - Two-pass lowering per module: every non-coroutine function is declared
@@ -58,9 +71,9 @@ use hew_mir::{
     CheckedMirFunction, ChildInitArg, CmpPred, CooperateKind, CooperateSite, DynVtableInstance,
     ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth,
     FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
-    LambdaEnvFieldDrop, MachineLayout, MachineVariantLayout, MirConst, MirConstValue, Place,
-    RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout,
-    SupervisorLayout, SuspendKind, Terminator, TrapKind,
+    LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, Place, RawMirFunction,
+    RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout, SupervisorLayout,
+    SuspendKind, Terminator, TrapKind,
 };
 use hew_types::{NumericWidth, ResolvedTy, WireCodecDirection};
 // Single source of truth for the trap discriminants codegen emits. Importing
@@ -637,7 +650,7 @@ fn validate_codegen_front_with_name(pipeline: &IrPipeline, module_name: &str) ->
 ///   where the resolved C-ABI symbol starts with `"hew_duplex_"`. This covers
 ///   elaborator-produced `"Duplex::close"` strings that resolve to
 ///   `hew_duplex_close` at codegen time.
-fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
+pub(crate) fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
     for func in &pipeline.raw_mir {
         for block in &func.blocks {
             for instr in &block.instructions {
@@ -1137,26 +1150,26 @@ fn initialise_llvm_targets() {
 /// the `Suspend` terminator arm reconstructs a [`crate::coro::CoroContext`] on
 /// demand to call `emit_suspend`.
 #[derive(Clone, Copy)]
-struct CoroState<'ctx> {
+pub(crate) struct CoroState<'ctx> {
     /// The `coro.begin` handle — the `HewCont` frame pointer.
-    handle: PointerValue<'ctx>,
+    pub(crate) handle: PointerValue<'ctx>,
     /// The opaque `coro.id` token, needed by `coro.suspend` / `coro.free` /
     /// `coro.end`.
-    id_token: inkwell::llvm_sys::prelude::LLVMValueRef,
+    pub(crate) id_token: inkwell::llvm_sys::prelude::LLVMValueRef,
     /// The shared block reached on case `1` of every suspend switch (a
     /// `hew_cont_destroy` tearing the frame down): runs `coro.free` →
     /// `hew_cont_frame_free` then `coro.end` and returns the handle.
-    cleanup_block: inkwell::basic_block::BasicBlock<'ctx>,
+    pub(crate) cleanup_block: inkwell::basic_block::BasicBlock<'ctx>,
     /// The shared block reached on the DEFAULT edge of every suspend switch
     /// (control returns to the executor — the suspend edge that frees the
     /// worker): returns the handle without tearing down the frame.
-    suspend_return_block: inkwell::basic_block::BasicBlock<'ctx>,
+    pub(crate) suspend_return_block: inkwell::basic_block::BasicBlock<'ctx>,
     /// The LLVM type of the LOGICAL return value (the resolved Hew return type,
     /// NOT the ramp's `ptr` return). Used to size the body's return-value slot
     /// and to load+deposit the reply at `Terminator::Return` (W6.010 body-side
     /// value routing). `None` when the logical return is unit/never (the body
     /// deposits no reply).
-    logical_return_ty: Option<BasicTypeEnum<'ctx>>,
+    pub(crate) logical_return_ty: Option<BasicTypeEnum<'ctx>>,
     /// Whether the function's MIR already carries an explicit
     /// `Terminator::Suspend { is_final: true }` (a generator / the synthetic
     /// substrate fixture). A switched-resume coroutine must have EXACTLY ONE
@@ -1166,7 +1179,7 @@ struct CoroState<'ctx> {
     /// final Suspend is the completion point and Return just `ret`s the handle.
     /// When `false` (a SuspendingAsk-only coroutine — no explicit final), the
     /// Return arm IS the natural completion and emits the single final suspend.
-    has_explicit_final_suspend: bool,
+    pub(crate) has_explicit_final_suspend: bool,
     /// The single shared block onto which EVERY `Terminator::Return` of a
     /// SuspendingAsk-driven coroutine converges. Each `Return` block stores its
     /// logical reply into `return_slot` (a memory alloca — no phi needed across
@@ -1177,7 +1190,7 @@ struct CoroState<'ctx> {
     /// "Only one suspend point can be marked as final" if a per-`Return` final
     /// were inlined). `None` for a coroutine that carries an explicit final
     /// Suspend (a generator) — its `Return` arm just `ret`s the handle.
-    final_suspend_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
+    pub(crate) final_suspend_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     /// Whether this coroutine is a GENERATOR body (its MIR carries
     /// `Terminator::Yield`). A generator's value channel is the explicit
     /// out-pointer parameter the body publishes each yield into (NOT the
@@ -1185,12 +1198,12 @@ struct CoroState<'ctx> {
     /// value-free `coro.suspend(is_final=true)` — completion just flips
     /// `coro.done` so the consumer's next `GeneratorNext` reads `None`. There is
     /// no `hew_get_reply_channel` / `hew_reply` deposit for a generator.
-    is_generator: bool,
+    pub(crate) is_generator: bool,
 }
 
-struct FnCtx<'a, 'ctx> {
-    ctx: &'ctx Context,
-    llvm_mod: &'a LlvmModule<'ctx>,
+pub(crate) struct FnCtx<'a, 'ctx> {
+    pub(crate) ctx: &'ctx Context,
+    pub(crate) llvm_mod: &'a LlvmModule<'ctx>,
     /// Emit `hew_shutdown_initiate(0)` + `hew_shutdown_wait()` before the
     /// `Terminator::Return` in the native program entry point of an
     /// actor-using program — the implicit actor-drain floor.
@@ -1211,7 +1224,7 @@ struct FnCtx<'a, 'ctx> {
     /// WHAT the real solution is: a MIR-level `Terminator::Drain` emitted by
     /// the lowerer, so the drain is part of the program's control-flow graph
     /// rather than a codegen epilogue injection.
-    emit_drain_epilogue: bool,
+    pub(crate) emit_drain_epilogue: bool,
     /// Emit `hew_wasm_runtime_exit()` before the `Terminator::Return` of the
     /// wasm32 program entry point of an actor-using program — the wasm analogue
     /// of `emit_drain_epilogue`.
@@ -1224,7 +1237,7 @@ struct FnCtx<'a, 'ctx> {
     /// runnable actors to completion synchronously and then performs scheduler
     /// shutdown plus actor cleanup. Without it the mailbox never drains and
     /// short-lived programs skip the runtime cleanup chain.
-    emit_wasm_runtime_exit: bool,
+    pub(crate) emit_wasm_runtime_exit: bool,
     /// Emit `hew_lambda_drain_all(0)` before the `Terminator::Return` of
     /// `main` on the native target so spawned lambda-actor dispatch
     /// threads finish processing their mailboxes before the process
@@ -1232,18 +1245,18 @@ struct FnCtx<'a, 'ctx> {
     /// work-stealing scheduler, so `hew_shutdown_wait` does not cover
     /// them. Always emitted on native `main` (cost is one runtime call
     /// that returns immediately when no lambda actors were spawned).
-    emit_lambda_drain_epilogue: bool,
+    pub(crate) emit_lambda_drain_epilogue: bool,
     /// ABI layout authority for the module target. Native textual emission
     /// carries host data; cross-target emission carries the target machine data.
-    target_data: &'a TargetData,
-    builder: Builder<'ctx>,
-    return_slot: PointerValue<'ctx>,
-    return_ty: BasicTypeEnum<'ctx>,
-    return_resolved_ty: ResolvedTy,
-    execution_context: Option<PointerValue<'ctx>>,
-    closure_call_fallback_context: Option<PointerValue<'ctx>>,
-    execution_context_is_actor_handler: bool,
-    actor_state_ty: Option<StructType<'ctx>>,
+    pub(crate) target_data: &'a TargetData,
+    pub(crate) builder: Builder<'ctx>,
+    pub(crate) return_slot: PointerValue<'ctx>,
+    pub(crate) return_ty: BasicTypeEnum<'ctx>,
+    pub(crate) return_resolved_ty: ResolvedTy,
+    pub(crate) execution_context: Option<PointerValue<'ctx>>,
+    pub(crate) closure_call_fallback_context: Option<PointerValue<'ctx>>,
+    pub(crate) execution_context_is_actor_handler: bool,
+    pub(crate) actor_state_ty: Option<StructType<'ctx>>,
     /// Per-field `StateFieldCloneKind`s for the actor whose handler this
     /// function is, in state-field declaration order (parallel to
     /// `actor_state_ty`'s fields). Populated for `ActorHandler` functions
@@ -1253,22 +1266,22 @@ struct FnCtx<'a, 'ctx> {
     /// never on the LLVM struct shape, which a user record with a
     /// `{ ptr, i32, i32 }` layout could alias (LESSONS:
     /// boundary-fail-closed, checker-authority).
-    actor_state_field_kinds: Option<&'a [StateFieldCloneKind]>,
+    pub(crate) actor_state_field_kinds: Option<&'a [StateFieldCloneKind]>,
     /// Local-register id → (stack slot, slot's LLVM type). Keyed by the
     /// `Place::Local(N)` index — an MIR identity, not a checker derivative.
-    locals: HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
+    pub(crate) locals: HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
     /// Local-register id → resolved Hew type. Kept alongside `locals` for
     /// ABI helpers that must encode a value from its source type, not only its
     /// LLVM storage shape.
-    local_tys: HashMap<u32, ResolvedTy>,
+    pub(crate) local_tys: HashMap<u32, ResolvedTy>,
     /// Block id → LLVM `BasicBlock`. Populated up front so terminators can
     /// name forward targets.
-    blocks: HashMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
+    pub(crate) blocks: HashMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
     /// Module-wide runtime-ABI extern declarations interned on first use.
     /// Carried in a `RefCell` so the per-instruction lowering (which only
     /// borrows `FnCtx` immutably) can register new declarations lazily
     /// from inside `Instr::CallRuntimeAbi` and `Instr::Drop` arms.
-    runtime_decls: RefCell<RuntimeDeclMap<'ctx>>,
+    pub(crate) runtime_decls: RefCell<RuntimeDeclMap<'ctx>>,
     /// Module-wide record layouts (A-7). Keyed by record name; values are
     /// the LLVM named struct types registered up front in `build_module`
     /// via `register_record_layouts`. `Instr::RecordInit` /
@@ -1276,16 +1289,16 @@ struct FnCtx<'a, 'ctx> {
     /// to resolve a record-typed local's slot to its `StructType` for GEP
     /// indexing. The map is borrowed (no ownership) — the registered
     /// `StructType<'ctx>` values share the codegen context's lifetime.
-    record_layouts: &'a RecordLayoutMap<'ctx>,
+    pub(crate) record_layouts: &'a RecordLayoutMap<'ctx>,
     /// Module-wide function symbol table. Populated before any body is
     /// lowered by the `declare_function` pass in `build_module`. The borrow
     /// is shared (read-only) — no new declarations are added during body
     /// lowering.
-    fn_symbols: &'a FnSymbolMap<'ctx>,
+    pub(crate) fn_symbols: &'a FnSymbolMap<'ctx>,
     /// Module-wide actor layouts keyed by `ActorLayout.name` at use sites.
     /// Spawn lowering consumes these layouts to emit the WASM bridge metadata
     /// producer before calling into the runtime spawn ABI.
-    actor_layouts: &'a [ActorLayout],
+    pub(crate) actor_layouts: &'a [ActorLayout],
     /// Module-wide machine tagged-union layouts keyed by machine name
     /// (and by `<Name>Event` for event-companion enums). Populated up
     /// front in `build_module` via `register_machine_layouts`.
@@ -1293,10 +1306,10 @@ struct FnCtx<'a, 'ctx> {
     /// codegen consults this through `machine_layout_for_local` to
     /// resolve a machine-typed local's slot to its outer LLVM struct,
     /// per-variant inner structs, and tag integer width.
-    machine_layouts: &'a MachineLayoutMap<'ctx>,
+    pub(crate) machine_layouts: &'a MachineLayoutMap<'ctx>,
     /// Module-wide enum layout descriptors. Used by the heap-owning
     /// composite return boundary check to inspect variant field types.
-    enum_layouts: &'a [EnumLayout],
+    pub(crate) enum_layouts: &'a [EnumLayout],
     /// Per-record field-resolved-type table, keyed by record name. Built
     /// once in `build_module` from `pipeline.record_layouts` and shared by
     /// every per-function lowering context. The synthesis-side hash thunk
@@ -1310,7 +1323,7 @@ struct FnCtx<'a, 'ctx> {
     /// `None` keys (records not in the map) are treated as if every field
     /// were a plain integer — defensive fall-back used by hand-built test
     /// fixtures that do not register a record layout for every named local.
-    record_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
+    pub(crate) record_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
     /// Module-wide dyn-trait vtable registry, shared by reference from
     /// `pipeline.dyn_vtable_registry`. Consumed by
     /// `Instr::CoerceToDynTrait` to resolve the
@@ -1324,12 +1337,12 @@ struct FnCtx<'a, 'ctx> {
     /// runs. Reaching codegen for a coercion not in this registry is a
     /// boundary invariant violation; the helper fails closed loudly
     /// rather than silently emitting a misrouted vtable reference.
-    dyn_vtable_registry: &'a [DynVtableInstance],
+    pub(crate) dyn_vtable_registry: &'a [DynVtableInstance],
     /// Module-level `const` globals emitted from `IrPipeline::user_consts`,
     /// keyed by HIR item id. `Instr::ConstGlobalLoad` uses this table to load
     /// the statically-initialized value and fails closed if the descriptor was
     /// not wired into the pipeline.
-    const_globals: &'a ConstGlobalMap<'ctx>,
+    pub(crate) const_globals: &'a ConstGlobalMap<'ctx>,
     /// P5-RX Stage 2a (A625): the runtime `borrow_mode` i32 — the trailing
     /// LLVM parameter of a `<Actor>__recv__<handler>` receive handler threaded
     /// by Stage 1's dispatch trampoline. `Some(_)` ONLY for receive handlers;
@@ -1349,21 +1362,21 @@ struct FnCtx<'a, 'ctx> {
     /// Under `borrow_mode == 0` (copy mode) every gate is a no-op: the handler
     /// already owns its private copy, so behaviour is byte-identical to the
     /// pre-Stage-2a path. The same compiled handler serves both modes.
-    borrow_mode: Option<IntValue<'ctx>>,
+    pub(crate) borrow_mode: Option<IntValue<'ctx>>,
     /// P5-RX Stage 2a (A625): the closed set of MIR `Place::Local` ids that
     /// carry a value derived (transitively, via `Instr::Move`) from a `String`
     /// receive parameter — the "borrow taint" set. Empty for every non-receive
     /// function and for receive handlers with no `String` params. Consulted at
     /// each escape sink (field store / return / re-send) and at every
     /// elaborated drop to decide whether the `borrow_mode` gate applies.
-    borrow_tainted: HashSet<u32>,
+    pub(crate) borrow_tainted: HashSet<u32>,
     /// Per-coroutine emission state, `Some` ONLY for a function whose MIR
     /// carries a `Terminator::Suspend` (R326/R327). The `Suspend` terminator arm
     /// reads this to place each `coro.suspend` + its 3-way switch; the
     /// suspend-return / cleanup epilogue blocks are emitted from it after the
     /// body. `None` for every ordinary (non-suspending) function, which lowers
     /// exactly as before — non-coroutine functions pay nothing.
-    coro: Option<CoroState<'ctx>>,
+    pub(crate) coro: Option<CoroState<'ctx>>,
     /// Lambda-actor body shape (`Tell` or `Ask`), populated ONLY for a
     /// function whose `call_conv` is `FunctionCallConv::LambdaActorBody`.
     /// Consulted by the `Terminator::Return` arm to select the runtime ABI
@@ -1373,25 +1386,25 @@ struct FnCtx<'a, 'ctx> {
     /// `*reply_out` / `*reply_len_out` (the body's `Local(3)` / `Local(4)`
     /// runtime ABI param slots), and returns `i32 0`. `None` for every
     /// other call convention.
-    lambda_actor_shape: Option<hew_mir::LambdaActorShape>,
+    pub(crate) lambda_actor_shape: Option<hew_mir::LambdaActorShape>,
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
 /// function name (a normal module-level identity); the value carries the
 /// LLVM function value plus its return type so `Terminator::Call` can
 /// resolve forward without re-deriving anything from the MIR shape.
-type FnSymbolMap<'ctx> = HashMap<String, FnSymbol<'ctx>>;
+pub(crate) type FnSymbolMap<'ctx> = HashMap<String, FnSymbol<'ctx>>;
 
-type ConstGlobalMap<'ctx> = HashMap<ItemId, ConstGlobal<'ctx>>;
+pub(crate) type ConstGlobalMap<'ctx> = HashMap<ItemId, ConstGlobal<'ctx>>;
 
 #[derive(Clone, Copy)]
-struct ConstGlobal<'ctx> {
-    value: GlobalValue<'ctx>,
-    ty: BasicTypeEnum<'ctx>,
+pub(crate) struct ConstGlobal<'ctx> {
+    pub(crate) value: GlobalValue<'ctx>,
+    pub(crate) ty: BasicTypeEnum<'ctx>,
 }
 
 #[derive(Clone, Copy)]
-enum FnSymbol<'ctx> {
+pub(crate) enum FnSymbol<'ctx> {
     Real {
         value: FunctionValue<'ctx>,
         return_ty: BasicTypeEnum<'ctx>,
@@ -1419,7 +1432,7 @@ enum FnSymbol<'ctx> {
 }
 
 impl<'ctx> FnSymbol<'ctx> {
-    fn real(
+    pub(crate) fn real(
         self,
         callee: &str,
         context: &str,
@@ -1448,7 +1461,7 @@ impl<'ctx> FnSymbol<'ctx> {
 /// C-ABI symbol name (already validated by `RuntimeCall::new`'s allowlist
 /// check). One declaration per symbol per module — repeat references at
 /// multiple call sites share the same LLVM `declare` line.
-type RuntimeDeclMap<'ctx> = HashMap<String, FunctionValue<'ctx>>;
+pub(crate) type RuntimeDeclMap<'ctx> = HashMap<String, FunctionValue<'ctx>>;
 
 #[derive(Debug, Clone, Copy)]
 enum MathBuiltinIntrinsic {
@@ -1494,7 +1507,7 @@ fn math_builtin_intrinsic(callee: &str) -> Option<MathBuiltinIntrinsic> {
 /// `i32`), and the resulting `signature_mismatch:hew_actor_spawn` stub traps
 /// `unreachable` at runtime. This helper returns the target-correct width so
 /// the codegen declaration matches the runtime's real C ABI.
-fn runtime_size_ty<'ctx>(
+pub(crate) fn runtime_size_ty<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
 ) -> inkwell::types::IntType<'ctx> {
@@ -1526,7 +1539,7 @@ fn runtime_size_ty<'ctx>(
 /// adopts it without signature verification and relies on `Module::verify()` as
 /// the downstream safety net. WHEN-OBSOLETE: replace this adoption path with an
 /// explicit existing-signature check before caching the declaration.
-fn intern_runtime_decl<'ctx>(
+pub(crate) fn intern_runtime_decl<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     decls: &mut RuntimeDeclMap<'ctx>,
@@ -2756,7 +2769,7 @@ impl<'a, 'ctx> FnCtx<'a, 'ctx> {
     /// Void-returning calls use this directly (or `call_runtime_void`); the
     /// typed variants (`call_runtime_basic`/`_int`/`_ptr`) layer the
     /// fail-closed "returned void" unwrap so that guard lives in ONE place.
-    fn call_runtime(
+    pub(crate) fn call_runtime(
         &self,
         sym: &str,
         args: &[BasicMetadataValueEnum<'ctx>],
@@ -2775,7 +2788,7 @@ impl<'a, 'ctx> FnCtx<'a, 'ctx> {
     }
 
     /// Declare-then-call a void-returning runtime symbol, discarding the result.
-    fn call_runtime_void(
+    pub(crate) fn call_runtime_void(
         &self,
         sym: &str,
         args: &[BasicMetadataValueEnum<'ctx>],
@@ -2790,7 +2803,7 @@ impl<'a, 'ctx> FnCtx<'a, 'ctx> {
     /// value, failing closed if the runtime fn returned void. This is the single
     /// authority for the "typed runtime call returned void" fail-closed guard
     /// that was hand-copied at every value-returning site.
-    fn call_runtime_basic(
+    pub(crate) fn call_runtime_basic(
         &self,
         sym: &str,
         args: &[BasicMetadataValueEnum<'ctx>],
@@ -2804,7 +2817,7 @@ impl<'a, 'ctx> FnCtx<'a, 'ctx> {
     }
 
     /// `call_runtime_basic` + `.into_int_value()`.
-    fn call_runtime_int(
+    pub(crate) fn call_runtime_int(
         &self,
         sym: &str,
         args: &[BasicMetadataValueEnum<'ctx>],
@@ -2817,7 +2830,7 @@ impl<'a, 'ctx> FnCtx<'a, 'ctx> {
     }
 
     /// `call_runtime_basic` + `.into_pointer_value()`.
-    fn call_runtime_ptr(
+    pub(crate) fn call_runtime_ptr(
         &self,
         sym: &str,
         args: &[BasicMetadataValueEnum<'ctx>],
@@ -2830,7 +2843,7 @@ impl<'a, 'ctx> FnCtx<'a, 'ctx> {
     }
 }
 
-fn fn_type_for_return<'ctx>(
+pub(crate) fn fn_type_for_return<'ctx>(
     ctx: &'ctx Context,
     return_ty: Option<BasicTypeEnum<'ctx>>,
     params: &[BasicMetadataTypeEnum<'ctx>],
@@ -2997,7 +3010,7 @@ fn reconcile_int_width<'ctx>(
     Ok(converted.into())
 }
 
-fn reconcile_int_width_signed<'ctx>(
+pub(crate) fn reconcile_int_width_signed<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     value: inkwell::values::BasicValueEnum<'ctx>,
     target_ty: BasicTypeEnum<'ctx>,
@@ -3025,7 +3038,7 @@ fn declare_catalog_ffi<'ctx>(
             returns_unit: matches!(entry.return_ty, BuiltinTy::Unit | BuiltinTy::Never),
         });
     }
-    let bytes_by_pointer = is_bytes_by_pointer_consumer(symbol);
+    let bytes_by_pointer = crate::runtime_abi::is_bytes_by_pointer_consumer(symbol);
     let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(entry.params.len());
     for (idx, param) in entry.params.iter().enumerate() {
         // A `bytes` parameter of a by-pointer consumer lowers to a plain `ptr`
@@ -3263,8 +3276,8 @@ fn predeclare_extern_decls<'ctx>(
         // Only check remaining unknowns for `bytes` params.
         if has_bytes_param
             && !is_bytes_triple_return_producer(&decl.name)
-            && !is_bytes_by_pointer_consumer(&decl.name)
-            && !is_bytes_struct_expansion_consumer(&decl.name)
+            && !crate::runtime_abi::is_bytes_by_pointer_consumer(&decl.name)
+            && !crate::runtime_abi::is_bytes_struct_expansion_consumer(&decl.name)
         {
             return Err(CodegenError::FailClosed(format!(
                 "extern `{}` has `bytes` param(s) but is not in \
@@ -3279,7 +3292,7 @@ fn predeclare_extern_decls<'ctx>(
         }
         // ── end bytes boundary gate ───────────────────────────────────────────
 
-        let bytes_by_pointer = is_bytes_by_pointer_consumer(&decl.name);
+        let bytes_by_pointer = crate::runtime_abi::is_bytes_by_pointer_consumer(&decl.name);
         let mut param_tys: Vec<BasicMetadataTypeEnum> = Vec::with_capacity(decl.param_tys.len());
         for ty in &decl.param_tys {
             // A `bytes` parameter of a by-pointer consumer is lowered to a plain
@@ -3363,13 +3376,13 @@ fn predeclare_extern_decls<'ctx>(
 /// (W3.020) rather than a struct layout. `Deref`/`DerefMut` forward to the
 /// struct map so existing `.get`/`.insert`/`.keys` call sites are unchanged.
 #[derive(Debug)]
-struct RecordLayoutMap<'ctx> {
-    structs: HashMap<String, StructType<'ctx>>,
-    opaque: std::collections::HashSet<String>,
+pub(crate) struct RecordLayoutMap<'ctx> {
+    pub(crate) structs: HashMap<String, StructType<'ctx>>,
+    pub(crate) opaque: std::collections::HashSet<String>,
 }
 
 impl<'ctx> RecordLayoutMap<'ctx> {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             structs: HashMap::new(),
             opaque: std::collections::HashSet::new(),
@@ -3388,150 +3401,6 @@ impl std::ops::DerefMut for RecordLayoutMap<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.structs
     }
-}
-
-/// Register every named-form record from `layouts` as an LLVM named struct
-/// type on `ctx`, populating the body with each field's LLVM lowering.
-///
-/// Two-pass to support records that reference each other by name (forward /
-/// mutual references are valid Hew; the struct body resolution must see
-/// every record's opaque type before we attempt to set any body):
-/// 1. Pass 1: create an opaque named struct for every record so cross-
-///    references can resolve.
-/// 2. Pass 2: lower each field type and call `set_body` on the opaque
-///    struct.
-///
-/// Returns the populated map. Fails closed if any field type cannot be
-/// lowered — e.g. a record field with a `Tuple` or `Array` type (Cluster 2
-/// composite lowering pending), or a `Named` type that names neither a
-/// registered record nor a built-in handle. The MIR producer + checker
-/// would have rejected such a record at HIR-validation time, so reaching
-/// the fail-closed arm here is itself a bug.
-/// Allocate one opaque LLVM named struct for every record / enum / machine
-/// outer type (and every `<Name>Event` companion) in the pipeline, returning
-/// a `RecordLayoutMap` pre-populated with those opaque handles.
-///
-/// This MUST run before any body-fill pass (`fill_record_layout_bodies`,
-/// `build_tagged_union_layout`) because each of those passes resolves
-/// field/variant types through `resolve_ty`, which in turn looks names up
-/// in this map. Without predeclaration, a record field of enum type (or an
-/// enum payload of record type, etc.) would fall through `resolve_ty` to
-/// `primitive_to_llvm`'s D10 fail-closed sentinel — the symptom W4.012
-/// Stage 2 fixes.
-///
-/// **Within-class duplicates** (the same enum name appearing twice in
-/// `pipeline.enum_layouts`, etc.) are tolerated: the second registration
-/// is a no-op against the first opaque. This matches the pre-Stage-2
-/// behaviour where `register_enum_layouts` would silently overwrite the
-/// map entry on a repeated name. Repeated layouts are produced by the
-/// current pipeline for some generic-enum monomorphisations (e.g.
-/// `Option$$i64` registered along multiple stdlib paths); a strict
-/// fail-closed there would regress existing passing tests.
-///
-/// **Cross-class duplicates** (a record and an enum sharing a name) surface
-/// as `CodegenError::FailClosed` — defence in depth for a MIR-producer
-/// invariant (layout names should be disjoint across record/enum/machine
-/// spaces).
-fn predeclare_named_layouts<'ctx>(
-    ctx: &'ctx Context,
-    records: &[RecordLayout],
-    enums: &[EnumLayout],
-    machines: &[MachineLayout],
-    opaque_handle_names: &[String],
-) -> CodegenResult<RecordLayoutMap<'ctx>> {
-    // `class_owner` tracks which class first registered each name so a
-    // later registration from a different class can fail-closed with a
-    // useful diagnostic. Within-class repeats are silently idempotent.
-    #[derive(Copy, Clone, PartialEq, Eq)]
-    enum Class {
-        Record,
-        Enum,
-        Machine,
-    }
-    impl Class {
-        fn label(self) -> &'static str {
-            match self {
-                Class::Record => "record",
-                Class::Enum => "enum",
-                Class::Machine => "machine",
-            }
-        }
-    }
-    let mut map: RecordLayoutMap<'ctx> = RecordLayoutMap::new();
-    map.opaque.extend(opaque_handle_names.iter().cloned());
-    let mut class_owner: HashMap<String, Class> = HashMap::new();
-    let insert = |map: &mut RecordLayoutMap<'ctx>,
-                  owners: &mut HashMap<String, Class>,
-                  class: Class,
-                  name: &str|
-     -> CodegenResult<()> {
-        if let Some(existing) = owners.get(name) {
-            if *existing == class {
-                // Within-class duplicate: idempotent no-op against the
-                // already-allocated opaque struct.
-                return Ok(());
-            }
-            return Err(CodegenError::FailClosed(format!(
-                "duplicate layout name `{name}` across {} and {} layout classes — \
-                 MIR producer must use disjoint type names across record/enum/machine spaces",
-                existing.label(),
-                class.label()
-            )));
-        }
-        let st = ctx.opaque_struct_type(name);
-        map.insert(name.to_string(), st);
-        owners.insert(name.to_string(), class);
-        Ok(())
-    };
-    for layout in records {
-        insert(&mut map, &mut class_owner, Class::Record, &layout.name)?;
-    }
-    for layout in enums {
-        insert(&mut map, &mut class_owner, Class::Enum, &layout.name)?;
-    }
-    for layout in machines {
-        insert(&mut map, &mut class_owner, Class::Machine, &layout.name)?;
-        insert(
-            &mut map,
-            &mut class_owner,
-            Class::Machine,
-            &format!("{}Event", layout.name),
-        )?;
-    }
-    Ok(map)
-}
-
-/// Pass 2 of record-layout registration: walk every record's field list,
-/// lower each field type to LLVM via `resolve_ty`, and `set_body` on the
-/// opaque struct allocated by `predeclare_named_layouts`.
-///
-/// Because the map already contains opaque entries for every other record,
-/// every enum, and every machine outer/event struct in the pipeline, a
-/// record field of `Named { name: "<EnumName>" }` (or any other registered
-/// name) resolves to that opaque type rather than tripping the D10
-/// fail-closed sentinel in `primitive_to_llvm`.
-fn fill_record_layout_bodies<'ctx>(
-    ctx: &'ctx Context,
-    layouts: &[RecordLayout],
-    map: &RecordLayoutMap<'ctx>,
-) -> CodegenResult<()> {
-    for layout in layouts {
-        let st = map.get(&layout.name).copied().ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "record `{}` missing from predeclared layout map — \
-                 predeclare_named_layouts must run before fill_record_layout_bodies",
-                layout.name
-            ))
-        })?;
-        let mut field_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(layout.field_tys.len());
-        for fty in &layout.field_tys {
-            field_tys.push(resolve_ty(ctx, fty, map)?);
-        }
-        // packed = false: use the target's natural alignment per
-        // `RecordLayout` doc (A-6b). LESSONS: parity-or-tracked-gap.
-        st.set_body(&field_tys, false);
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -3585,328 +3454,43 @@ fn fill_record_layout_bodies<'ctx>(
 /// Per-module map from a machine type name to its registered tagged-union
 /// LLVM layout. Populated once per `build_module` from
 /// `IrPipeline.machine_layouts`.
-type MachineLayoutMap<'ctx> = HashMap<String, MachineCodegenLayout<'ctx>>;
+pub(crate) type MachineLayoutMap<'ctx> = HashMap<String, MachineCodegenLayout<'ctx>>;
 
 /// Cached LLVM types for one machine declaration's tagged-union layout.
 #[derive(Clone)]
-struct MachineCodegenLayout<'ctx> {
+pub(crate) struct MachineCodegenLayout<'ctx> {
     /// Outer named LLVM struct: `{ tag: iW, payload: [N x i8] }`. Used by
     /// `place_resolved_ty(Place::MachineTag(local))` to size the alloca
     /// and by `place_pointer` to GEP into field 0 (tag) or field 1
     /// (payload).
-    outer_struct: StructType<'ctx>,
+    pub(crate) outer_struct: StructType<'ctx>,
     /// LLVM integer type for the discriminant tag (`iW` where
     /// `i8`/`i16` selected from the declared variant count. Cached so
     /// `Place::MachineTag` loads use
     /// the same type the alloca was declared with.
-    tag_int_ty: inkwell::types::IntType<'ctx>,
+    pub(crate) tag_int_ty: inkwell::types::IntType<'ctx>,
     /// Per-variant anonymous struct types in declaration order. Index
     /// matches `MachineLayout.variants[i]`. Used by
     /// `place_pointer(Place::MachineVariant { variant_idx, .. })` to
     /// bitcast the payload byte array to the active variant's struct.
-    variant_struct_tys: Vec<StructType<'ctx>>,
+    pub(crate) variant_struct_tys: Vec<StructType<'ctx>>,
     /// Resolved per-variant field types in declaration order. Used by
     /// `place_resolved_ty(Place::MachineVariant { ... })` to surface the
     /// `ResolvedTy` of a payload field load/store without going through
     /// the LLVM type back to a Hew type. Index `i` matches
     /// `MachineLayout.variants[i].field_tys`.
-    variant_field_tys: Vec<Vec<ResolvedTy>>,
+    pub(crate) variant_field_tys: Vec<Vec<ResolvedTy>>,
     /// Static `[N x ptr]` table of state-name strings for `Instr::MachineStateName`.
     /// `state_name_table[i]` is a pointer to a private NUL-terminated read-only
     /// global holding `variants[i].name`. Populated only for the state-side
     /// machine layout; the `<Name>Event` companion layout entry has `None`.
-    state_name_table: Option<inkwell::values::GlobalValue<'ctx>>,
-}
-
-/// Return the native host data-layout string, initialising LLVM's native target
-/// exactly once per process (guarded by `OnceLock`).
-///
-/// `TargetData` wraps a raw pointer and is not `Sync`, so we cache the
-/// layout *string* (which is `Sync`) and construct a fresh `TargetData`
-/// from it on each call via `TargetData::create`. `TargetData::create` is
-/// cheap — it only parses the layout string into target-description tables;
-/// it does not allocate LLVM IR or touch the global PassManager.
-///
-/// Object emission passes target-specific `TargetData` into module
-/// construction. This host helper is only for target-agnostic IR inspection
-/// tests and the debug `.ll` artefact.
-fn host_data_layout_string() -> &'static str {
-    use std::sync::OnceLock;
-    static HOST_DL: OnceLock<String> = OnceLock::new();
-    HOST_DL.get_or_init(|| {
-        // `initialize_native` is idempotent; `base=true` registers only
-        // the target description, not the asm printer/parser.
-        Target::initialize_native(&InitializationConfig {
-            base: true,
-            ..InitializationConfig::default()
-        })
-        .expect(
-            "host_data_layout_string: native LLVM target failed to initialise — \
-             the host platform is not supported by this build of LLVM",
-        );
-        let triple = TargetMachine::get_default_triple();
-        let target = Target::from_triple(&triple)
-            .expect("host_data_layout_string: no LLVM target for host triple");
-        // OptimizationLevel / RelocMode / CodeModel do not affect the data
-        // layout string; use defaults to minimise setup cost.
-        let tm = target
-            .create_target_machine(
-                &triple,
-                "generic",
-                "",
-                inkwell::OptimizationLevel::None,
-                inkwell::targets::RelocMode::Default,
-                inkwell::targets::CodeModel::Default,
-            )
-            .expect("host_data_layout_string: TargetMachine construction failed");
-        tm.get_target_data()
-            .get_data_layout()
-            .as_str()
-            .to_string_lossy()
-            .into_owned()
-    })
+    pub(crate) state_name_table: Option<inkwell::values::GlobalValue<'ctx>>,
 }
 
 /// Construct a `TargetData` for the native host from the cached data-layout
 /// string. See `host_data_layout_string` for initialisation details.
-fn host_target_data() -> TargetData {
-    TargetData::create(host_data_layout_string())
-}
-
-/// Register every machine from `pipeline.machine_layouts` as a named LLVM
-/// tagged-union struct. See the module-level "Layout invariants" block
-/// for the struct shape and access pattern.
-///
-/// Variant payload structs are anonymous; only the outer machine type
-/// is named so `Place::MachineTag(local)` slots can be alloca'd by name.
-///
-/// LESSONS: `feedback_fail_closed_not_pretend` — out-of-range variant or
-/// unsupported payload type returns `CodegenError::FailClosed`, never a
-/// silent fallback to variant 0 or a zero-sized payload.
-fn register_machine_layouts<'ctx>(
-    ctx: &'ctx Context,
-    llvm_mod: &LlvmModule<'ctx>,
-    machine_layouts: &[MachineLayout],
-    record_layout_map: &mut RecordLayoutMap<'ctx>,
-    enum_layouts: &[EnumLayout],
-    target_data: Option<&TargetData>,
-) -> CodegenResult<MachineLayoutMap<'ctx>> {
-    let mut map: MachineLayoutMap<'ctx> = HashMap::new();
-    for layout in machine_layouts {
-        // Within-class duplicate guard (mirrors `register_enum_layouts`):
-        // a second `set_body` against the same predeclared opaque struct
-        // is invalid LLVM. Skip the repeat if the outer struct's
-        // per-variant metadata is already present.
-        if map.contains_key(&layout.name) {
-            continue;
-        }
-        // The state-side machine value: `<Name>` with state-variant payloads.
-        let mut machine_cg = build_tagged_union_layout(
-            ctx,
-            &layout.name,
-            &layout.variants,
-            record_layout_map,
-            enum_layouts,
-            target_data,
-        )?;
-        // Build the per-machine state-name string table. Each entry is a
-        // pointer to a private NUL-terminated read-only global; the table
-        // itself is a private `[N x ptr]` constant. `Instr::MachineStateName`
-        // reads the machine's tag and GEPs into this table.
-        machine_cg.state_name_table = Some(build_state_name_table(
-            ctx,
-            llvm_mod,
-            &layout.name,
-            &layout.variants,
-        )?);
-        // Register the outer struct in the shared layout map so
-        // `resolve_ty` finds `ResolvedTy::Named { name: "<Name>" }`
-        // naturally — the alloca slot for a `self: <Name>` parameter
-        // resolves the same way a record-typed local does.
-        record_layout_map.insert(layout.name.clone(), machine_cg.outer_struct);
-        map.insert(layout.name.clone(), machine_cg);
-
-        // The companion event enum: `<Name>Event` with event-variant
-        // payloads. Tag bit width is derived from the event count
-        let event_name = format!("{}Event", layout.name);
-        let event_cg = build_tagged_union_layout(
-            ctx,
-            &event_name,
-            &layout.events,
-            record_layout_map,
-            enum_layouts,
-            target_data,
-        )?;
-        record_layout_map.insert(event_name.clone(), event_cg.outer_struct);
-        map.insert(event_name, event_cg);
-    }
-    Ok(map)
-}
-
-/// LLVM tagged-union struct, inserting into the shared `machine_layouts` map
-/// so that `Place::MachineTag` / `Place::MachineVariant` codegen can look up
-/// enum-typed locals by their type name.
-///
-/// User enums share the tagged-union substrate (`{ tag: iW, payload: [N x i8] }`)
-/// with machine states and event companions. Monomorphic enums of every
-/// variant shape (unit, tuple, struct) lower end-to-end through this
-/// substrate — `build_tagged_union_layout` walks per-variant `field_tys` and
-/// emits an alignment-correct payload byte array sized to the widest variant.
-/// Generic enums (`enum Maybe<T> { ... }`) are fully supported via the
-/// `EnumLayoutRegistry` substrate; each instantiation arrives in `enum_layouts`
-/// under a mangled name (e.g. `Option$$i64`) and is registered here.
-fn register_enum_layouts<'ctx>(
-    ctx: &'ctx Context,
-    enum_layouts: &[EnumLayout],
-    record_layout_map: &mut RecordLayoutMap<'ctx>,
-    machine_layout_map: &mut MachineLayoutMap<'ctx>,
-    target_data: Option<&TargetData>,
-) -> CodegenResult<()> {
-    // Within-class duplicate enum-layout entries (the same mangled name
-    // registered along multiple stdlib paths) are tolerated by
-    // `predeclare_named_layouts` as a no-op. Here we must also skip the
-    // duplicate body-fill, because `build_tagged_union_layout` calls
-    // `set_body` on the predeclared opaque — a second `set_body` against
-    // the same struct is invalid LLVM. The first registration wins;
-    // `machine_layout_map` retains the per-variant metadata it produced.
-    //
-    // Process in dependency order: `build_tagged_union_layout` queries the
-    // ABI size of each variant's LLVM struct via `TargetData::get_abi_size`.
-    // If a variant's field type is itself an enum whose body is not yet set
-    // (still opaque), `get_abi_size` returns 0 and the outer payload array
-    // is under-sized, silently corrupting extraction GEPs. Topological
-    // ordering ensures inner enums (e.g. `Option<i64>`) are fully registered
-    // before outer enums that reference them (e.g.
-    // `Result<Option<i64>, TimeoutError>`).
-    //
-    // WHY the input order is wrong: `try_register_enum_instantiation_ty` in
-    // the HIR uses a LIFO worklist that inserts `Result<Option<T>, E>` before
-    // `Option<T>` because the outer type is popped and inserted first, then
-    // its args are enqueued. This is a pre-existing HIR-side ordering gap;
-    // sorting here is the fail-closed fix rather than a silent mis-size.
-    //
-    // WHEN OBSOLETE: if the HIR registration is changed to emit inner types
-    // before outer types (e.g. by switching to post-order traversal), this
-    // sort remains a no-op (already ordered correctly) and can be removed.
-    //
-    // Algorithm: Kahn's topological sort over the named-enum dependency graph.
-    // Edge A → B means "A's body references B's named struct" (B must be
-    // set before A). The sort is stable within each tier so unrelated layouts
-    // keep their input order, which is important for the first-registration-wins
-    // dedup policy.
-    let names: HashSet<&str> = enum_layouts.iter().map(|l| l.name.as_str()).collect();
-
-    // `deps(i)` = indices of enum_layouts that layout `i` depends on
-    // (i.e., names that appear as variant field types and are themselves
-    // enum layout names).
-    let dep_of: Vec<Vec<usize>> = enum_layouts
-        .iter()
-        .map(|layout| {
-            let mut deps: Vec<usize> = Vec::new();
-            for variant in &layout.variants {
-                for field_ty in &variant.field_tys {
-                    collect_named_enum_deps(field_ty, &names, enum_layouts, &mut deps);
-                }
-            }
-            deps.sort_unstable();
-            deps.dedup();
-            // Drop self-dependency (shouldn't exist for non-recursive enums, but
-            // be defensive).
-            let self_idx = enum_layouts
-                .iter()
-                .position(|l| l.name == layout.name)
-                .unwrap_or(usize::MAX);
-            deps.retain(|&d| d != self_idx);
-            deps
-        })
-        .collect();
-
-    // In-degree for Kahn's: in_degree[i] = number of enum deps layout i still
-    // needs before it can be processed (= dep_of[i].len() initially).
-    let n = enum_layouts.len();
-    let in_degree: Vec<usize> = dep_of.iter().map(|d| d.len()).collect();
-
-    // Build a reverse-adjacency: for each layout d, which layouts depend on d.
-    let mut reverse: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for (i, deps) in dep_of.iter().enumerate() {
-        for &d in deps {
-            reverse[d].push(i);
-        }
-    }
-
-    // Kahn's algorithm with a VecDeque for stable (input-order) processing.
-    let mut order: Vec<usize> = Vec::with_capacity(n);
-    {
-        let mut in_deg = in_degree.clone();
-        // Use a stable queue: drain zero-in-degree nodes in input index order.
-        let mut queue: std::collections::VecDeque<usize> =
-            (0..n).filter(|&i| in_deg[i] == 0).collect();
-        while let Some(i) = queue.pop_front() {
-            order.push(i);
-            for &j in &reverse[i] {
-                in_deg[j] -= 1;
-                if in_deg[j] == 0 {
-                    queue.push_back(j);
-                }
-            }
-        }
-        if order.len() != n {
-            // Cycle detected: a non-indirect (inline, value-typed) enum field
-            // creates a circular inline layout. Fail closed with a diagnostic.
-            //
-            // Non-indirect enum values are laid out inline (finite-size tagged
-            // unions). A layout cycle among non-indirect enums would produce a
-            // zero-byte payload alloca — a silent miscompile that the LLVM
-            // verifier does not catch. Indirect (boxed) enums are already
-            // excluded from cycle edges by `collect_named_enum_deps`; only a
-            // genuine inline-layout cycle reaches this branch.
-            //
-            // WHY: the fallback to input order was the original behaviour and
-            // produced a zero-byte alloca for the cyclic variant.
-            // WHEN OBSOLETE: never — an inline layout cycle is structurally
-            // unrepresentable. If the type is boxed, declare it `indirect enum`
-            // so the pointer-shaped layout eliminates the cycle.
-            let cycle_names: Vec<&str> = enum_layouts
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !order.contains(i))
-                .map(|(_, l)| l.name.as_str())
-                .collect();
-            return Err(CodegenError::FailClosed(format!(
-                "cyclic enum layout detected — non-indirect Hew enums are inline value types \
-                 and cannot form a layout cycle; \
-                 the following enum name(s) form a layout cycle: {}. \
-                 Declare the enum(s) as `indirect enum` to break the cycle (indirect enums \
-                 are heap-boxed and hold a pointer, which has a fixed finite size).",
-                cycle_names.join(", ")
-            )));
-        }
-    }
-
-    for i in order {
-        let layout = &enum_layouts[i];
-        if machine_layout_map.contains_key(&layout.name) {
-            continue;
-        }
-        // Convert `EnumLayout.variants` (which are `MachineVariantLayout`)
-        // directly — they share the same shape (`name`, `field_tys`).
-        let enum_cg = build_tagged_union_layout(
-            ctx,
-            &layout.name,
-            &layout.variants,
-            record_layout_map,
-            enum_layouts,
-            target_data,
-        )?;
-        // Register the outer struct so `resolve_ty` resolves
-        // `ResolvedTy::Named { name: "<EnumName>" }` the same way as a
-        // machine-typed or record-typed local. (The opaque was inserted
-        // by `predeclare_named_layouts`; this overwrite stores the same
-        // `StructType` handle that `set_body` mutated in place.)
-        record_layout_map.insert(layout.name.clone(), enum_cg.outer_struct);
-        machine_layout_map.insert(layout.name.clone(), enum_cg);
-    }
-    Ok(())
+pub(crate) fn host_target_data() -> TargetData {
+    TargetData::create(crate::layout::host_data_layout_string())
 }
 
 /// Collect indices into `enum_layouts` that `field_ty` directly or
@@ -3922,7 +3506,7 @@ fn register_enum_layouts<'ctx>(
 /// calculated. Including indirect dependencies as layout edges would incorrectly
 /// classify a valid mutually-recursive `indirect enum` pair (A ↔ B, both
 /// boxed) as a layout cycle and fail-closed.
-fn collect_named_enum_deps(
+pub(crate) fn collect_named_enum_deps(
     field_ty: &ResolvedTy,
     names: &HashSet<&str>,
     enum_layouts: &[EnumLayout],
@@ -3958,169 +3542,7 @@ fn collect_named_enum_deps(
     }
 }
 
-/// Shared builder for the machine-value and event-companion tagged-union
-/// LLVM types. Both share the `{ tag: iW, payload: [N x i8] }` shape
-/// described in the layout-invariants block above.
-///
-/// Payload byte count is `TargetData::get_abi_size` of the variant's LLVM
-/// struct — ABI-correct for the host native target including inter-field
-/// padding (see sizing note in the block comment above). `record_layouts`
-/// is no longer a parameter; variant LLVM types are resolved through
-/// `record_layout_map` (the already-populated LLVM type map), which carries
-/// the same type information without needing raw `RecordLayout` access.
-fn build_tagged_union_layout<'ctx>(
-    ctx: &'ctx Context,
-    outer_name: &str,
-    variants: &[MachineVariantLayout],
-    record_layout_map: &RecordLayoutMap<'ctx>,
-    enum_layouts: &[EnumLayout],
-    target_data: Option<&TargetData>,
-) -> CodegenResult<MachineCodegenLayout<'ctx>> {
-    // Build each variant's LLVM struct type first, then query its ABI size.
-    // This order is required: `get_abi_size` operates on a completed LLVM
-    // type; we cannot query sizes incrementally from `ResolvedTy` fields
-    // without replicating LLVM's padding rules.
-    let mut variant_struct_tys: Vec<StructType<'ctx>> = Vec::with_capacity(variants.len());
-    let mut variant_field_tys: Vec<Vec<ResolvedTy>> = Vec::with_capacity(variants.len());
-    for variant in variants {
-        let field_tys: Vec<BasicTypeEnum<'ctx>> = variant
-            .field_tys
-            .iter()
-            .map(|fty| {
-                // `indirect enum` field types must resolve to `ptr` (not the
-                // named struct), because indirect-enum variables are
-                // heap-allocated and every field reference is a heap pointer.
-                // `resolve_ty` normally returns the named struct when the name
-                // appears in the struct-layout map (struct-first ordering for
-                // W4.011 collision safety: a user record can share a short name
-                // with a stdlib `#[opaque]` handle, e.g. user `Value` vs
-                // `json.Value`).
-                //
-                // Gate on `is_indirect_enum` — the same precise predicate that
-                // `declare_function`, `lower_function`, and `lower_vec_index`
-                // use — rather than the opaque-set proxy. The opaque set also
-                // contains every `#[opaque]` stdlib handle name; checking it
-                // before `resolve_ty` would invert the struct-first invariant
-                // for any user aggregate whose short name collides with an
-                // opaque-handle entry, causing an undersized payload (fail-open
-                // heap corruption). `#[opaque]` handle fields still resolve to
-                // `ptr` through `resolve_ty`'s own post-struct opaque check, so
-                // no field shape regresses.
-                if let ResolvedTy::Named { name, .. } = fty {
-                    if is_indirect_enum(name, enum_layouts) {
-                        return Ok(ctx.ptr_type(AddressSpace::default()).into());
-                    }
-                }
-                resolve_ty(ctx, fty, record_layout_map)
-            })
-            .collect::<CodegenResult<Vec<_>>>()?;
-        variant_struct_tys.push(ctx.struct_type(&field_tys, false));
-        variant_field_tys.push(variant.field_tys.clone());
-    }
-
-    // Compute the max ABI byte count AND max ABI alignment across all
-    // variant structs. Empty-variant unions yield 0 for both; we floor the
-    // byte count at 1 so field 1 is always a non-empty array and GEP indices
-    // stay consistent regardless of payload presence, and floor the alignment
-    // at 1 so the payload element type is well-defined.
-    //
-    // Alignment-aware payload typing: the payload is emitted as
-    // `[ceil(payload_bytes / max_align) x i{max_align*8}]`. The element type
-    // gives the payload field its natural alignment of `max_align` bytes, so
-    // variant-struct GEPs (which bitcast the payload pointer to the variant
-    // struct type) target pointers whose alignment meets the variant's
-    // most-aligned field. Primitive ABI alignments (i8=1, i16=2, i32=4,
-    // i64=8, ptr=8 on the targets Hew currently emits for) are consistent
-    // across native and wasm32 data layouts, so this single IR shape is
-    // valid on every target Hew lowers to. See the "Alignment" note in the
-    // layout-invariants block above.
-    let host_td;
-    let td = if let Some(td) = target_data {
-        td
-    } else {
-        host_td = host_target_data();
-        &host_td
-    };
-    let mut max_bytes: u64 = 0;
-    let mut max_align: u32 = 0;
-    for vs in &variant_struct_tys {
-        let abi_bytes = td.get_abi_size(vs);
-        if abi_bytes > max_bytes {
-            max_bytes = abi_bytes;
-        }
-        let abi_align = td.get_abi_alignment(vs);
-        if abi_align > max_align {
-            max_align = abi_align;
-        }
-    }
-    let payload_align = max_align.max(1);
-    // Round payload byte count up to a multiple of `payload_align` so the
-    // array element count `K = payload_bytes / payload_align` is exact.
-    let payload_align_u64 = u64::from(payload_align);
-    let payload_bytes = {
-        let bytes = max_bytes.max(1);
-        // `bytes` and `payload_align_u64` are non-zero; round bytes up to a
-        // multiple of `payload_align_u64` so the array element count is exact.
-        bytes.div_ceil(payload_align_u64) * payload_align_u64
-    };
-    let element_count_u64 = payload_bytes / payload_align_u64;
-    let element_count_u32 = u32::try_from(element_count_u64).map_err(|_| {
-        CodegenError::FailClosed(format!(
-            "machine `{outer_name}` payload element count {element_count_u64} exceeds u32 — \
-             a variant with > 4 GiB payload is unsupported"
-        ))
-    })?;
-    // Element bit width: `payload_align` bytes => `payload_align * 8` bits.
-    // Cap at 64 because LLVM's array element types and Hew's primitive set
-    // top out at i64; an alignment >8 on a Hew variant would imply a vector
-    // or aggregate field type the current substrate does not lower.
-    if payload_align > 8 {
-        return Err(CodegenError::FailClosed(format!(
-            "machine `{outer_name}` requires payload alignment {payload_align} > 8 bytes — \
-             Hew's primitive substrate tops out at i64 (8-byte alignment); a variant \
-             field with a wider alignment requirement is unsupported"
-        )));
-    }
-    let element_bits = payload_align * 8;
-    let element_bits_nz = std::num::NonZeroU32::new(element_bits).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "machine `{outer_name}` derived zero-bit payload element — \
-             payload_align computation is invalid"
-        ))
-    })?;
-    let payload_element_int_ty = ctx
-        .custom_width_int_type(element_bits_nz)
-        // JUSTIFIED: Display-format preserved. `custom_width_int_type` returns
-        // `Result<IntType, LLVMString>`, and the original wrap uses `{e}` (not
-        // `{e:?}`) to render the inkwell `LLVMString` as the LLVM diagnostic
-        // text without quoting it. Migrating to `LlvmResultExt::llvm_ctx` would
-        // silently switch to Debug projection (`{e:?}`) and change the
-        // user-visible error text. The lane plan §B4 deliberately leaves this
-        // one Display call un-migrated; if a second Display site ever appears,
-        // introduce a sibling `.llvm_ctx_display` helper.
-        .map_err(|e| CodegenError::Llvm(format!("custom_width_int_type({element_bits}): {e}")))?;
-
-    let tag_int_ty = tag_int_type_for_variant_count(ctx, outer_name, variants.len())?;
-    let payload_arr_ty = payload_element_int_ty.array_type(element_count_u32);
-
-    let outer_struct = record_layout_map.get(outer_name).copied().ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "tagged-union layout `{outer_name}` missing from predeclared layout map — \
-             predeclare_named_layouts must include every enum/machine outer + <Name>Event name"
-        ))
-    })?;
-    outer_struct.set_body(&[tag_int_ty.into(), payload_arr_ty.into()], false);
-
-    Ok(MachineCodegenLayout {
-        outer_struct,
-        tag_int_ty,
-        variant_struct_tys,
-        variant_field_tys,
-        state_name_table: None,
-    })
-}
-
-fn tag_int_type_for_variant_count<'ctx>(
+pub(crate) fn tag_int_type_for_variant_count<'ctx>(
     ctx: &'ctx Context,
     _outer_name: &str,
     variant_count: usize,
@@ -4142,7 +3564,7 @@ fn tag_int_type_for_variant_count<'ctx>(
 /// tag as the array index. Each per-state string is itself a separate
 /// private global (so the table holds opaque `ptr` values, matching
 /// `ResolvedTy::String`'s ABI in LLVM IR).
-fn build_state_name_table<'ctx>(
+pub(crate) fn build_state_name_table<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     machine_name: &str,
@@ -4333,94 +3755,7 @@ fn emit_const_globals<'ctx>(
     Ok(globals)
 }
 
-/// Locate a machine's tagged-union codegen layout for an MIR local known
-/// to hold a machine value. Reads the local's resolved type and consults
-/// the machine layout map. Fails closed if the local is not a machine
-/// type or the machine name is not registered.
-fn machine_layout_for_local<'a, 'ctx>(
-    fn_ctx: &'a FnCtx<'_, 'ctx>,
-    local: u32,
-) -> CodegenResult<&'a MachineCodegenLayout<'ctx>> {
-    let ty = fn_ctx.local_tys.get(&local).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "Place::MachineTag/MachineVariant references local {local} which has no \
-             resolved type — the MIR producer must allocate the machine local before \
-             projecting through it"
-        ))
-    })?;
-    let (name, args) = match ty {
-        ResolvedTy::Named { name, args, .. } => (name, args),
-        other => {
-            return Err(CodegenError::FailClosed(format!(
-                "Place::MachineTag/MachineVariant references local {local} whose type \
-                 is {other:?}, not a named machine type"
-            )));
-        }
-    };
-    // Generic-enum monomorphisations are registered under the mangled key
-    // (e.g. `"Option$$i64"`) by `register_enum_layouts`. When the local's
-    // type carries type args, compute the same mangled key used at
-    // registration so the lookup succeeds.
-    // WHY: bare-name lookup fails for any instantiated generic enum because
-    //   `register_enum_layouts` stores under `hir_layout.mangled_name`, not
-    //   the origin enum name. Bare lookup is correct only for monomorphic enums
-    //   (no type args) and machine/actor layouts.
-    // WHEN-OBSOLETE: if the layout map is ever re-keyed by a richer
-    //   identifier (e.g. a `(origin_id, mono_args)` pair), this branch goes away.
-    let lookup_key: String = if args.is_empty() {
-        // Monomorphic enums/machines register under their bare declaration
-        // name (`register_enum_layouts` / `register_machine_layouts` key by
-        // `EnumLayout.name` = the HIR `decl.name`, which is unqualified). A
-        // Place at an IMPORTER carries the module-qualified name (`fs.IoError`)
-        // because the local's `ResolvedTy::Named` was resolved against the
-        // importing scope. Strip the `module.` prefix when the qualified key
-        // is absent but the bare name is registered, mirroring the generic-enum
-        // branch's `short_name` fallback below.
-        // WHY: without this, constructing/matching an imported enum-with-data
-        //   (e.g. `IoError` from `std::fs`/`std::net`) fails closed at codegen
-        //   even though MIR registered the layout under the bare name.
-        // WHEN-OBSOLETE: if layouts are re-keyed by `(module, name)` so the
-        //   importer's qualified lookup matches directly.
-        if fn_ctx.machine_layouts.contains_key(name) {
-            name.clone()
-        } else {
-            short_name(name).to_string()
-        }
-    } else {
-        // Shorten the type-arg spine for the full-outer-name key too: the
-        // registration side keys on bare args, so a raw `mangle(name, args)`
-        // carrying a qualified payload would never hit and only the short_key
-        // fallback would save it. Keying both candidates off the shortened
-        // spine removes that raw-args trap at this layout-lookup site.
-        let key = mangle_with_shortened_args(name, args);
-        if !fn_ctx.machine_layouts.contains_key(&key) {
-            let short_key = mangle_with_shortened_args(short_name(name), args);
-            if fn_ctx.machine_layouts.contains_key(&short_key) {
-                short_key
-            } else if fn_ctx.machine_layouts.contains_key(short_name(name)) {
-                short_name(name).to_string()
-            } else {
-                return Err(CodegenError::FailClosed(format!(
-                    "Place::MachineTag/MachineVariant references generic enum `{name}` \
-                     with type args {args:?}: mangled key `{key}` is not in \
-                     IrPipeline.machine_layouts — the monomorphisation was not registered \
-                     by `register_enum_layouts` (registration-mismatch)"
-                )));
-            }
-        } else {
-            key
-        }
-    };
-    fn_ctx.machine_layouts.get(&lookup_key).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "Place::MachineTag/MachineVariant references machine `{name}` which is not \
-             in IrPipeline.machine_layouts — registration mismatch between MIR producer \
-             and codegen"
-        ))
-    })
-}
-
-fn short_name(name: &str) -> &str {
+pub(crate) fn short_name(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(_, short)| short)
 }
 
@@ -4559,7 +3894,7 @@ fn shorten_named_args(ty: ResolvedTy) -> ResolvedTy {
 /// drop-seed / codec-seed key MUST shorten the spine identically or the keys
 /// diverge and the layout lookup falls through to the D10 fail-closed gate.
 /// Nested qualified payloads are shortened at every depth.
-fn mangle_with_shortened_args(name: &str, args: &[ResolvedTy]) -> String {
+pub(crate) fn mangle_with_shortened_args(name: &str, args: &[ResolvedTy]) -> String {
     if args.iter().any(needs_normalization) {
         let short_args: Vec<ResolvedTy> = args.iter().cloned().map(shorten_named_args).collect();
         mangle(name, &short_args)
@@ -4597,76 +3932,6 @@ fn needs_normalization(ty: &ResolvedTy) -> bool {
     }
 }
 
-/// Resolve the mangled `enum_layouts` registration key for a `ResolvedTy::Named`
-/// enum composite, matching the scheme `register_enum_layouts` uses (bare name
-/// for monomorphic enums, `mangle(short_name, args)` for generic
-/// instantiations). This key is also the `<Enum>` segment of the synthesised
-/// `__hew_enum_drop_inplace_<Enum>` helper, so the W5.020 caller-side drop and
-/// the synthesis pass agree on one symbol. Fails closed for any non-enum or
-/// unregistered type rather than guessing a key.
-fn enum_layout_key_for_ty(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> CodegenResult<String> {
-    let ResolvedTy::Named { name, args, .. } = ty else {
-        return Err(CodegenError::FailClosed(format!(
-            "enum in-place drop: ElabDrop::ty {ty:?} is not a named enum type"
-        )));
-    };
-    let short = short_name(name);
-    let key = if args.is_empty() {
-        fn_ctx
-            .enum_layouts
-            .iter()
-            .find(|el| el.name == *name || short_name(&el.name) == short)
-            .map(|el| el.name.clone())
-    } else {
-        let mangled = mangle_with_shortened_args(short, args);
-        fn_ctx
-            .enum_layouts
-            .iter()
-            .find(|el| el.name == mangled || el.name == *name)
-            .map(|el| el.name.clone())
-    };
-    key.ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "enum in-place drop: enum type `{name}` (args {args:?}) has no entry in \
-             IrPipeline.enum_layouts — the MIR producer emitted an EnumInPlace drop for \
-             an unregistered enum (registration mismatch)"
-        ))
-    })
-}
-
-/// True when `ty` is an inline tagged-union enum composite whose active
-/// variant can own heap (`Result<T, string>`, `Option<string>`, a user enum
-/// with an owned-payload variant). This is the W5.020 caller-side drop's
-/// coverage predicate: the composite-return boundary admits exactly these
-/// shapes (the MIR elaborator emits a matching `DropKind::EnumInPlace`), and
-/// fails closed for every other heap-owning composite (tuples, records, and —
-/// caught earlier by the checker — recursive value types). Mirrors the MIR
-/// `ty_is_heap_owning_enum_composite`; indirect (heap-boxed) enums are excluded
-/// because their payload drop runs through the boxed-storage release path.
-fn is_heap_owning_enum_composite_return(ty: &ResolvedTy, enum_layouts: &[EnumLayout]) -> bool {
-    let ResolvedTy::Named { name, args, .. } = ty else {
-        return false;
-    };
-    let short = short_name(name);
-    let layout = if args.is_empty() {
-        enum_layouts
-            .iter()
-            .find(|el| el.name == *name || short_name(&el.name) == short)
-    } else {
-        let mangled = mangle_with_shortened_args(short, args);
-        enum_layouts
-            .iter()
-            .find(|el| el.name == mangled || el.name == *name)
-    };
-    let Some(layout) = layout else {
-        return false;
-    };
-    if layout.is_indirect {
-        return false;
-    }
-    ty_contains_heap_owning(ty, enum_layouts)
-}
-
 /// True when a function return type is a SINGLE heap-owning leaf (`bytes`) that
 /// lowers to an LLVM struct only as an ABI detail — not a composite carrying
 /// interior owners.
@@ -4690,23 +3955,6 @@ fn is_heap_owning_enum_composite_return(ty: &ResolvedTy, enum_layouts: &[EnumLay
 /// `DropKind::TupleInPlace` / `DropKind::RecordInPlace` spine.
 fn is_single_heap_owning_leaf_return(ty: &ResolvedTy) -> bool {
     matches!(ty, ResolvedTy::Bytes)
-}
-
-/// True when a function return type is a heap-owning **tuple** composite whose
-/// per-element drop the W5.021 spine emits (`DropKind::TupleInPlace` +
-/// `__hew_tuple_drop_inplace_<key>`). The caller's tuple binding (or the
-/// `__tuple_N` destructure temp's element bindings) assumes the per-element drop
-/// obligation, so the composite-return boundary admits exactly this shape.
-///
-/// Keyed on the SEMANTIC property — a `ResolvedTy::Tuple` carrying at least one
-/// heap-owning element via the single `ty_contains_heap_owning` authority — not
-/// an incidental LLVM-shape proxy, so MIR (`ty_is_heap_owning_tuple`) and
-/// codegen agree on exactly which returns own heap (LESSONS:
-/// dedup-semantic-boundary, boundary-fail-closed). A tuple whose elements are
-/// all BitCopy never reaches here (`ty_contains_heap_owning` is false), and the
-/// gate's `StructType` arm only fires for heap-owning shapes anyway.
-fn is_heap_owning_tuple_composite_return(ty: &ResolvedTy, enum_layouts: &[EnumLayout]) -> bool {
-    matches!(ty, ResolvedTy::Tuple(_)) && ty_contains_heap_owning(ty, enum_layouts)
 }
 
 /// True when a function return type is a heap-owning **record** composite whose
@@ -4780,18 +4028,6 @@ fn is_heap_owning_record_composite_return(
     is_record && ty_contains_heap_owning(ty, enum_layouts)
 }
 
-/// Returns `true` when the named enum registered in `enum_layouts` has
-/// `is_indirect = true`, meaning every variable of the type holds a
-/// heap pointer rather than an inline tagged-union struct.
-fn is_indirect_enum(name: &str, enum_layouts: &[EnumLayout]) -> bool {
-    // Look up by exact name first, then by short (unqualified) name so
-    // module-qualified enums (`"mod.Expr"`) match `"Expr"` entries.
-    enum_layouts
-        .iter()
-        .find(|el| el.name == name || el.name == short_name(name))
-        .is_some_and(|el| el.is_indirect)
-}
-
 /// Resolve the "struct base pointer" for a machine/enum local — the
 /// pointer that GEP instructions should index into to access the tagged-union
 /// body.
@@ -4823,7 +4059,7 @@ fn resolve_machine_base_ptr<'ctx>(
         .get(&local)
         .and_then(|ty| {
             if let ResolvedTy::Named { name, .. } = ty {
-                Some(is_indirect_enum(name, fn_ctx.enum_layouts))
+                Some(crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts))
             } else {
                 None
             }
@@ -4874,7 +4110,7 @@ use hew_mir::ty_contains_heap_owning;
 /// identical anonymous types within the same `Context`.
 /// WHEN-OBSOLETE: if Hew adds named tuple types (type aliases with struct
 /// semantics) this arm can be updated to look up the map first.
-fn resolve_ty<'ctx>(
+pub(crate) fn resolve_ty<'ctx>(
     ctx: &'ctx Context,
     ty: &ResolvedTy,
     record_layouts: &RecordLayoutMap<'ctx>,
@@ -4976,7 +4212,7 @@ fn resolve_ty<'ctx>(
     primitive_to_llvm(ctx, ty)
 }
 
-fn primitive_to_llvm<'ctx>(
+pub(crate) fn primitive_to_llvm<'ctx>(
     ctx: &'ctx Context,
     ty: &ResolvedTy,
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
@@ -5780,7 +5016,7 @@ fn lower_call_trait_method(
 // Per-instruction lowering
 // ---------------------------------------------------------------------------
 
-fn place_pointer<'ctx>(
+pub(crate) fn place_pointer<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     place: Place,
 ) -> CodegenResult<(PointerValue<'ctx>, BasicTypeEnum<'ctx>)> {
@@ -5837,7 +5073,7 @@ fn place_pointer<'ctx>(
         // MIR so future enum-only drop / lifecycle policies have a
         // separate surface to attach to, but the codegen seam is one GEP.
         Place::MachineTag(local) | Place::EnumTag(local) => {
-            let layout = machine_layout_for_local(fn_ctx, local)?;
+            let layout = crate::layout::machine_layout_for_local(fn_ctx, local)?;
             // For indirect enums the alloca holds a heap pointer rather than
             // the struct inline; load through it to get the struct base.
             let base_ptr = resolve_machine_base_ptr(fn_ctx, local)?;
@@ -5857,7 +5093,7 @@ fn place_pointer<'ctx>(
             variant_idx,
             field_idx,
         } => {
-            let layout = machine_layout_for_local(fn_ctx, local)?;
+            let layout = crate::layout::machine_layout_for_local(fn_ctx, local)?;
             let variant_idx_usize = variant_idx as usize;
             let variant_struct = layout
                 .variant_struct_tys
@@ -5911,7 +5147,10 @@ fn place_pointer<'ctx>(
     }
 }
 
-fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResult<&'a ResolvedTy> {
+pub(crate) fn place_resolved_ty<'a>(
+    fn_ctx: &'a FnCtx<'_, '_>,
+    place: Place,
+) -> CodegenResult<&'a ResolvedTy> {
     match place {
         Place::Local(id)
         | Place::DuplexHandle(id)
@@ -6001,167 +5240,10 @@ fn place_resolved_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, place: Place) -> CodegenResu
     }
 }
 
-fn sanitize_symbol(s: &str) -> String {
+pub(crate) fn sanitize_symbol(s: &str) -> String {
     s.chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
         .collect()
-}
-
-fn task_wrapper_name(callee_symbol: &str) -> String {
-    format!("__hew_task_wrapper_{}", sanitize_symbol(callee_symbol))
-}
-
-fn task_closure_wrapper_name(fn_symbol: &str) -> String {
-    format!("__hew_task_closure_wrapper_{}", sanitize_symbol(fn_symbol))
-}
-
-fn get_or_create_task_wrapper<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    callee_symbol: &str,
-) -> CodegenResult<FunctionValue<'ctx>> {
-    let wrapper_name = task_wrapper_name(callee_symbol);
-    if let Some(existing) = fn_ctx.llvm_mod.get_function(&wrapper_name) {
-        return Ok(existing);
-    }
-
-    let callee_symbol_entry = *fn_ctx.fn_symbols.get(callee_symbol).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SpawnTaskDirect callee `{callee_symbol}` was not declared"
-        ))
-    })?;
-    let (callee_value, callee_return_ty, callee_returns_unit) =
-        callee_symbol_entry.real(callee_symbol, "SpawnTaskDirect")?;
-
-    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    if callee_value.get_nth_param(0).is_none() || callee_value.get_nth_param(1).is_some() {
-        return Err(CodegenError::FailClosed(format!(
-            "SpawnTaskDirect callee `{callee_symbol}` must take a leading \
-             HewExecutionContext* and no user parameters"
-        )));
-    }
-
-    let wrapper_ty = fn_ctx
-        .ctx
-        .void_type()
-        .fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-    let wrapper = fn_ctx
-        .llvm_mod
-        .add_function(&wrapper_name, wrapper_ty, Some(Linkage::Internal));
-    let bb = fn_ctx.ctx.append_basic_block(wrapper, "entry");
-    let builder = fn_ctx.ctx.create_builder();
-    builder.position_at_end(bb);
-    let ctx_param = wrapper.get_nth_param(0).ok_or_else(|| {
-        CodegenError::FailClosed("task wrapper missing HewExecutionContext* parameter".into())
-    })?;
-    let task_param = wrapper.get_nth_param(1).ok_or_else(|| {
-        CodegenError::FailClosed("task wrapper missing HewTask* parameter".into())
-    })?;
-    let body_call = builder
-        .build_call(callee_value, &[ctx_param.into()], "task_body_call")
-        .llvm_ctx("task wrapper body call")?;
-
-    // Value-returning task: publish the body's `T` result through the task's
-    // own result buffer BEFORE marking the task complete, so the awaiter's
-    // resume edge reads it via `hew_task_get_result`. The adapter
-    // (`__hew_task_entry_<fn>`, TaskEntry call-conv) returns its body's `T`; a
-    // unit task returns the i8 unit stand-in and publishes nothing.
-    //
-    // Drop-exactly-once: `hew_task_set_result` deep-copies `sizeof(T)` bytes of
-    // the value REPRESENTATION into a malloc buffer the task owns and frees
-    // (as raw bytes) at scope join. For a managed `T` (string/record) those
-    // bytes are the owning handle, MOVED out of the body's return slot here and
-    // MOVED out of the buffer into the awaiter's binding on resume — the buffer
-    // free never drops the handle, so it lives exactly once.
-    if !callee_returns_unit {
-        let result_val = body_call.try_as_basic_value().basic().ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "SpawnTaskDirect value-task callee `{callee_symbol}` returned void but \
-                 its MIR return type is non-unit"
-            ))
-        })?;
-        // Stack slot holding the value representation; `hew_task_set_result`
-        // copies `sizeof(T)` bytes from it into the task-owned result buffer.
-        let result_slot = builder
-            .build_alloca(callee_return_ty, "task_result_slot")
-            .llvm_ctx("task wrapper result slot alloca")?;
-        builder
-            .build_store(result_slot, result_val)
-            .llvm_ctx("task wrapper result store")?;
-        let (size, _align) = abi_size_align(callee_return_ty, Some(fn_ctx.target_data))?;
-        let size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
-        let size_val = size_ty.const_int(size, false);
-        let set_result = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_task_set_result",
-        )?;
-        builder
-            .build_call(
-                set_result,
-                &[task_param.into(), result_slot.into(), size_val.into()],
-                "hew_task_set_result_call",
-            )
-            .llvm_ctx("hew_task_set_result call")?;
-    }
-
-    let complete = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_task_complete_threaded",
-    )?;
-    builder
-        .build_call(
-            complete,
-            &[task_param.into()],
-            "hew_task_complete_threaded_call",
-        )
-        .llvm_ctx("hew_task_complete_threaded call")?;
-    builder.build_return(None).llvm_ctx("task wrapper return")?;
-    Ok(wrapper)
-}
-
-fn emit_spawn_task_direct(
-    fn_ctx: &FnCtx<'_, '_>,
-    task: Place,
-    callee_symbol: &str,
-) -> CodegenResult<()> {
-    let spilled_ctx = fn_ctx.execution_context.ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SpawnTaskDirect spawn site for `{callee_symbol}` requires a caller-side \
-             ctx-bearing execution context; MIR lowering should reject Default-callconv \
-             enclosing functions before codegen"
-        ))
-    })?;
-    // W6.010: in a coroutine the spilled `ctx` param is the unwound dispatch
-    // frame after a suspend; `hew_task_spawn_thread_with_inherited_context`
-    // immediately derefs `parent_ctx` to snapshot supervisor/trace/cancel, so a
-    // scope/fork placed after an await must pass the resume-installed live
-    // context, not the dangling param. The live context restores
-    // actor/arena/lock_seat/supervisor; task_scope/cancel_token/trace are
-    // fail-safe null — the spawned child inherits no trace/cancel, which the
-    // runtime tolerates (null parent_cancel_token → no child token; trace is a
-    // by-value copy). A non-coroutine handler keeps the cheaper spilled param.
-    let parent_ctx = live_execution_context_ptr(fn_ctx, spilled_ctx)?;
-    let task_ptr = load_duplex_handle(fn_ctx, task, "SpawnTaskDirect task")?;
-    let wrapper = get_or_create_task_wrapper(fn_ctx, callee_symbol)?;
-    let spawn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_task_spawn_thread_with_inherited_context",
-    )?;
-    let fn_ptr = wrapper.as_global_value().as_pointer_value();
-    fn_ctx
-        .builder
-        .build_call(
-            spawn,
-            &[parent_ctx.into(), task_ptr.into(), fn_ptr.into()],
-            "hew_task_spawn_thread_with_inherited_context_call",
-        )
-        .llvm_ctx("hew_task_spawn_thread_with_inherited_context call")?;
-    Ok(())
 }
 
 fn llvm_global_name_fragment(raw: &str) -> String {
@@ -7592,7 +6674,7 @@ fn get_or_declare_libc_malloc<'ctx>(
     )
 }
 
-fn get_or_declare_libc_free<'ctx>(
+pub(crate) fn get_or_declare_libc_free<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
 ) -> FunctionValue<'ctx> {
@@ -7605,85 +6687,6 @@ fn get_or_declare_libc_free<'ctx>(
         ctx.void_type().fn_type(&[ptr_ty.into()], false),
         Some(Linkage::External),
     )
-}
-
-/// Synthesize the per-lambda capture-env dropper:
-/// `extern fn(env: *mut c_void)` — drops each owned env field by its
-/// declared class, then frees the heap env allocation. The runtime calls
-/// it exactly once after the dispatch loop stops; it is the SOLE teardown
-/// owner of the boxed env (`lifecycle-symmetry`). Field classes:
-///
-/// * `None` — BitCopy, nothing to release.
-/// * `String` — the env owns an independent `hew_string_clone`; release
-///   via `hew_string_drop`.
-/// * `WeakSelfHandle` — the downgraded self handle from the
-///   MakeLambdaActor back-fill; release via `hew_lambda_actor_weak_drop`
-///   (a weak drop never releases the actor itself). Null-safe at the
-///   runtime, so an env dropped before back-fill (construction failure)
-///   stays sound.
-fn emit_lambda_env_dropper<'ctx>(
-    ctx: &'ctx Context,
-    llvm_mod: &LlvmModule<'ctx>,
-    name: &str,
-    env_struct: StructType<'ctx>,
-    field_drops: &[LambdaEnvFieldDrop],
-) -> CodegenResult<FunctionValue<'ctx>> {
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let fn_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
-    let func = llvm_mod.add_function(name, fn_ty, Some(Linkage::Internal));
-    let entry = ctx.append_basic_block(func, "entry");
-    let builder = ctx.create_builder();
-    builder.position_at_end(entry);
-    let env_ptr = func
-        .get_nth_param(0)
-        .ok_or_else(|| CodegenError::FailClosed(format!("env dropper `{name}` missing env param")))?
-        .into_pointer_value();
-    for (idx, class) in field_drops.iter().enumerate() {
-        // Symbol AND declared signature both derive from the typed field
-        // class in one match — no string self-compare to re-derive what
-        // the class already knows.
-        // `hew_string_drop(s: *mut c_char)` returns void;
-        // `hew_lambda_actor_weak_drop(weak)` returns i32 (ignored).
-        let (drop_symbol, sig) = match class {
-            LambdaEnvFieldDrop::None => continue,
-            LambdaEnvFieldDrop::String => (
-                "hew_string_drop",
-                ctx.void_type().fn_type(&[ptr_ty.into()], false),
-            ),
-            LambdaEnvFieldDrop::WeakSelfHandle => (
-                "hew_lambda_actor_weak_drop",
-                ctx.i32_type().fn_type(&[ptr_ty.into()], false),
-            ),
-        };
-        let field_idx = u32::try_from(idx).map_err(|_| {
-            CodegenError::FailClosed("lambda env field count exceeds u32::MAX".into())
-        })?;
-        let field_ptr = builder
-            .build_struct_gep(
-                env_struct,
-                env_ptr,
-                field_idx,
-                &format!("env_drop_field_{idx}_ptr"),
-            )
-            .llvm_ctx("lambda env dropper gep")?;
-        let field_val = builder
-            .build_load(ptr_ty, field_ptr, &format!("env_drop_field_{idx}"))
-            .llvm_ctx("lambda env dropper field load")?;
-        let drop_fn = llvm_mod
-            .get_function(drop_symbol)
-            .unwrap_or_else(|| llvm_mod.add_function(drop_symbol, sig, Some(Linkage::External)));
-        builder
-            .build_call(drop_fn, &[field_val.into()], &format!("env_drop_{idx}"))
-            .llvm_ctx("lambda env dropper field drop call")?;
-    }
-    let free_fn = get_or_declare_libc_free(ctx, llvm_mod);
-    builder
-        .build_call(free_fn, &[env_ptr.into()], "env_drop_free")
-        .llvm_ctx("lambda env dropper free call")?;
-    builder
-        .build_return(None)
-        .llvm_ctx("lambda env dropper ret")?;
-    Ok(func)
 }
 
 /// (sym, ret_ty, arg_ty) for the runtime per-field clone helpers. `ret_ty`
@@ -7772,10 +6775,10 @@ fn get_or_declare_drop_helper<'ctx>(
 /// Caller (`emit_field_clone_step`) handles UserRecord separately
 /// because it calls a per-record synthesised helper rather than a runtime
 /// extern.
-const HASHMAP_CLONE_LAYOUT_SYMBOL: &str = "hew_hashmap_clone_layout";
-const HASHMAP_FREE_LAYOUT_SYMBOL: &str = "hew_hashmap_free_layout";
-const HASHSET_CLONE_LAYOUT_SYMBOL: &str = "hew_hashset_clone_layout";
-const HASHSET_FREE_LAYOUT_SYMBOL: &str = "hew_hashset_free_layout";
+pub(crate) const HASHMAP_CLONE_LAYOUT_SYMBOL: &str = "hew_hashmap_clone_layout";
+pub(crate) const HASHMAP_FREE_LAYOUT_SYMBOL: &str = "hew_hashmap_free_layout";
+pub(crate) const HASHSET_CLONE_LAYOUT_SYMBOL: &str = "hew_hashset_clone_layout";
+pub(crate) const HASHSET_FREE_LAYOUT_SYMBOL: &str = "hew_hashset_free_layout";
 /// Witness-managed Vec clone/free pair (W5.002 F0b). Single-arg, descriptor
 /// read from the handle — the Vec companion of the HashMap/HashSet
 /// `*_clone_layout`/`*_free_layout` family. These supersede the legacy
@@ -7785,133 +6788,8 @@ const HASHSET_FREE_LAYOUT_SYMBOL: &str = "hew_hashset_free_layout";
 /// `String` Vecs and fails closed only on `LayoutManaged` elements. The legacy
 /// symbols remain for non-state Vec drops/clones (locals, returns, user
 /// `Vec.clone()`); their retirement is W5.003 scope.
-const VEC_CLONE_MANAGED_SYMBOL: &str = "hew_vec_clone_managed";
-const VEC_FREE_MANAGED_SYMBOL: &str = "hew_vec_free_managed";
-
-/// The single layout-witness descriptor for a runtime-managed collection's
-/// memory lifecycle (W5.001 F0a).
-///
-/// Codegen derives BOTH the clone and the drop symbol for a collection
-/// state field from this ONE descriptor, so the two operations — and the
-/// constructor's `*_with_layout` ABI family they must pair with — can never
-/// select mismatched runtime symbols. This is the structural retirement of
-/// the W4.045 UAF class: there is no longer an independent per-type symbol
-/// *selection* on the clone side and the drop side that can drift apart (the
-/// prior bug was a drop arm branching on the element kind while the
-/// constructor and clone arms did not — `codegen-abi-authority` /
-/// `lifecycle-symmetry` P0). A new collection type registers its symbol
-/// pair here once; clone and drop derive mechanically.
-///
-/// Returns `None` for non-collection kinds (`String`/`Bytes`/`BitCopy`/
-/// `IoHandle`/`UserRecord`), which continue through their dedicated
-/// `clone_helper_for_kind` / `drop_helper_for_kind` / synthesised-helper
-/// arms unchanged.
-///
-/// This is the SOLE selection authority for collection clone/drop symbols.
-/// The matching arms in `clone_helper_for_kind` / `drop_helper_for_kind`
-/// are retired to `unreachable!` because the only callers
-/// (`emit_field_clone_step` / `emit_field_drop_step`) consult this witness
-/// first and never fall through to the per-type helper arm for a collection.
-struct CollectionLayoutWitness {
-    /// Allocating clone helper: `fn(*const handle) -> *mut handle`.
-    clone_sym: &'static str,
-    /// Free helper: `fn(*mut handle)`.
-    drop_sym: &'static str,
-}
-
-fn collection_layout_witness(
-    kind: &StateFieldCloneKind,
-) -> CodegenResult<Option<CollectionLayoutWitness>> {
-    // Defence-in-depth backstop (round-4): a collection whose element/key/value
-    // transitively carries an `OpaqueHandle` must NOT select the managed
-    // clone/free pair — the managed clone shallow-copies the opaque pointer and
-    // double-frees / UAFs on supervisor restart. The MIR classifier already fails
-    // closed before such a kind can be produced (`ty_contains_unclonable_opaque`),
-    // so this is unreachable in practice; it stays as a codegen-side fail-close so
-    // no future producer can route an opaque-bearing container through the managed
-    // collection symbols.
-    if matches!(
-        kind,
-        StateFieldCloneKind::Vec { .. }
-            | StateFieldCloneKind::HashMap { .. }
-            | StateFieldCloneKind::HashSet { .. }
-    ) && kind.contains_opaque_handle()
-    {
-        return Err(CodegenError::FailClosed(format!(
-            "collection state field {kind:?} transitively carries an opaque handle \
-             with no clone-dup helper; the managed clone/free pair would shallow-copy \
-             the handle and double-free / use-after-free on supervisor restart. The \
-             MIR classifier should have rejected this with OpaqueInContainer."
-        )));
-    }
-    // Same backstop for the closure-pair class: a closure pair's environment
-    // box has a sole owner and no retain, so the managed clone would alias it
-    // (double free at the two containers' releases), and closure-pair Vecs are
-    // constructed/released through the dedicated pointer-element +
-    // `hew_vec_free_closure_pairs` path, never the managed witness. The MIR
-    // value-class gate (`supports_value_class_drop_spine`) and the actor-state
-    // closure guard reject these before codegen; this stays as the fail-close.
-    if matches!(
-        kind,
-        StateFieldCloneKind::Vec { .. }
-            | StateFieldCloneKind::HashMap { .. }
-            | StateFieldCloneKind::HashSet { .. }
-    ) && kind.contains_closure_pair()
-    {
-        return Err(CodegenError::FailClosed(format!(
-            "collection state field {kind:?} transitively carries a closure pair; \
-             the managed clone/free pair would alias its sole-owner environment \
-             box. The MIR value-class gate should have rejected this kind."
-        )));
-    }
-    Ok(match kind {
-        StateFieldCloneKind::Vec { .. } => Some(CollectionLayoutWitness {
-            // Constructor lowering stamps every layout-backed Vec<T> handle with
-            // its `HewTypeLayout` descriptor; the managed pair reads it from the
-            // handle and pairs allocate/free so they cannot drift (W4.045 UAF
-            // class). Layout-absent Vecs (legacy typed constructors) clone/free
-            // by `elem_kind`. LayoutManaged elements fail closed in the runtime.
-            clone_sym: VEC_CLONE_MANAGED_SYMBOL,
-            drop_sym: VEC_FREE_MANAGED_SYMBOL,
-        }),
-        StateFieldCloneKind::HashMap { .. } => Some(CollectionLayoutWitness {
-            // Constructor lowering routes every HashMap<K,V> handle through
-            // `hew_hashmap_new_with_layout`; clone/free MUST pair with the
-            // matching `*_layout` family (CLAUDE.md §1; W4.045 UAF class).
-            clone_sym: HASHMAP_CLONE_LAYOUT_SYMBOL,
-            drop_sym: HASHMAP_FREE_LAYOUT_SYMBOL,
-        }),
-        StateFieldCloneKind::HashSet { .. } => Some(CollectionLayoutWitness {
-            // Companion of the HashMap pairing. The constructor routes every
-            // HashSet<T> handle through `hew_hashset_new_with_layout`; the
-            // element kind is irrelevant — there is no `hew_hashset_new` call
-            // in codegen, so clone/free always use the `*_layout` family.
-            clone_sym: HASHSET_CLONE_LAYOUT_SYMBOL,
-            drop_sym: HASHSET_FREE_LAYOUT_SYMBOL,
-        }),
-        StateFieldCloneKind::BitCopy { .. }
-        | StateFieldCloneKind::String
-        | StateFieldCloneKind::Bytes
-        | StateFieldCloneKind::Tuple { .. }
-        | StateFieldCloneKind::Array { .. }
-        | StateFieldCloneKind::IoHandle { .. }
-        | StateFieldCloneKind::UserRecord { .. }
-        // Enum is NOT a runtime-managed collection: its clone/drop is a
-        // tag-dispatched payload walk (W5.006 Slices 3/4), not a single
-        // `*_layout` symbol pair. It returns `None` here so the caller
-        // routes to the dedicated enum dispatch arm rather than the
-        // collection witness.
-        | StateFieldCloneKind::Enum { .. }
-        // OpaqueHandle is a pointer-width BitCopy-class handle (e.g. json.Value,
-        // cron.Expr). No layout-managed runtime collection; falls through to the
-        // per-kind helpers where clone fails closed and drop is a no-op.
-        | StateFieldCloneKind::OpaqueHandle { .. }
-        // ClosurePair is not a runtime-managed collection: its drop is the
-        // env free-thunk dispatch in `emit_field_drop_step`'s dedicated arm
-        // and its clone is the rollback refusal in `emit_field_clone_step`.
-        | StateFieldCloneKind::ClosurePair => None,
-    })
-}
+pub(crate) const VEC_CLONE_MANAGED_SYMBOL: &str = "hew_vec_clone_managed";
+pub(crate) const VEC_FREE_MANAGED_SYMBOL: &str = "hew_vec_free_managed";
 
 fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<CloneHelper>> {
     match kind {
@@ -8184,7 +7062,7 @@ fn get_or_declare_inplace_thunk<'ctx>(
 /// non-zero = partial-clone rollback complete). Declaring here lets a
 /// classified actor body call into a nested record helper that is
 /// synthesised later in the same module pass.
-fn get_or_declare_record_clone_inplace<'ctx>(
+pub(crate) fn get_or_declare_record_clone_inplace<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     record_name: &str,
@@ -8201,7 +7079,7 @@ fn get_or_declare_record_clone_inplace<'ctx>(
 /// Lookup-or-declare the synthesised per-record in-place drop helper.
 /// Signature: `fn(*mut) ->`. Does NOT free the wrapper — records are
 /// embedded in their parent struct.
-fn get_or_declare_record_drop_inplace<'ctx>(
+pub(crate) fn get_or_declare_record_drop_inplace<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     record_name: &str,
@@ -8224,7 +7102,7 @@ fn get_or_declare_record_drop_inplace<'ctx>(
 /// only the active variant's owned payload fields. The caller must have
 /// memcpy'd `dst <- src` first (the wholesale state memcpy satisfies this),
 /// so the tag and inactive/bitcopy payload bytes are already correct.
-fn get_or_declare_enum_clone_inplace<'ctx>(
+pub(crate) fn get_or_declare_enum_clone_inplace<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     enum_name: &str,
@@ -8237,7 +7115,7 @@ fn get_or_declare_enum_clone_inplace<'ctx>(
 /// outer tagged-union struct; the body tag-dispatches and drops only the
 /// active variant's owned payload fields. Does NOT free the wrapper — the
 /// enum is embedded in its parent struct.
-fn get_or_declare_enum_drop_inplace<'ctx>(
+pub(crate) fn get_or_declare_enum_drop_inplace<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     enum_name: &str,
@@ -8970,7 +7848,7 @@ fn emit_field_clone_step<'ctx>(
     // authority. Non-collection kinds fall through to their dedicated
     // `clone_helper_for_kind` arm. BitCopy yields `None` there and is a
     // caller-filter error.
-    let helper = match collection_layout_witness(kind)? {
+    let helper = match crate::layout::collection_layout_witness(kind)? {
         Some(witness) => CloneHelper::Allocating {
             name: witness.clone_sym,
         },
@@ -9398,7 +8276,7 @@ fn emit_field_drop_step<'ctx>(
             // selection authority, paired with the clone symbol so the two can
             // never drift (W4.045 UAF class). Non-collection kinds fall through
             // to their dedicated `drop_helper_for_kind` arm.
-            let helper = match collection_layout_witness(kind)? {
+            let helper = match crate::layout::collection_layout_witness(kind)? {
                 Some(witness) => DropHelper {
                     name: witness.drop_sym,
                 },
@@ -9554,7 +8432,7 @@ fn emit_record_clone_inplace_body<'ctx>(
 /// discipline, so they MUST emit identical IR (`lifecycle-symmetry`,
 /// `dedup-semantic-boundary`). The caller declares `f` and guards against
 /// double-synthesis; this function only fills the body.
-fn emit_aggregate_clone_inplace_body<'ctx>(
+pub(crate) fn emit_aggregate_clone_inplace_body<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     f: FunctionValue<'ctx>,
@@ -9676,7 +8554,7 @@ fn emit_record_drop_inplace_body<'ctx>(
 /// Emit the reverse-order per-field drop body into a pre-declared `fn(*mut)`
 /// aggregate drop helper. Shared by the record drop body and the W5.016 tuple
 /// drop thunk (`lifecycle-symmetry` with `emit_aggregate_clone_inplace_body`).
-fn emit_aggregate_drop_inplace_body<'ctx>(
+pub(crate) fn emit_aggregate_drop_inplace_body<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     f: FunctionValue<'ctx>,
@@ -9754,155 +8632,22 @@ fn emit_aggregate_drop_inplace_body<'ctx>(
 ///
 /// Fail-closed: a reply slot whose type cannot be resolved is a
 /// `CodegenError::FailClosed`, never a guessed type.
-fn ask_reply_ty<'a>(fn_ctx: &'a FnCtx<'_, '_>, reply_dest: Place) -> CodegenResult<&'a ResolvedTy> {
+pub(crate) fn ask_reply_ty<'a>(
+    fn_ctx: &'a FnCtx<'_, '_>,
+    reply_dest: Place,
+) -> CodegenResult<&'a ResolvedTy> {
     place_resolved_ty(fn_ctx, reply_dest)
-}
-
-/// Resolve the `void(*)(void*)` destructor for a reply type `R` as a function
-/// pointer (or a null `ptr` for a bit-copy `R`), to register on the reply
-/// channel via `hew_reply_channel_set_reply_drop_fn`. The channel's free leg
-/// runs it on a delivered-but-never-consumed reply (await timeout / cancel),
-/// releasing any heap embedded in `R` instead of leaking it (#1739, #1735).
-///
-/// Strategy mirrors the actor `state_drop_fn` thunk
-/// (`emit_actor_state_drop_body`) — a runtime-registered typed drop thunk —
-/// and reuses the canonical per-field drop machinery
-/// (`classify_state_field_with_enum_layouts` → `emit_field_drop_step`) so the
-/// reply drop and every other owned-value drop stay byte-for-byte consistent
-/// (`lifecycle-symmetry`):
-///   * **bit-copy / user-owned-handle `R`** → null: no embedded heap to
-///     release; the free leg's null check skips the destructor and frees the
-///     buffer alone (the prior behaviour).
-///   * **record / enum `R`** → the already-synthesised
-///     `__hew_{record,enum}_drop_inplace_<R>` thunk. Its body is seeded for
-///     every actor-handler return type by `collect_xnode_codec_drop_seeds`, so
-///     it is guaranteed defined; it is already the `void(void*)` in-place-drop
-///     shape the channel slot needs.
-///   * **leaf-owned `R`** (String/Bytes/Vec/HashMap/HashSet/Closure) → a thin
-///     synthesised `__hew_reply_drop_<R>(*mut buf)` that drops `R` in place by
-///     treating the byte-copied buffer as a single-field `{ R }` aggregate and
-///     running the canonical field-drop step over it. Idempotent: the same `R`
-///     reuses one thunk across every ask site.
-///
-/// Fail-closed: an owned `R` the classifier cannot map to a drop strategy is a
-/// `CodegenError::FailClosed`, never a silent null (which would reinstate the
-/// leak).
-fn ask_reply_drop_thunk_ptr<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    reply_ty: &ResolvedTy,
-) -> CodegenResult<PointerValue<'ctx>> {
-    let ctx = fn_ctx.ctx;
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-
-    // Tuple reply: there is no `StateFieldCloneKind` arm for a tuple (the
-    // classifier below fails closed on it), and no registry seed pass emits a
-    // tuple drop body. Synthesise it via the SAME owned-tuple drop spine the
-    // waiter-side `ElabDrop::TupleInPlace` consume uses
-    // (`emit_tuple_drop_inplace_body_only` → `__hew_tuple_drop_inplace_<key>`),
-    // so a never-consumed tuple reply and a consumed one drop byte-for-byte
-    // identically (`lifecycle-symmetry`). A tuple carrying a nested owned tuple
-    // fails closed inside the spine — exactly as the consume side does — so this
-    // never silently under-drops.
-    if let ResolvedTy::Tuple(elems) = reply_ty {
-        let tuple_key = tuple_thunk_key(elems);
-        let tuple_llvm_ty = resolve_ty(ctx, reply_ty, fn_ctx.record_layouts)?;
-        emit_tuple_drop_inplace_body_only(fn_ctx, &tuple_key, elems, tuple_llvm_ty)?;
-        let helper = get_or_declare_tuple_drop_inplace(ctx, fn_ctx.llvm_mod, &tuple_key);
-        if helper.count_basic_blocks() == 0 {
-            return Err(CodegenError::FailClosed(format!(
-                "owned ask reply tuple `{reply_ty:?}` resolved \
-                 `__hew_tuple_drop_inplace_{tuple_key}` but it has no body after \
-                 synthesis; refusing to register a dangling reply destructor (#1739)"
-            )));
-        }
-        return Ok(helper.as_global_value().as_pointer_value());
-    }
-
-    // Classify R into the per-field drop kind the canonical drop emitter
-    // consumes. The classifier needs a record-layout slice; reconstruct it from
-    // the codegen resolved-field table exactly as `tuple_inplace_field_kinds`
-    // does, so the reply path and the tuple/record paths share one authority.
-    let record_layouts: Vec<hew_mir::RecordLayout> = fn_ctx
-        .record_field_resolved_tys
-        .iter()
-        .map(|(name, tys)| hew_mir::RecordLayout {
-            name: name.clone(),
-            field_tys: tys.clone(),
-        })
-        .collect();
-    let mut visited = HashSet::new();
-    let kind = hew_mir::classify_state_field_with_enum_layouts(
-        reply_ty,
-        &record_layouts,
-        fn_ctx.enum_layouts,
-        &mut visited,
-    )
-    .map_err(|e| {
-        CodegenError::FailClosed(format!(
-            "owned ask reply type {reply_ty:?} is not drop-classifiable: {e}; a reply that \
-             times out or is cancelled before consumption would leak its embedded heap \
-             (#1739 reply-channel ownership)"
-        ))
-    })?;
-
-    match &kind {
-        // No embedded heap: the free leg frees the buffer alone (prior
-        // behaviour). Opaque handles are user-owned (`.free()` is explicit) and
-        // a borrowed `Connection` is not released by the reply path, so both are
-        // also null here — matching `emit_field_drop_step`'s no-op arms.
-        StateFieldCloneKind::BitCopy { .. }
-        | StateFieldCloneKind::OpaqueHandle { .. }
-        | StateFieldCloneKind::IoHandle {
-            kind: IoHandleKind::Connection,
-        } => Ok(ptr_ty.const_null()),
-        // Record / enum reply: register the already-seeded in-place drop thunk.
-        StateFieldCloneKind::UserRecord { name } => {
-            Ok(
-                get_or_declare_record_drop_inplace(ctx, fn_ctx.llvm_mod, name)
-                    .as_global_value()
-                    .as_pointer_value(),
-            )
-        }
-        StateFieldCloneKind::Enum { name } => {
-            Ok(get_or_declare_enum_drop_inplace(ctx, fn_ctx.llvm_mod, name)
-                .as_global_value()
-                .as_pointer_value())
-        }
-        // Leaf-owned reply: synthesise `__hew_reply_drop_<R>` over a `{ R }`
-        // wrapper whose field 0 is R's ABI representation in the buffer.
-        _ => {
-            let sym = format!("__hew_reply_drop_{}", hew_hir::mangle_resolved_ty(reply_ty));
-            if let Some(existing) = fn_ctx.llvm_mod.get_function(&sym) {
-                return Ok(existing.as_global_value().as_pointer_value());
-            }
-            let field_abi = primitive_to_llvm(ctx, reply_ty)?;
-            let wrapper = ctx.struct_type(&[field_abi], false);
-            let f = fn_ctx.llvm_mod.add_function(
-                &sym,
-                ctx.void_type().fn_type(&[ptr_ty.into()], false),
-                Some(Linkage::Internal),
-            );
-            emit_aggregate_drop_inplace_body(
-                ctx,
-                fn_ctx.llvm_mod,
-                f,
-                wrapper,
-                std::slice::from_ref(&kind),
-            )?;
-            Ok(f.as_global_value().as_pointer_value())
-        }
-    }
 }
 
 /// Emit `hew_reply_channel_set_reply_drop_fn(ch, <reply-drop thunk>)` at an ask
 /// caller site, so the channel runs `R`'s destructor on a never-consumed reply
 /// (#1739). `ch` is the channel just returned by `hew_reply_channel_new`.
-fn wire_reply_drop_fn<'ctx>(
+pub(crate) fn wire_reply_drop_fn<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     ch: PointerValue<'ctx>,
     reply_ty: &ResolvedTy,
 ) -> CodegenResult<()> {
-    let thunk_ptr = ask_reply_drop_thunk_ptr(fn_ctx, reply_ty)?;
+    let thunk_ptr = crate::thunks::ask_reply_drop_thunk_ptr(fn_ctx, reply_ty)?;
     let setter = intern_runtime_decl(
         fn_ctx.ctx,
         fn_ctx.llvm_mod,
@@ -12307,7 +11052,7 @@ fn load_place_as_metadata<'ctx>(
     )?))
 }
 
-fn load_place_as_basic<'ctx>(
+pub(crate) fn load_place_as_basic<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     place: Place,
     label: &str,
@@ -12319,7 +11064,7 @@ fn load_place_as_basic<'ctx>(
         .llvm_ctx_with(|| format!("{label} load"))
 }
 
-fn load_math_f64_arg<'ctx>(
+pub(crate) fn load_math_f64_arg<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     place: Place,
     label: &str,
@@ -12395,213 +11140,6 @@ fn emit_actor_state_lock_call(
     Ok(())
 }
 
-fn get_or_create_task_closure_wrapper<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    fn_symbol: &str,
-) -> CodegenResult<FunctionValue<'ctx>> {
-    let wrapper_name = task_closure_wrapper_name(fn_symbol);
-    if let Some(existing) = fn_ctx.llvm_mod.get_function(&wrapper_name) {
-        return Ok(existing);
-    }
-
-    let closure_symbol = *fn_ctx.fn_symbols.get(fn_symbol).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SpawnTaskClosure closure invoke shim `{fn_symbol}` was not declared"
-        ))
-    })?;
-    let (closure_value, closure_return_ty, closure_returns_unit) =
-        closure_symbol.real(fn_symbol, "SpawnTaskClosure")?;
-    if !closure_returns_unit || !matches!(closure_return_ty, BasicTypeEnum::IntType(_)) {
-        return Err(CodegenError::FailClosed(format!(
-            "SpawnTaskClosure shim `{fn_symbol}` must be unit-lowered to the i8 \
-             stand-in return type; got {:?}",
-            closure_return_ty
-        )));
-    }
-
-    if closure_value.get_nth_param(0).is_none() || closure_value.get_nth_param(1).is_none() {
-        return Err(CodegenError::FailClosed(format!(
-            "SpawnTaskClosure shim `{fn_symbol}` must take leading \
-             HewExecutionContext* and closure environment parameters"
-        )));
-    }
-
-    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    let wrapper_ty = fn_ctx
-        .ctx
-        .void_type()
-        .fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-    let wrapper = fn_ctx
-        .llvm_mod
-        .add_function(&wrapper_name, wrapper_ty, Some(Linkage::Internal));
-    let bb = fn_ctx.ctx.append_basic_block(wrapper, "entry");
-    let builder = fn_ctx.ctx.create_builder();
-    builder.position_at_end(bb);
-    let ctx_param = wrapper.get_nth_param(0).ok_or_else(|| {
-        CodegenError::FailClosed(
-            "closure task wrapper missing HewExecutionContext* parameter".into(),
-        )
-    })?;
-    let task_param = wrapper.get_nth_param(1).ok_or_else(|| {
-        CodegenError::FailClosed("closure task wrapper missing HewTask* parameter".into())
-    })?;
-    let get_env = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_task_get_env",
-    )?;
-    let env_ptr = builder
-        .build_call(get_env, &[task_param.into()], "hew_task_get_env_call")
-        .llvm_ctx("hew_task_get_env call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_task_get_env returned void".into()))?
-        .into_pointer_value();
-    builder
-        .build_call(
-            closure_value,
-            &[ctx_param.into(), env_ptr.into()],
-            "closure_task_body_call",
-        )
-        .llvm_ctx("closure task body call")?;
-
-    let complete = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_task_complete_threaded",
-    )?;
-    builder
-        .build_call(
-            complete,
-            &[task_param.into()],
-            "hew_task_complete_threaded_call",
-        )
-        .llvm_ctx("hew_task_complete_threaded call")?;
-    builder
-        .build_return(None)
-        .llvm_ctx("closure task wrapper return")?;
-    Ok(wrapper)
-}
-
-fn emit_spawn_task_closure(
-    fn_ctx: &FnCtx<'_, '_>,
-    task: Place,
-    fn_symbol: &str,
-    env: Place,
-    env_ty: &ResolvedTy,
-) -> CodegenResult<()> {
-    let spilled_ctx = fn_ctx.execution_context.ok_or_else(|| {
-        CodegenError::FailClosed("SpawnTaskClosure spawn site requires an execution context".into())
-    })?;
-    // W6.010: same coro-aware routing as `emit_spawn_task_direct` — a
-    // `scope`/`fork` closure spawn after an await must pass the resume-installed
-    // live context, not the unwound spilled param that
-    // `hew_task_spawn_thread_with_inherited_context` would deref.
-    let parent_ctx = live_execution_context_ptr(fn_ctx, spilled_ctx)?;
-    let task_ptr = load_duplex_handle(fn_ctx, task, "SpawnTaskClosure task")?;
-    let env_struct = record_struct_for(fn_ctx, env_ty)?;
-    let (env_ptr, env_slot_ty) = place_pointer(fn_ctx, env)?;
-    if env_slot_ty != BasicTypeEnum::StructType(env_struct) {
-        return Err(CodegenError::FailClosed(format!(
-            "SpawnTaskClosure env place type {env_slot_ty:?} does not match registered env \
-             struct {env_struct:?}"
-        )));
-    }
-    let Some(env_size) = env_struct.size_of() else {
-        return Err(CodegenError::FailClosed(
-            "SpawnTaskClosure could not compute closure environment byte size".into(),
-        ));
-    };
-    // Thread the environment struct's authoritative ABI alignment into the Rc
-    // allocation. The runtime over-aligns the payload to this value instead of
-    // guessing from the source pointer's trailing zeros, which would
-    // under-align an over-aligned closure capture.
-    let env_align = fn_ctx.ctx.i64_type().const_int(
-        u64::from(fn_ctx.target_data.get_abi_alignment(&env_struct)),
-        false,
-    );
-    let rc_new = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_rc_new",
-    )?;
-    let null_drop = fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null();
-    let rc_env = fn_ctx
-        .builder
-        .build_call(
-            rc_new,
-            &[
-                env_ptr.into(),
-                env_size.into(),
-                env_align.into(),
-                null_drop.into(),
-            ],
-            "hew_closure_env_rc_new",
-        )
-        .llvm_ctx("hew_rc_new call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_rc_new returned void".into()))?
-        .into_pointer_value();
-    fn_ctx.call_runtime_void(
-        "hew_task_set_env",
-        &[task_ptr.into(), rc_env.into()],
-        "hew_task_set_env_call",
-        "hew_task_set_env call",
-    )?;
-
-    let wrapper = get_or_create_task_closure_wrapper(fn_ctx, fn_symbol)?;
-    let spawn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_task_spawn_thread_with_inherited_context",
-    )?;
-    fn_ctx
-        .builder
-        .build_call(
-            spawn,
-            &[
-                parent_ctx.into(),
-                task_ptr.into(),
-                wrapper.as_global_value().as_pointer_value().into(),
-            ],
-            "hew_task_spawn_thread_with_inherited_context_closure_call",
-        )
-        .llvm_ctx("hew_task_spawn_thread_with_inherited_context call")?;
-    Ok(())
-}
-
-fn overflow_intrinsic_name(op: IntArithOp, signed: IntSignedness) -> &'static str {
-    match (op, signed) {
-        (IntArithOp::Add, IntSignedness::Signed) => "llvm.sadd.with.overflow",
-        (IntArithOp::Add, IntSignedness::Unsigned) => "llvm.uadd.with.overflow",
-        (IntArithOp::Sub, IntSignedness::Signed) => "llvm.ssub.with.overflow",
-        (IntArithOp::Sub, IntSignedness::Unsigned) => "llvm.usub.with.overflow",
-        (IntArithOp::Mul, IntSignedness::Signed) => "llvm.smul.with.overflow",
-        (IntArithOp::Mul, IntSignedness::Unsigned) => "llvm.umul.with.overflow",
-    }
-}
-
-/// Return the `llvm.{s,u}{add,sub}.sat` base name for Add/Sub.
-/// LLVM does not provide `llvm.smul.sat`; callers must keep the
-/// `.with.overflow` + select path for Mul. Panics on Mul to enforce the
-/// call-site invariant (the `IntArithSaturating` arm only routes Add/Sub here).
-fn saturating_intrinsic_name(op: IntArithOp, signed: IntSignedness) -> &'static str {
-    match (op, signed) {
-        (IntArithOp::Add, IntSignedness::Signed) => "llvm.sadd.sat",
-        (IntArithOp::Add, IntSignedness::Unsigned) => "llvm.uadd.sat",
-        (IntArithOp::Sub, IntSignedness::Signed) => "llvm.ssub.sat",
-        (IntArithOp::Sub, IntSignedness::Unsigned) => "llvm.usub.sat",
-        (IntArithOp::Mul, _) => {
-            panic!("saturating_intrinsic_name: llvm.smul.sat does not exist; use overflow path for Mul")
-        }
-    }
-}
-
 fn validate_numeric_method_width(
     width: NumericWidth,
     int_ty: inkwell::types::IntType<'_>,
@@ -12619,57 +11157,6 @@ fn validate_numeric_method_width(
     }
 }
 
-fn saturating_bound<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    op: IntArithOp,
-    signed: IntSignedness,
-    int_ty: inkwell::types::IntType<'ctx>,
-    lhs_v: IntValue<'ctx>,
-    rhs_v: IntValue<'ctx>,
-) -> CodegenResult<IntValue<'ctx>> {
-    let bits = int_ty.get_bit_width();
-    let zero = int_ty.const_zero();
-    match signed {
-        IntSignedness::Unsigned => Ok(match op {
-            IntArithOp::Sub => zero,
-            IntArithOp::Add | IntArithOp::Mul => int_ty.const_all_ones(),
-        }),
-        IntSignedness::Signed => {
-            let max = int_ty.const_int(((1u128 << (bits - 1)) - 1) as u64, false);
-            let min = int_ty.const_int((1u128 << (bits - 1)) as u64, false);
-            let choose_max = match op {
-                IntArithOp::Add => fn_ctx
-                    .builder
-                    .build_int_compare(IntPredicate::SGE, rhs_v, zero, "sat_add_positive")
-                    .llvm_ctx("saturating add sign compare")?,
-                IntArithOp::Sub => fn_ctx
-                    .builder
-                    .build_int_compare(IntPredicate::SLT, rhs_v, zero, "sat_sub_negative")
-                    .llvm_ctx("saturating sub sign compare")?,
-                IntArithOp::Mul => {
-                    let lhs_neg = fn_ctx
-                        .builder
-                        .build_int_compare(IntPredicate::SLT, lhs_v, zero, "sat_mul_lhs_neg")
-                        .llvm_ctx("saturating mul lhs sign compare")?;
-                    let rhs_neg = fn_ctx
-                        .builder
-                        .build_int_compare(IntPredicate::SLT, rhs_v, zero, "sat_mul_rhs_neg")
-                        .llvm_ctx("saturating mul rhs sign compare")?;
-                    fn_ctx
-                        .builder
-                        .build_int_compare(IntPredicate::EQ, lhs_neg, rhs_neg, "sat_mul_same_sign")
-                        .llvm_ctx("saturating mul same-sign compare")?
-                }
-            };
-            Ok(fn_ctx
-                .builder
-                .build_select(choose_max, max, min, "sat_signed_bound")
-                .llvm_ctx("saturating bound select")?
-                .into_int_value())
-        }
-    }
-}
-
 fn cast_int_signedness(ty: &ResolvedTy) -> CodegenResult<IntSignedness> {
     if ty.is_signed_integer() {
         Ok(IntSignedness::Signed)
@@ -12683,7 +11170,7 @@ fn cast_int_signedness(ty: &ResolvedTy) -> CodegenResult<IntSignedness> {
     }
 }
 
-fn expect_int_type<'ctx>(
+pub(crate) fn expect_int_type<'ctx>(
     ty: BasicTypeEnum<'ctx>,
     context: &'static str,
 ) -> CodegenResult<IntType<'ctx>> {
@@ -12932,222 +11419,6 @@ fn lower_numeric_cast(
         .builder
         .build_store(dest_ptr, casted)
         .llvm_ctx("numeric cast store")?;
-    Ok(())
-}
-
-/// Saturating integer-to-integer width conversion.
-///
-/// Both `from_ty` and `to_ty` must be checker-admitted integers.
-/// The source value is clamped to `[to_ty::MIN, to_ty::MAX]` before
-/// the narrowing (or widening) cast.
-///
-/// Algorithm overview:
-///
-/// - **Widening** (`src_bits < dest_bits`): every source value is already
-///   representable in the wider target — no clamping needed.  Just extend
-///   (sext for signed sources, zext for unsigned sources).
-///
-/// - **Same-width** (`src_bits == dest_bits`) or **Narrowing**
-///   (`src_bits > dest_bits`): the target bounds fit in the source-width
-///   type, so work entirely in the source integer type.  Emit two
-///   `cmp + select` pairs to clamp, then truncate / bit-cast as needed.
-///
-///   Bounds computation:
-///   - Signed target  k bits: MIN = -(2^(k-1)),  MAX = 2^(k-1) - 1
-///   - Unsigned target k bits: MIN = 0,           MAX = 2^k - 1
-///
-///   Represented as constants in the *source* integer type; they fit
-///   because src_bits >= dest_bits in this path.
-///
-///   Comparisons use the *source* signedness (we are asking "does the
-///   source value fall outside the target range?").
-fn lower_saturating_width_cast(
-    fn_ctx: &FnCtx<'_, '_>,
-    dest: Place,
-    src: Place,
-    from_ty: &ResolvedTy,
-    to_ty: &ResolvedTy,
-) -> CodegenResult<()> {
-    if !from_ty.is_integer() || !to_ty.is_integer() {
-        return Err(CodegenError::FailClosed(format!(
-            "SaturatingWidthCast requires integer types; got {} → {}",
-            from_ty.user_facing(),
-            to_ty.user_facing()
-        )));
-    }
-
-    let (src_ptr, src_storage) = place_pointer(fn_ctx, src)?;
-    let (dest_ptr, dest_storage) = place_pointer(fn_ctx, dest)?;
-    let src_int_ty = expect_int_type(src_storage, "saturating width cast source")?;
-    let dest_int_ty = expect_int_type(dest_storage, "saturating width cast dest")?;
-
-    let expected_src = primitive_to_llvm(fn_ctx.ctx, from_ty)?;
-    let expected_dest = primitive_to_llvm(fn_ctx.ctx, to_ty)?;
-    if src_storage != expected_src {
-        return Err(CodegenError::FailClosed(format!(
-            "SaturatingWidthCast source storage {src_storage:?} disagrees with from_ty {}",
-            from_ty.user_facing()
-        )));
-    }
-    if dest_storage != expected_dest {
-        return Err(CodegenError::FailClosed(format!(
-            "SaturatingWidthCast dest storage {dest_storage:?} disagrees with to_ty {}",
-            to_ty.user_facing()
-        )));
-    }
-
-    let src_v = fn_ctx
-        .builder
-        .build_load(src_int_ty, src_ptr, "sat_wcast_src")
-        .llvm_ctx("saturating width cast source load")?
-        .into_int_value();
-
-    let src_bits = src_int_ty.get_bit_width();
-    let dest_bits = dest_int_ty.get_bit_width();
-    let to_signed = to_ty.is_signed_integer();
-    let from_signed = from_ty.is_signed_integer();
-
-    let result: BasicValueEnum<'_> = if src_bits < dest_bits {
-        // Widening: every source value fits in the target — no clamping.
-        // Extend using source signedness (sext for signed, zext for unsigned).
-        if from_signed {
-            fn_ctx
-                .builder
-                .build_int_s_extend(src_v, dest_int_ty, "sat_wcast_sext")
-                .llvm_ctx("saturating width cast sign extend")?
-                .into()
-        } else {
-            fn_ctx
-                .builder
-                .build_int_z_extend(src_v, dest_int_ty, "sat_wcast_zext")
-                .llvm_ctx("saturating width cast zero extend")?
-                .into()
-        }
-    } else if src_bits == dest_bits && from_signed != to_signed {
-        // Same-width sign change: the target range is NOT a subset of the source
-        // range when interpreted in the source signedness, so we cannot compute
-        // clamping bounds in the source type.  Each direction needs only ONE clamp:
-        //
-        //   signed → unsigned (e.g. i32 → u32):
-        //     Target range [0, 2^k - 1].  Every non-negative source value fits
-        //     exactly; negative source values clamp to 0.  No upper clamp is
-        //     needed because 2^k - 1 is not representable as a signed k-bit value.
-        //     Emit: max(src, 0) via SGT + select, then let the store bitcast.
-        //
-        //   unsigned → signed (e.g. u32 → i32):
-        //     Target range [-(2^(k-1)), 2^(k-1)-1].  Source is always >= 0 so no
-        //     lower clamp is needed.  Clamp high at 2^(k-1)-1 using UGT so the
-        //     comparison sees the unsigned magnitude correctly.
-        //     Emit: min(src, 2^(k-1)-1) via UGT + select, then let the store bitcast.
-        if from_signed {
-            // signed → unsigned: clamp low at 0 only.
-            let zero = src_int_ty.const_zero();
-            let below_zero = fn_ctx
-                .builder
-                .build_int_compare(IntPredicate::SLT, src_v, zero, "sat_swcast_below_zero")
-                .llvm_ctx("saturating same-width sign cast below-zero compare")?;
-            fn_ctx
-                .builder
-                .build_select(below_zero, zero, src_v, "sat_swcast_clamped")
-                .llvm_ctx("saturating same-width sign cast clamp low select")?
-                .into_int_value()
-                .into()
-        } else {
-            // unsigned → signed: clamp high at 2^(k-1)-1 only.
-            // The constant is representable as an unsigned k-bit value.
-            let signed_max_val: u64 = (1_u64 << (dest_bits - 1)) - 1;
-            let signed_max = src_int_ty.const_int(signed_max_val, false);
-            let above_max = fn_ctx
-                .builder
-                .build_int_compare(IntPredicate::UGT, src_v, signed_max, "sat_swcast_above_max")
-                .llvm_ctx("saturating same-width sign cast above-max compare")?;
-            fn_ctx
-                .builder
-                .build_select(above_max, signed_max, src_v, "sat_swcast_clamped")
-                .llvm_ctx("saturating same-width sign cast clamp high select")?
-                .into_int_value()
-                .into()
-        }
-    } else {
-        // Narrowing (src_bits > dest_bits): clamp in the source integer type, then
-        // truncate.  The target bounds always fit in the source type here because
-        // src_bits > dest_bits.
-        let (min_const, max_const) = if to_signed {
-            // Signed target k bits: MIN = -(2^(k-1)), MAX = 2^(k-1) - 1
-            let min_val: i64 = -1_i64 << (dest_bits - 1);
-            let max_val: i64 = (1_i64 << (dest_bits - 1)) - 1;
-            (
-                src_int_ty.const_int(min_val as u64, true),
-                src_int_ty.const_int(max_val as u64, true),
-            )
-        } else {
-            // Unsigned target k bits: MIN = 0, MAX = 2^k - 1
-            // dest_bits < src_bits <= 64, so the shift is safe.
-            let max_val: u64 = (1_u64 << dest_bits) - 1;
-            (
-                src_int_ty.const_zero(),
-                src_int_ty.const_int(max_val, false),
-            )
-        };
-
-        // Clamp below: if src < min → use min.
-        // Compare using source signedness.
-        let below_min = if from_signed {
-            fn_ctx
-                .builder
-                .build_int_compare(IntPredicate::SLT, src_v, min_const, "sat_wcast_below_min")
-                .llvm_ctx("saturating width cast below-min compare")?
-        } else {
-            fn_ctx
-                .builder
-                .build_int_compare(IntPredicate::ULT, src_v, min_const, "sat_wcast_below_min")
-                .llvm_ctx("saturating width cast below-min compare")?
-        };
-        let clamped_low = fn_ctx
-            .builder
-            .build_select(below_min, min_const, src_v, "sat_wcast_clamp_low")
-            .llvm_ctx("saturating width cast clamp low select")?
-            .into_int_value();
-
-        // Clamp above: if clamped_low > max → use max.
-        let above_max = if from_signed {
-            fn_ctx
-                .builder
-                .build_int_compare(
-                    IntPredicate::SGT,
-                    clamped_low,
-                    max_const,
-                    "sat_wcast_above_max",
-                )
-                .llvm_ctx("saturating width cast above-max compare")?
-        } else {
-            fn_ctx
-                .builder
-                .build_int_compare(
-                    IntPredicate::UGT,
-                    clamped_low,
-                    max_const,
-                    "sat_wcast_above_max",
-                )
-                .llvm_ctx("saturating width cast above-max compare")?
-        };
-        let clamped = fn_ctx
-            .builder
-            .build_select(above_max, max_const, clamped_low, "sat_wcast_clamped")
-            .llvm_ctx("saturating width cast clamp high select")?
-            .into_int_value();
-
-        fn_ctx
-            .builder
-            .build_int_truncate(clamped, dest_int_ty, "sat_wcast_trunc")
-            .llvm_ctx("saturating width cast truncate")?
-            .into()
-    };
-
-    fn_ctx
-        .builder
-        .build_store(dest_ptr, result)
-        .llvm_ctx("saturating width cast store")?;
     Ok(())
 }
 
@@ -14087,7 +12358,7 @@ fn lower_instruction(
                     "IntArithCheckedOption Some payload type must match operand type".into(),
                 ));
             }
-            let intrinsic_name = overflow_intrinsic_name(*op, *signed);
+            let intrinsic_name = crate::arith::overflow_intrinsic_name(*op, *signed);
             let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
                 llvm_err!("with-overflow intrinsic `{intrinsic_name}` not found in LLVM build")
             })?;
@@ -14189,7 +12460,7 @@ fn lower_instruction(
             // `.with.overflow` + select path is kept for multiplication.
             let final_v = match op {
                 IntArithOp::Add | IntArithOp::Sub => {
-                    let intrinsic_name = saturating_intrinsic_name(*op, *signed);
+                    let intrinsic_name = crate::arith::saturating_intrinsic_name(*op, *signed);
                     let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
                         llvm_err!("sat intrinsic `{intrinsic_name}` not found in LLVM build")
                     })?;
@@ -14217,7 +12488,7 @@ fn lower_instruction(
                 IntArithOp::Mul => {
                     // `llvm.smul.sat` does not exist in LLVM; keep the
                     // with.overflow + saturating_bound + select sequence.
-                    let intrinsic_name = overflow_intrinsic_name(*op, *signed);
+                    let intrinsic_name = crate::arith::overflow_intrinsic_name(*op, *signed);
                     let intrinsic = Intrinsic::find(intrinsic_name).ok_or_else(|| {
                         llvm_err!(
                             "with-overflow intrinsic `{intrinsic_name}` not found in LLVM build"
@@ -14253,7 +12524,9 @@ fn lower_instruction(
                         .build_extract_value(agg, 1, "saturating_mul_overflow")
                         .llvm_ctx("saturating mul overflow extract")?
                         .into_int_value();
-                    let bound = saturating_bound(fn_ctx, *op, *signed, lhs_int, lhs_v, rhs_v)?;
+                    let bound = crate::arith::saturating_bound(
+                        fn_ctx, *op, *signed, lhs_int, lhs_v, rhs_v,
+                    )?;
                     fn_ctx
                         .builder
                         .build_select(of_bit, bound, result_v, "saturating_mul_select")
@@ -14307,7 +12580,7 @@ fn lower_instruction(
                         ))
                     }
                 };
-                let callee = get_or_emit_eq_thunk(fn_ctx, lhs_ty)?;
+                let callee = crate::thunks::get_or_emit_eq_thunk(fn_ctx, lhs_ty)?;
                 let eq_i32 = fn_ctx
                     .builder
                     .build_call(
@@ -14730,7 +13003,7 @@ fn lower_instruction(
             from_ty,
             to_ty,
         } => {
-            lower_saturating_width_cast(fn_ctx, *dest, *src, from_ty, to_ty)?;
+            crate::arith::lower_saturating_width_cast(fn_ctx, *dest, *src, from_ty, to_ty)?;
             let _ = ctx;
         }
         Instr::Move { dest, src } => {
@@ -14881,7 +13154,7 @@ fn lower_instruction(
             // remain fail-closed below — `parity-or-tracked-gap`.
             // LESSONS: boundary-fail-closed, exhaustive-coverage,
             // checker-output-boundary, dedup-semantic-boundary.
-            lower_call_runtime_abi(fn_ctx, call)?;
+            crate::runtime_abi::lower_call_runtime_abi(fn_ctx, call)?;
         }
         Instr::AutoLockAcquire { lock } => {
             // Auto-injected mutex acquire — `call
@@ -15455,7 +13728,7 @@ fn lower_instruction(
             task,
             callee_symbol,
         } => {
-            emit_spawn_task_direct(fn_ctx, *task, callee_symbol)?;
+            crate::thunks::emit_spawn_task_direct(fn_ctx, *task, callee_symbol)?;
             let _ = ctx;
         }
         Instr::SpawnTaskClosure {
@@ -15464,7 +13737,7 @@ fn lower_instruction(
             env,
             env_ty,
         } => {
-            emit_spawn_task_closure(fn_ctx, *task, fn_symbol, *env, env_ty)?;
+            crate::thunks::emit_spawn_task_closure(fn_ctx, *task, fn_symbol, *env, env_ty)?;
             let _ = ctx;
         }
         Instr::SpawnActor {
@@ -15768,7 +14041,7 @@ fn lower_instruction(
 /// named type is not in the layout map — both indicate the MIR producer
 /// emitted a `RecordInit` / `RecordFieldLoad` against a Place whose type
 /// wasn't a registered record, which is an upstream invariant violation.
-fn record_struct_for<'ctx>(
+pub(crate) fn record_struct_for<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     ty: &ResolvedTy,
 ) -> CodegenResult<StructType<'ctx>> {
@@ -16157,7 +14430,7 @@ fn current_actor_ptr<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<PointerVal
 ///
 /// A non-coroutine handler never suspends, so its `ctx` param stays live for the
 /// whole dispatch and keeps the cheaper direct GEP.
-fn live_execution_context_ptr<'ctx>(
+pub(crate) fn live_execution_context_ptr<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     spilled_ctx: PointerValue<'ctx>,
 ) -> CodegenResult<PointerValue<'ctx>> {
@@ -16410,7 +14683,7 @@ fn lower_actor_state_field_store(
                 // descriptor and cannot drift (W4.045 UAF class). All three
                 // `*_free_*` symbols are null-tolerant, so the spawn-time
                 // zero-initialised first store needs no extra guard.
-                let witness = collection_layout_witness(kind)?.ok_or_else(|| {
+                let witness = crate::layout::collection_layout_witness(kind)?.ok_or_else(|| {
                     CodegenError::FailClosed(format!(
                         "ActorStateFieldStore field {idx}: collection kind {kind:?} \
                          has no layout witness; `collection_layout_witness` and the \
@@ -16892,13 +15165,13 @@ fn lower_record_clone_inplace_instr<'ctx>(
 /// (`env_ptr - 8`), so `ClosureEnvFieldLoad` capture offsets are identical
 /// for stack and heap envs, and any drop site can recover the per-closure
 /// free thunk from the env pointer alone.
-const CLOSURE_ENV_BOX_HEADER: u64 = 8;
+pub(crate) const CLOSURE_ENV_BOX_HEADER: u64 = 8;
 
 /// Alignment `hew_dyn_box_alloc` is called with for closure env boxes. The
 /// header slot is a pointer (align 8) and every admissible env field aligns
 /// to at most 8 (`lower_make_closure` fails closed otherwise), so the box
 /// and the captures region are both correctly aligned.
-const CLOSURE_ENV_BOX_ALIGN: u64 = 8;
+pub(crate) const CLOSURE_ENV_BOX_ALIGN: u64 = 8;
 
 fn lower_make_closure(
     fn_ctx: &FnCtx<'_, '_>,
@@ -17017,7 +15290,8 @@ fn emit_closure_env_heap_box<'ctx>(
         })?
         .into_pointer_value();
     // Header slot 0: the per-closure free thunk.
-    let free_thunk = get_or_emit_closure_env_free_thunk(fn_ctx, fn_symbol, total_size)?;
+    let free_thunk =
+        crate::thunks::get_or_emit_closure_env_free_thunk(fn_ctx, fn_symbol, total_size)?;
     fn_ctx
         .builder
         .build_store(box_ptr, free_thunk.as_global_value().as_pointer_value())
@@ -17043,72 +15317,6 @@ fn emit_closure_env_heap_box<'ctx>(
         )
         .llvm_ctx("closure env box memcpy")?;
     Ok(env_data)
-}
-
-/// Synthesise (once per closure shim) the `void(ptr env)` free thunk the
-/// env box's header slot carries: `hew_dyn_box_free(env - HEADER, total,
-/// align)` with the exact layout the matching `hew_dyn_box_alloc` used.
-/// Private linkage — internal to the module, referenced only through the
-/// header slot planted by `emit_closure_env_heap_box`.
-fn get_or_emit_closure_env_free_thunk<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    fn_symbol: &str,
-    total_size: u64,
-) -> CodegenResult<FunctionValue<'ctx>> {
-    let symbol = format!("__hew_closure_env_free_{fn_symbol}");
-    if let Some(existing) = fn_ctx.llvm_mod.get_function(&symbol) {
-        return Ok(existing);
-    }
-    let ctx = fn_ctx.ctx;
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let i64_ty = ctx.i64_type();
-    let void_ty = ctx.void_type();
-    let box_free_fn = fn_ctx
-        .llvm_mod
-        .get_function("hew_dyn_box_free")
-        .unwrap_or_else(|| {
-            let ty = void_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false);
-            fn_ctx
-                .llvm_mod
-                .add_function("hew_dyn_box_free", ty, Some(Linkage::External))
-        });
-    let thunk = fn_ctx.llvm_mod.add_function(
-        &symbol,
-        void_ty.fn_type(&[ptr_ty.into()], false),
-        Some(Linkage::Private),
-    );
-    let entry = ctx.append_basic_block(thunk, "entry");
-    let builder = ctx.create_builder();
-    builder.position_at_end(entry);
-    let env = thunk
-        .get_nth_param(0)
-        .ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "closure env free thunk `{symbol}`: synthesised function missing \
-                 the env parameter"
-            ))
-        })?
-        .into_pointer_value();
-    // box = env - HEADER (in-bounds: the header is part of the allocation).
-    let neg_header = i64_ty.const_int(CLOSURE_ENV_BOX_HEADER.wrapping_neg(), true);
-    let box_ptr =
-        unsafe { builder.build_in_bounds_gep(ctx.i8_type(), env, &[neg_header], "env_box_base") }
-            .llvm_ctx_with(|| format!("closure env free thunk `{symbol}`: box base gep"))?;
-    builder
-        .build_call(
-            box_free_fn,
-            &[
-                box_ptr.into(),
-                i64_ty.const_int(total_size, false).into(),
-                i64_ty.const_int(CLOSURE_ENV_BOX_ALIGN, false).into(),
-            ],
-            "env_box_free",
-        )
-        .llvm_ctx_with(|| format!("closure env free thunk `{symbol}`: free call"))?;
-    builder
-        .build_return(None)
-        .llvm_ctx_with(|| format!("closure env free thunk `{symbol}`: return"))?;
-    Ok(thunk)
 }
 
 /// True when this `Terminator::Call` is a pointer-element Vec op whose
@@ -17186,7 +15394,7 @@ fn emit_box_closure_pair<'ctx>(
 }
 
 /// Copy a closure pair out of its element box into a pair-typed dest slot.
-fn emit_unbox_closure_pair(
+pub(crate) fn emit_unbox_closure_pair(
     fn_ctx: &FnCtx<'_, '_>,
     box_ptr: PointerValue<'_>,
     dest: Place,
@@ -17459,7 +15667,9 @@ fn lower_closure_env_field_load(
     Ok(())
 }
 
-fn metadata_type_from_basic<'ctx>(ty: BasicTypeEnum<'ctx>) -> BasicMetadataTypeEnum<'ctx> {
+pub(crate) fn metadata_type_from_basic<'ctx>(
+    ty: BasicTypeEnum<'ctx>,
+) -> BasicMetadataTypeEnum<'ctx> {
     match ty {
         BasicTypeEnum::ArrayType(t) => t.into(),
         BasicTypeEnum::FloatType(t) => t.into(),
@@ -17471,7 +15681,7 @@ fn metadata_type_from_basic<'ctx>(ty: BasicTypeEnum<'ctx>) -> BasicMetadataTypeE
     }
 }
 
-fn metadata_value_from_basic<'ctx>(
+pub(crate) fn metadata_value_from_basic<'ctx>(
     value: BasicValueEnum<'ctx>,
 ) -> inkwell::values::BasicMetadataValueEnum<'ctx> {
     match value {
@@ -17485,23 +15695,6 @@ fn metadata_value_from_basic<'ctx>(
     }
 }
 
-fn closure_call_context<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> CodegenResult<PointerValue<'ctx>> {
-    // W6.010: the closure callee receives this pointer as its leading
-    // `HewExecutionContext*` and may read context fields through it. In a
-    // coroutine the spilled `execution_context` param is the unwound dispatch
-    // frame after a suspend, so a context-dependent closure invoked after an
-    // await must receive the resume-installed live context (via
-    // `live_execution_context_ptr`), not the dangling param. The zeroed
-    // `closure_call_fallback_context` is a Default-callconv function with no real
-    // context (never a coroutine), so it is passed through unchanged.
-    if let Some(spilled_ctx) = fn_ctx.execution_context {
-        return live_execution_context_ptr(fn_ctx, spilled_ctx);
-    }
-    fn_ctx
-        .closure_call_fallback_context
-        .ok_or_else(|| CodegenError::FailClosed("CallClosure requires an execution context".into()))
-}
-
 fn lower_call_closure(
     fn_ctx: &FnCtx<'_, '_>,
     callee: Place,
@@ -17509,7 +15702,7 @@ fn lower_call_closure(
     ret_ty: &ResolvedTy,
     dest: Option<Place>,
 ) -> CodegenResult<()> {
-    let ctx_ptr = closure_call_context(fn_ctx)?;
+    let ctx_ptr = crate::thunks::closure_call_context(fn_ctx)?;
     let (callee_ptr, callee_ty) = place_pointer(fn_ctx, callee)?;
     let pair_ty = match callee_ty {
         BasicTypeEnum::StructType(st) if st.count_fields() == 2 => st,
@@ -17656,19 +15849,6 @@ fn is_bool_vec_runtime_symbol(symbol: &str) -> bool {
     )
 }
 
-fn is_layout_vec_runtime_symbol(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "hew_vec_push_layout"
-            | "hew_vec_get_layout"
-            | "hew_vec_set_layout"
-            | "hew_vec_pop_layout"
-            | "hew_vec_contains_thunk"
-            | "hew_vec_remove_at_layout"
-            | "hew_vec_clone_layout"
-    )
-}
-
 fn is_vec_i32_get_set_symbol(symbol: &str) -> bool {
     matches!(symbol, "hew_vec_get_i32" | "hew_vec_set_i32")
 }
@@ -17715,66 +15895,7 @@ fn get_or_declare_vec_constructor<'ctx>(
     ))
 }
 
-fn layout_vec_fn_type<'ctx>(
-    ctx: &'ctx Context,
-    symbol: &str,
-) -> CodegenResult<inkwell::types::FunctionType<'ctx>> {
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let i64_ty = ctx.i64_type();
-    let i32_ty = ctx.i32_type();
-    match symbol {
-        "hew_vec_push_layout" => Ok(ctx
-            .void_type()
-            .fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)),
-        "hew_vec_get_layout" => {
-            Ok(ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false))
-        }
-        "hew_vec_set_layout" => Ok(ctx.void_type().fn_type(
-            &[ptr_ty.into(), i64_ty.into(), ptr_ty.into(), ptr_ty.into()],
-            false,
-        )),
-        "hew_vec_pop_layout" => {
-            Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false))
-        }
-        // W3.032 Slice 3: `i32 hew_vec_contains_thunk(ptr vec, ptr val, ptr eq_fn)`.
-        // The third operand is a pointer to a codegen-emitted equality thunk;
-        // the runtime treats `Option<HewVecEqThunk>` as a nullable function
-        // pointer (null is rejected by `abort_null_eq_fn`).
-        "hew_vec_contains_thunk" => {
-            Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false))
-        }
-        // W3.003: `void hew_vec_remove_at_layout(ptr vec, i64 index, ptr layout)`.
-        // Index-based remove for BitCopy layout-backed elements; the hidden
-        // layout pointer is synthesized by codegen from the Vec element type.
-        "hew_vec_remove_at_layout" => Ok(ctx
-            .void_type()
-            .fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false)),
-        // W3.003: `ptr hew_vec_clone_layout(ptr vec, ptr layout) -> ptr`.
-        // BitCopy bulk-copy clone; returns a freshly allocated *mut HewVec.
-        // The hidden layout pointer is synthesized by codegen from the Vec element type.
-        "hew_vec_clone_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
-        _ => Err(CodegenError::FailClosed(format!(
-            "not a layout Vec runtime symbol: {symbol}"
-        ))),
-    }
-}
-
-fn get_or_declare_layout_vec_runtime<'ctx>(
-    ctx: &'ctx Context,
-    llvm_mod: &LlvmModule<'ctx>,
-    symbol: &str,
-) -> CodegenResult<FunctionValue<'ctx>> {
-    if let Some(fv) = llvm_mod.get_function(symbol) {
-        return Ok(fv);
-    }
-    Ok(llvm_mod.add_function(
-        symbol,
-        layout_vec_fn_type(ctx, symbol)?,
-        Some(Linkage::External),
-    ))
-}
-
-fn abi_size_align<'ctx>(
+pub(crate) fn abi_size_align<'ctx>(
     ty: BasicTypeEnum<'ctx>,
     target_data: Option<&TargetData>,
 ) -> CodegenResult<(u64, u32)> {
@@ -17822,51 +15943,13 @@ fn abi_size_align<'ctx>(
     Ok((size, align))
 }
 
-fn layout_descriptor_ptr<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    elem_ty: BasicTypeEnum<'ctx>,
-    label: &str,
-) -> CodegenResult<PointerValue<'ctx>> {
-    // `HewTypeLayout { size: usize, align: usize, ownership_kind: u8 }`. The two
-    // leading fields are target-width `usize`, not host-width `i64`: wasm32 has
-    // `usize = i32`, so the size/align measurements and the descriptor struct
-    // shape both flow from the active `TargetData` exactly as the
-    // `hashmap_*_layout_descriptor_ptr` width authority does. A host-width
-    // fallback here would be silent wrong-code on wasm32.
-    let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
-    let ctx = fn_ctx.ctx;
-    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
-    let i8_ty = ctx.i8_type();
-    let layout_ty = ctx.struct_type(&[usize_ty.into(), usize_ty.into(), i8_ty.into()], false);
-    // Dedup name mirrors the `hashmap_*_layout_descriptor_ptr` authority: a
-    // module only ever targets one machine, so a native (i64) and a wasm32
-    // (i32) descriptor for the same `(label, size, align)` never co-exist in
-    // one module. The `(size, align)` measurements already shift with the
-    // target width, so the name stays stable per target without a width suffix
-    // — native IR is unchanged, wasm32 emits its own `_4_4_`/`_16_8_` globals.
-    let global_name = format!("__hew_layout_{label}_{size}_{align}_plain");
-    if let Some(global) = fn_ctx.llvm_mod.get_global(&global_name) {
-        return Ok(global.as_pointer_value());
-    }
-    let init = layout_ty.const_named_struct(&[
-        usize_ty.const_int(size, false).into(),
-        usize_ty.const_int(u64::from(align), false).into(),
-        i8_ty.const_zero().into(),
-    ]);
-    let global = fn_ctx.llvm_mod.add_global(layout_ty, None, &global_name);
-    global.set_constant(true);
-    global.set_linkage(Linkage::Private);
-    global.set_initializer(&init);
-    Ok(global.as_pointer_value())
-}
-
 // ---------------------------------------------------------------------------
 // W5.016 — owned-element Vec descriptor + op lowering
 // ---------------------------------------------------------------------------
 
 /// Which per-type in-place thunk family an owned Vec element resolves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OwnedElemThunkKind {
+pub(crate) enum OwnedElemThunkKind {
     /// User record/struct — `__hew_record_{clone,drop}_inplace_<key>`.
     Record,
     /// User enum (tagged union) — `__hew_enum_{clone,drop}_inplace_<key>`.
@@ -17884,28 +15967,6 @@ enum OwnedElemThunkKind {
     /// structural fingerprint (`mangle_resolved_ty`) so `Vec<string>` and
     /// `Vec<i64>` never share a thunk.
     Collection,
-}
-
-/// Structural, injective per-tuple thunk key (`tuple_<elem>_<elem>...`), used as
-/// the `__hew_tuple_*_inplace` symbol suffix. Two structurally identical tuples
-/// share one thunk; two distinct shapes get distinct symbols.
-///
-/// Derived from `hew_hir::mangle_resolved_ty`, the canonical structural
-/// `ResolvedTy` encoder (distinct types render to distinct fragments), rather
-/// than a lossy `{:?}`-debug-then-sanitize transform. Two structurally distinct
-/// tuple shapes therefore never collapse onto one key — the lazy idempotent
-/// thunk-body emission (`count_basic_blocks() == 0`) would otherwise silently
-/// reuse the first shape's clone/drop helper, dropping a field through the wrong
-/// thunk (e.g. an `i64` field freed through a `string`-drop). `mangle_resolved_
-/// ty` already replaces `::` with `_` and emits only `[A-Za-z0-9_]`, so the key
-/// is LLVM-symbol-clean without a sanitize pass. (F-SEC-1 hardening.)
-fn tuple_thunk_key(elems: &[ResolvedTy]) -> String {
-    let mut out = String::from("tuple");
-    for e in elems {
-        out.push('_');
-        out.push_str(&hew_hir::mangle_resolved_ty(e));
-    }
-    out
 }
 
 fn state_kind_key_fragment(kind: &StateFieldCloneKind) -> String {
@@ -17950,7 +16011,7 @@ fn state_kind_tuple_key(elems: &[StateFieldCloneKind]) -> String {
 /// Lookup-or-declare the synthesised per-tuple in-place clone helper. Signature
 /// mirrors the record helper: `fn(*const src, *mut dst) -> i32` (0 = success,
 /// non-zero = partial-clone rollback complete).
-fn get_or_declare_tuple_clone_inplace<'ctx>(
+pub(crate) fn get_or_declare_tuple_clone_inplace<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     tuple_key: &str,
@@ -17960,7 +16021,7 @@ fn get_or_declare_tuple_clone_inplace<'ctx>(
 
 /// Lookup-or-declare the synthesised per-tuple in-place drop helper.
 /// Signature: `fn(*mut)`. Mirrors the record drop helper.
-fn get_or_declare_tuple_drop_inplace<'ctx>(
+pub(crate) fn get_or_declare_tuple_drop_inplace<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     tuple_key: &str,
@@ -18016,7 +16077,7 @@ fn emit_tuple_kind_drop_inplace_body<'ctx>(
 /// uses the managed pair. The selector consults the SAME authority the inner
 /// Vec's constructor uses (`resolved_ty_element_owns_heap_for_owned_vec`), so
 /// the clone primitive can never disagree with the inner Vec's actual ABI.
-fn collection_elem_clone_drop_syms(
+pub(crate) fn collection_elem_clone_drop_syms(
     fn_ctx: &FnCtx<'_, '_>,
     elem_ty: &ResolvedTy,
 ) -> Option<(&'static str, &'static str)> {
@@ -18065,7 +16126,7 @@ fn collection_elem_clone_drop_syms(
 /// (0 = success). The body loads the inner collection handle from the source
 /// slot, deep-clones it via the element's canonical clone primitive, and stores
 /// the fresh handle into the destination slot (COPY-IN).
-fn get_or_declare_collection_clone_inplace<'ctx>(
+pub(crate) fn get_or_declare_collection_clone_inplace<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     key: &str,
@@ -18076,109 +16137,12 @@ fn get_or_declare_collection_clone_inplace<'ctx>(
 /// Lookup-or-declare the synthesized per-collection in-place drop helper.
 /// Signature: `fn(*mut)`. Loads the inner collection handle from the slot and
 /// frees it via the element's canonical free primitive (null-tolerant).
-fn get_or_declare_collection_drop_inplace<'ctx>(
+pub(crate) fn get_or_declare_collection_drop_inplace<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     key: &str,
 ) -> FunctionValue<'ctx> {
     get_or_declare_inplace_thunk(ctx, llvm_mod, "collection", key, ThunkShape::DropInplace)
-}
-
-/// Emit the bodies of the collection-handle clone/drop wrapper thunks (#1722),
-/// idempotently (no-op if a body already exists — same lazy contract as the
-/// tuple thunk emitter). `clone_sym`/`drop_sym` are the element's canonical
-/// collection clone/free runtime symbols (see `collection_elem_clone_drop_syms`).
-///
-/// The element slot holds a single owned collection handle (a pointer). The
-/// clone thunk is COPY-IN: it loads the source handle, deep-clones it, and
-/// OVERWRITES the destination slot with the fresh handle — `hew_vec_push_owned`
-/// first memcpy's the shallow handle into the slot, which this store harmlessly
-/// replaces, so the source retains sole ownership of the original (no alias).
-/// The drop thunk loads the slot's handle and frees it (the free primitives
-/// no-op on null, so a moved-out/cleared slot is safe).
-fn emit_collection_handle_thunk_bodies<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    key: &str,
-    clone_sym: &'static str,
-    drop_sym: &'static str,
-) -> CodegenResult<()> {
-    let ctx = fn_ctx.ctx;
-    let llvm_mod = fn_ctx.llvm_mod;
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let i32_ty = ctx.i32_type();
-
-    let clone_fn = get_or_declare_collection_clone_inplace(ctx, llvm_mod, key);
-    if clone_fn.count_basic_blocks() == 0 {
-        let runtime_clone = llvm_mod.get_function(clone_sym).unwrap_or_else(|| {
-            llvm_mod.add_function(
-                clone_sym,
-                ptr_ty.fn_type(&[ptr_ty.into()], false),
-                Some(Linkage::External),
-            )
-        });
-        let builder = ctx.create_builder();
-        let entry = ctx.append_basic_block(clone_fn, "entry");
-        builder.position_at_end(entry);
-        let src = clone_fn
-            .get_nth_param(0)
-            .ok_or_else(|| {
-                CodegenError::FailClosed("collection clone thunk missing src param".to_string())
-            })?
-            .into_pointer_value();
-        let dst = clone_fn
-            .get_nth_param(1)
-            .ok_or_else(|| {
-                CodegenError::FailClosed("collection clone thunk missing dst param".to_string())
-            })?
-            .into_pointer_value();
-        let src_handle = builder
-            .build_load(ptr_ty, src, "coll_src_handle")
-            .llvm_ctx("collection clone load src handle")?;
-        let cloned = builder
-            .build_call(runtime_clone, &[src_handle.into()], "coll_clone_call")
-            .llvm_ctx("collection clone call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "collection clone primitive `{clone_sym}` returned void"
-                ))
-            })?;
-        builder
-            .build_store(dst, cloned)
-            .llvm_ctx("collection clone store dst handle")?;
-        builder
-            .build_return(Some(&i32_ty.const_zero()))
-            .llvm_ctx("collection clone ret")?;
-    }
-
-    let drop_fn = get_or_declare_collection_drop_inplace(ctx, llvm_mod, key);
-    if drop_fn.count_basic_blocks() == 0 {
-        let runtime_drop = llvm_mod.get_function(drop_sym).unwrap_or_else(|| {
-            llvm_mod.add_function(
-                drop_sym,
-                ctx.void_type().fn_type(&[ptr_ty.into()], false),
-                Some(Linkage::External),
-            )
-        });
-        let builder = ctx.create_builder();
-        let entry = ctx.append_basic_block(drop_fn, "entry");
-        builder.position_at_end(entry);
-        let slot = drop_fn
-            .get_nth_param(0)
-            .ok_or_else(|| {
-                CodegenError::FailClosed("collection drop thunk missing slot param".to_string())
-            })?
-            .into_pointer_value();
-        let handle = builder
-            .build_load(ptr_ty, slot, "coll_slot_handle")
-            .llvm_ctx("collection drop load slot handle")?;
-        builder
-            .build_call(runtime_drop, &[handle.into()], "coll_drop_call")
-            .llvm_ctx("collection drop call")?;
-        builder.build_return(None).llvm_ctx("collection drop ret")?;
-    }
-    Ok(())
 }
 
 fn tuple_field_clone_kind(
@@ -18204,7 +16168,7 @@ fn tuple_field_clone_kind(
 /// plus the tuple's LLVM struct type. Shared by the clone+drop thunk emitter
 /// (owned-Vec element path) and the drop-only emitter (W5.021 owned-tuple drop
 /// spine), so both consume the same classification authority.
-fn tuple_inplace_field_kinds<'ctx>(
+pub(crate) fn tuple_inplace_field_kinds<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     tuple_key: &str,
     elems: &[ResolvedTy],
@@ -18237,34 +16201,6 @@ fn tuple_inplace_field_kinds<'ctx>(
     Ok((tuple_struct, kinds))
 }
 
-/// Synthesize the `__hew_tuple_{clone,drop}_inplace_<key>` bodies for an owned
-/// tuple shape. Reuses the per-field clone/drop step machinery
-/// (`emit_field_clone_step` / `emit_field_drop_step`) over the tuple's struct
-/// fields — the same primitives the record bodies use — so the rollback and
-/// drop discipline are identical (`lifecycle-symmetry`). Idempotent: no-ops if
-/// the bodies already exist (a tuple shape may be referenced by multiple owned
-/// Vecs).
-fn emit_tuple_inplace_thunk_bodies<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    tuple_key: &str,
-    elems: &[ResolvedTy],
-    tuple_llvm_ty: BasicTypeEnum<'ctx>,
-) -> CodegenResult<()> {
-    let ctx = fn_ctx.ctx;
-    let llvm_mod = fn_ctx.llvm_mod;
-    let (tuple_struct, kinds) = tuple_inplace_field_kinds(fn_ctx, tuple_key, elems, tuple_llvm_ty)?;
-
-    let clone_fn = get_or_declare_tuple_clone_inplace(ctx, llvm_mod, tuple_key);
-    if clone_fn.count_basic_blocks() == 0 {
-        emit_aggregate_clone_inplace_body(ctx, llvm_mod, clone_fn, tuple_struct, &kinds)?;
-    }
-    let drop_fn = get_or_declare_tuple_drop_inplace(ctx, llvm_mod, tuple_key);
-    if drop_fn.count_basic_blocks() == 0 {
-        emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, &kinds)?;
-    }
-    Ok(())
-}
-
 /// Synthesize ONLY the `__hew_tuple_drop_inplace_<key>` body for an owned tuple
 /// shape — the W5.021 owned-tuple drop spine. Tuples crossing a return boundary
 /// are MOVED, never cloned, so the drop side is the only direction the spine
@@ -18274,7 +16210,7 @@ fn emit_tuple_inplace_thunk_bodies<'ctx>(
 /// element, whose seeding emits both bodies via `emit_tuple_inplace_thunk_
 /// bodies` — whichever runs first wins, and both emit identical drop IR per
 /// `lifecycle-symmetry`).
-fn emit_tuple_drop_inplace_body_only<'ctx>(
+pub(crate) fn emit_tuple_drop_inplace_body_only<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     tuple_key: &str,
     elems: &[ResolvedTy],
@@ -18290,295 +16226,10 @@ fn emit_tuple_drop_inplace_body_only<'ctx>(
     emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, &kinds)
 }
 
-/// Resolve an owned Vec element `ResolvedTy` to its `(thunk-kind, layout-key)`.
-///
-/// The layout key is the registry name the per-type inplace helper bodies are
-/// emitted under (`__hew_record_clone_inplace_<key>` etc.). Records resolve via
-/// the `record_field_resolved_tys` map (the codegen record registry); enums
-/// resolve via `enum_layouts` using the same name/args mangling scheme as
-/// `collect_enum_inplace_drop_seeds`; tuples resolve to a structural key (the
-/// thunk body is synthesized on demand). Returns `None` for any shape with no
-/// in-place thunk path (primitives, builtins) — the caller must fail closed.
-fn owned_elem_thunk_key(
-    fn_ctx: &FnCtx<'_, '_>,
-    elem_ty: &ResolvedTy,
-) -> Option<(OwnedElemThunkKind, String)> {
-    // Tuple element (W5.016 F2): no registry entry — synthesize a structural
-    // thunk key. Only owned tuples (at least one heap-owning field) reach the
-    // owned ABI; an all-BitCopy tuple stays on the existing `_layout` path
-    // (the constructor's `resolved_ty_element_owns_heap_for_owned_vec` guard
-    // excludes it).
-    if let ResolvedTy::Tuple(elems) = elem_ty {
-        return Some((OwnedElemThunkKind::Tuple, tuple_thunk_key(elems)));
-    }
-    // Nested collection element (#1722): `Vec<E>` / `HashMap` / `HashSet`. Like
-    // the tuple shape there is no registry entry — synthesize a structural
-    // thunk key (`mangle_resolved_ty` distinguishes `Vec<string>` from
-    // `Vec<i64>`). Gated on a resolvable clone/free primitive so a closure-pair
-    // `Vec<fn>` element resolves to `None` here (fail closed at descriptor
-    // build) rather than naming a thunk that cannot be synthesized.
-    if matches!(
-        elem_ty,
-        ResolvedTy::Named {
-            builtin: Some(
-                hew_types::BuiltinType::Vec
-                    | hew_types::BuiltinType::HashMap
-                    | hew_types::BuiltinType::HashSet
-            ),
-            ..
-        }
-    ) && collection_elem_clone_drop_syms(fn_ctx, elem_ty).is_some()
-    {
-        return Some((
-            OwnedElemThunkKind::Collection,
-            hew_hir::mangle_resolved_ty(elem_ty),
-        ));
-    }
-    let ResolvedTy::Named { name, args, .. } = elem_ty else {
-        return None;
-    };
-    // Enum-first: an owned-payload / recursive enum is the F3/F4 shape.
-    let short = short_name(name);
-    let enum_key = if args.is_empty() {
-        fn_ctx
-            .enum_layouts
-            .iter()
-            .find(|el| el.name == *name || short_name(&el.name) == short)
-            .map(|el| el.name.clone())
-    } else {
-        let mangled = mangle_with_shortened_args(short, args);
-        fn_ctx
-            .enum_layouts
-            .iter()
-            .find(|el| el.name == mangled || el.name == *name)
-            .map(|el| el.name.clone())
-    };
-    if let Some(key) = enum_key {
-        return Some((OwnedElemThunkKind::Enum, key));
-    }
-    // Machine: an enum at the value-classification layer (same tagged-union
-    // substrate; the clone/drop synthesis emits its
-    // `__hew_enum_{clone,drop}_inplace_<Machine>` bodies over the machine
-    // layout). Generic instantiations canonicalize to the bare decl name —
-    // the same short-name registration `resolve_ty`'s fallback resolves the
-    // element struct through. State-side machine entries are distinguished
-    // from event companions / plain enums by their state-name table.
-    if fn_ctx
-        .machine_layouts
-        .get(short)
-        .is_some_and(|m| m.state_name_table.is_some())
-    {
-        return Some((OwnedElemThunkKind::Enum, short.to_string()));
-    }
-    // Record: look up the codegen record registry key (mangled if generic).
-    // A generic instantiation registers on the bare-normalised spine, so
-    // shorten the type-arg spine before mangling.
-    let lookup_key = if args.is_empty() {
-        name.clone()
-    } else {
-        mangle_with_shortened_args(short_name(name), args)
-    };
-    if fn_ctx
-        .record_field_resolved_tys
-        .contains_key(lookup_key.as_str())
-    {
-        return Some((OwnedElemThunkKind::Record, lookup_key));
-    }
-    if fn_ctx.record_field_resolved_tys.contains_key(short) {
-        return Some((OwnedElemThunkKind::Record, short.to_string()));
-    }
-    None
-}
-
-/// Emit (or reuse) a `HewVecElemLayout`-shaped private constant for an owned
-/// Vec element type, returning a pointer suitable for the owned constructor's
-/// `layout` parameter.
-///
-/// The struct shape must match `hew_cabi::vec::HewVecElemLayout`:
-/// `{ size: usize, align: usize, ownership_kind: u8, clone_fn: *const fn,
-/// drop_fn: *const fn }`. `ownership_kind = LayoutManaged (2)`; the two thunk
-/// fields point at the element's per-type `__hew_record/enum_{clone,drop}_
-/// inplace_<key>` helpers (their bodies seeded by
-/// `collect_vec_owned_element_seeds`). Dedup by `(size, align, key)` so two
-/// distinct element shapes never collapse onto one descriptor.
-///
-/// Fails closed for any element with no resolvable thunk path — the owned ABI
-/// must never reference a non-existent thunk (`boundary-fail-closed`).
-fn owned_elem_layout_descriptor_ptr<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    elem_resolved_ty: &ResolvedTy,
-    elem_llvm_ty: BasicTypeEnum<'ctx>,
-    label: &str,
-) -> CodegenResult<PointerValue<'ctx>> {
-    let Some((kind, key)) = owned_elem_thunk_key(fn_ctx, elem_resolved_ty) else {
-        return Err(CodegenError::FailClosed(format!(
-            "owned Vec element `{elem_resolved_ty:?}` has no resolvable record/enum \
-             in-place thunk path at `{label}`; the checker must not route a \
-             non-thunkable element through the owned ABI"
-        )));
-    };
-    let (size, align) = abi_size_align(elem_llvm_ty, Some(fn_ctx.target_data))?;
-    let kind_tag = match kind {
-        OwnedElemThunkKind::Record => "rec",
-        OwnedElemThunkKind::Enum => "enum",
-        OwnedElemThunkKind::Tuple => "tup",
-        OwnedElemThunkKind::Collection => "coll",
-    };
-    let global_name = format!("__hew_vec_elem_layout_{kind_tag}_{key}_{size}_{align}");
-    if let Some(g) = fn_ctx.llvm_mod.get_global(&global_name) {
-        return Ok(g.as_pointer_value());
-    }
-    let (clone_fn, drop_fn) = match kind {
-        OwnedElemThunkKind::Record => (
-            get_or_declare_record_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-            get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-        ),
-        OwnedElemThunkKind::Enum => (
-            get_or_declare_enum_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-            get_or_declare_enum_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-        ),
-        OwnedElemThunkKind::Tuple => {
-            // The tuple thunk BODY is synthesized eagerly here (it has no
-            // registry-driven seeding pass, unlike record/enum): a tuple shape
-            // is referenced only through this descriptor, so synthesize-on-first-
-            // descriptor is the natural seeding point. Idempotent: the emitter
-            // no-ops if the body already exists.
-            let elems = match elem_resolved_ty {
-                ResolvedTy::Tuple(elems) => elems,
-                _ => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "owned tuple descriptor at `{label}`: element {elem_resolved_ty:?} is \
-                         not a tuple but resolved to the Tuple thunk kind"
-                    )));
-                }
-            };
-            emit_tuple_inplace_thunk_bodies(fn_ctx, &key, elems, elem_llvm_ty)?;
-            (
-                get_or_declare_tuple_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-                get_or_declare_tuple_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-            )
-        }
-        OwnedElemThunkKind::Collection => {
-            // The collection-handle wrapper thunk BODY is synthesized eagerly
-            // here (like the tuple thunk — no registry-driven seeding): a
-            // collection element is referenced only through this descriptor.
-            // Idempotent: the emitter no-ops if the body already exists.
-            let (clone_sym, drop_sym) = collection_elem_clone_drop_syms(fn_ctx, elem_resolved_ty)
-                .ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "owned collection descriptor at `{label}`: element \
-                         {elem_resolved_ty:?} has no canonical clone/free primitive \
-                         (closure-pair Vec elements are a separate lane)"
-                ))
-            })?;
-            emit_collection_handle_thunk_bodies(fn_ctx, &key, clone_sym, drop_sym)?;
-            (
-                get_or_declare_collection_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-                get_or_declare_collection_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-            )
-        }
-    };
-    let ctx = fn_ctx.ctx;
-    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
-    let i8_ty = ctx.i8_type();
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let layout_ty = ctx.struct_type(
-        &[
-            usize_ty.into(),
-            usize_ty.into(),
-            i8_ty.into(),
-            ptr_ty.into(),
-            ptr_ty.into(),
-        ],
-        false,
-    );
-    // ownership_kind = LayoutManaged (HewTypeOwnershipKind::LayoutManaged = 2).
-    let init = layout_ty.const_named_struct(&[
-        usize_ty.const_int(size, false).into(),
-        usize_ty.const_int(u64::from(align), false).into(),
-        i8_ty.const_int(2, false).into(),
-        clone_fn.as_global_value().as_pointer_value().into(),
-        drop_fn.as_global_value().as_pointer_value().into(),
-    ]);
-    let g = fn_ctx.llvm_mod.add_global(layout_ty, None, &global_name);
-    g.set_constant(true);
-    g.set_linkage(Linkage::Private);
-    g.set_initializer(&init);
-    Ok(g.as_pointer_value())
-}
-
-/// Synthesize (or reuse) the constant `HewVecElemLayout` witness static
-/// describing one channel/stream element type for the layout-witness
-/// recv/send ABI (`hew_channel_*_layout` / `hew_stream_*_layout`).
-///
-/// Encoding contract — must mirror `hew-runtime/src/channel_common.rs`:
-/// - `String` (ownership kind 1): pointer-sized element slot; the queue
-///   envelope is content-encoded (the runtime materialises a fresh
-///   header-aware cstring on decode).
-/// - `Bytes` (kind 3): `BytesTriple`-sized slot; content-encoded envelope.
-/// - scalars / BitCopy aggregates (kind 0, Plain): the raw representation,
-///   witness-width wide, no thunks.
-/// - heap-owning record/enum/tuple (kind 2, LayoutManaged): the W5.016 owned
-///   descriptor with the per-type `__hew_*_{clone,drop}_inplace` thunks,
-///   reused verbatim via [`owned_elem_layout_descriptor_ptr`].
-///
-/// The heap-ownership split reuses the Vec classifier
-/// (`resolved_ty_element_owns_heap_for_owned_vec`) so the channel/stream
-/// witness can never disagree with the Vec witness about one element type.
-fn channel_elem_layout_witness_ptr<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    elem_ty: &ResolvedTy,
-    label: &str,
-) -> CodegenResult<PointerValue<'ctx>> {
-    match elem_ty {
-        ResolvedTy::String => {
-            let ptr_bytes = u64::from(fn_ctx.target_data.get_pointer_byte_size(None));
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "pointer byte size fits u32 on every supported target"
-            )]
-            let align = ptr_bytes as u32;
-            const_elem_witness_global(fn_ctx, "__hew_elem_layout_string", ptr_bytes, align, 1)
-        }
-        ResolvedTy::Bytes => {
-            let triple_ty = fn_ctx.ctx.struct_type(
-                &[
-                    fn_ctx.ctx.ptr_type(AddressSpace::default()).into(),
-                    fn_ctx.ctx.i32_type().into(),
-                    fn_ctx.ctx.i32_type().into(),
-                ],
-                false,
-            );
-            let (size, align) = abi_size_align(triple_ty.into(), Some(fn_ctx.target_data))?;
-            const_elem_witness_global(fn_ctx, "__hew_elem_layout_bytes", size, align, 3)
-        }
-        _ if resolved_ty_element_owns_heap_for_owned_vec(fn_ctx, elem_ty) => {
-            let elem_llvm_ty = resolve_ty(fn_ctx.ctx, elem_ty, fn_ctx.record_layouts)?;
-            owned_elem_layout_descriptor_ptr(fn_ctx, elem_ty, elem_llvm_ty, label)
-        }
-        _ => {
-            // Plain: scalars (i8..i64, u8..u64, f32/f64, bool, char) and
-            // BitCopy aggregates ride the raw representation. The checker owns
-            // the admission decision; an element type it should not have
-            // admitted still gets a deterministic width here rather than a
-            // silent misdecode (the runtime cross-checks envelope width).
-            let elem_llvm_ty = resolve_ty(fn_ctx.ctx, elem_ty, fn_ctx.record_layouts)?;
-            let (size, align) = abi_size_align(elem_llvm_ty, Some(fn_ctx.target_data))?;
-            const_elem_witness_global(
-                fn_ctx,
-                &format!("__hew_elem_layout_plain_{size}_{align}"),
-                size,
-                align,
-                0,
-            )
-        }
-    }
-}
-
 /// Emit (or reuse) a thunk-less constant `HewVecElemLayout` global. The
 /// struct shape `{usize, usize, i8, ptr, ptr}` matches `hew-cabi::vec` and
 /// the thunk-bearing twin emitted by [`owned_elem_layout_descriptor_ptr`].
-fn const_elem_witness_global<'ctx>(
+pub(crate) fn const_elem_witness_global<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     global_name: &str,
     size: u64,
@@ -18661,7 +16312,7 @@ fn owned_vec_fn_type<'ctx>(
     }
 }
 
-fn get_or_declare_owned_vec_runtime<'ctx>(
+pub(crate) fn get_or_declare_owned_vec_runtime<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     symbol: &str,
@@ -18840,551 +16491,6 @@ fn lower_owned_vec_direct_call(
     Ok(())
 }
 
-// W3.032 Slice 3c: per-type equality thunk for layout-backed `Vec::contains`.
-//
-// `get_or_emit_eq_thunk` returns a `FunctionValue` matching the equality thunk
-// ABI from the W3.032 plan: `unsafe extern "C" fn(*const c_void, *const c_void)
-// -> i32` with `1` = equal, `0` = not equal.  The function is internally linked
-// (`define internal i32 @__hew_eq_thunk_*`) and is intended to be invoked by
-// `hew_vec_contains_thunk` from `hew-runtime/src/vec.rs`.
-//
-// **Authority boundary** — Codegen does NOT call `ty_is_eq_eligible` here nor
-// inspect any Hew-level ownership/marker information.  The sole gate is the
-// checker rewrite that lands the `"hew_vec_contains_thunk"` callee symbol;
-// reaching this function implies that gate has fired.  The defensive
-// `CodegenError::FailClosed` for float-shaped LLVM fields below is fault
-// isolation — it detects a checker-gate bypass and refuses to emit `fcmp` —
-// not an independent eligibility decision.
-//
-// **Dedup key** — Structured: derived from the element type's LLVM textual
-// form (sanitised) plus its target-data ABI size/align.  Two structurally
-// different LLVM types with the same size/align (e.g. `{i64, i64}` vs
-// `{i32, i64}` after padding) get different keys and therefore different
-// thunks, satisfying the W3.032 hard requirement that dedup not collapse on
-// `{size, align}` alone.  The `__hew_eq_thunk_` prefix reserves the symbol in
-// the Hew ABI namespace.
-fn eq_thunk_struct_key(ty: BasicTypeEnum<'_>) -> String {
-    // `print_to_string()` includes named-struct identity (e.g. `%Point`) for
-    // named struct types and the literal field shape (e.g. `{ i64, i64 }`)
-    // for anonymous/tuple structs.  That is exactly the structural fingerprint
-    // we want.  Replace whitespace and non-alphanumeric runs so the resulting
-    // string is a legal LLVM symbol suffix.
-    let raw = ty.print_to_string().to_string();
-    let mut out = String::with_capacity(raw.len());
-    let mut last_under = false;
-    for ch in raw.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch);
-            last_under = false;
-        } else if !last_under {
-            out.push('_');
-            last_under = true;
-        }
-    }
-    while out.ends_with('_') {
-        out.pop();
-    }
-    out
-}
-
-fn get_or_emit_eq_thunk<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    elem_ty: BasicTypeEnum<'ctx>,
-) -> CodegenResult<FunctionValue<'ctx>> {
-    let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
-    let key = eq_thunk_struct_key(elem_ty);
-    let name = format!("__hew_eq_thunk_{size}_{align}_{key}");
-    if let Some(existing) = fn_ctx.llvm_mod.get_function(&name) {
-        return Ok(existing);
-    }
-
-    // Eagerly insert the function declaration before any recursive call so
-    // that thunks for nested aggregates can find this one via name lookup.
-    // (Hew has no self-referential records — `Ty` is not recursive — so the
-    // recursion would terminate anyway, but eager insertion is the
-    // canonical inkwell pattern.)
-    let ctx = fn_ctx.ctx;
-    let i32_ty = ctx.i32_type();
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let fn_ty = i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-    let func = fn_ctx
-        .llvm_mod
-        .add_function(&name, fn_ty, Some(Linkage::Internal));
-
-    // Save the caller's insert block so we can restore it after building the
-    // thunk body — `FnCtx::builder` is shared with the outer function.
-    let saved_block = fn_ctx.builder.get_insert_block();
-
-    let entry_bb = ctx.append_basic_block(func, "entry");
-    let ret_true_bb = ctx.append_basic_block(func, "eq_thunk_ret_true");
-    let ret_false_bb = ctx.append_basic_block(func, "eq_thunk_ret_false");
-
-    fn_ctx.builder.position_at_end(entry_bb);
-    let lhs = func
-        .get_nth_param(0)
-        .ok_or_else(|| CodegenError::FailClosed("eq_thunk: missing lhs param".into()))?
-        .into_pointer_value();
-    let rhs = func
-        .get_nth_param(1)
-        .ok_or_else(|| CodegenError::FailClosed("eq_thunk: missing rhs param".into()))?
-        .into_pointer_value();
-
-    emit_eq_thunk_body(fn_ctx, elem_ty, lhs, rhs, ret_true_bb, ret_false_bb)?;
-
-    // Return slots.
-    fn_ctx.builder.position_at_end(ret_true_bb);
-    fn_ctx
-        .builder
-        .build_return(Some(&i32_ty.const_int(1, false)))
-        .llvm_ctx("eq_thunk ret true")?;
-    fn_ctx.builder.position_at_end(ret_false_bb);
-    fn_ctx
-        .builder
-        .build_return(Some(&i32_ty.const_zero()))
-        .llvm_ctx("eq_thunk ret false")?;
-
-    // Restore the outer function's builder position.
-    if let Some(bb) = saved_block {
-        fn_ctx.builder.position_at_end(bb);
-    }
-
-    Ok(func)
-}
-
-/// Emit a chain of field-by-field equality checks for `elem_ty`.  After all
-/// checks succeed control flows to `ret_true_bb`; any failed check branches
-/// directly to `ret_false_bb`.  The builder must be positioned at a block
-/// that has no terminator on entry.
-fn emit_eq_thunk_body<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    elem_ty: BasicTypeEnum<'ctx>,
-    lhs: PointerValue<'ctx>,
-    rhs: PointerValue<'ctx>,
-    ret_true_bb: inkwell::basic_block::BasicBlock<'ctx>,
-    ret_false_bb: inkwell::basic_block::BasicBlock<'ctx>,
-) -> CodegenResult<()> {
-    match elem_ty {
-        BasicTypeEnum::IntType(int_ty) => {
-            let lv = fn_ctx
-                .builder
-                .build_load(int_ty, lhs, "eq_lhs")
-                .llvm_ctx("eq_thunk lhs load")?
-                .into_int_value();
-            let rv = fn_ctx
-                .builder
-                .build_load(int_ty, rhs, "eq_rhs")
-                .llvm_ctx("eq_thunk rhs load")?
-                .into_int_value();
-            let eq = fn_ctx
-                .builder
-                .build_int_compare(IntPredicate::EQ, lv, rv, "eq_field")
-                .llvm_ctx("eq_thunk icmp")?;
-            fn_ctx
-                .builder
-                .build_conditional_branch(eq, ret_true_bb, ret_false_bb)
-                .llvm_ctx("eq_thunk br")?;
-            Ok(())
-        }
-        BasicTypeEnum::StructType(st) => {
-            // Tagged-union (user enum / machine) detection. The outer LLVM
-            // struct is a NAMED struct registered under the enum/machine name
-            // in `machine_layouts` (see `register_enum_layouts` /
-            // `register_machine_layouts`). Such a value must NOT be compared
-            // field-by-field as a plain record: outer field 1 is the
-            // `[N x i8]` payload union sized to the widest variant, so its
-            // inactive-variant and trailing padding bytes are indeterminate,
-            // and a heap/string payload field would compare raw pointer bytes.
-            // Route to tag-dispatched equality, which compares the
-            // discriminant first and then only the active variant's declared
-            // fields. LESSONS: match-fail-closed (P0), codegen-abi-authority.
-            if let Some(layout) = st
-                .get_name()
-                .and_then(|c| c.to_str().ok())
-                .and_then(|name| fn_ctx.machine_layouts.get(name))
-            {
-                return emit_eq_thunk_enum(fn_ctx, layout, lhs, rhs, ret_true_bb, ret_false_bb);
-            }
-            let field_count = st.count_fields();
-            if field_count == 0 {
-                // Zero-field aggregates (unit-like records / `()` tuple) are
-                // trivially equal.
-                fn_ctx
-                    .builder
-                    .build_unconditional_branch(ret_true_bb)
-                    .llvm_ctx("eq_thunk zero-field br")?;
-                return Ok(());
-            }
-            let func = fn_ctx
-                .builder
-                .get_insert_block()
-                .and_then(|b| b.get_parent())
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("eq_thunk body: missing enclosing function".into())
-                })?;
-            for idx in 0..field_count {
-                let field_ty = st.get_field_type_at_index(idx).ok_or_else(|| {
-                    CodegenError::FailClosed(format!("eq_thunk: struct {st:?} missing field {idx}"))
-                })?;
-                let lhs_field = fn_ctx
-                    .builder
-                    .build_struct_gep(st, lhs, idx, &format!("eq_lhs_f{idx}"))
-                    .llvm_ctx("eq_thunk lhs gep")?;
-                let rhs_field = fn_ctx
-                    .builder
-                    .build_struct_gep(st, rhs, idx, &format!("eq_rhs_f{idx}"))
-                    .llvm_ctx("eq_thunk rhs gep")?;
-                // Continuation block: where control resumes after a successful
-                // field comparison, unless this is the final field, in which
-                // case we branch directly to `ret_true_bb`.
-                let next_bb = if idx + 1 < field_count {
-                    fn_ctx
-                        .ctx
-                        .append_basic_block(func, &format!("eq_thunk_cont_{}", idx + 1))
-                } else {
-                    ret_true_bb
-                };
-                emit_eq_thunk_field_check(
-                    fn_ctx,
-                    field_ty,
-                    lhs_field,
-                    rhs_field,
-                    next_bb,
-                    ret_false_bb,
-                )?;
-                if idx + 1 < field_count {
-                    fn_ctx.builder.position_at_end(next_bb);
-                }
-            }
-            Ok(())
-        }
-        BasicTypeEnum::ArrayType(arr_ty) => {
-            // Arrays of equality-eligible elements: compare element-by-element.
-            // The checker eligibility gate forbids float/managed fields, so any
-            // array we see here has integer/aggregate elements.
-            let len = arr_ty.len();
-            if len == 0 {
-                fn_ctx
-                    .builder
-                    .build_unconditional_branch(ret_true_bb)
-                    .llvm_ctx("eq_thunk empty array br")?;
-                return Ok(());
-            }
-            let func = fn_ctx
-                .builder
-                .get_insert_block()
-                .and_then(|b| b.get_parent())
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("eq_thunk body: missing enclosing function".into())
-                })?;
-            let elem_ty = arr_ty.get_element_type();
-            for idx in 0..len {
-                let zero = fn_ctx.ctx.i32_type().const_zero();
-                let idx_v = fn_ctx.ctx.i32_type().const_int(u64::from(idx), false);
-                let lhs_elem = unsafe {
-                    fn_ctx
-                        .builder
-                        .build_in_bounds_gep(arr_ty, lhs, &[zero, idx_v], &format!("eq_lhs_a{idx}"))
-                        .llvm_ctx("eq_thunk lhs array gep")?
-                };
-                let rhs_elem = unsafe {
-                    fn_ctx
-                        .builder
-                        .build_in_bounds_gep(arr_ty, rhs, &[zero, idx_v], &format!("eq_rhs_a{idx}"))
-                        .llvm_ctx("eq_thunk rhs array gep")?
-                };
-                let next_bb = if idx + 1 < len {
-                    fn_ctx
-                        .ctx
-                        .append_basic_block(func, &format!("eq_thunk_arr_cont_{}", idx + 1))
-                } else {
-                    ret_true_bb
-                };
-                emit_eq_thunk_field_check(
-                    fn_ctx,
-                    elem_ty,
-                    lhs_elem,
-                    rhs_elem,
-                    next_bb,
-                    ret_false_bb,
-                )?;
-                if idx + 1 < len {
-                    fn_ctx.builder.position_at_end(next_bb);
-                }
-            }
-            Ok(())
-        }
-        BasicTypeEnum::FloatType(_) => {
-            // The checker eligibility gate (Slice 1) rejects every record /
-            // tuple type that contains a float field before `_layout`
-            // contains can reach codegen.  A float type at this point is a
-            // checker-gate bypass — fail closed instead of silently emitting
-            // an `fcmp` that would have NaN semantics.
-            Err(CodegenError::FailClosed(
-                "eq_thunk: float field reached codegen — checker gate bypassed".into(),
-            ))
-        }
-        BasicTypeEnum::PointerType(_)
-        | BasicTypeEnum::VectorType(_)
-        | BasicTypeEnum::ScalableVectorType(_) => Err(CodegenError::FailClosed(format!(
-            "eq_thunk: unsupported LLVM field shape {elem_ty:?} — \
-             checker eligibility gate should have rejected this element type"
-        ))),
-    }
-}
-
-/// Compare a single field/element at `lhs_field`/`rhs_field` of type
-/// `field_ty`.  Integer fields compare in-place and conditionally branch
-/// to `success_bb`/`fail_bb`.  Aggregate fields delegate to a nested
-/// `__hew_eq_thunk_*` function and check its `i32` return: non-zero ⇒
-/// success, zero ⇒ fail.
-fn emit_eq_thunk_field_check<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    field_ty: BasicTypeEnum<'ctx>,
-    lhs_field: PointerValue<'ctx>,
-    rhs_field: PointerValue<'ctx>,
-    success_bb: inkwell::basic_block::BasicBlock<'ctx>,
-    fail_bb: inkwell::basic_block::BasicBlock<'ctx>,
-) -> CodegenResult<()> {
-    match field_ty {
-        BasicTypeEnum::IntType(int_ty) => {
-            let lv = fn_ctx
-                .builder
-                .build_load(int_ty, lhs_field, "eq_field_lhs")
-                .llvm_ctx("eq_thunk field lhs load")?
-                .into_int_value();
-            let rv = fn_ctx
-                .builder
-                .build_load(int_ty, rhs_field, "eq_field_rhs")
-                .llvm_ctx("eq_thunk field rhs load")?
-                .into_int_value();
-            let eq = fn_ctx
-                .builder
-                .build_int_compare(IntPredicate::EQ, lv, rv, "eq_field_cmp")
-                .llvm_ctx("eq_thunk field icmp")?;
-            fn_ctx
-                .builder
-                .build_conditional_branch(eq, success_bb, fail_bb)
-                .llvm_ctx("eq_thunk field br")?;
-            Ok(())
-        }
-        BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) => {
-            // Nested aggregate: recurse via a separate thunk function.
-            let nested = get_or_emit_eq_thunk(fn_ctx, field_ty)?;
-            let call = fn_ctx
-                .builder
-                .build_call(
-                    nested,
-                    &[lhs_field.into(), rhs_field.into()],
-                    "eq_field_nested",
-                )
-                .llvm_ctx("eq_thunk nested call")?;
-            let raw = call
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("eq_thunk nested call returned void".into())
-                })?
-                .into_int_value();
-            let nz = fn_ctx
-                .builder
-                .build_int_compare(
-                    IntPredicate::NE,
-                    raw,
-                    fn_ctx.ctx.i32_type().const_zero(),
-                    "eq_field_nested_nz",
-                )
-                .llvm_ctx("eq_thunk nested ne")?;
-            fn_ctx
-                .builder
-                .build_conditional_branch(nz, success_bb, fail_bb)
-                .llvm_ctx("eq_thunk nested br")?;
-            Ok(())
-        }
-        BasicTypeEnum::FloatType(_) => Err(CodegenError::FailClosed(
-            "eq_thunk: float field reached codegen — checker gate bypassed".into(),
-        )),
-        BasicTypeEnum::PointerType(_)
-        | BasicTypeEnum::VectorType(_)
-        | BasicTypeEnum::ScalableVectorType(_) => Err(CodegenError::FailClosed(format!(
-            "eq_thunk: unsupported nested LLVM field shape {field_ty:?}"
-        ))),
-    }
-}
-
-/// Emit tag-dispatched equality for a tagged-union (user enum / machine)
-/// value addressed by `lhs`/`rhs` (pointers to the outer `{ tag, payload }`
-/// struct). The discriminant tags are compared first: unequal tags branch to
-/// `ret_false_bb`. Equal tags switch on the (now shared) tag value to a
-/// per-variant block that compares only the active variant's declared
-/// payload fields, recursing through `emit_eq_thunk_field_check`. A tag
-/// outside the declared variant set traps `HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH`
-/// (208) rather than comparing indeterminate bytes.
-///
-/// WHY tag-dispatch instead of a whole-struct field-by-field compare: the
-/// outer struct's field 1 is a `[N x i8]` union sized to the widest variant.
-/// For any narrower active variant the trailing bytes are indeterminate, and
-/// a managed/heap payload field (string, owned aggregate) would compare raw
-/// pointer bytes — both semantically wrong. Comparing the discriminant plus
-/// only the active variant's fields is the sole correct equality. The variant
-/// layout is read from the single `MachineCodegenLayout` authority so this
-/// dispatch cannot drift from construction. LESSONS: match-fail-closed (P0),
-/// codegen-abi-authority (P0).
-///
-/// Note on payload eligibility: `emit_eq_thunk_field_check` fails closed on
-/// float/pointer payload fields. The checker's `ty_is_eq_eligible` already
-/// rejects float and managed (string/heap) enum payloads before any
-/// `Vec::contains` lowering can route an enum element here, so those arms are
-/// fault isolation against a checker-gate bypass, not an independent
-/// eligibility decision.
-fn emit_eq_thunk_enum<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    layout: &MachineCodegenLayout<'ctx>,
-    lhs: PointerValue<'ctx>,
-    rhs: PointerValue<'ctx>,
-    ret_true_bb: inkwell::basic_block::BasicBlock<'ctx>,
-    ret_false_bb: inkwell::basic_block::BasicBlock<'ctx>,
-) -> CodegenResult<()> {
-    let ctx = fn_ctx.ctx;
-    let func = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|b| b.get_parent())
-        .ok_or_else(|| {
-            CodegenError::FailClosed("eq_thunk enum: missing enclosing function".into())
-        })?;
-    let outer = layout.outer_struct;
-    let tag_ty = layout.tag_int_ty;
-
-    // Load both discriminant tags (outer field 0) and compare.
-    let lhs_tag_ptr = fn_ctx
-        .builder
-        .build_struct_gep(outer, lhs, 0, "eq_enum_lhs_tag_ptr")
-        .llvm_ctx("eq_thunk enum lhs tag gep")?;
-    let rhs_tag_ptr = fn_ctx
-        .builder
-        .build_struct_gep(outer, rhs, 0, "eq_enum_rhs_tag_ptr")
-        .llvm_ctx("eq_thunk enum rhs tag gep")?;
-    let lhs_tag = fn_ctx
-        .builder
-        .build_load(tag_ty, lhs_tag_ptr, "eq_enum_lhs_tag")
-        .llvm_ctx("eq_thunk enum lhs tag load")?
-        .into_int_value();
-    let rhs_tag = fn_ctx
-        .builder
-        .build_load(tag_ty, rhs_tag_ptr, "eq_enum_rhs_tag")
-        .llvm_ctx("eq_thunk enum rhs tag load")?
-        .into_int_value();
-    let tags_eq = fn_ctx
-        .builder
-        .build_int_compare(IntPredicate::EQ, lhs_tag, rhs_tag, "eq_enum_tag_eq")
-        .llvm_ctx("eq_thunk enum tag icmp")?;
-    let tags_equal_bb = ctx.append_basic_block(func, "eq_enum_tags_equal");
-    fn_ctx
-        .builder
-        .build_conditional_branch(tags_eq, tags_equal_bb, ret_false_bb)
-        .llvm_ctx("eq_thunk enum tag br")?;
-
-    // Tags equal: switch on the shared tag to per-variant payload compare.
-    fn_ctx.builder.position_at_end(tags_equal_bb);
-    let trap_bb = ctx.append_basic_block(func, "eq_enum_tag_oob_trap");
-    let mut variant_blocks: Vec<inkwell::basic_block::BasicBlock<'ctx>> =
-        Vec::with_capacity(layout.variant_struct_tys.len());
-    let mut cases: Vec<(IntValue<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> =
-        Vec::with_capacity(layout.variant_struct_tys.len());
-    for idx in 0..layout.variant_struct_tys.len() {
-        let bb = ctx.append_basic_block(func, &format!("eq_enum_variant_{idx}"));
-        cases.push((tag_ty.const_int(idx as u64, false), bb));
-        variant_blocks.push(bb);
-    }
-    fn_ctx
-        .builder
-        .build_switch(lhs_tag, trap_bb, &cases)
-        .llvm_ctx("eq_thunk enum tag switch")?;
-
-    // Out-of-range tag: under the layout invariant neither operand can carry
-    // a tag outside the declared variant set, so reaching here means memory
-    // corruption or a producer-gate bypass. Trap fail-closed rather than
-    // compare indeterminate payload bytes. Code mirrors
-    // `TrapKind::ExhaustivenessFallthrough` lowering (see the `Terminator::Trap`
-    // arm) — single-sourced from the runtime constant.
-    fn_ctx.builder.position_at_end(trap_bb);
-    emit_trap_with_code(
-        fn_ctx,
-        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
-        "eq_enum_tag_oob",
-    )?;
-
-    // Per-variant payload comparison.
-    for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
-        fn_ctx.builder.position_at_end(variant_blocks[idx]);
-        let field_count = variant_struct.count_fields();
-        if field_count == 0 {
-            // Payload-less variant: equal tags ⇒ equal values.
-            fn_ctx
-                .builder
-                .build_unconditional_branch(ret_true_bb)
-                .llvm_ctx("eq_thunk enum empty-variant br")?;
-            continue;
-        }
-        // GEP each operand to outer field 1 (the payload union), then index
-        // it as the active variant's struct. Opaque pointers make the
-        // reinterpret a no-op: a `ptr` is a `ptr`; the following GEP is typed
-        // against `variant_struct`. Mirrors `Place::EnumVariant` lowering.
-        let lhs_payload = fn_ctx
-            .builder
-            .build_struct_gep(outer, lhs, 1, &format!("eq_enum_lhs_payload_{idx}"))
-            .llvm_ctx("eq_thunk enum lhs payload gep")?;
-        let rhs_payload = fn_ctx
-            .builder
-            .build_struct_gep(outer, rhs, 1, &format!("eq_enum_rhs_payload_{idx}"))
-            .llvm_ctx("eq_thunk enum rhs payload gep")?;
-        for field_idx in 0..field_count {
-            let field_ty = variant_struct
-                .get_field_type_at_index(field_idx)
-                .ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "eq_thunk enum: variant {idx} missing field {field_idx}"
-                    ))
-                })?;
-            let lhs_field = fn_ctx
-                .builder
-                .build_struct_gep(
-                    *variant_struct,
-                    lhs_payload,
-                    field_idx,
-                    &format!("eq_enum_lhs_v{idx}_f{field_idx}"),
-                )
-                .llvm_ctx("eq_thunk enum lhs field gep")?;
-            let rhs_field = fn_ctx
-                .builder
-                .build_struct_gep(
-                    *variant_struct,
-                    rhs_payload,
-                    field_idx,
-                    &format!("eq_enum_rhs_v{idx}_f{field_idx}"),
-                )
-                .llvm_ctx("eq_thunk enum rhs field gep")?;
-            let next_bb = if field_idx + 1 < field_count {
-                ctx.append_basic_block(func, &format!("eq_enum_v{idx}_cont_{}", field_idx + 1))
-            } else {
-                ret_true_bb
-            };
-            emit_eq_thunk_field_check(
-                fn_ctx,
-                field_ty,
-                lhs_field,
-                rhs_field,
-                next_bb,
-                ret_false_bb,
-            )?;
-            if field_idx + 1 < field_count {
-                fn_ctx.builder.position_at_end(next_bb);
-            }
-        }
-    }
-    Ok(())
-}
-
 // =========================================================================
 // W3.003-C C-3a: HashMap/HashSet layout-key hash-thunk + descriptor synthesis
 // =========================================================================
@@ -19433,7 +16539,7 @@ fn emit_eq_thunk_enum<'ctx>(
 /// Mix a single `i64` field value into the FNV-1a accumulator at `acc_slot`.
 ///
 /// FNV-1a 64-bit step: `acc = (acc XOR field) * 0x100000001b3`.
-fn mix_into_hash_acc<'ctx>(
+pub(crate) fn mix_into_hash_acc<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     acc_slot: PointerValue<'ctx>,
     field_u64: IntValue<'ctx>,
@@ -19458,256 +16564,6 @@ fn mix_into_hash_acc<'ctx>(
         .build_store(acc_slot, mul)
         .llvm_ctx("hash_thunk acc store")?;
     Ok(())
-}
-
-/// Emit field-by-field FNV-1a mixing into `acc_slot` for the value of type
-/// `ty` rooted at `base_ptr`.  Walks structs in declaration order (the
-/// authoritative order is the LLVM struct's field index, which matches
-/// `RecordLayout.field_tys` ordering installed by `fill_record_layout_bodies`).
-/// Nested aggregates fold via a separate, deduplicated nested thunk.
-fn emit_hash_thunk_body<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    ty: BasicTypeEnum<'ctx>,
-    resolved_ty: Option<&ResolvedTy>,
-    base_ptr: PointerValue<'ctx>,
-    acc_slot: PointerValue<'ctx>,
-) -> CodegenResult<()> {
-    let ctx = fn_ctx.ctx;
-    let i64_ty = ctx.i64_type();
-    match ty {
-        BasicTypeEnum::IntType(int_ty) => {
-            // Typed-width load: bool/i8 loads `i8`, char loads `i32`, i64
-            // loads `i64`.  Zero-extend to i64 before mixing so all widths
-            // funnel through the same FNV-1a step.
-            //
-            // Defence-in-depth for `bool`: Hew stores `bool` as an i8 where
-            // only the low bit is semantically defined (`0 = false`, `1 =
-            // true`); the checker guarantees the upper 7 bits are zero, but
-            // a stray non-canonical byte (an upstream invariant violation)
-            // must not silently desynchronise hashing from equality.  When
-            // the caller has told us the load is a `bool`, mask the loaded
-            // byte to its low bit before the FNV-1a mix.  General i8/u8/i16
-            // /i32/i64 fields are hashed full-width.
-            let loaded = fn_ctx
-                .builder
-                .build_load(int_ty, base_ptr, "hash_field_load")
-                .llvm_ctx("hash_thunk int load")?
-                .into_int_value();
-            let masked = if matches!(resolved_ty, Some(ResolvedTy::Bool)) {
-                let one = int_ty.const_int(1, false);
-                fn_ctx
-                    .builder
-                    .build_and(loaded, one, "hash_bool_mask")
-                    .llvm_ctx("hash_thunk bool mask")?
-            } else {
-                loaded
-            };
-            let zext = if int_ty.get_bit_width() < 64 {
-                fn_ctx
-                    .builder
-                    .build_int_z_extend(masked, i64_ty, "hash_field_zext")
-                    .llvm_ctx("hash_thunk zext")?
-            } else {
-                masked
-            };
-            mix_into_hash_acc(fn_ctx, acc_slot, zext)?;
-            Ok(())
-        }
-        BasicTypeEnum::StructType(st) => {
-            // Walk the optional ResolvedTy in lockstep with the LLVM struct
-            // fields so per-field bool detection survives recursion into
-            // nested records.  `field_resolved_tys` is sourced from the
-            // pipeline's record-layout table keyed by the struct's LLVM
-            // name; if the lookup fails we walk without ResolvedTy info
-            // (hand-built test fixtures may not register a layout for
-            // every named local).
-            let field_resolved_tys: Option<&Vec<ResolvedTy>> = st
-                .get_name()
-                .and_then(|cstr| cstr.to_str().ok())
-                .and_then(|name| fn_ctx.record_field_resolved_tys.get(name));
-            let field_count = st.count_fields();
-            for idx in 0..field_count {
-                let field_ty = st.get_field_type_at_index(idx).ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "hash_thunk: struct {st:?} missing field index {idx}"
-                    ))
-                })?;
-                let field_resolved = field_resolved_tys.and_then(|tys| tys.get(idx as usize));
-                let field_ptr = fn_ctx
-                    .builder
-                    .build_struct_gep(st, base_ptr, idx, &format!("hash_f{idx}"))
-                    .llvm_ctx("hash_thunk struct gep")?;
-                match field_ty {
-                    BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) => {
-                        // Recurse via a separate dedup'd nested thunk so the
-                        // emitted IR is compact and any nested record sharing
-                        // produces one hash thunk per type per module.
-                        let nested = get_or_emit_hash_thunk(fn_ctx, field_ty, field_resolved)?;
-                        let call = fn_ctx
-                            .builder
-                            .build_call(nested, &[field_ptr.into()], "hash_nested_call")
-                            .llvm_ctx("hash_thunk nested call")?;
-                        let nested_hash = call
-                            .try_as_basic_value()
-                            .basic()
-                            .ok_or_else(|| {
-                                CodegenError::FailClosed(
-                                    "hash_thunk nested call returned void".into(),
-                                )
-                            })?
-                            .into_int_value();
-                        mix_into_hash_acc(fn_ctx, acc_slot, nested_hash)?;
-                    }
-                    _ => {
-                        emit_hash_thunk_body(fn_ctx, field_ty, field_resolved, field_ptr, acc_slot)?
-                    }
-                }
-            }
-            Ok(())
-        }
-        BasicTypeEnum::ArrayType(arr_ty) => {
-            let len = arr_ty.len();
-            let elem_ty = arr_ty.get_element_type();
-            for idx in 0..len {
-                let zero = ctx.i32_type().const_zero();
-                let idx_v = ctx.i32_type().const_int(u64::from(idx), false);
-                let elem_ptr = unsafe {
-                    fn_ctx
-                        .builder
-                        .build_in_bounds_gep(
-                            arr_ty,
-                            base_ptr,
-                            &[zero, idx_v],
-                            &format!("hash_a{idx}"),
-                        )
-                        .llvm_ctx("hash_thunk arr gep")?
-                };
-                // Arrays of bool are not currently expressible in the Hew
-                // surface (bool aggregates are not first-class), so we walk
-                // array elements without a ResolvedTy hint.  When that
-                // changes, thread an `Option<&ResolvedTy>` through here.
-                emit_hash_thunk_body(fn_ctx, elem_ty, None, elem_ptr, acc_slot)?;
-            }
-            Ok(())
-        }
-        BasicTypeEnum::FloatType(_) => Err(CodegenError::FailClosed(
-            "hash_thunk: float field reached codegen — checker eligibility gate bypassed".into(),
-        )),
-        BasicTypeEnum::PointerType(_)
-        | BasicTypeEnum::VectorType(_)
-        | BasicTypeEnum::ScalableVectorType(_) => Err(CodegenError::FailClosed(format!(
-            "hash_thunk: unsupported field shape {ty:?} — checker eligibility \
-             gate should have rejected this field type"
-        ))),
-    }
-}
-
-/// Return (creating on demand) the per-type FNV-1a hash thunk for `elem_ty`.
-///
-/// Signature: `i64 __hew_hash_thunk_<size>_<align>_<struct_key>(ptr key)`.
-/// Dedup key matches `eq_thunk_struct_key` so the (size, align, struct shape)
-/// triple is the identity surface for both thunk families.  Linkage is
-/// `Internal` so the thunk does not leak into the public ABI surface.
-///
-/// `resolved_ty`, when `Some`, is the Hew-level type of the value at
-/// `base_ptr`; it lets the body emitter distinguish a `bool` field (which
-/// is masked to its low bit) from a full-width integer.  Cross-shape dedup
-/// is preserved: the dedup key embeds the LLVM struct identity (which
-/// includes the Hew type name), so two records with identical (size,
-/// align) but different shapes emit two distinct thunks.
-fn get_or_emit_hash_thunk<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    elem_ty: BasicTypeEnum<'ctx>,
-    resolved_ty: Option<&ResolvedTy>,
-) -> CodegenResult<FunctionValue<'ctx>> {
-    let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
-    let key = eq_thunk_struct_key(elem_ty);
-    let name = format!("__hew_hash_thunk_{size}_{align}_{key}");
-    if let Some(existing) = fn_ctx.llvm_mod.get_function(&name) {
-        return Ok(existing);
-    }
-
-    let ctx = fn_ctx.ctx;
-    let i64_ty = ctx.i64_type();
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let fn_ty = i64_ty.fn_type(&[ptr_ty.into()], false);
-    let func = fn_ctx
-        .llvm_mod
-        .add_function(&name, fn_ty, Some(Linkage::Internal));
-
-    let saved_block = fn_ctx.builder.get_insert_block();
-
-    let entry_bb = ctx.append_basic_block(func, "entry");
-    let exit_bb = ctx.append_basic_block(func, "hash_thunk_exit");
-    fn_ctx.builder.position_at_end(entry_bb);
-
-    // FNV-1a 64-bit offset basis.
-    let acc_slot = fn_ctx
-        .builder
-        .build_alloca(i64_ty, "hash_acc")
-        .llvm_ctx("hash_thunk alloca")?;
-    fn_ctx
-        .builder
-        .build_store(acc_slot, i64_ty.const_int(0xcbf29ce484222325_u64, false))
-        .llvm_ctx("hash_thunk init store")?;
-
-    let key_ptr = func
-        .get_nth_param(0)
-        .ok_or_else(|| CodegenError::FailClosed("hash_thunk: missing key param".into()))?
-        .into_pointer_value();
-
-    emit_hash_thunk_body(fn_ctx, elem_ty, resolved_ty, key_ptr, acc_slot)?;
-
-    fn_ctx
-        .builder
-        .build_unconditional_branch(exit_bb)
-        .llvm_ctx("hash_thunk br exit")?;
-    fn_ctx.builder.position_at_end(exit_bb);
-    let final_acc = fn_ctx
-        .builder
-        .build_load(i64_ty, acc_slot, "hash_acc_final")
-        .llvm_ctx("hash_thunk acc final load")?
-        .into_int_value();
-    fn_ctx
-        .builder
-        .build_return(Some(&final_acc))
-        .llvm_ctx("hash_thunk return")?;
-
-    if let Some(bb) = saved_block {
-        fn_ctx.builder.position_at_end(bb);
-    }
-
-    Ok(func)
-}
-
-/// Map a primitive `ResolvedTy` to the runtime-defined key layout extern
-/// (`hew_layout_key_<prim>` in `hew-runtime/src/layout_intrinsics.rs`). Returns
-/// `None` for non-primitive shapes (records, tuples, etc.), which fall through
-/// to the codegen-synthesised per-record layout path.
-///
-/// Stage C3 (DI-017): the resolver-authority cutover admits Hash+Eq primitives
-/// (i32/i64/u32/u64/bool/char/string/bytes) as HashMap keys / HashSet
-/// elements. Synthesising per-primitive hash/eq thunks in codegen is
-/// unnecessary (and impossible for `string` whose LLVM repr is a pointer to a
-/// C string) — instead, route to the runtime-shipped static descriptors that
-/// embed the canonical hash/eq/drop function pointers.
-fn primitive_key_layout_extern_name(rty: &ResolvedTy) -> Option<&'static str> {
-    Some(match rty {
-        ResolvedTy::I32 => "hew_layout_key_i32",
-        ResolvedTy::I64 => "hew_layout_key_i64",
-        ResolvedTy::U32 => "hew_layout_key_u32",
-        ResolvedTy::U64 => "hew_layout_key_u64",
-        ResolvedTy::Bool => "hew_layout_key_bool",
-        ResolvedTy::Char => "hew_layout_key_char",
-        ResolvedTy::String => "hew_layout_key_string",
-        ResolvedTy::Bytes => "hew_layout_key_bytes",
-        // F32/F64 ship `hash_fn = None` / `eq_fn = None` (DI-003 fail-closed-
-        // by-absence). They should never reach codegen because the resolver
-        // rejects them with `BoundsNotSatisfied(Hash, _)`. Returning `None`
-        // here falls through to the codegen-synthesis path, which itself
-        // hard-errors on floats — defence in depth.
-        _ => return None,
-    })
 }
 
 /// Counterpart to `primitive_key_layout_extern_name` for the value side. Maps
@@ -19774,12 +16630,12 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
     // be hashed by the generic thunk emitter and need the runtime's
     // canonical hash function. See `primitive_key_layout_extern_name`.
     if let Some(rty) = resolved_ty {
-        if let Some(name) = primitive_key_layout_extern_name(rty) {
+        if let Some(name) = crate::layout::primitive_key_layout_extern_name(rty) {
             return Ok(declare_extern_layout_global(fn_ctx, name));
         }
     }
     let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
-    let key = eq_thunk_struct_key(elem_ty);
+    let key = crate::thunks::eq_thunk_struct_key(elem_ty);
     let global_name = format!("__hew_map_key_layout_{size}_{align}_{key}_plain");
     if let Some(g) = fn_ctx.llvm_mod.get_global(&global_name) {
         return Ok(g.as_pointer_value());
@@ -19808,8 +16664,8 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
 
     // Emit/dedup the per-record thunks BEFORE constructing the initializer
     // so the function pointers exist when the global references them.
-    let hash_fn = get_or_emit_hash_thunk(fn_ctx, elem_ty, resolved_ty)?;
-    let eq_fn = get_or_emit_eq_thunk(fn_ctx, elem_ty)?;
+    let hash_fn = crate::thunks::get_or_emit_hash_thunk(fn_ctx, elem_ty, resolved_ty)?;
+    let eq_fn = crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty)?;
 
     let init = layout_ty.const_named_struct(&[
         usize_ty.const_int(size, false).into(),
@@ -20240,91 +17096,6 @@ fn is_bytes_constructor_symbol(symbol: &str) -> bool {
     symbol == "bytes::new"
 }
 
-/// Runtime consumers that take a `bytes` value BY POINTER (`*const BytesTriple`)
-/// rather than by value.
-///
-/// WHY: a 16-byte `BytesTriple {ptr, i32, i32}` passed by value as a NON-first
-/// argument loses its second eightbyte (offset/len) at the C-ABI boundary in
-/// the current codegen — the in-register small-struct coercion is only reliable
-/// for a single/first by-value struct argument (e.g. `hew_bytes_to_string`).
-/// These consumers all take the bytes value after a leading handle argument
-/// (`conn`/`sink`), so codegen passes the address of the caller's triple alloca
-/// (a plain `ptr`, always ABI-portable) and the runtime reads through it —
-/// exactly the proven `hew_bytes_push(&mut BytesTriple, ..)` pattern. The Hew
-/// surface still declares these params as `bytes`; only the C-ABI lowering
-/// differs. WHEN OBSOLETE: when codegen emits the correct C-ABI coercion for a
-/// by-value struct in any argument position (e.g. via the `byval`/coerced-int
-/// frontend lowering), these can revert to by-value `bytes` params.
-fn is_bytes_by_pointer_consumer(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "hew_tcp_write"
-            | "hew_sink_write_bytes"
-            | "hew_sink_try_write_bytes"
-            | "hew_bytes_to_string"
-            | "hew_bytes_len"
-            | "hew_file_write_bytes"
-            // TCP broadcast: `message: bytes` passed as *const BytesTriple.
-            // (Previous *const c_char signature ignored `offset` — only worked
-            // when offset==0. Fixed to take *const BytesTriple.)
-            | "hew_tcp_broadcast_except"
-            // TLS write bridge: `data: bytes` passed as *const BytesTriple.
-            // (Previous (*const u8, usize) pair ignored `offset`; fixed.)
-            | "hew_tls_write_result"
-            // Ed25519 sign: all _hew wrappers that accept `bytes` inputs pass
-            // them as *const BytesTriple (by-pointer consumer convention).
-            | "hew_ed25519_public_key_from_pkcs8_hew"
-            | "hew_ed25519_sign_hew"
-            | "hew_ed25519_verify_hew"
-            // QUIC send: `data: bytes` passed as *const BytesTriple.
-            | "hew_quic_stream_send"
-            | "hew_quic_stream_send_timeout_hew"
-            // compress: all _hew wrappers accept `bytes` inputs via *const BytesTriple.
-            | "hew_gzip_compress_hew"
-            | "hew_gzip_decompress_hew"
-            | "hew_deflate_compress_hew"
-            | "hew_deflate_decompress_hew"
-            | "hew_zlib_compress_hew"
-            | "hew_zlib_decompress_hew"
-            // msgpack: `bytes` inputs passed as *const BytesTriple.
-            | "hew_msgpack_to_json_hew"
-            | "hew_msgpack_encode_bytes_hew"
-    )
-}
-
-/// Runtime consumers that take a `bytes` value BY STRUCT EXPANSION — the Rust
-/// side expects `(ptr: *mut u8, offset: u32, len: u32)` as three separate
-/// parameters matching the `#[repr(C)] BytesTriple` field layout.
-///
-/// WHY this is a separate category: these functions take `bytes` as the FIRST
-/// (or only) argument. On AArch64 and SysV x86-64, a `{ptr, i32, i32}` struct
-/// passed by value as the first argument expands into three registers matching
-/// the Rust `(ptr, offset, len)` signature exactly. This is confirmed correct
-/// for the listed symbols; do NOT list a symbol here unless the Rust impl
-/// literally receives `(ptr: *mut u8, offset: u32, len: u32)` (or repeated
-/// triples for multiple `bytes` params).
-///
-/// WHEN OBSOLETE: same as `is_bytes_by_pointer_consumer` — once codegen emits
-/// proper `byval`/coerced-int lowering for struct params this distinction
-/// collapses. The list is an explicit registry so unknown symbols fail closed
-/// rather than silently mismatching.
-fn is_bytes_struct_expansion_consumer(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        // crypto: input `bytes` params expand to (ptr, offset, len).
-        "hew_sha256_hew"
-            | "hew_sha384_hew"
-            | "hew_sha512_hew"
-            | "hew_hmac_sha256_hew"
-            | "hew_constant_time_eq_hew"
-            // encrypt: `key: bytes` and optional `ciphertext: bytes` each expand.
-            | "hew_encrypt_seal_base64_hew"
-            | "hew_encrypt_open_hew"
-            | "hew_encrypt_try_open_hew"
-            | "hew_encrypt_must_open_hew"
-    )
-}
-
 /// Runtime producers whose Rust impl returns a `#[repr(C)] BytesTriple` by value
 /// and that codegen therefore declares with the AAPCS/SysV `[2 x i64]` boundary
 /// return type (reconstructed into the `{ptr,i32,i32}` dest at the call's
@@ -20584,7 +17355,7 @@ fn lower_hashmap_layout_probe(
             // emitted `@__hew_layout_probe_*` global is the unforgeable witness
             // that the descriptor width follows the active target.
             let (_, elem_ty) = place_pointer(fn_ctx, args[0])?;
-            let _ = layout_descriptor_ptr(fn_ctx, elem_ty, "probe")?;
+            let _ = crate::layout::layout_descriptor_ptr(fn_ctx, elem_ty, "probe")?;
         }
         _ => {
             return Err(CodegenError::FailClosed(format!(
@@ -20672,7 +17443,7 @@ fn truncate_bool_arg_to_i1<'ctx>(
     }
 }
 
-fn zext_bool_i1_to_dest<'ctx>(
+pub(crate) fn zext_bool_i1_to_dest<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     value: IntValue<'ctx>,
     dest_ty: BasicTypeEnum<'ctx>,
@@ -21176,15 +17947,19 @@ fn lower_vec_constructor_call(
     let fv = get_or_declare_vec_constructor(fn_ctx.ctx, fn_ctx.llvm_mod, runtime_symbol)?;
     let call = match ctor {
         VecCtor::BitCopyLayout(elem_llvm_ty) => {
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, elem_llvm_ty, "new")?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, elem_llvm_ty, "new")?;
             fn_ctx
                 .builder
                 .build_call(fv, &[layout_ptr.into()], "hew_vec_new_with_layout_call")
                 .llvm_ctx("hew_vec_new_with_layout call")?
         }
         VecCtor::Owned(elem_llvm_ty) => {
-            let layout_ptr =
-                owned_elem_layout_descriptor_ptr(fn_ctx, elem_ty, elem_llvm_ty, "new")?;
+            let layout_ptr = crate::layout::owned_elem_layout_descriptor_ptr(
+                fn_ctx,
+                elem_ty,
+                elem_llvm_ty,
+                "new",
+            )?;
             fn_ctx
                 .builder
                 .build_call(
@@ -21225,7 +18000,7 @@ fn lower_vec_constructor_call(
     Ok(())
 }
 
-fn lower_layout_vec_direct_call(
+pub(crate) fn lower_layout_vec_direct_call(
     fn_ctx: &FnCtx<'_, '_>,
     callee: &str,
     args: &[Place],
@@ -21266,7 +18041,7 @@ fn lower_layout_vec_direct_call(
     }
 
     let vec_ptr = load_duplex_handle(fn_ctx, args[0], &format!("{callee} arg0"))?;
-    let fv = get_or_declare_layout_vec_runtime(fn_ctx.ctx, fn_ctx.llvm_mod, callee)?;
+    let fv = crate::layout::get_or_declare_layout_vec_runtime(fn_ctx.ctx, fn_ctx.llvm_mod, callee)?;
     match callee {
         "hew_vec_push_layout" => {
             if let Some(d) = dest {
@@ -21275,7 +18050,7 @@ fn lower_layout_vec_direct_call(
                 )));
             }
             let (data_ptr, elem_ty) = place_pointer(fn_ctx, args[1])?;
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, elem_ty, "push")?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, elem_ty, "push")?;
             fn_ctx
                 .builder
                 .build_call(
@@ -21298,7 +18073,7 @@ fn lower_layout_vec_direct_call(
                 "hew_vec_get_layout_arg1",
             )?;
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, dest_ty, "get")?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, dest_ty, "get")?;
             let call = fn_ctx
                 .builder
                 .build_call(
@@ -21334,7 +18109,7 @@ fn lower_layout_vec_direct_call(
                 "hew_vec_set_layout_arg1",
             )?;
             let (data_ptr, elem_ty) = place_pointer(fn_ctx, args[2])?;
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, elem_ty, "set")?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, elem_ty, "set")?;
             fn_ctx
                 .builder
                 .build_call(
@@ -21356,7 +18131,7 @@ fn lower_layout_vec_direct_call(
                 )
             })?;
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, dest_ty, "pop")?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, dest_ty, "pop")?;
             let call = fn_ctx
                 .builder
                 .build_call(
@@ -21416,7 +18191,7 @@ fn lower_layout_vec_direct_call(
                 )
             })?;
             let (val_ptr, elem_ty) = place_pointer(fn_ctx, args[1])?;
-            let thunk_fn = get_or_emit_eq_thunk(fn_ctx, elem_ty)?;
+            let thunk_fn = crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty)?;
             let thunk_ptr = thunk_fn.as_global_value().as_pointer_value();
             let call = fn_ctx
                 .builder
@@ -21499,7 +18274,8 @@ fn lower_layout_vec_direct_call(
                          is not a layout-descriptor-backed record/tuple"
                     ))
                 })?;
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, layout_elem_ty, "remove")?;
+            let layout_ptr =
+                crate::layout::layout_descriptor_ptr(fn_ctx, layout_elem_ty, "remove")?;
             fn_ctx
                 .builder
                 .build_call(
@@ -21540,7 +18316,7 @@ fn lower_layout_vec_direct_call(
                          is not a layout-descriptor-backed record/tuple"
                     ))
                 })?;
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, layout_elem_ty, "clone")?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, layout_elem_ty, "clone")?;
             let call = fn_ctx
                 .builder
                 .build_call(
@@ -22284,2498 +19060,6 @@ fn lower_bytes_constructor_call(
     Ok(())
 }
 
-/// interned extern declaration for `call.symbol()`. The per-symbol
-/// dispatch encodes the ABI-shape decisions documented in the E4 plan
-/// (SHIM(E4) comment in `hew-mir/src/lower.rs` ~1220):
-///
-/// - `hew_duplex_pair(i64, i64, ptr, ptr) -> i32`: args[0]/args[1] load
-///   capacities; args[2]/args[3] are `Place::DuplexHandle(N)` and pass
-///   the *address of* local-N's alloca (a `*mut *mut HewDuplexHandle`
-///   the runtime writes through). Return discarded.
-/// - `hew_duplex_send(ptr, ptr, i64) -> i32`: args[0] is the receiver
-///   `Place::DuplexHandle(N)` — load the raw `*mut HewDuplexHandle`
-///   from local-N's alloca. args[1] is the message `Place::Local(M)`
-///   — spill its value into a fresh i64 stack slot and pass the slot's
-///   address as `*const u8`. args[2] is the length `Place::Local(L)`
-///   carrying `ConstI64 { value: 8 }` from the producer; load as i64.
-///   The i32 status is discarded when the producer supplies no `dest`
-///   (statement context) and materialized into `Result<(), SendError>`
-///   via `emit_send_result_from_rc` when it does (value context).
-///
-/// Symbols on the M2 allowlist but not yet wired (e.g.
-/// `hew_lambda_actor_release`) fall through to a fail-closed arm so
-/// the producer surface and the codegen surface stay in lock-step.
-fn lower_call_runtime_abi(
-    fn_ctx: &FnCtx<'_, '_>,
-    call: &hew_mir::RuntimeCall,
-) -> CodegenResult<()> {
-    use hew_types::runtime_call::{RuntimeCallFamily as F, VecGetElem};
-    // `symbol` is DERIVED from the family at the codegen edge — kept as a
-    // binding because the arm bodies use it for diagnostics, sub-dispatch
-    // within a multi-family arm, and `intern_runtime_decl` (the LLVM
-    // declare edge, where the C name is a name by nature).
-    let symbol = call.symbol();
-    let args = call.args();
-    let dest = call.dest();
-    let i32_ty = fn_ctx.ctx.i32_type();
-    let i64_ty = fn_ctx.ctx.i64_type();
-    let i8_ty = fn_ctx.ctx.i8_type();
-    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    match call.family() {
-        F::DuplexPair => {
-            if args.len() != 4 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_duplex_pair): expected 4 args \
-                     (s_cap, r_cap, out_a, out_b), got {}",
-                    args.len()
-                )));
-            }
-            // arg0 / arg1: capacities. Load from caller-provided
-            // alloca; the producer (`lower_duplex_pair`) wires both
-            // slots from the same capacity expression so types match.
-            let cap0 = load_int_arg(fn_ctx, args[0], i64_ty, "duplex_pair_s_cap")?;
-            let cap1 = load_int_arg(fn_ctx, args[1], i64_ty, "duplex_pair_r_cap")?;
-            // arg2 / arg3: out-params. Must be Place::DuplexHandle(N)
-            // per the E2 producer's SHIM(E4) convention. Pass the
-            // *address of* local-N's alloca so the runtime writes the
-            // pair of handle pointers through. Reject any other Place
-            // kind at this seam (fail-closed; not a silent shim).
-            let out_a = duplex_handle_out_addr(fn_ctx, args[2], "hew_duplex_pair arg2")?;
-            let out_b = duplex_handle_out_addr(fn_ctx, args[3], "hew_duplex_pair arg3")?;
-            let llvm_args: [BasicMetadataValueEnum; 4] =
-                [cap0.into(), cap1.into(), out_a.into(), out_b.into()];
-            fn_ctx.call_runtime_void(
-                symbol,
-                &llvm_args,
-                "hew_duplex_pair_call",
-                "hew_duplex_pair call",
-            )?;
-            // Producer emits dest: None — i32 return is discarded.
-            // Defence in depth: if a future producer ever wires a
-            // dest, fail-closed rather than silently dropping it.
-            if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_duplex_pair returns i32 (discarded by the runtime contract); \
-                     producer must not supply dest={d:?}"
-                )));
-            }
-            let _ = (i32_ty, ptr_ty);
-        }
-        F::DuplexSend => {
-            if args.len() != 3 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_duplex_send): expected 3 args \
-                     (handle, msg, len), got {}",
-                    args.len()
-                )));
-            }
-            // arg0: receiver handle. Place::DuplexHandle(N) loads the
-            // raw `*mut HewDuplexHandle` value from local-N's alloca
-            // (non-consuming; alloca persists across the call so the
-            // drop ritual can close it at end-of-scope).
-            let handle = load_duplex_handle(fn_ctx, args[0], "hew_duplex_send arg0")?;
-            // arg1: message. Place::Local(M) holds an i64 today
-            // (single-vertebra exemplar). Spill into a fresh i64
-            // alloca and pass the slot's address as `*const u8`
-            // (opaque-pointer mode bitcasts away the element type).
-            let msg_ptr = spill_int_arg_as_ptr(fn_ctx, args[1], i64_ty, "duplex_send_msg")?;
-            // arg2: byte length. Producer emits `ConstI64 { value: 8 }`
-            // into this local; load it as i64 (== usize on 64-bit).
-            let len = load_int_arg(fn_ctx, args[2], i64_ty, "duplex_send_len")?;
-            let llvm_args: [BasicMetadataValueEnum; 3] =
-                [handle.into(), msg_ptr.into(), len.into()];
-            let call_site = fn_ctx.call_runtime(
-                symbol,
-                &llvm_args,
-                "hew_duplex_send_call",
-                "hew_duplex_send call",
-            )?;
-            // Statement context (dest=None) discards the rc — fire-and-forget
-            // delivery. Value context materializes `Result<(), SendError>` from
-            // the i32 status through the single D1 mapping authority.
-            if let Some(d) = dest {
-                let status = call_site
-                    .try_as_basic_value()
-                    .basic()
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed(
-                            "hew_duplex_send returned void — expected i32 status".into(),
-                        )
-                    })?
-                    .into_int_value();
-                emit_send_result_from_rc(fn_ctx, status, d, "hew_duplex_send")?;
-            }
-            let _ = (i32_ty, ptr_ty);
-        }
-        // ── M2 lambda-actor send/ask/release/new ──────────────────────────
-        //
-        // hew_lambda_actor_send(actor: *mut HewLambdaActorHandle,
-        //                       msg: *const u8, len: usize) -> i32
-        // (`hew-runtime/src/lambda_actor.rs:918`). Same ABI shape as
-        // hew_duplex_send: load the actor handle pointer from
-        // `Place::LambdaActorHandle(N)`'s alloca and materialise the
-        // message as `(ptr, len)` via `lambda_msg_ptr_len` — scalar
-        // messages spill into the 8-byte zero-padded single-vertebra
-        // slot; struct-typed messages (packed-args multi-arg record,
-        // tuple, record) pass `(alloca, sizeof(struct))` directly. The
-        // i32 status is discarded in statement context and materialized
-        // into `Result<(), SendError>` in value context (see the `dest`
-        // branch below).
-        F::LambdaActorSend | F::LambdaActorWeakSend => {
-            if args.len() != 3 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): expected 3 args \
-                     (actor_handle, msg, len), got {}",
-                    args.len()
-                )));
-            }
-            let handle = load_duplex_handle(fn_ctx, args[0], "hew_lambda_actor_send arg0")?;
-            let (msg_ptr, len) = lambda_msg_ptr_len(fn_ctx, args[1], args[2], "lambda_send_msg")?;
-            let llvm_args: [BasicMetadataValueEnum; 3] =
-                [handle.into(), msg_ptr.into(), len.into()];
-            let call_site = fn_ctx.call_runtime(
-                symbol,
-                &llvm_args,
-                "hew_lambda_actor_send_call",
-                "hew_lambda_actor_send call",
-            )?;
-            // Statement context (dest=None) discards the rc — fire-and-forget
-            // delivery. Value context materializes `Result<(), SendError>` from
-            // the i32 status through the single D1 mapping authority (shared
-            // with `hew_duplex_send`: identical runtime status space).
-            if let Some(d) = dest {
-                let status = call_site
-                    .try_as_basic_value()
-                    .basic()
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed(
-                            "hew_lambda_actor_send returned void — expected i32 status".into(),
-                        )
-                    })?
-                    .into_int_value();
-                emit_send_result_from_rc(fn_ctx, status, d, "hew_lambda_actor_send")?;
-            }
-            let _ = (i32_ty, ptr_ty);
-        }
-        // hew_lambda_actor_ask(actor: *mut HewLambdaActorHandle,
-        //                      msg: *const u8, len: usize,
-        //                      reply_out: *mut *mut u8,
-        //                      reply_len_out: *mut usize) -> i32
-        // (`hew-runtime/src/lambda_actor.rs:1000`). args[3] / args[4]
-        // are MIR-side out-param slots (a Pointer local and an I64
-        // local respectively); pass their alloca addresses through to
-        // the runtime. Return is a SendError discriminant; discarded
-        // in this MVP (reply-decode and reply-buffer-free are a
-        // follow-on slice — `hew_reply_payload_free` must run on
-        // *reply_out when non-null).
-        F::LambdaActorAsk => {
-            if args.len() != 6 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_lambda_actor_ask): expected 6 args \
-                     (actor_handle, msg, len, reply_out, reply_len_out, askerror_local), got {}",
-                    args.len()
-                )));
-            }
-            let handle = load_duplex_handle(fn_ctx, args[0], "hew_lambda_actor_ask arg0")?;
-            let (msg_ptr, len) = lambda_msg_ptr_len(fn_ctx, args[1], args[2], "lambda_ask_msg")?;
-            let (reply_out_ptr, _) = place_pointer(fn_ctx, args[3])?;
-            let (reply_len_out_ptr, _) = place_pointer(fn_ctx, args[4])?;
-            // args[5]: codegen-only `AskError` Place::Local — the Err-path
-            // materialises `Result::Err(AskError::<variant>)` through this
-            // local via `emit_result_err`. NOT passed to the runtime call.
-            let error_dest = args[5];
-            let llvm_args: [BasicMetadataValueEnum; 5] = [
-                handle.into(),
-                msg_ptr.into(),
-                len.into(),
-                reply_out_ptr.into(),
-                reply_len_out_ptr.into(),
-            ];
-            // Capture the call's i32 SendError status — Ok=0, anything
-            // else is a failure (Closed=1, Full=2, ActorStopped=3,
-            // DoubleClose=4, OrphanedAsk=5). Pre-fix codegen ignored
-            // this and unconditionally loaded `*reply_out` (which the
-            // runtime zeros on every failure path) → null-deref UB on
-            // stopped / orphaned / send-failed paths. Branch on the
-            // status: Ok → reply-decode; Err → materialise
-            // `Result::Err(AskError::<variant>)` without touching the
-            // null reply pointer. (Security review fix 2026-06-08.)
-            let call_site = fn_ctx.call_runtime(
-                symbol,
-                &llvm_args,
-                "hew_lambda_actor_ask_call",
-                "hew_lambda_actor_ask call",
-            )?;
-            if let Some(d) = dest {
-                let status_val = call_site
-                    .try_as_basic_value()
-                    .basic()
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed(
-                            "hew_lambda_actor_ask returned void — expected i32 status".into(),
-                        )
-                    })?
-                    .into_int_value();
-                let zero_i32 = i32_ty.const_zero();
-                let is_ok = fn_ctx
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::EQ,
-                        status_val,
-                        zero_i32,
-                        "lambda_ask_status_is_ok",
-                    )
-                    .llvm_ctx("hew_lambda_actor_ask status icmp")?;
-                let current_fn = fn_ctx
-                    .builder
-                    .get_insert_block()
-                    .ok_or_else(|| CodegenError::FailClosed("no insert block".into()))?
-                    .get_parent()
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed("no parent fn at lambda ask split".into())
-                    })?;
-                let ok_bb = fn_ctx.ctx.append_basic_block(current_fn, "lambda_ask_ok");
-                let payload_ok_bb = fn_ctx
-                    .ctx
-                    .append_basic_block(current_fn, "lambda_ask_payload_ok");
-                let payload_invalid_bb = fn_ctx
-                    .ctx
-                    .append_basic_block(current_fn, "lambda_ask_payload_invalid");
-                let err_bb = fn_ctx.ctx.append_basic_block(current_fn, "lambda_ask_err");
-                let merge_bb = fn_ctx
-                    .ctx
-                    .append_basic_block(current_fn, "lambda_ask_merge");
-                fn_ctx
-                    .builder
-                    .build_conditional_branch(is_ok, ok_bb, err_bb)
-                    .llvm_ctx("hew_lambda_actor_ask status cond br")?;
-
-                // ── Ok branch: load reply out-params, then GUARD on
-                //              the exact ABI byte width of Result::Ok<R>
-                //              before decoding. Pre-guard, the codegen blindly
-                //              loaded an i64 from `*reply_out` whenever
-                //              status was Ok — but the runtime can return
-                //              status=Ok with reply_ptr=null on reply-buffer
-                //              allocation failure (`hew_reply` OOM path,
-                //              `reply_channel.rs:426-440`), and a future
-                //              short-reply body would over-read past the
-                //              published buffer. Branch on the validity
-                //              predicate: valid → decode; invalid →
-                //              materialise `AskError::PayloadSizeMismatch`
-                //              and bail without dereferencing reply_ptr.
-                //              (Security review fix 2026-06-08, final.) ──
-                fn_ctx.builder.position_at_end(ok_bb);
-                let reply_ptr_val = fn_ctx
-                    .builder
-                    .build_load(ptr_ty, reply_out_ptr, "lambda_ask_reply_ptr_load")
-                    .llvm_ctx("hew_lambda_actor_ask reply ptr load")?
-                    .into_pointer_value();
-                let reply_len_val = fn_ctx
-                    .builder
-                    .build_load(i64_ty, reply_len_out_ptr, "lambda_ask_reply_len_load")
-                    .llvm_ctx("hew_lambda_actor_ask reply len load")?
-                    .into_int_value();
-                let dest_local = composite_dest_local(d, "hew_lambda_actor_ask")?;
-                let result_layout = machine_layout_for_local(fn_ctx, dest_local)?;
-                let ok_fields = result_layout.variant_field_tys.first().ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "hew_lambda_actor_ask dest local {dest_local} has no Ok variant in \
-                         its Result layout"
-                    ))
-                })?;
-                if ok_fields.len() > 1 {
-                    return Err(CodegenError::FailClosed(format!(
-                        "hew_lambda_actor_ask Result::Ok variant for dest local {dest_local} \
-                         has {} fields; expected unit or single reply payload",
-                        ok_fields.len()
-                    )));
-                }
-                let ok_payload = if ok_fields.is_empty() {
-                    None
-                } else {
-                    let (ok_field_ptr, ok_field_ty) = place_pointer(
-                        fn_ctx,
-                        Place::MachineVariant {
-                            local: dest_local,
-                            variant_idx: 0,
-                            field_idx: 0,
-                        },
-                    )?;
-                    let (reply_width, _reply_align) =
-                        abi_size_align(ok_field_ty, Some(fn_ctx.target_data))?;
-                    Some((ok_field_ptr, ok_field_ty, reply_width))
-                };
-                let null_ptr = ptr_ty.const_null();
-                let expected_reply_width = ok_payload.map_or(0, |(_, _, width)| width);
-                let expected_len = i64_ty.const_int(expected_reply_width, false);
-                let is_len_ok = fn_ctx
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::EQ,
-                        reply_len_val,
-                        expected_len,
-                        "lambda_ask_reply_len_ok",
-                    )
-                    .llvm_ctx("hew_lambda_actor_ask reply_len EQ check")?;
-                let is_payload_valid = if expected_reply_width == 0 {
-                    is_len_ok
-                } else {
-                    let is_ptr_nonnull = fn_ctx
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::NE,
-                            reply_ptr_val,
-                            null_ptr,
-                            "lambda_ask_reply_ptr_nonnull",
-                        )
-                        .llvm_ctx("hew_lambda_actor_ask reply_ptr null check")?;
-                    fn_ctx
-                        .builder
-                        .build_and(is_ptr_nonnull, is_len_ok, "lambda_ask_payload_valid")
-                        .llvm_ctx("hew_lambda_actor_ask payload validity AND")?
-                };
-                fn_ctx
-                    .builder
-                    .build_conditional_branch(is_payload_valid, payload_ok_bb, payload_invalid_bb)
-                    .llvm_ctx("hew_lambda_actor_ask payload-valid cond br")?;
-
-                // ── payload_ok branch: copy the exact reply bytes into
-                //              Result::Ok, free the libc-allocated reply
-                //              buffer. ──
-                fn_ctx.builder.position_at_end(payload_ok_bb);
-                // Materialise the reply into the user's `Result<T, AskError>`
-                // dest via the same tagged-union helpers ordinary `Result`
-                // producers use (`emit_result_ok` / `emit_node_lookup_call`
-                // precedent): store tag=0 (Ok) into the dest's
-                // MachineTag slot, then store the loaded reply value into
-                // MachineVariant { variant_idx: 0, field_idx: 0 }. Storing
-                // the raw i64 into the outer struct's start would clobber
-                // the discriminant byte and yield a Result whose tag is
-                // the low byte of the reply value — silent miscompile.
-                store_composite_tag(fn_ctx, dest_local, 0, "hew_lambda_actor_ask")?;
-                if let Some((ok_field_ptr, _ok_field_ty, reply_width)) = ok_payload {
-                    fn_ctx
-                        .builder
-                        .build_memcpy(
-                            ok_field_ptr,
-                            1,
-                            reply_ptr_val,
-                            1,
-                            i64_ty.const_int(reply_width, false),
-                        )
-                        .llvm_ctx("hew_lambda_actor_ask Result::Ok payload memcpy")?;
-                }
-                // Free the libc-allocated reply buffer the runtime
-                // published (`hew_reply` copies the body's Box-allocated
-                // payload into a libc-allocated buffer before publish so
-                // the waiter — us — can free with libc::free). For
-                // zero-length replies the runtime returns a null pointer
-                // and `hew_reply_payload_free` no-ops (`libc::free(null)`).
-                let free_fn = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
-                    "hew_reply_payload_free",
-                )?;
-                fn_ctx
-                    .builder
-                    .build_call(
-                        free_fn,
-                        &[reply_ptr_val.into(), reply_len_val.into()],
-                        "hew_reply_payload_free_call",
-                    )
-                    .llvm_ctx("hew_reply_payload_free call")?;
-                fn_ctx
-                    .builder
-                    .build_unconditional_branch(merge_bb)
-                    .llvm_ctx("hew_lambda_actor_ask payload-ok branch to merge")?;
-
-                // ── payload_invalid branch: runtime returned status=Ok
-                //              but the reply payload is null, short, or wide.
-                //              Free the libc payload unconditionally
-                //              (no-op on null, valid for any length, so
-                //              even a short non-null buffer is reclaimed
-                //              not leaked), then materialise
-                //              `Result::Err(AskError::PayloadSizeMismatch)`.
-                //              Distinct from the Err branch below (which
-                //              handles non-Ok status); this branch handles
-                //              status=Ok / payload-malformed (today this
-                //              only fires on `hew_reply` OOM where the
-                //              copy-into-libc-buffer step failed and the
-                //              runtime fell through to publish null with
-                //              len=0 — see runtime
-                //              `reply_channel.rs:426-440`). ──
-                fn_ctx.builder.position_at_end(payload_invalid_bb);
-                fn_ctx
-                    .builder
-                    .build_call(
-                        free_fn,
-                        &[reply_ptr_val.into(), reply_len_val.into()],
-                        "hew_reply_payload_free_invalid_call",
-                    )
-                    .llvm_ctx("hew_reply_payload_free invalid-path call")?;
-                // AskError::PayloadSizeMismatch = 7 (see Err-branch
-                // discriminant catalog comment below).
-                const ASKERR_PAYLOAD_SIZE_MISMATCH: u64 = 7;
-                let askerr_payload_size_mismatch =
-                    i32_ty.const_int(ASKERR_PAYLOAD_SIZE_MISMATCH, false);
-                let error_local_invalid =
-                    composite_dest_local(error_dest, "hew_lambda_actor_ask payload-invalid")?;
-                let (error_tag_ptr_invalid, error_tag_ty_invalid) =
-                    place_pointer(fn_ctx, Place::MachineTag(error_local_invalid))?;
-                let error_tag_int_ty_invalid = match error_tag_ty_invalid {
-                    BasicTypeEnum::IntType(t) => t,
-                    other => {
-                        return Err(CodegenError::FailClosed(format!(
-                            "hew_lambda_actor_ask AskError tag projection \
-                             (payload-invalid) must be integer, got {other:?}"
-                        )));
-                    }
-                };
-                let askerr_payload_widened = match askerr_payload_size_mismatch
-                    .get_type()
-                    .get_bit_width()
-                    .cmp(&error_tag_int_ty_invalid.get_bit_width())
-                {
-                    std::cmp::Ordering::Equal => askerr_payload_size_mismatch,
-                    std::cmp::Ordering::Less => fn_ctx
-                        .builder
-                        .build_int_z_extend(
-                            askerr_payload_size_mismatch,
-                            error_tag_int_ty_invalid,
-                            "lambda_ask_err_payload_zext",
-                        )
-                        .llvm_ctx("lambda ask err payload-invalid zext")?,
-                    std::cmp::Ordering::Greater => fn_ctx
-                        .builder
-                        .build_int_truncate(
-                            askerr_payload_size_mismatch,
-                            error_tag_int_ty_invalid,
-                            "lambda_ask_err_payload_trunc",
-                        )
-                        .llvm_ctx("lambda ask err payload-invalid trunc")?,
-                };
-                fn_ctx
-                    .builder
-                    .build_store(error_tag_ptr_invalid, askerr_payload_widened)
-                    .llvm_ctx("store hew_lambda_actor_ask AskError tag (payload-invalid)")?;
-                emit_result_err(fn_ctx, d, error_dest)?;
-                fn_ctx
-                    .builder
-                    .build_unconditional_branch(merge_bb)
-                    .llvm_ctx("hew_lambda_actor_ask payload-invalid branch to merge")?;
-
-                // ── Err branch: map SendError → AskError, store
-                //              Result::Err(AskError::<variant>). The
-                //              runtime guarantees `*reply_out` is null
-                //              and `*reply_len_out` is 0 on every failure
-                //              path, so we do NOT load through reply_ptr
-                //              and do NOT call `hew_reply_payload_free`
-                //              (libc::free(null) is a no-op but skipping
-                //              keeps the Err path minimal). ──
-                fn_ctx.builder.position_at_end(err_bb);
-                // Status → AskError tag mapping. The AskError enum's
-                // discriminants come from `hew-types/src/builtin_enums.rs`:
-                //   0=NoError, 1=NodeNotRunning, 2=RoutingFailed,
-                //   3=EncodeFailed, 4=SendFailed, 5=Timeout,
-                //   6=ConnectionDropped, 7=PayloadSizeMismatch,
-                //   8=WorkerAtCapacity, 9=ActorStopped, 10=MailboxFull,
-                //   11=OrphanedAsk, 12=NoRunnableWork, 13=DecodeFailure.
-                // SendError discriminants (`hew-runtime/src/duplex.rs`):
-                //   1=Closed, 2=Full, 3=ActorStopped, 4=DoubleClose,
-                //   5=OrphanedAsk.
-                // Mapping (load-bearing; matches runtime's typed-error
-                // contract):
-                //   Closed       (1) → SendFailed (4)  — closed before send
-                //   Full         (2) → MailboxFull (10)
-                //   ActorStopped (3) → ActorStopped (9)
-                //   DoubleClose  (4) → SendFailed (4)  — handle released
-                //   OrphanedAsk  (5) → OrphanedAsk (11)
-                // Unknown statuses fall through to SendFailed (4) — a
-                // catch-all that surfaces a typed error rather than
-                // silent UB. A `switch` is the structural fit (LLVM
-                // lowers to a jump table or a sequence of icmps depending
-                // on density).
-                const ASKERR_SEND_FAILED: u64 = 4;
-                const ASKERR_ACTOR_STOPPED: u64 = 9;
-                const ASKERR_MAILBOX_FULL: u64 = 10;
-                const ASKERR_ORPHANED_ASK: u64 = 11;
-                let askerr_send_failed = i32_ty.const_int(ASKERR_SEND_FAILED, false);
-                let askerr_actor_stopped = i32_ty.const_int(ASKERR_ACTOR_STOPPED, false);
-                let askerr_mailbox_full = i32_ty.const_int(ASKERR_MAILBOX_FULL, false);
-                let askerr_orphaned_ask = i32_ty.const_int(ASKERR_ORPHANED_ASK, false);
-                // Chain of selects: start with the catch-all (SendFailed)
-                // and override for each known status. Equivalent to a
-                // switch but avoids splitting the err_bb into more blocks.
-                let one = i32_ty.const_int(1, false);
-                let two = i32_ty.const_int(2, false);
-                let three = i32_ty.const_int(3, false);
-                let five = i32_ty.const_int(5, false);
-                let is_full = fn_ctx
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::EQ,
-                        status_val,
-                        two,
-                        "lambda_ask_is_full",
-                    )
-                    .llvm_ctx("lambda ask is-full cmp")?;
-                let is_stopped = fn_ctx
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::EQ,
-                        status_val,
-                        three,
-                        "lambda_ask_is_stopped",
-                    )
-                    .llvm_ctx("lambda ask is-stopped cmp")?;
-                let is_orphaned = fn_ctx
-                    .builder
-                    .build_int_compare(
-                        inkwell::IntPredicate::EQ,
-                        status_val,
-                        five,
-                        "lambda_ask_is_orphaned",
-                    )
-                    .llvm_ctx("lambda ask is-orphaned cmp")?;
-                let _ = one; // closed (1) and DoubleClose (4) both → SendFailed catch-all
-                let after_full = fn_ctx
-                    .builder
-                    .build_select(
-                        is_full,
-                        askerr_mailbox_full,
-                        askerr_send_failed,
-                        "lambda_ask_err_after_full",
-                    )
-                    .llvm_ctx("lambda ask err select full")?
-                    .into_int_value();
-                let after_stopped = fn_ctx
-                    .builder
-                    .build_select(
-                        is_stopped,
-                        askerr_actor_stopped,
-                        after_full,
-                        "lambda_ask_err_after_stopped",
-                    )
-                    .llvm_ctx("lambda ask err select stopped")?
-                    .into_int_value();
-                let askerr_tag = fn_ctx
-                    .builder
-                    .build_select(
-                        is_orphaned,
-                        askerr_orphaned_ask,
-                        after_stopped,
-                        "lambda_ask_err_askerr_tag",
-                    )
-                    .llvm_ctx("lambda ask err select orphaned")?
-                    .into_int_value();
-                // Store the AskError tag into the error_dest local's
-                // MachineTag slot, then bind Result::Err(error_dest)
-                // into the user's `dest`. The AskError type is a pure
-                // unit-variant enum so its only field is the tag — no
-                // payload copy beyond the tag store is needed.
-                let error_local = composite_dest_local(error_dest, "hew_lambda_actor_ask Err")?;
-                let (error_tag_ptr, error_tag_ty) =
-                    place_pointer(fn_ctx, Place::MachineTag(error_local))?;
-                let error_tag_int_ty = match error_tag_ty {
-                    BasicTypeEnum::IntType(t) => t,
-                    other => {
-                        return Err(CodegenError::FailClosed(format!(
-                            "hew_lambda_actor_ask AskError tag projection must be \
-                             integer, got {other:?}"
-                        )));
-                    }
-                };
-                let askerr_tag_widened = match askerr_tag
-                    .get_type()
-                    .get_bit_width()
-                    .cmp(&error_tag_int_ty.get_bit_width())
-                {
-                    std::cmp::Ordering::Equal => askerr_tag,
-                    std::cmp::Ordering::Less => fn_ctx
-                        .builder
-                        .build_int_z_extend(askerr_tag, error_tag_int_ty, "lambda_ask_err_zext")
-                        .llvm_ctx("lambda ask err zext")?,
-                    std::cmp::Ordering::Greater => fn_ctx
-                        .builder
-                        .build_int_truncate(askerr_tag, error_tag_int_ty, "lambda_ask_err_trunc")
-                        .llvm_ctx("lambda ask err trunc")?,
-                };
-                fn_ctx
-                    .builder
-                    .build_store(error_tag_ptr, askerr_tag_widened)
-                    .llvm_ctx("store hew_lambda_actor_ask AskError tag")?;
-                emit_result_err(fn_ctx, d, error_dest)?;
-                fn_ctx
-                    .builder
-                    .build_unconditional_branch(merge_bb)
-                    .llvm_ctx("hew_lambda_actor_ask err branch to merge")?;
-
-                // ── Merge: subsequent instructions resume here. ──
-                fn_ctx.builder.position_at_end(merge_bb);
-            }
-            let _ = (i32_ty, ptr_ty);
-        }
-        // hew_lambda_actor_release(actor: *mut HewLambdaActorHandle) -> i32.
-        // The CallRuntimeAbi surface for this symbol mirrors the drop-
-        // dispatch path in `lower_drop_runtime` (the `Drop` instr is
-        // the canonical close site for handle ownership; CallRuntimeAbi
-        // is the producer surface for the same release call when a
-        // future slice (e.g. explicit `.release()` on a handle) wants
-        // it inline). Result discarded.
-        F::LambdaActorRelease => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_lambda_actor_release): expected 1 arg \
-                     (actor_handle), got {}",
-                    args.len()
-                )));
-            }
-            let handle = load_duplex_handle(fn_ctx, args[0], "hew_lambda_actor_release arg0")?;
-            fn_ctx.call_runtime_void(
-                symbol,
-                &[handle.into()],
-                "hew_lambda_actor_release_call",
-                "hew_lambda_actor_release call",
-            )?;
-            if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_lambda_actor_release returns i32 (discarded); \
-                     producer must not supply dest={d:?}"
-                )));
-            }
-            let _ = (i32_ty, ptr_ty);
-        }
-        // hew_lambda_actor_new(mailbox_capacity: usize, shape: i32,
-        //                      body_fn: *const HewLambdaActorBody,
-        //                      state: *mut c_void,
-        //                      state_drop: *const HewLambdaActorStateDrop)
-        //   -> *mut HewLambdaActorHandle
-        // (`hew-runtime/src/lambda_actor.rs:821`). The body_fn /
-        // state_drop pointers are function pointers and cannot be
-        // expressed as `Place` args — the spawn-site lowering uses the
-        // dedicated `Terminator::MakeLambdaActor` (mirrors
-        // `Terminator::MakeGenerator`); this CallRuntimeAbi arm is a
-        // fail-closed sentinel so the producer surface and codegen
-        // surface stay in lock-step (the M2 allowlist accepts the
-        // symbol; codegen rejects it from the wrong producer surface).
-        F::LambdaActorNew => {
-            return Err(CodegenError::FailClosed(format!(
-                "Instr::CallRuntimeAbi(hew_lambda_actor_new): the lambda-actor \
-                 construction surface is `Terminator::MakeLambdaActor` (function- \
-                 pointer args cannot be expressed as MIR `Place` values); routing \
-                 `hew_lambda_actor_new` through CallRuntimeAbi is a producer-side \
-                 error. args.len()={}, dest={dest:?}",
-                args.len()
-            )));
-        }
-        // ── Bytes value ABI ───────────────────────────────────────────────
-        //
-        // hew_bytes_push(triple: &mut BytesTriple, byte: u8) -> void.
-        // args[0]: Place::Local(N) for a bytes local. Pass the alloca address
-        // directly so the runtime can write back ptr/offset/len after CoW/grow.
-        // args[1]: Hew API accepts i32 for convenience; truncate to u8 at the
-        // runtime ABI boundary.
-        F::BytesLen => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_bytes_len): expected 1 arg (bytes), got {}",
-                    args.len()
-                )));
-            }
-            if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_bytes_len arg0 must be a `bytes` receiver; got {:?}",
-                    place_resolved_ty(fn_ctx, args[0])?
-                )));
-            }
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_bytes_len returns a length; producer must supply a dest".into(),
-                )
-            })?;
-            let (triple_ptr, _triple_ty) = place_pointer(fn_ctx, args[0])?;
-            let len_val = fn_ctx.call_runtime_basic(
-                symbol,
-                &[triple_ptr.into()],
-                "hew_bytes_len_call",
-                "hew_bytes_len call",
-            )?;
-            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, len_val)
-                .llvm_ctx("hew_bytes_len store")?;
-            let _ = (i32_ty, i64_ty, ptr_ty);
-        }
-        // hew_bytes_slice_raw(ptr, offset, len, start, end, out: *mut BytesTriple) -> void.
-        // A `bytes` receiver is a stack-resident triple; unpack it field-by-field,
-        // pass the scalar runtime ABI with an out-pointer for the result.
-        // Uses `_raw` void-return/out-pointer variant to avoid the Windows x64 MSVC sret
-        // mismatch: `BytesTriple` is 16 bytes and MSVC returns it via a hidden RCX
-        // sret pointer, which conflicts with hew's `[2 x i64]` register-pair
-        // codegen.  The `_raw` variant is `void(ptr, i32, i32, i64, i64, *mut
-        // BytesTriple)` and writes the result directly into the dest alloca.
-        F::BytesSlice => {
-            if args.len() != 3 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_bytes_slice): expected 3 args \
-                     (bytes, start, end), got {}",
-                    args.len()
-                )));
-            }
-            if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_bytes_slice arg0 must be a `bytes` receiver; got {:?}",
-                    place_resolved_ty(fn_ctx, args[0])?
-                )));
-            }
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_bytes_slice returns bytes; producer must supply a dest".into(),
-                )
-            })?;
-            let (triple_ptr, triple_ty) = place_pointer(fn_ctx, args[0])?;
-            let BasicTypeEnum::StructType(triple_struct_ty) = triple_ty else {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_bytes_slice: bytes receiver alloca has non-struct type {triple_ty:?}; \
-                     expected the `{{ptr, i32, i32}}` BytesTriple layout"
-                )));
-            };
-            let data_ptr_gep = fn_ctx
-                .builder
-                .build_struct_gep(triple_struct_ty, triple_ptr, 0, "bytes_slice_ptr_gep")
-                .llvm_ctx("hew_bytes_slice ptr GEP")?;
-            let data_ptr = fn_ctx
-                .builder
-                .build_load(ptr_ty, data_ptr_gep, "bytes_slice_ptr")
-                .llvm_ctx("hew_bytes_slice ptr load")?
-                .into_pointer_value();
-            let offset_gep = fn_ctx
-                .builder
-                .build_struct_gep(triple_struct_ty, triple_ptr, 1, "bytes_slice_offset_gep")
-                .llvm_ctx("hew_bytes_slice offset GEP")?;
-            let offset_val = fn_ctx
-                .builder
-                .build_load(i32_ty, offset_gep, "bytes_slice_offset")
-                .llvm_ctx("hew_bytes_slice offset load")?
-                .into_int_value();
-            let len_gep = fn_ctx
-                .builder
-                .build_struct_gep(triple_struct_ty, triple_ptr, 2, "bytes_slice_len_gep")
-                .llvm_ctx("hew_bytes_slice len GEP")?;
-            let len_val = fn_ctx
-                .builder
-                .build_load(i32_ty, len_gep, "bytes_slice_len")
-                .llvm_ctx("hew_bytes_slice len load")?
-                .into_int_value();
-            let start_val = load_int_arg(fn_ctx, args[1], i64_ty, "hew_bytes_slice start")?;
-            let end_val = load_int_arg(fn_ctx, args[2], i64_ty, "hew_bytes_slice end")?;
-            // Obtain dest_ptr before the call so we can pass it as the out-pointer.
-            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            if !matches!(dest_ty, BasicTypeEnum::StructType(_)) {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_bytes_slice dest must be a bytes struct slot, got {dest_ty:?}"
-                )));
-            }
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_bytes_slice_raw",
-            )?;
-            fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[
-                        data_ptr.into(),
-                        offset_val.into(),
-                        len_val.into(),
-                        start_val.into(),
-                        end_val.into(),
-                        dest_ptr.into(),
-                    ],
-                    "hew_bytes_slice_raw_call",
-                )
-                .llvm_ctx("hew_bytes_slice_raw call")?;
-            // `_raw` writes directly into `dest_ptr`; no try_as_basic_value /
-            // build_store needed.
-            let _ = (i8_ty, i64_ty);
-        }
-        F::BytesPush => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_bytes_push): expected 2 args \
-                     (bytes, byte), got {}",
-                    args.len()
-                )));
-            }
-            let (bytes_slot, _bytes_ty) = place_pointer(fn_ctx, args[0])?;
-            // The byte param is now typed u8 (i8 in LLVM); load directly as i8.
-            let byte_i8 = load_int_arg(fn_ctx, args[1], i8_ty, "hew_bytes_push byte")?;
-            fn_ctx.call_runtime_void(
-                symbol,
-                &[bytes_slot.into(), byte_i8.into()],
-                "hew_bytes_push_call",
-                "hew_bytes_push call",
-            )?;
-            if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_bytes_push returns void; producer must not supply dest={d:?}"
-                )));
-            }
-            let _ = (i64_ty, ptr_ty);
-        }
-        // hew_bytes_index(ptr: *mut u8, offset: u32, len: u32, index: i64) -> u8
-        // (`hew-runtime/src/bytes.rs:773`). The dedicated `bytes` element getter
-        // for both the `b[i]` indexing sugar (MIR `lower_bytes_index`) and the
-        // `bytes.get(i)` method (`impl bytes` in `std/io.hew`).
-        //
-        // A `bytes` value is a stack-resident `BytesTriple { ptr, offset, len }`,
-        // NOT a `*mut HewVec`, so it must NOT route through the Vec getter (which
-        // loads a heap-Vec `ptr` from arg0 via `load_duplex_handle`). The triple
-        // is passed BY VALUE field-by-field: GEP the triple alloca for `ptr`
-        // (field 0), `offset` (field 1, i32), and `len` (field 2, i32), then
-        // hand them to the runtime alongside the i64 index. The runtime
-        // bounds-checks and aborts on OOB (boundary-fail-closed); no compiler-
-        // emitted trap CFG. The dest int type is widened from the runtime's i8
-        // return (i8 for `b[i]`'s `u8` dest; i32 for `bytes.get`'s `i32` dest).
-        F::BytesIndex => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_bytes_index): expected 2 args \
-                     (bytes, index), got {}",
-                    args.len()
-                )));
-            }
-            if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_bytes_index arg0 must be a `bytes` receiver; got {:?}",
-                    place_resolved_ty(fn_ctx, args[0])?
-                )));
-            }
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_bytes_index returns a byte; producer must supply a dest".into(),
-                )
-            })?;
-            // Unpack the BytesTriple alloca: {ptr, i32 offset, i32 len}.
-            let (triple_ptr, triple_ty) = place_pointer(fn_ctx, args[0])?;
-            let BasicTypeEnum::StructType(triple_struct_ty) = triple_ty else {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_bytes_index: bytes receiver alloca has non-struct type {triple_ty:?}; \
-                     expected the `{{ptr, i32, i32}}` BytesTriple layout"
-                )));
-            };
-            let data_ptr_gep = fn_ctx
-                .builder
-                .build_struct_gep(triple_struct_ty, triple_ptr, 0, "bytes_index_ptr_gep")
-                .llvm_ctx("hew_bytes_index ptr GEP")?;
-            let data_ptr = fn_ctx
-                .builder
-                .build_load(ptr_ty, data_ptr_gep, "bytes_index_ptr")
-                .llvm_ctx("hew_bytes_index ptr load")?
-                .into_pointer_value();
-            let offset_gep = fn_ctx
-                .builder
-                .build_struct_gep(triple_struct_ty, triple_ptr, 1, "bytes_index_offset_gep")
-                .llvm_ctx("hew_bytes_index offset GEP")?;
-            let offset_val = fn_ctx
-                .builder
-                .build_load(i32_ty, offset_gep, "bytes_index_offset")
-                .llvm_ctx("hew_bytes_index offset load")?
-                .into_int_value();
-            let len_gep = fn_ctx
-                .builder
-                .build_struct_gep(triple_struct_ty, triple_ptr, 2, "bytes_index_len_gep")
-                .llvm_ctx("hew_bytes_index len GEP")?;
-            let len_val = fn_ctx
-                .builder
-                .build_load(i32_ty, len_gep, "bytes_index_len")
-                .llvm_ctx("hew_bytes_index len load")?
-                .into_int_value();
-            let index_val = load_int_arg(fn_ctx, args[1], i64_ty, "hew_bytes_index index")?;
-            let byte_val = fn_ctx.call_runtime_int(
-                symbol,
-                &[
-                    data_ptr.into(),
-                    offset_val.into(),
-                    len_val.into(),
-                    index_val.into(),
-                ],
-                "hew_bytes_index_call",
-                "hew_bytes_index call",
-            )?;
-            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            let BasicTypeEnum::IntType(dest_int_ty) = dest_ty else {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_bytes_index dest must be integer-shaped (u8 / i32); got {dest_ty:?}"
-                )));
-            };
-            // Zero-extend the u8 byte to the dest width (no-op when dest is i8).
-            let store_val = fn_ctx
-                .builder
-                .build_int_z_extend_or_bit_cast(byte_val, dest_int_ty, "bytes_index_zext")
-                .llvm_ctx("hew_bytes_index zext")?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, store_val)
-                .llvm_ctx("hew_bytes_index store")?;
-            let _ = (i8_ty, i64_ty, ptr_ty);
-        }
-        // Actor link/monitor builtins.
-        //
-        // SHIM(B3→Cluster2): `link()` returns `Result<(), LinkError>` and
-        // `monitor()` returns `MonitorRef { ref_id: i64 }`. Both require
-        // composite-type construction (enum variant / struct literal) in the
-        // LLVM IR, which the Cluster 1 spine does not yet support.
-        //
-        // WHY this shim exists: the producer (MIR lower.rs) calls
-        // `lower_runtime_call("hew_actor_link", ...)` off the HIR
-        // `ResolvedRef::Builtin(ActorLink)` resolution.  Codegen must not
-        // silently discard the call, but also cannot construct the
-        // composite return today.
-        // The FFI call is emitted; return wrapping is deferred.
-        //
-        // WHEN obsolete: when the Cluster 2 spine lands enum-variant and
-        // struct-literal construction in `hew-codegen-rs`.  At that point,
-        // `hew_actor_link` wraps the void return as `Ok(())`, and
-        // `hew_actor_monitor` wraps the u64 ref_id as `MonitorRef { ref_id }`.
-        //
-        // WHAT the real solution looks like:
-        //   hew_actor_link:   call void → alloca Result<(),LinkError> → store
-        //                     discriminant 0 (Ok), zero-length payload.
-        //   hew_actor_monitor: call i64 → alloca MonitorRef → store ref_id.
-        F::ActorLink => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_actor_link): expected 2 args \
-                     (parent, child), got {}",
-                    args.len()
-                )));
-            }
-            // arg0: parent actor handle (opaque ptr).
-            let parent = load_duplex_handle(fn_ctx, args[0], "link_parent")?;
-            // arg1: child actor handle (opaque ptr).
-            let child = load_duplex_handle(fn_ctx, args[1], "link_child")?;
-            let llvm_args: [BasicMetadataValueEnum; 2] = [parent.into(), child.into()];
-            fn_ctx.call_runtime_void(
-                symbol,
-                &llvm_args,
-                "hew_actor_link_call",
-                "hew_actor_link call",
-            )?;
-            // SHIM(B3→Cluster2): `link()` returns Result<(), LinkError>.
-            // Composite-type construction is not yet available in the Cluster 1
-            // spine. Until the Cluster 2 spine lands, producers must not wire a
-            // dest slot for this call — fail-closed if they do.
-            if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_actor_link Result<(),LinkError> return synthesis requires \
-                     Cluster 2 composite-type spine; producer must not supply \
-                     dest={d:?} until that lands"
-                )));
-            }
-            let _ = (i32_ty, ptr_ty);
-        }
-        F::ActorMonitor => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_actor_monitor): expected 2 args \
-                     (watcher, target), got {}",
-                    args.len()
-                )));
-            }
-            // arg0: watcher actor handle (opaque ptr).
-            let watcher = load_duplex_handle(fn_ctx, args[0], "monitor_watcher")?;
-            // arg1: target actor handle (opaque ptr).
-            let target = load_duplex_handle(fn_ctx, args[1], "monitor_target")?;
-            let llvm_args: [BasicMetadataValueEnum; 2] = [watcher.into(), target.into()];
-            fn_ctx.call_runtime_void(
-                symbol,
-                &llvm_args,
-                "hew_actor_monitor_call",
-                "hew_actor_monitor call",
-            )?;
-            // SHIM(B3→Cluster2): `monitor()` returns MonitorRef { ref_id: i64 }.
-            // Struct-literal construction requires the Cluster 2 spine.
-            // Producers must not wire a dest until that lands.
-            if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_actor_monitor MonitorRef{{ref_id}} struct synthesis requires \
-                     Cluster 2 composite-type spine; producer must not supply \
-                     dest={d:?} until that lands"
-                )));
-            }
-            let _ = (i32_ty, ptr_ty);
-        }
-        // hew_actor_self() -> *mut HewActor (`hew-runtime/src/actor.rs`). Reads
-        // the live actor from the per-dispatch thread-local — the borrowed
-        // handle the current `receive fn` runs on. Emitted for `this` used as a
-        // value (`HirExprKind::ActorSelf`): a self-send (`this.go()`) lowers its
-        // receiver through here, then `Terminator::Send` loads the handle back
-        // from `dest`. The returned `*mut HewActor` is a BORROW (no ownership
-        // transfer), so the `LocalPid` dest slot carries no drop obligation.
-        F::ActorSelf => {
-            if !args.is_empty() {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_actor_self): expected 0 args, got {}",
-                    args.len()
-                )));
-            }
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_actor_self returns the self-handle; producer must supply a dest".into(),
-                )
-            })?;
-            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            // The `LocalPid` handle slot is a `ptr` alloca — the actor handle is
-            // stored directly (the same representation `load_duplex_handle`
-            // reads back when `Terminator::Send` consumes this Place).
-            match dest_ty {
-                BasicTypeEnum::PointerType(_) => {}
-                other => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "hew_actor_self: dest {dest_place:?} resolves to non-pointer type \
-                         {other:?}; expected `ptr` (the LocalPid handle alloca)"
-                    )));
-                }
-            }
-            let self_ptr = fn_ctx.call_runtime_ptr(
-                symbol,
-                &[],
-                "hew_actor_self_call",
-                "hew_actor_self call",
-            )?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, self_ptr)
-                .llvm_ctx("hew_actor_self store")?;
-            let _ = (i32_ty, ptr_ty);
-        }
-        // hew_supervisor_stop(sup: *mut HewSupervisor) -> void
-        // (`hew-runtime/src/supervisor.rs:1944`). Graceful shutdown: void return.
-        // The `supervisor_stop(sup)` builtin passes a single supervisor handle;
-        // the producer always supplies `dest: None`.
-        F::SupervisorStop => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_supervisor_stop): expected 1 arg \
-                     (sup), got {}",
-                    args.len()
-                )));
-            }
-            let sup_ptr = load_duplex_handle(fn_ctx, args[0], "supervisor_stop_arg0")?;
-            fn_ctx.call_runtime_void(
-                symbol,
-                &[sup_ptr.into()],
-                "hew_supervisor_stop_call",
-                "hew_supervisor_stop call",
-            )?;
-            // Void return — producer supplies dest: None; fail-closed if not.
-            if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_supervisor_stop is void; producer must not supply \
-                     dest={d:?}"
-                )));
-            }
-            let _ = (i32_ty, i64_ty);
-        }
-        // `hew_duplex_close` is only called from the Drop ritual
-        // (`lower_drop`); reaching it via `Instr::CallRuntimeAbi`
-        // means a producer mis-routed a destructor through the
-        // generic call path. Fail-closed.
-        F::DuplexClose => {
-            return Err(CodegenError::FailClosed(
-                "Instr::CallRuntimeAbi(hew_duplex_close): close is the drop \
-                 ritual's responsibility — emit Instr::Drop { drop_fn: \
-                 Some(\"hew_duplex_close\") } instead so the alloca-zero \
-                 ritual fires after the close"
-                    .to_string(),
-            ));
-        }
-        // ── Vec<T> indexing (C-2) ────────────────────────────────────────
-        //
-        // hew_vec_len(v: *mut HewVec) -> i64
-        // args[0]: Place::Local(N) holding a `*mut HewVec` pointer — load the
-        // ptr from the alloca. dest: Place::Local(M) of type i64 — store result.
-        //
-        F::VecLen => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_vec_len): expected 1 arg (vec), got {}",
-                    args.len()
-                )));
-            }
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_vec_len: producer must supply a dest place for the length".into(),
-                )
-            })?;
-            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            // `bytes` operand (B-2): a `bytes` value is a stack-resident
-            // `BytesTriple { ptr, offset, len }`, NOT a `*mut HewVec`, so the
-            // `hew_vec_len(*mut HewVec)` C ABI cannot apply. Route a bytes
-            // receiver to `hew_bytes_len(*const BytesTriple) -> i64`, passing the
-            // triple alloca's ADDRESS (a plain `ptr`) — the by-pointer bytes-
-            // consumer convention (`is_bytes_by_pointer_consumer`). By value the
-            // `{ptr,i32,i32}` arg is not reliably ABI-portable (LLVM's 3-register
-            // small-struct classification vs Rust's repr(C) two-register pair).
-            // Checker-authority: branch on `args[0]`'s `ResolvedTy::Bytes`.
-            if matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
-                let (triple_ptr, _triple_ty) = place_pointer(fn_ctx, args[0])?;
-                let len_val = fn_ctx.call_runtime_basic(
-                    "hew_bytes_len",
-                    &[triple_ptr.into()],
-                    "hew_bytes_len_call",
-                    "hew_bytes_len call",
-                )?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, len_val)
-                    .llvm_ctx("bytes.len store")?;
-                let _ = (i32_ty, ptr_ty);
-                return Ok(());
-            }
-            let vec_ptr = load_duplex_handle(fn_ctx, args[0], "hew_vec_len arg0")?;
-            let len_val = fn_ctx.call_runtime_basic(
-                symbol,
-                &[vec_ptr.into()],
-                "hew_vec_len_call",
-                "hew_vec_len call",
-            )?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, len_val)
-                .llvm_ctx("hew_vec_len store")?;
-            let _ = (i32_ty, ptr_ty);
-        }
-        // hew_vec_get_bool(v: *mut HewVec, index: i64) -> bool (i1 ABI)
-        // hew_vec_get_i32(v: *mut HewVec, index: i64) -> i32
-        // hew_vec_get_i64(v: *mut HewVec, index: i64) -> i64
-        // hew_vec_get_f64(v: *mut HewVec, index: i64) -> f64
-        // hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void
-        // hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c_char
-        //
-        // All variants share the same ABI shape: load vec ptr from arg0, load
-        // index i64 from arg1, call, store result into dest. The result type
-        // differs per variant and is encoded in the function return type from
-        // `intern_runtime_decl`.
-        F::VecGet(
-            VecGetElem::Bool
-            | VecGetElem::F32
-            | VecGetElem::I8
-            | VecGetElem::U8
-            | VecGetElem::I16
-            | VecGetElem::U16
-            | VecGetElem::I32
-            | VecGetElem::I64
-            | VecGetElem::F64
-            | VecGetElem::Ptr
-            | VecGetElem::Str,
-        ) => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): expected 2 args (vec, index), got {}",
-                    args.len()
-                )));
-            }
-            // arg0: Vec pointer. `load_duplex_handle` loads a `ptr`-typed
-            // value from any `ptr`-alloca — correct for Vec handles too.
-            let vec_ptr = load_duplex_handle(fn_ctx, args[0], &format!("{symbol} arg0"))?;
-            // arg1: index as i64.
-            let index_val = load_int_arg(fn_ctx, args[1], i64_ty, &format!("{symbol} arg1"))?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
-            let call = fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[vec_ptr.into(), index_val.into()],
-                    &format!("{symbol}_call"),
-                )
-                .llvm_ctx_with(|| format!("{symbol} call"))?;
-            let result_val = call
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} returned void")))?;
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(format!("{symbol}: producer must supply a dest place"))
-            })?;
-            // Closure-pair element (`fns[i]` on a `Vec<fn(...)>`): the
-            // returned pointer is the slot's pair box; copy the 16-byte
-            // pair out (a borrow — the vec keeps the box and the env).
-            if symbol == "hew_vec_get_ptr"
-                && matches!(
-                    place_resolved_ty(fn_ctx, dest_place)?,
-                    ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
-                )
-            {
-                emit_unbox_closure_pair(fn_ctx, result_val.into_pointer_value(), dest_place)?;
-                let _ = (i32_ty, ptr_ty);
-                return Ok(());
-            }
-            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            let store_val = if symbol == "hew_vec_get_bool" {
-                zext_bool_i1_to_dest(fn_ctx, result_val.into_int_value(), dest_ty, symbol)?
-            } else {
-                result_val
-            };
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, store_val)
-                .llvm_ctx_with(|| format!("{symbol} store"))?;
-            let _ = (i32_ty, ptr_ty);
-        }
-        // ── Vec<T> layout-descriptor element getter (subscript / for-in) ──
-        //
-        // hew_vec_get_layout(v: *mut HewVec, index: i64,
-        //                    layout: *const HewTypeLayout) -> *const c_void
-        //
-        // Emitted for `xs[i]` and `for x in xs` where the element type is a
-        // BitCopy Named value record or a Tuple — any type whose elements are
-        // stored inline at a stride determined by the layout descriptor (not
-        // the fixed 8-byte pointer stride used by `hew_vec_get_ptr`).
-        //
-        // The layout descriptor is synthesised from the dest-place's type
-        // (same as the `lower_layout_vec_direct_call` path for `.get()`).
-        // The runtime returns a `*const c_void` pointing into the vec buffer;
-        // codegen loads the full element value through that pointer into dest.
-        F::VecGet(VecGetElem::Layout) => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_vec_get_layout): expected 2 args \
-                     (vec, index), got {}",
-                    args.len()
-                )));
-            }
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_vec_get_layout returns an element; producer must supply a dest".into(),
-                )
-            })?;
-            let vec_ptr = load_duplex_handle(fn_ctx, args[0], "hew_vec_get_layout arg0")?;
-            let index_val = load_int_arg(fn_ctx, args[1], i64_ty, "hew_vec_get_layout arg1")?;
-            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, dest_ty, "get")?;
-            let fv = get_or_declare_layout_vec_runtime(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                "hew_vec_get_layout",
-            )?;
-            let call = fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[vec_ptr.into(), index_val.into(), layout_ptr.into()],
-                    "hew_vec_get_layout_call",
-                )
-                .llvm_ctx("hew_vec_get_layout call")?;
-            let raw_ptr = call
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_vec_get_layout returned void".into()))?
-                .into_pointer_value();
-            let loaded = fn_ctx
-                .builder
-                .build_load(dest_ty, raw_ptr, "hew_vec_get_layout_load")
-                .llvm_ctx("hew_vec_get_layout load")?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, loaded)
-                .llvm_ctx("hew_vec_get_layout store")?;
-            let _ = (i32_ty, ptr_ty);
-        }
-        // hew_vec_get_owned(v: *const HewVec, index: i64) -> *const c_void
-        //
-        // W5.016: emitted for `xs[i]` / `for x in xs` where the element is an
-        // owned (non-Copy) record/enum/tuple. The runtime returns a BORROWED
-        // pointer into the live buffer (no clone/drop); codegen loads the full
-        // element value through it into dest. The borrowed element stays owned
-        // by the Vec — the dest is NOT scheduled for an independent drop (the
-        // for-in binding is a borrow, F5 discipline).
-        F::VecGet(VecGetElem::Owned) => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_vec_get_owned): expected 2 args \
-                     (vec, index), got {}",
-                    args.len()
-                )));
-            }
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_vec_get_owned returns an element; producer must supply a dest".into(),
-                )
-            })?;
-            let vec_ptr = load_duplex_handle(fn_ctx, args[0], "hew_vec_get_owned arg0")?;
-            let index_val = load_int_arg(fn_ctx, args[1], i64_ty, "hew_vec_get_owned arg1")?;
-            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            let fv =
-                get_or_declare_owned_vec_runtime(fn_ctx.ctx, fn_ctx.llvm_mod, "hew_vec_get_owned")?;
-            let call = fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[vec_ptr.into(), index_val.into()],
-                    "hew_vec_get_owned_call",
-                )
-                .llvm_ctx("hew_vec_get_owned call")?;
-            let raw_ptr = call
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_vec_get_owned returned void".into()))?
-                .into_pointer_value();
-            let loaded = fn_ctx
-                .builder
-                .build_load(dest_ty, raw_ptr, "hew_vec_get_owned_load")
-                .llvm_ctx("hew_vec_get_owned load")?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, loaded)
-                .llvm_ctx("hew_vec_get_owned store")?;
-            let _ = (i32_ty, ptr_ty);
-        }
-        // ── Vec<T> range-slice (C-3) ──────────────────────────────────────
-        //
-        // hew_vec_slice_range_{i32,i64,f64,ptr,str}(v: *mut HewVec,
-        //   start: i64, end: i64) -> *mut HewVec
-        //
-        // All five share the same ABI shape: load vec ptr from arg0, load
-        // start/end i64 from args 1..2, call, store the returned `*mut
-        // HewVec` into dest (a ptr-typed Vec<T> alloca). The element type
-        // is encoded in the suffix and selected by the MIR producer.
-        // Every VecSliceElem variant shares the arm; the per-element
-        // symbol is already in `symbol` (the family's c_symbol).
-        F::VecSliceRange(_) => {
-            if args.len() != 3 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): expected 3 args (vec, start, end), got {}",
-                    args.len()
-                )));
-            }
-            let vec_ptr = load_duplex_handle(fn_ctx, args[0], &format!("{symbol} arg0"))?;
-            let start_val = load_int_arg(fn_ctx, args[1], i64_ty, &format!("{symbol} arg1"))?;
-            let end_val = load_int_arg(fn_ctx, args[2], i64_ty, &format!("{symbol} arg2"))?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
-            let call = fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[vec_ptr.into(), start_val.into(), end_val.into()],
-                    &format!("{symbol}_call"),
-                )
-                .llvm_ctx_with(|| format!("{symbol} call"))?;
-            let result_val = call
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed(format!("{symbol} returned void")))?;
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(format!("{symbol}: producer must supply a dest place"))
-            })?;
-            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, result_val)
-                .llvm_ctx_with(|| format!("{symbol} store"))?;
-            let _ = (i32_ty, ptr_ty);
-        }
-        // String runtime calls — concat plus W3 collections-sugar S2 index/slice.
-        //
-        // These arms follow the Vec single-element-getter / slice-range
-        // shape: load the `*const c_char` value from a `ptr`-typed
-        // String alloca (string locals are represented as `ptr` in
-        // LLVM — see `basic_type_for(ResolvedTy::String)`), pass any
-        // scalar arguments, and store the return into the producer-allocated
-        // dest. The runtime entries themselves enforce invalid-input bounds.
-        //
-        // hew_string_concat(a: *const c_char, b: *const c_char) -> *mut c_char.
-        F::StringConcat => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_string_concat): expected 2 args (a, b), got {}",
-                    args.len()
-                )));
-            }
-            let lhs_ptr = load_duplex_handle(fn_ctx, args[0], "hew_string_concat arg0")?;
-            let rhs_ptr = load_duplex_handle(fn_ctx, args[1], "hew_string_concat arg1")?;
-            let result_val = fn_ctx.call_runtime_basic(
-                symbol,
-                &[lhs_ptr.into(), rhs_ptr.into()],
-                "hew_string_concat_call",
-                "hew_string_concat call",
-            )?;
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_string_concat: producer must supply a dest place".into(),
-                )
-            })?;
-            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, result_val)
-                .llvm_ctx("hew_string_concat store")?;
-            let _ = i32_ty;
-        }
-        F::ObserveReadU64 => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_observe_read_u64): expected 1 arg (name), got {}",
-                    args.len()
-                )));
-            }
-            let name_ptr = load_duplex_handle(fn_ctx, args[0], "hew_observe_read_u64 arg0")?;
-            let result_val = fn_ctx.call_runtime_basic(
-                symbol,
-                &[name_ptr.into()],
-                "hew_observe_read_u64_call",
-                "hew_observe_read_u64 call",
-            )?;
-            if let Some(dest_place) = dest {
-                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, result_val)
-                    .llvm_ctx("hew_observe_read_u64 store")?;
-            }
-            let _ = i32_ty;
-        }
-        F::ObserveScrape | F::ObserveSeries => {
-            let (call_name, call_ctx, store_ctx) = match symbol {
-                "hew_observe_scrape" => (
-                    "hew_observe_scrape_call",
-                    "hew_observe_scrape call",
-                    "hew_observe_scrape store",
-                ),
-                "hew_observe_series" => (
-                    "hew_observe_series_call",
-                    "hew_observe_series call",
-                    "hew_observe_series store",
-                ),
-                _ => unreachable!("observe ABI branch only matches scrape/series"),
-            };
-            if !args.is_empty() {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): expected 0 args, got {}",
-                    args.len()
-                )));
-            }
-            let result_val = fn_ctx.call_runtime_basic(symbol, &[], call_name, call_ctx)?;
-            if let Some(dest_place) = dest {
-                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, result_val)
-                    .llvm_ctx(store_ctx)?;
-            }
-            let _ = i32_ty;
-        }
-        F::ObserveBarrier => {
-            if !args.is_empty() {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_observe_barrier): expected 0 args, got {}",
-                    args.len()
-                )));
-            }
-            let result_val = fn_ctx.call_runtime_basic(
-                symbol,
-                &[],
-                "hew_observe_barrier_call",
-                "hew_observe_barrier call",
-            )?;
-            if let Some(dest_place) = dest {
-                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, result_val)
-                    .llvm_ctx("hew_observe_barrier store")?;
-            }
-            let _ = i32_ty;
-        }
-        // User-metric scalar emit path (#1862). `std::metrics` reaches these
-        // through its `extern "C"` block; the bodies live in
-        // `hew-runtime/src/metrics.rs`. The register entry points take a
-        // `*const c_char` name and return the `i64` slot handle; the mutators
-        // take an `i64` handle plus an `i64` delta or an `f64` observation and
-        // return void.
-        F::MetricCounterRegister | F::MetricGaugeRegister | F::MetricHistogramRegisterSimple => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): expected 1 arg (name), got {}",
-                    args.len()
-                )));
-            }
-            let name_ptr = load_duplex_handle(fn_ctx, args[0], "metric register name")?;
-            let result_val = fn_ctx.call_runtime_basic(
-                symbol,
-                &[name_ptr.into()],
-                "metric_register_call",
-                "metric register call",
-            )?;
-            if let Some(dest_place) = dest {
-                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, result_val)
-                    .llvm_ctx("metric register store")?;
-            }
-            let _ = i32_ty;
-        }
-        F::MetricCounterInc | F::MetricGaugeInc | F::MetricGaugeDec => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): expected 1 arg (handle), got {}",
-                    args.len()
-                )));
-            }
-            let handle = load_int_arg(fn_ctx, args[0], i64_ty, "metric mutate handle")?;
-            fn_ctx.call_runtime_void(
-                symbol,
-                &[handle.into()],
-                "metric_mutate_call",
-                "metric mutate call",
-            )?;
-            let _ = i32_ty;
-        }
-        F::MetricCounterAdd | F::MetricGaugeSet | F::MetricGaugeAdd => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): expected 2 args (handle, n), got {}",
-                    args.len()
-                )));
-            }
-            let handle = load_int_arg(fn_ctx, args[0], i64_ty, "metric mutate handle")?;
-            let n = load_int_arg(fn_ctx, args[1], i64_ty, "metric mutate value")?;
-            fn_ctx.call_runtime_void(
-                symbol,
-                &[handle.into(), n.into()],
-                "metric_mutate2_call",
-                "metric mutate2 call",
-            )?;
-            let _ = i32_ty;
-        }
-        F::MetricHistogramRecord => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): expected 2 args (handle, value), got {}",
-                    args.len()
-                )));
-            }
-            let handle = load_int_arg(fn_ctx, args[0], i64_ty, "histogram record handle")?;
-            let value = load_math_f64_arg(fn_ctx, args[1], "histogram record value", symbol)?;
-            fn_ctx.call_runtime_void(
-                symbol,
-                &[handle.into(), value.into()],
-                "histogram_record_call",
-                "histogram record call",
-            )?;
-            let _ = i32_ty;
-        }
-        F::StringCharCount => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_string_char_count): expected 1 arg (s), got {}",
-                    args.len()
-                )));
-            }
-            let s_ptr = load_duplex_handle(fn_ctx, args[0], "hew_string_char_count arg0")?;
-            let result_val = fn_ctx.call_runtime_basic(
-                symbol,
-                &[s_ptr.into()],
-                "hew_string_char_count_call",
-                "hew_string_char_count call",
-            )?;
-            if let Some(dest_place) = dest {
-                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, result_val)
-                    .llvm_ctx("hew_string_char_count store")?;
-            }
-            let _ = (i64_ty, ptr_ty);
-        }
-        // `impl duration` receiver methods (`hew-runtime/src/io_time.rs`). Each
-        // takes the i64-backed duration (nanoseconds) and returns the converted
-        // count: `nanos`/`micros`/`millis`/`secs`/`mins`/`hours`/`abs` produce
-        // an `i64` stored straight into the dest; `is_zero` produces the C `i32`
-        // boolean, compared `!= 0` to an `i1` and zero-extended into the `i8`
-        // bool dest (mirrors predicate stores for i1-to-bool slots).
-        F::DurationNanos
-        | F::DurationMicros
-        | F::DurationMillis
-        | F::DurationSecs
-        | F::DurationMins
-        | F::DurationHours
-        | F::DurationAbs
-        | F::DurationIsZero => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): expected 1 arg (duration), got {}",
-                    args.len()
-                )));
-            }
-            let duration = load_int_arg(fn_ctx, args[0], i64_ty, symbol)?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &[duration.into()], &format!("{symbol}_call"))
-                .llvm_ctx_with(|| format!("{symbol} call"))?;
-            if let Some(dest_place) = dest {
-                let result = call.try_as_basic_value().basic().ok_or_else(|| {
-                    CodegenError::FailClosed(format!("{symbol} returned void"))
-                })?;
-                let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
-                let store_val = if symbol == "hew_duration_is_zero" {
-                    // i32 C boolean -> i1 (`!= 0`) -> i8 bool dest.
-                    let i32_result = result.into_int_value();
-                    let predicate = fn_ctx
-                        .builder
-                        .build_int_compare(
-                            IntPredicate::NE,
-                            i32_result,
-                            i32_ty.const_zero(),
-                            &format!("{symbol}_pred"),
-                        )
-                        .llvm_ctx_with(|| format!("{symbol} nonzero compare"))?;
-                    zext_bool_i1_to_dest(fn_ctx, predicate, dest_ty, symbol)?
-                } else {
-                    result
-                };
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, store_val)
-                    .llvm_ctx_with(|| format!("{symbol} store"))?;
-            }
-            let _ = (i8_ty, ptr_ty);
-        }
-        // `impl instant` methods (`hew-runtime/src/io_time.rs`). `instant` is
-        // i64-backed (a monotonic nanosecond timestamp), so every argument and
-        // result is a bare `i64`: `now()` takes no args and returns the clock;
-        // `elapsed(now)` and `duration_since(now, earlier)` take 1 / 2 i64
-        // timestamps and return an i64-backed `duration`. Load each i64 arg,
-        // call the extern, store the i64 result straight into the dest.
-        F::InstantNow | F::InstantElapsed | F::InstantDurationSince => {
-            let expected = match symbol {
-                "hew_instant_now" => 0,
-                "hew_instant_elapsed" => 1,
-                "hew_instant_duration_since" => 2,
-                _ => unreachable!("instant codegen reached for non-instant symbol `{symbol}`"),
-            };
-            if args.len() != expected {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): expected {expected} i64 arg(s), got {}",
-                    args.len()
-                )));
-            }
-            let mut call_args = Vec::with_capacity(args.len());
-            for &arg in args {
-                call_args.push(load_int_arg(fn_ctx, arg, i64_ty, symbol)?.into());
-            }
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
-            let call = fn_ctx
-                .builder
-                .build_call(fv, &call_args, &format!("{symbol}_call"))
-                .llvm_ctx_with(|| format!("{symbol} call"))?;
-            if let Some(dest_place) = dest {
-                let result = call.try_as_basic_value().basic().ok_or_else(|| {
-                    CodegenError::FailClosed(format!("{symbol} returned void"))
-                })?;
-                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, result)
-                    .llvm_ctx_with(|| format!("{symbol} store"))?;
-            }
-            let _ = (i8_ty, ptr_ty);
-        }
-        F::StringIndex => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_string_index): expected 2 args (s, i), got {}",
-                    args.len()
-                )));
-            }
-            let s_ptr = load_duplex_handle(fn_ctx, args[0], "hew_string_index arg0")?;
-            let i_val = load_int_arg(fn_ctx, args[1], i64_ty, "hew_string_index arg1")?;
-            let result_val = fn_ctx.call_runtime_basic(
-                symbol,
-                &[s_ptr.into(), i_val.into()],
-                "hew_string_index_call",
-                "hew_string_index call",
-            )?;
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_string_index: producer must supply a dest place".into(),
-                )
-            })?;
-            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, result_val)
-                .llvm_ctx("hew_string_index store")?;
-            let _ = ptr_ty;
-        }
-        // hew_string_slice_codepoints(s: *const c_char, start: i64, end: i64)
-        //   -> *mut c_char (fresh owned slice)
-        F::StringSliceCodepoints => {
-            if args.len() != 3 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_string_slice_codepoints): expected 3 args \
-                     (s, start, end), got {}",
-                    args.len()
-                )));
-            }
-            let s_ptr = load_duplex_handle(fn_ctx, args[0], "hew_string_slice_codepoints arg0")?;
-            let start_val =
-                load_int_arg(fn_ctx, args[1], i64_ty, "hew_string_slice_codepoints arg1")?;
-            let end_val =
-                load_int_arg(fn_ctx, args[2], i64_ty, "hew_string_slice_codepoints arg2")?;
-            let result_val = fn_ctx.call_runtime_basic(
-                symbol,
-                &[s_ptr.into(), start_val.into(), end_val.into()],
-                "hew_string_slice_codepoints_call",
-                "hew_string_slice_codepoints call",
-            )?;
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_string_slice_codepoints: producer must supply a dest place".into(),
-                )
-            })?;
-            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, result_val)
-                .llvm_ctx("hew_string_slice_codepoints store")?;
-            let _ = i32_ty;
-        }
-        // hew_task_new() -> *mut HewTask
-        // No args. dest: Place holding the task pointer.
-        F::TaskNew => {
-            if !args.is_empty() {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_task_new): expected 0 args, got {}",
-                    args.len()
-                )));
-            }
-            let task_ptr = fn_ctx.call_runtime_basic(
-                symbol,
-                &[],
-                "hew_task_new_call",
-                "hew_task_new call",
-            )?;
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_task_new: producer must supply a dest place for the task ptr".into(),
-                )
-            })?;
-            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, task_ptr)
-                .llvm_ctx("hew_task_new store")?;
-            let _ = (i32_ty, ptr_ty);
-        }
-        F::TaskScopeNew => {
-            if !args.is_empty() {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_task_scope_new): expected 0 args, got {}",
-                    args.len()
-                )));
-            }
-            let scope_ptr = fn_ctx.call_runtime_basic(
-                symbol,
-                &[],
-                "hew_task_scope_new_call",
-                "hew_task_scope_new call",
-            )?;
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed("hew_task_scope_new requires a dest".into())
-            })?;
-            let (dest_ptr, _) = place_pointer(fn_ctx, dest_place)?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, scope_ptr)
-                .llvm_ctx("hew_task_scope_new store")?;
-            let _ = (i32_ty, ptr_ty);
-        }
-        F::TaskScopeSetCurrent => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_task_scope_set_current): expected 1 arg, got {}",
-                    args.len()
-                )));
-            }
-            let scope_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_scope_set_current arg0")?;
-            let call = fn_ctx.call_runtime(
-                symbol,
-                &[scope_ptr.into()],
-                "hew_task_scope_set_current_call",
-                "hew_task_scope_set_current call",
-            )?;
-            if let Some(dest_place) = dest {
-                let prev = call.try_as_basic_value().basic().ok_or_else(|| {
-                    CodegenError::FailClosed("hew_task_scope_set_current returned void".into())
-                })?;
-                let (dest_ptr, _) = place_pointer(fn_ctx, dest_place)?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, prev)
-                    .llvm_ctx("hew_task_scope_set_current store")?;
-            }
-            let _ = (i32_ty, ptr_ty);
-        }
-        F::TaskScopeDestroy | F::TaskScopeJoinAll => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): expected 1 arg, got {}",
-                    args.len()
-                )));
-            }
-            let scope_ptr = load_duplex_handle(fn_ctx, args[0], symbol)?;
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                symbol,
-            )?;
-            fn_ctx
-                .builder
-                .build_call(fv, &[scope_ptr.into()], &format!("{symbol}_call"))
-                .llvm_ctx_with(|| format!("{symbol} call"))?;
-            if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "{symbol} returns void; producer must not supply dest={d:?}"
-                )));
-            }
-            let _ = (i32_ty, ptr_ty);
-        }
-        F::TaskScopeSpawn => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_task_scope_spawn): expected 2 args, got {}",
-                    args.len()
-                )));
-            }
-            let scope_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_scope_spawn arg0")?;
-            let task_ptr = load_duplex_handle(fn_ctx, args[1], "hew_task_scope_spawn arg1")?;
-            fn_ctx.call_runtime_void(
-                symbol,
-                &[scope_ptr.into(), task_ptr.into()],
-                "hew_task_scope_spawn_call",
-                "hew_task_scope_spawn call",
-            )?;
-            let _ = (i32_ty, ptr_ty);
-        }
-        F::TaskScopeCancelAfterNs => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_task_scope_cancel_after_ns): expected 2 args, got {}",
-                    args.len()
-                )));
-            }
-            let scope_ptr =
-                load_duplex_handle(fn_ctx, args[0], "hew_task_scope_cancel_after_ns arg0")?;
-            let nanos = load_int_arg(
-                fn_ctx,
-                args[1],
-                i64_ty,
-                "hew_task_scope_cancel_after_ns duration",
-            )?;
-            fn_ctx.call_runtime_void(
-                symbol,
-                &[scope_ptr.into(), nanos.into()],
-                "hew_task_scope_cancel_after_ns_call",
-                "hew_task_scope_cancel_after_ns call",
-            )?;
-            let _ = (i32_ty, ptr_ty);
-        }
-        // hew_task_spawn_thread(task: *mut HewTask, task_fn: TaskFn) -> void
-        // args[0]: task ptr. args[1]: function pointer (ptr-typed in opaque-ptr mode).
-        //
-        // SHIM(row3→producer): the upcoming MIR producer for `spawn fn(...)` has
-        // not landed yet (inventory row 3). The Place shape for a function-pointer
-        // argument is an open design question — no existing arm loads a fn-ptr from
-        // a Place. When the producer lands it must pick one of:
-        //   (a) Place::Local(N) of a ptr-typed alloca storing the fn ptr, using
-        //       `load_duplex_handle` (which loads any ptr from a ptr alloca).
-        //   (b) A new Place variant specifically for function pointers.
-        // Emitting a fail-closed arm now locks in the allowlist guard without
-        // committing to the wrong ABI shape prematurely. WHEN-OBSOLETE: when the
-        // `spawn fn(...)` MIR producer lands and picks a Place convention; replace
-        // this shim with a real two-arg call matching that convention. WHAT: load
-        // task ptr from args[0], load fn-ptr from args[1] using the chosen Place
-        // shape, call void hew_task_spawn_thread(task, fn_ptr).
-        F::TaskSpawnThread => {
-            return Err(CodegenError::FailClosed(
-                "Instr::CallRuntimeAbi(hew_task_spawn_thread): no MIR producer for \
-                 spawn fn(...) has landed yet (inventory row 3). The fn-ptr Place \
-                 convention is undecided. Wire this arm when the spawn producer lands \
-                 and picks a Place shape for the function-pointer argument."
-                    .to_string(),
-            ));
-        }
-        // hew_task_await_blocking(task: *mut HewTask) -> *mut c_void
-        // args[0]: task ptr. dest: Place for the result pointer (may be None for
-        // void-result tasks; the blocking guarantee is unconditional).
-        F::TaskAwaitBlocking => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_task_await_blocking): expected 1 arg \
-                     (task), got {}",
-                    args.len()
-                )));
-            }
-            let task_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_await_blocking arg0")?;
-            let call = fn_ctx.call_runtime(
-                symbol,
-                &[task_ptr.into()],
-                "hew_task_await_blocking_call",
-                "hew_task_await_blocking call",
-            )?;
-            // Result pointer — optional; void-result tasks may pass dest: None.
-            if let Some(dest_place) = dest {
-                let result_val = call.try_as_basic_value().basic().ok_or_else(|| {
-                    CodegenError::FailClosed("hew_task_await_blocking returned void".into())
-                })?;
-                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, result_val)
-                    .llvm_ctx("hew_task_await_blocking store")?;
-            }
-            let _ = (i32_ty, ptr_ty);
-        }
-        // hew_task_get_result(task: *mut HewTask) -> *mut c_void
-        // args[0]: task ptr. dest: Place for the result pointer.
-        // Must be called after hew_task_await_blocking (task is Done).
-        F::TaskGetResult => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_task_get_result): expected 1 arg \
-                     (task), got {}",
-                    args.len()
-                )));
-            }
-            let task_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_get_result arg0")?;
-            let result_val = fn_ctx.call_runtime_basic(
-                symbol,
-                &[task_ptr.into()],
-                "hew_task_get_result_call",
-                "hew_task_get_result call",
-            )?;
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_task_get_result: producer must supply a dest place for the result ptr"
-                        .into(),
-                )
-            })?;
-            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, result_val)
-                .llvm_ctx("hew_task_get_result store")?;
-            let _ = (i32_ty, ptr_ty);
-        }
-        // hew_task_free(task: *mut HewTask) -> void
-        // args[0]: task ptr. dest: None — frees the task allocation.
-        F::TaskFree => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_task_free): expected 1 arg (task), got {}",
-                    args.len()
-                )));
-            }
-            let task_ptr = load_duplex_handle(fn_ctx, args[0], "hew_task_free arg0")?;
-            fn_ctx.call_runtime_void(
-                symbol,
-                &[task_ptr.into()],
-                "hew_task_free_call",
-                "hew_task_free call",
-            )?;
-            if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_task_free returns void; producer must not supply dest={d:?}"
-                )));
-            }
-            let _ = (i32_ty, ptr_ty);
-        }
-        // ── supervisor child-slot lookup (S3) ────────────────────────────────
-        //
-        // hew_supervisor_child_get(sup: *mut HewSupervisor, key: u32)
-        //     -> ChildLookupResult  (16-byte #[repr(C)] struct)
-        //
-        // MIR shape (from `lower_supervisor_child_get`):
-        //   args[0]: Place::ActorHandle(N) — supervisor PID (ptr-typed alloca).
-        //   args[1]: Place::Local(M)       — i64 slot index (ConstI64 from MIR).
-        //   dest:    Place::Local(K)       — __HewChildLookupResult (struct alloca).
-        //
-        // ABI bridge — WHY we call `hew_supervisor_child_get_raw` here:
-        //   On Windows x64 (MSVC ABI), Rust returns `ChildLookupResult` (16 bytes)
-        //   via a hidden sret pointer in RCX.  The previous codegen emitted a
-        //   register-return call site (`call { i64, i64 } @hew_supervisor_child_get`)
-        //   which LLVM lowers to RAX:RDX return — mismatching the Rust callee that
-        //   wrote the result to [RCX=sup] and returned the buffer address in RAX.
-        //   Result: the supervisor struct was silently corrupted and the caller read
-        //   a heap address as the tag word → trap 206 or stale null handle → AV.
-        //
-        //   Fix: call `hew_supervisor_child_get_raw(sup, key, &handle_out)` which
-        //   returns the packed word0 (tag in bits[7:0]) as a plain `u64` — single
-        //   register, no sret on any platform.  The handle is written through an
-        //   output pointer (also no ABI ambiguity).
-        //
-        //   `key` is `u32` in the runtime (i32 in LLVM); MIR emits i64 for the
-        //   slot index (ConstI64). Truncate to i32 before the call.
-        //
-        // WASM: `uses_wasm_excluded_symbol` gates this symbol before WASM
-        //   emission; supervisor tree requires the native scheduler runtime.
-        F::SupervisorChildGet => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_supervisor_child_get): expected 2 args \
-                     (sup, key), got {}",
-                    args.len()
-                )));
-            }
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_supervisor_child_get: producer must supply a dest place \
-                     (the __HewChildLookupResult alloca)"
-                        .to_string(),
-                )
-            })?;
-
-            // arg0: supervisor handle — ptr-typed (ActorHandle or actor-derived ptr).
-            let sup_ptr = load_duplex_handle(fn_ctx, args[0], "supervisor_child_get sup")?;
-
-            // arg1: slot index — i64 in MIR (ConstI64); truncate to i32 for the ABI.
-            let key_i64 = load_int_arg(fn_ctx, args[1], i64_ty, "supervisor_child_get key_i64")?;
-            let key_i32 = fn_ctx
-                .builder
-                .build_int_truncate(key_i64, i32_ty, "supervisor_child_get key_i32")
-                .llvm_ctx("supervisor_child_get key truncate")?;
-
-            // Alloca a u64 to receive the actor handle from the raw variant.
-            let handle_out = fn_ctx
-                .builder
-                .build_alloca(i64_ty, "child_handle_out")
-                .llvm_ctx("supervisor_child_get handle_out alloca")?;
-
-            // Call hew_supervisor_child_get_raw — returns word0 (tag in low byte)
-            // as i64; writes handle to *handle_out.  Platform-agnostic: no sret.
-            let fv = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_supervisor_child_get_raw",
-            )?;
-            let llvm_args: [BasicMetadataValueEnum; 3] =
-                [sup_ptr.into(), key_i32.into(), handle_out.into()];
-            let call_site = fn_ctx
-                .builder
-                .build_call(fv, &llvm_args, "hew_supervisor_child_get_raw_call")
-                .llvm_ctx("hew_supervisor_child_get_raw call")?;
-            let word0_i64 = call_site
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed(
-                        "hew_supervisor_child_get_raw returned void unexpectedly".into(),
-                    )
-                })?
-                .into_int_value();
-
-            // word0: packed (tag: u8, reason: u8, _pad: [u8; 6]) — tag in low byte.
-            // Truncate to i8 then zext to i64 for the dest alloca's i64-typed slot.
-            let tag_i8 = fn_ctx
-                .builder
-                .build_int_truncate(word0_i64, fn_ctx.ctx.i8_type(), "child_tag_i8")
-                .llvm_ctx("trunc tag")?;
-            let tag_i64 = fn_ctx
-                .builder
-                .build_int_z_extend(tag_i8, i64_ty, "child_tag_i64")
-                .llvm_ctx("zext tag")?;
-
-            // Load handle from the output pointer alloca.
-            let handle_i64 = fn_ctx
-                .builder
-                .build_load(i64_ty, handle_out, "child_handle_i64")
-                .llvm_ctx("load child handle")?
-                .into_int_value();
-
-            // The dest alloca has struct type { i64, i64 } (the MIR 2-field
-            // flattening of ChildLookupResult registered in lower.rs:412).
-            let (dest_ptr, dest_slot_ty) = place_pointer(fn_ctx, dest_place)?;
-            let dest_struct_ty = match dest_slot_ty {
-                BasicTypeEnum::StructType(st) => st,
-                other => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "hew_supervisor_child_get: dest Place must be a struct \
-                         ({{i64, i64}} for __HewChildLookupResult), got {other:?}"
-                    )));
-                }
-            };
-            // Store tag into field 0 of the dest alloca.
-            let tag_field_ptr = fn_ctx
-                .builder
-                .build_struct_gep(dest_struct_ty, dest_ptr, 0, "dest_tag_field_ptr")
-                .llvm_ctx("supervisor_child_get dest tag GEP")?;
-            fn_ctx
-                .builder
-                .build_store(tag_field_ptr, tag_i64)
-                .llvm_ctx("supervisor_child_get tag store")?;
-            // Store handle into field 1 of the dest alloca.
-            let handle_field_ptr = fn_ctx
-                .builder
-                .build_struct_gep(dest_struct_ty, dest_ptr, 1, "dest_handle_field_ptr")
-                .llvm_ctx("supervisor_child_get dest handle GEP")?;
-            fn_ctx
-                .builder
-                .build_store(handle_field_ptr, handle_i64)
-                .llvm_ctx("supervisor_child_get handle store")?;
-            let _ = (i32_ty, ptr_ty);
-        }
-
-        // ── Regex literal match arm lowering ──────────────────────────────────
-        //
-        // Both arms load the compiled `*HewRegex` handle from the module-level
-        // `@hew_regex_handles` global array using the `literal_id` (arg[1]) as
-        // the GEP index. The array is populated by the `hew_module_init_regex`
-        // constructor registered in `@llvm.global_ctors` (see
-        // `emit_regex_module_init`). If the global is absent (no regex literals
-        // in the pipeline), these arms fail closed — they should never be reached
-        // without a corresponding `emit_regex_module_init` call.
-
-        // hew_regex_match(re: *const HewRegex, text: *const c_char) -> i32
-        //
-        // args[0]: scrutinee (string local; stored as ptr in LLVM)
-        // args[1]: literal_id (ConstI64 local; used as GEP index into global array)
-        // dest:    i32 local (MIR emits IntCmp(NotEq, result, 0) immediately after)
-        F::RegexMatch => {
-            if args.len() != 2 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_regex_match): expected 2 args \
-                     (scrutinee, literal_id), got {}",
-                    args.len()
-                )));
-            }
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_regex_match: producer must supply a dest place for the i32 result".into(),
-                )
-            })?;
-            // arg0: scrutinee — ResolvedTy::String (stored as ptr in LLVM).
-            let (scrutinee_alloca, scrutinee_llvm_ty) = place_pointer(fn_ctx, args[0])?;
-            let text_ptr = fn_ctx
-                .builder
-                .build_load(scrutinee_llvm_ty, scrutinee_alloca, "regex_match_text")
-                .llvm_ctx("hew_regex_match text load")?
-                .into_pointer_value();
-            // arg1: literal_id — ConstI64 → used as GEP index into @hew_regex_handles.
-            let lit_id = load_int_arg(fn_ctx, args[1], i64_ty, "hew_regex_match lit_id")?;
-            let handle_arr_global =
-                fn_ctx
-                    .llvm_mod
-                    .get_global("hew_regex_handles")
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed(
-                            "hew_regex_match: @hew_regex_handles global not found — \
-                     regex_literals must be non-empty in the pipeline to emit the global"
-                                .into(),
-                        )
-                    })?;
-            // The global is [N x ptr]; GEP with [0, lit_id] to reach slot lit_id.
-            // We don't know N at this point (it's a module-level choice), but
-            // LLVM's typed GEP for arrays only validates the outer-index (0) at
-            // IR level; the inner index is bounds-checked by the type-checker at
-            // compile time (literal_id < N is an invariant). Using i64 for both
-            // indices; LLVM normalises to the GEP element type internally.
-            let handle_arr_ty = handle_arr_global.get_value_type().into_array_type();
-            let slot_ptr = unsafe {
-                fn_ctx
-                    .builder
-                    .build_gep(
-                        handle_arr_ty,
-                        handle_arr_global.as_pointer_value(),
-                        &[i64_ty.const_zero(), lit_id],
-                        "regex_handle_slot",
-                    )
-                    .llvm_ctx("hew_regex_match GEP")?
-            };
-            let handle = fn_ctx
-                .builder
-                .build_load(ptr_ty, slot_ptr, "regex_handle")
-                .llvm_ctx("hew_regex_match handle load")?
-                .into_pointer_value();
-            // Call hew_regex_match(handle, text) -> i32.
-            let llvm_args: [BasicMetadataValueEnum; 2] = [handle.into(), text_ptr.into()];
-            let result_i32 = fn_ctx.call_runtime_basic(
-                symbol,
-                &llvm_args,
-                "hew_regex_match_call",
-                "hew_regex_match call",
-            )?;
-            // Store i32 into dest.
-            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, result_i32)
-                .llvm_ctx("hew_regex_match store")?;
-        }
-
-        // hew_regex_capture(re: *const HewRegex, text: *const c_char,
-        //                   capture_idx: i64) -> *mut c_char
-        //
-        // args[0]: scrutinee (string local; stored as ptr)
-        // args[1]: literal_id (ConstI64; GEP into @hew_regex_handles)
-        // args[2]: capture_idx (ConstI64; 0-based into pattern's named capture list)
-        // dest:    i64 local (captures stored as i64 for null-check via IntCmp)
-        //
-        // The returned *mut c_char is converted to i64 via ptrtoint so it fits
-        // into the MIR i64 capture place. The MIR null-check (`IntCmp(Eq, cap, 0)`)
-        // fires when the capture did not participate (null → 0 → branch to next arm).
-        F::RegexCapture => {
-            if args.len() != 3 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_regex_capture): expected 3 args \
-                     (scrutinee, literal_id, capture_idx), got {}",
-                    args.len()
-                )));
-            }
-            let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_regex_capture: producer must supply a dest place for the capture ptr"
-                        .into(),
-                )
-            })?;
-            // arg0: scrutinee — ResolvedTy::String (ptr in LLVM).
-            let (scrutinee_alloca, scrutinee_llvm_ty) = place_pointer(fn_ctx, args[0])?;
-            let text_ptr = fn_ctx
-                .builder
-                .build_load(scrutinee_llvm_ty, scrutinee_alloca, "regex_cap_text")
-                .llvm_ctx("hew_regex_capture text load")?
-                .into_pointer_value();
-            // arg1: literal_id — GEP into @hew_regex_handles.
-            let lit_id = load_int_arg(fn_ctx, args[1], i64_ty, "hew_regex_capture lit_id")?;
-            let handle_arr_global =
-                fn_ctx
-                    .llvm_mod
-                    .get_global("hew_regex_handles")
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed(
-                            "hew_regex_capture: @hew_regex_handles global not found".into(),
-                        )
-                    })?;
-            let handle_arr_ty = handle_arr_global.get_value_type().into_array_type();
-            let slot_ptr = unsafe {
-                fn_ctx
-                    .builder
-                    .build_gep(
-                        handle_arr_ty,
-                        handle_arr_global.as_pointer_value(),
-                        &[i64_ty.const_zero(), lit_id],
-                        "regex_cap_handle_slot",
-                    )
-                    .llvm_ctx("hew_regex_capture GEP")?
-            };
-            let handle = fn_ctx
-                .builder
-                .build_load(ptr_ty, slot_ptr, "regex_cap_handle")
-                .llvm_ctx("hew_regex_capture handle load")?
-                .into_pointer_value();
-            // arg2: capture_idx — i64.
-            let cap_idx = load_int_arg(fn_ctx, args[2], i64_ty, "hew_regex_capture cap_idx")?;
-            // Call hew_regex_capture(handle, text, cap_idx) -> *mut c_char.
-            let llvm_args: [BasicMetadataValueEnum; 3] =
-                [handle.into(), text_ptr.into(), cap_idx.into()];
-            let cap_ptr = fn_ctx.call_runtime_ptr(
-                symbol,
-                &llvm_args,
-                "hew_regex_capture_call",
-                "hew_regex_capture call",
-            )?;
-            // Convert *mut c_char → i64 (ptrtoint) so the capture place (ResolvedTy::I64)
-            // receives the pointer bit-pattern. The MIR null-check (IntCmp Eq 0) fires on
-            // null return (group did not participate → branch to next arm, fail-closed).
-            let cap_as_i64 = fn_ctx
-                .builder
-                .build_ptr_to_int(cap_ptr, i64_ty, "regex_cap_as_i64")
-                .llvm_ctx("hew_regex_capture ptrtoint")?;
-            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            fn_ctx
-                .builder
-                .build_store(dest_ptr, cap_as_i64)
-                .llvm_ctx("hew_regex_capture store")?;
-        }
-
-        // hew_regex_free_capture(ptr: *mut c_char) -> void
-        //
-        // args[0]: the i64 capture place (pointer bit-pattern stored as i64 via ptrtoint).
-        //          Converted back to *mut c_char via inttoptr before the call.
-        // dest:    must be None (void return).
-        //
-        // Emitted by MIR at arm-body exit (success path, after all captures are
-        // extracted) and in partial-failure cleanup blocks (captures[0..j] already
-        // allocated when capture[j] returned null).
-        F::RegexFreeCapture => {
-            if args.len() != 1 {
-                return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_regex_free_capture): expected 1 arg \
-                     (capture ptr as i64), got {}",
-                    args.len()
-                )));
-            }
-            // The capture place is ResolvedTy::I64 (pointer bit-pattern via ptrtoint).
-            // Load the i64 value and convert back to *mut c_char via inttoptr.
-            let cap_as_i64 = load_int_arg(fn_ctx, args[0], i64_ty, "hew_regex_free_cap_i64")?;
-            let cap_ptr = fn_ctx
-                .builder
-                .build_int_to_ptr(cap_as_i64, ptr_ty, "hew_regex_free_cap_ptr")
-                .llvm_ctx("hew_regex_free_capture inttoptr")?;
-            fn_ctx.call_runtime_void(
-                symbol,
-                &[cap_ptr.into()],
-                "hew_regex_free_capture_call",
-                "hew_regex_free_capture call",
-            )?;
-        }
-
-        // Allowlisted but not wired (no codegen lowering arm yet), plus the
-        // pre-staged intercept families whose calls ride `Terminator::Call`
-        // and can never legally arrive as `Instr::CallRuntimeAbi` (their
-        // symbols are not in `MIR_EMITTER_RUNTIME_SYMBOLS`, so
-        // `RuntimeCall::new` refuses them at construction — this arm is
-        // their unreachable-by-construction backstop). Exhaustively
-        // enumerated, NO wildcard: a new family cannot land without an
-        // explicit lowering decision here (`parity-or-tracked-gap`,
-        // LESSONS P0 `match-fail-closed`).
-        F::ActorAsk
-        | F::ActorAskWithChannel
-        | F::ActorCooperate
-        | F::ActorSendById
-        | F::ActorSpawn
-        | F::ActorUnlink
-        | F::AutoMutexAlloc
-        | F::AutoMutexFree
-        | F::AutoMutexLock
-        | F::AutoMutexUnlock
-        | F::CancelTokenIsRequested
-        | F::CancelTokenRelease
-        | F::CancelTokenRetain
-        | F::ChannelRecvLayout
-        | F::ChannelSendLayout
-        | F::ChannelTryRecvLayout
-        | F::ChannelSenderClose
-        | F::ChannelReceiverClose
-        | F::DuplexClone
-        | F::DuplexCloseHalf
-        | F::DuplexPayloadFree
-        | F::DuplexRecv
-        | F::DuplexRecvHalf
-        | F::DuplexSendHalf
-        | F::DuplexTryRecv
-        | F::DuplexTrySend
-        | F::DynBoxAlloc
-        | F::DynBoxFree
-        | F::HashMapContainsKeyLayout
-        | F::HashMapFreeLayout
-        | F::HashMapGetLayout
-        | F::HashMapInsertLayout
-        | F::HashMapKeysLayout
-        | F::HashMapLenLayout
-        | F::HashMapNew
-        | F::HashMapNewWithLayout
-        | F::HashMapRemoveLayout
-        | F::HashMapValuesLayout
-        | F::HashSetContainsLayout
-        | F::HashSetFreeLayout
-        | F::HashSetInsertLayout
-        | F::HashSetIsEmptyLayout
-        | F::HashSetLenLayout
-        | F::HashSetNew
-        | F::HashSetNewWithLayout
-        | F::HashSetRemoveLayout
-        | F::LambdaBodyAllocReplyBuf
-        | F::LambdaActorClone
-        | F::LambdaActorDowngrade
-        | F::LambdaDrainAll
-        | F::LambdaActorWeakClone
-        | F::LambdaActorWeakDrop
-        | F::MathIntrinsic(_)
-        // User metrics (#1862): the labelled `*Vec` registration and the
-        // bucketed histogram registration take raw C arrays (`*const i64` /
-        // `*const *const c_char` plus a length). A Hew `extern "C"` declaration
-        // marshals a `Vec<T>` to a single `*mut HewVec`, which does not match
-        // that `(ptr, len)` ABI, so these stay fail-closed until a HewVec-shaped
-        // ABI lands. The scalar surface has a real arm below.
-        | F::MetricHistogramRegister
-        | F::MetricVecRegister
-        | F::MetricVecWith
-        | F::NodeLookup
-        | F::RcNew
-        | F::RecvHalfRecv
-        | F::RecvHalfTryRecv
-        | F::RegexCompile
-        | F::RemotePidTell
-        | F::ReplyChannelCancel
-        | F::ReplyChannelFree
-        | F::ReplyChannelNew
-        | F::ReplyPayloadFree
-        | F::ReplyWait
-        | F::SelectFirst
-        | F::SendHalfSend
-        | F::SendHalfTrySend
-        | F::SinkClose
-        | F::SinkWrite(_)
-        | F::SinkTryWrite(_)
-        | F::StreamClose
-        | F::StreamNextLayout
-        | F::StreamSendLayout
-        | F::StreamTryNextLayout
-        | F::SupervisorNestedGet
-        | F::TcpAttachLocal
-        | F::TaskCompleteThreaded
-        | F::TaskCompletionObserve
-        | F::TaskCompletionUnobserve
-        | F::TaskGetEnv
-        | F::TaskGetError
-        | F::TaskSetEnv
-        // `hew_task_set_result` is synthesized directly by the codegen task
-        // wrapper (`get_or_create_task_wrapper`), never emitted as an
-        // `Instr::CallRuntimeAbi` — so it has no MIR-ABI lowering arm here and
-        // fails closed if it ever reaches this dispatch, exactly like its
-        // sibling `TaskCompleteThreaded`.
-        | F::TaskSetResult
-        | F::VtableDispatchPanicOnOob => {
-            return Err(CodegenError::FailClosed(format!(
-                "Instr::CallRuntimeAbi(symbol={symbol:?}, family={:?}): codegen has no \
-                 lowering arm for this runtime family; wire a per-family arm or leave \
-                 the producer fail-closed until the substrate lane lands",
-                call.family(),
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// W3.030 Stage 2: typed dispatch decision for an `ElabDrop { drop_fn:
 /// Some(name) }`. The codegen drop path resolves *every* such drop to
 /// exactly one of these two arms; a third "unresolved" path is a
@@ -24933,7 +19217,7 @@ fn verify_drop_dispatch_resolves<'ctx>(
 /// A third dispatch path is impossible by construction — `resolve_drop_fn`
 /// either returns one of the two arms or fails closed. The verifier
 /// `verify_drop_dispatch_resolves` pins this at module-build time.
-fn lower_drop(
+pub(crate) fn lower_drop(
     fn_ctx: &FnCtx<'_, '_>,
     place: Place,
     drop_fn: &hew_mir::DropFnSpec,
@@ -25091,7 +19375,7 @@ fn emit_bytes_inplace_drop(fn_ctx: &FnCtx<'_, '_>, place: Place) -> CodegenResul
 }
 
 /// `DropDispatch::RuntimeSymbol` arm: the pre-W3.030 runtime close path.
-fn lower_drop_runtime(
+pub(crate) fn lower_drop_runtime(
     fn_ctx: &FnCtx<'_, '_>,
     place: Place,
     symbol: &'static str,
@@ -26003,7 +20287,7 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
                     df = drop.drop_fn,
                 )));
             }
-            let enum_name = enum_layout_key_for_ty(fn_ctx, &drop.ty)?;
+            let enum_name = crate::layout::enum_layout_key_for_ty(fn_ctx, &drop.ty)?;
             // The helper body is synthesised by `emit_state_clone_drop_synthesis`
             // (seeded with every `EnumInPlace`-dropped enum). A declaration with
             // no body would link-fail; refuse to emit a dangling call.
@@ -26066,7 +20350,7 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
             // tuples crossing a return boundary are moved, never cloned, and a
             // tuple carrying a `Stream`/`Sink` handle has no dup helper so the
             // clone body would fail closed. The emitter is idempotent.
-            let tuple_key = tuple_thunk_key(elems);
+            let tuple_key = crate::thunks::tuple_thunk_key(elems);
             let tuple_llvm_ty = resolve_ty(fn_ctx.ctx, &drop.ty, fn_ctx.record_layouts)?;
             emit_tuple_drop_inplace_body_only(fn_ctx, &tuple_key, elems, tuple_llvm_ty)?;
             let helper = get_or_declare_tuple_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &tuple_key);
@@ -26276,7 +20560,10 @@ const AGGREGATE_DROP_DEPTH_BOUND: u32 = 64;
 /// (`dedup-semantic-boundary`). Consults the record/enum field registries so a
 /// `Header { name: string }` element (owns heap via a field, not a type arg) is
 /// correctly recognised.
-fn resolved_ty_element_owns_heap_for_owned_vec(fn_ctx: &FnCtx<'_, '_>, elem: &ResolvedTy) -> bool {
+pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
+    fn_ctx: &FnCtx<'_, '_>,
+    elem: &ResolvedTy,
+) -> bool {
     match elem {
         // Bare scalar/string/bytes elements take the non-owned paths.
         ResolvedTy::String | ResolvedTy::Bytes => false,
@@ -26903,7 +21190,7 @@ fn emit_heap_slot_drop<'ctx>(
 /// Load an integer-typed `Place` and return its value coerced to the
 /// requested `expected` i64 type. Today every M2 substrate integer arg
 /// is i64 at the C-ABI; this helper rejects type mismatches loudly.
-fn load_int_arg<'ctx>(
+pub(crate) fn load_int_arg<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     place: Place,
     expected: inkwell::types::IntType<'ctx>,
@@ -26939,7 +21226,7 @@ fn load_int_arg<'ctx>(
 /// payload; the spine subset's single-vertebra exemplar carries i64
 /// payloads, so the spill produces an 8-byte alloca whose address is
 /// the `*const u8` the runtime reads.
-fn spill_int_arg_as_ptr<'ctx>(
+pub(crate) fn spill_int_arg_as_ptr<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     place: Place,
     expected: inkwell::types::IntType<'ctx>,
@@ -27043,7 +21330,7 @@ fn spill_msg_arg_as_ptr<'ctx>(
 /// `(ptr, sizeof)` shape the declared-actor wire uses
 /// (`actor_payload_ptr_size`), keeping one payload mechanism across both
 /// actor families.
-fn lambda_msg_ptr_len<'ctx>(
+pub(crate) fn lambda_msg_ptr_len<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     msg: Place,
     len: Place,
@@ -27063,7 +21350,7 @@ fn lambda_msg_ptr_len<'ctx>(
 /// underlying alloca is `ptr`-typed) as a loaded `*mut HewDuplexHandle`.
 /// Used by `hew_duplex_send`'s receiver arg and the `hew_duplex_close`
 /// drop ritual.
-fn load_duplex_handle<'ctx>(
+pub(crate) fn load_duplex_handle<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     place: Place,
     label: &str,
@@ -27095,7 +21382,7 @@ fn load_duplex_handle<'ctx>(
 /// the address into the underlying `ptr` slot. Rejects any non-DuplexHandle
 /// place at this seam (Place::Local has no symmetric runtime contract
 /// today; gate it loudly).
-fn duplex_handle_out_addr<'ctx>(
+pub(crate) fn duplex_handle_out_addr<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     place: Place,
     label: &str,
@@ -27245,7 +21532,7 @@ fn emit_print_value_call<'ctx>(
     Ok(())
 }
 
-fn actor_payload_ptr_size<'ctx>(
+pub(crate) fn actor_payload_ptr_size<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     value: Place,
     label: &str,
@@ -27272,7 +21559,7 @@ fn actor_payload_ptr_size<'ctx>(
     Ok((ptr, size))
 }
 
-fn static_type_size_i64<'ctx>(
+pub(crate) fn static_type_size_i64<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     ty: &ResolvedTy,
     label: &str,
@@ -27320,7 +21607,7 @@ fn load_actor_id<'ctx>(
         .into_int_value())
 }
 
-fn get_or_declare_free<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionValue<'ctx> {
+pub(crate) fn get_or_declare_free<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>) -> FunctionValue<'ctx> {
     if let Some(fv) = fn_ctx.llvm_mod.get_function("free") {
         return fv;
     }
@@ -27401,7 +21688,11 @@ fn is_machine_step_symbol(callee: &str) -> bool {
         .is_some_and(|prefix| !prefix.is_empty())
 }
 
-fn emit_trap_with_code(fn_ctx: &FnCtx<'_, '_>, code: u64, label: &str) -> CodegenResult<()> {
+pub(crate) fn emit_trap_with_code(
+    fn_ctx: &FnCtx<'_, '_>,
+    code: u64,
+    label: &str,
+) -> CodegenResult<()> {
     let trap_with_code_fn = match fn_ctx.llvm_mod.get_function("hew_trap_with_code") {
         Some(fv) => fv,
         None => {
@@ -27459,7 +21750,7 @@ fn emit_trap_with_code(fn_ctx: &FnCtx<'_, '_>, code: u64, label: &str) -> Codege
 ///
 /// Runs as an `Instr` (not a terminator), so it appends its own merge block and
 /// leaves the builder positioned there for the instructions that follow.
-fn emit_send_result_from_rc<'ctx>(
+pub(crate) fn emit_send_result_from_rc<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     status: IntValue<'ctx>,
     dest: Place,
@@ -27617,7 +21908,7 @@ fn remote_actor_dispatch_ptr<'ctx>(
 /// its dispatch global ptr (the `(dispatch, msg_type)` cross-node codec key for
 /// the originating remote ask). Mirrors the `RemotePid<T>` unwrap in
 /// `emit_remote_pid_tell_call`.
-fn remote_ask_dispatch_ptr<'ctx>(
+pub(crate) fn remote_ask_dispatch_ptr<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     pid_place: Place,
 ) -> CodegenResult<PointerValue<'ctx>> {
@@ -28318,3781 +22609,6 @@ fn emit_math_builtin_intrinsic_call<'ctx>(
     Ok(())
 }
 
-struct RemoteAskEmit<'a> {
-    actor: Place,
-    msg_type: i32,
-    value: Place,
-    timeout_ms: Place,
-    result_dest: Place,
-    reply_dest: Place,
-    error_dest: Place,
-    reply_ty: &'a ResolvedTy,
-    next: u32,
-}
-
-/// Carrier for [`emit_suspending_remote_actor_ask_terminator`] — the suspending
-/// cross-node `await remote.ask(...)` ramp (`Terminator::SuspendingRemoteAsk`).
-struct SuspendingRemoteAskEmit<'a> {
-    actor: Place,
-    msg_type: i32,
-    value: Place,
-    timeout_ms: Place,
-    result_dest: Place,
-    reply_dest: Place,
-    error_dest: Place,
-    reply_ty: &'a ResolvedTy,
-    resume: u32,
-    cleanup: u32,
-}
-
-struct SuspendingAskEmit {
-    actor: Place,
-    msg_type: i32,
-    value: Place,
-    result_dest: Place,
-    reply_dest: Place,
-    error_dest: Place,
-    resume: u32,
-    cleanup: u32,
-    /// NEW-6b `await … | after d` deadline (nanoseconds). `Some(ns)` schedules a
-    /// fail-closed timeout against the suspend's cancel registration; on expiry
-    /// the resume edge binds `Err(AskError::Timeout)` instead of waiting for a
-    /// reply. `None` is a plain suspending ask.
-    deadline_ns: Option<i64>,
-}
-
-struct SuspendingReadEmit {
-    conn: Place,
-    result_dest: Place,
-    deadline_result_dest: Option<Place>,
-    error_dest: Option<Place>,
-    /// `true` when the source was `await conn.read_string() | after d`: codegen
-    /// converts `result_dest` (bytes) to a string via `hew_bytes_to_string`
-    /// before wrapping in `Ok(_)` into `deadline_result_dest`. Ignored (treated
-    /// as `false`) when `deadline_result_dest` is `None`.
-    to_string: bool,
-    resume: u32,
-    cleanup: u32,
-    /// NEW-6c `await conn.read() | after d` deadline (nanoseconds). `Some(ns)`
-    /// schedules the common await-cancel arbiter against the read slot; timeout
-    /// binds `Err(IoError::TimedOut(0))`. `None` is a plain suspending read.
-    deadline_ns: Option<i64>,
-}
-
-/// Carrier for [`emit_suspending_accept_terminator`] — the suspending
-/// `await listener.accept()` ramp (`Terminator::SuspendingAccept`).
-struct SuspendingAcceptEmit {
-    listener: Place,
-    result_dest: Place,
-    /// When present, this accept is the source of `await ln.accept() | after d`.
-    /// `result_dest` remains the raw `Connection` slot; codegen binds
-    /// `Ok(result_dest)` or `Err(IoError::TimedOut)` into this outer Result slot
-    /// after resolving the await-cancel arbiter.
-    deadline_result_dest: Option<Place>,
-    /// `IoError` payload slot for the deadline Err arm. Present exactly when
-    /// `deadline_result_dest` is present.
-    error_dest: Option<Place>,
-    /// NEW-6d `await ln.accept() | after d` deadline (nanoseconds). `Some(ns)`
-    /// schedules the common await-cancel arbiter against the read slot; timeout
-    /// binds `Err(IoError::TimedOut(0))`. `None` is a plain suspending accept.
-    deadline_ns: Option<i64>,
-    resume: u32,
-    cleanup: u32,
-}
-
-/// Carrier for [`emit_suspending_stream_next_terminator`] — the suspending
-/// `await stream.recv()` ramp (`Terminator::SuspendingStreamNext`).
-struct SuspendingStreamNextEmit {
-    stream: Place,
-    result_dest: Place,
-    /// The stream's element type. The bind edge synthesizes a
-    /// `HewVecElemLayout` witness from it
-    /// ([`channel_elem_layout_witness_ptr`]) and pops via
-    /// `hew_stream_pop_layout` — one mechanism for every describable element
-    /// type. Mirrors `elem_ty` on [`SuspendingChannelRecvEmit`].
-    elem_ty: ResolvedTy,
-    /// When present, wraps `result_dest` in `Ok(_)` or emits
-    /// `Err(TimeoutError::Timeout)` here on deadline expiry.
-    deadline_result_dest: Option<Place>,
-    /// `TimeoutError` payload slot for the deadline Err arm.
-    error_dest: Option<Place>,
-    /// Absolute deadline in nanoseconds from the source expression, when
-    /// `await stream.recv() | after d` was the form.
-    deadline_ns: Option<i64>,
-    resume: u32,
-    cleanup: u32,
-}
-
-/// Carrier for [`emit_suspending_stream_send_terminator`] — the suspending
-/// `await sink.send(x)` ramp (`Terminator::SuspendingStreamSend`).
-struct SuspendingStreamSendEmit {
-    sink: Place,
-    value: Place,
-    resume: u32,
-    cleanup: u32,
-}
-
-/// Carrier for [`emit_suspending_channel_recv_terminator`] — the suspending
-/// `await rx.recv()` ramp (`Terminator::SuspendingChannelRecv`).
-struct SuspendingChannelRecvEmit {
-    receiver: Place,
-    result_dest: Place,
-    /// The channel's element type. The bind edge synthesizes a
-    /// `HewVecElemLayout` witness from it
-    /// ([`channel_elem_layout_witness_ptr`]) and pops via the non-blocking
-    /// `hew_channel_try_recv_layout` — one mechanism for every describable
-    /// element type.
-    elem_ty: ResolvedTy,
-    /// When present, wraps `result_dest` in `Ok(_)` or emits
-    /// `Err(TimeoutError::Timeout)` here on deadline expiry.
-    deadline_result_dest: Option<Place>,
-    /// `TimeoutError` payload slot for the deadline Err arm.
-    error_dest: Option<Place>,
-    /// Absolute deadline in nanoseconds from the source expression, when
-    /// `await rx.recv() | after d` was the form.
-    deadline_ns: Option<i64>,
-    resume: u32,
-    cleanup: u32,
-}
-
-/// Carrier for [`emit_suspending_call_closure_terminator`] — the
-/// suspendable-callee driver (`Terminator::SuspendingCallClosure`).
-struct SuspendingCallClosureEmit<'a> {
-    callee: Place,
-    args: Vec<Place>,
-    ret_ty: &'a ResolvedTy,
-    result_dest: Option<Place>,
-    resume: u32,
-    cleanup: u32,
-}
-
-/// Carrier for [`emit_suspending_task_await_terminator`] — the suspending
-/// `await t` ramp (`Terminator::SuspendingTaskAwait`).
-struct SuspendingTaskAwaitEmit {
-    scope: Place,
-    task: Place,
-    /// `Some(slot)` reads the task result via `hew_task_get_result` on the bind
-    /// edge and copies it into the slot at the `T` element width (value task);
-    /// `None` for a unit task (nothing to bind).
-    result_dest: Option<Place>,
-    resume: u32,
-    cleanup: u32,
-}
-
-/// Carrier for [`emit_suspending_sleep_terminator`] — the suspending
-/// `sleep_ms(d)` ramp (`Terminator::SuspendingSleep`).
-struct SuspendingSleepEmit {
-    duration_ms: Place,
-    resume: u32,
-    cleanup: u32,
-}
-
-/// Carrier for [`emit_suspending_scope_deadline_terminator`] — the suspending
-/// `scope { } after(d) { body }` ramp (`Terminator::SuspendingScopeDeadline`).
-struct SuspendingScopeDeadlineEmit {
-    scope: Place,
-    duration_ms: Place,
-    timeout_body_block: u32,
-    resume: u32,
-    cleanup: u32,
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "suspend-point lowering is parameterized by the shared coroutine \
-              blocks plus per-kind abandon/resume continuations"
-)]
-fn emit_suspend_point<'ctx, FAbandon, FResume>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    coro: CoroState<'ctx>,
-    parent: FunctionValue<'ctx>,
-    resume_bind_bb: inkwell::basic_block::BasicBlock<'ctx>,
-    label: &'static str,
-    abandon_cleanup_label: &'static str,
-    abandon_branch_context: &'static str,
-    emit_abandon_cleanup: FAbandon,
-    emit_resume_bind: FResume,
-) -> CodegenResult<()>
-where
-    FAbandon: FnOnce() -> CodegenResult<()>,
-    FResume: FnOnce() -> CodegenResult<()>,
-{
-    let abandon_cleanup_bb = fn_ctx.ctx.append_basic_block(parent, abandon_cleanup_label);
-    let cc = crate::coro::CoroContext {
-        ctx: fn_ctx.ctx,
-        llvm_mod: fn_ctx.llvm_mod,
-        builder: &fn_ctx.builder,
-        function: parent,
-        handle: coro.handle,
-        id_token: coro.id_token,
-    };
-    cc.emit_suspend(
-        resume_bind_bb,
-        abandon_cleanup_bb,
-        coro.suspend_return_block,
-        false,
-        label,
-    )?;
-
-    fn_ctx.builder.position_at_end(abandon_cleanup_bb);
-    emit_abandon_cleanup()?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(coro.cleanup_block)
-        .llvm_ctx(abandon_branch_context)?;
-
-    fn_ctx.builder.position_at_end(resume_bind_bb);
-    emit_resume_bind()
-}
-
-/// Emit the caller-side non-blocking `await conn.read()` (NEW-1
-/// `Terminator::SuspendingRead`). The fd-readiness analogue of
-/// [`emit_suspending_ask_terminator`].
-///
-/// Shape (the suspendable read ramp):
-/// ```text
-///   self      = hew_actor_self()                 ; the parked-continuation actor
-///   conn      = <load conn handle>               ; pointer-shaped (opaque)
-///   slot      = hew_read_slot_new()
-///   rc        = hew_conn_await_read(conn, self, slot)
-///   br (rc != 0) -> register_err, do_suspend
-/// register_err:                                  ; registration failed, no read
-///   hew_read_slot_cancel(slot); hew_read_slot_free(slot)
-///   result_dest = empty bytes                    ; EOF/empty convention
-///   br resume_bb
-/// do_suspend:                                    ; coro.suspend (non-final)
-///   switch coro.suspend [default -> return handle, 0 -> read_bind, 1 -> cleanup]
-/// abandon_cleanup:                               ; parked cont destroyed
-///   hew_read_slot_cancel(slot); hew_read_slot_free(slot); br shared cleanup
-/// read_bind:                                     ; the reactor resumed us
-///   triple = hew_read_slot_take(slot)            ; the bytes (already deposited)
-///   store triple -> result_dest
-///   hew_read_slot_free(slot)                     ; release the creator ref
-///   br resume_bb
-/// ```
-/// The bytes travel through `slot` (a frame-spilled local) across the suspend;
-/// on resume `hew_read_slot_take` returns them on the fast path (the reactor
-/// deposited them before `enqueue_resume` woke us). Slot ref counting: `new`
-/// (+1 creator ref); `hew_conn_await_read` takes its own reactor ref on success;
-/// the single `hew_read_slot_free` on each terminal edge releases the creator
-/// ref — the reactor releases its ref when its `Registration` is dropped.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the full caller-side read ramp — registration + suspend + the \
-              resume-edge bytes binding — is kept in one place so the suspend \
-              point and the value routing it depends on are read together"
-)]
-fn emit_suspending_read_terminator<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: SuspendingReadEmit,
-) -> CodegenResult<()> {
-    // The coro prologue must be present (lower_function detects the SuspendingRead
-    // carrier via `has_suspend` and emits it). Fail closed otherwise (R2 / the
-    // Lane-B silent-no-op class) — a SuspendingRead without coro state is a
-    // producer that ran ahead of the prologue.
-    let coro = fn_ctx.coro.ok_or_else(|| {
-        CodegenError::FailClosed(
-            "Terminator::SuspendingRead reached codegen but the function carries no \
-             coro prologue state — lower_function must detect the suspend carrier \
-             (has_suspend) and emit the prologue before the body"
-                .into(),
-        )
-    })?;
-    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SuspendingRead resume target bb{} not found",
-            term.resume
-        ))
-    })?;
-    if !fn_ctx.blocks.contains_key(&term.cleanup) {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingRead cleanup target bb{} not found",
-            term.cleanup
-        )));
-    }
-    if term.deadline_ns.is_some()
-        && (term.deadline_result_dest.is_none() || term.error_dest.is_none())
-    {
-        return Err(CodegenError::FailClosed(
-            "SuspendingRead deadline reached codegen without Result/IoError destinations".into(),
-        ));
-    }
-
-    // self = the current actor — the parked-continuation waiter the reactor wake
-    // re-enqueues. MUST come from `hew_actor_self()` (the thread-local execution
-    // context), NOT a spilled param: across a suspend the coroutine frame spills
-    // param 0, but the scheduler's per-dispatch context it pointed to is freed at
-    // the first suspend. On RESUME the scheduler installs a fresh context
-    // (`resume_suspended_activation`), so the thread-local read returns the live
-    // actor. This is the SAME single-authority live-context accessor the
-    // SuspendingAsk ramp uses (FIX-THE-CLASS).
-    let actor_self_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_self",
-    )?;
-    let self_actor = fn_ctx
-        .builder
-        .build_call(actor_self_fn, &[], "suspending_read_self")
-        .llvm_ctx("hew_actor_self call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
-        .into_pointer_value();
-    let conn_ptr = load_duplex_handle(fn_ctx, term.conn, "suspending_read conn")?;
-
-    let slot = fn_ctx.call_runtime_ptr(
-        "hew_read_slot_new",
-        &[],
-        "suspending_read_slot",
-        "hew_read_slot_new call",
-    )?;
-
-    let i32_ty = fn_ctx.ctx.i32_type();
-    let i64_ty = fn_ctx.ctx.i64_type();
-    let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
-        let cancel_new = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_new",
-        )?;
-        let cleanup_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_read_slot_cancel_cleanup",
-        )?;
-        let cleanup_ptr = cleanup_fn.as_global_value().as_pointer_value();
-        let reg = fn_ctx
-            .builder
-            .build_call(
-                cancel_new,
-                &[self_actor.into(), cleanup_ptr.into(), slot.into()],
-                "suspending_read_deadline_reg",
-            )
-            .llvm_ctx("hew_await_cancel_new call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-            .into_pointer_value();
-        let set_await_cancel = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_read_slot_set_await_cancel",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                set_await_cancel,
-                &[slot.into(), reg.into()],
-                "suspending_read_set_await_cancel",
-            )
-            .llvm_ctx("hew_read_slot_set_await_cancel call")?;
-        Some(reg)
-    } else {
-        None
-    };
-
-    let rc = fn_ctx.call_runtime_int(
-        "hew_conn_await_read",
-        &[conn_ptr.into(), self_actor.into(), slot.into()],
-        "suspending_read_register",
-        "hew_conn_await_read call",
-    )?;
-
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| CodegenError::Llvm("suspending read block has no parent function".into()))?;
-    let register_err_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_read_register_err");
-    let do_suspend_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_read_suspend");
-    let register_ok = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            rc,
-            rc.get_type().const_zero(),
-            "suspending_read_register_ok",
-        )
-        .llvm_ctx("suspending read register-ok compare")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(register_ok, do_suspend_bb, register_err_bb)
-        .llvm_ctx("suspending read register branch")?;
-
-    let slot_cancel = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_cancel",
-    )?;
-    let slot_free = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_free",
-    )?;
-
-    // ── register_err: the registration failed; no read will ever arrive. Cancel
-    // + free the slot and bind an empty `bytes` without suspending (no worker to
-    // free — we never parked). ────────────────────────────────────────────────
-    fn_ctx.builder.position_at_end(register_err_bb);
-    fn_ctx
-        .builder
-        .build_call(slot_cancel, &[slot.into()], "suspending_read_err_cancel")
-        .llvm_ctx("hew_read_slot_cancel (register err) call")?;
-    fn_ctx
-        .builder
-        .build_call(slot_free, &[slot.into()], "suspending_read_err_free")
-        .llvm_ctx("hew_read_slot_free (register err) call")?;
-    if let Some(reg) = reg {
-        fn_ctx.call_runtime_void(
-            "hew_await_cancel_free",
-            &[reg.into()],
-            "suspending_read_err_reg_free",
-            "hew_await_cancel_free (register err) call",
-        )?;
-    }
-    if let (Some(result_dest), Some(error_dest)) = (term.deadline_result_dest, term.error_dest) {
-        emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
-    } else {
-        store_empty_bytes(fn_ctx, term.result_dest)?;
-    }
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending read register-err br")?;
-
-    // ── do_suspend: park the continuation (non-final suspend). The default edge
-    // returns the coro handle to the trampoline (which parks it on this actor);
-    // case 0 resumes into the read-bind block; case 1 tears down. ──────────────
-    fn_ctx.builder.position_at_end(do_suspend_bb);
-    if let (Some(reg), Some(ns)) = (reg, term.deadline_ns) {
-        let delay_ms = (ns / 1_000_000).max(1) as u64;
-        let tw_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_global_timer_wheel",
-        )?;
-        let tw = fn_ctx
-            .builder
-            .build_call(tw_fn, &[], "suspending_read_deadline_tw")
-            .llvm_ctx("hew_global_timer_wheel call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_global_timer_wheel returned void".into()))?
-            .into_pointer_value();
-        let schedule = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_schedule_deadline_ms",
-        )?;
-        let delay_val = i64_ty.const_int(delay_ms, false);
-        let sched_rc = fn_ctx
-            .builder
-            .build_call(
-                schedule,
-                &[reg.into(), tw.into(), delay_val.into()],
-                "suspending_read_schedule_deadline",
-            )
-            .llvm_ctx("hew_await_cancel_schedule_deadline_ms call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_await_cancel_schedule_deadline_ms returned void".into(),
-                )
-            })?
-            .into_int_value();
-        let armed = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                sched_rc,
-                sched_rc.get_type().const_zero(),
-                "suspending_read_deadline_armed",
-            )
-            .llvm_ctx("suspending read schedule-armed compare")?;
-        let deadline_proceed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_read_deadline_proceed");
-        let deadline_check_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_read_deadline_check");
-        fn_ctx
-            .builder
-            .build_conditional_branch(armed, deadline_proceed_bb, deadline_check_bb)
-            .llvm_ctx("suspending read schedule-armed branch")?;
-
-        fn_ctx.builder.position_at_end(deadline_check_bb);
-        let status_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_status",
-        )?;
-        let sched_status = fn_ctx
-            .builder
-            .build_call(status_fn, &[reg.into()], "suspending_read_schedule_status")
-            .llvm_ctx("hew_await_cancel_status (schedule) call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
-            })?
-            .into_int_value();
-        let read_completed = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                sched_status,
-                i32_ty.const_int(1, false),
-                "suspending_read_schedule_read_completed",
-            )
-            .llvm_ctx("suspending read schedule read-completed compare")?;
-        let deadline_failclosed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_read_deadline_failclosed");
-        fn_ctx
-            .builder
-            .build_conditional_branch(read_completed, deadline_proceed_bb, deadline_failclosed_bb)
-            .llvm_ctx("suspending read schedule read-completed branch")?;
-
-        fn_ctx.builder.position_at_end(deadline_failclosed_bb);
-        let reg_cancel = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_cancel",
-        )?;
-        let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
-        let no_wake = i32_ty.const_zero();
-        fn_ctx
-            .builder
-            .build_call(
-                reg_cancel,
-                &[reg.into(), cancelled_status.into(), no_wake.into()],
-                "suspending_read_failclosed_reg_cancel",
-            )
-            .llvm_ctx("hew_await_cancel_cancel (read fail-closed) call")?;
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                reg_free,
-                &[reg.into()],
-                "suspending_read_failclosed_reg_free",
-            )
-            .llvm_ctx("hew_await_cancel_free (read fail-closed) call")?;
-        fn_ctx
-            .builder
-            .build_call(
-                slot_cancel,
-                &[slot.into()],
-                "suspending_read_failclosed_slot_cancel",
-            )
-            .llvm_ctx("hew_read_slot_cancel (fail-closed) call")?;
-        fn_ctx
-            .builder
-            .build_call(slot_free, &[slot.into()], "suspending_read_failclosed_free")
-            .llvm_ctx("hew_read_slot_free (fail-closed) call")?;
-        let result_dest = term.deadline_result_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingRead fail-closed missing Result dest".into())
-        })?;
-        let error_dest = term.error_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingRead fail-closed missing IoError dest".into())
-        })?;
-        emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
-        fn_ctx
-            .builder
-            .build_unconditional_branch(resume_bb)
-            .llvm_ctx("suspending read deadline fail-closed br")?;
-
-        fn_ctx.builder.position_at_end(deadline_proceed_bb);
-    }
-    let read_bind_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_read_bind");
-    // ── abandon_cleanup edge: when a parked SuspendingRead continuation is
-    // DESTROYED without resuming (actor stop/crash while suspended, begin_park
-    // refusal, the C1 free-path destroy_parked), `coro.suspend`'s case-1 edge
-    // runs. The shared `coro.cleanup_block` only frees the coro frame — it never
-    // sees `slot` (a codegen-local SSA value with no MIR Place), so without this
-    // interposition `slot` leaks. The abandon continuation CANCELS + FREES the
-    // creator ref before joining the shared cleanup. The cancel makes a racing
-    // reactor deposit drop its read buffer + skip the wake; the free releases
-    // this abandoned caller's creator-side ref. The late wake itself is
-    // independently fail-safe (enqueue_resume drops a wake to a freed caller).
-    emit_suspend_point(
-        fn_ctx,
-        coro,
-        parent,
-        read_bind_bb,
-        "suspending_read",
-        "suspending_read_abandon_cleanup",
-        "suspending read abandon -> shared cleanup br",
-        || {
-            // ── abandon_cleanup: cancel + free the read slot, then join the shared
-            // coro cleanup (frame-free + coro.end). ─────────────────────────────
-            if let Some(reg) = reg {
-                let reg_cancel = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
-                    "hew_await_cancel_cancel",
-                )?;
-                let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
-                let no_wake = i32_ty.const_zero();
-                fn_ctx
-                    .builder
-                    .build_call(
-                        reg_cancel,
-                        &[reg.into(), cancelled_status.into(), no_wake.into()],
-                        "suspending_read_abandon_reg_cancel",
-                    )
-                    .llvm_ctx("hew_await_cancel_cancel (read abandon) call")?;
-                let reg_free = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
-                    "hew_await_cancel_free",
-                )?;
-                fn_ctx
-                    .builder
-                    .build_call(reg_free, &[reg.into()], "suspending_read_abandon_reg_free")
-                    .llvm_ctx("hew_await_cancel_free (read abandon) call")?;
-            }
-            fn_ctx
-                .builder
-                .build_call(
-                    slot_cancel,
-                    &[slot.into()],
-                    "suspending_read_abandon_cancel",
-                )
-                .llvm_ctx("hew_read_slot_cancel (abandon) call")?;
-            fn_ctx
-                .builder
-                .build_call(slot_free, &[slot.into()], "suspending_read_abandon_free")
-                .llvm_ctx("hew_read_slot_free (abandon) call")?;
-            Ok(())
-        },
-        || emit_suspending_read_bind(fn_ctx, &term, slot, slot_free, reg, resume_bb, parent),
-    )?;
-
-    Ok(())
-}
-
-/// Resume-bind continuation of [`emit_suspending_read_terminator`]: the reactor
-/// resumed us (enqueue_resume). The bytes are already deposited in `slot`;
-/// `hew_read_slot_take_raw` writes them into `result_dest` on the fast path.
-/// On a deadline carrier the deadline-vs-read arbiter runs first (timeout binds
-/// `Err(IoError::TimedOut)`). Release the creator ref and branch to the MIR
-/// resume block. Split out so the suspend-point seam owns the suspend + abandon
-/// scaffolding while this owns the value routing.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the full read-bind edge — deadline arbiter + the bytes/string \
-              binding — is kept in one place so the deadline resolution and the \
-              value routing it gates are read together"
-)]
-fn emit_suspending_read_bind<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: &SuspendingReadEmit,
-    slot: inkwell::values::PointerValue<'ctx>,
-    slot_free: FunctionValue<'ctx>,
-    reg: Option<inkwell::values::PointerValue<'ctx>>,
-    resume_bb: inkwell::basic_block::BasicBlock<'ctx>,
-    parent: FunctionValue<'ctx>,
-) -> CodegenResult<()> {
-    let i32_ty = fn_ctx.ctx.i32_type();
-    if let Some(reg) = reg {
-        let complete = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_complete",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(complete, &[reg.into()], "suspending_read_deadline_complete")
-            .llvm_ctx("hew_await_cancel_complete call")?;
-        let status_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_status",
-        )?;
-        let status = fn_ctx
-            .builder
-            .build_call(status_fn, &[reg.into()], "suspending_read_deadline_status")
-            .llvm_ctx("hew_await_cancel_status call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
-            })?
-            .into_int_value();
-        let timed_out = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                i32_ty.const_int(3, false),
-                "suspending_read_timed_out",
-            )
-            .llvm_ctx("suspending read timed-out compare")?;
-        let timeout_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_read_timeout");
-        let read_proceed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_read_proceed");
-        fn_ctx
-            .builder
-            .build_conditional_branch(timed_out, timeout_bb, read_proceed_bb)
-            .llvm_ctx("suspending read deadline branch")?;
-
-        fn_ctx.builder.position_at_end(timeout_bb);
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(reg_free, &[reg.into()], "suspending_read_timeout_reg_free")
-            .llvm_ctx("hew_await_cancel_free (read timeout) call")?;
-        fn_ctx
-            .builder
-            .build_call(slot_free, &[slot.into()], "suspending_read_timeout_free")
-            .llvm_ctx("hew_read_slot_free (timeout) call")?;
-        let result_dest = term.deadline_result_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingRead timeout missing Result dest".into())
-        })?;
-        let error_dest = term.error_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingRead timeout missing IoError dest".into())
-        })?;
-        emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
-        fn_ctx
-            .builder
-            .build_unconditional_branch(resume_bb)
-            .llvm_ctx("suspending read timeout br")?;
-
-        fn_ctx.builder.position_at_end(read_proceed_bb);
-    }
-    let slot_take = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_take_raw",
-    )?;
-    // Use hew_read_slot_take_raw: avoid Windows x64 MSVC sret mismatch.
-    // _raw writes directly to dest_ptr and returns void.
-    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, term.result_dest)?;
-    if !matches!(dest_ty, BasicTypeEnum::StructType(_)) {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingRead result_dest must be a bytes struct slot, got {dest_ty:?}"
-        )));
-    }
-    fn_ctx
-        .builder
-        .build_call(
-            slot_take,
-            &[slot.into(), dest_ptr.into()],
-            "suspending_read_take_raw",
-        )
-        .llvm_ctx("hew_read_slot_take_raw call")?;
-    if let Some(result_dest) = term.deadline_result_dest {
-        if term.to_string {
-            // `await conn.read_string() | after d` success path: convert the raw
-            // bytes (`result_dest`) to a string before wrapping in `Ok(_)`.
-            // `hew_bytes_to_string` takes a `*bytes` (by-pointer consumer convention)
-            // and returns a header-pointer-shaped string (ptr).
-            let bytes_to_string = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_bytes_to_string",
-            )?;
-            let (bytes_ptr, _) = place_pointer(fn_ctx, term.result_dest)?;
-            let string_val = fn_ctx
-                .builder
-                .build_call(
-                    bytes_to_string,
-                    &[bytes_ptr.into()],
-                    "suspending_read_bytes_to_string",
-                )
-                .llvm_ctx("hew_bytes_to_string call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("hew_bytes_to_string returned void".into())
-                })?;
-            // result_dest is Result<string, IoError>; tag=0, Ok variant field 0 = ptr.
-            // Write the string pointer directly into the Ok variant field — no
-            // intermediate alloca needed since `string_val` is already a ptr value.
-            let dest_local = composite_dest_local(result_dest, "SuspendingRead read_string ok")?;
-            store_composite_tag(fn_ctx, dest_local, 0, "SuspendingRead read_string ok")?;
-            let (ok_field_ptr, ok_field_ty) = place_pointer(
-                fn_ctx,
-                Place::MachineVariant {
-                    local: dest_local,
-                    variant_idx: 0,
-                    field_idx: 0,
-                },
-            )?;
-            if !matches!(ok_field_ty, BasicTypeEnum::PointerType(_)) {
-                return Err(CodegenError::FailClosed(format!(
-                    "SuspendingRead read_string Ok field must be ptr-typed, got {ok_field_ty:?}"
-                )));
-            }
-            fn_ctx
-                .builder
-                .build_store(ok_field_ptr, string_val)
-                .llvm_ctx("SuspendingRead read_string Ok field store")?;
-        } else {
-            emit_result_ok(fn_ctx, result_dest, Some(term.result_dest))?;
-        }
-    }
-    fn_ctx
-        .builder
-        .build_call(slot_free, &[slot.into()], "suspending_read_ok_free")
-        .llvm_ctx("hew_read_slot_free (ok) call")?;
-    if let Some(reg) = reg {
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(reg_free, &[reg.into()], "suspending_read_ok_reg_free")
-            .llvm_ctx("hew_await_cancel_free (read ok) call")?;
-    }
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending read ok br")?;
-
-    Ok(())
-}
-
-/// Emit the caller-side non-blocking `await listener.accept()` (NEW-2
-/// `Terminator::SuspendingAccept`). The listener-readiness analogue of
-/// [`emit_suspending_read_terminator`].
-///
-/// Shape (the suspendable accept ramp):
-/// ```text
-///   self      = hew_actor_self()                 ; the parked-continuation actor
-///   listener  = <load listener handle>           ; pointer-shaped (opaque)
-///   slot      = hew_read_slot_new()
-///   rc        = hew_listener_await_accept(listener, self, slot)
-///   br (rc != 0) -> register_err, do_suspend
-/// register_err:                                  ; registration failed, no accept
-///   hew_read_slot_cancel(slot); hew_read_slot_free(slot)
-///   result_dest = inttoptr(-1)                   ; invalid Connection convention
-///   br resume_bb
-/// do_suspend:                                    ; coro.suspend (non-final)
-///   switch coro.suspend [default -> return handle, 0 -> accept_bind, 1 -> cleanup]
-/// abandon_cleanup:                               ; parked cont destroyed
-///   hew_read_slot_cancel(slot); hew_read_slot_free(slot); br shared cleanup
-/// accept_bind:                                   ; the reactor resumed us
-///   conn = hew_read_slot_take_handle(slot)       ; the accepted handle (as ptr)
-///   store conn -> result_dest
-///   hew_read_slot_free(slot)                     ; release the creator ref
-///   br resume_bb
-/// ```
-/// The accepted connection handle travels through `slot` (a frame-spilled local)
-/// across the suspend; on resume `hew_read_slot_take_handle` returns it on the
-/// fast path (the reactor deposited it before `enqueue_resume` woke us). Slot ref
-/// counting is identical to the read ramp: `new` (+1 creator); the await register
-/// takes its own reactor ref on success; the single `hew_read_slot_free` on each
-/// terminal edge releases the creator ref.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the full caller-side accept ramp — registration + suspend + the \
-              resume-edge connection binding — is kept in one place so the \
-              suspend point and the value routing it depends on are read together"
-)]
-fn emit_suspending_accept_terminator<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: SuspendingAcceptEmit,
-) -> CodegenResult<()> {
-    // The coro prologue must be present (lower_function detects the
-    // SuspendingAccept carrier via `has_suspend`). Fail closed otherwise.
-    let coro = fn_ctx.coro.ok_or_else(|| {
-        CodegenError::FailClosed(
-            "Terminator::SuspendingAccept reached codegen but the function carries no \
-             coro prologue state — lower_function must detect the suspend carrier \
-             (has_suspend) and emit the prologue before the body"
-                .into(),
-        )
-    })?;
-    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SuspendingAccept resume target bb{} not found",
-            term.resume
-        ))
-    })?;
-    if !fn_ctx.blocks.contains_key(&term.cleanup) {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingAccept cleanup target bb{} not found",
-            term.cleanup
-        )));
-    }
-    if term.deadline_ns.is_some()
-        && (term.deadline_result_dest.is_none() || term.error_dest.is_none())
-    {
-        return Err(CodegenError::FailClosed(
-            "SuspendingAccept deadline reached codegen without Result/IoError destinations".into(),
-        ));
-    }
-
-    // self = the current actor — the parked-continuation waiter the reactor wake
-    // re-enqueues. From `hew_actor_self()` (the live thread-local context), the
-    // same single-authority accessor the SuspendingRead/Ask ramps use.
-    let actor_self_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_self",
-    )?;
-    let self_actor = fn_ctx
-        .builder
-        .build_call(actor_self_fn, &[], "suspending_accept_self")
-        .llvm_ctx("hew_actor_self call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
-        .into_pointer_value();
-    let listener_ptr = load_duplex_handle(fn_ctx, term.listener, "suspending_accept listener")?;
-
-    let slot_new = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_new",
-    )?;
-    let slot = fn_ctx
-        .builder
-        .build_call(slot_new, &[], "suspending_accept_slot")
-        .llvm_ctx("hew_read_slot_new call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
-        .into_pointer_value();
-
-    let i32_ty = fn_ctx.ctx.i32_type();
-    let i64_ty = fn_ctx.ctx.i64_type();
-
-    // ── Deadline cancel registration (when `| after d` is present). ────────────
-    // Wire before `hew_listener_await_accept` so the registration is in place
-    // before the reactor can fire. Mirrors the SuspendingRead cancel-registration
-    // sequence (hew_await_cancel_new → hew_read_slot_set_await_cancel).
-    let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
-        let cancel_new = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_new",
-        )?;
-        let cleanup_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_read_slot_cancel_cleanup",
-        )?;
-        let cleanup_ptr = cleanup_fn.as_global_value().as_pointer_value();
-        let reg = fn_ctx
-            .builder
-            .build_call(
-                cancel_new,
-                &[self_actor.into(), cleanup_ptr.into(), slot.into()],
-                "suspending_accept_deadline_reg",
-            )
-            .llvm_ctx("hew_await_cancel_new call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-            .into_pointer_value();
-        let set_await_cancel = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_read_slot_set_await_cancel",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                set_await_cancel,
-                &[slot.into(), reg.into()],
-                "suspending_accept_set_await_cancel",
-            )
-            .llvm_ctx("hew_read_slot_set_await_cancel call")?;
-        Some(reg)
-    } else {
-        None
-    };
-
-    let rc = fn_ctx.call_runtime_int(
-        "hew_listener_await_accept",
-        &[listener_ptr.into(), self_actor.into(), slot.into()],
-        "suspending_accept_register",
-        "hew_listener_await_accept call",
-    )?;
-
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| {
-            CodegenError::Llvm("suspending accept block has no parent function".into())
-        })?;
-    let register_err_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_accept_register_err");
-    let do_suspend_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_accept_suspend");
-    let register_ok = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            rc,
-            rc.get_type().const_zero(),
-            "suspending_accept_register_ok",
-        )
-        .llvm_ctx("suspending accept register-ok compare")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(register_ok, do_suspend_bb, register_err_bb)
-        .llvm_ctx("suspending accept register branch")?;
-
-    let slot_cancel = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_cancel",
-    )?;
-    let slot_free = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_free",
-    )?;
-
-    // ── register_err: the registration failed; no accept will ever arrive.
-    // Cancel + free the slot. On a deadline path, emit IoError::TimedOut into the
-    // Result destination. On the plain path, bind an INVALID `Connection`. ──────
-    fn_ctx.builder.position_at_end(register_err_bb);
-    fn_ctx
-        .builder
-        .build_call(slot_cancel, &[slot.into()], "suspending_accept_err_cancel")
-        .llvm_ctx("hew_read_slot_cancel (register err) call")?;
-    fn_ctx
-        .builder
-        .build_call(slot_free, &[slot.into()], "suspending_accept_err_free")
-        .llvm_ctx("hew_read_slot_free (register err) call")?;
-    if let Some(reg) = reg {
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(reg_free, &[reg.into()], "suspending_accept_err_reg_free")
-            .llvm_ctx("hew_await_cancel_free (register err) call")?;
-    }
-    if let (Some(result_dest), Some(error_dest)) = (term.deadline_result_dest, term.error_dest) {
-        emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
-    } else {
-        store_invalid_connection(fn_ctx, term.result_dest)?;
-    }
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending accept register-err br")?;
-
-    // ── do_suspend: park the continuation (non-final suspend). ─────────────────
-    fn_ctx.builder.position_at_end(do_suspend_bb);
-    if let (Some(reg), Some(ns)) = (reg, term.deadline_ns) {
-        let delay_ms = (ns / 1_000_000).max(1) as u64;
-        let tw_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_global_timer_wheel",
-        )?;
-        let tw = fn_ctx
-            .builder
-            .build_call(tw_fn, &[], "suspending_accept_deadline_tw")
-            .llvm_ctx("hew_global_timer_wheel call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_global_timer_wheel returned void".into()))?
-            .into_pointer_value();
-        let schedule = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_schedule_deadline_ms",
-        )?;
-        let delay_val = i64_ty.const_int(delay_ms, false);
-        let sched_rc = fn_ctx
-            .builder
-            .build_call(
-                schedule,
-                &[reg.into(), tw.into(), delay_val.into()],
-                "suspending_accept_schedule_deadline",
-            )
-            .llvm_ctx("hew_await_cancel_schedule_deadline_ms call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_await_cancel_schedule_deadline_ms returned void".into(),
-                )
-            })?
-            .into_int_value();
-        let armed = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                sched_rc,
-                sched_rc.get_type().const_zero(),
-                "suspending_accept_deadline_armed",
-            )
-            .llvm_ctx("suspending accept schedule-armed compare")?;
-        let deadline_proceed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_accept_deadline_proceed");
-        let deadline_check_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_accept_deadline_check");
-        fn_ctx
-            .builder
-            .build_conditional_branch(armed, deadline_proceed_bb, deadline_check_bb)
-            .llvm_ctx("suspending accept schedule-armed branch")?;
-
-        fn_ctx.builder.position_at_end(deadline_check_bb);
-        let status_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_status",
-        )?;
-        let sched_status = fn_ctx
-            .builder
-            .build_call(
-                status_fn,
-                &[reg.into()],
-                "suspending_accept_schedule_status",
-            )
-            .llvm_ctx("hew_await_cancel_status (schedule) call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
-            })?
-            .into_int_value();
-        let accept_completed = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                sched_status,
-                i32_ty.const_int(1, false),
-                "suspending_accept_schedule_accept_completed",
-            )
-            .llvm_ctx("suspending accept schedule accept-completed compare")?;
-        let deadline_failclosed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_accept_deadline_failclosed");
-        fn_ctx
-            .builder
-            .build_conditional_branch(
-                accept_completed,
-                deadline_proceed_bb,
-                deadline_failclosed_bb,
-            )
-            .llvm_ctx("suspending accept schedule accept-completed branch")?;
-
-        fn_ctx.builder.position_at_end(deadline_failclosed_bb);
-        let reg_cancel = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_cancel",
-        )?;
-        let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
-        let no_wake = i32_ty.const_zero();
-        fn_ctx
-            .builder
-            .build_call(
-                reg_cancel,
-                &[reg.into(), cancelled_status.into(), no_wake.into()],
-                "suspending_accept_failclosed_reg_cancel",
-            )
-            .llvm_ctx("hew_await_cancel_cancel (accept fail-closed) call")?;
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                reg_free,
-                &[reg.into()],
-                "suspending_accept_failclosed_reg_free",
-            )
-            .llvm_ctx("hew_await_cancel_free (accept fail-closed) call")?;
-        fn_ctx
-            .builder
-            .build_call(
-                slot_cancel,
-                &[slot.into()],
-                "suspending_accept_failclosed_slot_cancel",
-            )
-            .llvm_ctx("hew_read_slot_cancel (fail-closed) call")?;
-        fn_ctx
-            .builder
-            .build_call(
-                slot_free,
-                &[slot.into()],
-                "suspending_accept_failclosed_free",
-            )
-            .llvm_ctx("hew_read_slot_free (fail-closed) call")?;
-        let result_dest = term.deadline_result_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingAccept fail-closed missing Result dest".into())
-        })?;
-        let error_dest = term.error_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingAccept fail-closed missing IoError dest".into())
-        })?;
-        emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
-        fn_ctx
-            .builder
-            .build_unconditional_branch(resume_bb)
-            .llvm_ctx("suspending accept deadline fail-closed br")?;
-
-        fn_ctx.builder.position_at_end(deadline_proceed_bb);
-    }
-    let accept_bind_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_accept_bind");
-    // ── abandon_cleanup edge: when a parked SuspendingAccept continuation is
-    // DESTROYED without resuming, `coro.suspend`'s case-1 edge runs. The abandon
-    // continuation CANCELS + FREES the creator ref before joining the shared
-    // cleanup (identical discipline to the read ramp).
-    emit_suspend_point(
-        fn_ctx,
-        coro,
-        parent,
-        accept_bind_bb,
-        "suspending_accept",
-        "suspending_accept_abandon_cleanup",
-        "suspending accept abandon -> shared cleanup br",
-        || {
-            // ── abandon_cleanup: cancel + free the read slot, then join the shared
-            // coro cleanup (frame-free + coro.end). ─────────────────────────────
-            if let Some(reg) = reg {
-                let reg_cancel = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
-                    "hew_await_cancel_cancel",
-                )?;
-                let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
-                let no_wake = i32_ty.const_zero();
-                fn_ctx
-                    .builder
-                    .build_call(
-                        reg_cancel,
-                        &[reg.into(), cancelled_status.into(), no_wake.into()],
-                        "suspending_accept_abandon_reg_cancel",
-                    )
-                    .llvm_ctx("hew_await_cancel_cancel (accept abandon) call")?;
-                let reg_free = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
-                    "hew_await_cancel_free",
-                )?;
-                fn_ctx
-                    .builder
-                    .build_call(
-                        reg_free,
-                        &[reg.into()],
-                        "suspending_accept_abandon_reg_free",
-                    )
-                    .llvm_ctx("hew_await_cancel_free (accept abandon) call")?;
-            }
-            fn_ctx
-                .builder
-                .build_call(
-                    slot_cancel,
-                    &[slot.into()],
-                    "suspending_accept_abandon_cancel",
-                )
-                .llvm_ctx("hew_read_slot_cancel (abandon) call")?;
-            fn_ctx
-                .builder
-                .build_call(slot_free, &[slot.into()], "suspending_accept_abandon_free")
-                .llvm_ctx("hew_read_slot_free (abandon) call")?;
-            Ok(())
-        },
-        || emit_suspending_accept_bind(fn_ctx, &term, slot, slot_free, reg, resume_bb, parent),
-    )?;
-
-    Ok(())
-}
-
-/// Resume-bind continuation of [`emit_suspending_accept_terminator`]: the reactor
-/// resumed us (enqueue_resume). The accepted connection handle is already
-/// deposited in `slot`; `hew_read_slot_take_handle` returns it (as the
-/// pointer-shaped `Connection`) on the fast path. Store it into `result_dest`,
-/// release the creator ref, and branch to the MIR resume block. When a deadline
-/// is active, first resolve the arbiter (complete vs timed-out) before binding.
-/// Split out so the suspend-point seam owns the suspend + abandon scaffolding
-/// while this owns the value routing.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the full accept-bind edge — deadline arbiter + the Connection \
-              binding — is kept in one place so the deadline resolution and the \
-              value routing it gates are read together"
-)]
-fn emit_suspending_accept_bind<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: &SuspendingAcceptEmit,
-    slot: inkwell::values::PointerValue<'ctx>,
-    slot_free: FunctionValue<'ctx>,
-    reg: Option<inkwell::values::PointerValue<'ctx>>,
-    resume_bb: inkwell::basic_block::BasicBlock<'ctx>,
-    parent: FunctionValue<'ctx>,
-) -> CodegenResult<()> {
-    let i32_ty = fn_ctx.ctx.i32_type();
-    if let Some(reg) = reg {
-        let complete = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_complete",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                complete,
-                &[reg.into()],
-                "suspending_accept_deadline_complete",
-            )
-            .llvm_ctx("hew_await_cancel_complete call")?;
-        let status_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_status",
-        )?;
-        let status = fn_ctx
-            .builder
-            .build_call(
-                status_fn,
-                &[reg.into()],
-                "suspending_accept_deadline_status",
-            )
-            .llvm_ctx("hew_await_cancel_status call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
-            })?
-            .into_int_value();
-        let timed_out = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                i32_ty.const_int(3, false),
-                "suspending_accept_timed_out",
-            )
-            .llvm_ctx("suspending accept timed-out compare")?;
-        let timeout_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_accept_timeout");
-        let accept_proceed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_accept_proceed");
-        fn_ctx
-            .builder
-            .build_conditional_branch(timed_out, timeout_bb, accept_proceed_bb)
-            .llvm_ctx("suspending accept deadline branch")?;
-
-        fn_ctx.builder.position_at_end(timeout_bb);
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                reg_free,
-                &[reg.into()],
-                "suspending_accept_timeout_reg_free",
-            )
-            .llvm_ctx("hew_await_cancel_free (accept timeout) call")?;
-        fn_ctx
-            .builder
-            .build_call(slot_free, &[slot.into()], "suspending_accept_timeout_free")
-            .llvm_ctx("hew_read_slot_free (timeout) call")?;
-        let result_dest = term.deadline_result_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingAccept timeout missing Result dest".into())
-        })?;
-        let error_dest = term.error_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingAccept timeout missing IoError dest".into())
-        })?;
-        emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
-        fn_ctx
-            .builder
-            .build_unconditional_branch(resume_bb)
-            .llvm_ctx("suspending accept timeout br")?;
-
-        fn_ctx.builder.position_at_end(accept_proceed_bb);
-    }
-    let conn = fn_ctx.call_runtime_basic(
-        "hew_read_slot_take_handle",
-        &[slot.into()],
-        "suspending_accept_take",
-        "hew_read_slot_take_handle call",
-    )?;
-    let (dest_ptr, dest_ty) = place_pointer(fn_ctx, term.result_dest)?;
-    if !matches!(dest_ty, BasicTypeEnum::PointerType(_)) {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingAccept result_dest must be a pointer-shaped Connection slot, got {dest_ty:?}"
-        )));
-    }
-    fn_ctx
-        .builder
-        .build_store(dest_ptr, conn)
-        .llvm_ctx("suspending accept connection store")?;
-    if let Some(result_dest) = term.deadline_result_dest {
-        // `await ln.accept() | after d` success path: wrap the accepted Connection
-        // in `Ok(_)` into the Result<Connection, IoError> destination.
-        emit_result_ok(fn_ctx, result_dest, Some(term.result_dest))?;
-    }
-    fn_ctx
-        .builder
-        .build_call(slot_free, &[slot.into()], "suspending_accept_ok_free")
-        .llvm_ctx("hew_read_slot_free (ok) call")?;
-    if let Some(reg) = reg {
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(reg_free, &[reg.into()], "suspending_accept_ok_reg_free")
-            .llvm_ctx("hew_await_cancel_free (accept ok) call")?;
-    }
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending accept ok br")?;
-
-    Ok(())
-}
-
-/// Emit the caller-side non-blocking `await stream.recv()` (NEW-7
-/// `Terminator::SuspendingStreamNext`). The channel-readiness analogue of
-/// [`emit_suspending_read_terminator`].
-///
-/// Shape (the suspending stream-recv ramp):
-/// ```text
-///   self    = hew_actor_self()                       ; the parked-cont actor
-///   stream  = <load stream handle>                   ; pointer-shaped (opaque)
-///   slot    = hew_read_slot_new()
-///   rc      = hew_stream_await_next(stream, self, slot)
-///   br (rc == 0) -> do_suspend, bind                 ; 0 = parked, 1 = ready-now
-/// do_suspend:                                        ; coro.suspend (non-final)
-///   switch coro.suspend [default -> return handle, 0 -> bind, 1 -> abandon]
-/// abandon:                                           ; parked cont destroyed
-///   hew_read_slot_cancel(slot)
-///   hew_stream_detach_await(stream, slot)            ; release the core ref
-///   hew_read_slot_free(slot); br shared cleanup
-/// bind:                                              ; ready-now OR resumed
-///   rc = hew_stream_pop_layout(stream, out, witness) ; pop the queued item
-///   <select Option<T> tag from rc into result_dest>  ; rc 0 -> None, 1 -> Some
-///   hew_read_slot_free(slot)                         ; release the creator ref
-///   br resume_bb
-/// ```
-/// The item travels through the channel QUEUE across the suspend (NOT the slot —
-/// the slot is a pure readiness signal); on resume `hew_stream_pop_layout` pops
-/// it exactly once on the consumer's own edge. Slot refs: `new` (+1 creator);
-/// `hew_stream_await_next` takes the channel core's in-flight ref only on the
-/// park path; the single `hew_read_slot_free` on each terminal edge releases the
-/// creator ref. The abandon edge cancels + detaches before freeing so a racing
-/// producer deposit drops its signal and a freed consumer is never woken.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the full caller-side recv ramp — registration + suspend + the \
-              resume-edge Option<bytes> binding — is kept in one place so the \
-              suspend point and the value routing it depends on are read together"
-)]
-fn emit_suspending_stream_next_terminator<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: SuspendingStreamNextEmit,
-) -> CodegenResult<()> {
-    let coro = fn_ctx.coro.ok_or_else(|| {
-        CodegenError::FailClosed(
-            "Terminator::SuspendingStreamNext reached codegen but the function \
-             carries no coro prologue state — lower_function must detect the \
-             suspend carrier (has_suspend) and emit the prologue before the body"
-                .into(),
-        )
-    })?;
-    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SuspendingStreamNext resume target bb{} not found",
-            term.resume
-        ))
-    })?;
-    if !fn_ctx.blocks.contains_key(&term.cleanup) {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingStreamNext cleanup target bb{} not found",
-            term.cleanup
-        )));
-    }
-    if term.deadline_ns.is_some()
-        && (term.deadline_result_dest.is_none() || term.error_dest.is_none())
-    {
-        return Err(CodegenError::FailClosed(
-            "SuspendingStreamNext deadline reached codegen without Result/TimeoutError destinations"
-                .into(),
-        ));
-    }
-    let Place::Local(dest_local) = term.result_dest else {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingStreamNext result_dest must be a local Option<T> slot, got {:?}",
-            term.result_dest
-        )));
-    };
-
-    let i32_ty = fn_ctx.ctx.i32_type();
-    let i64_ty = fn_ctx.ctx.i64_type();
-
-    // self = the awaiting actor (the live thread-local context, NOT a spilled
-    // param) — the same single-authority accessor the SuspendingRead/Ask ramps
-    // use across a suspend.
-    let actor_self_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_self",
-    )?;
-    let self_actor = fn_ctx
-        .builder
-        .build_call(actor_self_fn, &[], "suspending_stream_next_self")
-        .llvm_ctx("hew_actor_self call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
-        .into_pointer_value();
-    let stream_ptr = load_duplex_handle(fn_ctx, term.stream, "suspending_stream_next stream")?;
-
-    let slot_new = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_new",
-    )?;
-    let slot = fn_ctx
-        .builder
-        .build_call(slot_new, &[], "suspending_stream_next_slot")
-        .llvm_ctx("hew_read_slot_new call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
-        .into_pointer_value();
-
-    // ── Deadline cancel registration (when `| after d` is present). ─────────────
-    // Wire before `hew_stream_await_next` so the registration is in place before
-    // the reactor can fire. Uses `hew_stream_recv_cancel_cleanup` (which calls
-    // hew_read_slot_cancel + hew_stream_detach_await) as the one-shot CAS arbiter
-    // cleanup callback.
-    //
-    // The cleanup requires a `HewStreamRecvCancelCtx { slot, stream }` struct
-    // (two pointer-sized fields) so it can perform both the slot cancel AND the
-    // stream-core detach in one atomic callback. Allocate that struct on the
-    // coroutine frame (alloca) and populate it before registering the cancel.
-    // The coroutine frame's lifetime spans the suspend point, so the alloca is
-    // live when the deadline timer fires and calls the cleanup.
-    let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
-        let cancel_new = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_new",
-        )?;
-        let cleanup_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_stream_recv_cancel_cleanup",
-        )?;
-        let cleanup_ptr = cleanup_fn.as_global_value().as_pointer_value();
-        // Allocate HewStreamRecvCancelCtx { slot: ptr, stream: ptr }.
-        let ptr_ty = fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default());
-        let cancel_ctx_ty = fn_ctx
-            .ctx
-            .struct_type(&[ptr_ty.into(), ptr_ty.into()], false);
-        let cancel_ctx = fn_ctx
-            .builder
-            .build_alloca(cancel_ctx_ty, "suspending_stream_next_cancel_ctx")
-            .llvm_ctx("stream next cancel ctx alloca")?;
-        // Store slot into field 0 of the cancel context.
-        let ctx_slot_ptr = fn_ctx
-            .builder
-            .build_struct_gep(
-                cancel_ctx_ty,
-                cancel_ctx,
-                0,
-                "suspending_stream_next_cancel_ctx_slot",
-            )
-            .llvm_ctx("stream next cancel ctx slot gep")?;
-        fn_ctx
-            .builder
-            .build_store(ctx_slot_ptr, slot)
-            .llvm_ctx("stream next cancel ctx slot store")?;
-        // Store stream into field 1 of the cancel context.
-        let ctx_stream_ptr = fn_ctx
-            .builder
-            .build_struct_gep(
-                cancel_ctx_ty,
-                cancel_ctx,
-                1,
-                "suspending_stream_next_cancel_ctx_stream",
-            )
-            .llvm_ctx("stream next cancel ctx stream gep")?;
-        fn_ctx
-            .builder
-            .build_store(ctx_stream_ptr, stream_ptr)
-            .llvm_ctx("stream next cancel ctx stream store")?;
-        let reg = fn_ctx
-            .builder
-            .build_call(
-                cancel_new,
-                &[self_actor.into(), cleanup_ptr.into(), cancel_ctx.into()],
-                "suspending_stream_next_deadline_reg",
-            )
-            .llvm_ctx("hew_await_cancel_new call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-            .into_pointer_value();
-        let set_await_cancel = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_read_slot_set_await_cancel",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                set_await_cancel,
-                &[slot.into(), reg.into()],
-                "suspending_stream_next_set_await_cancel",
-            )
-            .llvm_ctx("hew_read_slot_set_await_cancel call")?;
-        Some(reg)
-    } else {
-        None
-    };
-
-    let rc = fn_ctx.call_runtime_int(
-        "hew_stream_await_next",
-        &[stream_ptr.into(), self_actor.into(), slot.into()],
-        "suspending_stream_next_register",
-        "hew_stream_await_next call",
-    )?;
-
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| {
-            CodegenError::Llvm("suspending stream-next block has no parent function".into())
-        })?;
-    let do_suspend_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_stream_next_suspend");
-    let bind_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_stream_next_bind");
-    // rc == 0 (STREAM_AWAIT_SUSPEND) → park; else (READY) bind immediately.
-    let is_suspend = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            rc,
-            rc.get_type().const_zero(),
-            "suspending_stream_next_is_suspend",
-        )
-        .llvm_ctx("suspending stream-next suspend compare")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(is_suspend, do_suspend_bb, bind_bb)
-        .llvm_ctx("suspending stream-next register branch")?;
-
-    let slot_cancel = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_cancel",
-    )?;
-    let slot_free = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_free",
-    )?;
-    let detach_await = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_stream_detach_await",
-    )?;
-
-    // ── do_suspend: park the continuation (non-final). Default → return the coro
-    // handle to the trampoline; case 0 → bind; case 1 → abandon teardown. ──────
-    fn_ctx.builder.position_at_end(do_suspend_bb);
-    if let (Some(reg), Some(ns)) = (reg, term.deadline_ns) {
-        let delay_ms = (ns / 1_000_000).max(1) as u64;
-        let tw_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_global_timer_wheel",
-        )?;
-        let tw = fn_ctx
-            .builder
-            .build_call(tw_fn, &[], "suspending_stream_next_deadline_tw")
-            .llvm_ctx("hew_global_timer_wheel call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_global_timer_wheel returned void".into()))?
-            .into_pointer_value();
-        let schedule = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_schedule_deadline_ms",
-        )?;
-        let delay_val = i64_ty.const_int(delay_ms, false);
-        let sched_rc = fn_ctx
-            .builder
-            .build_call(
-                schedule,
-                &[reg.into(), tw.into(), delay_val.into()],
-                "suspending_stream_next_schedule_deadline",
-            )
-            .llvm_ctx("hew_await_cancel_schedule_deadline_ms call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_await_cancel_schedule_deadline_ms returned void".into(),
-                )
-            })?
-            .into_int_value();
-        let armed = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                sched_rc,
-                sched_rc.get_type().const_zero(),
-                "suspending_stream_next_deadline_armed",
-            )
-            .llvm_ctx("suspending stream-next schedule-armed compare")?;
-        let deadline_proceed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_stream_next_deadline_proceed");
-        let deadline_check_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_stream_next_deadline_check");
-        fn_ctx
-            .builder
-            .build_conditional_branch(armed, deadline_proceed_bb, deadline_check_bb)
-            .llvm_ctx("suspending stream-next schedule-armed branch")?;
-
-        fn_ctx.builder.position_at_end(deadline_check_bb);
-        let status_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_status",
-        )?;
-        let sched_status = fn_ctx
-            .builder
-            .build_call(
-                status_fn,
-                &[reg.into()],
-                "suspending_stream_next_schedule_status",
-            )
-            .llvm_ctx("hew_await_cancel_status (schedule) call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
-            })?
-            .into_int_value();
-        let recv_completed = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                sched_status,
-                i32_ty.const_int(1, false),
-                "suspending_stream_next_schedule_recv_completed",
-            )
-            .llvm_ctx("suspending stream-next schedule recv-completed compare")?;
-        let deadline_failclosed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_stream_next_deadline_failclosed");
-        fn_ctx
-            .builder
-            .build_conditional_branch(recv_completed, deadline_proceed_bb, deadline_failclosed_bb)
-            .llvm_ctx("suspending stream-next schedule recv-completed branch")?;
-
-        fn_ctx.builder.position_at_end(deadline_failclosed_bb);
-        let reg_cancel = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_cancel",
-        )?;
-        let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
-        let no_wake = i32_ty.const_zero();
-        fn_ctx
-            .builder
-            .build_call(
-                reg_cancel,
-                &[reg.into(), cancelled_status.into(), no_wake.into()],
-                "suspending_stream_next_failclosed_reg_cancel",
-            )
-            .llvm_ctx("hew_await_cancel_cancel (stream next fail-closed) call")?;
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                reg_free,
-                &[reg.into()],
-                "suspending_stream_next_failclosed_reg_free",
-            )
-            .llvm_ctx("hew_await_cancel_free (stream next fail-closed) call")?;
-        fn_ctx
-            .builder
-            .build_call(
-                slot_cancel,
-                &[slot.into()],
-                "suspending_stream_next_failclosed_slot_cancel",
-            )
-            .llvm_ctx("hew_read_slot_cancel (fail-closed) call")?;
-        fn_ctx
-            .builder
-            .build_call(
-                slot_free,
-                &[slot.into()],
-                "suspending_stream_next_failclosed_free",
-            )
-            .llvm_ctx("hew_read_slot_free (fail-closed) call")?;
-        let result_dest = term.deadline_result_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingStreamNext fail-closed missing Result dest".into())
-        })?;
-        let error_dest = term.error_dest.ok_or_else(|| {
-            CodegenError::FailClosed(
-                "SuspendingStreamNext fail-closed missing TimeoutError dest".into(),
-            )
-        })?;
-        emit_recv_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
-        fn_ctx
-            .builder
-            .build_unconditional_branch(resume_bb)
-            .llvm_ctx("suspending stream-next deadline fail-closed br")?;
-
-        fn_ctx.builder.position_at_end(deadline_proceed_bb);
-    }
-    // ── abandon_cleanup edge: cancel the slot (a racing producer deposit drops
-    // its signal + skips the wake), detach the channel-await registration (release
-    // the core's in-flight ref), free the creator ref, then join shared cleanup.
-    // ── bind edge: ready-now OR resumed. Pop the queued item through the
-    // layout-witness entry (`hew_stream_pop_layout` decodes the element directly
-    // into the Option<T> Some payload slot per the element witness), release the
-    // creator ref, branch to the MIR resume. One mechanism for every describable
-    // element type — mirror of the `SuspendingChannelRecv` ramp's bind edge.
-    emit_suspend_point(
-        fn_ctx,
-        coro,
-        parent,
-        bind_bb,
-        "suspending_stream_next",
-        "suspending_stream_next_abandon_cleanup",
-        "suspending stream-next abandon -> shared cleanup br",
-        || {
-            if let Some(reg) = reg {
-                let reg_cancel = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
-                    "hew_await_cancel_cancel",
-                )?;
-                let cancelled_status = i32_ty.const_int(2, false);
-                let no_wake = i32_ty.const_zero();
-                fn_ctx
-                    .builder
-                    .build_call(
-                        reg_cancel,
-                        &[reg.into(), cancelled_status.into(), no_wake.into()],
-                        "suspending_stream_next_abandon_reg_cancel",
-                    )
-                    .llvm_ctx("hew_await_cancel_cancel (stream next abandon) call")?;
-                let reg_free = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
-                    "hew_await_cancel_free",
-                )?;
-                fn_ctx
-                    .builder
-                    .build_call(
-                        reg_free,
-                        &[reg.into()],
-                        "suspending_stream_next_abandon_reg_free",
-                    )
-                    .llvm_ctx("hew_await_cancel_free (stream next abandon) call")?;
-            }
-            fn_ctx
-                .builder
-                .build_call(
-                    slot_cancel,
-                    &[slot.into()],
-                    "suspending_stream_next_abandon_cancel",
-                )
-                .llvm_ctx("hew_read_slot_cancel (abandon) call")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    detach_await,
-                    &[stream_ptr.into(), slot.into()],
-                    "suspending_stream_next_abandon_detach",
-                )
-                .llvm_ctx("hew_stream_detach_await (abandon) call")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    slot_free,
-                    &[slot.into()],
-                    "suspending_stream_next_abandon_free",
-                )
-                .llvm_ctx("hew_read_slot_free (abandon) call")?;
-            Ok(())
-        },
-        || {
-            emit_suspending_stream_next_bind(
-                fn_ctx, &term, stream_ptr, slot, slot_free, dest_local, reg, resume_bb, parent,
-            )
-        },
-    )?;
-
-    Ok(())
-}
-
-/// Resume-bind continuation of [`emit_suspending_stream_next_terminator`]:
-/// ready-now or resumed. Resolve the deadline arbiter (timeout binds
-/// `Err(TimeoutError)`), pop the queued item through `hew_stream_pop_layout`,
-/// release the creator ref, and branch to the MIR resume block. Split out so the
-/// suspend-point seam owns the suspend + abandon scaffolding while this owns the
-/// value routing.
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "the full stream-recv bind edge — deadline arbiter + Option<T> \
-              layout pop — is kept in one place so the deadline resolution and \
-              the value routing it gates are read together"
-)]
-fn emit_suspending_stream_next_bind<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: &SuspendingStreamNextEmit,
-    stream_ptr: inkwell::values::PointerValue<'ctx>,
-    slot: inkwell::values::PointerValue<'ctx>,
-    slot_free: FunctionValue<'ctx>,
-    dest_local: u32,
-    reg: Option<inkwell::values::PointerValue<'ctx>>,
-    resume_bb: inkwell::basic_block::BasicBlock<'ctx>,
-    parent: FunctionValue<'ctx>,
-) -> CodegenResult<()> {
-    let i32_ty = fn_ctx.ctx.i32_type();
-    if let Some(reg) = reg {
-        // Deadline active: resolve the arbiter (complete → check status).
-        let complete = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_complete",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                complete,
-                &[reg.into()],
-                "suspending_stream_next_deadline_complete",
-            )
-            .llvm_ctx("hew_await_cancel_complete call")?;
-        let status_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_status",
-        )?;
-        let status = fn_ctx
-            .builder
-            .build_call(
-                status_fn,
-                &[reg.into()],
-                "suspending_stream_next_deadline_status",
-            )
-            .llvm_ctx("hew_await_cancel_status call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
-            })?
-            .into_int_value();
-        let timed_out = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                i32_ty.const_int(3, false), // AwaitCancelStatus::TimedOut = 3
-                "suspending_stream_next_timed_out",
-            )
-            .llvm_ctx("suspending stream-next timed-out compare")?;
-        let timeout_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_stream_next_timeout");
-        let stream_proceed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_stream_next_proceed");
-        fn_ctx
-            .builder
-            .build_conditional_branch(timed_out, timeout_bb, stream_proceed_bb)
-            .llvm_ctx("suspending stream-next deadline branch")?;
-
-        fn_ctx.builder.position_at_end(timeout_bb);
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                reg_free,
-                &[reg.into()],
-                "suspending_stream_next_timeout_reg_free",
-            )
-            .llvm_ctx("hew_await_cancel_free (stream next timeout) call")?;
-        fn_ctx
-            .builder
-            .build_call(
-                slot_free,
-                &[slot.into()],
-                "suspending_stream_next_timeout_free",
-            )
-            .llvm_ctx("hew_read_slot_free (timeout) call")?;
-        let result_dest = term.deadline_result_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingStreamNext timeout missing Result dest".into())
-        })?;
-        let error_dest = term.error_dest.ok_or_else(|| {
-            CodegenError::FailClosed(
-                "SuspendingStreamNext timeout missing TimeoutError dest".into(),
-            )
-        })?;
-        emit_recv_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
-        fn_ctx
-            .builder
-            .build_unconditional_branch(resume_bb)
-            .llvm_ctx("suspending stream-next timeout br")?;
-
-        fn_ctx.builder.position_at_end(stream_proceed_bb);
-    }
-    store_recv_option_via_layout(
-        fn_ctx,
-        stream_ptr,
-        dest_local,
-        "hew_stream_pop_layout",
-        &term.elem_ty,
-    )?;
-    fn_ctx
-        .builder
-        .build_call(
-            slot_free,
-            &[slot.into()],
-            "suspending_stream_next_bind_free",
-        )
-        .llvm_ctx("hew_read_slot_free (bind) call")?;
-    if let Some(result_dest) = term.deadline_result_dest {
-        // `await stream.recv() | after d` success path: wrap Option<T> in `Ok(_)`.
-        emit_result_ok(fn_ctx, result_dest, Some(term.result_dest))?;
-    }
-    if let Some(reg) = reg {
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                reg_free,
-                &[reg.into()],
-                "suspending_stream_next_ok_reg_free",
-            )
-            .llvm_ctx("hew_await_cancel_free (stream next ok) call")?;
-    }
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending stream-next bind -> resume br")?;
-
-    Ok(())
-}
-
-/// Emit the caller-side non-blocking `await rx.recv()` over a `std::channel`
-/// `Receiver<T>` (NEW-4 `Terminator::SuspendingChannelRecv`). The std-channel
-/// analogue of [`emit_suspending_stream_next_terminator`].
-///
-/// Shape (the suspending channel-recv ramp):
-/// ```text
-///   self    = hew_actor_self()                       ; the parked-cont actor
-///   rx      = <load receiver handle>                 ; pointer-shaped (opaque)
-///   slot    = hew_read_slot_new()
-///   rc      = hew_channel_await_recv(rx, self, slot)
-///   br (rc == 0) -> do_suspend, bind                 ; 0 = parked, 1 = ready-now
-/// do_suspend:                                        ; coro.suspend (non-final)
-///   switch coro.suspend [default -> return handle, 0 -> bind, 1 -> abandon]
-/// abandon:                                           ; parked cont destroyed
-///   hew_read_slot_cancel(slot)
-///   hew_channel_detach_recv(rx, slot)               ; release the core ref
-///   hew_read_slot_free(slot); br shared cleanup
-/// bind:                                              ; ready-now OR resumed
-///   rc = hew_channel_try_recv_layout(rx, out, witness) ; rc 0 -> None, 1 -> Some
-///   hew_read_slot_free(slot)                         ; release the creator ref
-///   br resume_bb
-/// ```
-/// The item travels through the channel QUEUE across the suspend (NOT the slot —
-/// the slot is a pure readiness signal); on resume the single consumer pops it
-/// exactly once on its own edge via the non-blocking `try_recv` (an immediate
-/// close → null / out-valid 0 → `None`). The receiver handle is BORROWED for
-/// registration + pop — never consumed or double-closed. Slot refs mirror the
-/// stream-recv ramp: `new` (+1 creator); `hew_channel_await_recv` takes the
-/// channel core's in-flight ref only on the park path; the single
-/// `hew_read_slot_free` on each terminal edge releases the creator ref. The
-/// abandon edge cancels + detaches before freeing so a racing sender deposit
-/// drops its signal and a freed consumer is never woken. The `Some(string)`
-/// payload is the owned malloc'd pointer the MIR drop spine balances with
-/// `hew_string_drop` on EVERY consumption path (match arm or discard), so a
-/// non-match discard frees it exactly once — never the parked branch's
-/// match-scrutinee-only leak fix.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the full caller-side recv ramp — registration + suspend + the \
-              resume-edge Option<T> binding for both the string and int element \
-              kinds — is kept in one place so the suspend point and the value \
-              routing it depends on are read together"
-)]
-fn emit_suspending_channel_recv_terminator<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: SuspendingChannelRecvEmit,
-) -> CodegenResult<()> {
-    let coro = fn_ctx.coro.ok_or_else(|| {
-        CodegenError::FailClosed(
-            "Terminator::SuspendingChannelRecv reached codegen but the function \
-             carries no coro prologue state — lower_function must detect the \
-             suspend carrier (has_suspend) and emit the prologue before the body"
-                .into(),
-        )
-    })?;
-    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SuspendingChannelRecv resume target bb{} not found",
-            term.resume
-        ))
-    })?;
-    if !fn_ctx.blocks.contains_key(&term.cleanup) {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingChannelRecv cleanup target bb{} not found",
-            term.cleanup
-        )));
-    }
-    if term.deadline_ns.is_some()
-        && (term.deadline_result_dest.is_none() || term.error_dest.is_none())
-    {
-        return Err(CodegenError::FailClosed(
-            "SuspendingChannelRecv deadline reached codegen without Result/TimeoutError destinations"
-                .into(),
-        ));
-    }
-    let Place::Local(dest_local) = term.result_dest else {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingChannelRecv result_dest must be a local Option<T> slot, got {:?}",
-            term.result_dest
-        )));
-    };
-
-    let i32_ty = fn_ctx.ctx.i32_type();
-    let i64_ty = fn_ctx.ctx.i64_type();
-
-    // self = the awaiting actor (the live thread-local context) — the same
-    // single-authority accessor the stream/read ramps use across a suspend.
-    let actor_self_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_self",
-    )?;
-    let self_actor = fn_ctx
-        .builder
-        .build_call(actor_self_fn, &[], "suspending_channel_recv_self")
-        .llvm_ctx("hew_actor_self call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
-        .into_pointer_value();
-    let rx_ptr = load_duplex_handle(fn_ctx, term.receiver, "suspending_channel_recv rx")?;
-
-    let slot_new = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_new",
-    )?;
-    let slot = fn_ctx
-        .builder
-        .build_call(slot_new, &[], "suspending_channel_recv_slot")
-        .llvm_ctx("hew_read_slot_new call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
-        .into_pointer_value();
-
-    // ── Deadline cancel registration (when `| after d` is present). ─────────────
-    // Wire before `hew_channel_await_recv` so the registration is in place before
-    // the reactor can fire. Uses `hew_channel_recv_cancel_cleanup` (which calls
-    // hew_read_slot_cancel + hew_channel_detach_recv) as the one-shot CAS arbiter
-    // cleanup callback.
-    //
-    // The cleanup requires a `HewChannelRecvCancelCtx { slot, receiver }` struct
-    // (two pointer-sized fields) so it can perform both the slot cancel AND the
-    // channel-core detach in one atomic callback. Allocate that struct on the
-    // coroutine frame (alloca) and populate it before registering the cancel.
-    // The coroutine frame's lifetime spans the suspend point, so the alloca is
-    // live when the deadline timer fires and calls the cleanup.
-    let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
-        let cancel_new = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_new",
-        )?;
-        let cleanup_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_channel_recv_cancel_cleanup",
-        )?;
-        let cleanup_ptr = cleanup_fn.as_global_value().as_pointer_value();
-        // Allocate HewChannelRecvCancelCtx { slot: ptr, receiver: ptr }.
-        let ptr_ty = fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default());
-        let cancel_ctx_ty = fn_ctx
-            .ctx
-            .struct_type(&[ptr_ty.into(), ptr_ty.into()], false);
-        let cancel_ctx = fn_ctx
-            .builder
-            .build_alloca(cancel_ctx_ty, "suspending_channel_recv_cancel_ctx")
-            .llvm_ctx("channel recv cancel ctx alloca")?;
-        // Store slot into field 0 of the cancel context.
-        let ctx_slot_ptr = fn_ctx
-            .builder
-            .build_struct_gep(
-                cancel_ctx_ty,
-                cancel_ctx,
-                0,
-                "suspending_channel_recv_cancel_ctx_slot",
-            )
-            .llvm_ctx("channel recv cancel ctx slot gep")?;
-        fn_ctx
-            .builder
-            .build_store(ctx_slot_ptr, slot)
-            .llvm_ctx("channel recv cancel ctx slot store")?;
-        // Store receiver into field 1 of the cancel context.
-        let ctx_rx_ptr = fn_ctx
-            .builder
-            .build_struct_gep(
-                cancel_ctx_ty,
-                cancel_ctx,
-                1,
-                "suspending_channel_recv_cancel_ctx_rx",
-            )
-            .llvm_ctx("channel recv cancel ctx rx gep")?;
-        fn_ctx
-            .builder
-            .build_store(ctx_rx_ptr, rx_ptr)
-            .llvm_ctx("channel recv cancel ctx rx store")?;
-        let reg = fn_ctx
-            .builder
-            .build_call(
-                cancel_new,
-                &[self_actor.into(), cleanup_ptr.into(), cancel_ctx.into()],
-                "suspending_channel_recv_deadline_reg",
-            )
-            .llvm_ctx("hew_await_cancel_new call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-            .into_pointer_value();
-        let set_await_cancel = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_read_slot_set_await_cancel",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                set_await_cancel,
-                &[slot.into(), reg.into()],
-                "suspending_channel_recv_set_await_cancel",
-            )
-            .llvm_ctx("hew_read_slot_set_await_cancel call")?;
-        Some(reg)
-    } else {
-        None
-    };
-
-    let rc = fn_ctx.call_runtime_int(
-        "hew_channel_await_recv",
-        &[rx_ptr.into(), self_actor.into(), slot.into()],
-        "suspending_channel_recv_register",
-        "hew_channel_await_recv call",
-    )?;
-
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| {
-            CodegenError::Llvm("suspending channel-recv block has no parent function".into())
-        })?;
-    let do_suspend_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_channel_recv_suspend");
-    let bind_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_channel_recv_bind");
-    // rc == 0 (CHANNEL_AWAIT_SUSPEND) → park; else (READY) bind immediately.
-    let is_suspend = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            rc,
-            rc.get_type().const_zero(),
-            "suspending_channel_recv_is_suspend",
-        )
-        .llvm_ctx("suspending channel-recv suspend compare")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(is_suspend, do_suspend_bb, bind_bb)
-        .llvm_ctx("suspending channel-recv register branch")?;
-
-    let slot_cancel = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_cancel",
-    )?;
-    let slot_free = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_free",
-    )?;
-    let detach_recv = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_channel_detach_recv",
-    )?;
-
-    // ── do_suspend: park the continuation (non-final). Default → return the coro
-    // handle to the trampoline; case 0 → bind; case 1 → abandon teardown. ──────
-    fn_ctx.builder.position_at_end(do_suspend_bb);
-    if let (Some(reg), Some(ns)) = (reg, term.deadline_ns) {
-        let delay_ms = (ns / 1_000_000).max(1) as u64;
-        let tw_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_global_timer_wheel",
-        )?;
-        let tw = fn_ctx
-            .builder
-            .build_call(tw_fn, &[], "suspending_channel_recv_deadline_tw")
-            .llvm_ctx("hew_global_timer_wheel call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_global_timer_wheel returned void".into()))?
-            .into_pointer_value();
-        let schedule = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_schedule_deadline_ms",
-        )?;
-        let delay_val = i64_ty.const_int(delay_ms, false);
-        let sched_rc = fn_ctx
-            .builder
-            .build_call(
-                schedule,
-                &[reg.into(), tw.into(), delay_val.into()],
-                "suspending_channel_recv_schedule_deadline",
-            )
-            .llvm_ctx("hew_await_cancel_schedule_deadline_ms call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_await_cancel_schedule_deadline_ms returned void".into(),
-                )
-            })?
-            .into_int_value();
-        let armed = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                sched_rc,
-                sched_rc.get_type().const_zero(),
-                "suspending_channel_recv_deadline_armed",
-            )
-            .llvm_ctx("suspending channel-recv schedule-armed compare")?;
-        let deadline_proceed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_channel_recv_deadline_proceed");
-        let deadline_check_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_channel_recv_deadline_check");
-        fn_ctx
-            .builder
-            .build_conditional_branch(armed, deadline_proceed_bb, deadline_check_bb)
-            .llvm_ctx("suspending channel-recv schedule-armed branch")?;
-
-        fn_ctx.builder.position_at_end(deadline_check_bb);
-        let status_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_status",
-        )?;
-        let sched_status = fn_ctx
-            .builder
-            .build_call(
-                status_fn,
-                &[reg.into()],
-                "suspending_channel_recv_schedule_status",
-            )
-            .llvm_ctx("hew_await_cancel_status (schedule) call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
-            })?
-            .into_int_value();
-        let recv_completed = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                sched_status,
-                i32_ty.const_int(1, false),
-                "suspending_channel_recv_schedule_recv_completed",
-            )
-            .llvm_ctx("suspending channel-recv schedule recv-completed compare")?;
-        let deadline_failclosed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_channel_recv_deadline_failclosed");
-        fn_ctx
-            .builder
-            .build_conditional_branch(recv_completed, deadline_proceed_bb, deadline_failclosed_bb)
-            .llvm_ctx("suspending channel-recv schedule recv-completed branch")?;
-
-        fn_ctx.builder.position_at_end(deadline_failclosed_bb);
-        let reg_cancel = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_cancel",
-        )?;
-        let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
-        let no_wake = i32_ty.const_zero();
-        fn_ctx
-            .builder
-            .build_call(
-                reg_cancel,
-                &[reg.into(), cancelled_status.into(), no_wake.into()],
-                "suspending_channel_recv_failclosed_reg_cancel",
-            )
-            .llvm_ctx("hew_await_cancel_cancel (channel recv fail-closed) call")?;
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                reg_free,
-                &[reg.into()],
-                "suspending_channel_recv_failclosed_reg_free",
-            )
-            .llvm_ctx("hew_await_cancel_free (channel recv fail-closed) call")?;
-        fn_ctx
-            .builder
-            .build_call(
-                slot_cancel,
-                &[slot.into()],
-                "suspending_channel_recv_failclosed_slot_cancel",
-            )
-            .llvm_ctx("hew_read_slot_cancel (fail-closed) call")?;
-        fn_ctx
-            .builder
-            .build_call(
-                slot_free,
-                &[slot.into()],
-                "suspending_channel_recv_failclosed_free",
-            )
-            .llvm_ctx("hew_read_slot_free (fail-closed) call")?;
-        let result_dest = term.deadline_result_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingChannelRecv fail-closed missing Result dest".into())
-        })?;
-        let error_dest = term.error_dest.ok_or_else(|| {
-            CodegenError::FailClosed(
-                "SuspendingChannelRecv fail-closed missing TimeoutError dest".into(),
-            )
-        })?;
-        emit_recv_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
-        fn_ctx
-            .builder
-            .build_unconditional_branch(resume_bb)
-            .llvm_ctx("suspending channel-recv deadline fail-closed br")?;
-
-        fn_ctx.builder.position_at_end(deadline_proceed_bb);
-    }
-    // ── abandon_cleanup edge: cancel the slot (a racing sender deposit drops its
-    // signal + skips the wake), detach the channel-await registration (release the
-    // core's in-flight ref), free the creator ref, then join shared cleanup.
-    // ── bind edge: ready-now OR resumed. Pop the queued item via the non-blocking
-    // try_recv (the single consumer's own edge), map it into the Option<T> dest,
-    // release the creator ref, branch to the MIR resume.
-    emit_suspend_point(
-        fn_ctx,
-        coro,
-        parent,
-        bind_bb,
-        "suspending_channel_recv",
-        "suspending_channel_recv_abandon_cleanup",
-        "suspending channel-recv abandon -> shared cleanup br",
-        || {
-            if let Some(reg) = reg {
-                let reg_cancel = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
-                    "hew_await_cancel_cancel",
-                )?;
-                let cancelled_status = i32_ty.const_int(2, false);
-                let no_wake = i32_ty.const_zero();
-                fn_ctx
-                    .builder
-                    .build_call(
-                        reg_cancel,
-                        &[reg.into(), cancelled_status.into(), no_wake.into()],
-                        "suspending_channel_recv_abandon_reg_cancel",
-                    )
-                    .llvm_ctx("hew_await_cancel_cancel (channel recv abandon) call")?;
-                let reg_free = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
-                    "hew_await_cancel_free",
-                )?;
-                fn_ctx
-                    .builder
-                    .build_call(
-                        reg_free,
-                        &[reg.into()],
-                        "suspending_channel_recv_abandon_reg_free",
-                    )
-                    .llvm_ctx("hew_await_cancel_free (channel recv abandon) call")?;
-            }
-            fn_ctx
-                .builder
-                .build_call(
-                    slot_cancel,
-                    &[slot.into()],
-                    "suspending_channel_recv_abandon_cancel",
-                )
-                .llvm_ctx("hew_read_slot_cancel (abandon) call")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    detach_recv,
-                    &[rx_ptr.into(), slot.into()],
-                    "suspending_channel_recv_abandon_detach",
-                )
-                .llvm_ctx("hew_channel_detach_recv (abandon) call")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    slot_free,
-                    &[slot.into()],
-                    "suspending_channel_recv_abandon_free",
-                )
-                .llvm_ctx("hew_read_slot_free (abandon) call")?;
-            Ok(())
-        },
-        || {
-            emit_suspending_channel_recv_bind(
-                fn_ctx, &term, rx_ptr, slot, slot_free, dest_local, reg, resume_bb, parent,
-            )
-        },
-    )?;
-
-    Ok(())
-}
-
-/// Resume-bind continuation of [`emit_suspending_channel_recv_terminator`]:
-/// ready-now or resumed. Resolve the deadline arbiter (timeout binds
-/// `Err(TimeoutError)`), pop the queued item through the non-blocking
-/// `hew_channel_try_recv_layout`, release the creator ref, and branch to the MIR
-/// resume block. Split out so the suspend-point seam owns the suspend + abandon
-/// scaffolding while this owns the value routing.
-#[allow(
-    clippy::too_many_arguments,
-    clippy::too_many_lines,
-    reason = "the full channel-recv bind edge — deadline arbiter + Option<T> \
-              layout pop — is kept in one place so the deadline resolution and \
-              the value routing it gates are read together"
-)]
-fn emit_suspending_channel_recv_bind<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: &SuspendingChannelRecvEmit,
-    rx_ptr: inkwell::values::PointerValue<'ctx>,
-    slot: inkwell::values::PointerValue<'ctx>,
-    slot_free: FunctionValue<'ctx>,
-    dest_local: u32,
-    reg: Option<inkwell::values::PointerValue<'ctx>>,
-    resume_bb: inkwell::basic_block::BasicBlock<'ctx>,
-    parent: FunctionValue<'ctx>,
-) -> CodegenResult<()> {
-    let i32_ty = fn_ctx.ctx.i32_type();
-    if let Some(reg) = reg {
-        // Deadline active: resolve the arbiter (complete → check status).
-        let complete = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_complete",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                complete,
-                &[reg.into()],
-                "suspending_channel_recv_deadline_complete",
-            )
-            .llvm_ctx("hew_await_cancel_complete call")?;
-        let status_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_status",
-        )?;
-        let status = fn_ctx
-            .builder
-            .build_call(
-                status_fn,
-                &[reg.into()],
-                "suspending_channel_recv_deadline_status",
-            )
-            .llvm_ctx("hew_await_cancel_status call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
-            })?
-            .into_int_value();
-        let timed_out = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                i32_ty.const_int(3, false), // AwaitCancelStatus::TimedOut = 3
-                "suspending_channel_recv_timed_out",
-            )
-            .llvm_ctx("suspending channel-recv timed-out compare")?;
-        let timeout_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_channel_recv_timeout");
-        let recv_proceed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_channel_recv_proceed");
-        fn_ctx
-            .builder
-            .build_conditional_branch(timed_out, timeout_bb, recv_proceed_bb)
-            .llvm_ctx("suspending channel-recv deadline branch")?;
-
-        fn_ctx.builder.position_at_end(timeout_bb);
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                reg_free,
-                &[reg.into()],
-                "suspending_channel_recv_timeout_reg_free",
-            )
-            .llvm_ctx("hew_await_cancel_free (channel recv timeout) call")?;
-        fn_ctx
-            .builder
-            .build_call(
-                slot_free,
-                &[slot.into()],
-                "suspending_channel_recv_timeout_free",
-            )
-            .llvm_ctx("hew_read_slot_free (timeout) call")?;
-        let result_dest = term.deadline_result_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingChannelRecv timeout missing Result dest".into())
-        })?;
-        let error_dest = term.error_dest.ok_or_else(|| {
-            CodegenError::FailClosed(
-                "SuspendingChannelRecv timeout missing TimeoutError dest".into(),
-            )
-        })?;
-        emit_recv_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
-        fn_ctx
-            .builder
-            .build_unconditional_branch(resume_bb)
-            .llvm_ctx("suspending channel-recv timeout br")?;
-
-        fn_ctx.builder.position_at_end(recv_proceed_bb);
-    }
-    // The await already ensured readiness (an item is queued or the channel
-    // closed), so the bind edge pops via the NON-BLOCKING layout entry — the
-    // single consumer's own edge, popping the queued item exactly once
-    // (close → rc 0 → None). The element witness decodes any describable T.
-    store_recv_option_via_layout(
-        fn_ctx,
-        rx_ptr,
-        dest_local,
-        "hew_channel_try_recv_layout",
-        &term.elem_ty,
-    )?;
-    fn_ctx
-        .builder
-        .build_call(
-            slot_free,
-            &[slot.into()],
-            "suspending_channel_recv_bind_free",
-        )
-        .llvm_ctx("hew_read_slot_free (bind) call")?;
-    if let Some(result_dest) = term.deadline_result_dest {
-        // `await rx.recv() | after d` success path: wrap the Option<T> in `Ok(_)`.
-        emit_result_ok(fn_ctx, result_dest, Some(term.result_dest))?;
-    }
-    if let Some(reg) = reg {
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                reg_free,
-                &[reg.into()],
-                "suspending_channel_recv_ok_reg_free",
-            )
-            .llvm_ctx("hew_await_cancel_free (channel recv ok) call")?;
-    }
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending channel-recv bind -> resume br")?;
-
-    Ok(())
-}
-
-/// Emit the caller-side non-blocking `await t` over a scope-owned child
-/// `Task<T>` (`Terminator::SuspendingTaskAwait`). The task-completion analogue
-/// of [`emit_suspending_channel_recv_terminator`].
-///
-/// Shape (the suspending task-await ramp):
-/// ```text
-///   self  = hew_actor_self()                       ; the parked-cont actor
-///   scope = <load scope token>                     ; pointer-shaped (opaque)
-///   task  = <load task handle>                     ; pointer-shaped (opaque)
-///   slot  = hew_read_slot_new()
-///   rc    = hew_task_await_suspend(scope, task, self, slot)
-///   br (rc == 0) -> do_suspend, bind               ; 0 = parked, 1 = already-done
-/// do_suspend:                                       ; coro.suspend (non-final)
-///   switch coro.suspend [default -> return handle, 0 -> bind, 1 -> abandon]
-/// abandon:                                          ; parked cont destroyed
-///   hew_task_detach_await(scope, task, slot); br shared cleanup
-/// bind:                                             ; already-done OR resumed
-///   (value task) result = hew_task_get_result(task); store -> result_dest
-///   hew_read_slot_free(slot)                        ; release the creator ref
-///   br resume_bb
-/// ```
-/// The task is BORROWED across the suspend (the scope-join owns its free). On
-/// resume the task is `Done` and `hew_task_get_result` deep-reads its result —
-/// the value channel is the task's own result buffer, NOT the gen out-pointer.
-/// Slot refs mirror the channel-recv ramp: `new` (+1 creator);
-/// `hew_task_await_suspend` takes the observer's in-flight ref only on the park
-/// path; the single `hew_read_slot_free` on the bind edge releases the creator
-/// ref. The abandon edge cancels + detaches before the creator-ref free so a
-/// racing task `Done` drops its wake against a freed continuation.
-fn emit_suspending_task_await_terminator<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: SuspendingTaskAwaitEmit,
-) -> CodegenResult<()> {
-    let coro = fn_ctx.coro.ok_or_else(|| {
-        CodegenError::FailClosed(
-            "Terminator::SuspendingTaskAwait reached codegen but the function \
-             carries no coro prologue state — lower_function must detect the \
-             suspend carrier (has_suspend) and emit the prologue before the body"
-                .into(),
-        )
-    })?;
-    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SuspendingTaskAwait resume target bb{} not found",
-            term.resume
-        ))
-    })?;
-    if !fn_ctx.blocks.contains_key(&term.cleanup) {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingTaskAwait cleanup target bb{} not found",
-            term.cleanup
-        )));
-    }
-    // A value-returning task carries `result_dest` — the slot the child's `T`
-    // is read into on the bind edge. The task body published its result through
-    // `hew_task_set_result` (the codegen task wrapper); on the resume /
-    // immediate-ready edge the task is `Done` and `hew_task_get_result` returns
-    // the result buffer, which the bind edge copies into `result_dest` at the
-    // `T` element width. A unit task carries `None` and binds nothing.
-    let actor_self_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_self",
-    )?;
-    let self_actor = fn_ctx
-        .builder
-        .build_call(actor_self_fn, &[], "suspending_task_await_self")
-        .llvm_ctx("hew_actor_self call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
-        .into_pointer_value();
-    let scope_ptr = load_duplex_handle(fn_ctx, term.scope, "suspending_task_await scope")?;
-    let task_ptr = load_duplex_handle(fn_ctx, term.task, "suspending_task_await task")?;
-
-    let slot_new = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_new",
-    )?;
-    let slot = fn_ctx
-        .builder
-        .build_call(slot_new, &[], "suspending_task_await_slot")
-        .llvm_ctx("hew_read_slot_new call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
-        .into_pointer_value();
-
-    let rc = fn_ctx.call_runtime_int(
-        "hew_task_await_suspend",
-        &[
-            scope_ptr.into(),
-            task_ptr.into(),
-            self_actor.into(),
-            slot.into(),
-        ],
-        "suspending_task_await_register",
-        "hew_task_await_suspend call",
-    )?;
-
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| {
-            CodegenError::Llvm("suspending task-await block has no parent function".into())
-        })?;
-    let do_suspend_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_task_await_suspend");
-    let bind_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_task_await_bind");
-    // rc == 0 (TASK_AWAIT_SUSPEND) → park; else (READY) bind immediately.
-    let is_suspend = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            rc,
-            rc.get_type().const_zero(),
-            "suspending_task_await_is_suspend",
-        )
-        .llvm_ctx("suspending task-await suspend compare")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(is_suspend, do_suspend_bb, bind_bb)
-        .llvm_ctx("suspending task-await register branch")?;
-
-    let slot_free = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_free",
-    )?;
-    let detach_await = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_task_detach_await",
-    )?;
-
-    // ── do_suspend: park the continuation (non-final). Default → return the coro
-    // handle to the trampoline; case 0 → bind; case 1 → abandon teardown. ──────
-    fn_ctx.builder.position_at_end(do_suspend_bb);
-    emit_suspend_point(
-        fn_ctx,
-        coro,
-        parent,
-        bind_bb,
-        "suspending_task_await",
-        "suspending_task_await_abandon_cleanup",
-        "suspending task-await abandon -> shared cleanup br",
-        || {
-            // Abandon: detach the observer (cancel the slot so a racing Done
-            // drops its wake) + release the creator ref. The observer's own
-            // in-flight ref is released when it fires against the cancelled slot.
-            fn_ctx
-                .builder
-                .build_call(
-                    detach_await,
-                    &[scope_ptr.into(), task_ptr.into(), slot.into()],
-                    "suspending_task_await_abandon_detach",
-                )
-                .llvm_ctx("hew_task_detach_await (abandon) call")?;
-            Ok(())
-        },
-        || {
-            // Bind: already-done OR resumed. The task is `Done`. For a value
-            // task, read the published result and copy it into `result_dest` at
-            // the `T` element width: `hew_task_get_result` returns the
-            // task-owned result buffer (the bytes `hew_task_set_result` deep-
-            // copied from the body's return); the load+store MOVES the value
-            // representation out of the buffer into the awaiter's binding slot.
-            // The task frees the buffer (as raw bytes) at scope join, so a
-            // managed handle lives exactly once — in `result_dest`.
-            //
-            // Null-buffer guard: `hew_task_get_result` returns `t.result`, which
-            // is NULL whenever the task reached `Done` WITHOUT publishing a result
-            // — i.e. a `Done(Cancelled)` task whose body never ran to
-            // `hew_task_set_result` (the runtime documents this null contract on
-            // `hew_task_await_suspend`). On a null buffer the bind edge copies
-            // nothing rather than dereferencing null: the awaiter is being torn
-            // down by the same scope cancel, so the binding is never observed —
-            // exactly the unit-task discipline. Mirrors the suspending-ask bind
-            // edge, which null-checks `reply_ptr` before the load.
-            //
-            // WHY a guard for a path the current surface cannot reach: no v0.6
-            // user construct cancels a sibling task while another value-awaits in
-            // the same scope (the empty-body `scope … after(d)` deadline arms but
-            // joins the forked task rather than preempting its await — verified),
-            // so this branch is presently unexercised. It honours the runtime's
-            // explicit null-return contract so the value path is correct the day a
-            // cancelling-await surface lands (await-cancel deadline on the task, a
-            // failing-sibling scope-cancel), rather than shipping a latent null
-            // deref behind a future feature. WHEN obsolete: never — the runtime
-            // contract permits a null result buffer regardless of surface.
-            if let Some(result_dest) = term.result_dest {
-                let result_buf = fn_ctx.call_runtime_ptr(
-                    "hew_task_get_result",
-                    &[task_ptr.into()],
-                    "suspending_task_await_result",
-                    "hew_task_get_result (bind) call",
-                )?;
-                let copy_bb = fn_ctx
-                    .ctx
-                    .append_basic_block(parent, "suspending_task_await_result_copy");
-                let bind_join_bb = fn_ctx
-                    .ctx
-                    .append_basic_block(parent, "suspending_task_await_result_join");
-                let result_is_null = fn_ctx
-                    .builder
-                    .build_is_null(result_buf, "suspending_task_await_result_is_null")
-                    .llvm_ctx("value-task result null compare")?;
-                // null (cancelled / no result) → skip copy; non-null → copy.
-                fn_ctx
-                    .builder
-                    .build_conditional_branch(result_is_null, bind_join_bb, copy_bb)
-                    .llvm_ctx("value-task result null branch")?;
-
-                fn_ctx.builder.position_at_end(copy_bb);
-                let (dest_ptr, dest_ty) = place_pointer(fn_ctx, result_dest)?;
-                let loaded = fn_ctx
-                    .builder
-                    .build_load(dest_ty, result_buf, "suspending_task_await_result_load")
-                    .llvm_ctx("value-task result load")?;
-                fn_ctx
-                    .builder
-                    .build_store(dest_ptr, loaded)
-                    .llvm_ctx("value-task result store")?;
-                fn_ctx
-                    .builder
-                    .build_unconditional_branch(bind_join_bb)
-                    .llvm_ctx("value-task result copy -> join br")?;
-
-                fn_ctx.builder.position_at_end(bind_join_bb);
-            }
-            // Release the creator ref, branch to the MIR resume.
-            fn_ctx
-                .builder
-                .build_call(slot_free, &[slot.into()], "suspending_task_await_bind_free")
-                .llvm_ctx("hew_read_slot_free (bind) call")?;
-            fn_ctx
-                .builder
-                .build_unconditional_branch(resume_bb)
-                .llvm_ctx("suspending task-await bind -> resume br")?;
-            Ok(())
-        },
-    )
-}
-
-/// Emit the caller-side cooperative `sleep_ms(d)` (`Terminator::SuspendingSleep`).
-/// The timer-readiness analogue of [`emit_suspending_task_await_terminator`]:
-/// instead of `std::thread::sleep` pinning the worker, arm an await-cancel
-/// deadline on the process-global timer wheel carrying the parked actor, suspend
-/// (freeing the worker), and resume when the timer fires (`enqueue_resume`).
-///
-/// Shape (the suspending sleep ramp):
-/// ```text
-///   self = hew_actor_self()                  ; the parked-cont actor
-///   d    = <load duration_ms>                ; i64
-///   reg  = hew_await_cancel_new(self, null, null)
-///   tw   = hew_global_timer_wheel()
-///   rc   = hew_await_cancel_schedule_deadline_ms(reg, tw, d)
-///   br (rc == 0) -> do_suspend, bind         ; 0 = armed, else = arm failed
-/// do_suspend:                                ; coro.suspend (non-final)
-///   switch coro.suspend [default -> return handle, 0 -> bind, 1 -> abandon]
-/// abandon:                                   ; parked cont destroyed
-///   hew_await_cancel_cancel(reg, Cancelled, 0); hew_await_cancel_free(reg)
-///   br shared cleanup
-/// bind:                                      ; timer fired (or arm failed)
-///   hew_await_cancel_complete(reg); hew_await_cancel_free(reg)
-///   br resume_bb
-/// ```
-/// `sleep` is unit, so the resume edge binds nothing. The deadline-fire path
-/// (`await_cancel_finish(TimedOut)`) calls `enqueue_resume(self, null)` — the
-/// SAME wake the `await x | after d` deadline already proves. If the arm fails
-/// (wheel/ticker unavailable) the bind edge proceeds immediately — a fail-safe
-/// zero-length sleep, never a hang of the timer subsystem.
-fn emit_suspending_sleep_terminator<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: SuspendingSleepEmit,
-) -> CodegenResult<()> {
-    let coro = fn_ctx.coro.ok_or_else(|| {
-        CodegenError::FailClosed(
-            "Terminator::SuspendingSleep reached codegen but the function carries \
-             no coro prologue state — lower_function must detect the suspend \
-             carrier (has_suspend) and emit the prologue before the body"
-                .into(),
-        )
-    })?;
-    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SuspendingSleep resume target bb{} not found",
-            term.resume
-        ))
-    })?;
-    if !fn_ctx.blocks.contains_key(&term.cleanup) {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingSleep cleanup target bb{} not found",
-            term.cleanup
-        )));
-    }
-
-    let i32_ty = fn_ctx.ctx.i32_type();
-    let actor_self_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_self",
-    )?;
-    let self_actor = fn_ctx
-        .builder
-        .build_call(actor_self_fn, &[], "suspending_sleep_self")
-        .llvm_ctx("hew_actor_self call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
-        .into_pointer_value();
-    let duration = load_place_as_basic(fn_ctx, term.duration_ms, "suspending_sleep_duration")?
-        .into_int_value();
-
-    let null_ptr = fn_ctx
-        .ctx
-        .ptr_type(inkwell::AddressSpace::default())
-        .const_null();
-    let cancel_new = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_await_cancel_new",
-    )?;
-    // A pure timer→enqueue_resume registration: no cleanup source (sleep owns no
-    // read slot / channel registration to tear down — the wheel cancel on the
-    // abandon edge is the whole teardown).
-    let reg = fn_ctx
-        .builder
-        .build_call(
-            cancel_new,
-            &[self_actor.into(), null_ptr.into(), null_ptr.into()],
-            "suspending_sleep_reg",
-        )
-        .llvm_ctx("hew_await_cancel_new call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-        .into_pointer_value();
-
-    let tw_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_global_timer_wheel",
-    )?;
-    let tw = fn_ctx
-        .builder
-        .build_call(tw_fn, &[], "suspending_sleep_tw")
-        .llvm_ctx("hew_global_timer_wheel call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_global_timer_wheel returned void".into()))?
-        .into_pointer_value();
-    let schedule = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_await_cancel_schedule_deadline_ms",
-    )?;
-    let sched_rc = fn_ctx
-        .builder
-        .build_call(
-            schedule,
-            &[reg.into(), tw.into(), duration.into()],
-            "suspending_sleep_schedule",
-        )
-        .llvm_ctx("hew_await_cancel_schedule_deadline_ms call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| {
-            CodegenError::FailClosed("hew_await_cancel_schedule_deadline_ms returned void".into())
-        })?
-        .into_int_value();
-
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| {
-            CodegenError::Llvm("suspending sleep block has no parent function".into())
-        })?;
-    let do_suspend_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_sleep_suspend");
-    let bind_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_sleep_bind");
-    // rc == 0 (armed) → park; else (arm failed) bind immediately (fail-safe).
-    let armed = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            sched_rc,
-            sched_rc.get_type().const_zero(),
-            "suspending_sleep_armed",
-        )
-        .llvm_ctx("suspending sleep armed compare")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(armed, do_suspend_bb, bind_bb)
-        .llvm_ctx("suspending sleep arm branch")?;
-
-    let reg_complete = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_await_cancel_complete",
-    )?;
-    let reg_cancel = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_await_cancel_cancel",
-    )?;
-    let reg_free = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_await_cancel_free",
-    )?;
-
-    fn_ctx.builder.position_at_end(do_suspend_bb);
-    emit_suspend_point(
-        fn_ctx,
-        coro,
-        parent,
-        bind_bb,
-        "suspending_sleep",
-        "suspending_sleep_abandon_cleanup",
-        "suspending sleep abandon -> shared cleanup br",
-        || {
-            // Abandon: cancel the scheduled deadline (a racing fire drops its
-            // wake) WITHOUT waking, then release the registration.
-            let cancelled_status = i32_ty.const_int(2, false); // Cancelled
-            let no_wake = i32_ty.const_zero();
-            fn_ctx
-                .builder
-                .build_call(
-                    reg_cancel,
-                    &[reg.into(), cancelled_status.into(), no_wake.into()],
-                    "suspending_sleep_abandon_cancel",
-                )
-                .llvm_ctx("hew_await_cancel_cancel (sleep abandon) call")?;
-            fn_ctx
-                .builder
-                .build_call(reg_free, &[reg.into()], "suspending_sleep_abandon_free")
-                .llvm_ctx("hew_await_cancel_free (sleep abandon) call")?;
-            Ok(())
-        },
-        || {
-            // Bind: the timer fired (or the arm failed → immediate). Settle the
-            // arbiter and release the registration. `sleep` is unit — nothing to
-            // bind.
-            fn_ctx
-                .builder
-                .build_call(reg_complete, &[reg.into()], "suspending_sleep_complete")
-                .llvm_ctx("hew_await_cancel_complete call")?;
-            fn_ctx
-                .builder
-                .build_call(reg_free, &[reg.into()], "suspending_sleep_bind_free")
-                .llvm_ctx("hew_await_cancel_free (sleep bind) call")?;
-            fn_ctx
-                .builder
-                .build_unconditional_branch(resume_bb)
-                .llvm_ctx("suspending sleep bind -> resume br")?;
-            Ok(())
-        },
-    )
-}
-
-/// `scope { } after(d) { body }` with a NON-EMPTY timeout body
-/// (`Terminator::SuspendingScopeDeadline`).
-///
-/// The two-arm sibling of [`emit_suspending_sleep_terminator`]: a single shared
-/// `HewAwaitCancel` arbiter (the first-ready one-shot CAS the suspending select
-/// uses) races the scope-wide child JOIN (wait-ALL) against a timer-wheel
-/// DEADLINE. The deadline-won edge cancels the remaining children and routes to
-/// the lowered `after(...)` body; the join-won edge skips the body. Whichever arm
-/// wins the CAS settles the wait, so deadline-vs-completion is mutually exclusive.
-///
-/// Shape (the suspending scope-deadline ramp):
-/// ```text
-///   self  = hew_actor_self()                       ; the parked-cont actor
-///   scope = <load scope>                           ; the task scope
-///   d_ms  = max(0, <load duration> / 1_000_000)    ; ns → ms
-///   reg   = hew_await_cancel_new(self, null, null) ; ONE shared arbiter
-///   tw    = hew_global_timer_wheel()
-///   hew_await_cancel_schedule_deadline_ms(reg, tw, d_ms)   ; DEADLINE arm
-///   ready = hew_task_scope_completion_observe(scope, reg, self) ; JOIN arm
-///   br (ready == SCOPE_JOIN_READY) -> scan, do_suspend
-/// do_suspend:                                       ; coro.suspend (non-final)
-///   switch coro.suspend [default -> return handle, 0 -> scan, 1 -> abandon]
-/// abandon:                                          ; parked cont destroyed
-///   hew_await_cancel_cancel(reg, Cancelled, no_wake)   ; cancels the timer
-///   hew_task_scope_detach_completion(scope)
-///   hew_task_scope_cancel(scope)                       ; force children Done
-///   hew_await_cancel_free(reg); br shared cleanup
-/// scan (resume):                                    ; join completed OR deadline fired
-///   status = hew_await_cancel_status(reg)
-///   hew_await_cancel_cancel(reg, Cancelled, no_wake)   ; idempotent settle (timer)
-///   br (status == TimedOut) -> deadline_won, join_won
-/// deadline_won:
-///   hew_task_scope_cancel(scope); hew_task_scope_join_all(scope)  ; reap
-///   hew_await_cancel_free(reg); br timeout_body_block  ; run after-body -> resume
-/// join_won:
-///   hew_task_scope_join_all(scope)                     ; reap (all done)
-///   hew_await_cancel_free(reg); br resume_bb           ; skip the body
-/// ```
-/// The deadline arm cannot fail-safe to immediate the way `sleep` does (the join
-/// arm is still live if the wheel is unavailable), so the schedule rc is ignored:
-/// a failed arm means no deadline fires and the join decides the winner. The
-/// `scope` local is frame-spilled, so loading the carrier's `scope` place is
-/// valid before the suspend (arm) and after resume (cancel + join). The `cleanup`
-/// edge is the coro abandon outline; the resume/abandon arms hold every teardown.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the full scope-deadline ramp — arbiter setup + two-arm arming + \
-              suspend + the resume-edge winner branch (deadline body vs \
-              scope-complete) + the abandon teardown — is kept in one place so \
-              the arbiter's exactly-once teardown is read together"
-)]
-fn emit_suspending_scope_deadline_terminator<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: SuspendingScopeDeadlineEmit,
-) -> CodegenResult<()> {
-    let coro = fn_ctx.coro.ok_or_else(|| {
-        CodegenError::FailClosed(
-            "Terminator::SuspendingScopeDeadline reached codegen but the function \
-             carries no coro prologue state — lower_function must detect the \
-             suspend carrier (has_suspend) and emit the prologue before the body"
-                .into(),
-        )
-    })?;
-    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SuspendingScopeDeadline resume target bb{} not found",
-            term.resume
-        ))
-    })?;
-    let timeout_body_bb = *fn_ctx.blocks.get(&term.timeout_body_block).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SuspendingScopeDeadline timeout-body target bb{} not found",
-            term.timeout_body_block
-        ))
-    })?;
-    if !fn_ctx.blocks.contains_key(&term.cleanup) {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingScopeDeadline cleanup target bb{} not found",
-            term.cleanup
-        )));
-    }
-
-    let ctx = fn_ctx.ctx;
-    let i32_ty = ctx.i32_type();
-    let i64_ty = ctx.i64_type();
-    let ptr_ty = ctx.ptr_type(inkwell::AddressSpace::default());
-
-    // self = the parked-continuation actor the timer / join wake re-enqueues.
-    // MUST come from hew_actor_self() (the live thread-local context), not a
-    // spilled param: across a suspend the per-dispatch context is freed; on
-    // resume the scheduler installs a fresh one (the FIX-THE-CLASS accessor the
-    // ask / read / sleep ramps use).
-    let actor_self_fn = intern_runtime_decl(
-        ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_self",
-    )?;
-    let self_actor = fn_ctx
-        .builder
-        .build_call(actor_self_fn, &[], "suspending_scope_deadline_self")
-        .llvm_ctx("hew_actor_self call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
-        .into_pointer_value();
-
-    // The scope being raced (a frame-spilled local; valid across the suspend).
-    let scope_ptr = load_place_as_basic(fn_ctx, term.scope, "suspending_scope_deadline_scope")?
-        .into_pointer_value();
-
-    // ns → ms, clamped non-negative (`after(d)` carries a duration value in
-    // nanoseconds, like the select AfterTimer arm; the schedule takes u64 ms).
-    let dur_ns = load_place_as_basic(fn_ctx, term.duration_ms, "suspending_scope_deadline_dur")?
-        .into_int_value();
-    let ms_per_ns = i64_ty.const_int(1_000_000, false);
-    let dur_ms = fn_ctx
-        .builder
-        .build_int_signed_div(dur_ns, ms_per_ns, "suspending_scope_deadline_dur_ms")
-        .llvm_ctx("scope deadline dur sdiv")?;
-    let zero_i64 = i64_ty.const_zero();
-    let neg = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::SLT,
-            dur_ms,
-            zero_i64,
-            "suspending_scope_deadline_neg",
-        )
-        .llvm_ctx("scope deadline neg cmp")?;
-    let dur_ms_nonneg = fn_ctx
-        .builder
-        .build_select(neg, zero_i64, dur_ms, "suspending_scope_deadline_nonneg")
-        .llvm_ctx("scope deadline nonneg select")?
-        .into_int_value();
-
-    // ONE shared first-ready arbiter (no source cleanup — the resume/abandon arms
-    // do the scope cancel + join + arbiter free with full pointer context, like
-    // the sleep ramp's null-cleanup arbiter).
-    let null_ptr = ptr_ty.const_null();
-    let cancel_new = intern_runtime_decl(
-        ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_await_cancel_new",
-    )?;
-    let reg = fn_ctx
-        .builder
-        .build_call(
-            cancel_new,
-            &[self_actor.into(), null_ptr.into(), null_ptr.into()],
-            "suspending_scope_deadline_reg",
-        )
-        .llvm_ctx("hew_await_cancel_new call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-        .into_pointer_value();
-
-    // DEADLINE arm: arm the timeout on the shared arbiter via the global wheel.
-    // Ignore the schedule rc: the JOIN arm still decides the winner if the wheel
-    // is unavailable, so a failed deadline arm never hangs the wait.
-    let tw_fn = intern_runtime_decl(
-        ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_global_timer_wheel",
-    )?;
-    let tw = fn_ctx
-        .builder
-        .build_call(tw_fn, &[], "suspending_scope_deadline_tw")
-        .llvm_ctx("hew_global_timer_wheel call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_global_timer_wheel returned void".into()))?
-        .into_pointer_value();
-    let schedule = intern_runtime_decl(
-        ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_await_cancel_schedule_deadline_ms",
-    )?;
-    fn_ctx
-        .builder
-        .build_call(
-            schedule,
-            &[reg.into(), tw.into(), dur_ms_nonneg.into()],
-            "suspending_scope_deadline_schedule",
-        )
-        .llvm_ctx("hew_await_cancel_schedule_deadline_ms call")?;
-
-    // JOIN arm: wire the scope's wait-ALL completion onto the same arbiter. A
-    // return of SCOPE_JOIN_READY (1) means the scope already joined — bind the
-    // scope-complete edge without suspending (the immediate path).
-    let scope_observe = intern_runtime_decl(
-        ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_task_scope_completion_observe",
-    )?;
-    let join_ready = fn_ctx
-        .builder
-        .build_call(
-            scope_observe,
-            &[scope_ptr.into(), reg.into(), self_actor.into()],
-            "suspending_scope_deadline_observe",
-        )
-        .llvm_ctx("hew_task_scope_completion_observe call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| {
-            CodegenError::FailClosed("hew_task_scope_completion_observe returned void".into())
-        })?
-        .into_int_value();
-
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| {
-            CodegenError::Llvm("suspending scope deadline block has no parent function".into())
-        })?;
-    let do_suspend_bb = ctx.append_basic_block(parent, "suspending_scope_deadline_suspend");
-    let scan_bb = ctx.append_basic_block(parent, "suspending_scope_deadline_scan");
-
-    // SCOPE_JOIN_READY (1) → bind immediately on the scan edge; else suspend.
-    let scope_join_ready = i32_ty.const_int(1, false);
-    let already_done = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            join_ready,
-            scope_join_ready,
-            "suspending_scope_deadline_ready",
-        )
-        .llvm_ctx("scope deadline ready cmp")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(already_done, scan_bb, do_suspend_bb)
-        .llvm_ctx("scope deadline ready branch")?;
-
-    let reg_cancel = intern_runtime_decl(
-        ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_await_cancel_cancel",
-    )?;
-    let reg_free = intern_runtime_decl(
-        ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_await_cancel_free",
-    )?;
-    let reg_status = intern_runtime_decl(
-        ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_await_cancel_status",
-    )?;
-    let scope_cancel = intern_runtime_decl(
-        ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_task_scope_cancel",
-    )?;
-    let scope_join = intern_runtime_decl(
-        ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_task_scope_join_all",
-    )?;
-    let scope_detach = intern_runtime_decl(
-        ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_task_scope_detach_completion",
-    )?;
-
-    let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
-    let timed_out_status = i32_ty.const_int(3, false); // AwaitCancelStatus::TimedOut
-    let no_wake = i32_ty.const_zero();
-
-    fn_ctx.builder.position_at_end(do_suspend_bb);
-    emit_suspend_point(
-        fn_ctx,
-        coro,
-        parent,
-        scan_bb,
-        "suspending_scope_deadline",
-        "suspending_scope_deadline_abandon_cleanup",
-        "suspending scope deadline abandon -> shared cleanup br",
-        || {
-            // Abandon: the parked continuation is being destroyed. Cancel the
-            // arbiter WITHOUT waking (cancels the armed deadline so a racing fire
-            // drops its wake), detach the join arm, then force the scope's
-            // children Done (scope-cancel) so every per-child join observer fires
-            // and reclaims its box, then free the arbiter's creator ref. Each call
-            // runs exactly once on this single abandon edge.
-            fn_ctx
-                .builder
-                .build_call(
-                    reg_cancel,
-                    &[reg.into(), cancelled_status.into(), no_wake.into()],
-                    "suspending_scope_deadline_abandon_cancel",
-                )
-                .llvm_ctx("scope deadline abandon arbiter cancel")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    scope_detach,
-                    &[scope_ptr.into()],
-                    "suspending_scope_deadline_abandon_detach",
-                )
-                .llvm_ctx("scope deadline abandon detach")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    scope_cancel,
-                    &[scope_ptr.into()],
-                    "suspending_scope_deadline_abandon_scope_cancel",
-                )
-                .llvm_ctx("scope deadline abandon scope cancel")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    reg_free,
-                    &[reg.into()],
-                    "suspending_scope_deadline_abandon_free",
-                )
-                .llvm_ctx("scope deadline abandon arbiter free")?;
-            Ok(())
-        },
-        || {
-            // Resume / immediate: the join completed OR the deadline fired. Read
-            // the terminal status to decide which arm won, settle the arbiter
-            // (cancel-no-wake is idempotent — cancels the timer if the join won),
-            // then branch. Both arms reap the children with join_all and free the
-            // arbiter's creator ref exactly once.
-            let status = fn_ctx
-                .builder
-                .build_call(
-                    reg_status,
-                    &[reg.into()],
-                    "suspending_scope_deadline_status",
-                )
-                .llvm_ctx("hew_await_cancel_status call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("hew_await_cancel_status returned void".into())
-                })?
-                .into_int_value();
-            fn_ctx
-                .builder
-                .build_call(
-                    reg_cancel,
-                    &[reg.into(), cancelled_status.into(), no_wake.into()],
-                    "suspending_scope_deadline_resume_cancel",
-                )
-                .llvm_ctx("scope deadline resume arbiter cancel")?;
-
-            let deadline_won = fn_ctx
-                .builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    status,
-                    timed_out_status,
-                    "suspending_scope_deadline_timed_out",
-                )
-                .llvm_ctx("scope deadline timed-out cmp")?;
-            let deadline_won_bb =
-                ctx.append_basic_block(parent, "suspending_scope_deadline_deadline_won");
-            let join_won_bb = ctx.append_basic_block(parent, "suspending_scope_deadline_join_won");
-            fn_ctx
-                .builder
-                .build_conditional_branch(deadline_won, deadline_won_bb, join_won_bb)
-                .llvm_ctx("scope deadline winner branch")?;
-
-            // Deadline won: cancel the remaining children, reap them, free the
-            // arbiter, then run the lowered after(...) body (which converges on
-            // resume).
-            fn_ctx.builder.position_at_end(deadline_won_bb);
-            fn_ctx
-                .builder
-                .build_call(
-                    scope_cancel,
-                    &[scope_ptr.into()],
-                    "suspending_scope_deadline_won_cancel",
-                )
-                .llvm_ctx("scope deadline won scope cancel")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    scope_join,
-                    &[scope_ptr.into()],
-                    "suspending_scope_deadline_won_join",
-                )
-                .llvm_ctx("scope deadline won join_all")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    reg_free,
-                    &[reg.into()],
-                    "suspending_scope_deadline_won_free",
-                )
-                .llvm_ctx("scope deadline won arbiter free")?;
-            fn_ctx
-                .builder
-                .build_unconditional_branch(timeout_body_bb)
-                .llvm_ctx("scope deadline won -> body br")?;
-
-            // Join won: reap the (already-complete) children, free the arbiter,
-            // and skip the after-body — the scope completed in time.
-            fn_ctx.builder.position_at_end(join_won_bb);
-            fn_ctx
-                .builder
-                .build_call(
-                    scope_join,
-                    &[scope_ptr.into()],
-                    "suspending_scope_deadline_join_join",
-                )
-                .llvm_ctx("scope deadline join join_all")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    reg_free,
-                    &[reg.into()],
-                    "suspending_scope_deadline_join_free",
-                )
-                .llvm_ctx("scope deadline join arbiter free")?;
-            fn_ctx
-                .builder
-                .build_unconditional_branch(resume_bb)
-                .llvm_ctx("scope deadline join -> resume br")?;
-            Ok(())
-        },
-    )
-}
-
 /// The element type of a recv dest local's checker-resolved `Option<T>` slot.
 /// The blocking-recv `Terminator::Call` intercepts derive the layout witness
 /// from this — the dest type is checker-authored (MIR allocates the dest from
@@ -32130,14 +22646,14 @@ fn recv_dest_option_elem_ty(
 /// transferred to the consumer — the MIR drop spine releases owned payloads).
 /// rc 0 → None (tag 1; the payload slot is untouched and inert — a None-tagged
 /// Option never reads or drops its payload).
-fn store_recv_option_via_layout<'ctx>(
+pub(crate) fn store_recv_option_via_layout<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     handle_ptr: inkwell::values::PointerValue<'ctx>,
     dest_local: u32,
     recv_symbol: &str,
     elem_ty: &ResolvedTy,
 ) -> CodegenResult<()> {
-    let witness = channel_elem_layout_witness_ptr(fn_ctx, elem_ty, recv_symbol)?;
+    let witness = crate::layout::channel_elem_layout_witness_ptr(fn_ctx, elem_ty, recv_symbol)?;
     let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(dest_local))?;
     let BasicTypeEnum::IntType(tag_int) = tag_ty else {
         return Err(CodegenError::FailClosed(format!(
@@ -32194,213 +22710,10 @@ fn store_recv_option_via_layout<'ctx>(
     Ok(())
 }
 
-/// Emit the caller-side non-blocking `await sink.send(x)` (NEW-7
-/// `Terminator::SuspendingStreamSend`). The backpressure analogue of
-/// [`emit_suspending_stream_next_terminator`].
-///
-/// Shape (the suspending stream-send ramp):
-/// ```text
-///   self    = hew_actor_self()
-///   sink    = <load sink handle>
-///   value   = <address of the bytes-triple alloca>      ; passed by pointer
-///   slot    = hew_read_slot_new()
-///   rc      = hew_stream_await_send(sink, self, slot, value)
-///   br (rc == 0) -> do_suspend, bind                     ; 0 = parked (full ring)
-/// do_suspend:                                            ; coro.suspend (non-final)
-///   switch coro.suspend [default -> return handle, 0 -> bind, 1 -> abandon]
-/// abandon:                                               ; parked cont destroyed
-///   hew_read_slot_cancel(slot)
-///   hew_sink_detach_await(sink, slot)                    ; drop pending item + ref
-///   hew_read_slot_free(slot); br shared cleanup
-/// bind:                                                  ; ready-now OR resumed
-///   hew_read_slot_free(slot); br resume_bb               ; send is unit, no bind
-/// ```
-/// The item is copied into the channel queue / the parked producer's waiter by
-/// `hew_stream_await_send`, so it is owned by the runtime across the suspend and
-/// re-enqueued exactly once by the consumer's drain. Slot ref discipline matches
-/// the recv ramp; the abandon edge cancels + detaches before freeing.
-fn emit_suspending_stream_send_terminator<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: SuspendingStreamSendEmit,
-) -> CodegenResult<()> {
-    let coro = fn_ctx.coro.ok_or_else(|| {
-        CodegenError::FailClosed(
-            "Terminator::SuspendingStreamSend reached codegen but the function \
-             carries no coro prologue state — lower_function must detect the \
-             suspend carrier (has_suspend) and emit the prologue before the body"
-                .into(),
-        )
-    })?;
-    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SuspendingStreamSend resume target bb{} not found",
-            term.resume
-        ))
-    })?;
-    if !fn_ctx.blocks.contains_key(&term.cleanup) {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingStreamSend cleanup target bb{} not found",
-            term.cleanup
-        )));
-    }
-
-    let actor_self_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_self",
-    )?;
-    let self_actor = fn_ctx
-        .builder
-        .build_call(actor_self_fn, &[], "suspending_stream_send_self")
-        .llvm_ctx("hew_actor_self call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
-        .into_pointer_value();
-    let sink_ptr = load_duplex_handle(fn_ctx, term.sink, "suspending_stream_send sink")?;
-    // The bytes value is passed BY POINTER (the triple alloca address), exactly
-    // like the blocking `hew_sink_write_bytes` consumer.
-    let (value_ptr, _value_ty) = place_pointer(fn_ctx, term.value)?;
-
-    let slot_new = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_new",
-    )?;
-    let slot = fn_ctx
-        .builder
-        .build_call(slot_new, &[], "suspending_stream_send_slot")
-        .llvm_ctx("hew_read_slot_new call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
-        .into_pointer_value();
-
-    let rc = fn_ctx.call_runtime_int(
-        "hew_stream_await_send",
-        &[
-            sink_ptr.into(),
-            self_actor.into(),
-            slot.into(),
-            value_ptr.into(),
-        ],
-        "suspending_stream_send_register",
-        "hew_stream_await_send call",
-    )?;
-
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| {
-            CodegenError::Llvm("suspending stream-send block has no parent function".into())
-        })?;
-    let do_suspend_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_stream_send_suspend");
-    let bind_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_stream_send_bind");
-    let is_suspend = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            rc,
-            rc.get_type().const_zero(),
-            "suspending_stream_send_is_suspend",
-        )
-        .llvm_ctx("suspending stream-send suspend compare")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(is_suspend, do_suspend_bb, bind_bb)
-        .llvm_ctx("suspending stream-send register branch")?;
-
-    let slot_cancel = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_cancel",
-    )?;
-    let slot_free = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_free",
-    )?;
-    let detach_await = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_sink_detach_await",
-    )?;
-
-    // ── do_suspend: park the producer (non-final). ────────────────────────────
-    fn_ctx.builder.position_at_end(do_suspend_bb);
-    emit_suspend_point(
-        fn_ctx,
-        coro,
-        parent,
-        bind_bb,
-        "suspending_stream_send",
-        "suspending_stream_send_abandon_cleanup",
-        "suspending stream-send abandon -> shared cleanup br",
-        || {
-            // ── abandon_cleanup: cancel + detach (drop the pending item + release
-            // the core ref) + free, then join shared cleanup. ───────────────────
-            fn_ctx
-                .builder
-                .build_call(
-                    slot_cancel,
-                    &[slot.into()],
-                    "suspending_stream_send_abandon_cancel",
-                )
-                .llvm_ctx("hew_read_slot_cancel (abandon) call")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    detach_await,
-                    &[sink_ptr.into(), slot.into()],
-                    "suspending_stream_send_abandon_detach",
-                )
-                .llvm_ctx("hew_sink_detach_await (abandon) call")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    slot_free,
-                    &[slot.into()],
-                    "suspending_stream_send_abandon_free",
-                )
-                .llvm_ctx("hew_read_slot_free (abandon) call")?;
-            Ok(())
-        },
-        || {
-            // ── bind: ready-now OR resumed. `send` is unit — just release the
-            // creator ref and branch to the MIR resume block. ───────────────────
-            fn_ctx
-                .builder
-                .build_call(
-                    slot_free,
-                    &[slot.into()],
-                    "suspending_stream_send_bind_free",
-                )
-                .llvm_ctx("hew_read_slot_free (bind) call")?;
-            fn_ctx
-                .builder
-                .build_unconditional_branch(resume_bb)
-                .llvm_ctx("suspending stream-send bind -> resume br")?;
-            Ok(())
-        },
-    )?;
-
-    Ok(())
-}
-
 /// Store an empty `bytes` value (null ptr, offset 0, len 0) into a bytes place.
 /// Used by the SuspendingRead register-error edge (no read will arrive) — the
 /// EOF/empty convention the blocking `hew_tcp_read` also returns on failure.
-fn store_empty_bytes<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, dest: Place) -> CodegenResult<()> {
+pub(crate) fn store_empty_bytes<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, dest: Place) -> CodegenResult<()> {
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
     let BasicTypeEnum::StructType(struct_ty) = dest_ty else {
         return Err(CodegenError::FailClosed(format!(
@@ -32414,7 +22727,7 @@ fn store_empty_bytes<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, dest: Place) -> CodegenResu
     Ok(())
 }
 
-fn emit_read_deadline_timeout_err(
+pub(crate) fn emit_read_deadline_timeout_err(
     fn_ctx: &FnCtx<'_, '_>,
     result_dest: Place,
     error_dest: Place,
@@ -32448,7 +22761,7 @@ fn emit_read_deadline_timeout_err(
 /// Emit `Err(TimeoutError::Timeout)` into `result_dest` for the
 /// `await rx.recv() | after d` / `await stream.recv() | after d` timeout arm
 /// (L4 phase 2). `TimeoutError::Timeout` is variant 0 with no payload.
-fn emit_recv_deadline_timeout_err(
+pub(crate) fn emit_recv_deadline_timeout_err(
     fn_ctx: &FnCtx<'_, '_>,
     result_dest: Place,
     error_dest: Place,
@@ -32469,7 +22782,10 @@ fn emit_recv_deadline_timeout_err(
 /// `hew_tcp_accept` error return. The accept register-error edge binds this so
 /// the resumed handler sees an invalid connection (`hew_connection_is_valid`
 /// rejects it) rather than a deposited handle — fail-closed, never a panic.
-fn store_invalid_connection<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, dest: Place) -> CodegenResult<()> {
+pub(crate) fn store_invalid_connection<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: Place,
+) -> CodegenResult<()> {
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
     let BasicTypeEnum::PointerType(ptr_ty) = dest_ty else {
         return Err(CodegenError::FailClosed(format!(
@@ -32485,1780 +22801,6 @@ fn store_invalid_connection<'ctx>(fn_ctx: &FnCtx<'_, 'ctx>, dest: Place) -> Code
         .builder
         .build_store(dest_ptr, invalid_ptr)
         .llvm_ctx("store invalid connection")?;
-    Ok(())
-}
-
-/// Emit the caller-side non-blocking actor ask (W6.010 `Terminator::SuspendingAsk`).
-///
-/// Shape (the suspendable caller ramp):
-/// ```text
-///   self      = ctx.actor                         ; current_actor_ptr
-///   ch        = hew_reply_channel_new()
-///                hew_reply_channel_set_parked_waiter(ch, self)
-///   rc        = hew_actor_ask_with_channel(actor, msg_type, payload, size, ch)
-///   br (rc != 0) -> send_err, do_suspend
-/// send_err:                                        ; submit failed, no reply ever
-///   hew_reply_channel_free(ch)
-///   error_dest = hew_actor_ask_take_last_error(); result_dest = Err(error_dest)
-///   br resume_bb (MIR `resume` block — the bound result is read there)
-/// do_suspend:                                      ; coro.suspend (non-final)
-///   switch coro.suspend [default -> return handle, 0 -> reply_bind, 1 -> cleanup]
-/// reply_bind:                                      ; the executor resumed us
-///   reply = hew_reply_wait(ch)                     ; fast path — already ready
-///   br (reply == null) -> ask_err, ask_ok
-/// ask_ok:  reply_dest = *reply; result_dest = Ok(reply_dest); free(reply); free(ch); br resume_bb
-/// ask_err: free(ch); error_dest = hew_actor_ask_take_last_error(); result_dest = Err; br resume_bb
-/// ```
-/// The value travels through `ch` (a frame-spilled local) across the suspend;
-/// on resume `hew_reply_wait` returns immediately (the reply was deposited
-/// before `enqueue_resume` woke us). The reply-channel ref count: `new` (+1
-/// creator ref); `hew_actor_ask_with_channel` keeps the creator ref (the send
-/// retains its own sender ref); `hew_reply_wait` does NOT consume a ref; the
-/// single `hew_reply_channel_free` here releases the creator ref — matching the
-/// blocking `hew_actor_ask` ownership model exactly.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the full caller-side ask ramp — send setup + suspend + the resume-edge \
-              Ok/Err reply binding — is kept in one place so the suspend point and \
-              the value routing it depends on are read together"
-)]
-fn emit_suspending_ask_terminator<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: SuspendingAskEmit,
-) -> CodegenResult<()> {
-    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    // The coro prologue must be present (lower_function detects the SuspendingAsk
-    // carrier via `has_suspend` and emits it). Fail closed otherwise (R2 / the
-    // Lane-B silent-no-op class) — a SuspendingAsk without coro state is a
-    // producer that ran ahead of the prologue.
-    let coro = fn_ctx.coro.ok_or_else(|| {
-        CodegenError::FailClosed(
-            "Terminator::SuspendingAsk reached codegen but the function carries no \
-             coro prologue state — lower_function must detect the suspend carrier \
-             (has_suspend) and emit the prologue before the body"
-                .into(),
-        )
-    })?;
-    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SuspendingAsk resume target bb{} not found",
-            term.resume
-        ))
-    })?;
-    if !fn_ctx.blocks.contains_key(&term.cleanup) {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingAsk cleanup target bb{} not found",
-            term.cleanup
-        )));
-    }
-
-    // self = the current actor — the parked-continuation waiter the reply
-    // re-enqueues. MUST come from `hew_actor_self()` (the thread-local execution
-    // context), NOT the spilled `ctx` parameter: across a suspend the coroutine
-    // frame spills param 0, but the scheduler's per-dispatch context it pointed
-    // to is freed when the dispatch returns at the first suspend. On RESUME the
-    // scheduler installs a fresh context (`resume_suspended_activation`), so the
-    // thread-local read returns the live actor; a spilled-param read would
-    // dereference freed stack (the multi-await crash). `hew_get_reply_channel`
-    // in the body's reply deposit reads the same thread-local, so both halves of
-    // the value routing agree on the current context.
-    let actor_self_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_self",
-    )?;
-    let self_actor = fn_ctx
-        .builder
-        .build_call(actor_self_fn, &[], "suspending_ask_self")
-        .llvm_ctx("hew_actor_self call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
-        .into_pointer_value();
-    let actor_ptr = load_duplex_handle(fn_ctx, term.actor, "suspending_ask receiver")?;
-    let (payload_ptr, payload_size) =
-        actor_payload_ptr_size(fn_ctx, term.value, "suspending_ask_payload")?;
-
-    let ch_new = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_reply_channel_new",
-    )?;
-    let ch = fn_ctx
-        .builder
-        .build_call(ch_new, &[], "suspending_ask_ch")
-        .llvm_ctx("hew_reply_channel_new call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_reply_channel_new returned void".into()))?
-        .into_pointer_value();
-    fn_ctx.call_runtime_void(
-        "hew_reply_channel_set_parked_waiter",
-        &[ch.into(), self_actor.into()],
-        "suspending_ask_set_waiter",
-        "hew_reply_channel_set_parked_waiter call",
-    )?;
-
-    // #1739: register the reply type R's destructor on the channel before the
-    // ask submits. This is THE timeout/cancel leak path — an `await … | after d`
-    // (or an actor-shutdown race) can deposit an owned reply that no waiter ever
-    // consumes; the channel free leg then runs this destructor on the
-    // never-consumed buffer instead of leaking R's embedded heap. `ch` is the
-    // channel just created above; the reply type comes from the receiver's
-    // `Duplex<Msg, Reply>` handle type.
-    let suspending_ask_reply_ty = ask_reply_ty(fn_ctx, term.reply_dest)?.clone();
-    wire_reply_drop_fn(fn_ctx, ch, &suspending_ask_reply_ty)?;
-
-    // ── NEW-6b await-deadline registration. Attach a one-shot cancel/deadline
-    // record to the reply channel BEFORE the ask submits so the reply-deposit
-    // path (`hew_await_cancel_complete` on the channel's `await_cancel`) is the
-    // deadline-vs-reply arbiter. The timer itself is armed only on the commit
-    // (`do_suspend`) path; `schedule_deadline_ms` no-ops if a reply already
-    // completed the registration. `reg` is a frame-spilled local live across the
-    // suspend (like `ch`). `None` when this ask carries no deadline. ───────────
-    let i32_ty = fn_ctx.ctx.i32_type();
-    let i64_ty = fn_ctx.ctx.i64_type();
-    let reg: Option<inkwell::values::PointerValue<'ctx>> = if term.deadline_ns.is_some() {
-        let cancel_new = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_new",
-        )?;
-        let cleanup_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_reply_channel_cancel_cleanup",
-        )?;
-        let cleanup_ptr = cleanup_fn.as_global_value().as_pointer_value();
-        let reg = fn_ctx
-            .builder
-            .build_call(
-                cancel_new,
-                &[self_actor.into(), cleanup_ptr.into(), ch.into()],
-                "suspending_ask_deadline_reg",
-            )
-            .llvm_ctx("hew_await_cancel_new call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_await_cancel_new returned void".into()))?
-            .into_pointer_value();
-        let set_await_cancel = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_reply_channel_set_await_cancel",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                set_await_cancel,
-                &[ch.into(), reg.into()],
-                "suspending_ask_set_await_cancel",
-            )
-            .llvm_ctx("hew_reply_channel_set_await_cancel call")?;
-        Some(reg)
-    } else {
-        None
-    };
-
-    let ask_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_ask_with_channel",
-    )?;
-    let msg_type_val = fn_ctx.ctx.i32_type().const_int(term.msg_type as u64, false);
-    // `payload_size` is built as i64; the `size` param is `usize`/`size_t`
-    // (i32 on wasm32). Reconcile to the target-correct width.
-    let suspending_ask_size_ty = runtime_size_ty(fn_ctx.ctx, fn_ctx.llvm_mod);
-    let payload_size = reconcile_int_width_signed(
-        fn_ctx,
-        payload_size.into(),
-        suspending_ask_size_ty.into(),
-        "suspending ask payload size",
-    )?;
-    let rc = fn_ctx
-        .builder
-        .build_call(
-            ask_fn,
-            &[
-                actor_ptr.into(),
-                msg_type_val.into(),
-                payload_ptr.into(),
-                payload_size.into(),
-                ch.into(),
-            ],
-            "suspending_ask_submit",
-        )
-        .llvm_ctx("hew_actor_ask_with_channel call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_ask_with_channel returned void".into()))?
-        .into_int_value();
-
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| CodegenError::Llvm("suspending ask block has no parent function".into()))?;
-    let send_err_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_ask_send_err");
-    let do_suspend_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_ask_suspend");
-    let send_ok = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            rc,
-            rc.get_type().const_zero(),
-            "suspending_ask_send_ok",
-        )
-        .llvm_ctx("suspending ask send-ok compare")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(send_ok, do_suspend_bb, send_err_bb)
-        .llvm_ctx("suspending ask send branch")?;
-
-    // ── send_err: the submit failed; no reply will ever arrive. Free the
-    // channel and bind Err(AskError) without suspending (no worker to free —
-    // we never parked). ──────────────────────────────────────────────────────
-    fn_ctx.builder.position_at_end(send_err_bb);
-    let ch_free = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_reply_channel_free",
-    )?;
-    fn_ctx
-        .builder
-        .build_call(ch_free, &[ch.into()], "suspending_ask_send_err_free")
-        .llvm_ctx("hew_reply_channel_free (send err) call")?;
-    if let Some(reg) = reg {
-        // Submit failed → no reply, no suspend. Release the registration creator
-        // ref (no timer was armed; the channel's retained ref drops at final free).
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(reg_free, &[reg.into()], "suspending_ask_send_err_reg_free")
-            .llvm_ctx("hew_await_cancel_free (send err) call")?;
-    }
-    emit_suspending_ask_err(fn_ctx, term.result_dest, term.error_dest)?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending ask send-err br")?;
-
-    // ── do_suspend: park the continuation (non-final suspend). The default
-    // edge returns the coro handle to the trampoline (which parks it on this
-    // actor); case 0 resumes into the reply-bind block; case 1 tears down. ────
-    fn_ctx.builder.position_at_end(do_suspend_bb);
-    // ── NEW-6b: arm the deadline timer now that we are committed to suspending.
-    // `schedule_deadline_ms` returns 0 once armed, and -1 either because (a) a
-    // reply already completed the registration in the submit→here window — a
-    // BENIGN fast-reply race, so the reply-bind path will return Ok — or because
-    // (b) the timer wheel could not be obtained / the schedule genuinely failed
-    // (`hew_global_timer_wheel()` null on init failure, or a null timer entry).
-    // Case (b) must FAIL CLOSED: a `| after d` ask whose deadline cannot be armed
-    // would otherwise silently degrade to an un-deadlined await that can hang,
-    // contradicting the never-hang contract. We distinguish (a) from (b) by the
-    // registration's terminal state: (a) leaves it `Completed`, (b) leaves it
-    // `Pending`. On (b) we tear the ask down deterministically and bind
-    // `Err(AskError::Timeout)` (the deadline cannot be honoured → conservatively
-    // report the deadline as elapsed) WITHOUT parking — never a silent
-    // un-deadlined await, never a crash.
-    if let (Some(reg), Some(ns)) = (reg, term.deadline_ns) {
-        // ns → ms (the runtime timer-wheel granularity), floored to ≥ 1 ms so a
-        // sub-millisecond literal still arms one tick rather than rounding to 0.
-        let delay_ms = (ns / 1_000_000).max(1) as u64;
-        let tw_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_global_timer_wheel",
-        )?;
-        // `hew_global_timer_wheel` returns null on init failure; the schedule call
-        // below null-checks `tw` and returns -1, which we then route to fail-closed.
-        let tw = fn_ctx
-            .builder
-            .build_call(tw_fn, &[], "suspending_ask_deadline_tw")
-            .llvm_ctx("hew_global_timer_wheel call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_global_timer_wheel returned void".into()))?
-            .into_pointer_value();
-        let schedule = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_schedule_deadline_ms",
-        )?;
-        let delay_val = i64_ty.const_int(delay_ms, false);
-        let sched_rc = fn_ctx
-            .builder
-            .build_call(
-                schedule,
-                &[reg.into(), tw.into(), delay_val.into()],
-                "suspending_ask_schedule_deadline",
-            )
-            .llvm_ctx("hew_await_cancel_schedule_deadline_ms call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_await_cancel_schedule_deadline_ms returned void".into(),
-                )
-            })?
-            .into_int_value();
-        let armed = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                sched_rc,
-                sched_rc.get_type().const_zero(),
-                "suspending_ask_deadline_armed",
-            )
-            .llvm_ctx("suspending ask schedule-armed compare")?;
-        let deadline_proceed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_ask_deadline_proceed");
-        let deadline_check_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_ask_deadline_check");
-        fn_ctx
-            .builder
-            .build_conditional_branch(armed, deadline_proceed_bb, deadline_check_bb)
-            .llvm_ctx("suspending ask schedule-armed branch")?;
-
-        // ── deadline_check: schedule returned -1. If the registration is already
-        // `Completed`, a reply won the race (benign) → proceed to the reply bind.
-        // Otherwise the deadline could not be armed → fail closed. ───────────────
-        fn_ctx.builder.position_at_end(deadline_check_bb);
-        let status_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_status",
-        )?;
-        let sched_status = fn_ctx
-            .builder
-            .build_call(status_fn, &[reg.into()], "suspending_ask_schedule_status")
-            .llvm_ctx("hew_await_cancel_status (schedule) call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
-            })?
-            .into_int_value();
-        // AwaitCancelStatus::Completed = 1.
-        let reply_completed = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                sched_status,
-                i32_ty.const_int(1, false),
-                "suspending_ask_schedule_reply_completed",
-            )
-            .llvm_ctx("suspending ask schedule reply-completed compare")?;
-        let deadline_failclosed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_ask_deadline_failclosed");
-        fn_ctx
-            .builder
-            .build_conditional_branch(reply_completed, deadline_proceed_bb, deadline_failclosed_bb)
-            .llvm_ctx("suspending ask schedule reply-completed branch")?;
-
-        // ── deadline_failclosed: the deadline could not be armed and no reply
-        // completed the registration. Terminalize the registration (disarms any
-        // timer, tombstones the channel so a late replier releases its sender
-        // ref), cancel + free the reply channel, release the creator ref, bind
-        // `Err(AskError::Timeout)`, and resume WITHOUT ever parking. ─────────────
-        fn_ctx.builder.position_at_end(deadline_failclosed_bb);
-        let reg_cancel = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_cancel",
-        )?;
-        let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
-        let no_wake = i32_ty.const_zero();
-        fn_ctx
-            .builder
-            .build_call(
-                reg_cancel,
-                &[reg.into(), cancelled_status.into(), no_wake.into()],
-                "suspending_ask_failclosed_reg_cancel",
-            )
-            .llvm_ctx("hew_await_cancel_cancel (fail-closed) call")?;
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                reg_free,
-                &[reg.into()],
-                "suspending_ask_failclosed_reg_free",
-            )
-            .llvm_ctx("hew_await_cancel_free (fail-closed) call")?;
-        let ch_cancel = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_reply_channel_cancel",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(
-                ch_cancel,
-                &[ch.into()],
-                "suspending_ask_failclosed_ch_cancel",
-            )
-            .llvm_ctx("hew_reply_channel_cancel (fail-closed) call")?;
-        let ch_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_reply_channel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(ch_free, &[ch.into()], "suspending_ask_failclosed_ch_free")
-            .llvm_ctx("hew_reply_channel_free (fail-closed) call")?;
-        // AskError::Timeout = 5.
-        let timeout_code = i32_ty.const_int(5, false);
-        emit_suspending_ask_err_with_code(fn_ctx, term.result_dest, term.error_dest, timeout_code)?;
-        fn_ctx
-            .builder
-            .build_unconditional_branch(resume_bb)
-            .llvm_ctx("suspending ask deadline fail-closed br")?;
-
-        // Proceed: the deadline armed (or a reply already won) — continue to the
-        // coro suspend. Subsequent emit_suspend uses the current builder block.
-        fn_ctx.builder.position_at_end(deadline_proceed_bb);
-    }
-    let reply_bind_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_ask_reply_bind");
-    // ── abandon_cleanup edge (S2): when a parked SuspendingAsk continuation is
-    // DESTROYED without resuming (actor stop/crash while suspended, begin_park
-    // refusal, the C1 free-path destroy_parked), `coro.suspend`'s case-1 edge
-    // runs. The shared `coro.cleanup_block` only frees the coro frame — it never
-    // sees `ch` (a codegen-local SSA value with no MIR Place), so without this
-    // interposition `ch` leaks. The abandon continuation CANCELS + FREES the
-    // creator ref before joining the shared cleanup. Cancel-then-free mirrors the
-    // blocking-ask timeout abandon (actor.rs): the cancel makes a late replier
-    // (the callee still holds the sender ref) release its own ref and skip the
-    // wake; the free releases this abandoned caller's creator-side ref. The late
-    // wake itself is independently fail-safe (the caller-actor UAF guard in
-    // enqueue_resume drops a wake to a freed caller).
-    emit_suspend_point(
-        fn_ctx,
-        coro,
-        parent,
-        reply_bind_bb,
-        "suspending_ask",
-        "suspending_ask_abandon_cleanup",
-        "suspending ask abandon -> shared cleanup br",
-        || {
-            // ── abandon_cleanup: free the awaited reply channel, then join the
-            // shared coro cleanup (frame-free + coro.end). ──────────────────────
-            if let Some(reg) = reg {
-                // Parked continuation destroyed without resuming: force the
-                // registration terminal (disarms the deadline timer, releasing its
-                // retained ref and running the channel-tombstone cleanup while `ch`
-                // is still live), then release the creator ref. wake_actor = 0: we
-                // are tearing down, not resuming. The channel's own retained ref
-                // drops at its final free below.
-                let reg_cancel = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
-                    "hew_await_cancel_cancel",
-                )?;
-                let cancelled_status = i32_ty.const_int(2, false); // AwaitCancelStatus::Cancelled
-                let no_wake = i32_ty.const_zero();
-                fn_ctx
-                    .builder
-                    .build_call(
-                        reg_cancel,
-                        &[reg.into(), cancelled_status.into(), no_wake.into()],
-                        "suspending_ask_abandon_reg_cancel",
-                    )
-                    .llvm_ctx("hew_await_cancel_cancel (abandon) call")?;
-                let reg_free = intern_runtime_decl(
-                    fn_ctx.ctx,
-                    fn_ctx.llvm_mod,
-                    &mut fn_ctx.runtime_decls.borrow_mut(),
-                    "hew_await_cancel_free",
-                )?;
-                fn_ctx
-                    .builder
-                    .build_call(reg_free, &[reg.into()], "suspending_ask_abandon_reg_free")
-                    .llvm_ctx("hew_await_cancel_free (abandon) call")?;
-            }
-            let ch_cancel = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_reply_channel_cancel",
-            )?;
-            fn_ctx
-                .builder
-                .build_call(ch_cancel, &[ch.into()], "suspending_ask_abandon_cancel")
-                .llvm_ctx("hew_reply_channel_cancel (abandon) call")?;
-            fn_ctx
-                .builder
-                .build_call(ch_free, &[ch.into()], "suspending_ask_abandon_free")
-                .llvm_ctx("hew_reply_channel_free (abandon) call")?;
-            Ok(())
-        },
-        || emit_suspending_ask_reply_bind(fn_ctx, &term, ch, reg, resume_bb, parent),
-    )?;
-
-    let _ = ptr_ty;
-    Ok(())
-}
-
-/// Resume-bind continuation of [`emit_suspending_ask_terminator`]: the executor
-/// resumed us (enqueue_resume). The reply is already deposited on `ch`;
-/// `hew_reply_wait` returns it on the fast path. Bind Ok(reply)/Err(AskError)
-/// exactly as Terminator::Ask does, then free the reply payload + the channel,
-/// and branch to the MIR resume block. Split out so the suspend-point seam owns
-/// the suspend + abandon scaffolding while this owns the value routing.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the full reply-bind edge — deadline-vs-reply resolution + the \
-              Ok/Err binding — is kept in one place so the deadline arbiter and \
-              the value routing it gates are read together"
-)]
-fn emit_suspending_ask_reply_bind<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: &SuspendingAskEmit,
-    ch: inkwell::values::PointerValue<'ctx>,
-    reg: Option<inkwell::values::PointerValue<'ctx>>,
-    resume_bb: inkwell::basic_block::BasicBlock<'ctx>,
-    parent: FunctionValue<'ctx>,
-) -> CodegenResult<()> {
-    let i32_ty = fn_ctx.ctx.i32_type();
-    let ch_free = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_reply_channel_free",
-    )?;
-    let ch_cancel = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_reply_channel_cancel",
-    )?;
-    // ── NEW-6b deadline-vs-reply resolution at the single resume convergence
-    // point. Whichever wake fired (reply deposit or deadline timer), the one-shot
-    // registration is authoritative: `complete` claims the reply if still pending
-    // (which cancels the timer); if the timer already won, `complete` is a no-op
-    // and `status` reads TimedOut. On TimedOut we bind `Err(AskError::Timeout)`
-    // and tear the channel down WITHOUT waiting on a reply that will never come.
-    if let Some(reg) = reg {
-        let complete = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_complete",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(complete, &[reg.into()], "suspending_ask_deadline_complete")
-            .llvm_ctx("hew_await_cancel_complete call")?;
-        let status_fn = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_status",
-        )?;
-        let status = fn_ctx
-            .builder
-            .build_call(status_fn, &[reg.into()], "suspending_ask_deadline_status")
-            .llvm_ctx("hew_await_cancel_status call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| {
-                CodegenError::FailClosed("hew_await_cancel_status returned void".into())
-            })?
-            .into_int_value();
-        // AwaitCancelStatus::TimedOut = 3.
-        let timed_out = fn_ctx
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                i32_ty.const_int(3, false),
-                "suspending_ask_timed_out",
-            )
-            .llvm_ctx("suspending ask timed-out compare")?;
-        let timeout_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_ask_timeout");
-        let reply_proceed_bb = fn_ctx
-            .ctx
-            .append_basic_block(parent, "suspending_ask_reply_proceed");
-        fn_ctx
-            .builder
-            .build_conditional_branch(timed_out, timeout_bb, reply_proceed_bb)
-            .llvm_ctx("suspending ask deadline branch")?;
-
-        // ── timeout: the deadline elapsed first. Release the registration creator
-        // ref, cancel + free the reply channel (a late replier releases its sender
-        // ref on the tombstone), bind `Err(AskError::Timeout)`, and resume. ───────
-        fn_ctx.builder.position_at_end(timeout_bb);
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(reg_free, &[reg.into()], "suspending_ask_timeout_reg_free")
-            .llvm_ctx("hew_await_cancel_free (timeout) call")?;
-        fn_ctx
-            .builder
-            .build_call(ch_cancel, &[ch.into()], "suspending_ask_timeout_ch_cancel")
-            .llvm_ctx("hew_reply_channel_cancel (timeout) call")?;
-        fn_ctx
-            .builder
-            .build_call(ch_free, &[ch.into()], "suspending_ask_timeout_ch_free")
-            .llvm_ctx("hew_reply_channel_free (timeout) call")?;
-        // AskError::Timeout = 5 (runtime internal::types::AskError; the Hew std
-        // AskError enum shares the same discriminant).
-        let timeout_code = i32_ty.const_int(5, false);
-        emit_suspending_ask_err_with_code(fn_ctx, term.result_dest, term.error_dest, timeout_code)?;
-        fn_ctx
-            .builder
-            .build_unconditional_branch(resume_bb)
-            .llvm_ctx("suspending ask timeout br")?;
-
-        // Reply landed before the deadline: continue the normal Ok/Err binding.
-        fn_ctx.builder.position_at_end(reply_proceed_bb);
-    }
-    let reply_wait = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_reply_wait",
-    )?;
-    let reply_ptr = fn_ctx
-        .builder
-        .build_call(reply_wait, &[ch.into()], "suspending_ask_reply")
-        .llvm_ctx("hew_reply_wait call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_reply_wait returned void".into()))?
-        .into_pointer_value();
-    let ask_ok_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_ask_reply_ok");
-    let ask_err_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_ask_reply_err");
-    let reply_is_null = fn_ctx
-        .builder
-        .build_is_null(reply_ptr, "suspending_ask_reply_is_null")
-        .llvm_ctx("suspending ask reply null compare")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(reply_is_null, ask_err_bb, ask_ok_bb)
-        .llvm_ctx("suspending ask reply branch")?;
-
-    // Ok path: load reply value -> reply_dest -> Result::Ok; free reply + ch.
-    fn_ctx.builder.position_at_end(ask_ok_bb);
-    let (reply_dest_ptr, reply_dest_ty) = place_pointer(fn_ctx, term.reply_dest)?;
-    let reply_val = fn_ctx
-        .builder
-        .build_load(reply_dest_ty, reply_ptr, "suspending_ask_reply_value")
-        .llvm_ctx("suspending ask reply load")?;
-    fn_ctx
-        .builder
-        .build_store(reply_dest_ptr, reply_val)
-        .llvm_ctx("suspending ask reply store")?;
-    emit_result_ok(fn_ctx, term.result_dest, Some(term.reply_dest))?;
-    let free = get_or_declare_free(fn_ctx);
-    fn_ctx
-        .builder
-        .build_call(free, &[reply_ptr.into()], "suspending_ask_reply_free")
-        .llvm_ctx("free suspending ask reply")?;
-    fn_ctx
-        .builder
-        .build_call(ch_free, &[ch.into()], "suspending_ask_ok_ch_free")
-        .llvm_ctx("hew_reply_channel_free (ok) call")?;
-    if let Some(reg) = reg {
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(reg_free, &[reg.into()], "suspending_ask_ok_reg_free")
-            .llvm_ctx("hew_await_cancel_free (ok) call")?;
-    }
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending ask ok br")?;
-
-    // Err path: null reply -> Err(AskError). A null reply is either a mailbox
-    // teardown (the channel's `orphaned` flag is set → AskError::OrphanedAsk) or
-    // a send/other failure recorded in the TLS last-error slot. Read the
-    // channel-local orphaned flag BEFORE freeing the ref, then bind the SAME
-    // discriminator the blocking-ask path binds (P2a): `select(orphaned,
-    // OrphanedAsk, take_last_error())`. Without this the resume edge bound the
-    // TLS last-error, which never carries the channel-local orphaned fact, so
-    // mailbox-teardown asks reported the wrong error variant.
-    fn_ctx.builder.position_at_end(ask_err_bb);
-    let orphaned_i32 = fn_ctx.call_runtime_int(
-        "hew_reply_channel_is_orphaned",
-        &[ch.into()],
-        "suspending_ask_is_orphaned",
-        "hew_reply_channel_is_orphaned call",
-    )?;
-    // Free the caller-side ref AFTER reading the orphaned flag.
-    fn_ctx
-        .builder
-        .build_call(ch_free, &[ch.into()], "suspending_ask_err_ch_free")
-        .llvm_ctx("hew_reply_channel_free (err) call")?;
-    if let Some(reg) = reg {
-        let reg_free = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_await_cancel_free",
-        )?;
-        fn_ctx
-            .builder
-            .build_call(reg_free, &[reg.into()], "suspending_ask_err_reg_free")
-            .llvm_ctx("hew_await_cancel_free (err) call")?;
-    }
-    let is_orphaned = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::NE,
-            orphaned_i32,
-            i32_ty.const_zero(),
-            "suspending_ask_orphaned_flag",
-        )
-        .llvm_ctx("suspending ask orphaned compare")?;
-    let last_error = fn_ctx.call_runtime_int(
-        "hew_actor_ask_take_last_error",
-        &[],
-        "suspending_ask_err_take_last_error",
-        "hew_actor_ask_take_last_error call",
-    )?;
-    // AskError::OrphanedAsk = 11 (hew-runtime internal::types::AskError); the Hew
-    // AskError enum tag uses the same discriminants the blocking path stores.
-    let orphaned_ask_code = i32_ty.const_int(11, false);
-    let err_code = fn_ctx
-        .builder
-        .build_select(
-            is_orphaned,
-            orphaned_ask_code,
-            last_error,
-            "suspending_ask_err_code",
-        )
-        .llvm_ctx("suspending ask err-code select")?
-        .into_int_value();
-    emit_suspending_ask_err_with_code(fn_ctx, term.result_dest, term.error_dest, err_code)?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending ask err br")?;
-
-    Ok(())
-}
-
-/// Emit the suspendable-callee driver (`Terminator::SuspendingCallClosure`): call
-/// a closure whose body `await`s across the coroutine boundary, drive that callee
-/// coroutine, and PROPAGATE its suspension up into THIS calling coroutine.
-///
-/// Shape (the driver loop):
-/// ```text
-///   ctx       = <live execution context>            ; the closure's ctx arg
-///   (fn,env)  = <load closure pair>
-///   ch        = hew_reply_channel_new()             ; driver-owned result box
-///   hew_context_reply_channel_swap_push(ch)         ; scoped: route child Return -> ch
-///   child     = fn(ctx, env, args...)               ; ramp -> coro handle (ptr)
-///               hew_context_reply_channel_swap_pop()
-///   br check_done
-/// check_done:                                        ; driver loop header
-///   poll = hew_cont_poll(child, null)               ; Ready(1) => child completed
-///   br (poll == Ready) -> finish, do_suspend
-/// do_suspend:                                        ; coro.suspend (non-final)
-///   switch coro.suspend [default -> return handle, 0 -> resume_child, 1 -> abandon]
-/// resume_child:                                      ; reactor woke the actor
-///   hew_context_reply_channel_swap_push(ch)
-///   hew_cont_resume(child)                           ; run child to next suspend/done
-///   hew_context_reply_channel_swap_pop()
-///   br check_done                                    ; multi-suspend re-parks here
-/// abandon:                                           ; caller destroyed while parked
-///   hew_cont_destroy(child); cancel+free(ch); br shared cleanup
-/// finish:                                            ; child completed
-///   reply = hew_reply_wait(ch)                       ; the deposited return value
-///   *result_dest = *reply; free(reply)               ; non-unit only
-///   [unit only: free(ch) sender ref]                 ; child deposited nothing
-///   hew_reply_channel_free(ch); hew_cont_destroy(child)
-///   br resume_bb
-/// ```
-/// The child's `Return` runs synchronously inside the ramp/`hew_cont_resume`
-/// call, so the swap window covers its `hew_reply` deposit. The swap is a SCOPED
-/// transfer of BOTH the reply-channel pointer AND the consumed bit (saved on
-/// push, restored on pop), and the scheduler crash-recovery edge unwinds any
-/// still-open swap (`reply_channel_swap_unwind`) — so the outer dispatch's
-/// reply routing is restored and the driver channel is torn down on EVERY exit
-/// edge (normal return, trap, cancel, unwind), not just the normal-return path.
-/// The child's OWN read
-/// suspend registers `self = hew_actor_self()` as the wake target, so the reactor
-/// wakes the calling ACTOR, whose parked outer coroutine resumes at `resume_child`
-/// and re-resumes the child handle (R2 wake-target threading).
-#[allow(
-    clippy::too_many_lines,
-    reason = "the full suspendable-callee driver — ramp invoke + the park/resume \
-              loop + the completion value binding — is kept in one place so the \
-              suspend point and the value routing it depends on are read together"
-)]
-fn emit_suspending_call_closure_terminator<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: SuspendingCallClosureEmit<'_>,
-) -> CodegenResult<()> {
-    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
-    let i32_ty = fn_ctx.ctx.i32_type();
-    // The coro prologue must be present (lower_function detects the suspend
-    // carrier via `has_suspend` and emits it). Fail closed otherwise (R2 / the
-    // Lane-B silent-no-op class).
-    let coro = fn_ctx.coro.ok_or_else(|| {
-        CodegenError::FailClosed(
-            "Terminator::SuspendingCallClosure reached codegen but the function carries \
-             no coro prologue state — lower_function must detect the suspend carrier \
-             (has_suspend) and emit the prologue before the body"
-                .into(),
-        )
-    })?;
-    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SuspendingCallClosure resume target bb{} not found",
-            term.resume
-        ))
-    })?;
-    if !fn_ctx.blocks.contains_key(&term.cleanup) {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingCallClosure cleanup target bb{} not found",
-            term.cleanup
-        )));
-    }
-
-    // Resolve the live execution context (the closure's leading ctx arg — the
-    // resume-installed context after a suspend, not the dangling spilled param).
-    let ctx_ptr = closure_call_context(fn_ctx)?;
-
-    // Load the two-pointer closure pair (fn-ptr + env-ptr) exactly as
-    // `lower_call_closure` does.
-    let (callee_ptr, callee_ty) = place_pointer(fn_ctx, term.callee)?;
-    let pair_ty = match callee_ty {
-        BasicTypeEnum::StructType(st) if st.count_fields() == 2 => st,
-        other => {
-            return Err(CodegenError::FailClosed(format!(
-                "SuspendingCallClosure callee must be the two-pointer closure pair, got {other:?}"
-            )));
-        }
-    };
-    let pair = fn_ctx
-        .builder
-        .build_load(pair_ty, callee_ptr, "suspending_closure_pair_load")
-        .llvm_ctx("SuspendingCallClosure pair load")?
-        .into_struct_value();
-    let fn_ptr = fn_ctx
-        .builder
-        .build_extract_value(pair, 0, "suspending_closure_fn_extract")
-        .llvm_ctx("SuspendingCallClosure fn extract")?
-        .into_pointer_value();
-    let env_ptr = fn_ctx
-        .builder
-        .build_extract_value(pair, 1, "suspending_closure_env_extract")
-        .llvm_ctx("SuspendingCallClosure env extract")?
-        .into_pointer_value();
-
-    // Build the ramp call signature. The callee is a coroutine RAMP whose LLVM
-    // return is the `coro.begin` handle (`ptr`), NOT `ret_ty` — this is the fix
-    // to the plain `lower_call_closure` ABI mismatch.
-    let mut param_tys: Vec<BasicMetadataTypeEnum> =
-        Vec::with_capacity(term.args.len().saturating_add(2));
-    param_tys.push(ptr_ty.into());
-    param_tys.push(ptr_ty.into());
-    let mut arg_vals: Vec<inkwell::values::BasicMetadataValueEnum> =
-        Vec::with_capacity(term.args.len().saturating_add(2));
-    arg_vals.push(ctx_ptr.into());
-    arg_vals.push(env_ptr.into());
-    for arg in &term.args {
-        let (arg_ptr, arg_ty) = place_pointer(fn_ctx, *arg)?;
-        param_tys.push(metadata_type_from_basic(arg_ty));
-        let loaded = fn_ctx
-            .builder
-            .build_load(arg_ty, arg_ptr, "suspending_closure_arg")
-            .llvm_ctx("SuspendingCallClosure arg load")?;
-        arg_vals.push(metadata_value_from_basic(loaded));
-    }
-    let ramp_fn_ty = fn_type_for_return(fn_ctx.ctx, Some(ptr_ty.into()), &param_tys);
-
-    // Driver-owned reply channel: the child closure coroutine's `Return` arm
-    // deposits its logical value here (via the swapped-in context reply channel).
-    let ch_new = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_reply_channel_new",
-    )?;
-    let ch = fn_ctx
-        .builder
-        .build_call(ch_new, &[], "suspending_closure_ch")
-        .llvm_ctx("hew_reply_channel_new call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_reply_channel_new returned void".into()))?
-        .into_pointer_value();
-    // #1739: register the return type's destructor on the channel before the
-    // child closure can deposit a reply. If this suspending call is abandoned
-    // (cancel / coro destroy / shutdown) after the child deposited but before
-    // the driver consumed, the channel free leg runs this destructor on the
-    // never-consumed buffer rather than leaking the reply's embedded heap. The
-    // reply type is the closure's return type.
-    wire_reply_drop_fn(fn_ctx, ch, term.ret_ty)?;
-    // Ref accounting (mirrors the SuspendingAsk model): `new` gives the +1
-    // wait-side (creator) ref this driver frees on the completion edge. We
-    // UNCONDITIONALLY retain one sender ref here (Option B): for a non-unit
-    // return the child's `Return` deposit (`hew_reply`) RELEASES this sender ref
-    // (otherwise it would free the channel out from under `hew_reply_wait` —
-    // use-after-free); for a unit/never return the child deposits nothing, so
-    // the sender ref stays live and the unit finish path releases it explicitly
-    // below. Keeping the retain unconditional means the channel always carries
-    // exactly two refs whenever the child has NOT deposited (the abandon and the
-    // crash-unwind edges both free two), so trap/cancel/unwind teardown is a
-    // single uniform rule.
-    fn_ctx.call_runtime_void(
-        "hew_reply_channel_retain",
-        &[ch.into()],
-        "suspending_closure_ch_retain",
-        "hew_reply_channel_retain call",
-    )?;
-
-    let swap_push_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_context_reply_channel_swap_push",
-    )?;
-    let swap_pop_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_context_reply_channel_swap_pop",
-    )?;
-    let cont_poll_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_cont_poll",
-    )?;
-    let cont_resume_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_cont_resume",
-    )?;
-    let cont_destroy_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_cont_destroy",
-    )?;
-    let ch_free = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_reply_channel_free",
-    )?;
-
-    // Helper: open/close a SCOPED swap of `ch` around a synchronous child call.
-    // `swap_in` saves the outer reply-channel pointer + consumed bit and installs
-    // `ch`; `swap_out` restores both. The crash/trap edge is covered separately
-    // by the scheduler's `reply_channel_swap_unwind`, so restoration is
-    // structurally guaranteed on every exit path, not just the normal return.
-    let swap_in = |label: &str| -> CodegenResult<()> {
-        fn_ctx
-            .builder
-            .build_call(swap_push_fn, &[ch.into()], label)
-            .llvm_ctx("hew_context_reply_channel_swap_push call")?;
-        Ok(())
-    };
-    let swap_out = |label: &str| -> CodegenResult<()> {
-        fn_ctx
-            .builder
-            .build_call(swap_pop_fn, &[], label)
-            .llvm_ctx("hew_context_reply_channel_swap_pop call")?;
-        Ok(())
-    };
-
-    // ── invoke the ramp under the swapped-in channel ───────────────────────────
-    swap_in("suspending_closure_swap_in")?;
-    let child = fn_ctx
-        .builder
-        .build_indirect_call(ramp_fn_ty, fn_ptr, &arg_vals, "suspending_closure_child")
-        .llvm_ctx("SuspendingCallClosure ramp call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| {
-            CodegenError::FailClosed(
-                "suspending closure ramp returned void; a coroutine ramp must return its \
-                 coro.begin handle (ptr)"
-                    .into(),
-            )
-        })?
-        .into_pointer_value();
-    swap_out("suspending_closure_swap_out")?;
-
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| {
-            CodegenError::Llvm("suspending closure call block has no parent function".into())
-        })?;
-    let check_done_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_closure_check_done");
-    let do_suspend_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_closure_suspend");
-    let resume_child_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_closure_resume_child");
-    let finish_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_closure_finish");
-
-    fn_ctx
-        .builder
-        .build_unconditional_branch(check_done_bb)
-        .llvm_ctx("suspending closure -> check_done br")?;
-
-    // ── check_done: poll the child for completion (Ready) vs still-suspended. ──
-    fn_ctx.builder.position_at_end(check_done_bb);
-    let poll = fn_ctx
-        .builder
-        .build_call(
-            cont_poll_fn,
-            &[child.into(), ptr_ty.const_null().into()],
-            "suspending_closure_poll",
-        )
-        .llvm_ctx("hew_cont_poll call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_cont_poll returned void".into()))?
-        .into_int_value();
-    // ResumePoll::Ready == 1 → the child reached its final suspend (completed).
-    let is_ready = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::EQ,
-            poll,
-            i32_ty.const_int(1, false),
-            "suspending_closure_is_ready",
-        )
-        .llvm_ctx("suspending closure ready compare")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(is_ready, finish_bb, do_suspend_bb)
-        .llvm_ctx("suspending closure poll branch")?;
-
-    // ── do_suspend: park THIS coroutine (non-final). default -> executor; case
-    // 0 -> resume_child; case 1 -> abandon. ───────────────────────────────────
-    fn_ctx.builder.position_at_end(do_suspend_bb);
-    emit_suspend_point(
-        fn_ctx,
-        coro,
-        parent,
-        resume_child_bb,
-        "suspending_closure",
-        "suspending_closure_abandon",
-        "suspending closure abandon -> shared cleanup br",
-        || {
-            // ── abandon: the parked continuation was destroyed without resuming.
-            // Destroy the child handle + cancel/free the driver channel, then
-            // join the shared coro cleanup (frame-free + coro.end). ─────────────
-            fn_ctx
-                .builder
-                .build_call(
-                    cont_destroy_fn,
-                    &[child.into()],
-                    "suspending_closure_abandon_destroy",
-                )
-                .llvm_ctx("hew_cont_destroy (abandon) call")?;
-            let ch_cancel = intern_runtime_decl(
-                fn_ctx.ctx,
-                fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_reply_channel_cancel",
-            )?;
-            fn_ctx
-                .builder
-                .build_call(ch_cancel, &[ch.into()], "suspending_closure_abandon_cancel")
-                .llvm_ctx("hew_reply_channel_cancel (abandon) call")?;
-            // The destroyed child never deposits, so its retained sender ref is
-            // never released by `hew_reply`; release BOTH the sender ref and the
-            // creator ref here so the channel is freed exactly once (no leak).
-            fn_ctx
-                .builder
-                .build_call(
-                    ch_free,
-                    &[ch.into()],
-                    "suspending_closure_abandon_free_sender",
-                )
-                .llvm_ctx("hew_reply_channel_free (abandon sender) call")?;
-            fn_ctx
-                .builder
-                .build_call(
-                    ch_free,
-                    &[ch.into()],
-                    "suspending_closure_abandon_free_creator",
-                )
-                .llvm_ctx("hew_reply_channel_free (abandon creator) call")?;
-            Ok(())
-        },
-        || {
-            // ── resume_child: the reactor woke the calling actor; re-resume the
-            // child (under the swapped-in channel) and re-poll. Multi-suspend
-            // closure bodies re-park here on the next yield. ───────────────────
-            swap_in("suspending_closure_resume_swap_in")?;
-            fn_ctx
-                .builder
-                .build_call(cont_resume_fn, &[child.into()], "suspending_closure_resume")
-                .llvm_ctx("hew_cont_resume call")?;
-            swap_out("suspending_closure_resume_swap_out")?;
-            fn_ctx
-                .builder
-                .build_unconditional_branch(check_done_bb)
-                .llvm_ctx("suspending closure resume -> check_done br")?;
-            Ok(())
-        },
-    )?;
-
-    // ── finish: the child completed and (for a non-unit closure) deposited its
-    // return value onto `ch`. Bind it, free the reply payload + channel, destroy
-    // the child frame, and branch to the MIR resume block. ────────────────────
-    fn_ctx.builder.position_at_end(finish_bb);
-    if let Some(dest) = term.result_dest {
-        // A unit/never logical return deposits no reply (the coro Return arm only
-        // deposits a non-unit logical value), so `hew_reply_wait` is reached ONLY
-        // when a value was deposited — it returns it on the fast path (the deposit
-        // ran synchronously inside the resume above, before `done`).
-        let _ = term.ret_ty;
-        let reply_wait = intern_runtime_decl(
-            fn_ctx.ctx,
-            fn_ctx.llvm_mod,
-            &mut fn_ctx.runtime_decls.borrow_mut(),
-            "hew_reply_wait",
-        )?;
-        let reply_ptr = fn_ctx
-            .builder
-            .build_call(reply_wait, &[ch.into()], "suspending_closure_reply")
-            .llvm_ctx("hew_reply_wait call")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("hew_reply_wait returned void".into()))?
-            .into_pointer_value();
-        let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest)?;
-        let reply_val = fn_ctx
-            .builder
-            .build_load(dest_ty, reply_ptr, "suspending_closure_reply_value")
-            .llvm_ctx("suspending closure reply load")?;
-        fn_ctx
-            .builder
-            .build_store(dest_ptr, reply_val)
-            .llvm_ctx("suspending closure reply store")?;
-        let free = get_or_declare_free(fn_ctx);
-        fn_ctx
-            .builder
-            .build_call(free, &[reply_ptr.into()], "suspending_closure_reply_free")
-            .llvm_ctx("free suspending closure reply")?;
-    } else {
-        // Unit/never logical return: the child deposited NOTHING (the coro Return
-        // arm only deposits a non-unit logical value), so the sender ref retained
-        // above was never released by `hew_reply`. Release it here so the unit
-        // finish path frees BOTH refs (sender now + creator below) and the channel
-        // is reclaimed exactly once — fixing the unit-closure reply-channel leak.
-        fn_ctx
-            .builder
-            .build_call(
-                ch_free,
-                &[ch.into()],
-                "suspending_closure_ok_unit_free_sender",
-            )
-            .llvm_ctx("hew_reply_channel_free (ok unit sender) call")?;
-    }
-    fn_ctx
-        .builder
-        .build_call(ch_free, &[ch.into()], "suspending_closure_ok_ch_free")
-        .llvm_ctx("hew_reply_channel_free (ok) call")?;
-    fn_ctx
-        .builder
-        .build_call(
-            cont_destroy_fn,
-            &[child.into()],
-            "suspending_closure_ok_destroy",
-        )
-        .llvm_ctx("hew_cont_destroy (ok) call")?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending closure ok -> resume br")?;
-
-    Ok(())
-}
-
-/// Emit `result_dest = Err(AskError::<hew_actor_ask_take_last_error()>)` —
-/// the SuspendingAsk send-failure Err-binding (no channel exists yet, so the
-/// TLS last-error slot is authoritative), identical to the `Terminator::Ask`
-/// err arm.
-fn emit_suspending_ask_err<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    result_dest: Place,
-    error_dest: Place,
-) -> CodegenResult<()> {
-    let err_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_ask_take_last_error",
-    )?;
-    let err_code = fn_ctx
-        .builder
-        .build_call(err_fn, &[], "suspending_ask_take_last_error_call")
-        .llvm_ctx("hew_actor_ask_take_last_error call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| {
-            CodegenError::FailClosed("hew_actor_ask_take_last_error returned void".into())
-        })?
-        .into_int_value();
-    emit_suspending_ask_err_with_code(fn_ctx, result_dest, error_dest, err_code)
-}
-
-/// Emit `result_dest = Err(AskError::<err_code>)` — binds the AskError tag from
-/// a precomputed discriminant. The null-reply resume path uses this to bind
-/// `OrphanedAsk` from the channel's orphaned flag (matching the blocking-ask
-/// path), which the TLS last-error slot does not carry.
-fn emit_suspending_ask_err_with_code<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    result_dest: Place,
-    error_dest: Place,
-    err_code: inkwell::values::IntValue<'ctx>,
-) -> CodegenResult<()> {
-    let error_local = composite_dest_local(error_dest, "SuspendingAsk AskError")?;
-    let (error_tag_ptr, error_tag_ty) = place_pointer(fn_ctx, Place::MachineTag(error_local))?;
-    let error_tag_int_ty = match error_tag_ty {
-        BasicTypeEnum::IntType(t) => t,
-        other => {
-            return Err(CodegenError::FailClosed(format!(
-                "SuspendingAsk AskError tag projection must be integer, got {other:?}"
-            )));
-        }
-    };
-    let err_code = match err_code
-        .get_type()
-        .get_bit_width()
-        .cmp(&error_tag_int_ty.get_bit_width())
-    {
-        std::cmp::Ordering::Equal => err_code,
-        std::cmp::Ordering::Less => fn_ctx
-            .builder
-            .build_int_z_extend(err_code, error_tag_int_ty, "suspending_ask_err_zext")
-            .llvm_ctx("suspending ask err zext")?,
-        std::cmp::Ordering::Greater => fn_ctx
-            .builder
-            .build_int_truncate(err_code, error_tag_int_ty, "suspending_ask_err_trunc")
-            .llvm_ctx("suspending ask err trunc")?,
-    };
-    fn_ctx
-        .builder
-        .build_store(error_tag_ptr, err_code)
-        .llvm_ctx("store SuspendingAsk AskError tag")?;
-    emit_result_err(fn_ctx, result_dest, error_dest)
-}
-
-/// Bind a `Result::Err(AskError)` into `result_dest` from the node ask-error
-/// slot (`hew_node_ask_take_last_error`). Shared by the blocking and suspending
-/// remote-ask failure edges — both read the same thread-local discriminant set
-/// by a null return from the runtime ask path.
-fn emit_remote_ask_err_from_last_error<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    result_dest: Place,
-    error_dest: Place,
-) -> CodegenResult<()> {
-    let err_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_node_ask_take_last_error",
-    )?;
-    let err_code = fn_ctx
-        .builder
-        .build_call(err_fn, &[], "hew_node_ask_take_last_error_call")
-        .llvm_ctx("hew_node_ask_take_last_error call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| {
-            CodegenError::FailClosed("hew_node_ask_take_last_error returned void".into())
-        })?
-        .into_int_value();
-    let error_local = composite_dest_local(error_dest, "RemoteAsk AskError")?;
-    let (error_tag_ptr, error_tag_ty) = place_pointer(fn_ctx, Place::MachineTag(error_local))?;
-    let error_tag_int_ty = match error_tag_ty {
-        BasicTypeEnum::IntType(t) => t,
-        other => {
-            return Err(CodegenError::FailClosed(format!(
-                "RemoteAsk AskError tag projection must be integer, got {other:?}"
-            )));
-        }
-    };
-    let err_code = match err_code
-        .get_type()
-        .get_bit_width()
-        .cmp(&error_tag_int_ty.get_bit_width())
-    {
-        std::cmp::Ordering::Equal => err_code,
-        std::cmp::Ordering::Less => fn_ctx
-            .builder
-            .build_int_z_extend(err_code, error_tag_int_ty, "remote_ask_err_zext")
-            .llvm_ctx("remote ask err zext")?,
-        std::cmp::Ordering::Greater => fn_ctx
-            .builder
-            .build_int_truncate(err_code, error_tag_int_ty, "remote_ask_err_trunc")
-            .llvm_ctx("remote ask err trunc")?,
-    };
-    fn_ctx
-        .builder
-        .build_store(error_tag_ptr, err_code)
-        .llvm_ctx("store RemoteAsk AskError tag")?;
-    emit_result_err(fn_ctx, result_dest, error_dest)
-}
-
-/// Emit the caller-side non-blocking cross-node `await remote.ask(...)` (NEW-5
-/// `Terminator::SuspendingRemoteAsk`). The wire-reply analogue of
-/// [`emit_suspending_ask_terminator`]: instead of blocking an OS worker in
-/// `hew_node_api_ask`, submit the ask + register the parked continuation
-/// (`hew_node_api_ask_async`), suspend (freeing the worker), and on the resume
-/// edge drain the deposited reply (`hew_node_api_ask_finish`), binding
-/// `Result<Reply, AskError>`.
-///
-/// Shape (the suspendable remote-ask ramp):
-/// ```text
-///   self    = hew_actor_self()                       ; the parked-cont actor
-///   handle  = hew_node_api_ask_async(pid, msg_type, payload, size, timeout, self)
-///   br (handle == null) ? submit_err : do_suspend
-/// submit_err:                                         ; setup failed, never parked
-///   bind Result::Err(hew_node_ask_take_last_error()); br resume
-/// do_suspend:                                         ; park the continuation
-///   coro.suspend → { default: executor, resume: reply_bind, cleanup: abandon }
-/// abandon_cleanup:                                    ; parked cont destroyed
-///   hew_node_api_ask_cancel(handle); br shared cleanup
-/// reply_bind:                                         ; wire reply woke us
-///   reply = hew_node_api_ask_finish(handle, msg_type, reply_size)
-///   br (reply == null) ? err : ok
-/// ok:   bind Result::Ok(reply); free(reply); br resume
-/// err:  bind Result::Err(hew_node_ask_take_last_error()); br resume
-/// ```
-/// The reply travels through the reply routing table (the `request_id`-keyed
-/// pending slot) across the suspend, NOT a terminator operand — exactly as
-/// `SuspendingAsk`'s reply travels through its reply channel.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the full caller-side remote-ask ramp — submit + suspend + the \
-              resume-edge reply binding — is kept in one place so the suspend \
-              point and the value routing it depends on are read together"
-)]
-fn emit_suspending_remote_actor_ask_terminator<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: SuspendingRemoteAskEmit<'_>,
-) -> CodegenResult<()> {
-    // The coro prologue must be present (lower_function detects the
-    // SuspendingRemoteAsk carrier via `has_suspend`). Fail closed otherwise
-    // (R2 / the Lane-B silent-no-op class).
-    let coro = fn_ctx.coro.ok_or_else(|| {
-        CodegenError::FailClosed(
-            "Terminator::SuspendingRemoteAsk reached codegen but the function carries no \
-             coro prologue state — lower_function must detect the suspend carrier"
-                .into(),
-        )
-    })?;
-    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "SuspendingRemoteAsk resume target bb{} not found",
-            term.resume
-        ))
-    })?;
-    if !fn_ctx.blocks.contains_key(&term.cleanup) {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingRemoteAsk cleanup target bb{} not found",
-            term.cleanup
-        )));
-    }
-
-    let (pid_slot, pid_slot_ty) = place_pointer(fn_ctx, term.actor)?;
-    if !matches!(pid_slot_ty, BasicTypeEnum::IntType(t) if t.get_bit_width() == 64) {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingRemoteAsk actor place must be the packed i64 RemotePid<T>, got {pid_slot_ty:?}"
-        )));
-    }
-    let pid_val = fn_ctx
-        .builder
-        .build_load(pid_slot_ty, pid_slot, "remote_ask_pid")
-        .llvm_ctx("load SuspendingRemoteAsk pid")?
-        .into_int_value();
-    let (payload_ptr, payload_size) =
-        actor_payload_ptr_size(fn_ctx, term.value, "remote_ask_payload")?;
-    let (timeout_ptr, timeout_ty) = place_pointer(fn_ctx, term.timeout_ms)?;
-    let timeout_val = fn_ctx
-        .builder
-        .build_load(timeout_ty, timeout_ptr, "remote_ask_timeout")
-        .llvm_ctx("load SuspendingRemoteAsk timeout")?
-        .into_int_value();
-    if timeout_val.get_type().get_bit_width() != 64 {
-        return Err(CodegenError::FailClosed(format!(
-            "SuspendingRemoteAsk timeout_ms must lower to a 64-bit integer, got {} bits",
-            timeout_val.get_type().get_bit_width()
-        )));
-    }
-    let reply_size = static_type_size_i64(fn_ctx, term.reply_ty, "remote_ask_reply")?;
-    // Target actor type's dispatch global — the `(dispatch, msg_type)` codec key
-    // for both the request encode (ask_async) and the reply decode (ask_finish).
-    let dispatch_ptr = remote_ask_dispatch_ptr(fn_ctx, term.actor)?;
-
-    // self = the current actor — the parked-continuation waiter the wire reply
-    // re-enqueues. MUST come from `hew_actor_self()` (the live thread-local
-    // execution context); across a suspend the spilled `ctx` param's context is
-    // freed, but the thread-local read returns the live actor on resume. The
-    // same single-authority live-context accessor the SuspendingRead/Ask ramps
-    // use.
-    let actor_self_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_actor_self",
-    )?;
-    let self_actor = fn_ctx
-        .builder
-        .build_call(actor_self_fn, &[], "suspending_remote_ask_self")
-        .llvm_ctx("hew_actor_self call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
-        .into_pointer_value();
-
-    let ask_async_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_node_api_ask_async",
-    )?;
-    let msg_type = fn_ctx.ctx.i32_type().const_int(term.msg_type as u64, false);
-    let pending_handle = fn_ctx
-        .builder
-        .build_call(
-            ask_async_fn,
-            &[
-                pid_val.into(),
-                dispatch_ptr.into(),
-                msg_type.into(),
-                payload_ptr.into(),
-                payload_size.into(),
-                timeout_val.into(),
-                self_actor.into(),
-            ],
-            "hew_node_api_ask_async_call",
-        )
-        .llvm_ctx("hew_node_api_ask_async call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_node_api_ask_async returned void".into()))?
-        .into_pointer_value();
-
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| {
-            CodegenError::Llvm("suspending remote ask block has no parent function".into())
-        })?;
-    // ── submit_err: setup failed (null handle); no reply will ever arrive and we
-    // never parked. Bind the typed Err without suspending (no worker to free).
-    let submit_err_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_remote_ask_submit_err");
-    let do_suspend_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_remote_ask_suspend");
-    let handle_is_null = fn_ctx
-        .builder
-        .build_is_null(pending_handle, "suspending_remote_ask_handle_is_null")
-        .llvm_ctx("suspending remote ask handle null compare")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(handle_is_null, submit_err_bb, do_suspend_bb)
-        .llvm_ctx("suspending remote ask submit branch")?;
-
-    fn_ctx.builder.position_at_end(submit_err_bb);
-    emit_remote_ask_err_from_last_error(fn_ctx, term.result_dest, term.error_dest)?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(resume_bb)
-        .llvm_ctx("suspending remote ask submit-err br")?;
-
-    // ── do_suspend: park the continuation (non-final suspend). The default edge
-    // returns the coro handle to the trampoline (which parks it on this actor);
-    // case 0 resumes into the reply-bind block; case 1 tears down. ─────────────
-    fn_ctx.builder.position_at_end(do_suspend_bb);
-    let reply_bind_bb = fn_ctx
-        .ctx
-        .append_basic_block(parent, "suspending_remote_ask_reply_bind");
-    // Abandon-cleanup edge: a parked SuspendingRemoteAsk continuation DESTROYED
-    // without resuming (actor stop/crash while suspended, the C1 free-path
-    // destroy_parked) runs `coro.suspend`'s case-1 edge. The shared cleanup only
-    // frees the coro frame — it never sees `pending_handle` (a codegen-local SSA
-    // value with no MIR Place), so without this interposition the pending entry
-    // leaks. Route case 1 to a block that CANCELS the pending reply (removing it
-    // from the routing table) before joining the shared cleanup. A racing late
-    // reply then finds nothing; the late wake itself is independently fail-safe
-    // (enqueue_resume drops a wake to a freed caller).
-    emit_suspend_point(
-        fn_ctx,
-        coro,
-        parent,
-        reply_bind_bb,
-        "suspending_remote_ask",
-        "suspending_remote_ask_abandon_cleanup",
-        "suspending remote ask abandon -> shared cleanup br",
-        || {
-            // ── abandon_cleanup: cancel the pending reply, then join the shared
-            // coro cleanup (frame-free + coro.end). ─────────────────────────────
-            fn_ctx.call_runtime_void(
-                "hew_node_api_ask_cancel",
-                &[pending_handle.into()],
-                "suspending_remote_ask_cancel",
-                "hew_node_api_ask_cancel call",
-            )?;
-            Ok(())
-        },
-        || {
-            // ── reply_bind: the wire reply (or peer-drop / timeout failure)
-            // resumed us. Drain the deposited outcome; null is the typed-failure
-            // sentinel. ─────────────────────────────────────────────────────────
-            let reply_ptr = fn_ctx.call_runtime_ptr(
-                "hew_node_api_ask_finish",
-                &[
-                    pending_handle.into(),
-                    dispatch_ptr.into(),
-                    msg_type.into(),
-                    reply_size.into(),
-                ],
-                "hew_node_api_ask_finish_call",
-                "hew_node_api_ask_finish call",
-            )?;
-
-            let ok_bb = fn_ctx
-                .ctx
-                .append_basic_block(parent, "suspending_remote_ask_ok");
-            let err_bb = fn_ctx
-                .ctx
-                .append_basic_block(parent, "suspending_remote_ask_err");
-            let is_null = fn_ctx
-                .builder
-                .build_is_null(reply_ptr, "suspending_remote_ask_is_null")
-                .llvm_ctx("suspending remote ask null compare")?;
-            fn_ctx
-                .builder
-                .build_conditional_branch(is_null, err_bb, ok_bb)
-                .llvm_ctx("suspending remote ask result branch")?;
-
-            fn_ctx.builder.position_at_end(ok_bb);
-            if matches!(term.reply_ty, ResolvedTy::Unit) {
-                emit_result_ok(fn_ctx, term.result_dest, None)?;
-            } else {
-                let (reply_dest_ptr, reply_dest_ty) = place_pointer(fn_ctx, term.reply_dest)?;
-                let reply_val = fn_ctx
-                    .builder
-                    .build_load(
-                        reply_dest_ty,
-                        reply_ptr,
-                        "suspending_remote_ask_reply_value",
-                    )
-                    .llvm_ctx("suspending remote ask reply load")?;
-                fn_ctx
-                    .builder
-                    .build_store(reply_dest_ptr, reply_val)
-                    .llvm_ctx("suspending remote ask reply store")?;
-                emit_result_ok(fn_ctx, term.result_dest, Some(term.reply_dest))?;
-                let free = get_or_declare_free(fn_ctx);
-                fn_ctx
-                    .builder
-                    .build_call(
-                        free,
-                        &[reply_ptr.into()],
-                        "suspending_remote_ask_reply_free",
-                    )
-                    .llvm_ctx("free suspending remote ask reply")?;
-            }
-            fn_ctx
-                .builder
-                .build_unconditional_branch(resume_bb)
-                .llvm_ctx("suspending remote ask ok br")?;
-
-            fn_ctx.builder.position_at_end(err_bb);
-            emit_remote_ask_err_from_last_error(fn_ctx, term.result_dest, term.error_dest)?;
-            fn_ctx
-                .builder
-                .build_unconditional_branch(resume_bb)
-                .llvm_ctx("suspending remote ask err br")?;
-            Ok(())
-        },
-    )?;
-
-    Ok(())
-}
-
-fn emit_remote_actor_ask_terminator<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    term: RemoteAskEmit<'_>,
-) -> CodegenResult<()> {
-    let (pid_slot, pid_slot_ty) = place_pointer(fn_ctx, term.actor)?;
-    if !matches!(pid_slot_ty, BasicTypeEnum::IntType(t) if t.get_bit_width() == 64) {
-        return Err(CodegenError::FailClosed(format!(
-            "RemoteAsk actor place must be the packed i64 RemotePid<T>, got {pid_slot_ty:?}"
-        )));
-    }
-    let pid_val = fn_ctx
-        .builder
-        .build_load(pid_slot_ty, pid_slot, "remote_ask_pid")
-        .llvm_ctx("load RemoteAsk pid")?
-        .into_int_value();
-    let (payload_ptr, payload_size) =
-        actor_payload_ptr_size(fn_ctx, term.value, "remote_ask_payload")?;
-    let (timeout_ptr, timeout_ty) = place_pointer(fn_ctx, term.timeout_ms)?;
-    let timeout_val = fn_ctx
-        .builder
-        .build_load(timeout_ty, timeout_ptr, "remote_ask_timeout")
-        .llvm_ctx("load RemoteAsk timeout")?
-        .into_int_value();
-    if timeout_val.get_type().get_bit_width() != 64 {
-        return Err(CodegenError::FailClosed(format!(
-            "RemoteAsk timeout_ms must lower to a 64-bit integer, got {} bits",
-            timeout_val.get_type().get_bit_width()
-        )));
-    }
-    let reply_size = static_type_size_i64(fn_ctx, term.reply_ty, "remote_ask_reply")?;
-    // Target actor type's dispatch global — the `(dispatch, msg_type)` codec key
-    // for BOTH the request encode and the reply decode on this ask.
-    let dispatch_ptr = remote_ask_dispatch_ptr(fn_ctx, term.actor)?;
-    let ask_fn = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_node_api_ask",
-    )?;
-    let msg_type = fn_ctx.ctx.i32_type().const_int(term.msg_type as u64, false);
-    let reply_ptr = fn_ctx
-        .builder
-        .build_call(
-            ask_fn,
-            &[
-                pid_val.into(),
-                dispatch_ptr.into(),
-                msg_type.into(),
-                payload_ptr.into(),
-                payload_size.into(),
-                timeout_val.into(),
-                reply_size.into(),
-            ],
-            "hew_node_api_ask_call",
-        )
-        .llvm_ctx("hew_node_api_ask call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_node_api_ask returned void".into()))?
-        .into_pointer_value();
-
-    let parent = fn_ctx
-        .builder
-        .get_insert_block()
-        .and_then(|bb| bb.get_parent())
-        .ok_or_else(|| CodegenError::Llvm("remote ask block has no parent function".into()))?;
-    let ok_bb = fn_ctx.ctx.append_basic_block(parent, "remote_ask_ok");
-    let err_bb = fn_ctx.ctx.append_basic_block(parent, "remote_ask_err");
-    let is_null = fn_ctx
-        .builder
-        .build_is_null(reply_ptr, "remote_ask_is_null")
-        .llvm_ctx("remote ask null compare")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(is_null, err_bb, ok_bb)
-        .llvm_ctx("remote ask result branch")?;
-    let next_bb = *fn_ctx.blocks.get(&term.next).ok_or_else(|| {
-        CodegenError::FailClosed(format!("RemoteAsk next bb{} missing", term.next))
-    })?;
-
-    fn_ctx.builder.position_at_end(ok_bb);
-    if matches!(term.reply_ty, ResolvedTy::Unit) {
-        emit_result_ok(fn_ctx, term.result_dest, None)?;
-    } else {
-        let (reply_dest_ptr, reply_dest_ty) = place_pointer(fn_ctx, term.reply_dest)?;
-        let reply_val = fn_ctx
-            .builder
-            .build_load(reply_dest_ty, reply_ptr, "remote_ask_reply_value")
-            .llvm_ctx("remote ask reply load")?;
-        fn_ctx
-            .builder
-            .build_store(reply_dest_ptr, reply_val)
-            .llvm_ctx("remote ask reply store")?;
-        emit_result_ok(fn_ctx, term.result_dest, Some(term.reply_dest))?;
-        let free = get_or_declare_free(fn_ctx);
-        fn_ctx
-            .builder
-            .build_call(free, &[reply_ptr.into()], "remote_ask_reply_free")
-            .llvm_ctx("free remote ask reply")?;
-    }
-    fn_ctx
-        .builder
-        .build_unconditional_branch(next_bb)
-        .llvm_ctx("remote ask ok br")?;
-
-    fn_ctx.builder.position_at_end(err_bb);
-    emit_remote_ask_err_from_last_error(fn_ctx, term.result_dest, term.error_dest)?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(next_bb)
-        .llvm_ctx("remote ask err br")?;
-
     Ok(())
 }
 
@@ -34278,7 +22820,7 @@ fn emit_remote_actor_ask_terminator<'ctx>(
 /// the Result construction lives here, not in a new `FnSymbol` variant
 /// (mirrors `RemotePid::from_raw`'s precedent of catalog-return-as-u64 +
 /// user-visible-type-via-codegen).
-fn emit_node_lookup_call<'ctx>(
+pub(crate) fn emit_node_lookup_call<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbols: &FnSymbolMap<'ctx>,
     args: &[Place],
@@ -34503,7 +23045,7 @@ fn emit_node_lookup_call<'ctx>(
 /// composites are constructed via a temporary local + a final `Move`,
 /// not directly — keeping the projection arithmetic uniform.
 #[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
-fn composite_dest_local(dest: Place, helper: &str) -> CodegenResult<u32> {
+pub(crate) fn composite_dest_local(dest: Place, helper: &str) -> CodegenResult<u32> {
     match dest {
         Place::Local(id) => Ok(id),
         other => Err(CodegenError::FailClosed(format!(
@@ -34519,7 +23061,7 @@ fn composite_dest_local(dest: Place, helper: &str) -> CodegenResult<u32> {
 /// resolve to an integer type (a structural invariant of
 /// `build_tagged_union_layout`).
 #[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
-fn store_composite_tag(
+pub(crate) fn store_composite_tag(
     fn_ctx: &FnCtx<'_, '_>,
     dest_local: u32,
     tag_value: u64,
@@ -34605,7 +23147,7 @@ fn copy_into_variant_field(
 /// passing the source local here). This matches the audit's enumeration
 /// of every `Result<_, _>` shape registered at the base commit.
 #[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
-fn emit_result_ok(
+pub(crate) fn emit_result_ok(
     fn_ctx: &FnCtx<'_, '_>,
     dest: Place,
     payload: Option<Place>,
@@ -34631,7 +23173,11 @@ fn emit_result_ok(
 /// the discriminant already set; this helper does not synthesise
 /// variant tags for the payload type.
 #[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
-fn emit_result_err(fn_ctx: &FnCtx<'_, '_>, dest: Place, error_payload: Place) -> CodegenResult<()> {
+pub(crate) fn emit_result_err(
+    fn_ctx: &FnCtx<'_, '_>,
+    dest: Place,
+    error_payload: Place,
+) -> CodegenResult<()> {
     let dest_local = composite_dest_local(dest, "emit_result_err")?;
     store_composite_tag(fn_ctx, dest_local, 1, "emit_result_err")?;
     copy_into_variant_field(fn_ctx, error_payload, dest_local, 1, 0, "emit_result_err")?;
@@ -34989,9 +23535,9 @@ fn dispatch_collapsed_suspend<'ctx>(
             result_dest,
             reply_dest,
             error_dest,
-        } => emit_suspending_ask_terminator(
+        } => crate::suspend::emit_suspending_ask_terminator(
             fn_ctx,
-            SuspendingAskEmit {
+            crate::suspend::SuspendingAskEmit {
                 actor: *actor,
                 msg_type: *msg_type,
                 value: *value,
@@ -35009,9 +23555,9 @@ fn dispatch_collapsed_suspend<'ctx>(
             deadline_result_dest,
             error_dest,
             to_string,
-        } => emit_suspending_read_terminator(
+        } => crate::suspend::emit_suspending_read_terminator(
             fn_ctx,
-            SuspendingReadEmit {
+            crate::suspend::SuspendingReadEmit {
                 conn: *conn,
                 result_dest: *result_dest,
                 deadline_result_dest: *deadline_result_dest,
@@ -35028,9 +23574,9 @@ fn dispatch_collapsed_suspend<'ctx>(
             elem_ty,
             deadline_result_dest,
             error_dest,
-        } => emit_suspending_stream_next_terminator(
+        } => crate::suspend::emit_suspending_stream_next_terminator(
             fn_ctx,
-            SuspendingStreamNextEmit {
+            crate::suspend::SuspendingStreamNextEmit {
                 stream: *stream,
                 result_dest: *result_dest,
                 elem_ty: elem_ty.clone(),
@@ -35047,9 +23593,9 @@ fn dispatch_collapsed_suspend<'ctx>(
             elem_ty,
             deadline_result_dest,
             error_dest,
-        } => emit_suspending_channel_recv_terminator(
+        } => crate::suspend::emit_suspending_channel_recv_terminator(
             fn_ctx,
-            SuspendingChannelRecvEmit {
+            crate::suspend::SuspendingChannelRecvEmit {
                 receiver: *receiver,
                 result_dest: *result_dest,
                 elem_ty: elem_ty.clone(),
@@ -35060,23 +23606,25 @@ fn dispatch_collapsed_suspend<'ctx>(
                 cleanup,
             },
         ),
-        SuspendKind::StreamSend { sink, value } => emit_suspending_stream_send_terminator(
-            fn_ctx,
-            SuspendingStreamSendEmit {
-                sink: *sink,
-                value: *value,
-                resume,
-                cleanup,
-            },
-        ),
+        SuspendKind::StreamSend { sink, value } => {
+            crate::suspend::emit_suspending_stream_send_terminator(
+                fn_ctx,
+                crate::suspend::SuspendingStreamSendEmit {
+                    sink: *sink,
+                    value: *value,
+                    resume,
+                    cleanup,
+                },
+            )
+        }
         SuspendKind::Accept {
             listener,
             result_dest,
             deadline_result_dest,
             error_dest,
-        } => emit_suspending_accept_terminator(
+        } => crate::suspend::emit_suspending_accept_terminator(
             fn_ctx,
-            SuspendingAcceptEmit {
+            crate::suspend::SuspendingAcceptEmit {
                 listener: *listener,
                 result_dest: *result_dest,
                 deadline_result_dest: *deadline_result_dest,
@@ -35091,9 +23639,9 @@ fn dispatch_collapsed_suspend<'ctx>(
             args,
             ret_ty,
             result_dest,
-        } => emit_suspending_call_closure_terminator(
+        } => crate::suspend::emit_suspending_call_closure_terminator(
             fn_ctx,
-            SuspendingCallClosureEmit {
+            crate::suspend::SuspendingCallClosureEmit {
                 callee: *callee,
                 args: args.clone(),
                 ret_ty,
@@ -35111,9 +23659,9 @@ fn dispatch_collapsed_suspend<'ctx>(
             reply_dest,
             error_dest,
             reply_ty,
-        } => emit_suspending_remote_actor_ask_terminator(
+        } => crate::suspend::emit_suspending_remote_actor_ask_terminator(
             fn_ctx,
-            SuspendingRemoteAskEmit {
+            crate::suspend::SuspendingRemoteAskEmit {
                 actor: *actor,
                 msg_type: *msg_type,
                 value: *value,
@@ -35130,9 +23678,9 @@ fn dispatch_collapsed_suspend<'ctx>(
             scope,
             task,
             result_dest,
-        } => emit_suspending_task_await_terminator(
+        } => crate::suspend::emit_suspending_task_await_terminator(
             fn_ctx,
-            SuspendingTaskAwaitEmit {
+            crate::suspend::SuspendingTaskAwaitEmit {
                 scope: *scope,
                 task: *task,
                 result_dest: *result_dest,
@@ -35140,9 +23688,9 @@ fn dispatch_collapsed_suspend<'ctx>(
                 cleanup,
             },
         ),
-        SuspendKind::Sleep { duration_ms } => emit_suspending_sleep_terminator(
+        SuspendKind::Sleep { duration_ms } => crate::suspend::emit_suspending_sleep_terminator(
             fn_ctx,
-            SuspendingSleepEmit {
+            crate::suspend::SuspendingSleepEmit {
                 duration_ms: *duration_ms,
                 resume,
                 cleanup,
@@ -35620,7 +24168,8 @@ fn lower_terminator<'ctx>(
                         "{callee} value local _{value_local} has no registered type"
                     ))
                 })?;
-                let witness = channel_elem_layout_witness_ptr(fn_ctx, &elem_ty, callee)?;
+                let witness =
+                    crate::layout::channel_elem_layout_witness_ptr(fn_ctx, &elem_ty, callee)?;
                 let handle_ptr =
                     load_duplex_handle(fn_ctx, *handle_arg, &format!("{callee} handle"))?;
                 let (value_ptr, _) = place_pointer(fn_ctx, *value_arg)?;
@@ -35714,7 +24263,7 @@ fn lower_terminator<'ctx>(
                 lower_vec_constructor_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            if is_layout_vec_runtime_symbol(callee) {
+            if crate::layout::is_layout_vec_runtime_symbol(callee) {
                 lower_layout_vec_direct_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
@@ -36673,7 +25222,7 @@ fn lower_terminator<'ctx>(
                     let (env_struct, _) = env_struct_and_heap
                         .as_ref()
                         .expect("guarded by match arm condition");
-                    emit_lambda_env_dropper(
+                    crate::thunks::emit_lambda_env_dropper(
                         fn_ctx.ctx,
                         fn_ctx.llvm_mod,
                         state_drop_fn,
@@ -37062,9 +25611,9 @@ fn lower_terminator<'ctx>(
             error_dest,
             reply_ty,
             next,
-        } => emit_remote_actor_ask_terminator(
+        } => crate::suspend::emit_remote_actor_ask_terminator(
             fn_ctx,
-            RemoteAskEmit {
+            crate::suspend::RemoteAskEmit {
                 actor: *actor,
                 msg_type: *msg_type,
                 value: *value,
@@ -37175,9 +25724,9 @@ fn lower_terminator<'ctx>(
             timeout_body_block,
             resume,
             cleanup,
-        } => emit_suspending_scope_deadline_terminator(
+        } => crate::suspend::emit_suspending_scope_deadline_terminator(
             fn_ctx,
-            SuspendingScopeDeadlineEmit {
+            crate::suspend::SuspendingScopeDeadlineEmit {
                 scope: *scope,
                 duration_ms: *duration_ms,
                 timeout_body_block: *timeout_body_block,
@@ -39229,7 +27778,7 @@ fn emit_suspending_select_terminator<'ctx>(
         })
     };
 
-    emit_suspend_point(
+    crate::suspend::emit_suspend_point(
         fn_ctx,
         coro,
         parent,
@@ -40114,7 +28663,7 @@ fn declare_function<'ctx>(
     let resolve_value_ty = |ty: &ResolvedTy| -> CodegenResult<BasicTypeEnum<'ctx>> {
         let raw = resolve_ty(ctx, ty, record_layouts)?;
         if let ResolvedTy::Named { name, .. } = ty {
-            if is_indirect_enum(name, enum_layouts) {
+            if crate::layout::is_indirect_enum(name, enum_layouts) {
                 return Ok(ctx.ptr_type(AddressSpace::default()).into());
             }
         }
@@ -40273,158 +28822,6 @@ fn emit_wasm_main_export_wrapper<'ctx>(
             .llvm_ctx("WASM main wrapper return void")?;
     }
 
-    Ok(())
-}
-
-/// The memory-intrinsic floor (`mem.*`, W5.005 / F1b) for which codegen
-/// synthesizes a trampoline body directly from the catalog id threaded on
-/// `RawMirFunction::intrinsic_id`.
-///
-/// This enum is the central fail-closed authority (D343): an `intrinsic_id`
-/// that does not parse to one of these variants is a hard `CodegenError`, not
-/// a silent empty-body no-op. The catalog (`stdlib_catalog`) and the
-/// `std.mem` floor surface are the source of truth for the id strings; this
-/// `match` is the codegen-side counterpart and must stay in lockstep with
-/// them (the `unknown_floor_intrinsic_id_fails_closed` test guards the gap).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FloorIntrinsic {
-    Alloc,
-    Realloc,
-    Dealloc,
-    PtrOffset,
-    PtrCopy,
-}
-
-impl FloorIntrinsic {
-    fn from_catalog_id(id: &str) -> Option<Self> {
-        match id {
-            "mem.alloc" => Some(Self::Alloc),
-            "mem.realloc" => Some(Self::Realloc),
-            "mem.dealloc" => Some(Self::Dealloc),
-            "mem.ptr_offset" => Some(Self::PtrOffset),
-            "mem.ptr_copy" => Some(Self::PtrCopy),
-            _ => None,
-        }
-    }
-}
-
-/// Synthesize the trampoline body for a `#[intrinsic("mem.*")]` memory-floor
-/// function (W5.005 / F1b, Decision 4 Option A).
-///
-/// The MIR `blocks` of these functions are a bodyless placeholder — the
-/// source declaration is `fn alloc(..) -> *mut u8 {}`. Codegen discards that
-/// placeholder and emits the real lowering here, driven by the typed
-/// `intrinsic` id threaded from HIR. Calls to `mem$alloc` (etc.) dispatch
-/// normally to this defined function; the body is the substrate.
-///
-/// Pointer args/returns are opaque `ptr`; the integer args are u64-width
-/// (`i64` in LLVM). Byte-level monomorphic (A612): `ptr_offset`/`ptr_copy`
-/// count raw bytes — the caller has already multiplied by the descriptor
-/// size, so no element-type scaling happens here.
-///
-/// Fail-closed (D343): the caller rejects an unrecognised id before reaching
-/// this function, so every arm maps to a concrete lowering — there is no
-/// silent empty-body path. A param-arity mismatch between the stub signature
-/// and the lowering is also a hard error.
-fn emit_floor_intrinsic_body<'ctx>(
-    ctx: &'ctx Context,
-    llvm_mod: &LlvmModule<'ctx>,
-    llvm_fn: FunctionValue<'ctx>,
-    func: &RawMirFunction,
-    intrinsic: FloorIntrinsic,
-) -> CodegenResult<()> {
-    let builder = ctx.create_builder();
-    let entry = ctx.append_basic_block(llvm_fn, "entry");
-    builder.position_at_end(entry);
-    let mut decls = RuntimeDeclMap::new();
-    let i8_ty = ctx.i8_type();
-
-    let param = |i: u32| -> CodegenResult<BasicValueEnum<'ctx>> {
-        llvm_fn.get_nth_param(i).ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "floor intrinsic `{}` ({intrinsic:?}) has no LLVM parameter at index {i}; \
-                 the `std.mem` stub signature and the codegen lowering disagree",
-                func.name
-            ))
-        })
-    };
-
-    match intrinsic {
-        FloorIntrinsic::Alloc => {
-            let size = param(0)?;
-            let align = param(1)?;
-            let f = intern_runtime_decl(ctx, llvm_mod, &mut decls, "hew_alloc")?;
-            let call = builder
-                .build_call(f, &[size.into(), align.into()], "mem_alloc")
-                .llvm_ctx("mem.alloc hew_alloc call")?;
-            let ret = call.try_as_basic_value().basic().ok_or_else(|| {
-                CodegenError::FailClosed("hew_alloc returned void; expected ptr".into())
-            })?;
-            builder.build_return(Some(&ret)).llvm_ctx("mem.alloc ret")?;
-        }
-        FloorIntrinsic::Realloc => {
-            let ptr = param(0)?;
-            let old_size = param(1)?;
-            let new_size = param(2)?;
-            let align = param(3)?;
-            let f = intern_runtime_decl(ctx, llvm_mod, &mut decls, "hew_realloc")?;
-            let call = builder
-                .build_call(
-                    f,
-                    &[ptr.into(), old_size.into(), new_size.into(), align.into()],
-                    "mem_realloc",
-                )
-                .llvm_ctx("mem.realloc hew_realloc call")?;
-            let ret = call.try_as_basic_value().basic().ok_or_else(|| {
-                CodegenError::FailClosed("hew_realloc returned void; expected ptr".into())
-            })?;
-            builder
-                .build_return(Some(&ret))
-                .llvm_ctx("mem.realloc ret")?;
-        }
-        FloorIntrinsic::Dealloc => {
-            let ptr = param(0)?;
-            let size = param(1)?;
-            let align = param(2)?;
-            let f = intern_runtime_decl(ctx, llvm_mod, &mut decls, "hew_dealloc")?;
-            builder
-                .build_call(f, &[ptr.into(), size.into(), align.into()], "mem_dealloc")
-                .llvm_ctx("mem.dealloc hew_dealloc call")?;
-            builder
-                .build_return(Some(&i8_ty.const_zero()))
-                .llvm_ctx("mem.dealloc ret")?;
-        }
-        FloorIntrinsic::PtrOffset => {
-            let base = param(0)?.into_pointer_value();
-            let byte_offset = param(1)?.into_int_value();
-            // SAFETY: i8 in-bounds GEP by a raw byte count — this primitive IS
-            // Rust's `<*mut T>::add` (inbounds). The result must stay within the
-            // same allocation `base` points into (one-past-end permitted);
-            // anything else is UB. Bounds are the caller's obligation (A605 —
-            // unsafe primitives; the only callers are compiler-authored
-            // containers). Cross-allocation/wrapping offset is a separate future
-            // primitive, intentionally not provided here (YAGNI).
-            let gep = unsafe {
-                builder
-                    .build_in_bounds_gep(i8_ty, base, &[byte_offset], "mem_ptr_offset")
-                    .llvm_ctx("mem.ptr_offset i8 gep")?
-            };
-            builder
-                .build_return(Some(&gep))
-                .llvm_ctx("mem.ptr_offset ret")?;
-        }
-        FloorIntrinsic::PtrCopy => {
-            let dst = param(0)?.into_pointer_value();
-            let src = param(1)?.into_pointer_value();
-            let byte_count = param(2)?.into_int_value();
-            builder
-                .build_memcpy(dst, 1, src, 1, byte_count)
-                .llvm_ctx("mem.ptr_copy memcpy")?;
-            builder
-                .build_return(Some(&i8_ty.const_zero()))
-                .llvm_ctx("mem.ptr_copy ret")?;
-        }
-    }
     Ok(())
 }
 
@@ -40616,15 +29013,16 @@ fn lower_function<'ctx>(
     // Fail-closed: an id codegen does not recognise is a hard error, never a
     // silent empty-body no-op (the historic fail-OPEN bug).
     if let Some(intrinsic_id) = &func.intrinsic_id {
-        let intrinsic = FloorIntrinsic::from_catalog_id(intrinsic_id).ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "function `{}` carries unknown floor intrinsic id {intrinsic_id:?}; \
+        let intrinsic =
+            crate::arith::FloorIntrinsic::from_catalog_id(intrinsic_id).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "function `{}` carries unknown floor intrinsic id {intrinsic_id:?}; \
                  codegen has no lowering for it — extend `FloorIntrinsic` or leave \
                  the declaration fail-closed (it must never emit an empty body)",
-                func.name
-            ))
-        })?;
-        return emit_floor_intrinsic_body(ctx, llvm_mod, llvm_fn, func, intrinsic);
+                    func.name
+                ))
+            })?;
+        return crate::arith::emit_floor_intrinsic_body(ctx, llvm_mod, llvm_fn, func, intrinsic);
     }
     let context_marker_findings = validate_context_markers_for_codegen(func);
     if !context_marker_findings.is_empty() {
@@ -40918,7 +29316,7 @@ fn lower_function<'ctx>(
             } else {
                 let raw_ty = resolve_ty(ctx, ty, record_layouts)?;
                 if let ResolvedTy::Named { name, .. } = ty {
-                    if is_indirect_enum(name, enum_layouts) {
+                    if crate::layout::is_indirect_enum(name, enum_layouts) {
                         ctx.ptr_type(inkwell::AddressSpace::default()).into()
                     } else {
                         raw_ty
@@ -40978,7 +29376,7 @@ fn lower_function<'ctx>(
         } else {
             continue;
         };
-        if !is_indirect_enum(ty_name, enum_layouts) {
+        if !crate::layout::is_indirect_enum(ty_name, enum_layouts) {
             continue;
         }
         // Locate the outer struct type for the indirect enum.
@@ -41431,9 +29829,15 @@ fn lower_function<'ctx>(
     // LESSONS: boundary-fail-closed, migration-completeness.
     if matches!(return_ty_llvm, BasicTypeEnum::StructType(_))
         && ty_contains_heap_owning(&func.return_ty, fn_ctx.enum_layouts)
-        && !is_heap_owning_enum_composite_return(&func.return_ty, fn_ctx.enum_layouts)
+        && !crate::layout::is_heap_owning_enum_composite_return(
+            &func.return_ty,
+            fn_ctx.enum_layouts,
+        )
         && !is_single_heap_owning_leaf_return(&func.return_ty)
-        && !is_heap_owning_tuple_composite_return(&func.return_ty, fn_ctx.enum_layouts)
+        && !crate::layout::is_heap_owning_tuple_composite_return(
+            &func.return_ty,
+            fn_ctx.enum_layouts,
+        )
         && !is_heap_owning_record_composite_return(
             &func.return_ty,
             fn_ctx.record_layouts,
@@ -41736,728 +30140,6 @@ fn lower_function<'ctx>(
     Ok(())
 }
 
-/// Emit a C-ABI terminate trampoline for an actor's `#[on(stop)]` hooks.
-///
-/// The runtime's `terminate_fn` slot has ABI `fn(*mut c_void state) -> void`.
-/// Each ActorHandler-lowered `__on_stop__<i>` function has ABI
-/// `fn(*mut HewExecutionContext) -> void`. This trampoline bridges the two
-/// and fans out to all stop hooks in lexical declaration order:
-///
-/// 1. Call `hew_require_execution_context()` to get the context already
-///    installed by `call_terminate_fn` before this trampoline is entered.
-/// 2. Load the actor pointer from context offset 0 (HEW_CTX_OFFSET_ACTOR).
-/// 3. Acquire the actor-state lock via `hew_actor_state_lock_acquire`.
-/// 4. For each `<Actor>__on_stop__<i>` in declaration order, call it with
-///    the ActorHandler ABI (ctx as first arg).
-/// 5. Release the lock via `hew_actor_state_lock_release`.
-///
-/// The `state` parameter is unused — the execution context carries the actor
-/// pointer (offset 0) and all other dispatch-substrate state. `state` is
-/// present only to satisfy the `terminate_fn: fn(*mut c_void) -> void` ABI.
-///
-/// Panic safety: if any on(stop) body panics, `call_terminate_fn`'s
-/// `catch_unwind` catches it and releases the lock via
-/// `hew_actor_state_lock_release_after_panic` (LESSONS: cleanup-all-exits P0).
-fn emit_actor_terminate_trampoline<'ctx>(
-    ctx: &'ctx Context,
-    llvm_mod: &LlvmModule<'ctx>,
-    layout: &ActorLayout,
-    fn_symbols: &FnSymbolMap<'ctx>,
-) -> CodegenResult<()> {
-    // Resolve all per-hook LLVM functions up front so we fail-closed before
-    // emitting any IR.
-    let mut on_stop_fns = Vec::with_capacity(layout.on_stop_symbols.len());
-    for sym in &layout.on_stop_symbols {
-        let entry = fn_symbols.get(sym).ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "terminate trampoline for `{}` references undeclared on_stop handler `{sym}`",
-                layout.name
-            ))
-        })?;
-        let (fn_val, _, _) = entry.real(sym, "terminate trampoline")?;
-        on_stop_fns.push(fn_val);
-    }
-
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let trampoline_name = format!("__terminate_{}", mangle_dotted_name(&layout.name));
-    let fn_ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
-    let trampoline_fn = llvm_mod.add_function(&trampoline_name, fn_ty, Some(Linkage::Internal));
-    let builder = ctx.create_builder();
-    let entry = ctx.append_basic_block(trampoline_fn, "entry");
-    builder.position_at_end(entry);
-
-    // Declare required runtime functions inline (the trampoline has no FnCtx).
-    let require_ctx_ty = ptr_ty.fn_type(&[], false);
-    let require_ctx_fn = llvm_mod
-        .get_function("hew_require_execution_context")
-        .unwrap_or_else(|| {
-            llvm_mod.add_function("hew_require_execution_context", require_ctx_ty, None)
-        });
-    let lock_acquire_ty = ctx.i32_type().fn_type(&[ptr_ty.into()], false);
-    let lock_acquire_fn = llvm_mod
-        .get_function("hew_actor_state_lock_acquire")
-        .unwrap_or_else(|| {
-            llvm_mod.add_function("hew_actor_state_lock_acquire", lock_acquire_ty, None)
-        });
-    let lock_release_ty = ctx.i32_type().fn_type(&[ptr_ty.into()], false);
-    let lock_release_fn = llvm_mod
-        .get_function("hew_actor_state_lock_release")
-        .unwrap_or_else(|| {
-            llvm_mod.add_function("hew_actor_state_lock_release", lock_release_ty, None)
-        });
-
-    // Get the current execution context (installed by call_terminate_fn).
-    let ctx_ptr = builder
-        .build_call(require_ctx_fn, &[], "terminate_ctx")
-        .llvm_ctx("terminate trampoline: require_ctx call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| {
-            CodegenError::FailClosed("hew_require_execution_context returned void".into())
-        })?
-        .into_pointer_value();
-
-    // Load the actor pointer from context offset 0 (HEW_CTX_OFFSET_ACTOR).
-    let actor_ptr = unsafe {
-        builder
-            .build_gep(
-                ctx.i8_type(),
-                ctx_ptr,
-                &[ctx.i64_type().const_int(HEW_CTX_OFFSET_ACTOR as u64, false)],
-                "terminate_actor_slot",
-            )
-            .llvm_ctx("terminate trampoline: actor gep")?
-    };
-    let actor_val = builder
-        .build_load(ptr_ty, actor_ptr, "terminate_actor")
-        .llvm_ctx("terminate trampoline: actor load")?
-        .into_pointer_value();
-
-    // Acquire the actor-state lock (same protocol as dispatch trampolines).
-    builder
-        .build_call(
-            lock_acquire_fn,
-            &[actor_val.into()],
-            "terminate_lock_acquire",
-        )
-        .llvm_ctx("terminate trampoline: lock acquire")?;
-
-    // Call each on(stop) handler in lexical declaration order with the
-    // ActorHandler ABI (ctx as first arg). All hooks share the single
-    // acquire/release pair above.
-    for (i, on_stop_fn) in on_stop_fns.iter().enumerate() {
-        builder
-            .build_call(
-                *on_stop_fn,
-                &[ctx_ptr.into()],
-                &format!("terminate_on_stop_call_{i}"),
-            )
-            .llvm_ctx_with(|| format!("terminate trampoline: on_stop[{i}] call"))?;
-    }
-
-    // Release the actor-state lock.
-    builder
-        .build_call(
-            lock_release_fn,
-            &[actor_val.into()],
-            "terminate_lock_release",
-        )
-        .llvm_ctx("terminate trampoline: lock release")?;
-
-    builder
-        .build_return(None)
-        .llvm_ctx("terminate trampoline: return")?;
-
-    Ok(())
-}
-
-fn emit_actor_dispatch_trampoline<'ctx>(
-    ctx: &'ctx Context,
-    llvm_mod: &LlvmModule<'ctx>,
-    layout: &ActorLayout,
-    // NEW-3a: per-handler suspendable predicate, parallel to `layout.handlers`.
-    // `Some(true)`  — the handler's MIR carries `Terminator::Suspend`; it is
-    //                 emitted as a coroutine ramp and the trampoline DRIVES it.
-    // `Some(false)` — a run-to-completion handler; the trampoline direct-calls
-    //                 it (the byte-identical-to-baseline fast path).
-    // `None`        — no raw MIR function matched the handler symbol; the
-    //                 trampoline fails closed (the discriminator was not carried
-    //                 — the R2 silent-no-op class, refused not defaulted).
-    handler_suspendable: &[Option<bool>],
-    fn_symbols: &FnSymbolMap<'ctx>,
-    record_layouts: &RecordLayoutMap<'ctx>,
-) -> CodegenResult<()> {
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let i32_ty = ctx.i32_type();
-    let i64_ty = ctx.i64_type();
-    // `data_size` is `usize` in `HewDispatchFn` (i32 on wasm32, i64 native).
-    // The scheduler registers this trampoline as the actor's dispatch fn
-    // pointer and invokes it via the wasm function table; a width mismatch
-    // here surfaces as a wasm `indirect call type mismatch` trap. Match the
-    // runtime ABI width. See `runtime_size_ty`.
-    let size_ty = runtime_size_ty(ctx, llvm_mod);
-    let dispatch_name = format!("__hew_actor_dispatch_{}", mangle_dotted_name(&layout.name));
-    // D-A.2 (R326/R327): the trampoline returns the dispatch suspend outcome as
-    // a nullable continuation handle (`ptr`). Run-to-completion handlers — every
-    // handler today, since no source construct produces a `coro.suspend` yet —
-    // return `null`. A suspending handler (NEW-3) returns its `coro.begin`
-    // handle, which the scheduler parks. Surfacing the handle through the return
-    // value (vs. a `HewActor` field) keeps the offset-mirror untouched; codegen
-    // registers this trampoline as an opaque `ptr`, so widening the return type
-    // does not change the spawn-registration ABI. Matches `HewDispatchFn`
-    // (hew-runtime/src/internal/types.rs).
-    let fn_ty = ptr_ty.fn_type(
-        &[
-            ptr_ty.into(),
-            ptr_ty.into(),
-            i32_ty.into(),
-            ptr_ty.into(),
-            size_ty.into(),
-            // P5-RX sub-stage 1: borrow_mode receipt discriminant. Must match
-            // `HewDispatchFn` (hew-runtime/src/internal/types.rs) — the runtime
-            // scheduler is the sole caller and registers this trampoline as the
-            // actor's `dispatch` fn pointer, so the arities must stay in lockstep.
-            i32_ty.into(),
-        ],
-        false,
-    );
-    let dispatch_fn = llvm_mod.add_function(&dispatch_name, fn_ty, Some(Linkage::Internal));
-    let builder = ctx.create_builder();
-    let entry = ctx.append_basic_block(dispatch_fn, "entry");
-    let default_bb = ctx.append_basic_block(dispatch_fn, "unknown_msg_type");
-    let after_bb = ctx.append_basic_block(dispatch_fn, "dispatch_done");
-    builder.position_at_end(entry);
-    let msg_type = dispatch_fn
-        .get_nth_param(2)
-        .ok_or_else(|| {
-            CodegenError::FailClosed("dispatch trampoline missing msg_type param".into())
-        })?
-        .into_int_value();
-
-    // P5-RX — borrow-load receipt primitive.
-    //
-    // Resolve the payload source pointer ONCE, before the msg_type switch,
-    // from the `borrow_mode` discriminant (param 5):
-    //   - copy mode (0): source = `data` (param 3), the node-owned buffer.
-    //   - borrow mode (1): source = `hew_msg_envelope_payload_ptr(data)`,
-    //     where `data` is the `HewMsgEnvelope*`; the borrowed payload is read
-    //     read-only and the single drop stays owned by
-    //     `hew_msg_envelope_release`. A null borrowed payload fails closed via
-    //     `hew_panic` (Gate 2) rather than being loaded — see the guard below.
-    //
-    // The branch is real control flow (not a `select`): calling
-    // `hew_msg_envelope_payload_ptr` on a copy-mode `data` buffer would be a
-    // wild read, so the accessor is invoked only on the borrow arm.
-    let borrow_mode = dispatch_fn
-        .get_nth_param(5)
-        .ok_or_else(|| CodegenError::FailClosed("dispatch missing borrow_mode param".into()))?
-        .into_int_value();
-    let data_ptr = dispatch_fn
-        .get_nth_param(3)
-        .ok_or_else(|| CodegenError::FailClosed("dispatch missing data param".into()))?
-        .into_pointer_value();
-    let is_borrow = builder
-        .build_int_compare(
-            inkwell::IntPredicate::NE,
-            borrow_mode,
-            i32_ty.const_zero(),
-            "dispatch_is_borrow",
-        )
-        .llvm_ctx("dispatch borrow_mode compare")?;
-    let borrow_src_bb = ctx.append_basic_block(dispatch_fn, "borrow_src");
-    let copy_src_bb = ctx.append_basic_block(dispatch_fn, "copy_src");
-    let src_merge_bb = ctx.append_basic_block(dispatch_fn, "payload_src");
-    builder
-        .build_conditional_branch(is_borrow, borrow_src_bb, copy_src_bb)
-        .llvm_ctx("dispatch borrow_mode branch")?;
-
-    builder.position_at_end(borrow_src_bb);
-    let payload_ptr_fn = llvm_mod
-        .get_function("hew_msg_envelope_payload_ptr")
-        .unwrap_or_else(|| {
-            // `*mut c_void hew_msg_envelope_payload_ptr(HewMsgEnvelope *env)`
-            // (hew-runtime/src/mailbox.rs). Borrow accessor: returns the
-            // payload pointer the envelope owns; the caller must not free it.
-            let payload_fn_ty = ptr_ty.fn_type(&[ptr_ty.into()], false);
-            llvm_mod.add_function(
-                "hew_msg_envelope_payload_ptr",
-                payload_fn_ty,
-                Some(Linkage::External),
-            )
-        });
-    let borrowed_payload = builder
-        .build_call(payload_ptr_fn, &[data_ptr.into()], "envelope_payload_ptr")
-        .llvm_ctx("hew_msg_envelope_payload_ptr call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| {
-            CodegenError::FailClosed("hew_msg_envelope_payload_ptr returned void".into())
-        })?
-        .into_pointer_value();
-
-    // GATE 2 (fail-closed null guard, P5-RX). The borrow arm reads the
-    // payload through `borrowed_payload`; a null envelope payload pointer
-    // (corrupt / mis-built envelope node, or a `clone_alias`/`fork` race
-    // that left no buffer) must NEVER be by-value loaded below — that would
-    // be a silent null deref / wild read at the `build_load`. Refuse hard:
-    // null payload ⇒ `hew_panic` (longjmps to the scheduler crash frame, or
-    // exits the process), never a quiet dereference. Real control flow, not
-    // a `select`: the load only ever sees a proven-non-null pointer.
-    let borrow_payload_is_null = builder
-        .build_int_compare(
-            inkwell::IntPredicate::EQ,
-            borrowed_payload,
-            ptr_ty.const_null(),
-            "borrow_payload_is_null",
-        )
-        .llvm_ctx("dispatch borrow payload null compare")?;
-    let borrow_null_bb = ctx.append_basic_block(dispatch_fn, "borrow_payload_null");
-    let borrow_ok_bb = ctx.append_basic_block(dispatch_fn, "borrow_payload_ok");
-    builder
-        .build_conditional_branch(borrow_payload_is_null, borrow_null_bb, borrow_ok_bb)
-        .llvm_ctx("dispatch borrow payload null branch")?;
-
-    // Fail-closed arm: hard panic, never return to the load.
-    builder.position_at_end(borrow_null_bb);
-    let panic_fn = llvm_mod.get_function("hew_panic").unwrap_or_else(|| {
-        // `void hew_panic(void)` (hew-runtime/src/actor.rs) — diverges via
-        // the actor recovery longjmp or a clean process exit.
-        let panic_ty = ctx.void_type().fn_type(&[], false);
-        llvm_mod.add_function("hew_panic", panic_ty, Some(Linkage::External))
-    });
-    builder
-        .build_call(panic_fn, &[], "borrow_payload_null_panic")
-        .llvm_ctx("dispatch borrow null guard hew_panic call")?;
-    builder
-        .build_unreachable()
-        .llvm_ctx("dispatch borrow null guard unreachable")?;
-
-    // Proven-non-null arm: feed the merge phi.
-    builder.position_at_end(borrow_ok_bb);
-    builder
-        .build_unconditional_branch(src_merge_bb)
-        .llvm_ctx("dispatch borrow src branch")?;
-
-    builder.position_at_end(copy_src_bb);
-    builder
-        .build_unconditional_branch(src_merge_bb)
-        .llvm_ctx("dispatch copy src branch")?;
-
-    builder.position_at_end(src_merge_bb);
-    let payload_src = builder
-        .build_phi(ptr_ty, "payload_src_ptr")
-        .llvm_ctx("dispatch payload src phi")?;
-    payload_src.add_incoming(&[(&borrowed_payload, borrow_ok_bb), (&data_ptr, copy_src_bb)]);
-    let payload_src = payload_src.as_basic_value().into_pointer_value();
-
-    let mut cases = Vec::with_capacity(layout.handlers.len());
-    for handler in &layout.handlers {
-        let bb = ctx.append_basic_block(dispatch_fn, &format!("msg_{}", handler.msg_type));
-        cases.push((i32_ty.const_int(handler.msg_type as u64, false), bb));
-    }
-    builder
-        .build_switch(msg_type, default_bb, &cases)
-        .llvm_ctx("actor dispatch switch")?;
-
-    // The trampoline returns a nullable suspend handle (D-A.2). Each handler arm
-    // joins at `after_bb`, contributing its return value to a phi:
-    //   - run-to-completion handler        → null (no suspend)
-    //   - suspendable handler, poll Ready  → null (it completed this dispatch;
-    //                                         the reply was already deposited)
-    //   - suspendable handler, poll Pending→ the `coro.begin` handle (parked)
-    // The phi over these incomings is the trampoline's return value. Every
-    // incoming is a `ptr` (the trampoline return type), so a uniform
-    // `PointerValue` incoming list matches the `add_incoming` shape the existing
-    // `payload_src` phi above uses.
-    let mut return_incomings: Vec<(PointerValue<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)> =
-        Vec::with_capacity(layout.handlers.len());
-
-    for (idx, (handler, (_, bb))) in layout.handlers.iter().zip(cases.iter()).enumerate() {
-        builder.position_at_end(*bb);
-        let symbol = fn_symbols.get(&handler.symbol).ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "actor dispatch `{dispatch_name}` references undeclared handler `{}`",
-                handler.symbol
-            ))
-        })?;
-        let (handler_fn, return_ty, returns_unit) =
-            symbol.real(&handler.symbol, "actor dispatch handler")?;
-
-        // NEW-3a (R2): the ramp-vs-direct decision MUST trace to the
-        // block-terminator carrier the coroutine emission read, never to a name
-        // or a default. A handler symbol with no matching raw MIR function never
-        // carried the discriminator — fail closed (a missing discriminator is
-        // the Lane-B silent-no-op, refused not defaulted-to-direct-call).
-        let is_suspendable = match handler_suspendable.get(idx).copied().flatten() {
-            Some(flag) => flag,
-            None => {
-                return Err(CodegenError::FailClosed(format!(
-                    "actor dispatch `{dispatch_name}`: handler `{}` has no matching MIR \
-                     function to derive its suspendable predicate from; the ramp-vs-direct \
-                     discriminator was not carried (R2 — refuse rather than silently \
-                     direct-call a possibly-suspendable handler)",
-                    handler.symbol
-                )));
-            }
-        };
-
-        // NEW-3a boundary-fail-closed: a suspendable handler is emitted as a
-        // coroutine ramp whose LLVM return type is `ptr` (the `coro.begin`
-        // handle) — enforced by the fail-closed guard in `lower_function`. If
-        // the trampoline marks a handler suspendable but its declared LLVM
-        // return is NOT `ptr`, the predicate and the emission disagree; refuse
-        // rather than drive a non-coroutine through the resume/poll verbs.
-        if is_suspendable && !matches!(return_ty, BasicTypeEnum::PointerType(_)) {
-            return Err(CodegenError::FailClosed(format!(
-                "actor dispatch `{dispatch_name}`: handler `{}` is marked suspendable \
-                 (its MIR carries Terminator::Suspend) but its declared LLVM return type \
-                 is {return_ty:?}, not the coro-handle `ptr` a ramp must return; the \
-                 trampoline predicate and the ramp emission disagree (R2/boundary-fail-closed)",
-                handler.symbol
-            )));
-        }
-
-        let ctx_arg = dispatch_fn
-            .get_nth_param(0)
-            .ok_or_else(|| CodegenError::FailClosed("dispatch missing ctx param".into()))?;
-        // One trailing borrow_mode arg matches the receive-handler ABI growth
-        // in `declare_function` (gated on the `__recv__` symbol). Dormant this
-        // sub-stage: the handler body ignores it. A suspendable handler needs NO
-        // extra out-pointer argument: the coroutine body deposits its reply
-        // directly via `hew_get_reply_channel` + `hew_reply` (W6.010 value
-        // routing lives in the body, not a trampoline out-slot — the body
-        // completes wherever the resume lands, including the scheduler's
-        // `resume_park` after the trampoline frame has unwound).
-        let mut args: Vec<BasicMetadataValueEnum> = Vec::with_capacity(2 + handler.param_tys.len());
-        args.push(ctx_arg.into());
-        if handler.param_tys.len() > 1 {
-            // Multi-arg packed-record wire: the sender (`lower_packed_args_
-            // payload`) packed the args into an anonymous non-packed record
-            // whose field types are exactly this handler's `param_tys` in
-            // declaration order. Rebuild the identical literal struct type
-            // here and read each param from its natural field offset — a
-            // single base-pointer load per param (the pre-wire shape) would
-            // read every param from offset 0. LLVM literal and named structs
-            // with the same body share one layout, so both wire ends agree
-            // by construction. Each field load reads exactly
-            // `sizeof(field_ty)` bytes at its offset — the bounded-copy
-            // invariant the single-arg wire carries.
-            let mut packed_field_tys: Vec<BasicTypeEnum> =
-                Vec::with_capacity(handler.param_tys.len());
-            for param_ty in &handler.param_tys {
-                packed_field_tys.push(resolve_ty(ctx, param_ty, record_layouts)?);
-            }
-            let packed_st = ctx.struct_type(&packed_field_tys, false);
-            for (idx, field_ty) in packed_field_tys.iter().enumerate() {
-                let field_idx = u32::try_from(idx).map_err(|_| {
-                    CodegenError::FailClosed(format!(
-                        "actor dispatch `{dispatch_name}`: handler `{}` param count \
-                         exceeds u32::MAX — impossible in Hew",
-                        handler.symbol
-                    ))
-                })?;
-                let field_ptr = builder
-                    .build_struct_gep(
-                        packed_st,
-                        payload_src,
-                        field_idx,
-                        &format!("msg_arg_{idx}_ptr"),
-                    )
-                    .llvm_ctx("actor dispatch packed arg gep")?;
-                let loaded = builder
-                    .build_load(*field_ty, field_ptr, &format!("msg_arg_{idx}"))
-                    .llvm_ctx("actor dispatch packed arg load")?;
-                args.push(metadata_value_from_basic(loaded));
-            }
-        } else {
-            for (idx, param_ty) in handler.param_tys.iter().enumerate() {
-                let llvm_ty = resolve_ty(ctx, param_ty, record_layouts)?;
-                let loaded = builder
-                    .build_load(llvm_ty, payload_src, &format!("msg_arg_{idx}"))
-                    .llvm_ctx("actor dispatch arg load")?;
-                args.push(metadata_value_from_basic(loaded));
-            }
-        }
-        args.push(borrow_mode.into());
-        let call = builder
-            .build_call(handler_fn, &args, &format!("call_{}", handler.name))
-            .llvm_ctx("actor dispatch handler call")?;
-
-        if is_suspendable {
-            // NEW-3a — DRIVE the handler's coroutine.
-            //
-            // The call result IS the `coro.begin` handle (a `ptr`), NOT a reply
-            // value (E4): a suspendable handler's ramp returns the frame handle.
-            // Drive ONE resume/poll step:
-            //   handle = ramp(...)            ; the coro frame
-            //   hew_cont_resume(handle)       ; run to the next suspend/completion
-            //   poll = hew_cont_poll(handle, out)
-            //   Pending → return handle       ; the scheduler parks it
-            //   Ready   → extract `out` → hew_reply; return null (completed)
-            let handle = call.try_as_basic_value().basic().ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "suspendable handler `{}` coroutine ramp returned void; \
-                     a ramp must return its coro.begin handle (ptr)",
-                    handler.symbol
-                ))
-            })?;
-            if !matches!(handle.get_type(), BasicTypeEnum::PointerType(_)) {
-                return Err(CodegenError::FailClosed(format!(
-                    "suspendable handler `{}` coroutine ramp returned {:?}, not the \
-                     coro.begin handle (ptr)",
-                    handler.symbol,
-                    handle.get_type()
-                )));
-            }
-            let handle = handle.into_pointer_value();
-
-            // Drive the cont C-ABI verbs. These are runtime symbols
-            // (`hew-runtime/src/cont.rs`); declared trampoline-locally via the
-            // get-or-declare pattern (the same way this fn declares `hew_panic`
-            // and `hew_msg_envelope_payload_ptr`) so they are not coupled to the
-            // MIR-emitter runtime-symbol allowlist.
-            let cont_resume_fn = llvm_mod.get_function("hew_cont_resume").unwrap_or_else(|| {
-                // `void hew_cont_resume(void *handle)` (cont.rs:214).
-                let ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
-                llvm_mod.add_function("hew_cont_resume", ty, Some(Linkage::External))
-            });
-            let cont_poll_fn = llvm_mod.get_function("hew_cont_poll").unwrap_or_else(|| {
-                // `ResumePoll hew_cont_poll(void *handle, void *out_value)`
-                // (cont.rs:269). `ResumePoll` is `#[repr(i32)]`
-                // (Pending=0, Ready=1, cont.rs:100-109), so the C return is i32.
-                let ty = i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false);
-                llvm_mod.add_function("hew_cont_poll", ty, Some(Linkage::External))
-            });
-            let cont_destroy_fn = llvm_mod
-                .get_function("hew_cont_destroy")
-                .unwrap_or_else(|| {
-                    // `void hew_cont_destroy(void *handle)` (cont.rs:294). The SOLE
-                    // teardown owner: runs the frame's `cleanup` outline (drops of
-                    // frame-owned locals held across the await) then frees the frame.
-                    // Null-safe at the runtime (cont.rs:295). Declared trampoline-local
-                    // via the same get-or-declare pattern as `hew_cont_resume`/`poll`.
-                    let ty = ctx.void_type().fn_type(&[ptr_ty.into()], false);
-                    llvm_mod.add_function("hew_cont_destroy", ty, Some(Linkage::External))
-                });
-
-            // Do NOT resume here. Calling the ramp already ran the coroutine
-            // body to its FIRST `coro.suspend` (the SuspendingAsk send + park);
-            // `handle` is suspended at that point. An immediate `hew_cont_resume`
-            // would drive the body PAST the suspend into its reply-bind block
-            // before the reply has arrived, re-blocking the worker on
-            // `hew_reply_wait` — the exact OS-thread block this lane removes
-            // (R1). Instead POLL the just-parked handle: a Pending poll means the
-            // body is waiting on a readiness source (the ask reply), so the
-            // trampoline returns the handle and the scheduler parks it; the real
-            // resume is driven later by `enqueue_resume` → `resume_park` (which
-            // does its own resume+poll) when the reply fires. A Ready poll means
-            // the body completed without ever suspending on a real source (it ran
-            // to its final suspend immediately), handled by the Ready arm below.
-            // `cont_resume_fn` stays declared (the scheduler's resume_park uses
-            // it); the trampoline simply does not drive the first resume.
-            let _ = cont_resume_fn;
-
-            // Poll the just-parked handle for its done-state ONLY (W6.010 value
-            // routing lives in the coroutine body, which deposits its reply via
-            // `hew_reply` at its final return — see the `Terminator::Return`
-            // coroutine arm). The poll out-pointer is therefore unused here: pass
-            // null. `hew_cont_poll` reads `coro.done`: Pending → the body is
-            // waiting on a readiness source (park it); Ready → the body completed
-            // (and already deposited its reply), just reclaim the frame.
-            let poll = builder
-                .build_call(
-                    cont_poll_fn,
-                    &[handle.into(), ptr_ty.const_null().into()],
-                    "hew_cont_poll_call",
-                )
-                .llvm_ctx("hew_cont_poll call")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| CodegenError::FailClosed("hew_cont_poll returned void".into()))?
-                .into_int_value();
-
-            // `poll == ResumePoll::Ready (1)` → completed this dispatch.
-            // `poll == ResumePoll::Pending (0)` → suspended; park the handle.
-            let ready_const = i32_ty.const_int(1, false);
-            let is_ready = builder
-                .build_int_compare(
-                    inkwell::IntPredicate::EQ,
-                    poll,
-                    ready_const,
-                    "suspend_poll_is_ready",
-                )
-                .llvm_ctx("suspend poll ready compare")?;
-            let ready_bb = ctx.append_basic_block(dispatch_fn, &format!("suspend_ready_{idx}"));
-            let pending_bb = ctx.append_basic_block(dispatch_fn, &format!("suspend_pending_{idx}"));
-            builder
-                .build_conditional_branch(is_ready, ready_bb, pending_bb)
-                .llvm_ctx("suspend poll branch")?;
-
-            // Ready arm: the coroutine reached its final suspend on the FIRST
-            // poll (it completed without ever parking on a real readiness source
-            // — e.g. an await whose reply was already available). The coroutine
-            // BODY already deposited its reply (`Terminator::Return` coroutine
-            // arm: `hew_get_reply_channel` + `hew_reply`), so the trampoline does
-            // NOT deposit here — doing so would double-reply. The trampoline only
-            // reclaims the frame and returns null (no park).
-            builder.position_at_end(ready_bb);
-            // Reclaim the frame exactly once (F-A). The continuation reached its
-            // final suspend (`coro.done`); `hew_cont_destroy` is its SOLE teardown
-            // owner (cont.rs:283-285), running the `cleanup` outline — drops of
-            // frame-owned locals held across the await — then freeing the frame.
-            // Emitted for BOTH the unit and value cases (outside the reply block),
-            // after the reply is deposited and before the merge into `after_bb`.
-            //
-            // DISJOINTNESS (no double-destroy with the scheduler's resume-reentry
-            // teardown): this Ready arm fires only when the FIRST poll returns
-            // Ready, in which case the trampoline returns `null` (the incoming
-            // pushed below) so the scheduler's park edge — which parks only on a
-            // NON-null handle (scheduler.rs ~1395) — never stores this handle into
-            // `actor.suspended_cont`. The scheduler's `destroy_parked`
-            // (coro_exec.rs:332) swaps that slot and so destroys ONLY handles that
-            // were parked, i.e. handles whose first poll was Pending. A given
-            // handle is therefore destroyed here (first-poll-Ready, never parked)
-            // XOR by `destroy_parked` (first-poll-Pending, parked then resumed) —
-            // mutually exclusive. cont.rs:99: a Ready continuation is reclaimed via
-            // `hew_cont_destroy` exactly once.
-            builder
-                .build_call(cont_destroy_fn, &[handle.into()], "hew_cont_destroy_call")
-                .llvm_ctx("hew_cont_destroy call")?;
-            builder
-                .build_unconditional_branch(after_bb)
-                .llvm_ctx("suspend ready branch")?;
-            return_incomings.push((ptr_ty.const_null(), ready_bb));
-
-            // Pending arm: the coroutine suspended at a non-final point. Surface
-            // the handle as the trampoline return so the scheduler park edge
-            // fires (scheduler.rs park-on-non-null-handle).
-            builder.position_at_end(pending_bb);
-            builder
-                .build_unconditional_branch(after_bb)
-                .llvm_ctx("suspend pending branch")?;
-            return_incomings.push((handle, pending_bb));
-        } else {
-            // Run-to-completion handler (byte-identical to baseline): treat the
-            // call result as the reply value and deposit it, then join with a
-            // null suspend handle.
-            if !returns_unit {
-                let ret_val = call.try_as_basic_value().basic().ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "actor handler `{}` has non-unit MIR return but LLVM call returned void",
-                        handler.symbol
-                    ))
-                })?;
-                if ret_val.get_type() != return_ty {
-                    return Err(CodegenError::FailClosed(format!(
-                        "actor handler `{}` return type mismatch: call={:?}, declared={return_ty:?}",
-                        handler.symbol,
-                        ret_val.get_type()
-                    )));
-                }
-                let mut runtime_decls = RuntimeDeclMap::new();
-                let reply_channel = intern_runtime_decl(
-                    ctx,
-                    llvm_mod,
-                    &mut runtime_decls,
-                    "hew_get_reply_channel",
-                )?;
-                let reply = intern_runtime_decl(ctx, llvm_mod, &mut runtime_decls, "hew_reply")?;
-                let ch = builder
-                    .build_call(reply_channel, &[], "hew_get_reply_channel_call")
-                    .llvm_ctx("get reply channel call")?
-                    .try_as_basic_value()
-                    .basic()
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed("hew_get_reply_channel returned void".into())
-                    })?
-                    .into_pointer_value();
-                let ret_slot = builder
-                    .build_alloca(return_ty, "actor_reply_slot")
-                    .llvm_ctx("actor reply alloca")?;
-                builder
-                    .build_store(ret_slot, ret_val)
-                    .llvm_ctx("actor reply store")?;
-                let size = return_ty.size_of().ok_or_else(|| {
-                    CodegenError::FailClosed(format!(
-                        "actor handler `{}` reply type has no static size: {return_ty:?}",
-                        handler.symbol
-                    ))
-                })?;
-                // Reconcile LLVM size_of (always i64) to the target-correct
-                // `usize`/`size_t` (i32 on wasm32) for `hew_reply`'s `size` param.
-                let size = if size.get_type() == size_ty {
-                    size
-                } else if size_ty.get_bit_width() < i64_ty.get_bit_width() {
-                    builder
-                        .build_int_truncate(size, size_ty, "actor_reply_size_trunc")
-                        .llvm_ctx("reply size trunc")?
-                } else {
-                    builder
-                        .build_int_z_extend(size, size_ty, "actor_reply_size_zext")
-                        .llvm_ctx("reply size zext")?
-                };
-                builder
-                    .build_call(
-                        reply,
-                        &[ch.into(), ret_slot.into(), size.into()],
-                        "hew_reply_call",
-                    )
-                    .llvm_ctx("hew_reply call")?;
-            }
-            // The current block is still `*bb` (no new blocks on the direct
-            // path) — record it as the phi predecessor with a null handle.
-            let pred = builder.get_insert_block().ok_or_else(|| {
-                CodegenError::FailClosed("dispatch direct arm has no insert block".into())
-            })?;
-            builder
-                .build_unconditional_branch(after_bb)
-                .llvm_ctx("actor dispatch branch")?;
-            return_incomings.push((ptr_ty.const_null(), pred));
-        }
-    }
-
-    builder.position_at_end(default_bb);
-    let trap = Intrinsic::find("llvm.trap")
-        .and_then(|intrinsic| intrinsic.get_declaration(llvm_mod, &[]))
-        .ok_or_else(|| CodegenError::Llvm("llvm.trap declaration failed".into()))?;
-    builder
-        .build_call(trap, &[], "actor_dispatch_unknown_msg_trap")
-        .llvm_ctx("actor dispatch trap")?;
-    builder
-        .build_unreachable()
-        .llvm_ctx("actor dispatch unreachable")?;
-
-    builder.position_at_end(after_bb);
-    // D-A.2 / NEW-3a: the trampoline returns the dispatch suspend outcome — a
-    // nullable `coro.begin` handle. Run-to-completion handlers and Ready-poll
-    // suspendable handlers contribute `null` (no park); a Pending-poll
-    // suspendable handler contributes its handle (the scheduler parks it). An
-    // actor with zero handlers has no incoming edge to `after_bb` from the
-    // switch arms (only the trapping default reaches the switch), so fall back
-    // to a plain null return rather than an empty phi.
-    if return_incomings.is_empty() {
-        builder
-            .build_return(Some(&ptr_ty.const_null()))
-            .llvm_ctx("actor dispatch return null suspend handle")?;
-    } else {
-        let phi = builder
-            .build_phi(ptr_ty, "dispatch_suspend_handle")
-            .llvm_ctx("dispatch suspend handle phi")?;
-        let incoming_refs: Vec<(
-            &dyn inkwell::values::BasicValue<'ctx>,
-            inkwell::basic_block::BasicBlock<'ctx>,
-        )> = return_incomings
-            .iter()
-            .map(|(v, bb)| (v as &dyn inkwell::values::BasicValue<'ctx>, *bb))
-            .collect();
-        phi.add_incoming(&incoming_refs);
-        builder
-            .build_return(Some(&phi.as_basic_value()))
-            .llvm_ctx("actor dispatch return suspend handle phi")?;
-    }
-    Ok(())
-}
-
 fn actor_name_from_handler_symbol(symbol: &str) -> Option<&str> {
     symbol
         .split_once("__recv__")
@@ -42603,14 +30285,14 @@ fn build_module_for_target<'ctx>(
     // enum); without the predeclare-all-then-fill-all ordering, the record
     // body-fill would call `resolve_ty` against a map containing only
     // record opaques and trip the D10 fail-closed sentinel on `kind`.
-    let mut record_layouts = predeclare_named_layouts(
+    let mut record_layouts = crate::layout::predeclare_named_layouts(
         ctx,
         &pipeline.record_layouts,
         &pipeline.enum_layouts,
         &pipeline.machine_layouts,
         &pipeline.opaque_handle_names,
     )?;
-    fill_record_layout_bodies(ctx, &pipeline.record_layouts, &record_layouts)?;
+    crate::layout::fill_record_layout_bodies(ctx, &pipeline.record_layouts, &record_layouts)?;
     // Build a quick lookup from record name → field ResolvedTys, shared by
     // every per-function lowering context. The synthesis path consults this
     // when walking a struct hash thunk so a `bool` field (i8 storage, low
@@ -42656,7 +30338,7 @@ fn build_module_for_target<'ctx>(
                 .any(|t| resolved_ty_references_machine(t, &machine_short_names))
         })
     });
-    register_enum_layouts(
+    crate::layout::register_enum_layouts(
         ctx,
         &machine_free_enums,
         &mut record_layouts,
@@ -42667,7 +30349,7 @@ fn build_module_for_target<'ctx>(
     // Outer structs + `<Name>Event` companions were predeclared above; this
     // call sets each body on the existing opaque. The richer per-variant
     // metadata (inner structs, tag int type) lives in `machine_layouts`.
-    let machine_layout_map = register_machine_layouts(
+    let machine_layout_map = crate::layout::register_machine_layouts(
         ctx,
         &llvm_mod,
         &pipeline.machine_layouts,
@@ -42678,7 +30360,7 @@ fn build_module_for_target<'ctx>(
     machine_layouts.extend(machine_layout_map);
     // Second enum pass: the machine-referencing instantiations, sized now
     // that every machine body is set.
-    register_enum_layouts(
+    crate::layout::register_enum_layouts(
         ctx,
         &machine_ref_enums,
         &mut record_layouts,
@@ -42749,7 +30431,7 @@ fn build_module_for_target<'ctx>(
                     })
             })
             .collect();
-        emit_actor_dispatch_trampoline(
+        crate::thunks::emit_actor_dispatch_trampoline(
             ctx,
             &llvm_mod,
             actor,
@@ -42758,7 +30440,7 @@ fn build_module_for_target<'ctx>(
             &record_layouts,
         )?;
         if !actor.on_stop_symbols.is_empty() {
-            emit_actor_terminate_trampoline(ctx, &llvm_mod, actor, &fn_symbols)?;
+            crate::thunks::emit_actor_terminate_trampoline(ctx, &llvm_mod, actor, &fn_symbols)?;
         }
     }
     // W2.002 Stage 3: synthesise `__hew_state_clone_<Actor>` /
@@ -45694,7 +33376,7 @@ fn emit_xnode_codec_module_init<'ctx>(
 /// synthesised constructor is the expected substrate for that feature.
 /// WHAT: the `lower_call_runtime_abi` arms for `hew_regex_match` and `hew_regex_capture` load
 /// from this global array by GEP (literal_id → slot index).
-fn emit_regex_module_init<'ctx>(
+pub(crate) fn emit_regex_module_init<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     literals: &[RegexLiteral],
@@ -49906,12 +37588,12 @@ mod tests {
     ) -> CompositeHelperHarness<'ctx> {
         let target_data = host_target_data();
         let mut record_layouts: RecordLayoutMap<'ctx> =
-            predeclare_named_layouts(ctx, record_fixtures, enum_fixtures, &[], &[])
+            crate::layout::predeclare_named_layouts(ctx, record_fixtures, enum_fixtures, &[], &[])
                 .expect("named-layout predeclaration must succeed");
-        fill_record_layout_bodies(ctx, record_fixtures, &record_layouts)
+        crate::layout::fill_record_layout_bodies(ctx, record_fixtures, &record_layouts)
             .expect("record-layout body fill must succeed");
         let mut machine_layouts: MachineLayoutMap<'ctx> = HashMap::new();
-        register_enum_layouts(
+        crate::layout::register_enum_layouts(
             ctx,
             enum_fixtures,
             &mut record_layouts,
@@ -51228,15 +38910,27 @@ mod tests {
             ],
             is_indirect: false,
         }];
-        let mut map = predeclare_named_layouts(&ctx, &record_fixtures, &enum_fixtures, &[], &[])
-            .expect("predeclare must succeed");
+        let mut map = crate::layout::predeclare_named_layouts(
+            &ctx,
+            &record_fixtures,
+            &enum_fixtures,
+            &[],
+            &[],
+        )
+        .expect("predeclare must succeed");
         let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
-        register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
-            .expect("enum body-fill must succeed against predeclared opaque");
+        crate::layout::register_enum_layouts(
+            &ctx,
+            &enum_fixtures,
+            &mut map,
+            &mut machine_layouts,
+            None,
+        )
+        .expect("enum body-fill must succeed against predeclared opaque");
         // Now fill the record body. `resolve_ty` on the `CrashKind` field
         // must find the predeclared opaque in `map` rather than fall
         // through to `primitive_to_llvm`'s D10 arm.
-        fill_record_layout_bodies(&ctx, &record_fixtures, &map)
+        crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map)
             .expect("record body-fill must resolve enum-typed field via predeclared opaque");
         assert!(
             map.contains_key("CrashKind"),
@@ -51276,8 +38970,14 @@ mod tests {
                 field_tys: vec![],
             }],
         }];
-        let map = predeclare_named_layouts(&ctx, &record_fixtures, &[], &machine_fixtures, &[])
-            .expect("predeclare must succeed for record+machine");
+        let map = crate::layout::predeclare_named_layouts(
+            &ctx,
+            &record_fixtures,
+            &[],
+            &machine_fixtures,
+            &[],
+        )
+        .expect("predeclare must succeed for record+machine");
         assert!(
             map.contains_key("Worker"),
             "predeclare must register machine outer struct name"
@@ -51286,7 +38986,7 @@ mod tests {
             map.contains_key("WorkerEvent"),
             "predeclare must register <Name>Event companion"
         );
-        fill_record_layout_bodies(&ctx, &record_fixtures, &map)
+        crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map)
             .expect("record body-fill must resolve machine-typed field via predeclared opaque");
     }
 
@@ -51307,9 +39007,9 @@ mod tests {
                 is_opaque: false,
             }],
         }];
-        let map = predeclare_named_layouts(&ctx, &record_fixtures, &[], &[], &[])
+        let map = crate::layout::predeclare_named_layouts(&ctx, &record_fixtures, &[], &[], &[])
             .expect("predeclare must succeed");
-        let err = fill_record_layout_bodies(&ctx, &record_fixtures, &map)
+        let err = crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map)
             .expect_err("record body-fill must fail-closed on unknown Named type");
         match err {
             CodegenError::FailClosed(msg) => {
@@ -51342,8 +39042,14 @@ mod tests {
             }],
             is_indirect: false,
         }];
-        let err = predeclare_named_layouts(&ctx, &record_fixtures, &enum_fixtures, &[], &[])
-            .expect_err("duplicate names across classes must fail-closed");
+        let err = crate::layout::predeclare_named_layouts(
+            &ctx,
+            &record_fixtures,
+            &enum_fixtures,
+            &[],
+            &[],
+        )
+        .expect_err("duplicate names across classes must fail-closed");
         match err {
             CodegenError::FailClosed(msg) => {
                 assert!(
@@ -51399,11 +39105,17 @@ mod tests {
                 is_indirect: false,
             },
         ];
-        let mut map = predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
+        let mut map = crate::layout::predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
             .expect("predeclare must tolerate within-class duplicate enum names");
         let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
-        register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
-            .expect("register_enum_layouts must skip within-class duplicate body-fill");
+        crate::layout::register_enum_layouts(
+            &ctx,
+            &enum_fixtures,
+            &mut map,
+            &mut machine_layouts,
+            None,
+        )
+        .expect("register_enum_layouts must skip within-class duplicate body-fill");
         assert!(
             machine_layouts.contains_key("Option$$u8"),
             "metadata for the deduplicated enum must be registered exactly once"
@@ -51451,11 +39163,17 @@ mod tests {
                 is_indirect: false,
             },
         ];
-        let mut map = predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
+        let mut map = crate::layout::predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
             .expect("predeclare must succeed even for cyclic names");
         let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
-        let err = register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
-            .expect_err("cyclic enum layout must fail-closed, not silently miscompile");
+        let err = crate::layout::register_enum_layouts(
+            &ctx,
+            &enum_fixtures,
+            &mut map,
+            &mut machine_layouts,
+            None,
+        )
+        .expect_err("cyclic enum layout must fail-closed, not silently miscompile");
         match err {
             CodegenError::FailClosed(msg) => {
                 assert!(
@@ -51528,11 +39246,17 @@ mod tests {
                 is_indirect: true,
             },
         ];
-        let mut map = predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
+        let mut map = crate::layout::predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
             .expect("predeclare must succeed for mutual indirect enum pair");
         let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
-        register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
-            .expect("mutual indirect enum pair must compile: both fields are pointer-shaped");
+        crate::layout::register_enum_layouts(
+            &ctx,
+            &enum_fixtures,
+            &mut map,
+            &mut machine_layouts,
+            None,
+        )
+        .expect("mutual indirect enum pair must compile: both fields are pointer-shaped");
         assert!(
             machine_layouts.contains_key("A"),
             "layout for indirect enum A must be registered"
@@ -53801,7 +41525,7 @@ mod tests {
 
         // The predicate slice carries `None` for the handler — the discriminator
         // was not carried. The trampoline must fail closed.
-        let result = emit_actor_dispatch_trampoline(
+        let result = crate::thunks::emit_actor_dispatch_trampoline(
             &ctx,
             &llvm_mod,
             &actor,

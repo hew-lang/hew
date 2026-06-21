@@ -1129,13 +1129,11 @@ impl Checker {
         if method != "close" || sig.requires_mutable_receiver {
             return false;
         }
-        // `resource_types` is keyed by the declared (bare) type name. The
-        // receiver type name may arrive module-qualified (`mod.Conn`) for an
-        // imported handle type; match on the unqualified suffix too.
-        let unqualified = type_name
-            .rsplit_once('.')
-            .map_or(type_name, |(_, suffix)| suffix);
-        self.resource_types.contains(type_name) || self.resource_types.contains(unqualified)
+        // The trait registry is the single authority for the `#[resource]`
+        // fact. `is_resource` matches the declared bare name and the
+        // module-qualified receiver's unqualified suffix (`mod.Conn` → `Conn`)
+        // for imported handle types.
+        self.registry.is_resource(type_name)
     }
 
     /// Apply the consume-receiver marker for a trait-dispatched method call:

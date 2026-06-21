@@ -181,6 +181,20 @@ pub struct TraitRegistry {
     /// be serializable. Registration deliberately includes records, enums, and
     /// wire-marked types, but not ordinary plain structs.
     serializable_members: HashMap<String, Vec<Ty>>,
+    /// Names of types declared with the `#[resource]` marker.
+    ///
+    /// A `#[resource]` type's inherent `close(self)` is BOTH the implicit-drop
+    /// dispatch target (W3.030) AND a terminal consuming method: calling it
+    /// moves the receiver, so a subsequent use is `UseAfterMove` and the
+    /// scope-exit implicit drop is suppressed on the consumed path (#1295).
+    ///
+    /// This is the single source of truth for the user-declared `#[resource]`
+    /// fact. The structural `MarkerTrait::Resource` derivation in
+    /// `implements_marker` covers the built-in resource handles (`Duplex`,
+    /// `CancellationToken`) on their type shape; this set covers the
+    /// user/stdlib `#[resource]` declarations keyed by name. Both are owned by
+    /// the registry so the checker no longer keeps a parallel allowlist.
+    resource_types: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -533,6 +547,30 @@ impl TraitRegistry {
                 .drop_types
                 .iter()
                 .any(|dt| dt.rsplit('.').next() == Some(name))
+    }
+
+    /// Register a `#[resource]` type by its declared (bare) name.
+    ///
+    /// Called at type-decl registration for every user/stdlib `#[resource]`
+    /// declaration. The registry is the single authority for this fact;
+    /// `is_resource` is the only query path.
+    pub fn register_resource_type(&mut self, name: String) {
+        self.resource_types.insert(name);
+    }
+
+    /// Report whether `name` is a `#[resource]` type.
+    ///
+    /// `resource_types` is keyed by the declared (bare) type name. A receiver
+    /// type name may arrive module-qualified (`mod.Conn`) for an imported
+    /// handle type, so the unqualified suffix is matched too — mirroring the
+    /// bare/unqualified lookup the `Drop`/handle type sets use.
+    #[must_use]
+    pub fn is_resource(&self, name: &str) -> bool {
+        if self.resource_types.contains(name) {
+            return true;
+        }
+        let unqualified = name.rsplit_once('.').map_or(name, |(_, suffix)| suffix);
+        self.resource_types.contains(unqualified)
     }
 
     /// Register a negative impl (type does NOT implement trait).
@@ -1551,6 +1589,26 @@ mod tests {
             "HashMap<String, i64> must NOT be Serializable at the RemotePid boundary \
              (codec walk does not support collection types)"
         );
+    }
+
+    /// RI-01: the `TraitRegistry` is the single source of truth for the
+    /// user-declared `#[resource]` fact. After the unify the checker keeps no
+    /// parallel allowlist — a resource type is recognised ONLY because it was
+    /// registered here, via the registry's own `is_resource` query.
+    #[test]
+    fn registry_is_sole_authority_for_resource_types() {
+        let mut registry = TraitRegistry::new();
+        // Unregistered type is not a resource.
+        assert!(!registry.is_resource("Child"));
+
+        registry.register_resource_type("Child".to_string());
+        // Registered bare name resolves through the registry alone.
+        assert!(registry.is_resource("Child"));
+        // Module-qualified receiver name resolves via the unqualified suffix,
+        // matching the imported-handle dispatch path.
+        assert!(registry.is_resource("process.Child"));
+        // A different qualified type is not admitted by the suffix fallback.
+        assert!(!registry.is_resource("process.Parent"));
     }
 
     #[test]

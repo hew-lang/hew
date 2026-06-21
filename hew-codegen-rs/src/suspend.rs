@@ -716,7 +716,7 @@ pub(crate) fn emit_suspending_read_terminator<'ctx>(
               binding — is kept in one place so the deadline resolution and the \
               value routing it gates are read together"
 )]
-pub(crate) fn emit_suspending_read_bind<'ctx>(
+fn emit_suspending_read_bind<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     term: &SuspendingReadEmit,
     slot: inkwell::values::PointerValue<'ctx>,
@@ -1386,7 +1386,7 @@ pub(crate) fn emit_suspending_accept_terminator<'ctx>(
               binding — is kept in one place so the deadline resolution and the \
               value routing it gates are read together"
 )]
-pub(crate) fn emit_suspending_accept_bind<'ctx>(
+fn emit_suspending_accept_bind<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     term: &SuspendingAcceptEmit,
     slot: inkwell::values::PointerValue<'ctx>,
@@ -2050,7 +2050,7 @@ pub(crate) fn emit_suspending_stream_next_terminator<'ctx>(
               layout pop — is kept in one place so the deadline resolution and \
               the value routing it gates are read together"
 )]
-pub(crate) fn emit_suspending_stream_next_bind<'ctx>(
+fn emit_suspending_stream_next_bind<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     term: &SuspendingStreamNextEmit,
     stream_ptr: inkwell::values::PointerValue<'ctx>,
@@ -2725,7 +2725,7 @@ pub(crate) fn emit_suspending_channel_recv_terminator<'ctx>(
               layout pop — is kept in one place so the deadline resolution and \
               the value routing it gates are read together"
 )]
-pub(crate) fn emit_suspending_channel_recv_bind<'ctx>(
+fn emit_suspending_channel_recv_bind<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     term: &SuspendingChannelRecvEmit,
     rx_ptr: inkwell::values::PointerValue<'ctx>,
@@ -4559,7 +4559,7 @@ pub(crate) fn emit_suspending_ask_terminator<'ctx>(
               Ok/Err binding — is kept in one place so the deadline arbiter and \
               the value routing it gates are read together"
 )]
-pub(crate) fn emit_suspending_ask_reply_bind<'ctx>(
+fn emit_suspending_ask_reply_bind<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     term: &SuspendingAskEmit,
     ch: inkwell::values::PointerValue<'ctx>,
@@ -5255,7 +5255,7 @@ pub(crate) fn emit_suspending_call_closure_terminator<'ctx>(
 /// the SuspendingAsk send-failure Err-binding (no channel exists yet, so the
 /// TLS last-error slot is authoritative), identical to the `Terminator::Ask`
 /// err arm.
-pub(crate) fn emit_suspending_ask_err<'ctx>(
+fn emit_suspending_ask_err<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     result_dest: Place,
     error_dest: Place,
@@ -5283,7 +5283,7 @@ pub(crate) fn emit_suspending_ask_err<'ctx>(
 /// a precomputed discriminant. The null-reply resume path uses this to bind
 /// `OrphanedAsk` from the channel's orphaned flag (matching the blocking-ask
 /// path), which the TLS last-error slot does not carry.
-pub(crate) fn emit_suspending_ask_err_with_code<'ctx>(
+fn emit_suspending_ask_err_with_code<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     result_dest: Place,
     error_dest: Place,
@@ -5325,7 +5325,7 @@ pub(crate) fn emit_suspending_ask_err_with_code<'ctx>(
 /// slot (`hew_node_ask_take_last_error`). Shared by the blocking and suspending
 /// remote-ask failure edges — both read the same thread-local discriminant set
 /// by a null return from the runtime ask path.
-pub(crate) fn emit_remote_ask_err_from_last_error<'ctx>(
+fn emit_remote_ask_err_from_last_error<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     result_dest: Place,
     error_dest: Place,

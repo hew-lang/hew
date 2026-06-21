@@ -29,11 +29,11 @@ use hew_types::ResolvedTy;
 #[allow(unused_imports)]
 use crate::llvm::*;
 
-pub(crate) fn task_wrapper_name(callee_symbol: &str) -> String {
+fn task_wrapper_name(callee_symbol: &str) -> String {
     format!("__hew_task_wrapper_{}", sanitize_symbol(callee_symbol))
 }
 
-pub(crate) fn task_closure_wrapper_name(fn_symbol: &str) -> String {
+fn task_closure_wrapper_name(fn_symbol: &str) -> String {
     format!("__hew_task_closure_wrapper_{}", sanitize_symbol(fn_symbol))
 }
 
@@ -401,7 +401,7 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
     }
 }
 
-pub(crate) fn get_or_create_task_closure_wrapper<'ctx>(
+fn get_or_create_task_closure_wrapper<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbol: &str,
 ) -> CodegenResult<FunctionValue<'ctx>> {
@@ -1028,7 +1028,7 @@ pub(crate) fn get_or_emit_eq_thunk<'ctx>(
 /// checks succeed control flows to `ret_true_bb`; any failed check branches
 /// directly to `ret_false_bb`.  The builder must be positioned at a block
 /// that has no terminator on entry.
-pub(crate) fn emit_eq_thunk_body<'ctx>(
+fn emit_eq_thunk_body<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     elem_ty: BasicTypeEnum<'ctx>,
     lhs: PointerValue<'ctx>,
@@ -1210,7 +1210,7 @@ pub(crate) fn emit_eq_thunk_body<'ctx>(
 /// to `success_bb`/`fail_bb`.  Aggregate fields delegate to a nested
 /// `__hew_eq_thunk_*` function and check its `i32` return: non-zero ⇒
 /// success, zero ⇒ fail.
-pub(crate) fn emit_eq_thunk_field_check<'ctx>(
+fn emit_eq_thunk_field_check<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     field_ty: BasicTypeEnum<'ctx>,
     lhs_field: PointerValue<'ctx>,
@@ -1309,7 +1309,7 @@ pub(crate) fn emit_eq_thunk_field_check<'ctx>(
 /// `Vec::contains` lowering can route an enum element here, so those arms are
 /// fault isolation against a checker-gate bypass, not an independent
 /// eligibility decision.
-pub(crate) fn emit_eq_thunk_enum<'ctx>(
+fn emit_eq_thunk_enum<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     layout: &MachineCodegenLayout<'ctx>,
     lhs: PointerValue<'ctx>,
@@ -1463,7 +1463,7 @@ pub(crate) fn emit_eq_thunk_enum<'ctx>(
 /// authoritative order is the LLVM struct's field index, which matches
 /// `RecordLayout.field_tys` ordering installed by `fill_record_layout_bodies`).
 /// Nested aggregates fold via a separate, deduplicated nested thunk.
-pub(crate) fn emit_hash_thunk_body<'ctx>(
+fn emit_hash_thunk_body<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     ty: BasicTypeEnum<'ctx>,
     resolved_ty: Option<&ResolvedTy>,

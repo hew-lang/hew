@@ -2964,9 +2964,12 @@ impl Checker {
     ///     `Result<R, AskError>` (ask-shaped). Verifies `M: @send`. Secondary
     ///     surface to the canonical call-syntax `handle(msg)`; both route
     ///     through `Place::LambdaActorHandle` to `hew_lambda_actor_send` at MIR.
-    ///   - `.close()` → `Result<(), CloseError>` — consuming; moves the handle.
-    ///     Lowers to `hew_lambda_actor_release` via the `Place::LambdaActorHandle`
-    ///     drop discriminator.
+    ///   - `.close()` → `()` — consuming; moves the handle. Deliberately returns
+    ///     plain `()` rather than `Result<(), CloseError>` (unlike `Duplex::close`):
+    ///     the lambda-actor release is unconditionally successful, and the
+    ///     `CloseError` layout is not yet codegen-able. Lowers to
+    ///     `hew_lambda_actor_release` via the `Place::LambdaActorHandle` drop
+    ///     discriminator.
     ///
     /// `.recv()` / `.try_recv()` / `.try_send()` / `.send_half()` / `.recv_half()`
     /// are NOT a lambda-actor surface: a lambda actor is not a channel. The caller

@@ -3744,7 +3744,7 @@ fn returned_record_of_handles_callee_does_not_drop_fields() {
     );
 }
 
-/// Oracle: a tuple of owned HANDLE-place members (lambda-actor `Duplex` handles)
+/// Oracle: a tuple of owned HANDLE-place members (lambda-actor `LambdaPid` handles)
 /// returned by a direct tail. Handle members register in `binding_locals` as
 /// their handle Place, so they surface as `TupleConstruct` elements as that
 /// handle Place; the value-flow pass originally gated member sources on
@@ -3760,7 +3760,7 @@ fn returned_record_of_handles_callee_does_not_drop_fields() {
 #[test]
 fn returned_handle_tuple_callee_does_not_drop_members() {
     let releases = callee_handle_release_drops(
-        "fn make_pair() -> (Duplex<i64, ()>, Duplex<i64, ()>) {\n\
+        "fn make_pair() -> (LambdaPid<i64, ()>, LambdaPid<i64, ()>) {\n\
          \x20   let a = actor |x: i64| { println(f\"a {x}\"); };\n\
          \x20   let b = actor |x: i64| { println(f\"b {x}\"); };\n\
          \x20   (a, b)\n\
@@ -3786,7 +3786,7 @@ fn returned_handle_tuple_callee_does_not_drop_members() {
 #[test]
 fn returned_let_bound_handle_tuple_callee_does_not_drop_members() {
     let releases = callee_handle_release_drops(
-        "fn make_pair() -> (Duplex<i64, ()>, Duplex<i64, ()>) {\n\
+        "fn make_pair() -> (LambdaPid<i64, ()>, LambdaPid<i64, ()>) {\n\
          \x20   let a = actor |x: i64| { println(f\"a {x}\"); };\n\
          \x20   let b = actor |x: i64| { println(f\"b {x}\"); };\n\
          \x20   let pair = (a, b);\n\
@@ -3813,7 +3813,7 @@ fn returned_let_bound_handle_tuple_callee_does_not_drop_members() {
 #[test]
 fn returned_match_tail_handle_tuple_callee_does_not_drop_members() {
     let releases = callee_handle_release_drops(
-        "fn make_pair(c: bool) -> (Duplex<i64, ()>, Duplex<i64, ()>) {\n\
+        "fn make_pair(c: bool) -> (LambdaPid<i64, ()>, LambdaPid<i64, ()>) {\n\
          \x20   let a = actor |x: i64| { println(f\"a {x}\"); };\n\
          \x20   let b = actor |x: i64| { println(f\"b {x}\"); };\n\
          \x20   match c {\n\

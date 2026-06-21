@@ -1,0 +1,56 @@
+// F-04 fail-closed guard: a send/ask through a fungible reference to a
+// PERMANENTLY-DEAD child fail-closes recoverably (a dropped tell, an Err ask) —
+// it never traps the program.
+//
+// The budget is intensity 1: a sustained crash loop exhausts it, so the child
+// ends permanently Dead (BudgetExhausted) and will never restart again. Each
+// crash is driven through the SAME held fungible handle (re-resolving to the
+// current child to crash it), and the supervisor's terminal decision is reached
+// after the in-window restart budget is spent.
+//
+// Once the child is down, a tell through the handle is dropped (no-op) and an
+// ask returns Err(AskError) — both recoverable, NEITHER a SIGTRAP. Exit 9 is the
+// sentinel proving the tell dropped without trapping AND the ask reached the
+// recoverable Err arm. Pre-F-04 the send/ask through the stale handle trapped
+// (HEW_TRAP_ACTOR_SEND_FAILED → exit 133).
+actor Worker {
+    var value: i64 = 5;
+    receive fn tick() {
+        value = value + 1;
+    }
+    receive fn get_value() -> i64 {
+        value
+    }
+    receive fn crash_me() {
+        panic("worker crash");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+
+    child w1: Worker(value: 5);
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let w = sup.w1;
+    // Drive a sustained crash loop through the held handle. Each tell re-resolves
+    // to the current child; once the in-window budget (intensity 1) is spent the
+    // child is permanently Dead. The loop is generous so the terminal decision is
+    // reached regardless of restart-window timing; the settle below lets the
+    // supervisor finish processing the final terminal crash.
+    for _ in 0 .. 5 {
+        w.crash_me();
+        sleep_ms(80);
+    }
+    sleep_ms(200);
+    // Tell to a permanently-dead child: dropped recoverably, NOT a trap.
+    w.tick();
+    // Ask a permanently-dead child: recoverable Err, NOT a trap.
+    match await w.get_value() {
+        Ok(_) => 3,
+        Err(_) => 9,
+    }
+}

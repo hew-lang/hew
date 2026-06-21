@@ -685,6 +685,21 @@ run_accept_expect_status "supervised_actor_init_block" 42
 # (No WASM check needed: same reason as above.)
 run_accept_expect_status "supervisor_child_after_restart" 7
 
+# F-04 fungible reference: a supervised-child handle re-resolves to the CURRENT
+# child at each send/ask, so a handle BOUND before a crash and held ACROSS the
+# restart reaches the FRESH child. Binds `let w = sup.w1` before crashing, then
+# asks through that pre-crash handle after a barrier-driven restart. Exit 7 = the
+# restarted child's init value, reached via the held fungible reference. Pre-F-04
+# the held snapshot reached the freed actor and trapped (SIGTRAP, exit 133).
+run_accept_expect_status "supervisor_fungible_reresolve" 7
+
+# F-04 fail-closed: a send/ask through a fungible reference to a permanently-dead
+# child fail-closes recoverably (dropped tell, Err ask), NEVER a trap. Exhausts
+# the restart budget, then tells + asks the down child. Exit 9 = the recoverable
+# Err arm reached without a SIGTRAP. Pre-F-04 the stale-handle send trapped
+# (exit 133).
+run_accept_expect_status "supervisor_fungible_dead_child" 9
+
 # Lifecycle-under-supervision: a supervised actor's init() / #[on(start)] must
 # fire on BOTH the initial supervised spawn AND a supervisor-triggered restart.
 # The child is spawned with `value: 7` (the template seed); init() overwrites it

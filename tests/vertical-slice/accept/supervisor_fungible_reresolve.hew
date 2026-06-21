@@ -1,0 +1,60 @@
+// F-04 regression guard: a supervised-child handle is a FUNGIBLE reference that
+// re-resolves to the CURRENT child at each send/ask, NOT a snapshot.
+//
+// Before F-04: `let w = sup.w1` cached a `*mut HewActor`. After the supervisor
+// freed and replaced that actor on restart, a send/ask through `w` reached the
+// freed/stale pointer — `hew_actor_send_by_id` returned a non-zero status and
+// codegen trapped (HEW_TRAP_ACTOR_SEND_FAILED, 206) → SIGTRAP (exit 133), or
+// dereferenced freed memory (UAF). The dogfood F-04 symptom.
+//
+// After F-04: `w` carries the `(supervisor, slot)` reference. Each send/ask
+// re-resolves the current live child via `hew_supervisor_child_get` (the
+// existing slot-table resolver). After a restart, the very next ask through the
+// HELD handle reaches the FRESH child — no UAF, no trap.
+//
+// This test BINDS the handle BEFORE the crash and holds it ACROSS the restart,
+// then asks through the same binding AFTER. The barrier (hew_supervisor_wait_restart)
+// makes the ordering deterministic — no sleep_ms race. Exit 7 proves the held,
+// pre-crash handle re-resolved to the restarted child whose init value is 7.
+actor Worker {
+    var value: i64;
+    receive fn get_value() -> i64 {
+        value
+    }
+    receive fn crash_me() {
+        panic("test crash — supervisor should restart this child");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child w1: Worker(value: 7);
+}
+
+extern "C" {
+    fn hew_supervisor_wait_restart(sup: LocalPid<App>, target: i64, timeout_ms: i64) -> i64;
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    // Bind the fungible reference BEFORE the crash and hold it across the restart.
+    let w = sup.w1;
+    // Crash the worker through the SAME held handle (fire-and-forget tell).
+    w.crash_me();
+    // Wait for the supervisor to complete exactly one restart cycle.
+    let restarted = unsafe {
+        hew_supervisor_wait_restart(sup, 1, 5000)
+    };
+    if restarted == 0 {
+        // Timed out — supervisor did not complete a restart within 5 s.
+        return 0;
+    }
+    // Ask through the PRE-CRASH held handle. The fungible reference re-resolves
+    // to the restarted child; a snapshot would reach the freed actor and trap.
+    match await w.get_value() {
+        Ok(v) => v,
+        Err(_) => 0,
+    }
+}

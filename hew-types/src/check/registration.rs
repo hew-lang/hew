@@ -1533,7 +1533,7 @@ impl Checker {
         // modules too, so an imported handle type's inherent `close(self)`
         // consumes its receiver at the call site (mirrors `register_type_decl`).
         if td.resource_marker == hew_parser::ast::ResourceMarker::Resource {
-            self.resource_types.insert(td.name.clone());
+            self.registry.register_resource_type(td.name.clone());
         }
         let kind = match td.kind {
             TypeDeclKind::Struct => TypeDefKind::Struct,
@@ -1776,7 +1776,7 @@ impl Checker {
         // duplicate scope-exit implicit drop). HIR owns the close-discipline
         // diagnostics (W3.030); the checker only needs the marker fact here.
         if td.resource_marker == hew_parser::ast::ResourceMarker::Resource {
-            self.resource_types.insert(td.name.clone());
+            self.registry.register_resource_type(td.name.clone());
         }
         // Track user-declared `#[opaque]` types so `record_clone_admissibility`
         // can detect opaque fields transitively. The module_registry only

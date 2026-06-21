@@ -43042,6 +43042,65 @@ fn main() {
             .verify()
             .unwrap_or_else(|e| panic!("bracketed module failed verify: {e}\n\nIR:\n{ir}"));
     }
+
+    /// RC10 Stage 2: two disjoint stack slots, each bracketed with the RC10
+    /// markers, survive an `-O2` middle-end pipeline verifier-clean. The markers
+    /// are consumed by the backend stack colourer (which overlaps the disjoint
+    /// slots — proven out-of-band with `llc -O2`: bracketed frame = one slot,
+    /// unbracketed = two); this test pins the durable, host-portable half — that
+    /// `-O2` optimization neither rejects nor miscompiles a module carrying the
+    /// markers. A wrong marker shape (e.g. the removed 2-operand form) would fail
+    /// `run_passes`/`verify` here.
+    #[test]
+    fn lifetime_markers_survive_o2_pipeline() {
+        let ctx = Context::create();
+        let module = ctx.create_module("rc10_lifetime_o2");
+        let builder = ctx.create_builder();
+        let machine = target_machine_for_triple(&native_emission_triple()).expect("host machine");
+
+        let fn_ty = ctx.void_type().fn_type(&[], false);
+        let f = module.add_function("two_disjoint_slots", fn_ty, None);
+        let entry = ctx.append_basic_block(f, "entry");
+        builder.position_at_end(entry);
+
+        // A `sink(ptr)` declaration so the slots escape (the optimizer cannot
+        // delete a slot whose address is observed by an opaque external call).
+        let ptr_ty = ctx.ptr_type(AddressSpace::default());
+        let sink = module.add_function(
+            "rc10_sink",
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            Some(Linkage::External),
+        );
+
+        let slot_ty = ctx.i8_type().array_type(4096);
+        for tag in ["a", "b"] {
+            let slot = builder
+                .build_alloca(slot_ty, &format!("slot_{tag}"))
+                .expect("alloca");
+            emit_lifetime_start(&ctx, &module, &builder, slot, &format!("lt.start.{tag}"))
+                .expect("emit start");
+            builder
+                .build_call(sink, &[slot.into()], &format!("use.{tag}"))
+                .expect("sink call");
+            emit_lifetime_end(&ctx, &module, &builder, slot, &format!("lt.end.{tag}"))
+                .expect("emit end");
+        }
+        builder.build_return(None).expect("ret void");
+
+        module
+            .verify()
+            .unwrap_or_else(|e| panic!("pre-O2 module failed verify: {e}"));
+
+        // `-O2` middle-end pipeline. The markers must pass through it without
+        // error and leave the module verifier-clean.
+        let options = inkwell::passes::PassBuilderOptions::create();
+        module
+            .run_passes("default<O2>", &machine, options)
+            .unwrap_or_else(|e| panic!("O2 pipeline rejected the bracketed module: {e}"));
+        module
+            .verify()
+            .unwrap_or_else(|e| panic!("post-O2 module failed verify: {e}"));
+    }
 }
 
 // Make `StubErr` `Clone` so we can re-use the same error in multiple

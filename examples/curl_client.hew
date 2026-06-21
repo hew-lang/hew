@@ -114,13 +114,7 @@ fn main() {
         },
     }
     // Build and send HTTP request
-    let request = f"GET {path} HTTP/1.0
-Host: {host}
-User-Agent: hew-curl/1.0
-Accept: */*
-Connection: close
-
-";
+    let request = f"GET {path} HTTP/1.0\nHost: {host}\nUser-Agent: hew-curl/1.0\nAccept: */*\nConnection: close\n\n";
     conn.write_string(request);
     println("  Request sent");
     println("");

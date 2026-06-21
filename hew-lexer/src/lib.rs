@@ -493,8 +493,13 @@ pub enum Token<'src> {
     #[regex(r#""([^"\\]|\\.)*""#)]
     StringLit(&'src str),
 
-    /// Character literal `'a'`, `'\n'`, etc.
-    #[regex(r"'([^'\\]|\\.)'")]
+    /// Character literal `'a'`, `'\n'`, `'\u{1F600}'`, `'\x41'`, etc.
+    ///
+    /// The escape body accepts the named escapes (`\.`), a `\u{H...}` Unicode
+    /// escape (1–6 hex digits), and a `\xHH` byte escape, mirroring the string
+    /// literal escape set so an invisible/confusable scalar can be written as a
+    /// `\u{...}` escape rather than a raw codepoint.
+    #[regex(r"'([^'\\]|\\u\{[0-9a-fA-F]{1,6}\}|\\x[0-9a-fA-F][0-9a-fA-F]|\\.)'")]
     CharLit(&'src str),
 
     /// Identifier. Keywords have higher priority via `#[token]`.

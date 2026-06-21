@@ -1109,6 +1109,51 @@ impl<'src> Parser<'src> {
                 '0' => '\0',
                 '\\' => '\\',
                 '\'' => '\'',
+                'x' => {
+                    // \xHH — exactly two hex digits → a byte (ASCII scalar).
+                    let hi = chars.next();
+                    let lo = chars.next();
+                    let (Some(hi), Some(lo)) = (hi, lo) else {
+                        self.error_invalid_literal("invalid escape sequence".to_string());
+                        return None;
+                    };
+                    let Ok(byte) = u8::from_str_radix(&format!("{hi}{lo}"), 16) else {
+                        self.error_invalid_literal("invalid escape sequence".to_string());
+                        return None;
+                    };
+                    byte as char
+                }
+                'u' => {
+                    // \u{H...} — 1–6 hex digits forming a Unicode scalar value.
+                    if chars.next() != Some('{') {
+                        self.error_invalid_literal("invalid escape sequence".to_string());
+                        return None;
+                    }
+                    let mut hex = String::new();
+                    let mut closed = false;
+                    for ch in chars.by_ref() {
+                        if ch == '}' {
+                            closed = true;
+                            break;
+                        }
+                        hex.push(ch);
+                    }
+                    if !closed || hex.is_empty() || hex.len() > 6 {
+                        self.error_invalid_literal("invalid Unicode escape".to_string());
+                        return None;
+                    }
+                    let Ok(codepoint) = u32::from_str_radix(&hex, 16) else {
+                        self.error_invalid_literal("invalid Unicode escape".to_string());
+                        return None;
+                    };
+                    let Some(decoded) = char::from_u32(codepoint) else {
+                        self.error_invalid_literal(
+                            "invalid Unicode escape: not a valid scalar value".to_string(),
+                        );
+                        return None;
+                    };
+                    decoded
+                }
                 _ => {
                     self.error_invalid_literal("invalid escape sequence".to_string());
                     return None;

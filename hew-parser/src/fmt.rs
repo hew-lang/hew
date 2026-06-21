@@ -3243,12 +3243,10 @@ impl<'a> Formatter<'a> {
             }
             Literal::Bool(b) => self.write(if *b { "true" } else { "false" }),
             Literal::Char(c) => {
+                let mut buf = String::new();
+                escape_char_literal(*c, &mut buf);
                 self.write("'");
-                if let Some(esc) = escape_char(*c) {
-                    self.write(esc);
-                } else {
-                    self.output.push(*c);
-                }
+                self.write(&buf);
                 self.write("'");
             }
             Literal::Duration(ns) => {
@@ -3412,6 +3410,17 @@ fn compound_assign_op_str(op: CompoundAssignOp) -> &'static str {
 /// - **Zl** (Line Separator): U+2028.
 /// - **Zp** (Paragraph Separator): U+2029.
 ///
+/// Also escapes (returns `false`) scalars that `General_Category` alone does
+/// not catch but which still render as nothing or as a blank in source:
+/// - **`Default_Ignorable_Code_Point`**: variation selectors (U+FE00–FE0F,
+///   U+E0100–E01EF), the combining grapheme joiner (U+034F), Hangul fillers
+///   (U+115F–1160), the tag block (U+E0000–E0FFF), and the rest of the
+///   property. Many of these have a *readable* `General_Category` (Mn/Lo/So)
+///   yet emit nothing, so a category-only predicate leaks them raw.
+/// - **Blank-looking scalars**: BRAILLE PATTERN BLANK (U+2800) and the Hangul
+///   fillers, which occupy width but show nothing — a confusable/space-spoof
+///   vector.
+///
 /// Preserves (returns `true`) everything else: letters (L*), marks (M*),
 /// numbers (N*), punctuation (P*), symbols (S*), and space separators (Zs) —
 /// including accented letters (`é`), CJK (`世`), arrows (`→`), em dashes
@@ -3428,13 +3437,54 @@ fn is_printable_non_ascii(c: char) -> bool {
         || c.is_private_use() // Co — Private Use Areas
         || c.is_unassigned() // Cn — no assigned rendering, fail-closed
         || c.is_separator_line() // Zl — U+2028
-        || c.is_separator_paragraph()
-    // Zp — U+2029
+        || c.is_separator_paragraph() // Zp — U+2029
+        || is_default_ignorable(c) // renders as nothing despite a readable category
+        || is_blank_looking(c)
+    // occupies width but shows nothing (Braille blank, Hangul fillers)
     {
         return false;
     }
 
     true
+}
+
+/// Unicode `Default_Ignorable_Code_Point` property (from
+/// `DerivedCoreProperties.txt`).  `finl_unicode` 1.4 exposes only
+/// `General_Category`, so this property is encoded explicitly.  These scalars
+/// are rendered as nothing by conforming renderers; several (e.g. U+FE0F
+/// VARIATION SELECTOR-16, U+034F COMBINING GRAPHEME JOINER) sit in *readable*
+/// categories (Mn/Lo/So) and so escape the `General_Category` gate, yet still
+/// emit raw and act as confusable/Trojan-Source vectors.  Escaping them keeps
+/// the formatted source visually faithful.
+fn is_default_ignorable(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD                              // SOFT HYPHEN
+        | 0x034F                            // COMBINING GRAPHEME JOINER
+        | 0x061C                            // ARABIC LETTER MARK
+        | 0x115F..=0x1160                   // HANGUL CHOSEONG/JUNGSEONG FILLER
+        | 0x17B4..=0x17B5                   // KHMER VOWEL INHERENT AQ/AA
+        | 0x180B..=0x180F                   // MONGOLIAN FVS1-4 + VOWEL SEPARATOR
+        | 0x200B..=0x200F                   // ZERO WIDTH SPACE … RLM
+        | 0x202A..=0x202E                   // BiDi embedding/override controls
+        | 0x2060..=0x206F                   // WORD JOINER … deprecated format/shaping
+        | 0x3164                            // HANGUL FILLER
+        | 0xFE00..=0xFE0F                   // VARIATION SELECTOR-1 … -16
+        | 0xFEFF                            // ZERO WIDTH NO-BREAK SPACE / BOM
+        | 0xFFA0                            // HALFWIDTH HANGUL FILLER
+        | 0xFFF0..=0xFFF8                   // unassigned specials (ignorable)
+        | 0x1BCA0..=0x1BCA3                 // SHORTHAND FORMAT CONTROLS
+        | 0x1D173..=0x1D17A                 // MUSICAL SYMBOL BEGIN/END controls
+        | 0xE0000..=0xE0FFF                 // TAGS + VARIATION SELECTORS SUPPLEMENT
+    )
+}
+
+/// Scalars that occupy advance width but render as a blank box of nothing and
+/// are **not** already caught by `is_default_ignorable`.  The Hangul fillers
+/// (U+115F/U+1160/U+3164/U+FFA0) are blank-looking too but carry the
+/// `Default_Ignorable` property, so they are handled there; the only addition
+/// here is the Braille blank, whose `General_Category` is the readable `So`.
+fn is_blank_looking(c: char) -> bool {
+    c == '\u{2800}' // BRAILLE PATTERN BLANK
 }
 
 /// Escape a single character for use inside a double-quoted string or
@@ -3520,11 +3570,24 @@ fn escape_fstring_literal(s: &str) -> String {
     out
 }
 
+/// Escape a regex literal pattern (`re"…"`) for re-emission.
+///
+/// Regex backslash sequences (`\s`, `\d`, `\u{…}`, …) are passed through
+/// verbatim because the pattern reaches the engine unchanged save for the
+/// delimiter escape `\"` — see `normalize_regex_literal`. A raw invisible or
+/// confusable scalar that appears literally in the pattern is rewritten to a
+/// `\u{…}` regex escape: the `regex` engine treats `\u{202E}` as the U+202E
+/// codepoint, so the match semantics are identical while the source stays
+/// visually faithful. This routes regex literals through the same
+/// invisible/confusable policy as string, f-string, byte-string, and char
+/// literals, closing the bypass where a raw RLO inside `re"…"` would be emitted
+/// verbatim.
 fn escape_regex_pattern(pattern: &str) -> String {
     let mut out = String::with_capacity(pattern.len());
     let mut chars = pattern.chars();
     while let Some(c) = chars.next() {
         if c == '\\' {
+            // Preserve the regex escape (both chars) verbatim.
             out.push('\\');
             if let Some(next) = chars.next() {
                 out.push(next);
@@ -3533,7 +3596,15 @@ fn escape_regex_pattern(pattern: &str) -> String {
             }
         } else if c == '"' {
             out.push_str("\\\"");
+        } else if c.is_ascii() {
+            out.push(c);
+        } else if c.is_control() || !is_printable_non_ascii(c) {
+            // Non-ASCII control or invisible/confusable scalar: emit a \u{…}
+            // regex escape, which the engine maps to the same codepoint.
+            let cp = c as u32;
+            let _ = write!(out, "\\u{{{cp:X}}}");
         } else {
+            // Readable non-ASCII (é, →, 世, …): preserve verbatim.
             out.push(c);
         }
     }
@@ -3563,16 +3634,46 @@ fn escape_byte_string(data: &[u8]) -> String {
     out
 }
 
-/// Return the escape sequence for a char, or `None` if no escaping is needed.
-fn escape_char(c: char) -> Option<&'static str> {
+/// Escape a single character for use inside a single-quoted char literal
+/// (`'…'`).
+///
+/// Shares the invisible/confusable escape policy with [`escape_str_char`]: the
+/// only differences are that `'` (not `"`) is the delimiter that must be
+/// backslash-escaped, and `{`/`}` need no escaping (a char literal has no
+/// interpolation). Routing char literals through the same policy closes the
+/// bypass where a raw U+202E (RLO) or U+FE0F (VS-16) char literal would
+/// otherwise be emitted verbatim.
+fn escape_char_literal(c: char, out: &mut String) {
     match c {
-        '\\' => Some("\\\\"),
-        '\'' => Some("\\'"),
-        '\n' => Some("\\n"),
-        '\t' => Some("\\t"),
-        '\r' => Some("\\r"),
-        '\0' => Some("\\0"),
-        _ => None,
+        '\\' => out.push_str("\\\\"),
+        '\'' => out.push_str("\\'"),
+        '\n' => out.push_str("\\n"),
+        '\t' => out.push_str("\\t"),
+        '\r' => out.push_str("\\r"),
+        '\0' => out.push_str("\\0"),
+        c if c.is_ascii() => {
+            let b = c as u8;
+            if b < 0x20 || b == 0x7f {
+                let _ = write!(out, "\\x{b:02x}");
+            } else {
+                out.push(c);
+            }
+        }
+        c if c.is_control() => {
+            // Non-ASCII control chars (C1 range U+0080–U+009F, NEL U+0085).
+            let cp = c as u32;
+            let _ = write!(out, "\\u{{{cp:X}}}");
+        }
+        c if is_printable_non_ascii(c) => {
+            // Readable non-ASCII: preserve verbatim (é, →, 世, —, …).
+            out.push(c);
+        }
+        c => {
+            // Invisible or confusable non-ASCII (zero-width, BiDi, variation
+            // selectors, Default_Ignorable, …).
+            let cp = c as u32;
+            let _ = write!(out, "\\u{{{cp:X}}}");
+        }
     }
 }
 
@@ -4582,6 +4683,205 @@ impl<T> Vec<T> {
                 "{label} must be preserved raw (got escaped)"
             );
         }
+    }
+
+    // ── Default_Ignorable + blank-looking scalars (completeness) ─────────────
+
+    /// Representatives of every `Default_Ignorable` range — plus the
+    /// blank-looking Braille pattern — must escape, even the ones whose
+    /// `General_Category` is readable (Mn/Lo/So) and would otherwise slip past
+    /// the category gate.
+    #[test]
+    fn property_default_ignorable_and_blank_escape() {
+        let must_escape: &[(char, &str)] = &[
+            ('\u{00AD}', "U+00AD SOFT HYPHEN (Cf)"),
+            (
+                '\u{034F}',
+                "U+034F COMBINING GRAPHEME JOINER (Mn, readable cat)",
+            ),
+            ('\u{061C}', "U+061C ARABIC LETTER MARK (Cf)"),
+            ('\u{115F}', "U+115F HANGUL CHOSEONG FILLER (Lo, blank)"),
+            ('\u{1160}', "U+1160 HANGUL JUNGSEONG FILLER (Lo, blank)"),
+            ('\u{17B4}', "U+17B4 KHMER VOWEL INHERENT AQ (Cf)"),
+            (
+                '\u{180B}',
+                "U+180B MONGOLIAN FREE VARIATION SELECTOR ONE (Mn)",
+            ),
+            ('\u{180E}', "U+180E MONGOLIAN VOWEL SEPARATOR (Cf)"),
+            ('\u{200B}', "U+200B ZERO WIDTH SPACE (Cf)"),
+            ('\u{200D}', "U+200D ZERO WIDTH JOINER (Cf)"),
+            ('\u{202E}', "U+202E RIGHT-TO-LEFT OVERRIDE (Cf)"),
+            ('\u{2060}', "U+2060 WORD JOINER (Cf)"),
+            (
+                '\u{2800}',
+                "U+2800 BRAILLE PATTERN BLANK (So, blank-looking)",
+            ),
+            ('\u{3164}', "U+3164 HANGUL FILLER (Lo, blank)"),
+            (
+                '\u{FE0F}',
+                "U+FE0F VARIATION SELECTOR-16 (Mn, readable cat)",
+            ),
+            ('\u{FE00}', "U+FE00 VARIATION SELECTOR-1 (Mn)"),
+            ('\u{FEFF}', "U+FEFF ZERO WIDTH NO-BREAK SPACE / BOM (Cf)"),
+            ('\u{FFA0}', "U+FFA0 HALFWIDTH HANGUL FILLER (Lo, blank)"),
+            (
+                '\u{1D173}',
+                "U+1D173 MUSICAL SYMBOL BEGIN BEAM (Cf, supplementary)",
+            ),
+            (
+                '\u{E0100}',
+                "U+E0100 VARIATION SELECTOR-17 (Mn, supplement)",
+            ),
+            ('\u{E0001}', "U+E0001 LANGUAGE TAG (Cf, tag block)"),
+        ];
+        for &(c, label) in must_escape {
+            assert!(
+                !is_printable_non_ascii(c),
+                "{label} must be escaped (got preserved)"
+            );
+            // The string-escape path must emit a \u{…} escape, never the raw char.
+            let escaped = escape_string(&c.to_string());
+            assert_eq!(
+                escaped,
+                format!("\\u{{{:X}}}", c as u32),
+                "{label} must escape via escape_string"
+            );
+        }
+    }
+
+    /// Exhaustive: every scalar in the explicit `Default_Ignorable` ranges escapes.
+    #[test]
+    fn property_all_default_ignorable_ranges_escape() {
+        let ranges: &[(u32, u32)] = &[
+            (0x00AD, 0x00AD),
+            (0x034F, 0x034F),
+            (0x061C, 0x061C),
+            (0x115F, 0x1160),
+            (0x17B4, 0x17B5),
+            (0x180B, 0x180F),
+            (0x200B, 0x200F),
+            (0x202A, 0x202E),
+            (0x2060, 0x206F),
+            (0x3164, 0x3164),
+            (0xFE00, 0xFE0F),
+            (0xFEFF, 0xFEFF),
+            (0xFFA0, 0xFFA0),
+            (0xFFF0, 0xFFF8),
+            (0x1BCA0, 0x1BCA3),
+            (0x1D173, 0x1D17A),
+            (0xE0000, 0xE0FFF),
+        ];
+        let leaked: Vec<char> = ranges
+            .iter()
+            .flat_map(|&(lo, hi)| lo..=hi)
+            .filter_map(char::from_u32)
+            .filter(|c| !c.is_ascii() && is_printable_non_ascii(*c))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "Default_Ignorable scalars incorrectly preserved: {:?}",
+            leaked
+                .iter()
+                .map(|c| format!("U+{:04X}", *c as u32))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // ── char + regex literal escape parity (FIX 3: bypass surfaces) ──────────
+
+    /// A char literal containing an invisible/confusable scalar must escape via
+    /// the shared policy, not pass through raw.
+    #[test]
+    fn char_literal_escapes_invisible() {
+        let mut out = String::new();
+        escape_char_literal('\u{202E}', &mut out);
+        assert_eq!(out, "\\u{202E}", "RLO in char literal must escape");
+
+        out.clear();
+        escape_char_literal('\u{FE0F}', &mut out);
+        assert_eq!(out, "\\u{FE0F}", "VS-16 in char literal must escape");
+
+        out.clear();
+        escape_char_literal('\u{200B}', &mut out);
+        assert_eq!(out, "\\u{200B}", "ZWSP in char literal must escape");
+    }
+
+    /// Char literals with readable Unicode and named escapes are preserved.
+    #[test]
+    fn char_literal_preserves_readable_and_named() {
+        let cases: &[(char, &str)] = &[
+            ('é', "é"),
+            ('世', "世"),
+            ('→', "→"),
+            ('\n', "\\n"),
+            ('\'', "\\'"),
+            ('\\', "\\\\"),
+            ('a', "a"),
+        ];
+        for &(c, expected) in cases {
+            let mut out = String::new();
+            escape_char_literal(c, &mut out);
+            assert_eq!(out, expected, "char {c:?} formatted wrong");
+        }
+    }
+
+    /// A char literal round-trips through parse → format with the invisible
+    /// scalar escaped, and is idempotent.
+    #[test]
+    fn char_literal_invisible_round_trips_escaped() {
+        let raw_src = "fn f() -> char {\n    '\u{202E}'\n}\n";
+        let formatted = roundtrip(raw_src);
+        assert!(
+            formatted.contains("'\\u{202E}'"),
+            "RLO char literal must format escaped; got: {formatted:?}"
+        );
+        let twice = roundtrip(&formatted);
+        assert_eq!(twice, formatted, "char-literal escape must be idempotent");
+    }
+
+    /// A regex literal containing an invisible scalar must escape it to a
+    /// `\u{…}` regex escape (semantically identical to the engine), while
+    /// preserving readable Unicode and regex backslash escapes verbatim.
+    #[test]
+    fn regex_literal_escapes_invisible_preserves_escapes() {
+        // Raw RLO inside the pattern → \u{202E}.
+        assert_eq!(
+            escape_regex_pattern("a\u{202E}b"),
+            "a\\u{202E}b",
+            "RLO in regex must escape to \\u{{202E}}"
+        );
+        // Readable Unicode preserved verbatim.
+        assert_eq!(
+            escape_regex_pattern("café→世"),
+            "café→世",
+            "readable Unicode in regex preserved"
+        );
+        // Regex backslash escapes preserved verbatim.
+        assert_eq!(
+            escape_regex_pattern("\\s+\\d*"),
+            "\\s+\\d*",
+            "regex backslash escapes preserved"
+        );
+        // Quote escaped, VS-16 escaped.
+        assert_eq!(
+            escape_regex_pattern("x\u{FE0F}\"y"),
+            "x\\u{FE0F}\\\"y",
+            "VS-16 escaped and quote escaped in regex"
+        );
+    }
+
+    /// A regex literal with an invisible scalar round-trips through parse →
+    /// format with the scalar escaped, and is idempotent.
+    #[test]
+    fn regex_literal_invisible_round_trips_escaped() {
+        let raw_src = "fn f() {\n    let r = re\"a\u{202E}b\";\n}\n";
+        let formatted = roundtrip(raw_src);
+        assert!(
+            formatted.contains("re\"a\\u{202E}b\""),
+            "RLO regex literal must format escaped; got: {formatted:?}"
+        );
+        let twice = roundtrip(&formatted);
+        assert_eq!(twice, formatted, "regex-literal escape must be idempotent");
     }
 
     // ── full parse/format round-trip for Unicode string literals ────────────

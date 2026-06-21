@@ -2237,19 +2237,19 @@ pub(crate) fn lower_call_runtime_abi(
         //   args[1]: Place::Local(M)       — i64 slot index (ConstI64 from MIR).
         //   dest:    Place::Local(K)       — __HewChildLookupResult (struct alloca).
         //
-        // ABI bridge — WHY we call `hew_supervisor_child_get_raw` here:
-        //   On Windows x64 (MSVC ABI), Rust returns `ChildLookupResult` (16 bytes)
-        //   via a hidden sret pointer in RCX.  The previous codegen emitted a
-        //   register-return call site (`call { i64, i64 } @hew_supervisor_child_get`)
-        //   which LLVM lowers to RAX:RDX return — mismatching the Rust callee that
-        //   wrote the result to [RCX=sup] and returned the buffer address in RAX.
-        //   Result: the supervisor struct was silently corrupted and the caller read
-        //   a heap address as the tag word → trap 206 or stale null handle → AV.
+        // ABI bridge — how the canonical symbol crosses the C ABI per target:
+        //   The 16-byte `ChildLookupResult` straddles the SysV-register-pair /
+        //   MSVC-indirect fault line. The historical trap 206 came from declaring
+        //   the field-accurate struct WITHOUT a matching ABI attribute, letting
+        //   LLVM pick indirect-sret on MSVC (caller read a stale x8/RCX slot →
+        //   spurious tag → trap 206 or stale handle → AV).
         //
-        //   Fix: call `hew_supervisor_child_get_raw(sup, key, &handle_out)` which
-        //   returns the packed word0 (tag in bits[7:0]) as a plain `u64` — single
-        //   register, no sret on any platform.  The handle is written through an
-        //   output pointer (also no ABI ambiguity).
+        //   The R5 classifier removes the gap: `declare_aggregate_return` declares
+        //   the canonical `hew_supervisor_child_get` register-pair (`[2 x i64]`) on
+        //   SysV/AAPCS and `void(ptr sret(ChildLookupResult) noalias, ...)` on
+        //   Windows x64 MSVC, so the declared carrier and the attribute always
+        //   agree. The `_raw` out-pointer twin the old comment described is being
+        //   retired with the rest of the `_raw` family.
         //
         //   `key` is `u32` in the runtime (i32 in LLVM); MIR emits i64 for the
         //   slot index (ConstI64). Truncate to i32 before the call.

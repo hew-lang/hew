@@ -109,10 +109,18 @@ const SMALL_AGGREGATE_MAX: u64 = 16;
 /// Returns `true` when `triple` names the Windows x64 MSVC environment, whose
 /// aggregate ABI differs from SysV/AAPCS (every non-{1,2,4,8}-byte aggregate is
 /// indirect). Matches on the `-msvc` environment suffix, not the arch, because
-/// only the MSVC environment carries this rule (`*-windows-gnu` uses a
-/// SysV-like ABI).
+/// only the MSVC environment carries this rule.
 fn is_windows_msvc(triple: &str) -> bool {
     triple.contains("windows-msvc") || triple.ends_with("-msvc")
+}
+
+/// Returns `true` for any Windows triple. Used to keep `*-windows-gnu`
+/// (Win64-GNU / MinGW) OUT of the SysV/AAPCS arm: Win64-GNU uses the Win64
+/// aggregate ABI (indirect for size ∉ {1,2,4,8}), NOT SysV. Hew targets
+/// Windows via MSVC, so Win64-GNU is an unsupported target and must fail
+/// closed rather than be misclassified as SysV.
+fn is_windows(triple: &str) -> bool {
+    triple.contains("windows") || triple.contains("-win32")
 }
 
 /// Returns `true` when `triple` names a wasm32 target.
@@ -188,9 +196,13 @@ pub(crate) fn classify_aggregate(
 fn is_sysv_or_aapcs(triple: &str) -> bool {
     let is_x86_64 = triple.starts_with("x86_64-") || triple.starts_with("amd64-");
     let is_aarch64 = triple.starts_with("aarch64-") || triple.starts_with("arm64-");
-    // -gnu / -darwin / -musl / bare (no environment) all use the SysV/AAPCS
-    // small-aggregate rule. The MSVC environment was already handled above.
-    (is_x86_64 || is_aarch64) && !is_windows_msvc(triple)
+    // -gnu / -darwin / -musl / bare (no environment) on these arches use the
+    // SysV/AAPCS small-aggregate rule. EXCLUDE every Windows triple: MSVC was
+    // already handled above (Indirect), and `*-windows-gnu` (Win64-GNU/MinGW)
+    // uses the Win64 aggregate ABI, NOT SysV — admitting it here would emit a
+    // register-pair where the platform expects indirect. Hew targets Windows
+    // via MSVC, so Win64-GNU falls through to the fail-closed arm.
+    (is_x86_64 || is_aarch64) && !is_windows(triple)
 }
 
 /// Look up an LLVM enum attribute kind id by name, failing closed if this LLVM
@@ -542,6 +554,30 @@ mod tests {
                 assert!(msg.contains("not modelled"), "msg: {msg}");
             }
             other => panic!("expected FailClosed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn win64_gnu_fails_closed_not_classified_sysv() {
+        // `x86_64-pc-windows-gnu` (Win64-GNU / MinGW) uses the Win64 aggregate
+        // ABI (indirect for size ∉ {1,2,4,8}), NOT SysV. It is an unsupported
+        // target (Hew targets Windows via MSVC), so it must fail closed — NOT
+        // be admitted to the SysV register-pair arm. This is the cross-eco ABI
+        // correctness fix: an x86_64 non-MSVC Windows triple is no longer
+        // misclassified as SysV-like.
+        let ctx = Context::create();
+        let td = target_data_for(SYSV); // size only; the triple drives the rule
+        assert!(
+            !is_sysv_or_aapcs("x86_64-pc-windows-gnu"),
+            "Win64-GNU must NOT be admitted to the SysV/AAPCS arm"
+        );
+        let err = classify_aggregate(bytes_triple(&ctx), &td, "x86_64-pc-windows-gnu")
+            .expect_err("Win64-GNU must fail closed, not classify as SysV");
+        match err {
+            CodegenError::FailClosed(msg) => {
+                assert!(msg.contains("not modelled"), "msg: {msg}");
+            }
+            other => panic!("expected FailClosed for Win64-GNU, got {other:?}"),
         }
     }
 

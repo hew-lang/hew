@@ -60,7 +60,7 @@ use hew_mir::{
     FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
     LambdaEnvFieldDrop, MachineLayout, MachineVariantLayout, MirConst, MirConstValue, Place,
     RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout,
-    SupervisorLayout, Terminator, TrapKind,
+    SupervisorLayout, SuspendKind, Terminator, TrapKind,
 };
 use hew_types::{NumericWidth, ResolvedTy, WireCodecDirection};
 // Single source of truth for the trap discriminants codegen emits. Importing
@@ -710,41 +710,28 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
             if let Terminator::SuspendingSelect { .. } = &block.terminator {
                 return Some("hew_await_cancel_schedule_deadline_ms".to_string());
             }
-            // NEW-7 worker-free `await stream.recv()` / `for await` stream
-            // carrier: emits `hew_stream_await_next`, also part of the
-            // native-only stream substrate. Surface the structured fail-closed
-            // diagnostic for any direct-MIR stream carrier rather than letting
-            // wasm-ld discover the dangling reference. WASM-TODO(#1451).
-            if let Terminator::SuspendingStreamNext { .. } = &block.terminator {
-                return Some("hew_stream_await_next".to_string());
-            }
-            // NEW-4 worker-free `await rx.recv()` carrier: emits
-            // `hew_channel_await_recv`, also part of the native-only channel core
-            // (`cfg(not(target_arch = "wasm32"))`). Surface the structured
-            // fail-closed diagnostic for any direct-MIR recv carrier rather than
-            // letting wasm-ld discover the dangling reference. WASM-TODO(#1451).
-            if let Terminator::SuspendingChannelRecv { .. } = &block.terminator {
-                return Some("hew_channel_await_recv".to_string());
-            }
-            // cut-task-sleep worker-free `await t` carrier: emits
-            // `hew_task_await_suspend`, which rides the native-only read-slot /
-            // `enqueue_resume` substrate (`cfg(not(target_arch = "wasm32"))`).
-            // Surface the structured fail-closed diagnostic for any direct-MIR
-            // task-await carrier rather than letting wasm-ld discover the dangling
-            // reference. WASM-TODO(#1758): wasm32 coro-frame teardown parity.
-            if let Terminator::SuspendingTaskAwait { .. } = &block.terminator {
-                return Some("hew_task_await_suspend".to_string());
-            }
-            // cut-task-sleep cooperative `sleep_ms` carrier: arms a global
-            // timer-wheel deadline via `hew_await_cancel_schedule_deadline_ms`
-            // (the wheel ticker thread is native-only). Fail closed at compile on
-            // wasm32 — the wasm sleep path keeps the message-boundary park
-            // (`hew_sleep_ms` → `scheduler_wasm::request_sleep`), which the
-            // contextless keep path on wasm preserves; an execution-context
-            // suspend carrier reaching a wasm build is refused here rather than
-            // emitting a dangling reference. WASM-TODO(#1758).
-            if let Terminator::SuspendingSleep { .. } = &block.terminator {
-                return Some("hew_await_cancel_schedule_deadline_ms".to_string());
+            // The ten collapsed suspension carriers fold onto a bare `Suspend`
+            // whose kind lives in the `suspend_kinds` side-table. Four of them
+            // reference native-only symbols and must fail closed on wasm32 (the
+            // others use wasm-available symbols). Map the kind to its native-only
+            // symbol so wasm-ld never discovers a dangling reference:
+            //   - StreamNext → `hew_stream_await_next` (native stream substrate;
+            //     WASM-TODO(#1451)).
+            //   - ChannelRecv → `hew_channel_await_recv` (native channel core;
+            //     WASM-TODO(#1451)).
+            //   - TaskAwait → `hew_task_await_suspend` (native read-slot /
+            //     `enqueue_resume` substrate; WASM-TODO(#1758)).
+            //   - Sleep → `hew_await_cancel_schedule_deadline_ms` (native global
+            //     timer-wheel ticker; the wasm sleep keep path parks at the
+            //     message boundary instead; WASM-TODO(#1758)).
+            if let Terminator::Suspend { .. } = &block.terminator {
+                if let Some(sym) = func
+                    .suspend_kinds
+                    .get(&block.id)
+                    .and_then(wasm_excluded_suspend_kind_symbol)
+                {
+                    return Some(sym.to_string());
+                }
             }
             // cut-task-sleep scope-deadline carrier (staged): the non-empty
             // after(...) body suspends on the native-only timer wheel + join
@@ -791,6 +778,28 @@ fn uses_wasm_excluded_symbol(pipeline: &IrPipeline) -> Option<String> {
         }
     }
     None
+}
+
+/// The native-only runtime symbol a collapsed suspension carrier references on
+/// wasm32, or `None` for kinds whose symbols are wasm-available. Drives the
+/// fail-closed `WasmUnsupportedSubstrate` diagnostic in
+/// [`uses_wasm_excluded_symbol`] so a wasm build never reaches `wasm-ld` with a
+/// dangling reference. The four flagged kinds mirror the dedicated-carrier
+/// checks the side-table replaced; the others (`Ask` / `Read` / `Accept` /
+/// `RemoteAsk` / `StreamSend` / `CallClosure`) were never flagged here.
+fn wasm_excluded_suspend_kind_symbol(kind: &SuspendKind) -> Option<&'static str> {
+    match kind {
+        SuspendKind::StreamNext { .. } => Some("hew_stream_await_next"),
+        SuspendKind::ChannelRecv { .. } => Some("hew_channel_await_recv"),
+        SuspendKind::TaskAwait { .. } => Some("hew_task_await_suspend"),
+        SuspendKind::Sleep { .. } => Some("hew_await_cancel_schedule_deadline_ms"),
+        SuspendKind::Ask { .. }
+        | SuspendKind::Read { .. }
+        | SuspendKind::Accept { .. }
+        | SuspendKind::RemoteAsk { .. }
+        | SuspendKind::StreamSend { .. }
+        | SuspendKind::CallClosure { .. } => None,
+    }
 }
 
 /// WASM-excluded drop rituals: the Duplex close family rides the
@@ -25426,7 +25435,10 @@ fn has_unhandled_borrow_escape(func: &RawMirFunction, tainted: &HashSet<u32>) ->
         // read a tainted view (Call args, Ask payload, Select-ask payload,
         // Yield) carry the handle into an untracked owner — fail closed.
         if !matches!(block.terminator, Terminator::Send { .. })
-            && reads_tainted(terminator_source_places(&block.terminator))
+            && reads_tainted(terminator_source_places(
+                &block.terminator,
+                func.suspend_kinds.get(&block.id),
+            ))
         {
             return true;
         }
@@ -34952,12 +34964,200 @@ fn gen_companion_out_drop_thunk<'ctx>(
     Ok(Some(thunk))
 }
 
+/// Emit a collapsed suspension carrier from its [`SuspendKind`] side-table
+/// payload. The ten pure-`{resume, cleanup}` carriers fold onto a single bare
+/// [`Terminator::Suspend`]; the carrier's distinguishing payload lives in the
+/// side-table and is routed here to the SAME `emit_suspending_*` ramp the
+/// dedicated carrier dispatched to. `resume` / `cleanup` come from the bare
+/// `Suspend` terminator (they carry the original carrier's edges); `block_id`
+/// keys the `await_deadline_ns` lookup the four deadline-bearing carriers
+/// consume. By construction the emitted IR is byte-identical to the
+/// dedicated-carrier shape (the ramps are unchanged).
+fn dispatch_collapsed_suspend<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    kind: &SuspendKind,
+    resume: u32,
+    cleanup: u32,
+    block_id: u32,
+    await_deadlines: &std::collections::HashMap<u32, i64>,
+) -> CodegenResult<()> {
+    match kind {
+        SuspendKind::Ask {
+            actor,
+            msg_type,
+            value,
+            result_dest,
+            reply_dest,
+            error_dest,
+        } => emit_suspending_ask_terminator(
+            fn_ctx,
+            SuspendingAskEmit {
+                actor: *actor,
+                msg_type: *msg_type,
+                value: *value,
+                result_dest: *result_dest,
+                reply_dest: *reply_dest,
+                error_dest: *error_dest,
+                resume,
+                cleanup,
+                deadline_ns: await_deadlines.get(&block_id).copied(),
+            },
+        ),
+        SuspendKind::Read {
+            conn,
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+            to_string,
+        } => emit_suspending_read_terminator(
+            fn_ctx,
+            SuspendingReadEmit {
+                conn: *conn,
+                result_dest: *result_dest,
+                deadline_result_dest: *deadline_result_dest,
+                error_dest: *error_dest,
+                to_string: *to_string,
+                resume,
+                cleanup,
+                deadline_ns: await_deadlines.get(&block_id).copied(),
+            },
+        ),
+        SuspendKind::StreamNext {
+            stream,
+            result_dest,
+            elem_ty,
+            deadline_result_dest,
+            error_dest,
+        } => emit_suspending_stream_next_terminator(
+            fn_ctx,
+            SuspendingStreamNextEmit {
+                stream: *stream,
+                result_dest: *result_dest,
+                elem_ty: elem_ty.clone(),
+                deadline_result_dest: *deadline_result_dest,
+                error_dest: *error_dest,
+                deadline_ns: await_deadlines.get(&block_id).copied(),
+                resume,
+                cleanup,
+            },
+        ),
+        SuspendKind::ChannelRecv {
+            receiver,
+            result_dest,
+            elem_ty,
+            deadline_result_dest,
+            error_dest,
+        } => emit_suspending_channel_recv_terminator(
+            fn_ctx,
+            SuspendingChannelRecvEmit {
+                receiver: *receiver,
+                result_dest: *result_dest,
+                elem_ty: elem_ty.clone(),
+                deadline_result_dest: *deadline_result_dest,
+                error_dest: *error_dest,
+                deadline_ns: await_deadlines.get(&block_id).copied(),
+                resume,
+                cleanup,
+            },
+        ),
+        SuspendKind::StreamSend { sink, value } => emit_suspending_stream_send_terminator(
+            fn_ctx,
+            SuspendingStreamSendEmit {
+                sink: *sink,
+                value: *value,
+                resume,
+                cleanup,
+            },
+        ),
+        SuspendKind::Accept {
+            listener,
+            result_dest,
+            deadline_result_dest,
+            error_dest,
+        } => emit_suspending_accept_terminator(
+            fn_ctx,
+            SuspendingAcceptEmit {
+                listener: *listener,
+                result_dest: *result_dest,
+                deadline_result_dest: *deadline_result_dest,
+                error_dest: *error_dest,
+                deadline_ns: await_deadlines.get(&block_id).copied(),
+                resume,
+                cleanup,
+            },
+        ),
+        SuspendKind::CallClosure {
+            callee,
+            args,
+            ret_ty,
+            result_dest,
+        } => emit_suspending_call_closure_terminator(
+            fn_ctx,
+            SuspendingCallClosureEmit {
+                callee: *callee,
+                args: args.clone(),
+                ret_ty,
+                result_dest: *result_dest,
+                resume,
+                cleanup,
+            },
+        ),
+        SuspendKind::RemoteAsk {
+            actor,
+            msg_type,
+            value,
+            timeout_ms,
+            result_dest,
+            reply_dest,
+            error_dest,
+            reply_ty,
+        } => emit_suspending_remote_actor_ask_terminator(
+            fn_ctx,
+            SuspendingRemoteAskEmit {
+                actor: *actor,
+                msg_type: *msg_type,
+                value: *value,
+                timeout_ms: *timeout_ms,
+                result_dest: *result_dest,
+                reply_dest: *reply_dest,
+                error_dest: *error_dest,
+                reply_ty,
+                resume,
+                cleanup,
+            },
+        ),
+        SuspendKind::TaskAwait {
+            scope,
+            task,
+            result_dest,
+        } => emit_suspending_task_await_terminator(
+            fn_ctx,
+            SuspendingTaskAwaitEmit {
+                scope: *scope,
+                task: *task,
+                result_dest: *result_dest,
+                resume,
+                cleanup,
+            },
+        ),
+        SuspendKind::Sleep { duration_ms } => emit_suspending_sleep_terminator(
+            fn_ctx,
+            SuspendingSleepEmit {
+                duration_ms: *duration_ms,
+                resume,
+                cleanup,
+            },
+        ),
+    }
+}
+
 fn lower_terminator<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     fn_symbols: &FnSymbolMap<'ctx>,
     term: &Terminator,
     block_id: u32,
     await_deadlines: &std::collections::HashMap<u32, i64>,
+    suspend_kinds: &std::collections::HashMap<u32, SuspendKind>,
 ) -> CodegenResult<()> {
     match term {
         Terminator::Return => {
@@ -36848,143 +37048,10 @@ fn lower_terminator<'ctx>(
                 .build_unconditional_branch(next_bb)
                 .llvm_ctx("ask err br")?;
         }
-        Terminator::SuspendingAsk {
-            actor,
-            msg_type,
-            value,
-            result_dest,
-            reply_dest,
-            error_dest,
-            resume,
-            cleanup,
-        } => emit_suspending_ask_terminator(
-            fn_ctx,
-            SuspendingAskEmit {
-                actor: *actor,
-                msg_type: *msg_type,
-                value: *value,
-                result_dest: *result_dest,
-                reply_dest: *reply_dest,
-                error_dest: *error_dest,
-                resume: *resume,
-                cleanup: *cleanup,
-                deadline_ns: await_deadlines.get(&block_id).copied(),
-            },
-        )?,
-        Terminator::SuspendingRead {
-            conn,
-            result_dest,
-            deadline_result_dest,
-            error_dest,
-            to_string,
-            resume,
-            cleanup,
-        } => emit_suspending_read_terminator(
-            fn_ctx,
-            SuspendingReadEmit {
-                conn: *conn,
-                result_dest: *result_dest,
-                deadline_result_dest: *deadline_result_dest,
-                error_dest: *error_dest,
-                to_string: *to_string,
-                resume: *resume,
-                cleanup: *cleanup,
-                deadline_ns: await_deadlines.get(&block_id).copied(),
-            },
-        )?,
-        Terminator::SuspendingStreamNext {
-            stream,
-            result_dest,
-            elem_ty,
-            deadline_result_dest,
-            error_dest,
-            resume,
-            cleanup,
-        } => emit_suspending_stream_next_terminator(
-            fn_ctx,
-            SuspendingStreamNextEmit {
-                stream: *stream,
-                result_dest: *result_dest,
-                elem_ty: elem_ty.clone(),
-                deadline_result_dest: *deadline_result_dest,
-                error_dest: *error_dest,
-                deadline_ns: await_deadlines.get(&block_id).copied(),
-                resume: *resume,
-                cleanup: *cleanup,
-            },
-        )?,
-        Terminator::SuspendingChannelRecv {
-            receiver,
-            result_dest,
-            elem_ty,
-            deadline_result_dest,
-            error_dest,
-            resume,
-            cleanup,
-        } => emit_suspending_channel_recv_terminator(
-            fn_ctx,
-            SuspendingChannelRecvEmit {
-                receiver: *receiver,
-                result_dest: *result_dest,
-                elem_ty: elem_ty.clone(),
-                deadline_result_dest: *deadline_result_dest,
-                error_dest: *error_dest,
-                deadline_ns: await_deadlines.get(&block_id).copied(),
-                resume: *resume,
-                cleanup: *cleanup,
-            },
-        )?,
-        Terminator::SuspendingStreamSend {
-            sink,
-            value,
-            resume,
-            cleanup,
-        } => emit_suspending_stream_send_terminator(
-            fn_ctx,
-            SuspendingStreamSendEmit {
-                sink: *sink,
-                value: *value,
-                resume: *resume,
-                cleanup: *cleanup,
-            },
-        )?,
-        Terminator::SuspendingAccept {
-            listener,
-            result_dest,
-            deadline_result_dest,
-            error_dest,
-            resume,
-            cleanup,
-        } => emit_suspending_accept_terminator(
-            fn_ctx,
-            SuspendingAcceptEmit {
-                listener: *listener,
-                result_dest: *result_dest,
-                deadline_result_dest: *deadline_result_dest,
-                error_dest: *error_dest,
-                deadline_ns: await_deadlines.get(&block_id).copied(),
-                resume: *resume,
-                cleanup: *cleanup,
-            },
-        )?,
-        Terminator::SuspendingCallClosure {
-            callee,
-            args,
-            ret_ty,
-            result_dest,
-            resume,
-            cleanup,
-        } => emit_suspending_call_closure_terminator(
-            fn_ctx,
-            SuspendingCallClosureEmit {
-                callee: *callee,
-                args: args.clone(),
-                ret_ty,
-                result_dest: *result_dest,
-                resume: *resume,
-                cleanup: *cleanup,
-            },
-        )?,
+        // The ten pure-{resume,cleanup} suspension carriers collapsed onto the
+        // bare `Terminator::Suspend` arm below, which reads the `SuspendKind`
+        // side-table and routes to the SAME `emit_suspending_*` ramp via
+        // `dispatch_collapsed_suspend`.
         Terminator::RemoteAsk {
             actor,
             msg_type,
@@ -37009,32 +37076,6 @@ fn lower_terminator<'ctx>(
                 next: *next,
             },
         )?,
-        Terminator::SuspendingRemoteAsk {
-            actor,
-            msg_type,
-            value,
-            timeout_ms,
-            result_dest,
-            reply_dest,
-            error_dest,
-            reply_ty,
-            resume,
-            cleanup,
-        } => emit_suspending_remote_actor_ask_terminator(
-            fn_ctx,
-            SuspendingRemoteAskEmit {
-                actor: *actor,
-                msg_type: *msg_type,
-                value: *value,
-                timeout_ms: *timeout_ms,
-                result_dest: *result_dest,
-                reply_dest: *reply_dest,
-                error_dest: *error_dest,
-                reply_ty,
-                resume: *resume,
-                cleanup: *cleanup,
-            },
-        )?,
         Terminator::Select { arms, .. } => {
             emit_select_terminator(fn_ctx, arms)?;
         }
@@ -37057,6 +37098,23 @@ fn lower_terminator<'ctx>(
             cleanup,
             is_final,
         } => {
+            // A collapsed suspension carrier: its distinguishing payload lives in
+            // the `suspend_kinds` side-table keyed by this block. Route it to the
+            // SAME `emit_suspending_*` ramp the dedicated carrier dispatched to —
+            // byte-identical emission by construction (the ramps are unchanged).
+            // A bare `Suspend` with NO side-table entry is a generator / synthetic
+            // substrate suspend, handled by the direct `coro.suspend` path below.
+            if let Some(kind) = suspend_kinds.get(&block_id) {
+                dispatch_collapsed_suspend(
+                    fn_ctx,
+                    kind,
+                    *resume,
+                    *cleanup,
+                    block_id,
+                    await_deadlines,
+                )?;
+                return Ok(());
+            }
             // Stackless suspend point (R326/R327). Emit `coro.suspend` + the
             // 3-way switch. The function's coro prologue (emitted in
             // `lower_function` when the MIR carries this terminator) must have
@@ -37111,34 +37169,6 @@ fn lower_terminator<'ctx>(
                 "coro",
             )?;
         }
-        Terminator::SuspendingTaskAwait {
-            scope,
-            task,
-            result_dest,
-            resume,
-            cleanup,
-        } => emit_suspending_task_await_terminator(
-            fn_ctx,
-            SuspendingTaskAwaitEmit {
-                scope: *scope,
-                task: *task,
-                result_dest: *result_dest,
-                resume: *resume,
-                cleanup: *cleanup,
-            },
-        )?,
-        Terminator::SuspendingSleep {
-            duration_ms,
-            resume,
-            cleanup,
-        } => emit_suspending_sleep_terminator(
-            fn_ctx,
-            SuspendingSleepEmit {
-                duration_ms: *duration_ms,
-                resume: *resume,
-                cleanup: *cleanup,
-            },
-        )?,
         Terminator::SuspendingScopeDeadline {
             scope,
             duration_ms,
@@ -40049,18 +40079,12 @@ fn is_coroutine_function(func: &RawMirFunction) -> bool {
         || func.blocks.iter().any(|b| {
             matches!(
                 b.terminator,
+                // The ten pure-{resume,cleanup} carriers all collapse to the bare
+                // `Suspend`; `SuspendingScopeDeadline` / `SuspendingSelect` keep
+                // their distinct terminators. Any of them makes the function a
+                // presplit coroutine.
                 Terminator::Yield { .. }
                     | Terminator::Suspend { .. }
-                    | Terminator::SuspendingAsk { .. }
-                    | Terminator::SuspendingRead { .. }
-                    | Terminator::SuspendingCallClosure { .. }
-                    | Terminator::SuspendingStreamNext { .. }
-                    | Terminator::SuspendingStreamSend { .. }
-                    | Terminator::SuspendingAccept { .. }
-                    | Terminator::SuspendingChannelRecv { .. }
-                    | Terminator::SuspendingRemoteAsk { .. }
-                    | Terminator::SuspendingTaskAwait { .. }
-                    | Terminator::SuspendingSleep { .. }
                     | Terminator::SuspendingScopeDeadline { .. }
                     | Terminator::SuspendingSelect { .. }
             )
@@ -41576,6 +41600,7 @@ fn lower_function<'ctx>(
             &block.terminator,
             block.id,
             &func.await_deadline_ns,
+            &func.suspend_kinds,
         )?;
     }
 
@@ -42714,17 +42739,9 @@ fn build_module_for_target<'ctx>(
                         f.blocks.iter().any(|b| {
                             matches!(
                                 b.terminator,
+                                // The ten pure carriers collapse to bare `Suspend`;
+                                // ScopeDeadline / Select stay distinct.
                                 Terminator::Suspend { .. }
-                                    | Terminator::SuspendingAsk { .. }
-                                    | Terminator::SuspendingRead { .. }
-                                    | Terminator::SuspendingCallClosure { .. }
-                                    | Terminator::SuspendingStreamNext { .. }
-                                    | Terminator::SuspendingStreamSend { .. }
-                                    | Terminator::SuspendingAccept { .. }
-                                    | Terminator::SuspendingChannelRecv { .. }
-                                    | Terminator::SuspendingRemoteAsk { .. }
-                                    | Terminator::SuspendingTaskAwait { .. }
-                                    | Terminator::SuspendingSleep { .. }
                                     | Terminator::SuspendingScopeDeadline { .. }
                                     | Terminator::SuspendingSelect { .. }
                             )
@@ -45929,6 +45946,7 @@ mod tests {
             decisions: Vec::<DecisionFact>::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -46318,6 +46336,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -46360,6 +46379,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -46441,6 +46461,7 @@ mod tests {
                 decisions: Vec::<DecisionFact>::new(),
                 intrinsic_id: None,
                 await_deadline_ns: std::collections::HashMap::new(),
+                suspend_kinds: std::collections::HashMap::new(),
 
                 lambda_actor_user_param_locals: Vec::new(),
                 span: None,
@@ -46569,6 +46590,7 @@ mod tests {
                 decisions: Vec::<DecisionFact>::new(),
                 intrinsic_id: None,
                 await_deadline_ns: std::collections::HashMap::new(),
+                suspend_kinds: std::collections::HashMap::new(),
 
                 lambda_actor_user_param_locals: Vec::new(),
                 span: None,
@@ -46671,6 +46693,7 @@ mod tests {
             decisions: Vec::<DecisionFact>::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -46805,6 +46828,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -46933,6 +46957,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -47013,6 +47038,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -47087,6 +47113,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -47364,6 +47391,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -47573,6 +47601,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -48277,6 +48306,7 @@ mod tests {
             decisions: Vec::<DecisionFact>::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -48367,6 +48397,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -48482,6 +48513,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -48517,6 +48549,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -48599,6 +48632,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -49108,6 +49142,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -49146,14 +49181,10 @@ mod tests {
                     id: 0,
                     statements: Vec::new(),
                     instructions: Vec::new(),
-                    terminator: Terminator::SuspendingChannelRecv {
-                        receiver: Place::Local(0),
-                        result_dest: Place::Local(1),
-                        elem_ty: ResolvedTy::String,
-                        deadline_result_dest: None,
-                        error_dest: None,
+                    terminator: Terminator::Suspend {
                         resume: 1,
                         cleanup: 2,
+                        is_final: false,
                     },
                 },
                 BasicBlock {
@@ -49172,6 +49203,16 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::from([(
+                0,
+                SuspendKind::ChannelRecv {
+                    receiver: Place::Local(0),
+                    result_dest: Place::Local(1),
+                    elem_ty: ResolvedTy::String,
+                    deadline_result_dest: None,
+                    error_dest: None,
+                },
+            )]),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -49179,7 +49220,7 @@ mod tests {
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
-            .expect("a SuspendingChannelRecv carrier must be flagged as WASM-excluded");
+            .expect("a collapsed ChannelRecv suspend carrier must be flagged as WASM-excluded");
         assert_eq!(
             found, "hew_channel_await_recv",
             "WASM exclusion scan must surface `hew_channel_await_recv` for a \
@@ -49209,14 +49250,10 @@ mod tests {
                     id: 0,
                     statements: Vec::new(),
                     instructions: Vec::new(),
-                    terminator: Terminator::SuspendingStreamNext {
-                        stream: Place::Local(0),
-                        result_dest: Place::Local(1),
-                        elem_ty: ResolvedTy::Bytes,
-                        deadline_result_dest: None,
-                        error_dest: None,
+                    terminator: Terminator::Suspend {
                         resume: 1,
                         cleanup: 2,
+                        is_final: false,
                     },
                 },
                 BasicBlock {
@@ -49235,6 +49272,16 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::from([(
+                0,
+                SuspendKind::StreamNext {
+                    stream: Place::Local(0),
+                    result_dest: Place::Local(1),
+                    elem_ty: ResolvedTy::Bytes,
+                    deadline_result_dest: None,
+                    error_dest: None,
+                },
+            )]),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -49242,7 +49289,7 @@ mod tests {
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
-            .expect("a SuspendingStreamNext carrier must be flagged as WASM-excluded");
+            .expect("a collapsed StreamNext suspend carrier must be flagged as WASM-excluded");
         assert_eq!(
             found, "hew_stream_await_next",
             "WASM exclusion scan must surface `hew_stream_await_next` for a \
@@ -49272,12 +49319,10 @@ mod tests {
                     id: 0,
                     statements: Vec::new(),
                     instructions: Vec::new(),
-                    terminator: Terminator::SuspendingTaskAwait {
-                        scope: Place::Local(0),
-                        task: Place::Local(1),
-                        result_dest: None,
+                    terminator: Terminator::Suspend {
                         resume: 1,
                         cleanup: 2,
+                        is_final: false,
                     },
                 },
                 BasicBlock {
@@ -49296,13 +49341,21 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::from([(
+                0,
+                SuspendKind::TaskAwait {
+                    scope: Place::Local(0),
+                    task: Place::Local(1),
+                    result_dest: None,
+                },
+            )]),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
-            .expect("a SuspendingTaskAwait carrier must be flagged as WASM-excluded");
+            .expect("a collapsed TaskAwait suspend carrier must be flagged as WASM-excluded");
         assert_eq!(
             found, "hew_task_await_suspend",
             "WASM exclusion scan must surface `hew_task_await_suspend` for a \
@@ -49329,10 +49382,10 @@ mod tests {
                     id: 0,
                     statements: Vec::new(),
                     instructions: Vec::new(),
-                    terminator: Terminator::SuspendingSleep {
-                        duration_ms: Place::Local(0),
+                    terminator: Terminator::Suspend {
                         resume: 1,
                         cleanup: 2,
+                        is_final: false,
                     },
                 },
                 BasicBlock {
@@ -49351,13 +49404,19 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::from([(
+                0,
+                SuspendKind::Sleep {
+                    duration_ms: Place::Local(0),
+                },
+            )]),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
         };
         let pipeline = raw_mir_only_pipeline(body);
         let found = uses_wasm_excluded_symbol(&pipeline)
-            .expect("a SuspendingSleep carrier must be flagged as WASM-excluded");
+            .expect("a collapsed Sleep suspend carrier must be flagged as WASM-excluded");
         assert_eq!(
             found, "hew_await_cancel_schedule_deadline_ms",
             "WASM exclusion scan must surface `hew_await_cancel_schedule_deadline_ms` \
@@ -49432,6 +49491,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
             instr_spans: ::std::collections::BTreeMap::new(),
@@ -49471,58 +49531,70 @@ mod tests {
             instructions: Vec::new(),
             terminator: Terminator::Return,
         };
-        let body = |name: &str, terminator: Terminator| RawMirFunction {
-            name: name.to_string(),
-            return_ty: ResolvedTy::Unit,
-            call_conv: hew_mir::FunctionCallConv::Default,
-            params: vec![],
-            locals: vec![ptr_ty.clone(), ptr_ty.clone()],
-            blocks: vec![
-                BasicBlock {
-                    id: 0,
-                    statements: Vec::new(),
-                    instructions: Vec::new(),
-                    terminator,
-                },
-                return_block(1),
-                return_block(2),
-            ],
-            decisions: Vec::new(),
-            intrinsic_id: None,
-            await_deadline_ns: std::collections::HashMap::new(),
-            lambda_actor_user_param_locals: Vec::new(),
-            span: None,
-            instr_spans: ::std::collections::BTreeMap::new(),
+        // A collapsed suspension carrier lowers to a bare `Suspend` whose kind
+        // lives in the `suspend_kinds` side-table; `Select` keeps its own
+        // terminator (no side-table entry).
+        let body = |name: &str, terminator: Terminator, kind: Option<SuspendKind>| {
+            let suspend_kinds = kind
+                .map(|k| std::collections::HashMap::from([(0u32, k)]))
+                .unwrap_or_default();
+            RawMirFunction {
+                name: name.to_string(),
+                return_ty: ResolvedTy::Unit,
+                call_conv: hew_mir::FunctionCallConv::Default,
+                params: vec![],
+                locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+                blocks: vec![
+                    BasicBlock {
+                        id: 0,
+                        statements: Vec::new(),
+                        instructions: Vec::new(),
+                        terminator,
+                    },
+                    return_block(1),
+                    return_block(2),
+                ],
+                decisions: Vec::new(),
+                intrinsic_id: None,
+                await_deadline_ns: std::collections::HashMap::new(),
+                suspend_kinds,
+                lambda_actor_user_param_locals: Vec::new(),
+                span: None,
+                instr_spans: ::std::collections::BTreeMap::new(),
+            }
         };
 
+        let suspend = || Terminator::Suspend {
+            resume: 1,
+            cleanup: 2,
+            is_final: false,
+        };
         let cases = [
             (
                 body(
                     "record_elem_suspending_channel_recv",
-                    Terminator::SuspendingChannelRecv {
+                    suspend(),
+                    Some(SuspendKind::ChannelRecv {
                         receiver: Place::Local(0),
                         result_dest: Place::Local(1),
                         elem_ty: record_elem_ty.clone(),
                         deadline_result_dest: None,
                         error_dest: None,
-                        resume: 1,
-                        cleanup: 2,
-                    },
+                    }),
                 ),
                 "hew_channel_await_recv",
             ),
             (
                 body(
                     "record_elem_suspending_stream_next",
-                    Terminator::SuspendingStreamNext {
+                    suspend(),
+                    Some(SuspendKind::StreamNext {
                         stream: Place::Local(0),
                         result_dest: Place::Local(1),
                         elem_ty: record_elem_ty.clone(),
                         deadline_result_dest: None,
                         error_dest: None,
-                        resume: 1,
-                        cleanup: 2,
-                    },
+                    }),
                 ),
                 "hew_stream_await_next",
             ),
@@ -49540,6 +49612,7 @@ mod tests {
                         }],
                         next: 1,
                     },
+                    None,
                 ),
                 "hew_channel_poll",
             ),
@@ -51602,6 +51675,7 @@ mod tests {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -51750,6 +51824,7 @@ mod tests {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -52102,6 +52177,7 @@ mod tests {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -52387,6 +52463,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -52635,6 +52712,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -52825,6 +52903,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -53012,6 +53091,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -53123,6 +53203,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -53150,6 +53231,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -53179,6 +53261,7 @@ mod tests {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -54089,6 +54172,7 @@ fn main() {
             decisions: Vec::new(),
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,

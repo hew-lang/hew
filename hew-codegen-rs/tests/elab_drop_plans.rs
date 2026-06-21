@@ -82,6 +82,7 @@ fn pipeline_with_elab_drop_plan() -> IrPipeline {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,
@@ -254,6 +255,7 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,

@@ -46,6 +46,7 @@ fn pipeline_const_42() -> IrPipeline {
         decisions: Vec::<DecisionFact>::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
@@ -96,6 +97,7 @@ fn pipeline_unsupported_array_return() -> IrPipeline {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,

@@ -95,6 +95,7 @@ fn traffic_light_uses_i8_tagged_union_struct() {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
@@ -132,6 +133,7 @@ fn repeated_machine_uses_share_one_named_struct_definition() {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
@@ -178,6 +180,7 @@ fn two_hundred_fifty_seven_states_use_i16_tag() {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,
@@ -246,6 +249,7 @@ fn constructor_pipeline() -> IrPipeline {
         decisions: Vec::new(),
         intrinsic_id: None,
         await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
 
         lambda_actor_user_param_locals: Vec::new(),
         span: None,

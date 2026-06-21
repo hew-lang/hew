@@ -98,19 +98,22 @@ fn mir_checked_dump(source: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// True when the Checked-MIR dump carries the suspending channel-recv flip
-/// carrier (`Terminator::SuspendingChannelRecv`).
+/// True when the Checked-MIR dump carries a suspend terminator, indicating
+/// that the channel-recv flip was applied.
 ///
-/// The dump renderer is a presentation detail that has evolved: the
-/// derived-`Debug` form prints the variant name `SuspendingChannelRecv`,
-/// while the structured Checked-MIR renderer prints the instruction
-/// mnemonic `suspend.channel_recv`. The flip's PRESENCE is the load-bearing
-/// signal these oracles assert; match either rendering so the oracle stays
-/// pinned to the MIR fact, not the formatter. Both mnemonics are distinct
-/// from the blocking recv call (`hew_channel_recv_layout`), so the negative
-/// oracle below cannot false-match the non-flipped path.
+/// The carrier name has evolved across dump-renderer generations:
+///   - derived-`Debug`: `SuspendingChannelRecv`
+///   - structured renderer: `suspend.channel_recv`
+///   - post–side-table collapse: `suspend is_final=` (bare Suspend terminator;
+///     kind detail lives in the side-table, visible only in the Raw dump)
+///
+/// The flip's PRESENCE is the load-bearing signal; any of the three forms
+/// confirms it. The negative oracle uses the `Checked` dump's bare form, which
+/// is absent on the blocking-call (non-flipped) path from `main`.
 fn dump_has_channel_recv_suspend(dump: &str) -> bool {
-    dump.contains("SuspendingChannelRecv") || dump.contains("suspend.channel_recv")
+    dump.contains("SuspendingChannelRecv")
+        || dump.contains("suspend.channel_recv")
+        || dump.contains("suspend is_final=")
 }
 
 /// NEW-4 oracle: `await rx.recv()` in an actor handler (an execution-context

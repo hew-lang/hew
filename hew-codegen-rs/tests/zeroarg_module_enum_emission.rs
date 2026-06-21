@@ -350,6 +350,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
 
             lambda_actor_user_param_locals: Vec::new(),
             span: None,

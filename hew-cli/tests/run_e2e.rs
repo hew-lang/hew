@@ -3496,12 +3496,16 @@ fn returned_match_tail_tuple_callee_does_not_drop_members() {
 }
 
 /// Return the `--dump-mir checked` text for `source`.
+///
+/// Runs the compiler from the repo root so that stdlib imports (`std::stream`,
+/// `std::net`, etc.) are resolvable; the source file is written to a tempdir
+/// and passed by absolute path.
 fn mir_checked_dump(source: &str) -> String {
     let dir = support::tempdir();
     let hew_src = dir.path().join("oracle.hew");
     std::fs::write(&hew_src, source).unwrap();
     let out = support::run_hew_in(
-        dir.path(),
+        repo_root(),
         &[
             "compile",
             "--dump-mir",
@@ -3549,16 +3553,16 @@ fn suspending_stream_recv_send_flip_in_execution_context() {
          }\n\
          fn main() { let r = spawn Runner(); r.go(0); }\n",
     );
-    // Accept either the derived-Debug spelling (`SuspendingStreamNext`) or the
-    // structured mnemonic (`suspend.stream_next`) — the flip's presence is the
-    // load-bearing signal, not the renderer version.
+    // After the SuspendKind side-table collapse the old carrier-spelled
+    // terminators (`SuspendingStreamNext`, `SuspendingStreamSend`) no longer
+    // exist as Terminator variants; both lower to the bare `Terminator::Suspend`
+    // (rendering: `suspend is_final=...`).  The actor body has two await sites
+    // (recv + send), so two bare suspend terminators must be present.
+    let suspend_count = dump.matches("suspend is_final=").count();
     assert!(
-        dump.contains("SuspendingStreamNext") || dump.contains("suspend.stream_next"),
-        "actor `await stream.recv()` must flip to SuspendingStreamNext:\n{dump}"
-    );
-    assert!(
-        dump.contains("SuspendingStreamSend") || dump.contains("suspend.stream_send"),
-        "actor `await sink.send()` must flip to SuspendingStreamSend:\n{dump}"
+        suspend_count >= 2,
+        "actor `await stream.recv()` + `await sink.send()` must each lower to \
+         a bare `suspend is_final=` terminator (expected >=2, found {suspend_count}):\n{dump}"
     );
 }
 
@@ -3584,12 +3588,13 @@ fn suspending_listener_accept_flip_in_execution_context() {
          \x20   a.go(0);\n\
          }\n",
     );
-    // Accept either the derived-Debug spelling (`SuspendingAccept`) or the
-    // structured mnemonic (`suspend.accept`) — the flip's presence is the
-    // load-bearing signal, not the renderer version.
+    // After the SuspendKind side-table collapse `SuspendingAccept` no longer
+    // exists as a Terminator variant; it lowers to the bare `Terminator::Suspend`
+    // (rendering: `suspend is_final=...`).
     assert!(
-        dump.contains("SuspendingAccept") || dump.contains("suspend.accept"),
-        "actor `await listener.accept()` must flip to SuspendingAccept:\n{dump}"
+        dump.contains("suspend is_final="),
+        "actor `await listener.accept()` must lower to a bare `suspend is_final=` \
+         terminator (SuspendKind::Accept in the side-table):\n{dump}"
     );
 }
 
@@ -3643,12 +3648,13 @@ fn suspending_remote_ask_flip_in_execution_context() {
          }\n\
          fn main() { let c = spawn Client(); c.go(0); }\n",
     );
-    // Accept either the derived-Debug spelling (`SuspendingRemoteAsk`) or the
-    // structured mnemonic (`suspend.remote_ask`) — the flip's presence is the
-    // load-bearing signal, not the renderer version.
+    // After the SuspendKind side-table collapse `SuspendingRemoteAsk` no longer
+    // exists as a Terminator variant; it lowers to the bare `Terminator::Suspend`
+    // (rendering: `suspend is_final=...`).
     assert!(
-        dump.contains("SuspendingRemoteAsk") || dump.contains("suspend.remote_ask"),
-        "actor-handler `peer.ask()` must flip to SuspendingRemoteAsk:\n{dump}"
+        dump.contains("suspend is_final="),
+        "actor-handler `peer.ask()` must lower to a bare `suspend is_final=` \
+         terminator (SuspendKind::RemoteAsk in the side-table):\n{dump}"
     );
 }
 

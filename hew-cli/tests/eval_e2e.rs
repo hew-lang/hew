@@ -104,6 +104,34 @@ fn for_await_mir_checked_dump(name: &str) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// Raw-stage MIR dump for a fixture under `tests/surface-fixtures/`.
+///
+/// Used where the kind detail (e.g. `elem_ty=bytes`) is needed: the Raw dump
+/// annotates `Terminator::Suspend` with its `SuspendKind` tag from the
+/// side-table, while the Checked dump only shows the bare `suspend is_final=…`.
+fn for_await_mir_raw_dump(name: &str) -> String {
+    require_codegen();
+
+    let source = surface_fixture(&format!("{name}.hew"));
+    let mut command = Command::new(hew_binary());
+    command
+        .args(["compile", "--dump-mir", "raw"])
+        .arg(&source)
+        .current_dir(repo_root())
+        .env("HEW_WORKERS", "1");
+    let output = support::run_bounded_command(
+        command,
+        format!("hew compile --dump-mir raw {}", source.display()),
+    );
+    assert!(
+        output.status.success(),
+        "MIR raw dump for {name} should succeed; stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
 #[test]
 fn for_await_receiver_string_drains_to_completion_under_single_worker() {
     run_for_await_surface_fixture("for_await_recv_string");
@@ -146,28 +174,36 @@ fn channel_record_elements_roundtrip_and_early_exit_under_single_worker() {
 
 #[test]
 fn for_await_mir_dump_contains_suspending_recv_terminators() {
-    // The dump renderer changed from the derived-Debug form (`SuspendingChannelRecv`)
-    // to the structured mnemonic (`suspend.channel_recv`). Accept either so this
-    // oracle is pinned to the MIR flip fact, not the renderer version.
+    // The carrier shape has evolved across renderer generations:
+    //   - derived-Debug: `SuspendingChannelRecv`
+    //   - structured renderer: `suspend.channel_recv`
+    //   - post–side-table collapse: `suspend is_final=` (kind lives in side-table,
+    //     visible in the Raw dump as `suspend [channel_recv] elem_ty=…`)
+    // The flip PRESENCE is the load-bearing signal; use the Checked dump for the
+    // presence check (it shows the bare `suspend is_final=` form) and the Raw dump
+    // for the element-type witness checks.
     for name in ["for_await_recv_string", "for_await_recv_int"] {
         let dump = for_await_mir_checked_dump(name);
         assert!(
-            dump.contains("SuspendingChannelRecv") || dump.contains("suspend.channel_recv"),
-            "{name} must lower to a SuspendingChannelRecv terminator:\n{dump}",
+            dump.contains("SuspendingChannelRecv")
+                || dump.contains("suspend.channel_recv")
+                || dump.contains("suspend is_final="),
+            "{name} must lower to a channel-recv suspend terminator:\n{dump}",
         );
     }
 
-    // Bytes element: the checker-resolved element type selects the Bytes
-    // content-encoding witness for the layout pop in codegen.
-    // Debug form: `elem_ty: Bytes`; structured form: `elem_ty=bytes`.
-    let bytes_dump = for_await_mir_checked_dump("for_await_stream_bytes");
+    // Bytes element: use the Raw dump so the SuspendKind side-table tag
+    // (`[stream_next] elem_ty=bytes`) is visible.
+    let bytes_dump = for_await_mir_raw_dump("for_await_stream_bytes");
     assert!(
-        bytes_dump.contains("SuspendingStreamNext") || bytes_dump.contains("suspend.stream_next"),
-        "for_await_stream_bytes must lower to a SuspendingStreamNext terminator:\n{bytes_dump}",
+        bytes_dump.contains("SuspendingStreamNext")
+            || bytes_dump.contains("suspend.stream_next")
+            || bytes_dump.contains("[stream_next]"),
+        "for_await_stream_bytes must lower to a stream-next suspend terminator:\n{bytes_dump}",
     );
     assert!(
         bytes_dump.contains("elem_ty: Bytes") || bytes_dump.contains("elem_ty=bytes"),
-        "for_await_stream_bytes's SuspendingStreamNext must carry \
+        "for_await_stream_bytes's stream-next suspend must carry \
          elem_ty=bytes (the Bytes element witness):\n{bytes_dump}",
     );
     assert!(
@@ -178,16 +214,17 @@ fn for_await_mir_dump_contains_suspending_recv_terminators() {
 
     // String element: the String element witness keeps the header-aware
     // cstring decode and binds `Option<string>`.
-    // Debug form: `elem_ty: String`; structured form: `elem_ty=string`.
     for name in ["for_await_stream_string", "typed_streams_string"] {
-        let dump = for_await_mir_checked_dump(name);
+        let dump = for_await_mir_raw_dump(name);
         assert!(
-            dump.contains("SuspendingStreamNext") || dump.contains("suspend.stream_next"),
-            "{name} must lower to a SuspendingStreamNext terminator:\n{dump}",
+            dump.contains("SuspendingStreamNext")
+                || dump.contains("suspend.stream_next")
+                || dump.contains("[stream_next]"),
+            "{name} must lower to a stream-next suspend terminator:\n{dump}",
         );
         assert!(
             dump.contains("elem_ty: String") || dump.contains("elem_ty=string"),
-            "{name}'s SuspendingStreamNext must carry elem_ty=string \
+            "{name}'s stream-next suspend must carry elem_ty=string \
              (the String element witness):\n{dump}",
         );
         assert!(

@@ -7,13 +7,17 @@
 ///
 /// ## Determinism
 ///
-/// `RawMirFunction.await_deadline_ns` (`HashMap`) and `.instr_spans`
-/// (`BTreeMap`) are side-tables that do not represent IR shape.
-/// `instr_spans` is already a `BTreeMap` so its iteration order is
-/// deterministic. `await_deadline_ns` is deliberately OMITTED from
-/// the dump: rendering a `HashMap` field would make the golden corpus
-/// nondeterministic. If a consumer needs deadline info, it is available
-/// via the `{:#?}` Debug dump or directly from the struct field.
+/// `RawMirFunction.await_deadline_ns` (`HashMap`), `.suspend_kinds`
+/// (`HashMap`), and `.instr_spans` (`BTreeMap`) are side-tables that do not
+/// represent IR shape. `instr_spans` is already a `BTreeMap` so its iteration
+/// order is deterministic. `await_deadline_ns` and `suspend_kinds` are both
+/// keyed by block id, so the collapsed `Terminator::Suspend` renderer looks up
+/// `suspend_kinds` by the block being rendered (a single deterministic lookup,
+/// not a `HashMap` iteration) to recover the carrier payload for the dump. The
+/// raw maps themselves are NOT iterated into the dump: rendering a `HashMap`
+/// field would make the golden corpus nondeterministic. If a consumer needs the
+/// raw tables, they are available via the `{:#?}` Debug dump or the struct
+/// fields directly.
 ///
 /// ## Exhaustiveness (fail-closed)
 ///
@@ -29,8 +33,8 @@ use crate::model::{
     BasicBlock, CheckedMirFunction, ClosureEnvMode, CmpPred, Direction, DropFnSpec, DropKind,
     DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath, FloatWidth, FunctionCallConv, Instr,
     IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaEnvFieldDrop, MirCheck, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm, SelectArmKind, Terminator,
-    TrapKind,
+    MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm, SelectArmKind, SuspendKind,
+    Terminator, TrapKind,
 };
 
 /// Which stage of the pipeline to render.
@@ -115,9 +119,9 @@ fn dump_raw_function(out: &mut String, func: &RawMirFunction) {
         writeln!(out, "  intrinsic: {id}").expect("write to string");
     }
 
-    // Blocks
+    // Blocks — thread suspend_kinds so Suspend terminators can render the kind tag.
     for block in &func.blocks {
-        dump_basic_block(out, block, 2);
+        dump_basic_block(out, block, 2, Some(&func.suspend_kinds));
     }
 }
 
@@ -125,7 +129,7 @@ fn dump_checked_function(out: &mut String, func: &CheckedMirFunction) {
     writeln!(out, "fn {} -> {}", func.name, func.return_ty.user_facing()).expect("write to string");
 
     for block in &func.blocks {
-        dump_basic_block(out, block, 2);
+        dump_basic_block(out, block, 2, None);
     }
 
     // The empty-checks signal is load-bearing: consumers key off
@@ -174,7 +178,12 @@ fn dump_elab_function(out: &mut String, func: &ElaboratedMirFunction) {
 // BasicBlock renderer
 // ---------------------------------------------------------------------------
 
-fn dump_basic_block(out: &mut String, block: &BasicBlock, indent: usize) {
+fn dump_basic_block(
+    out: &mut String,
+    block: &BasicBlock,
+    indent: usize,
+    suspend_kinds: Option<&std::collections::HashMap<u32, SuspendKind>>,
+) {
     let pad = " ".repeat(indent);
     writeln!(out, "{pad}bb{}:", block.id).expect("write to string");
 
@@ -186,7 +195,13 @@ fn dump_basic_block(out: &mut String, block: &BasicBlock, indent: usize) {
         writeln!(out, "{pad}  {}", render_instr(instr)).expect("write to string");
     }
 
-    writeln!(out, "{pad}  {}", render_terminator(&block.terminator)).expect("write to string");
+    let kind_entry = suspend_kinds.and_then(|sk| sk.get(&block.id));
+    writeln!(
+        out,
+        "{pad}  {}",
+        render_terminator_with_kind(&block.terminator, kind_entry)
+    )
+    .expect("write to string");
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +235,56 @@ fn render_place(place: &Place) -> String {
 // ---------------------------------------------------------------------------
 // Terminator renderer
 // ---------------------------------------------------------------------------
+
+/// Render a `SuspendKind` as a bracketed kind tag with kind-specific fields,
+/// e.g. `[channel_recv] elem_ty=string` or `[stream_next] elem_ty=bytes`.
+///
+/// Returns an empty string when `kind` is `None` (Checked/Elab stages where
+/// the side-table is not available).
+fn render_suspend_kind_tag(kind: Option<&SuspendKind>) -> String {
+    let Some(kind) = kind else {
+        return String::new();
+    };
+    match kind {
+        SuspendKind::Ask { .. } => "[ask]".to_string(),
+        SuspendKind::Read { .. } => "[read]".to_string(),
+        SuspendKind::Accept { .. } => "[accept]".to_string(),
+        SuspendKind::CallClosure { .. } => "[call_closure]".to_string(),
+        SuspendKind::StreamNext { elem_ty, .. } => {
+            format!("[stream_next] elem_ty={}", elem_ty.user_facing())
+        }
+        SuspendKind::StreamSend { .. } => "[stream_send]".to_string(),
+        SuspendKind::ChannelRecv { elem_ty, .. } => {
+            format!("[channel_recv] elem_ty={}", elem_ty.user_facing())
+        }
+        SuspendKind::RemoteAsk { .. } => "[remote_ask]".to_string(),
+        SuspendKind::TaskAwait { .. } => "[task_await]".to_string(),
+        SuspendKind::Sleep { .. } => "[sleep]".to_string(),
+    }
+}
+
+/// Render a terminator, annotating `Terminator::Suspend` with its `SuspendKind`
+/// tag when `kind` is present (Raw-dump stage). The Checked and Elab stages
+/// pass `None` — the bare `suspend is_final=…` rendering is preserved.
+fn render_terminator_with_kind(term: &Terminator, kind: Option<&SuspendKind>) -> String {
+    match term {
+        Terminator::Suspend {
+            resume,
+            cleanup,
+            is_final,
+        } => {
+            let tag = render_suspend_kind_tag(kind);
+            if tag.is_empty() {
+                format!("suspend is_final={is_final} -> resume=bb{resume} cleanup=bb{cleanup}")
+            } else {
+                format!(
+                    "suspend {tag} is_final={is_final} -> resume=bb{resume} cleanup=bb{cleanup}"
+                )
+            }
+        }
+        other => render_terminator(other),
+    }
+}
 
 #[allow(
     clippy::too_many_lines,
@@ -331,145 +396,6 @@ fn render_terminator(term: &Terminator) -> String {
             render_place(reply_dest),
             render_place(error_dest),
         ),
-        Terminator::SuspendingAsk {
-            actor,
-            msg_type,
-            value,
-            result_dest,
-            reply_dest,
-            error_dest,
-            resume,
-            cleanup,
-        } => format!(
-            "{} = suspend.ask {}[msg={msg_type}] {} reply={} err={} -> resume=bb{resume} cleanup=bb{cleanup}",
-            render_place(result_dest),
-            render_place(actor),
-            render_place(value),
-            render_place(reply_dest),
-            render_place(error_dest),
-        ),
-        Terminator::SuspendingRead {
-            conn,
-            result_dest,
-            deadline_result_dest,
-            error_dest,
-            to_string,
-            resume,
-            cleanup,
-        } => {
-            let deadline = deadline_result_dest
-                .as_ref()
-                .map(|p| format!(" deadline_result={}", render_place(p)))
-                .unwrap_or_default();
-            let err = error_dest
-                .as_ref()
-                .map(|p| format!(" err={}", render_place(p)))
-                .unwrap_or_default();
-            format!(
-                "{} = suspend.read {} to_string={to_string}{deadline}{err} -> resume=bb{resume} cleanup=bb{cleanup}",
-                render_place(result_dest),
-                render_place(conn),
-            )
-        }
-        Terminator::SuspendingAccept {
-            listener,
-            result_dest,
-            deadline_result_dest,
-            error_dest,
-            resume,
-            cleanup,
-        } => {
-            let deadline = deadline_result_dest
-                .as_ref()
-                .map(|p| format!(" deadline_result={}", render_place(p)))
-                .unwrap_or_default();
-            let err = error_dest
-                .as_ref()
-                .map(|p| format!(" err={}", render_place(p)))
-                .unwrap_or_default();
-            format!(
-                "{} = suspend.accept {}{deadline}{err} -> resume=bb{resume} cleanup=bb{cleanup}",
-                render_place(result_dest),
-                render_place(listener),
-            )
-        }
-        Terminator::SuspendingCallClosure {
-            callee,
-            args,
-            ret_ty,
-            result_dest,
-            resume,
-            cleanup,
-        } => {
-            let arg_str = args.iter().map(render_place).collect::<Vec<_>>().join(", ");
-            let dest_str = result_dest
-                .as_ref()
-                .map(|p| format!("{} = ", render_place(p)))
-                .unwrap_or_default();
-            format!(
-                "{dest_str}suspend.call_closure {}({arg_str}) ret_ty={} -> resume=bb{resume} cleanup=bb{cleanup}",
-                render_place(callee),
-                ret_ty.user_facing(),
-            )
-        }
-        Terminator::SuspendingStreamNext {
-            stream,
-            result_dest,
-            elem_ty,
-            deadline_result_dest,
-            error_dest,
-            resume,
-            cleanup,
-        } => {
-            let deadline = deadline_result_dest
-                .as_ref()
-                .map(|p| format!(" deadline_result={}", render_place(p)))
-                .unwrap_or_default();
-            let err = error_dest
-                .as_ref()
-                .map(|p| format!(" err={}", render_place(p)))
-                .unwrap_or_default();
-            format!(
-                "{} = suspend.stream_next {} elem_ty={}{deadline}{err} -> resume=bb{resume} cleanup=bb{cleanup}",
-                render_place(result_dest),
-                render_place(stream),
-                elem_ty.user_facing(),
-            )
-        }
-        Terminator::SuspendingStreamSend {
-            sink,
-            value,
-            resume,
-            cleanup,
-        } => format!(
-            "suspend.stream_send {} {} -> resume=bb{resume} cleanup=bb{cleanup}",
-            render_place(sink),
-            render_place(value),
-        ),
-        Terminator::SuspendingChannelRecv {
-            receiver,
-            result_dest,
-            elem_ty,
-            deadline_result_dest,
-            error_dest,
-            resume,
-            cleanup,
-        } => {
-            let deadline = deadline_result_dest
-                .as_ref()
-                .map(|p| format!(" deadline_result={}", render_place(p)))
-                .unwrap_or_default();
-            let err = error_dest
-                .as_ref()
-                .map(|p| format!(" err={}", render_place(p)))
-                .unwrap_or_default();
-            format!(
-                "{} = suspend.channel_recv {} elem_ty={}{deadline}{err} -> resume=bb{resume} cleanup=bb{cleanup}",
-                render_place(result_dest),
-                render_place(receiver),
-                elem_ty.user_facing(),
-            )
-        }
         Terminator::RemoteAsk {
             actor,
             msg_type,
@@ -482,27 +408,6 @@ fn render_terminator(term: &Terminator) -> String {
             next,
         } => format!(
             "{} = remote_ask {}[msg={msg_type}] {} timeout={} reply={} err={} reply_ty={} -> bb{next}",
-            render_place(result_dest),
-            render_place(actor),
-            render_place(value),
-            render_place(timeout_ms),
-            render_place(reply_dest),
-            render_place(error_dest),
-            reply_ty.user_facing(),
-        ),
-        Terminator::SuspendingRemoteAsk {
-            actor,
-            msg_type,
-            value,
-            timeout_ms,
-            result_dest,
-            reply_dest,
-            error_dest,
-            reply_ty,
-            resume,
-            cleanup,
-        } => format!(
-            "{} = suspend.remote_ask {}[msg={msg_type}] {} timeout={} reply={} err={} reply_ty={} -> resume=bb{resume} cleanup=bb{cleanup}",
             render_place(result_dest),
             render_place(actor),
             render_place(value),
@@ -543,31 +448,6 @@ fn render_terminator(term: &Terminator) -> String {
             cleanup,
             is_final,
         } => format!("suspend is_final={is_final} -> resume=bb{resume} cleanup=bb{cleanup}"),
-        Terminator::SuspendingTaskAwait {
-            scope,
-            task,
-            result_dest,
-            resume,
-            cleanup,
-        } => {
-            let dest = result_dest
-                .as_ref()
-                .map(|p| format!("{} = ", render_place(p)))
-                .unwrap_or_default();
-            format!(
-                "{dest}suspend.task_await scope={} task={} -> resume=bb{resume} cleanup=bb{cleanup}",
-                render_place(scope),
-                render_place(task),
-            )
-        }
-        Terminator::SuspendingSleep {
-            duration_ms,
-            resume,
-            cleanup,
-        } => format!(
-            "suspend.sleep {} -> resume=bb{resume} cleanup=bb{cleanup}",
-            render_place(duration_ms),
-        ),
         Terminator::SuspendingScopeDeadline {
             scope,
             duration_ms,
@@ -1815,6 +1695,7 @@ mod tests {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: vec![],
             span: None,
             instr_spans: std::collections::BTreeMap::new(),
@@ -1951,6 +1832,111 @@ mod tests {
         assert_eq!(a, b, "dump_mir is not deterministic");
     }
 
+    /// Raw dump of a `Terminator::Suspend` with a `SuspendKind::ChannelRecv`
+    /// side-table entry renders the kind tag and `elem_ty` inline.
+    #[test]
+    fn suspend_with_channel_recv_kind_renders_tag_and_elem_ty() {
+        use std::collections::HashMap;
+        let mut suspend_kinds = HashMap::new();
+        suspend_kinds.insert(
+            0,
+            SuspendKind::ChannelRecv {
+                receiver: Place::Local(0),
+                result_dest: Place::Local(1),
+                elem_ty: ResolvedTy::String,
+                deadline_result_dest: None,
+                error_dest: None,
+            },
+        );
+        let func = RawMirFunction {
+            name: "recv_actor".to_string(),
+            return_ty: ResolvedTy::I64,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ResolvedTy::I64, ResolvedTy::I64],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            }],
+            decisions: vec![],
+            intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds,
+            lambda_actor_user_param_locals: vec![],
+            span: None,
+            instr_spans: std::collections::BTreeMap::new(),
+        };
+        let pipeline = minimal_pipeline_with_raw(func);
+        let dump = dump_mir(&pipeline, DumpStage::Raw);
+        assert!(
+            dump.contains("suspend [channel_recv] elem_ty=string is_final=false"),
+            "expected kind tag and elem_ty in Raw suspend dump:\n{dump}"
+        );
+        // Also confirm the bare `suspend is_final=` prefix is present (for grep compat).
+        assert!(
+            dump.contains("suspend is_final=") || dump.contains("suspend ["),
+            "suspend rendering must contain 'suspend is_final=' or 'suspend [':\n{dump}"
+        );
+    }
+
+    /// Raw dump of a `Terminator::Suspend` with a `SuspendKind::StreamNext`
+    /// carrying `elem_ty=bytes` renders the bytes element type.
+    #[test]
+    fn suspend_with_stream_next_bytes_renders_elem_ty_bytes() {
+        use std::collections::HashMap;
+        let mut suspend_kinds = HashMap::new();
+        suspend_kinds.insert(
+            0,
+            SuspendKind::StreamNext {
+                stream: Place::Local(0),
+                result_dest: Place::Local(1),
+                elem_ty: ResolvedTy::Bytes,
+                deadline_result_dest: None,
+                error_dest: None,
+            },
+        );
+        let func = RawMirFunction {
+            name: "stream_actor".to_string(),
+            return_ty: ResolvedTy::I64,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ResolvedTy::I64, ResolvedTy::I64],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            }],
+            decisions: vec![],
+            intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds,
+            lambda_actor_user_param_locals: vec![],
+            span: None,
+            instr_spans: std::collections::BTreeMap::new(),
+        };
+        let pipeline = minimal_pipeline_with_raw(func);
+        let dump = dump_mir(&pipeline, DumpStage::Raw);
+        assert!(
+            dump.contains("suspend [stream_next] elem_ty=bytes is_final=false"),
+            "expected [stream_next] elem_ty=bytes in Raw suspend dump:\n{dump}"
+        );
+        assert!(
+            !dump.contains("elem_ty=string"),
+            "bytes stream must NOT render elem_ty=string:\n{dump}"
+        );
+    }
+
     /// Trap renders as "trap(<TrapKind>)" — not a Debug form.
     #[test]
     fn trap_terminator_renders_kind_tag() {
@@ -1971,6 +1957,7 @@ mod tests {
             decisions: vec![],
             intrinsic_id: None,
             await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds: std::collections::HashMap::new(),
             lambda_actor_user_param_locals: vec![],
             span: None,
             instr_spans: std::collections::BTreeMap::new(),

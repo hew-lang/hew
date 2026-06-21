@@ -3389,6 +3389,94 @@ fn compound_assign_op_str(op: CompoundAssignOp) -> &'static str {
     }
 }
 
+/// Returns `true` for non-ASCII Unicode scalars that should be emitted raw
+/// (readable, unambiguous in source), following the rustfmt/gofmt convention.
+///
+/// Escapes (returns `false`) for:
+/// - C1 control range U+0080–U+009F (`char::is_control()` already covers these,
+///   but listed here for clarity)
+/// - Unicode Format category (Cf): soft hyphen, zero-width spaces, `BiDi` controls,
+///   byte-order mark, interlinear annotation anchors, language tags, etc.
+/// - Unicode Line Separator U+2028 and Paragraph Separator U+2029 (Zl/Zp)
+/// - Private-use area characters (U+E000–U+F8FF, U+F0000–U+10FFFF supplement planes)
+/// - Specials block U+FFF0–U+FFFF (replacement char and object replacement char
+///   excluded from "readable")
+///
+/// Preserves (returns `true`) everything else: letters, marks, numbers, punctuation,
+/// symbols, and regular space separators — including accented letters (`é`), CJK
+/// (`世`), arrows (`→`), em dashes (`—`), and similar readable Unicode.
+fn is_printable_non_ascii(c: char) -> bool {
+    debug_assert!(!c.is_ascii(), "only call for non-ASCII chars");
+    let cp = c as u32;
+
+    // C1 controls (already caught by is_control(), but guard here for clarity).
+    if (0x0080..=0x009F).contains(&cp) {
+        return false;
+    }
+
+    // Unicode Format (Cf) characters — invisible and/or confusable in source.
+    // These ranges are stable Unicode categories; only extend with new Cf ranges.
+    //
+    // Soft hyphen (Cf, invisible in many renderers).
+    if cp == 0x00AD {
+        return false;
+    }
+    // Arabic letter mark, left-to-right mark, right-to-left mark (Cf).
+    if (0x061C..=0x061C).contains(&cp) || (0x200E..=0x200F).contains(&cp) {
+        return false;
+    }
+    // Zero-width non-joiner, zero-width joiner, zero-width space (Cf/Cf/Zs-invisible).
+    if (0x200B..=0x200D).contains(&cp) {
+        return false;
+    }
+    // Word joiner (Cf).
+    if cp == 0x2060 {
+        return false;
+    }
+    // Function application, invisible times, invisible separator, invisible plus (Cf).
+    if (0x2061..=0x2064).contains(&cp) {
+        return false;
+    }
+    // BiDi embedding/override/isolate controls (Cf): U+202A–U+202E, U+2066–U+2069.
+    if (0x202A..=0x202E).contains(&cp) || (0x2066..=0x2069).contains(&cp) {
+        return false;
+    }
+    // Line Separator (Zl) and Paragraph Separator (Zp) — invisible line-break semantics.
+    if cp == 0x2028 || cp == 0x2029 {
+        return false;
+    }
+    // Interlinear annotation anchor/separator/terminator (Cf).
+    if (0xFFF9..=0xFFFB).contains(&cp) {
+        return false;
+    }
+    // Byte Order Mark / Zero-width no-break space (Cf).
+    if cp == 0xFEFF {
+        return false;
+    }
+    // Specials block: U+FFF0–U+FFFF contains object-replacement char, etc.
+    // Escape the whole block to avoid ambiguous-looking source text.
+    if (0xFFF0..=0xFFFF).contains(&cp) {
+        return false;
+    }
+    // Private use areas: U+E000–U+F8FF (BMP), U+F0000–U+FFFFF, U+100000–U+10FFFF.
+    if (0xE000..=0xF8FF).contains(&cp)
+        || (0xF0000..=0xFFFFF).contains(&cp)
+        || (0x0010_0000..=0x0010_FFFF).contains(&cp)
+    {
+        return false;
+    }
+    // Tag characters U+E0000–U+E007F (Cf, language tags).
+    if (0xE0000..=0xE007F).contains(&cp) {
+        return false;
+    }
+    // Variation selectors (VS1–VS16 U+FE00–U+FE0F; VS17–VS256 U+E0100–U+E01EF): Mn/invisible.
+    if (0xFE00..=0xFE0F).contains(&cp) || (0xE0100..=0xE01EF).contains(&cp) {
+        return false;
+    }
+
+    true
+}
+
 /// Escape a single character for use inside a double-quoted string or
 /// f-string literal part.
 ///
@@ -3399,9 +3487,16 @@ fn compound_assign_op_str(op: CompoundAssignOp) -> &'static str {
 ///   name (`\n`, `\t`, `\r`, `\\`, `\"`, `\0`).
 /// • `\xNN` (two lowercase hex digits) for any other non-printable ASCII byte
 ///   (code point < 0x20 or == 0x7F).
-/// • `\u{HHHH}` (uppercase hex, no leading zeros beyond the minimum) for any
-///   non-ASCII Unicode scalar.
-/// • Printable ASCII passes through verbatim.
+/// • Printable ASCII and readable non-ASCII Unicode pass through verbatim.
+///   "Readable" means: NOT a control character, NOT a Format/Separator
+///   Unicode category, NOT a private-use codepoint — per `is_printable_non_ascii`.
+/// • `\u{HHHH}` (uppercase hex, no leading zeros beyond the minimum) for
+///   invisible/confusable non-ASCII (zero-width spaces, `BiDi` overrides, C1
+///   controls, etc.).
+///
+/// This follows the rustfmt/gofmt convention: preserve readable Unicode
+/// (`é`, `→`, `世`, `—`) verbatim; escape only what is genuinely invisible
+/// or confusable in source text.
 ///
 /// `fstring_braces`: when `true`, also escape `{` and `}` as `\{` / `\}` so
 /// they survive round-trip inside an f-string interpolation boundary.
@@ -3424,8 +3519,17 @@ fn escape_str_char(c: char, out: &mut String, fstring_braces: bool) {
                 out.push(c);
             }
         }
+        c if c.is_control() => {
+            // Non-ASCII control chars (C1 range U+0080–U+009F, NEL U+0085).
+            let cp = c as u32;
+            let _ = write!(out, "\\u{{{cp:X}}}");
+        }
+        c if is_printable_non_ascii(c) => {
+            // Readable non-ASCII: preserve verbatim (é, →, 世, —, …).
+            out.push(c);
+        }
         c => {
-            // Non-ASCII Unicode scalar.
+            // Invisible or confusable non-ASCII (zero-width, BiDi, private-use, …).
             let cp = c as u32;
             let _ = write!(out, "\\u{{{cp:X}}}");
         }
@@ -4292,6 +4396,141 @@ impl<T> Vec<T> {
     }
 }
 ";
+        assert_eq!(roundtrip(src), src);
+    }
+
+    // ── escape_str_char: escape-sequence faithfulness (P0) ──────────────────
+
+    /// Named escape sequences that the lexer resolved to their byte values must
+    /// re-emit as the named escape, NOT as a raw byte.
+    #[test]
+    fn escape_string_roundtrips_named_escapes() {
+        // The lexer stores a literal newline byte; escape_string must emit \n.
+        assert_eq!(escape_string("\n"), "\\n");
+        assert_eq!(escape_string("\t"), "\\t");
+        assert_eq!(escape_string("\r"), "\\r");
+        assert_eq!(escape_string("\\"), "\\\\");
+        assert_eq!(escape_string("\""), "\\\"");
+        assert_eq!(escape_string("\0"), "\\0");
+    }
+
+    /// \xNN escape for non-printable ASCII outside the named set.
+    #[test]
+    fn escape_string_roundtrips_xnn_control() {
+        // U+0001 SOH — non-printable ASCII, not in named set.
+        assert_eq!(escape_string("\x01"), "\\x01");
+        // U+001F US — highest C0 below space, not in named set.
+        assert_eq!(escape_string("\x1f"), "\\x1f");
+        // U+007F DEL.
+        assert_eq!(escape_string("\x7f"), "\\x7f");
+    }
+
+    /// \u{...} escape for non-ASCII invisible/confusable characters.
+    #[test]
+    fn escape_string_escapes_invisible_unicode() {
+        // U+200B zero-width space (Format Cf) — must be escaped.
+        assert_eq!(escape_string("\u{200B}"), "\\u{200B}");
+        // U+202E right-to-left override (BiDi Cf) — must be escaped.
+        assert_eq!(escape_string("\u{202E}"), "\\u{202E}");
+        // U+FEFF byte order mark (Cf) — must be escaped.
+        assert_eq!(escape_string("\u{FEFF}"), "\\u{FEFF}");
+        // U+2028 line separator (Zl) — must be escaped.
+        assert_eq!(escape_string("\u{2028}"), "\\u{2028}");
+        // U+2029 paragraph separator (Zp) — must be escaped.
+        assert_eq!(escape_string("\u{2029}"), "\\u{2029}");
+        // U+00AD soft hyphen (Cf) — must be escaped.
+        assert_eq!(escape_string("\u{AD}"), "\\u{AD}");
+    }
+
+    // ── escape_str_char: preserve-readable-Unicode (A176) ───────────────────
+
+    /// Readable non-ASCII Unicode must pass through verbatim.
+    #[test]
+    fn escape_string_preserves_readable_unicode() {
+        // Accented letter.
+        assert_eq!(escape_string("é"), "é");
+        // Arrow symbol.
+        assert_eq!(escape_string("→"), "→");
+        // CJK ideograph.
+        assert_eq!(escape_string("世"), "世");
+        // Em dash.
+        assert_eq!(escape_string("—"), "—");
+        // Mixed: readable Unicode adjacent to ASCII.
+        assert_eq!(escape_string("café"), "café");
+        assert_eq!(escape_string("résumé"), "résumé");
+    }
+
+    /// `is_printable_non_ascii` classifies readable chars as printable.
+    #[test]
+    fn is_printable_non_ascii_true_for_readable() {
+        assert!(is_printable_non_ascii('é'), "accented letter");
+        assert!(is_printable_non_ascii('→'), "arrow");
+        assert!(is_printable_non_ascii('世'), "CJK");
+        assert!(is_printable_non_ascii('—'), "em dash");
+        assert!(is_printable_non_ascii('π'), "greek letter");
+        assert!(is_printable_non_ascii('£'), "pound sign");
+        assert!(is_printable_non_ascii('©'), "copyright sign");
+    }
+
+    /// `is_printable_non_ascii` classifies invisible/confusable chars as non-printable.
+    #[test]
+    fn is_printable_non_ascii_false_for_invisible() {
+        assert!(!is_printable_non_ascii('\u{200B}'), "zero-width space");
+        assert!(!is_printable_non_ascii('\u{200D}'), "zero-width joiner");
+        assert!(!is_printable_non_ascii('\u{202E}'), "rtl override");
+        assert!(!is_printable_non_ascii('\u{FEFF}'), "BOM");
+        assert!(!is_printable_non_ascii('\u{2028}'), "line separator");
+        assert!(!is_printable_non_ascii('\u{2029}'), "paragraph separator");
+        assert!(!is_printable_non_ascii('\u{00AD}'), "soft hyphen");
+        assert!(!is_printable_non_ascii('\u{E000}'), "private use start");
+        assert!(!is_printable_non_ascii('\u{FFF0}'), "specials block");
+    }
+
+    // ── full parse/format round-trip for Unicode string literals ────────────
+
+    /// A string literal containing readable Unicode must survive a parse/format
+    /// cycle unchanged (formatter preserves raw Unicode rather than escaping it).
+    #[test]
+    fn string_literal_readable_unicode_round_trips() {
+        let src = "fn greet() -> string {\n    \"café → résumé\"\n}\n";
+        assert_eq!(roundtrip(src), src);
+    }
+
+    /// Idempotency: running the formatter twice on a source with readable Unicode
+    /// must produce the same output both times.
+    #[test]
+    fn string_literal_readable_unicode_idempotent() {
+        let src = "fn greet() -> string {\n    \"世界 — hello → world\"\n}\n";
+        let once = roundtrip(src);
+        assert_eq!(
+            once, src,
+            "first pass must preserve readable Unicode verbatim"
+        );
+        let twice = roundtrip(&once);
+        assert_eq!(twice, once, "second pass must be idempotent");
+    }
+
+    /// A string literal containing an invisible Unicode character must have that
+    /// character escaped after formatting, and remain stable on a second pass.
+    #[test]
+    fn string_literal_invisible_unicode_escaped_and_idempotent() {
+        // Source contains a literal zero-width space (U+200B) inside the string.
+        // After formatting, it must appear as \u{200B}.
+        let raw_src = "fn test() -> string {\n    \"hello\u{200B}world\"\n}\n";
+        let formatted = roundtrip(raw_src);
+        assert!(
+            formatted.contains("\\u{200B}"),
+            "zero-width space must be escaped; got: {formatted:?}"
+        );
+        // Second pass must not change anything.
+        let twice = roundtrip(&formatted);
+        assert_eq!(twice, formatted, "must be idempotent after escaping");
+    }
+
+    /// f-string literals with readable Unicode survive round-trip.
+    #[test]
+    fn fstring_literal_readable_unicode_round_trips() {
+        let src = "fn greet(name: string) -> string {\n    f\"bonjour {name} — café\"\n}\n";
         assert_eq!(roundtrip(src), src);
     }
 }

@@ -1,0 +1,33 @@
+// return-as-expression in a diverging branch (v0.6 error-prop): an `if`/`else`
+// whose else branch `return`s leaves the construct's value type as the THEN
+// branch's type. An UNANNOTATED `let adjusted = if … else { return … }` must
+// infer `i64` (not `Never`/`Unit`) so a later `adjusted + 1` lowers as integer
+// arithmetic. Covers the let-RHS and binary-operand positions that previously
+// failed closed at MIR while the annotated and fn-arg positions worked.
+fn adjust(n: i64) -> Result<i64, string> {
+    let adjusted = if n > 0 {
+        n
+    } else {
+        return Err("non-positive")
+    };
+    Ok(adjusted + 1)
+}
+
+fn combine(n: i64) -> Result<i64, string> {
+    let ten = 10;
+    Ok(ten + if n == 1 { n + 1 } else { return Err("bad-arg") })
+}
+
+fn show(r: Result<i64, string>) -> string {
+    match r {
+        Ok(v) => f"ok={v}",
+        Err(e) => f"err={e}",
+    }
+}
+
+fn main() {
+    println(show(adjust(1)));
+    println(show(adjust(0)));
+    println(show(combine(1)));
+    println(show(combine(2)));
+}

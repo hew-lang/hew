@@ -172,6 +172,7 @@ impl Verifier {
                 HirStmtKind::LetElse {
                     scrutinee,
                     bindings,
+                    success_prelude,
                     else_body,
                     ..
                 } => {
@@ -180,6 +181,19 @@ impl Verifier {
                     // register them here so later references resolve.
                     for binding in bindings {
                         self.binding(binding.binding, scrutinee.span.clone());
+                    }
+                    // Aggregate payload destructure (e.g. `Ok((n, s))`): the
+                    // prelude's `Let` statements introduce the leaf binders
+                    // (`n`, `s`) that also escape into the enclosing scope.
+                    // Register them and verify their projection values so a
+                    // later reference resolves and is not flagged unresolved.
+                    for prelude_stmt in success_prelude {
+                        if let HirStmtKind::Let(binding, value) = &prelude_stmt.kind {
+                            self.binding(binding.id, binding.span.clone());
+                            if let Some(value) = value {
+                                self.expr(value);
+                            }
+                        }
                     }
                     self.block(else_body);
                 }

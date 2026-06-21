@@ -1,0 +1,31 @@
+// let-else over a nested-tuple payload (v0.6 error-prop): `let Ok((n, s)) = e
+// else { return … };` destructures the tuple and binds BOTH leaf binders into
+// the enclosing scope, so `n` and `s` are live for the rest of the block. The
+// success-path prelude mirrors `match`'s aggregate-payload destructure.
+fn make_pair(good: bool) -> Result<(i64, string), string> {
+    if good {
+        Ok((7, "payload"))
+    } else {
+        Err("no-pair")
+    }
+}
+
+fn parse(good: bool) -> Result<string, string> {
+    let Ok((n, s)) = make_pair(good) else {
+        return Err("fallback")
+    };
+    let later = n + 35;
+    Ok(f"{s}:{later}")
+}
+
+fn run(good: bool) -> string {
+    match parse(good) {
+        Ok(v) => f"ok={v}",
+        Err(e) => f"err={e}",
+    }
+}
+
+fn main() {
+    println(run(true));
+    println(run(false));
+}

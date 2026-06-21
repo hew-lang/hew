@@ -169,6 +169,55 @@ fn constructor_payload_aggregate_subpatterns(pattern: &Pattern) -> bool {
     })
 }
 
+/// Resolve the type of an `if`/`else` expression from its two branch types,
+/// mirroring the checker's `unify_branches` Never-handling.
+///
+/// A branch that diverges (`return`/`break`/`continue`) lowers to a block of
+/// type `ResolvedTy::Never`; it must NOT determine the construct's value type.
+/// When one branch is `Never`, the construct's type is the OTHER branch's type
+/// (the value branch). This makes `let x = if c { v } else { return … }` carry
+/// `v`'s type instead of `Never`, so a later `x + 1` lowers as integer
+/// arithmetic rather than failing closed on a non-integer operand at MIR.
+///
+/// With no else branch the construct yields `Unit`; with both branches present
+/// and neither `Never`, the then branch's type wins (the checker already
+/// reconciled the two, so they agree here).
+fn if_branch_result_ty(then_ty: &ResolvedTy, else_ty: Option<&ResolvedTy>) -> ResolvedTy {
+    match else_ty {
+        None => ResolvedTy::Unit,
+        Some(else_ty) => {
+            if matches!(else_ty, ResolvedTy::Never) {
+                then_ty.clone()
+            } else {
+                else_ty.clone()
+            }
+        }
+    }
+}
+
+/// True when a tail-less block's statements guarantee control never falls off
+/// the end — i.e. the block diverges and has type `ResolvedTy::Never`.
+///
+/// A block diverges when its last reachable statement diverges: a bare
+/// `return`, or a value/expression statement whose lowered type is `Never`
+/// (a `return <expr>` expression, or an `if`/`match` whose every branch
+/// diverges). This is the HIR mirror of the checker's `check_block`
+/// divergence tracking, kept narrow: only the LAST statement is inspected,
+/// matching the well-formed case where any earlier diverging statement makes
+/// the rest unreachable (the checker already warned on that).
+fn block_diverges(statements: &[HirStmt]) -> bool {
+    let Some(last) = statements.last() else {
+        return false;
+    };
+    match &last.kind {
+        HirStmtKind::Return(_) => true,
+        HirStmtKind::Expr(expr) | HirStmtKind::Let(_, Some(expr)) => {
+            matches!(expr.ty, ResolvedTy::Never)
+        }
+        _ => false,
+    }
+}
+
 fn literal_to_hir(lit: &Literal) -> (HirLiteral, ResolvedTy) {
     match lit {
         Literal::Integer { value, .. } => (HirLiteral::Integer(*value), ResolvedTy::I64),
@@ -3775,10 +3824,14 @@ fn collect_call_sites_in_stmt(
         }
         HirStmtKind::LetElse {
             scrutinee,
+            success_prelude,
             else_body,
             ..
         } => {
             collect_call_sites_in_expr(scrutinee, out, trait_out);
+            for stmt in success_prelude {
+                collect_call_sites_in_stmt(stmt, out, trait_out);
+            }
             collect_call_sites_in_block(else_body, out, trait_out);
         }
     }
@@ -6714,10 +6767,14 @@ impl LowerCtx {
             }
             HirStmtKind::LetElse {
                 scrutinee,
+                success_prelude,
                 else_body,
                 ..
             } => {
                 self.wrap_var_self_explicit_expr_returns(scrutinee, receiver, abi_return_ty);
+                for stmt in success_prelude.iter_mut() {
+                    self.wrap_var_self_stmt_returns(stmt, receiver, abi_return_ty);
+                }
                 self.wrap_var_self_explicit_returns_in_block(else_body, receiver, abi_return_ty);
             }
             HirStmtKind::Let(_, None) => {}
@@ -9774,9 +9831,24 @@ impl LowerCtx {
             .trailing_expr
             .as_ref()
             .map(|expr| Box::new(self.lower_expr(expr, IntentKind::Read)));
-        let ty = tail
-            .as_ref()
-            .map_or(ResolvedTy::Unit, |expr| expr.ty.clone());
+        // A block's value type is its tail expression's type. With no tail it is
+        // `Unit` UNLESS the block diverges: a trailing `return`/`break`/
+        // `continue` (or a last statement that diverges in every branch, e.g. an
+        // `if` whose arms all `return`) makes control never fall off the end, so
+        // the block has type `Never`. This mirrors the checker's `check_block`
+        // `Ty::Never` result and is what lets `let x = if c { v } else { return … }`
+        // carry `v`'s type — without it the else block reads `Unit` and the
+        // construct mis-types, breaking a later `x + 1` at MIR lowering.
+        let ty = tail.as_ref().map_or_else(
+            || {
+                if block_diverges(&statements) {
+                    ResolvedTy::Never
+                } else {
+                    ResolvedTy::Unit
+                }
+            },
+            |expr| expr.ty.clone(),
+        );
         self.current_scope_id = prev_scope_id;
         self.pop_scope();
         self.scope_depth = saved_scope_depth;
@@ -10775,9 +10847,7 @@ impl LowerCtx {
                         None
                     }
                 });
-                let if_ty = else_expr
-                    .as_ref()
-                    .map_or(ResolvedTy::Unit, |e| e.ty.clone());
+                let if_ty = if_branch_result_ty(&then_ty, else_expr.as_ref().map(|e| &e.ty));
                 let if_expr = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -11423,6 +11493,97 @@ impl LowerCtx {
         }
     }
 
+    /// Destructure a constructor pattern's AGGREGATE payload subpatterns
+    /// (non-empty tuples and structs, e.g. the `(n, s)` in `Ok((n, s))`) into
+    /// their leaf binders.
+    ///
+    /// For each aggregate field the variant carries, this binds the whole
+    /// payload field to a synthetic temp (appended to `bindings` so MIR moves
+    /// the field out of the scrutinee) and then recursively lowers the nested
+    /// pattern against a reference to that temp via
+    /// `lower_pattern_value_into_stmts`, collecting the destructure `Let`
+    /// statements into the returned prelude. The caller runs the prelude on the
+    /// success path so the leaf binders (`n`, `s`) are live afterwards.
+    ///
+    /// Shared by `match` arm lowering and `let-else` lowering so both paths
+    /// reach an identical set of leaf bindings for the same pattern shape.
+    /// Returns `(prelude_stmts, had_error)`; on error the diagnostics are
+    /// already pushed and the caller fails closed.
+    fn lower_constructor_payload_aggregates(
+        &mut self,
+        ctor_name: &str,
+        sub_patterns: &[Spanned<Pattern>],
+        scrutinee_ty: &ResolvedTy,
+        bindings: &mut Vec<HirMatchArmBinding>,
+        owning_pass: &'static str,
+    ) -> (Vec<HirStmt>, bool) {
+        let mut prelude = Vec::new();
+        let mut had_error = false;
+        let field_tys = self
+            .lookup_variant_ctor(ctor_name)
+            .map(|(type_name, _, kind)| match kind {
+                HirVariantKind::Tuple(field_tys) => {
+                    let scrutinee_args = match scrutinee_ty {
+                        ResolvedTy::Named { args, .. } => args.as_slice(),
+                        _ => &[],
+                    };
+                    let type_params = self
+                        .enum_type_params
+                        .get(&type_name)
+                        .cloned()
+                        .unwrap_or_default();
+                    if type_params.len() == scrutinee_args.len() {
+                        field_tys
+                            .iter()
+                            .map(|ty| substitute_type_params(ty, &type_params, scrutinee_args))
+                            .collect()
+                    } else {
+                        field_tys.clone()
+                    }
+                }
+                HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
+            })
+            .unwrap_or_default();
+        for (field_idx, (sub_pat, sub_span)) in sub_patterns.iter().enumerate() {
+            if !matches!(sub_pat, Pattern::Struct { .. })
+                && !matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
+            {
+                continue;
+            }
+            let Some(field_ty) = field_tys.get(field_idx).cloned() else {
+                continue;
+            };
+            let Ok(field_idx_u32) = u32::try_from(field_idx) else {
+                self.unsupported(
+                    sub_span.clone(),
+                    "payload aggregate field index exceeds u32::MAX",
+                    owning_pass,
+                );
+                had_error = true;
+                continue;
+            };
+            let temp_name = format!("__payload_{}_{}", field_idx, self.ids.binding().0);
+            let bound = self.bind(temp_name.clone(), field_ty.clone(), false, sub_span.clone());
+            let temp_id = bound.id;
+            bindings.push(HirMatchArmBinding {
+                binding: temp_id,
+                field_idx: field_idx_u32,
+                name: temp_name.clone(),
+                ty: field_ty.clone(),
+            });
+            let temp_ref =
+                self.binding_ref_expr(temp_name, temp_id, field_ty.clone(), sub_span.clone());
+            self.lower_pattern_value_into_stmts(
+                &(sub_pat.clone(), sub_span.clone()),
+                temp_ref,
+                field_ty,
+                &mut prelude,
+                sub_span.clone(),
+            );
+        }
+        (prelude, had_error)
+    }
+
     /// Lower `let PAT = scrutinee else { <divergent block> };` to the dedicated
     /// `HirStmtKind::LetElse` node.
     ///
@@ -11533,7 +11694,7 @@ impl LowerCtx {
         // Bind the payload fields into the ENCLOSING scope (no push/pop) so the
         // Ok-path binders escape and are live for the rest of the enclosing
         // block — the defining property of let-else.
-        let bindings: Vec<HirMatchArmBinding> = if binding_error {
+        let mut bindings: Vec<HirMatchArmBinding> = if binding_error {
             Vec::new()
         } else {
             binding_specs
@@ -11548,6 +11709,27 @@ impl LowerCtx {
                     }
                 })
                 .collect()
+        };
+
+        // Destructure aggregate payload subpatterns (`Ok((n, s))`) into their
+        // leaf binders, mirroring `match`. The prelude runs on the SUCCESS path
+        // after the top-level payload fields bind; its leaf binders escape into
+        // the enclosing scope just like `bindings`. Plain bindings / wildcards
+        // produce no prelude.
+        let success_prelude = if binding_error {
+            Vec::new()
+        } else if let Pattern::Constructor { name, patterns } = &pattern.0 {
+            let (prelude, had_error) = self.lower_constructor_payload_aggregates(
+                name,
+                patterns,
+                &scrutinee_hir.ty,
+                &mut bindings,
+                "let-else-substrate",
+            );
+            binding_error |= had_error;
+            prelude
+        } else {
+            Vec::new()
         };
 
         let mut payload_variant_predicates =
@@ -11572,6 +11754,7 @@ impl LowerCtx {
                 scrutinee: Box::new(scrutinee_hir),
                 variant_idx,
                 bindings,
+                success_prelude,
                 payload_variant_predicates,
                 else_body,
             },
@@ -11871,6 +12054,7 @@ impl LowerCtx {
 
     fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
         let lowered = self.lower_expr_inner(expr, intent);
+
         // Function-tail Ok-coercion: the checker marked this tail expression's
         // span when a `Result<Ok, Err>`-returning function's tail yields the
         // `Ok` payload (e.g. `db.find(id)?` typed `User` under
@@ -12108,9 +12292,12 @@ impl LowerCtx {
                 let else_expr = else_block
                     .as_ref()
                     .map(|expr| Box::new(self.lower_expr(expr, IntentKind::Read)));
-                let ty = else_expr
-                    .as_ref()
-                    .map_or(ResolvedTy::Unit, |expr| expr.ty.clone());
+                // Mirror the checker's `unify_branches`: a diverging branch
+                // (`Never`) must not set the construct's value type, so the
+                // construct takes the value branch's type. Without this an
+                // unannotated `let x = if c { v } else { return … }` would carry
+                // the else's `Never` and break a later `x + 1` at MIR lowering.
+                let ty = if_branch_result_ty(&then_expr.ty, else_expr.as_ref().map(|e| &e.ty));
                 (
                     HirExprKind::If {
                         condition: Box::new(condition),
@@ -21110,75 +21297,15 @@ impl LowerCtx {
 
             let mut body_prelude = Vec::new();
             if let Pattern::Constructor { name, patterns } = &arm.pattern.0 {
-                let field_tys = self
-                    .lookup_variant_ctor(name)
-                    .map(|(type_name, _, kind)| match kind {
-                        HirVariantKind::Tuple(field_tys) => {
-                            let scrutinee_args = match &scrutinee_hir.ty {
-                                ResolvedTy::Named { args, .. } => args.as_slice(),
-                                _ => &[],
-                            };
-                            let type_params = self
-                                .enum_type_params
-                                .get(&type_name)
-                                .cloned()
-                                .unwrap_or_default();
-                            if type_params.len() == scrutinee_args.len() {
-                                field_tys
-                                    .iter()
-                                    .map(|ty| {
-                                        substitute_type_params(ty, &type_params, scrutinee_args)
-                                    })
-                                    .collect()
-                            } else {
-                                field_tys.clone()
-                            }
-                        }
-                        HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
-                    })
-                    .unwrap_or_default();
-                for (field_idx, (sub_pat, sub_span)) in patterns.iter().enumerate() {
-                    if !matches!(sub_pat, Pattern::Struct { .. })
-                        && !matches!(sub_pat, Pattern::Tuple(items) if !items.is_empty())
-                    {
-                        continue;
-                    }
-                    let Some(field_ty) = field_tys.get(field_idx).cloned() else {
-                        continue;
-                    };
-                    let Ok(field_idx_u32) = u32::try_from(field_idx) else {
-                        self.unsupported(
-                            sub_span.clone(),
-                            "payload aggregate field index exceeds u32::MAX",
-                            "match-expression-substrate",
-                        );
-                        binding_error = true;
-                        continue;
-                    };
-                    let temp_name = format!("__payload_{}_{}", field_idx, self.ids.binding().0);
-                    let bound =
-                        self.bind(temp_name.clone(), field_ty.clone(), false, sub_span.clone());
-                    let temp_id = bound.id;
-                    bindings.push(HirMatchArmBinding {
-                        binding: temp_id,
-                        field_idx: field_idx_u32,
-                        name: temp_name.clone(),
-                        ty: field_ty.clone(),
-                    });
-                    let temp_ref = self.binding_ref_expr(
-                        temp_name,
-                        temp_id,
-                        field_ty.clone(),
-                        sub_span.clone(),
-                    );
-                    self.lower_pattern_value_into_stmts(
-                        &(sub_pat.clone(), sub_span.clone()),
-                        temp_ref,
-                        field_ty,
-                        &mut body_prelude,
-                        sub_span.clone(),
-                    );
-                }
+                let (prelude, had_error) = self.lower_constructor_payload_aggregates(
+                    name,
+                    patterns,
+                    &scrutinee_hir.ty,
+                    &mut bindings,
+                    "match-expression-substrate",
+                );
+                body_prelude = prelude;
+                binding_error |= had_error;
             }
             if binding_error {
                 let _ = self.lower_expr(&arm.body, IntentKind::Read);
@@ -22604,10 +22731,21 @@ fn collect_general_closure_captures_walk_block(
             }
             HirStmtKind::LetElse {
                 scrutinee,
+                success_prelude,
                 else_body,
                 ..
             } => {
                 collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
+                for prelude_stmt in success_prelude {
+                    if let HirStmtKind::Let(_, Some(value)) = &prelude_stmt.kind {
+                        collect_general_closure_captures_walk(
+                            value,
+                            outer_bindings,
+                            seen,
+                            captures,
+                        );
+                    }
+                }
                 collect_general_closure_captures_walk_block(
                     else_body,
                     outer_bindings,
@@ -22647,10 +22785,16 @@ fn collect_captures_walk_block(
             }
             HirStmtKind::LetElse {
                 scrutinee,
+                success_prelude,
                 else_body,
                 ..
             } => {
                 collect_captures_walk(scrutinee, param_ids, seen, captures, self_id);
+                for prelude_stmt in success_prelude {
+                    if let HirStmtKind::Let(_, Some(value)) = &prelude_stmt.kind {
+                        collect_captures_walk(value, param_ids, seen, captures, self_id);
+                    }
+                }
                 collect_captures_walk_block(else_body, param_ids, seen, captures, self_id);
             }
         }
@@ -22975,35 +23119,59 @@ fn collect_hir_emitted_events_in_block(
     out: &mut Vec<String>,
 ) {
     for stmt in &block.statements {
-        match &stmt.kind {
-            HirStmtKind::Expr(e) | HirStmtKind::Let(_, Some(e)) | HirStmtKind::Return(Some(e)) => {
-                collect_hir_emitted_events_walk(e, event_names, out);
-            }
-            HirStmtKind::Assign { value, .. } => {
-                collect_hir_emitted_events_walk(value, event_names, out);
-            }
-            HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
-            HirStmtKind::Defer { body, .. } => {
-                collect_hir_emitted_events_walk(body, event_names, out);
-            }
-            HirStmtKind::LetElse {
-                scrutinee,
-                else_body,
-                ..
-            } => {
-                collect_hir_emitted_events_walk(scrutinee, event_names, out);
-                collect_hir_emitted_events_in_block(else_body, event_names, out);
-            }
-        }
+        collect_hir_emitted_events_in_stmt(stmt, event_names, out);
     }
     if let Some(tail) = &block.tail {
         collect_hir_emitted_events_walk(tail, event_names, out);
     }
 }
 
+/// Walk one HIR statement for machine-emit event names. Centralised so every
+/// block-bearing walker (the `_in_block` helper plus the inline `Block` /
+/// `GenBlock` / etc. arms) reaches an identical set of emit-bearing
+/// sub-expressions — including the let-else success prelude.
+fn collect_hir_emitted_events_in_stmt(
+    stmt: &HirStmt,
+    event_names: &[String],
+    out: &mut Vec<String>,
+) {
+    match &stmt.kind {
+        HirStmtKind::Expr(e) | HirStmtKind::Let(_, Some(e)) | HirStmtKind::Return(Some(e)) => {
+            collect_hir_emitted_events_walk(e, event_names, out);
+        }
+        HirStmtKind::Assign { value, .. } => {
+            collect_hir_emitted_events_walk(value, event_names, out);
+        }
+        HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+        HirStmtKind::Defer { body, .. } => {
+            collect_hir_emitted_events_walk(body, event_names, out);
+        }
+        HirStmtKind::LetElse {
+            scrutinee,
+            success_prelude,
+            else_body,
+            ..
+        } => {
+            collect_hir_emitted_events_walk(scrutinee, event_names, out);
+            for prelude_stmt in success_prelude {
+                collect_hir_emitted_events_in_stmt(prelude_stmt, event_names, out);
+            }
+            collect_hir_emitted_events_in_block(else_body, event_names, out);
+        }
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "single recursive walker spanning all HirExprKind variants"
+)]
+#[allow(
+    clippy::match_same_arms,
+    reason = "block-bearing variants (GenBlock / Scope / ForkBlock / While / \
+              ForRange / WhileLet / Loop) all delegate to \
+              collect_hir_emitted_events_in_block but are kept as distinct arms \
+              so a new variant forces an explicit per-variant decision rather \
+              than silently joining a merged arm"
 )]
 fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: &mut Vec<String>) {
     match &expr.kind {
@@ -23017,63 +23185,10 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             }
         }
         HirExprKind::Block(block) => {
-            for stmt in &block.statements {
-                match &stmt.kind {
-                    HirStmtKind::Expr(e)
-                    | HirStmtKind::Let(_, Some(e))
-                    | HirStmtKind::Return(Some(e)) => {
-                        collect_hir_emitted_events_walk(e, event_names, out);
-                    }
-                    HirStmtKind::Assign { value, .. } => {
-                        // Assignment targets are never emit-bearing expressions.
-                        collect_hir_emitted_events_walk(value, event_names, out);
-                    }
-                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
-                    HirStmtKind::Defer { body, .. } => {
-                        collect_hir_emitted_events_walk(body, event_names, out);
-                    }
-                    HirStmtKind::LetElse {
-                        scrutinee,
-                        else_body,
-                        ..
-                    } => {
-                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
-                        collect_hir_emitted_events_in_block(else_body, event_names, out);
-                    }
-                }
-            }
-            if let Some(tail) = &block.tail {
-                collect_hir_emitted_events_walk(tail, event_names, out);
-            }
+            collect_hir_emitted_events_in_block(block, event_names, out);
         }
         HirExprKind::GenBlock { body, .. } => {
-            for stmt in &body.statements {
-                match &stmt.kind {
-                    HirStmtKind::Expr(e)
-                    | HirStmtKind::Let(_, Some(e))
-                    | HirStmtKind::Return(Some(e)) => {
-                        collect_hir_emitted_events_walk(e, event_names, out);
-                    }
-                    HirStmtKind::Assign { value, .. } => {
-                        collect_hir_emitted_events_walk(value, event_names, out);
-                    }
-                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
-                    HirStmtKind::Defer { body, .. } => {
-                        collect_hir_emitted_events_walk(body, event_names, out);
-                    }
-                    HirStmtKind::LetElse {
-                        scrutinee,
-                        else_body,
-                        ..
-                    } => {
-                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
-                        collect_hir_emitted_events_in_block(else_body, event_names, out);
-                    }
-                }
-            }
-            if let Some(tail) = &body.tail {
-                collect_hir_emitted_events_walk(tail, event_names, out);
-            }
+            collect_hir_emitted_events_in_block(body, event_names, out);
         }
         HirExprKind::Yield {
             value: Some(value), ..
@@ -23169,95 +23284,17 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             collect_hir_emitted_events_walk(object, event_names, out);
         }
         HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => {
-            for stmt in &body.statements {
-                match &stmt.kind {
-                    HirStmtKind::Expr(e)
-                    | HirStmtKind::Let(_, Some(e))
-                    | HirStmtKind::Return(Some(e)) => {
-                        collect_hir_emitted_events_walk(e, event_names, out);
-                    }
-                    HirStmtKind::Assign { value, .. } => {
-                        collect_hir_emitted_events_walk(value, event_names, out);
-                    }
-                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
-                    HirStmtKind::Defer { body, .. } => {
-                        collect_hir_emitted_events_walk(body, event_names, out);
-                    }
-                    HirStmtKind::LetElse {
-                        scrutinee,
-                        else_body,
-                        ..
-                    } => {
-                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
-                        collect_hir_emitted_events_in_block(else_body, event_names, out);
-                    }
-                }
-            }
-            if let Some(tail) = &body.tail {
-                collect_hir_emitted_events_walk(tail, event_names, out);
-            }
+            collect_hir_emitted_events_in_block(body, event_names, out);
         }
         HirExprKind::ScopeDeadline { duration, body } => {
             collect_hir_emitted_events_walk(duration, event_names, out);
-            for stmt in &body.statements {
-                match &stmt.kind {
-                    HirStmtKind::Expr(e)
-                    | HirStmtKind::Let(_, Some(e))
-                    | HirStmtKind::Return(Some(e)) => {
-                        collect_hir_emitted_events_walk(e, event_names, out);
-                    }
-                    HirStmtKind::Assign { value, .. } => {
-                        collect_hir_emitted_events_walk(value, event_names, out);
-                    }
-                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
-                    HirStmtKind::Defer { body, .. } => {
-                        collect_hir_emitted_events_walk(body, event_names, out);
-                    }
-                    HirStmtKind::LetElse {
-                        scrutinee,
-                        else_body,
-                        ..
-                    } => {
-                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
-                        collect_hir_emitted_events_in_block(else_body, event_names, out);
-                    }
-                }
-            }
-            if let Some(tail) = &body.tail {
-                collect_hir_emitted_events_walk(tail, event_names, out);
-            }
+            collect_hir_emitted_events_in_block(body, event_names, out);
         }
         HirExprKind::While {
             condition, body, ..
         } => {
             collect_hir_emitted_events_walk(condition, event_names, out);
-            for stmt in &body.statements {
-                match &stmt.kind {
-                    HirStmtKind::Expr(e)
-                    | HirStmtKind::Let(_, Some(e))
-                    | HirStmtKind::Return(Some(e)) => {
-                        collect_hir_emitted_events_walk(e, event_names, out);
-                    }
-                    HirStmtKind::Assign { value, .. } => {
-                        collect_hir_emitted_events_walk(value, event_names, out);
-                    }
-                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
-                    HirStmtKind::Defer { body, .. } => {
-                        collect_hir_emitted_events_walk(body, event_names, out);
-                    }
-                    HirStmtKind::LetElse {
-                        scrutinee,
-                        else_body,
-                        ..
-                    } => {
-                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
-                        collect_hir_emitted_events_in_block(else_body, event_names, out);
-                    }
-                }
-            }
-            if let Some(tail) = &body.tail {
-                collect_hir_emitted_events_walk(tail, event_names, out);
-            }
+            collect_hir_emitted_events_in_block(body, event_names, out);
         }
         HirExprKind::ForRange {
             start,
@@ -23269,65 +23306,13 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             collect_hir_emitted_events_walk(start, event_names, out);
             collect_hir_emitted_events_walk(end, event_names, out);
             collect_hir_emitted_events_walk(step, event_names, out);
-            for stmt in &body.statements {
-                match &stmt.kind {
-                    HirStmtKind::Expr(e)
-                    | HirStmtKind::Let(_, Some(e))
-                    | HirStmtKind::Return(Some(e)) => {
-                        collect_hir_emitted_events_walk(e, event_names, out);
-                    }
-                    HirStmtKind::Assign { value, .. } => {
-                        collect_hir_emitted_events_walk(value, event_names, out);
-                    }
-                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
-                    HirStmtKind::Defer { body, .. } => {
-                        collect_hir_emitted_events_walk(body, event_names, out);
-                    }
-                    HirStmtKind::LetElse {
-                        scrutinee,
-                        else_body,
-                        ..
-                    } => {
-                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
-                        collect_hir_emitted_events_in_block(else_body, event_names, out);
-                    }
-                }
-            }
-            if let Some(tail) = &body.tail {
-                collect_hir_emitted_events_walk(tail, event_names, out);
-            }
+            collect_hir_emitted_events_in_block(body, event_names, out);
         }
         HirExprKind::WhileLet {
             scrutinee, body, ..
         } => {
             collect_hir_emitted_events_walk(scrutinee, event_names, out);
-            for stmt in &body.statements {
-                match &stmt.kind {
-                    HirStmtKind::Expr(e)
-                    | HirStmtKind::Let(_, Some(e))
-                    | HirStmtKind::Return(Some(e)) => {
-                        collect_hir_emitted_events_walk(e, event_names, out);
-                    }
-                    HirStmtKind::Assign { value, .. } => {
-                        collect_hir_emitted_events_walk(value, event_names, out);
-                    }
-                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
-                    HirStmtKind::Defer { body, .. } => {
-                        collect_hir_emitted_events_walk(body, event_names, out);
-                    }
-                    HirStmtKind::LetElse {
-                        scrutinee,
-                        else_body,
-                        ..
-                    } => {
-                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
-                        collect_hir_emitted_events_in_block(else_body, event_names, out);
-                    }
-                }
-            }
-            if let Some(tail) = &body.tail {
-                collect_hir_emitted_events_walk(tail, event_names, out);
-            }
+            collect_hir_emitted_events_in_block(body, event_names, out);
         }
         HirExprKind::IfLet {
             scrutinee,
@@ -23337,33 +23322,7 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
         } => {
             collect_hir_emitted_events_walk(scrutinee, event_names, out);
             for block in std::iter::once(body).chain(else_body.as_ref()) {
-                for stmt in &block.statements {
-                    match &stmt.kind {
-                        HirStmtKind::Expr(e)
-                        | HirStmtKind::Let(_, Some(e))
-                        | HirStmtKind::Return(Some(e)) => {
-                            collect_hir_emitted_events_walk(e, event_names, out);
-                        }
-                        HirStmtKind::Assign { value, .. } => {
-                            collect_hir_emitted_events_walk(value, event_names, out);
-                        }
-                        HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
-                        HirStmtKind::Defer { body, .. } => {
-                            collect_hir_emitted_events_walk(body, event_names, out);
-                        }
-                        HirStmtKind::LetElse {
-                            scrutinee,
-                            else_body,
-                            ..
-                        } => {
-                            collect_hir_emitted_events_walk(scrutinee, event_names, out);
-                            collect_hir_emitted_events_in_block(else_body, event_names, out);
-                        }
-                    }
-                }
-                if let Some(tail) = &block.tail {
-                    collect_hir_emitted_events_walk(tail, event_names, out);
-                }
+                collect_hir_emitted_events_in_block(block, event_names, out);
             }
         }
         HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
@@ -23372,33 +23331,7 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
             }
         }
         HirExprKind::Loop { body, .. } => {
-            for stmt in &body.statements {
-                match &stmt.kind {
-                    HirStmtKind::Expr(e)
-                    | HirStmtKind::Let(_, Some(e))
-                    | HirStmtKind::Return(Some(e)) => {
-                        collect_hir_emitted_events_walk(e, event_names, out);
-                    }
-                    HirStmtKind::Assign { value, .. } => {
-                        collect_hir_emitted_events_walk(value, event_names, out);
-                    }
-                    HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
-                    HirStmtKind::Defer { body, .. } => {
-                        collect_hir_emitted_events_walk(body, event_names, out);
-                    }
-                    HirStmtKind::LetElse {
-                        scrutinee,
-                        else_body,
-                        ..
-                    } => {
-                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
-                        collect_hir_emitted_events_in_block(else_body, event_names, out);
-                    }
-                }
-            }
-            if let Some(tail) = &body.tail {
-                collect_hir_emitted_events_walk(tail, event_names, out);
-            }
+            collect_hir_emitted_events_in_block(body, event_names, out);
         }
         HirExprKind::TupleIndex { tuple, .. } => {
             collect_hir_emitted_events_walk(tuple, event_names, out);
@@ -25947,10 +25880,16 @@ fn scan_block_for_call_shape(
             }
             HirStmtKind::LetElse {
                 scrutinee,
+                success_prelude,
                 else_body,
                 ..
             } => {
                 scan_expr_for_call_shape(scrutinee, callable, diagnostics);
+                for prelude_stmt in success_prelude {
+                    if let HirStmtKind::Let(_, Some(init)) = &prelude_stmt.kind {
+                        scan_expr_for_call_shape(init, callable, diagnostics);
+                    }
+                }
                 scan_block_for_call_shape(else_body, callable, diagnostics);
             }
         }

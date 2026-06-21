@@ -555,10 +555,17 @@ fn walk_stmt_for_suspend(stmt: &hew_hir::HirStmt, found: &mut bool) {
         HirStmtKind::Defer { body, .. } => walk_expr_for_suspend(body, found),
         HirStmtKind::LetElse {
             scrutinee,
+            success_prelude,
             else_body,
             ..
         } => {
             walk_expr_for_suspend(scrutinee, found);
+            for prelude_stmt in success_prelude {
+                walk_stmt_for_suspend(prelude_stmt, found);
+                if *found {
+                    return;
+                }
+            }
             walk_block_for_suspend(else_body, found);
         }
         HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}

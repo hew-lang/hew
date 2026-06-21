@@ -1051,8 +1051,19 @@ pub enum HirStmtKind {
         /// index of `Ok` in `Result`).
         variant_idx: u32,
         /// Payload bindings introduced by the success-path pattern. These are
-        /// allocated in the ENCLOSING scope and escape the statement.
+        /// allocated in the ENCLOSING scope and escape the statement. For an
+        /// aggregate payload field (e.g. the tuple in `Ok((n, s))`) this holds
+        /// a synthetic `__payload_*` temp binding for the whole field; the
+        /// nested leaf binders (`n`, `s`) are produced by `success_prelude`.
         bindings: Vec<HirMatchArmBinding>,
+        /// Destructure statements for aggregate payload subpatterns
+        /// (`Ok((n, s))`, `Ok(Point { x, y })`). They run on the SUCCESS path,
+        /// after the top-level payload fields are bound and before the
+        /// continuation, projecting the synthetic `__payload_*` temps into
+        /// their leaf binders. Each is a plain `HirStmtKind::Let`; the leaf
+        /// binders escape into the enclosing scope like the top-level
+        /// `bindings`. Empty when no payload field is an aggregate.
+        success_prelude: Vec<HirStmt>,
         /// Nested constructor checks on payload fields, evaluated after the
         /// outer tag check and before the bindings are made live. A failed
         /// nested check routes to `else_body`, same as a top-level tag

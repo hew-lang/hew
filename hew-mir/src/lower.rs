@@ -4359,10 +4359,16 @@ fn collect_unknown_self_fields_in_block(
             }
             HirStmtKind::LetElse {
                 scrutinee,
+                success_prelude,
                 else_body,
                 ..
             } => {
                 collect_unknown_self_fields_in_expr(scrutinee, state_fields, seen, unknown);
+                for prelude_stmt in success_prelude {
+                    if let HirStmtKind::Let(_, Some(value)) = &prelude_stmt.kind {
+                        collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
+                    }
+                }
                 collect_unknown_self_fields_in_block(else_body, state_fields, seen, unknown);
             }
         }
@@ -8258,6 +8264,7 @@ impl Builder {
                 scrutinee,
                 variant_idx,
                 bindings,
+                success_prelude,
                 payload_variant_predicates,
                 else_body,
             } => {
@@ -8265,6 +8272,7 @@ impl Builder {
                     scrutinee,
                     *variant_idx,
                     bindings,
+                    success_prelude,
                     payload_variant_predicates,
                     else_body,
                 );
@@ -8292,6 +8300,7 @@ impl Builder {
         scrutinee: &HirExpr,
         variant_idx: u32,
         bindings: &[hew_hir::HirMatchArmBinding],
+        success_prelude: &[hew_hir::HirStmt],
         payload_variant_predicates: &[hew_hir::HirPayloadVariantPredicate],
         else_body: &hew_hir::HirBlock,
     ) {
@@ -8417,6 +8426,15 @@ impl Builder {
                 },
             });
             self.binding_locals.insert(binding.binding, dest);
+        }
+        // Aggregate-payload destructure (`Ok((n, s))`): the prelude `Let`
+        // statements project the synthetic `__payload_*` temp into the leaf
+        // binders (`n`, `s`). They run on the SUCCESS path after the top-level
+        // payload fields bind, and like those fields their binding_locals are
+        // inserted (by the normal `Let` lowering) and never restored, so the
+        // leaf binders escape into the enclosing scope for the continuation.
+        for stmt in success_prelude {
+            self.stmt(stmt);
         }
         self.finish_current_block(Terminator::Goto { target: cont_bb });
 

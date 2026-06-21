@@ -1023,6 +1023,7 @@ fn walk_stmt(
         HirStmtKind::LetElse {
             scrutinee,
             bindings,
+            success_prelude,
             else_body,
             ..
         } => {
@@ -1041,6 +1042,22 @@ fn walk_stmt(
                 visit_ty(
                     &binding.ty,
                     &scrutinee.span,
+                    subst,
+                    machine_decls,
+                    residual_domain,
+                    seen,
+                    order,
+                    cap,
+                    diagnostics,
+                    cap_diag_emitted,
+                );
+            }
+            // Aggregate-payload leaf binders (`Ok((n, s))`) and their
+            // projection values may reach machine types not named elsewhere;
+            // walk the prelude so discovery stays complete.
+            for prelude_stmt in success_prelude {
+                walk_stmt(
+                    prelude_stmt,
                     subst,
                     machine_decls,
                     residual_domain,

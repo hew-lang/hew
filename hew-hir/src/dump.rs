@@ -9,7 +9,7 @@
 
 use std::fmt::Write as _;
 
-use crate::node::{HirBlock, HirExpr, HirExprKind, HirItem, HirModule, HirStmtKind};
+use crate::node::{HirBlock, HirExpr, HirExprKind, HirItem, HirModule, HirStmt, HirStmtKind};
 
 #[must_use]
 #[allow(
@@ -353,6 +353,7 @@ fn dump_block(out: &mut String, block: &HirBlock, indent: usize) {
             HirStmtKind::LetElse {
                 scrutinee,
                 bindings,
+                success_prelude,
                 else_body,
                 ..
             } => {
@@ -360,6 +361,10 @@ fn dump_block(out: &mut String, block: &HirBlock, indent: usize) {
                 writeln!(out, "{pad}let-else bind=[{}]", names.join(", "))
                     .expect("write to string");
                 dump_expr(out, scrutinee, indent + 2);
+                if !success_prelude.is_empty() {
+                    writeln!(out, "{pad}success-prelude").expect("write to string");
+                    dump_stmts(out, success_prelude, indent + 2);
+                }
                 writeln!(out, "{pad}else").expect("write to string");
                 dump_block(out, else_body, indent + 2);
             }
@@ -368,6 +373,26 @@ fn dump_block(out: &mut String, block: &HirBlock, indent: usize) {
     if let Some(tail) = &block.tail {
         writeln!(out, "{pad}tail").expect("write to string");
         dump_expr(out, tail, indent + 2);
+    }
+}
+
+/// Dump a flat list of statements (the let-else success prelude) by delegating
+/// each to the same per-statement rendering used inside a block. The prelude
+/// holds only `HirStmtKind::Let` projections, so a minimal renderer suffices.
+fn dump_stmts(out: &mut String, stmts: &[HirStmt], indent: usize) {
+    let pad = " ".repeat(indent);
+    for stmt in stmts {
+        match &stmt.kind {
+            HirStmtKind::Let(binding, value) => {
+                writeln!(out, "{pad}let {}", binding.name).expect("write to string");
+                if let Some(value) = value {
+                    dump_expr(out, value, indent + 2);
+                }
+            }
+            other => {
+                writeln!(out, "{pad}{other:?}").expect("write to string");
+            }
+        }
     }
 }
 

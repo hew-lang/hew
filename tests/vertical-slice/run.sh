@@ -767,6 +767,15 @@ run_accept_expect_stdout "return_in_match_arm"
 # binds the Ok payload into the enclosing scope (used after the statement) or
 # diverges through the else block.
 run_accept_expect_stdout "let_else_bind_or_bail"
+# let-else over a nested-tuple payload: `let Ok((n, s)) = e else { return … };`
+# destructures the tuple and escapes BOTH leaf binders into the enclosing scope
+# (the success-path prelude mirrors `match`'s aggregate-payload destructure).
+run_accept_expect_stdout "let_else_tuple_payload"
+# return-as-expression in a diverging branch: an unannotated
+# `let x = if … else { return … }` infers the value branch's type (not Never),
+# so a later `x + 1` lowers as integer arithmetic in let-RHS and binary-operand
+# positions.
+run_accept_expect_stdout "return_expr_unannotated_branch"
 # Combined error-prop idiom: let-else + return-as-expression closing the full
 # errors-as-values program (typed ConfigError, parse_port, load_config).
 run_accept_expect_stdout "error_prop_combined"

@@ -204,24 +204,23 @@ pub unsafe extern "C" fn hew_datetime_weekday(epoch_ms: i64) -> i64 {
 
 /// Return the current monotonic clock time in nanoseconds.
 ///
-/// Uses `CLOCK_MONOTONIC` for high-resolution timing suitable for
-/// benchmarking. Not affected by wall-clock adjustments.
+/// High-resolution timing suitable for benchmarking; not affected by
+/// wall-clock adjustments. The zero point is the single process-wide
+/// monotonic epoch in `hew_runtime::monotonic`, shared with every runtime
+/// subsystem (timers, supervisor, crash, tracing, SWIM) so this datetime
+/// reading and a runtime timestamp count from the same instant.
 ///
 /// # Safety
 ///
 /// No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_datetime_now_nanos() -> i64 {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    let epoch = EPOCH.get_or_init(Instant::now);
     #[expect(
-        clippy::cast_possible_truncation,
-        reason = "monotonic ns since process start won't exceed i64"
+        clippy::cast_possible_wrap,
+        reason = "monotonic ns since process start won't exceed i64 (~292 years)"
     )]
     {
-        epoch.elapsed().as_nanos() as i64
+        hew_runtime::monotonic::monotonic_ns() as i64
     }
 }
 
@@ -344,5 +343,58 @@ mod tests {
         assert_eq!(result, 1_767_225_600_000);
         let err = hew_datetime_last_error();
         assert!(err.is_null());
+    }
+
+    /// `hew_datetime_now_nanos` must read the SAME process-wide monotonic epoch
+    /// as `hew_runtime::monotonic`, not a private datetime epoch.
+    ///
+    /// This is the single-epoch invariant for the datetime clock (issue #2060,
+    /// CAP-09). The test has teeth: it primes the shared epoch, sleeps a
+    /// measurable interval, then samples the datetime clock. With a shared
+    /// epoch, the datetime reading already includes the elapsed interval. With a
+    /// private datetime epoch (the pre-fold behaviour), the first datetime call
+    /// would capture a fresh zero point at that moment and read near-zero —
+    /// well below the slept interval — so this assertion fails.
+    #[test]
+    fn now_nanos_shares_the_runtime_process_epoch() {
+        // Prime the shared process epoch so its zero point is firmly in the past
+        // before we ever touch the datetime clock.
+        let before = hew_runtime::monotonic::monotonic_ns();
+
+        let sleep = std::time::Duration::from_millis(20);
+        std::thread::sleep(sleep);
+
+        // SAFETY: hew_datetime_now_nanos has no preconditions.
+        let dt_after = unsafe { hew_datetime_now_nanos() };
+        assert!(
+            dt_after >= 0,
+            "datetime monotonic reading must be non-negative"
+        );
+
+        let sleep_ns = i64::try_from(sleep.as_nanos()).expect("20ms fits i64");
+        // A shared epoch means the datetime reading is anchored to the same
+        // zero point primed above, so it must reflect at least the slept gap.
+        // A private epoch captured at the datetime call would read far below it.
+        assert!(
+            dt_after >= sleep_ns,
+            "hew_datetime_now_nanos read {dt_after}ns, below the {sleep_ns}ns slept since \
+             the shared epoch was primed (before={before}ns) — datetime is on its own epoch"
+        );
+
+        // And the two clocks must stay tightly coupled: a fresh runtime reading
+        // taken just after the datetime reading is only slightly ahead, never a
+        // full second apart, which an independent epoch would produce.
+        let runtime_after = hew_runtime::monotonic::monotonic_ns();
+        let dt_after_u = u64::try_from(dt_after).expect("non-negative datetime ns fits u64");
+        assert!(
+            runtime_after >= dt_after_u,
+            "runtime reading {runtime_after}ns sampled after datetime {dt_after_u}ns must be \
+             at or ahead of it on one shared clock"
+        );
+        let skew = runtime_after - dt_after_u;
+        assert!(
+            skew < 1_000_000_000,
+            "datetime and runtime monotonic clocks diverged by {skew}ns (>1s) — not one epoch"
+        );
     }
 }

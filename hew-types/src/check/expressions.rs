@@ -1749,6 +1749,51 @@ impl Checker {
                 self.current_return_type = Some(Ty::Unit);
                 self.check_block(body, Some(&Ty::Unit));
                 self.current_return_type = prev_return_type;
+                // Mirror the `ForkChild` ownership gate: mark non-Copy call
+                // arguments as moved into this child task so that parent use
+                // after the fork reports `UseAfterMove`.
+                //
+                // `fork { f(a) }` transfers ownership of non-Copy args to the
+                // child task, exactly as `fork name = f(a)` does. The general
+                // `Expr::Call` arm does NOT mark args moved, so without this
+                // pass a heap `string` arg remains live in the parent scope
+                // and a subsequent use goes unreported — contradicting the
+                // lowering's "parent emits NO drop for moved-in args" contract.
+                //
+                // The accepted single-call form appears in two shapes:
+                //   a) `fork { f(args) }`  — tail expression (no semicolon)
+                //   b) `fork { f(args); }` — single stmt with semicolon
+                // For multi-statement bodies the HIR lowering rejects the fork,
+                // so we only encounter those shapes during type-checking; we
+                // still mark them (each call transfers its non-Copy args) to
+                // keep the ownership contract uniform even when HIR will err.
+                //
+                // WHEN-OBSOLETE: if the general call-arg path gains move-
+                // tracking, this pass (and the ForkChild one) become redundant.
+                macro_rules! mark_call_args_moved {
+                    ($args:expr) => {
+                        for arg in $args {
+                            let (arg_expr, arg_span) = arg.expr();
+                            if let Expr::Identifier(arg_name) = arg_expr {
+                                if let Some(binding_ty) =
+                                    self.env.lookup_ref(arg_name).map(|b| b.ty.clone())
+                                {
+                                    let resolved = self.subst.resolve(&binding_ty);
+                                    self.mark_expr_moved_if_non_copy(arg_expr, arg_span, &resolved);
+                                }
+                            }
+                        }
+                    };
+                }
+                if let Some(tail) = &body.trailing_expr {
+                    if let (Expr::Call { args, .. }, _) = tail.as_ref() {
+                        mark_call_args_moved!(args);
+                    }
+                } else if body.stmts.len() == 1 {
+                    if let (Stmt::Expression((Expr::Call { args, .. }, _)), _) = &body.stmts[0] {
+                        mark_call_args_moved!(args);
+                    }
+                }
                 // The fork statement itself produces no value.
                 Ty::Unit
             }

@@ -21091,6 +21091,71 @@ mod fork_block_body_checks {
     }
 
     #[test]
+    fn fork_block_string_arg_parent_use_after_fork_block_rejected() {
+        // Ownership hole regression: `fork { shout(greeting) }` must mark
+        // `greeting` (a non-Copy `string`) moved into the child task, so that
+        // parent use after the fork reports `UseAfterMove`.
+        //
+        // The block form `fork { f(args) }` and the named form
+        // `fork ts = f(args)` must be symmetric — the named form already
+        // rejects parent-use-after-move; this test pins the block form.
+        let output = check_source(
+            r#"
+            fn shout(msg: string) {}
+
+            fn main() {
+                let greeting: string = "hello" + " world";
+                scope {
+                    fork {
+                        shout(greeting);
+                    };
+                };
+                // greeting was moved into the fork block — UseAfterMove here.
+                let _x = greeting;
+            }
+            "#,
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::UseAfterMove),
+            "parent use of a string arg after fork-block must be UseAfterMove \
+             (parity with named fork); got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_block_bitcopy_arg_parent_use_after_fork_block_accepted() {
+        // BitCopy scalars (i64) passed to a fork-block must remain live in
+        // the parent scope — no UseAfterMove for Copy types.
+        let output = check_source(
+            r"
+            fn add_print(a: i64, b: i64) {}
+
+            fn main() {
+                let x: i64 = 20;
+                let y: i64 = 22;
+                scope {
+                    fork {
+                        add_print(x, y);
+                    };
+                };
+                // BitCopy scalars remain live in the parent.
+                let _sum = x + y;
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "parent use of i64 args after fork-block must check clean \
+             (BitCopy exemption); got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
     fn fork_block_tail_expr_non_call_emits_actionable_diagnostic() {
         // `fork { 42 }` — a bare tail-expression with no semicolon — must
         // emit the actionable fork-shape message ("fork{} bodies must be a

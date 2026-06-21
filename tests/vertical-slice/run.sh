@@ -1302,6 +1302,15 @@ run_accept_expect_stdout "fork_args_spawn"
 # the fork-entry shim transfers args the same way as the named form.
 run_accept_expect_stdout "fork_block_args_spawn"
 
+# Reject: parent use of a non-Copy string arg after `fork { f(arg); }` must
+# report UseAfterMove — parity with the named `fork t = f(arg)` form. Without
+# the move-marking pass the block form would silently leave `greeting` live and
+# this use would go unreported, violating the lowering's ownership contract.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/fork_block_parent_use_after_move.hew" \
+  "use of moved value \`greeting\`" \
+  "fork_block_parent_use_after_move"
+
 # Reject: removed `scope |s| { s.launch / s.spawn / s.cancel }` surface.
 # Pins LESSONS row reject-scope-fork-collapse: the handle-based scope API was
 # removed; the parser emits a targeted diagnostic directing users to the new

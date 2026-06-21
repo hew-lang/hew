@@ -418,36 +418,48 @@ impl Checker {
         }
     }
 
-    /// Does the bare let-pattern identifier `name` resolve to a known *unit*
-    /// enum variant of `val_ty`?
+    /// Would a bare identifier `name` at a USE-site resolve to a known *unit*
+    /// enum variant / nullary constructor?
     ///
-    /// This is the resolution-based replacement for the old case-sensitivity
-    /// heuristic. A let-pattern identifier is a refutable variant pattern only
-    /// when it actually resolves to a unit variant of the value type; every
-    /// other bare identifier (including uppercase ones like `INF` or `Foo`) is
-    /// a fresh binding. Qualified paths (`E::A`) are handled by the caller and
-    /// never reach here. Mirrors Rust: a name resolving to a unit variant is a
-    /// pattern; otherwise it binds.
-    fn bare_identifier_resolves_to_unit_variant(&self, name: &str, val_ty: &Ty) -> bool {
-        let resolved = self.subst.resolve(val_ty);
-        // Built-in `Option<T>`: `None` is the only unit variant (`Some`
-        // carries a payload).
-        if resolved.as_option().is_some() {
-            return name == "None";
+    /// This decides, on the let-side, whether a bare pattern identifier is a
+    /// refutable variant pattern (route to the refutability gate) or a fresh
+    /// binding. It must agree with how `synthesize`/`synthesize_identifier`
+    /// (expressions.rs) resolve the SAME bare name at a use-site: a
+    /// disagreement produces a half-built binding, where the let-side binds a
+    /// local that the use-side then shadows with the builtin/global variant,
+    /// leaving an unused-variable warning plus a `cannot infer type` at the use.
+    ///
+    /// Resolution is therefore by the GLOBAL/builtin namespace and is
+    /// independent of the value type, mirroring the use-side exactly:
+    ///   * `None` is special-cased at the use-site (expressions.rs, the
+    ///     `name == "None"` arm of `synthesize`) as `Option::None`
+    ///     *unconditionally*, ahead of any binding lookup — so a bare `None`
+    ///     is always a variant pattern here. A value type that is not `Option`
+    ///     then surfaces as a clean single type mismatch (`None` is
+    ///     `Option<_>`, the value is not), never a stray binding.
+    ///   * any user enum's unit variant is found by the use-side's
+    ///     `resolve_identifier_variant`, which scans every `type_defs` entry
+    ///     for a `VariantDef::Unit` of that name — so the let-side scans the
+    ///     same table the same way.
+    ///
+    /// Qualified paths (`E::A`) are handled by the caller and never reach here.
+    /// Mirrors Rust: a name that names a unit variant/const is always a
+    /// pattern, and a mismatched value type is a plain type error — not a
+    /// binding.
+    fn bare_identifier_resolves_to_unit_variant(&self, name: &str) -> bool {
+        // Builtin `None`: the use-side resolves a bare `None` to `Option::None`
+        // unconditionally and ahead of any binding, so the let-side treats it
+        // as a variant pattern regardless of the value type. (`Some`, `Ok`,
+        // `Err` carry payloads — never bare unit variants.)
+        if name == "None" {
+            return true;
         }
-        // Built-in `Result<T, E>`: both variants carry a payload, so a bare
-        // identifier is never a unit variant here.
-        if resolved.as_result().is_some() {
-            return false;
-        }
-        // User enum: the variant must exist on the value type AND be a unit
-        // variant. A name that is not a variant of this type is a binding.
-        if let Some(type_name) = resolved.type_name() {
-            if let Some(td) = self.lookup_type_def(type_name) {
-                return matches!(td.variants.get(name), Some(VariantDef::Unit));
-            }
-        }
-        false
+        // User enums: scan every type definition for a unit variant of this
+        // name, exactly as the use-side's `resolve_identifier_variant` does.
+        // A bare name that is a unit variant of *any* known enum is a pattern.
+        self.type_defs
+            .values()
+            .any(|td| matches!(td.variants.get(name), Some(VariantDef::Unit)))
     }
 
     #[expect(
@@ -586,17 +598,21 @@ impl Checker {
                 // refutability gate below so a let-else records its resolution
                 // and a plain `let` is rejected.
                 //
-                // Detection is by RESOLUTION, never by case: a `::`-qualified
-                // path is unambiguously a variant, and a bare identifier is a
-                // unit-variant pattern only when it actually resolves to a unit
-                // variant of the value type. Any other bare identifier — even
-                // an uppercase one like `INF` or `Foo` — is a fresh binding.
-                // This mirrors Rust pattern resolution: a name resolving to a
-                // unit variant/const is a pattern; otherwise it binds.
+                // Detection is by RESOLUTION, never by case, and must AGREE
+                // with the use-side: a `::`-qualified path is unambiguously a
+                // variant, and a bare identifier is a unit-variant pattern when
+                // the use-side would resolve it to a known unit variant in the
+                // global/builtin namespace (`None`, any user enum's unit
+                // variant) — independent of the value type. Any other bare
+                // identifier — even an uppercase one like `INF` or `Foo` — is a
+                // fresh binding. This mirrors Rust pattern resolution: a name
+                // that names a unit variant/const is always a pattern (a
+                // mismatched value type is then a clean type error); otherwise
+                // it binds.
                 let identifier_is_unit_variant = match &pattern.0 {
                     Pattern::Identifier(name) if name.contains("::") => true,
                     Pattern::Identifier(name) => {
-                        self.bare_identifier_resolves_to_unit_variant(name, &val_ty)
+                        self.bare_identifier_resolves_to_unit_variant(name)
                     }
                     _ => false,
                 };

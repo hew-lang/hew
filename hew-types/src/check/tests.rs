@@ -27427,6 +27427,71 @@ mod every_attribute {
     }
 
     #[test]
+    fn bare_none_over_non_option_is_variant_pattern_not_binding() {
+        // Regression for the let-side/use-side split: a bare `None` is ALWAYS a
+        // variant pattern, independent of the value type, because the use-side
+        // resolves a bare `None` to `Option::None` unconditionally. With the old
+        // value-type-based detection, `let None = 5;` bound `None` as a local
+        // (None is not a variant of `i64`), then any use resolved to the builtin
+        // — a half-built binding that surfaced as "unused variable `None`" plus a
+        // "cannot infer type" at the use. The aligned detection treats `None` as
+        // a refutable variant pattern, so this is a SINGLE clean diagnostic: a
+        // refutable-pattern rejection, with NO `None` binding and NO unused-var.
+        let output = check_source("fn f() { let None = 5; }");
+        let refutable: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::RefutableLetPattern { .. }))
+            .collect();
+        assert_eq!(
+            refutable.len(),
+            1,
+            "`let None = 5;` must be a single refutable-variant rejection; got errors: {:#?}",
+            output.errors
+        );
+        // The split symptom: `None` must NOT be bound as a local, so no
+        // unused-variable warning for `None` may appear.
+        let unused_none = output.warnings.iter().any(|w| {
+            matches!(w.kind, TypeErrorKind::UnusedVariable) && w.message.contains("`None`")
+        });
+        assert!(
+            !unused_none,
+            "`None` must not be a half-built binding (no unused-variable warning); warnings: {:#?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn bare_none_over_generic_is_variant_pattern_not_binding() {
+        // The same alignment must hold over a generic type parameter: `let None
+        // = x;` where `x: T` is a variant pattern, not a binding. The old
+        // detection bound `None` (T is not `Option`), leaving an unused-variable
+        // warning while the use-side would resolve `None` to the builtin —
+        // inconsistent. The aligned detection routes it to the refutability gate.
+        let output = check_source("fn g<T>(x: T) { let None = x; }");
+        let refutable: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::RefutableLetPattern { .. }))
+            .collect();
+        assert_eq!(
+            refutable.len(),
+            1,
+            "`let None = x;` in a generic fn must be a single refutable-variant rejection; \
+             got errors: {:#?}",
+            output.errors
+        );
+        let unused_none = output.warnings.iter().any(|w| {
+            matches!(w.kind, TypeErrorKind::UnusedVariable) && w.message.contains("`None`")
+        });
+        assert!(
+            !unused_none,
+            "`None` over a generic must not be a half-built binding; warnings: {:#?}",
+            output.warnings
+        );
+    }
+
+    #[test]
     fn let_irrefutable_struct_record_keyword_no_error() {
         // `record`-keyword product type is also irrefutable.
         let output = check_source(

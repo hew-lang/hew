@@ -4885,7 +4885,7 @@ pub(crate) fn emit_suspending_call_closure_terminator<'ctx>(
 
     // Resolve the live execution context (the closure's leading ctx arg — the
     // resume-installed context after a suspend, not the dangling spilled param).
-    let ctx_ptr = closure_call_context(fn_ctx)?;
+    let ctx_ptr = crate::thunks::closure_call_context(fn_ctx)?;
 
     // Load the two-pointer closure pair (fn-ptr + env-ptr) exactly as
     // `lower_call_closure` does.

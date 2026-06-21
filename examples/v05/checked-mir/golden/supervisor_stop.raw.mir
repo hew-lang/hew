@@ -20,45 +20,52 @@ fn main() -> i64 [conv=default]
   locals:
     _0: LocalPid<AppSupervisor>
     _1: LocalPid<AppSupervisor>
-    _2: i64
-    _3: __HewChildLookupResult
-    _4: i64
+    _2: LocalPid<Worker>
+    _3: i64
+    _4: __HewChildLookupResult
     _5: i64
-    _6: bool
+    _6: i64
     _7: i64
-    _8: LocalPid<Worker>
+    _8: __HewChildLookupResult
     _9: i64
     _10: i64
+    _11: i64
+    _12: bool
+    _13: i64
   bb0:
     _0 = call AppSupervisor__bootstrap() -> bb1
   bb1:
     stmt: bind BindingId(1) sup site=SiteId(1) ty=LocalPid<AppSupervisor>
     stmt: use BindingId(1) sup site=SiteId(3) ty=LocalPid<AppSupervisor> intent=Read
-    _1 = move _0
-    _2 = const.i64 0
-    _3 = call_rt hew_supervisor_child_get(_1, _2)
-    _4 = _3.field[0]
-    _5 = const.i64 0
-    _6 = icmp.eq _4 _5
-    branch _6 ? bb3 : bb2
-  bb2:
-    trap(SupervisorChildUnavailable)
-  bb3:
     stmt: bind BindingId(2) w site=SiteId(2) ty=LocalPid<Worker>
     stmt: use BindingId(2) w site=SiteId(5) ty=LocalPid<Worker> intent=Read
-    _7 = _3.field[1]
-    actor8 = move _7
-    _9 = const.i64 1
-    send actor8[msg=-346962505] _9 alias=Copy -> bb4
-  bb4:
+    _1 = move _0
+    _3 = const.i64 0
+    _4 = call_rt hew_supervisor_child_get(_1, _3)
+    _5 = _4.field[1]
+    actor2 = move _5
+    _6 = const.i64 1
+    _7 = const.i64 0
+    _8 = call_rt hew_supervisor_child_get(_1, _7)
+    _9 = _8.field[1]
+    actor2 = move _9
+    _10 = _8.field[0]
+    _11 = const.i64 0
+    _12 = icmp.eq _10 _11
+    branch _12 ? bb3 : bb4
+  bb2:
     stmt: eval site=SiteId(4) ty=()
     stmt: use BindingId(1) sup site=SiteId(8) ty=LocalPid<AppSupervisor> intent=Read
     stmt: eval site=SiteId(7) ty=()
     stmt: return site=Some(SiteId(10)) ty=i64
     call_rt hew_supervisor_stop(_1)
-    _10 = const.i64 0
-    ret = move _10
+    _13 = const.i64 0
+    ret = move _13
     return
+  bb3:
+    send actor2[msg=-346962505] _6 alias=Copy -> bb2
+  bb4:
+    goto bb2
 
 fn i32::fmt(i32) -> string [conv=default]
   locals:

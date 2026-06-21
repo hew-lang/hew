@@ -33,6 +33,7 @@ pub(crate) mod arith;
 pub mod coro;
 pub mod llvm;
 pub(crate) mod runtime_abi;
+pub(crate) mod suspend;
 
 pub use llvm::{
     emit_module, emit_module_objects, validate_codegen_front, verify_pipeline, CodegenError,

@@ -267,14 +267,25 @@ fn fork_block_multi_statement_rejected() {
     ";
     let output = lower(source);
 
-    let has_fork_block_unsupported = output
-        .diagnostics
-        .iter()
-        .any(|d| matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. }));
+    // Pin the fail-closed diagnostic: it must be the typed shape gate AND carry
+    // an actionable message that names the workaround, so a future refactor
+    // cannot silently degrade it to an opaque NotYetImplemented.
+    let multi_stmt_gate = output.diagnostics.iter().find(|d| {
+        matches!(d.kind, HirDiagnosticKind::ForkBlockBodyUnsupported { .. })
+            && d.note.contains("multi-statement")
+    });
+    let multi_stmt_gate = multi_stmt_gate.unwrap_or_else(|| {
+        panic!(
+            "Multi-statement fork block must emit an actionable ForkBlockBodyUnsupported; \
+             got: {:#?}",
+            output.diagnostics
+        )
+    });
     assert!(
-        has_fork_block_unsupported,
-        "Multi-statement fork block must emit ForkBlockBodyUnsupported; got: {:#?}",
-        output.diagnostics
+        multi_stmt_gate.note.contains("not yet supported")
+            && multi_stmt_gate.note.contains("fork { the_fn() }"),
+        "multi-statement reject must name the workaround; got note: {:?}",
+        multi_stmt_gate.note
     );
 
     let result = output.into_result();

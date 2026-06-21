@@ -998,7 +998,7 @@ fn fs$read(string) -> string [conv=default]
     _7: bool
     _8: string
     _9: string
-    _10: ()
+    _10: !
     _11: i64
     _12: i64
     _13: bool
@@ -1019,7 +1019,7 @@ fn fs$read(string) -> string [conv=default]
     _28: string
     _29: string
     _30: string
-    _31: ()
+    _31: !
     _32: string
   bb0:
     stmt: use BindingId(31) path site=SiteId(319) ty=string intent=Read

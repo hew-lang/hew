@@ -424,7 +424,12 @@ impl Checker {
     )]
     pub(super) fn check_stmt(&mut self, stmt: &Stmt, span: &Span) {
         match stmt {
-            Stmt::Let { pattern, ty, value } => {
+            Stmt::Let {
+                pattern,
+                ty,
+                value,
+                else_block,
+            } => {
                 let binding_context = match &pattern.0 {
                     Pattern::Identifier(name) => format!("local binding `{name}`"),
                     _ => "local binding".to_string(),
@@ -639,24 +644,83 @@ impl Checker {
                         // — either already handled above or not relevant here.
                         _ => None,
                     };
-                    if let Some(kind_label) = maybe_refutable_kind {
-                        // Only emit the refutability error when the value type is
-                        // actually resolved (not Ty::Var / Ty::Error).
-                        if !matches!(resolved_val_ty, Ty::Var(_) | Ty::Error) {
-                            self.report_error(
-                                TypeErrorKind::RefutableLetPattern {
-                                    kind_label: kind_label.to_string(),
-                                },
-                                &pattern.1,
-                                format!(
-                                    "refutable {kind_label} pattern is not allowed in `let`; \
-                                     use `if let` or `match` instead"
-                                ),
-                            );
+                    match (maybe_refutable_kind, else_block) {
+                        // Refutable pattern WITH an `else` clause: this is a
+                        // let-else. The refutable pattern is admitted because
+                        // the else clause supplies the failure path. The else
+                        // block must diverge — it runs when the pattern fails
+                        // and there is no value to bind, so control must not
+                        // fall through to the binding. Check the else block
+                        // BEFORE binding the pattern so the Ok-path binders are
+                        // not visible inside it (they are bound only on the
+                        // success path).
+                        (Some(_), Some(else_blk)) => {
+                            // Record the success-path pattern resolution so HIR
+                            // lowering can consume the same `pattern_resolutions`
+                            // side-table that powers `if let` / `match` /
+                            // `while let`. Without this the let-else lowering
+                            // finds no resolution and fails closed.
+                            self.record_arm_resolution(&pattern.0, &pattern.1, &val_ty);
+                            let else_ty = self.check_block(else_blk, None);
+                            if !matches!(else_ty, Ty::Never)
+                                && !matches!(resolved_val_ty, Ty::Var(_) | Ty::Error)
+                            {
+                                // Span the diagnostic on the else block tail.
+                                // The trailing-expr / last-stmt span brackets
+                                // it; fall back to the pattern span for an
+                                // empty block (which is itself non-diverging).
+                                let else_span = else_blk
+                                    .trailing_expr
+                                    .as_ref()
+                                    .map(|e| e.1.clone())
+                                    .or_else(|| else_blk.stmts.last().map(|(_, sp)| sp.clone()))
+                                    .unwrap_or_else(|| pattern.1.clone());
+                                self.report_error(
+                                    TypeErrorKind::LetElseDoesNotDiverge,
+                                    &else_span,
+                                    "the `else` block of a `let … else` must \
+                                     diverge (e.g. `return`, `break`, `continue`, or a \
+                                     `!`-typed call); it must not fall through to the \
+                                     binding"
+                                        .to_string(),
+                                );
+                            }
                         }
+                        // Refutable pattern with NO `else` clause: rejected. A
+                        // plain `let` has no failure arm, so only irrefutable
+                        // patterns are admitted. Suggest the let-else `else`
+                        // clause (now that it exists) or `if let`/`match`.
+                        (Some(kind_label), None) => {
+                            // Only emit when the value type is actually resolved
+                            // (not Ty::Var / Ty::Error) so a prior root error is
+                            // not buried under a cascade.
+                            if !matches!(resolved_val_ty, Ty::Var(_) | Ty::Error) {
+                                self.report_error(
+                                    TypeErrorKind::RefutableLetPattern {
+                                        kind_label: kind_label.to_string(),
+                                    },
+                                    &pattern.1,
+                                    format!(
+                                        "refutable {kind_label} pattern is not allowed in a \
+                                         plain `let`; add an `else {{ … }}` clause (it \
+                                         must diverge), or use `if let`/`match`"
+                                    ),
+                                );
+                            }
+                        }
+                        // Irrefutable pattern with an `else` clause: the else can
+                        // never run, so divergence is not required. Type-check it
+                        // for error coverage only.
+                        (None, Some(else_blk)) => {
+                            let _ = self.check_block(else_blk, None);
+                        }
+                        (None, None) => {}
                     }
                     // Always call bind_pattern for error-recovery so the binders exist
-                    // and subsequent uses don't cascade into UnresolvedSymbol.
+                    // and subsequent uses don't cascade into UnresolvedSymbol. The
+                    // binders are defined into the CURRENT (enclosing) scope, so a
+                    // let-else `let Ok(n) = … else { … };` makes `n` visible in the
+                    // rest of the enclosing block.
                     self.bind_pattern(&pattern.0, &val_ty, false, &pattern.1);
                 }
             }

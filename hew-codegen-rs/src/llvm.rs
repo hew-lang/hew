@@ -6,6 +6,19 @@
 //! `experiments/c1-backend-shootout/src/bin/probe_c.rs` against the real MIR
 //! shapes in `hew-mir`.
 //!
+//! ## Concern modules
+//!
+//! This file is the coordinating core: the `pub` API surface, the shared
+//! `FnCtx` / `FnSymbol` / `CoroState` context types, and the central
+//! `lower_instruction` / `lower_terminator` dispatch. Cohesive free-function
+//! clusters live in sibling concern-modules and are called back via `crate::`:
+//! [`crate::coro`] (switched-resume skeleton), [`crate::arith`] (saturating /
+//! floor-intrinsic helpers), [`crate::runtime_abi`] (the runtime-call dispatch),
+//! [`crate::suspend`] (suspending-terminator lowering), [`crate::thunks`]
+//! (eq/hash/closure/task/trampoline emitters), and [`crate::layout`]
+//! (named-type layout registration). Each shares this crate's scope, so the
+//! references are bidirectional with no module cycle.
+//!
 //! ## Shape
 //!
 //! - Two-pass lowering per module: every non-coroutine function is declared

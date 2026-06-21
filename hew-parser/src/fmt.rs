@@ -2951,11 +2951,7 @@ impl<'a> Formatter<'a> {
                 for part in parts {
                     match part {
                         StringPart::Literal(s) => {
-                            let escaped = s
-                                .replace('"', "\\\"")
-                                .replace('{', "\\{")
-                                .replace('}', "\\}");
-                            self.write(&escaped);
+                            self.write(&escape_fstring_literal(s));
                         }
                         StringPart::Expr((expr, _)) => {
                             self.write("{");
@@ -3403,6 +3399,32 @@ fn escape_string(s: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\r' => out.push_str("\\r"),
             '\0' => out.push_str("\\0"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Escape the literal-text parts of an f-string (`f"…"`).
+///
+/// The lexer has already resolved all escape sequences to their byte values
+/// (e.g. `\n` → a real newline) before storing them in `StringPart::Literal`.
+/// The formatter must re-escape those bytes so that re-parsing yields the
+/// same value.  An f-string literal part has the same escape set as a plain
+/// string *plus* `{` and `}`, which delimit interpolation holes and must be
+/// written as `\{` / `\}` to survive round-trip.
+fn escape_fstring_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
+            '{' => out.push_str("\\{"),
+            '}' => out.push_str("\\}"),
             other => out.push(other),
         }
     }

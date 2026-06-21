@@ -2323,3 +2323,91 @@ fn fmt_unicode_brace_escape_roundtrip() {
         );
     }
 }
+
+// -----------------------------------------------------------------------
+// Escape sequence preservation (regression: fmt P0 FAIL-OPEN)
+//
+// The formatter must re-emit escape sequences faithfully in both plain
+// string literals and f-string literal parts.  Before the fix the
+// f-string path emitted the *resolved* bytes (real newline / tab / etc.)
+// instead of the source representation, silently corrupting the file.
+// -----------------------------------------------------------------------
+
+/// Plain string literals: every escape sequence survives round-trip.
+///
+/// The parser rejects `\0` in string literals (null-terminated ABI conflict),
+/// so the covered set is `\n \t \\ \" \r`.
+#[test]
+fn fmt_string_literal_escapes_preserved() {
+    // The raw-string source contains the two-char sequences \n \t \\ \" \r
+    // which the lexer resolves to their single-byte values.  After formatting
+    // those single bytes must be re-escaped back to the two-char form.
+    let src = r#"fn main() { let s = "a\nb\tc\\d\"e\rf"; }"#;
+    let out = roundtrip(src);
+    assert!(
+        out.contains(r#""a\nb\tc\\d\"e\rf""#),
+        "escape sequences not preserved in plain string literal.\nOutput: {out}"
+    );
+}
+
+/// Plain string literal idempotency: fmt(fmt(x)) == fmt(x).
+#[test]
+fn fmt_string_literal_escapes_idempotent() {
+    // Source already in canonical fmt form — round-trip must be identity.
+    let src = "fn main() {\n    let s = \"a\\nb\\tc\\\\d\\\"e\\rf\";\n}\n";
+    let out = roundtrip(src);
+    assert_eq!(
+        out, src,
+        "plain-string escape round-trip changed the source"
+    );
+}
+
+/// f-string literal parts: control-character escapes must be re-emitted.
+///
+/// The parser rejects `\0` in string literals (null-terminated ABI conflict),
+/// so the covered set is `\n \t \\ \" \r`.
+#[test]
+fn fmt_fstring_literal_escapes_preserved() {
+    // f-string with escape sequences in the literal part, not the interpolation.
+    let src = r#"fn main() { let s = f"line1\nline2\ttab\\back\"quote\rcr"; }"#;
+    let out = roundtrip(src);
+    assert!(
+        out.contains("\\n"),
+        "\\n should be preserved in f-string literal part.\nOutput: {out}"
+    );
+    assert!(
+        out.contains("\\t"),
+        "\\t should be preserved in f-string literal part.\nOutput: {out}"
+    );
+    assert!(
+        out.contains("\\\\"),
+        "\\\\ should be preserved in f-string literal part.\nOutput: {out}"
+    );
+    assert!(
+        out.contains("\\\""),
+        "\\\" should be preserved in f-string literal part.\nOutput: {out}"
+    );
+    assert!(
+        out.contains("\\r"),
+        "\\r should be preserved in f-string literal part.\nOutput: {out}"
+    );
+}
+
+/// f-string with both escapes and an interpolated expression: all parts survive.
+#[test]
+fn fmt_fstring_with_interp_and_escapes_preserved() {
+    let src = r#"fn greet(name: string) { println(f"hello\t{name}\n"); }"#;
+    let out = roundtrip(src);
+    assert!(
+        out.contains("\\t"),
+        "\\t should survive in f-string literal part adjacent to interpolation.\nOutput: {out}"
+    );
+    assert!(
+        out.contains("\\n"),
+        "\\n should survive in f-string literal part adjacent to interpolation.\nOutput: {out}"
+    );
+    assert!(
+        out.contains("{name}"),
+        "interpolated expression should be preserved.\nOutput: {out}"
+    );
+}

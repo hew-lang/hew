@@ -29599,6 +29599,54 @@ fn resolve_enum_di_type<'ctx>(
         )
         .as_type();
 
+    // Recursion guard (Risk C): a recursive enum (`indirect enum List { Cons {
+    // tail: List }; Nil }`) would re-enter this function while resolving the
+    // `tail: List` payload field, with no cache entry yet → infinite recursion
+    // → stack overflow. Insert a placeholder struct DIE (tag member only) under
+    // the cache key BEFORE the payload loop, so the recursive field resolves to
+    // a pointer-to-placeholder and terminates. The full struct (with the
+    // payload union) overwrites the placeholder at the end; recursive references
+    // legitimately point at the tag-only placeholder, which gdb resolves by
+    // name — the standard forward-declared-composite pattern.
+    let tag_offset_for_placeholder = target_data
+        .offset_of_element(&outer_struct, 0)
+        .map(|b| b * 8)
+        .unwrap_or(0);
+    let placeholder_tag_member = dctx
+        .di_builder
+        .create_member_type(
+            dctx.compile_unit.as_debug_info_scope(),
+            "tag",
+            dctx.file,
+            0,
+            tag_bits.max(8),
+            0,
+            tag_offset_for_placeholder,
+            DIFlags::PUBLIC,
+            tag_di,
+        )
+        .as_type();
+    let placeholder = dctx
+        .di_builder
+        .create_struct_type(
+            dctx.compile_unit.as_debug_info_scope(),
+            enum_name,
+            dctx.file,
+            0,
+            struct_size_bits,
+            struct_align_bits,
+            DIFlags::PUBLIC,
+            None,
+            &[placeholder_tag_member],
+            0,
+            None,
+            enum_name,
+        )
+        .as_type();
+    dctx.di_type_cache
+        .borrow_mut()
+        .insert(cache_key.clone(), placeholder);
+
     // Payload: a `DW_TAG_union_type` of per-variant struct DIEs. A variant with
     // no payload contributes nothing; a variant whose payload can't be resolved
     // is skipped (the variant name still prints via the tag).

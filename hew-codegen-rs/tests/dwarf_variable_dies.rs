@@ -222,6 +222,67 @@ fn debug_build_wires_subprogram_signature_types() {
     );
 }
 
+/// A recursive type (`indirect enum List { Cons { tail: List }; Nil }`) must
+/// not infinite-loop the type-DIE resolver. The cache inserts a forward
+/// placeholder before resolving variant payloads (Risk C); without it, the
+/// `tail: List` field re-enters resolution with no cache entry and overflows
+/// the stack. This test pins that the build completes and the `List` type DIE
+/// is emitted exactly once.
+#[test]
+fn debug_build_handles_recursive_indirect_enum_without_overflow() {
+    const RECURSIVE: &str = "\
+indirect enum List {
+    Cons { head: i64, tail: List };
+    Nil;
+}
+
+fn main() {
+    let xs: List = List::Cons { head: 1, tail: List::Nil };
+    print(1);
+}
+";
+    // Inline emit of a distinct fixture (the shared `emit_ll` uses the standard
+    // FIXTURE constant); reuse the front-end pipeline shape.
+    let parsed = hew_parser::parse(RECURSIVE);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc = checker.check_program(&parsed.program);
+    let output = lower_program(
+        &parsed.program,
+        &tc,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    let pipeline = hew_mir::lower_hir_module(&output.module);
+    let tmp = std::env::temp_dir().join("hew-dwarf-dies-recursive");
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).expect("create out_dir");
+    let src = tmp.join("fixture.hew");
+    std::fs::write(&src, RECURSIVE).expect("write source");
+    let options = EmitOptions {
+        module_name: "probe",
+        out_dir: &tmp,
+        native: false,
+        wasm: false,
+        target_triple: None,
+        debug: true,
+        opt_level: hew_codegen_rs::OptLevel::O0,
+        source_path: Some(src.as_path()),
+    };
+    let artefacts = emit_module(&pipeline, &options).expect("emit_module must not overflow");
+    let ir =
+        std::fs::read_to_string(artefacts.ll_path.as_deref().expect("ll_path")).expect("read .ll");
+    // The recursive `List` enum struct is emitted (degraded tagged-union view).
+    assert!(
+        ir.contains("name: \"List\""),
+        "expected the recursive List type DIE; IR:\n{ir}"
+    );
+}
+
 #[test]
 fn non_debug_build_emits_zero_variable_and_type_dies() {
     // The #2004 byte-clean invariant: without `-g`, NO variable/type debug

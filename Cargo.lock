@@ -1768,6 +1768,7 @@ dependencies = [
 name = "hew-parser"
 version = "0.5.6"
 dependencies = [
+ "finl_unicode",
  "hew-lexer",
  "serde",
  "serde_json",

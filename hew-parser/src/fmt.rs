@@ -3,6 +3,8 @@
 use std::fmt::Write as _;
 use std::ops::Range;
 
+use finl_unicode::categories::CharacterCategories;
+
 use crate::ast::{
     ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
     CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
@@ -3392,85 +3394,43 @@ fn compound_assign_op_str(op: CompoundAssignOp) -> &'static str {
 /// Returns `true` for non-ASCII Unicode scalars that should be emitted raw
 /// (readable, unambiguous in source), following the rustfmt/gofmt convention.
 ///
-/// Escapes (returns `false`) for:
-/// - C1 control range U+0080–U+009F (`char::is_control()` already covers these,
-///   but listed here for clarity)
-/// - Unicode Format category (Cf): soft hyphen, zero-width spaces, `BiDi` controls,
-///   byte-order mark, interlinear annotation anchors, language tags, etc.
-/// - Unicode Line Separator U+2028 and Paragraph Separator U+2029 (Zl/Zp)
-/// - Private-use area characters (U+E000–U+F8FF, U+F0000–U+10FFFF supplement planes)
-/// - Specials block U+FFF0–U+FFFF (replacement char and object replacement char
-///   excluded from "readable")
+/// The escape-vs-preserve decision is derived from the authoritative Unicode
+/// `General_Category` so the predicate stays correct as new codepoints are
+/// assigned and avoids the drift-prone hand-maintained range list it replaces.
 ///
-/// Preserves (returns `true`) everything else: letters, marks, numbers, punctuation,
-/// symbols, and regular space separators — including accented letters (`é`), CJK
-/// (`世`), arrows (`→`), em dashes (`—`), and similar readable Unicode.
+/// Escapes (returns `false`) when the character belongs to any of:
+/// - **Cc** (Control): U+0080–U+009F C1 controls and the ASCII controls
+///   (the caller already gates `is_control()` before reaching here, but
+///   `finl_unicode::is_control()` is the normative source for the Cc set).
+/// - **Cf** (Format): soft hyphen, zero-width spaces, all `BiDi` controls
+///   (U+202A–U+202E, U+2066–U+2069), deprecated format/shaping controls
+///   (U+206A–U+206F), Mongolian vowel separator (U+180E), word joiners,
+///   interlinear annotations, BOM, tag block — the Trojan-Source/confusable
+///   class.
+/// - **Co** (Private Use): U+E000–U+F8FF BMP PUA; supplementary PUA planes.
+/// - **Cn** (Unassigned): no defined rendering — fail-closed.
+/// - **Zl** (Line Separator): U+2028.
+/// - **Zp** (Paragraph Separator): U+2029.
+///
+/// Preserves (returns `true`) everything else: letters (L*), marks (M*),
+/// numbers (N*), punctuation (P*), symbols (S*), and space separators (Zs) —
+/// including accented letters (`é`), CJK (`世`), arrows (`→`), em dashes
+/// (`—`), and similar readable Unicode.
+///
+/// Note: Cs (Surrogate) codepoints are not valid Rust `char` values and
+/// therefore never reach this function.
 fn is_printable_non_ascii(c: char) -> bool {
     debug_assert!(!c.is_ascii(), "only call for non-ASCII chars");
-    let cp = c as u32;
 
-    // C1 controls (already caught by is_control(), but guard here for clarity).
-    if (0x0080..=0x009F).contains(&cp) {
-        return false;
-    }
-
-    // Unicode Format (Cf) characters — invisible and/or confusable in source.
-    // These ranges are stable Unicode categories; only extend with new Cf ranges.
-    //
-    // Soft hyphen (Cf, invisible in many renderers).
-    if cp == 0x00AD {
-        return false;
-    }
-    // Arabic letter mark, left-to-right mark, right-to-left mark (Cf).
-    if (0x061C..=0x061C).contains(&cp) || (0x200E..=0x200F).contains(&cp) {
-        return false;
-    }
-    // Zero-width non-joiner, zero-width joiner, zero-width space (Cf/Cf/Zs-invisible).
-    if (0x200B..=0x200D).contains(&cp) {
-        return false;
-    }
-    // Word joiner (Cf).
-    if cp == 0x2060 {
-        return false;
-    }
-    // Function application, invisible times, invisible separator, invisible plus (Cf).
-    if (0x2061..=0x2064).contains(&cp) {
-        return false;
-    }
-    // BiDi embedding/override/isolate controls (Cf): U+202A–U+202E, U+2066–U+2069.
-    if (0x202A..=0x202E).contains(&cp) || (0x2066..=0x2069).contains(&cp) {
-        return false;
-    }
-    // Line Separator (Zl) and Paragraph Separator (Zp) — invisible line-break semantics.
-    if cp == 0x2028 || cp == 0x2029 {
-        return false;
-    }
-    // Interlinear annotation anchor/separator/terminator (Cf).
-    if (0xFFF9..=0xFFFB).contains(&cp) {
-        return false;
-    }
-    // Byte Order Mark / Zero-width no-break space (Cf).
-    if cp == 0xFEFF {
-        return false;
-    }
-    // Specials block: U+FFF0–U+FFFF contains object-replacement char, etc.
-    // Escape the whole block to avoid ambiguous-looking source text.
-    if (0xFFF0..=0xFFFF).contains(&cp) {
-        return false;
-    }
-    // Private use areas: U+E000–U+F8FF (BMP), U+F0000–U+FFFFF, U+100000–U+10FFFF.
-    if (0xE000..=0xF8FF).contains(&cp)
-        || (0xF0000..=0xFFFFF).contains(&cp)
-        || (0x0010_0000..=0x0010_FFFF).contains(&cp)
+    // Escape the C categories that are invisible, confusable, or unrendered.
+    if c.is_control() // Cc — C1 controls (U+0080–U+009F) and ASCII controls
+        || c.is_format() // Cf — all Format characters (BiDi, soft-hyphen, ZWJ, shaping, tags, …)
+        || c.is_private_use() // Co — Private Use Areas
+        || c.is_unassigned() // Cn — no assigned rendering, fail-closed
+        || c.is_separator_line() // Zl — U+2028
+        || c.is_separator_paragraph()
+    // Zp — U+2029
     {
-        return false;
-    }
-    // Tag characters U+E0000–U+E007F (Cf, language tags).
-    if (0xE0000..=0xE007F).contains(&cp) {
-        return false;
-    }
-    // Variation selectors (VS1–VS16 U+FE00–U+FE0F; VS17–VS256 U+E0100–U+E01EF): Mn/invisible.
-    if (0xFE00..=0xFE0F).contains(&cp) || (0xE0100..=0xE01EF).contains(&cp) {
         return false;
     }
 
@@ -4484,6 +4444,144 @@ impl<T> Vec<T> {
         assert!(!is_printable_non_ascii('\u{00AD}'), "soft hyphen");
         assert!(!is_printable_non_ascii('\u{E000}'), "private use start");
         assert!(!is_printable_non_ascii('\u{FFF0}'), "specials block");
+        // Previously-missed Cf chars (deprecated format/shaping controls).
+        assert!(
+            !is_printable_non_ascii('\u{206A}'),
+            "U+206A INHIBIT SYMMETRIC SWAPPING (Cf)"
+        );
+        assert!(
+            !is_printable_non_ascii('\u{206B}'),
+            "U+206B ACTIVATE SYMMETRIC SWAPPING (Cf)"
+        );
+        assert!(
+            !is_printable_non_ascii('\u{206C}'),
+            "U+206C INHIBIT ARABIC FORM SHAPING (Cf)"
+        );
+        assert!(
+            !is_printable_non_ascii('\u{206D}'),
+            "U+206D ACTIVATE ARABIC FORM SHAPING (Cf)"
+        );
+        assert!(
+            !is_printable_non_ascii('\u{206E}'),
+            "U+206E NATIONAL DIGIT SHAPES (Cf)"
+        );
+        assert!(
+            !is_printable_non_ascii('\u{206F}'),
+            "U+206F NOMINAL DIGIT SHAPES (Cf)"
+        );
+        assert!(
+            !is_printable_non_ascii('\u{180E}'),
+            "U+180E MONGOLIAN VOWEL SEPARATOR (Cf)"
+        );
+    }
+
+    // ── property tests: category-derived escape/preserve classification ──────
+
+    /// Every non-ASCII char in `General_Category` Cf (Format) must be escaped.
+    /// Cf contains the Trojan-Source / confusable class — all must be escaped.
+    #[test]
+    fn property_all_cf_chars_escape() {
+        let leaked: Vec<char> = (0x80u32..=0x0010_FFFFu32)
+            .filter_map(char::from_u32)
+            .filter(|c| c.is_format() && is_printable_non_ascii(*c))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "Cf chars incorrectly marked printable: {:?}",
+            leaked
+                .iter()
+                .map(|c| format!("U+{:04X}", *c as u32))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Every non-ASCII char in `General_Category` Cc (Control) must be escaped.
+    #[test]
+    fn property_all_cc_chars_escape() {
+        let leaked: Vec<char> = (0x80u32..=0x0010_FFFFu32)
+            .filter_map(char::from_u32)
+            .filter(|c| c.is_control() && is_printable_non_ascii(*c))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "Cc chars incorrectly marked printable: {:?}",
+            leaked
+                .iter()
+                .map(|c| format!("U+{:04X}", *c as u32))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Every non-ASCII char in `General_Category` Co (Private Use) must be escaped.
+    #[test]
+    fn property_all_co_chars_escape() {
+        let leaked: Vec<char> = (0x80u32..=0x0010_FFFFu32)
+            .filter_map(char::from_u32)
+            .filter(|c| c.is_private_use() && is_printable_non_ascii(*c))
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "Co (Private Use) chars incorrectly marked printable: {:?}",
+            leaked
+                .iter()
+                .map(|c| format!("U+{:04X}", *c as u32))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Zl (U+2028) and Zp (U+2029) must be escaped.
+    #[test]
+    fn property_zl_zp_escape() {
+        assert!(
+            !is_printable_non_ascii('\u{2028}'),
+            "U+2028 LINE SEPARATOR (Zl) must be escaped"
+        );
+        assert!(
+            !is_printable_non_ascii('\u{2029}'),
+            "U+2029 PARAGRAPH SEPARATOR (Zp) must be escaped"
+        );
+    }
+
+    /// A sample of L* / N* / P* / S* / M* chars must be preserved raw.
+    /// These are the readable categories that idiomatic source may contain.
+    #[test]
+    fn property_readable_categories_preserved() {
+        let readable_samples: &[(char, &str)] = &[
+            // Letters (L*)
+            ('é', "U+00E9 LATIN SMALL LETTER E WITH ACUTE (Ll)"),
+            ('π', "U+03C0 GREEK SMALL LETTER PI (Ll)"),
+            ('世', "U+4E16 CJK UNIFIED IDEOGRAPH-4E16 (Lo)"),
+            ('Ñ', "U+00D1 LATIN CAPITAL LETTER N WITH TILDE (Lu)"),
+            (
+                'ǅ',
+                "U+01C5 LATIN CAPITAL LETTER D WITH SMALL LETTER Z WITH CARON (Lt)",
+            ),
+            ('ˈ', "U+02C8 MODIFIER LETTER VERTICAL LINE (Lm)"),
+            // Numbers (N*)
+            ('²', "U+00B2 SUPERSCRIPT TWO (No)"),
+            ('Ⅲ', "U+2162 ROMAN NUMERAL THREE (Nl)"),
+            ('١', "U+0661 ARABIC-INDIC DIGIT ONE (Nd)"),
+            // Punctuation (P*)
+            ('«', "U+00AB LEFT-POINTING DOUBLE ANGLE QUOTATION MARK (Pi)"),
+            (
+                '»',
+                "U+00BB RIGHT-POINTING DOUBLE ANGLE QUOTATION MARK (Pf)",
+            ),
+            ('—', "U+2014 EM DASH (Pd)"),
+            ('·', "U+00B7 MIDDLE DOT (Po)"),
+            // Symbols (S*)
+            ('©', "U+00A9 COPYRIGHT SIGN (So)"),
+            ('→', "U+2192 RIGHTWARDS ARROW (Sm)"),
+            ('£', "U+00A3 POUND SIGN (Sc)"),
+            // Marks (M*)
+            ('\u{0300}', "U+0300 COMBINING GRAVE ACCENT (Mn)"),
+        ];
+        for &(c, label) in readable_samples {
+            assert!(
+                is_printable_non_ascii(c),
+                "{label} must be preserved raw (got escaped)"
+            );
+        }
     }
 
     // ── full parse/format round-trip for Unicode string literals ────────────

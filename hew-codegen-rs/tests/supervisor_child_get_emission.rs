@@ -54,10 +54,24 @@ fn get_worker(app: LocalPid<App>) -> LocalPid<Worker> {
 }
 ";
 
-/// Compile `STATIC_CHILD_ACCESS` for the host target and return the emitted
-/// textual LLVM IR string.
+/// The SysV/AAPCS triple the register-pair assertions classify against.
+///
+/// PINNED, not host (`None`): the register-pair ABI is the SysV/AAPCS shape,
+/// which is NOT the host shape on the Windows MSVC runner (there the 16-byte
+/// aggregate classifies `Indirect`/sret). A host-naive `None` made these tests
+/// silently target whatever the runner's host ABI was — green on Linux/macOS,
+/// red on the Windows runner where the host is `x86_64-pc-windows-msvc`. The
+/// textual `.ll` is classified against the requested triple (the diagnostic IR
+/// matches the object emission's ABI), so pinning SysV asserts the SysV shape
+/// on every host. The MSVC shape has its own triple-pinned test below.
+const SYSV_TRIPLE: &str = "x86_64-unknown-linux-gnu";
+
+/// Compile `STATIC_CHILD_ACCESS` for an explicit SysV/AAPCS target and return
+/// the emitted textual LLVM IR string. SysV is pinned (not host) so the
+/// register-pair assertions hold on every CI host, including the Windows MSVC
+/// runner whose host ABI returns the 16-byte aggregate indirectly.
 fn emit_child_access_ir(slug: &str) -> String {
-    emit_child_access_ir_for(slug, None)
+    emit_child_access_ir_for(slug, Some(SYSV_TRIPLE))
 }
 
 /// Compile `STATIC_CHILD_ACCESS` through the full HIR → MIR → codegen pipeline
@@ -114,9 +128,10 @@ fn emit_child_access_ir_for(slug: &str, target_triple: Option<&str>) -> String {
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
-/// On SysV/AAPCS (host) the canonical `@hew_supervisor_child_get` is declared
-/// with the classified register-pair ABI: `[2 x i64] (ptr, i32)`. The removed
-/// `_raw` out-pointer twin must NOT appear.
+/// On SysV/AAPCS (pinned `x86_64-unknown-linux-gnu`) the canonical
+/// `@hew_supervisor_child_get` is declared with the classified register-pair
+/// ABI: `[2 x i64] (ptr, i32)`. The removed `_raw` out-pointer twin must NOT
+/// appear.
 ///
 /// ABI rationale:
 ///   The 16-byte `ChildLookupResult` aggregate classifies `RegisterPair` on

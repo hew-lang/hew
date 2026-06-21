@@ -2223,7 +2223,12 @@ impl<'a> Formatter<'a> {
 
     fn format_stmt_inline(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let { pattern, ty, value } => {
+            Stmt::Let {
+                pattern,
+                ty,
+                value,
+                else_block,
+            } => {
                 self.write("let ");
                 self.format_pattern(&pattern.0);
                 if let Some(ty) = ty {
@@ -2233,6 +2238,10 @@ impl<'a> Formatter<'a> {
                 if let Some((expr, _)) = value {
                     self.write(" = ");
                     self.format_expr(expr);
+                }
+                if let Some(else_block) = else_block {
+                    self.write(" else ");
+                    self.format_block(else_block, self.source.len());
                 }
                 self.write(";");
             }
@@ -2313,7 +2322,12 @@ impl<'a> Formatter<'a> {
     #[expect(clippy::too_many_lines, reason = "match on all Stmt variants")]
     fn format_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let { pattern, ty, value } => {
+            Stmt::Let {
+                pattern,
+                ty,
+                value,
+                else_block,
+            } => {
                 self.write_indent();
                 self.write("let ");
                 self.format_pattern(&pattern.0);
@@ -2324,6 +2338,10 @@ impl<'a> Formatter<'a> {
                 if let Some(val) = value {
                     self.write(" = ");
                     self.format_expr(&val.0);
+                }
+                if let Some(else_block) = else_block {
+                    self.write(" else ");
+                    self.format_block(else_block, self.source.len());
                 }
                 self.write(";\n");
             }

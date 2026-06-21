@@ -358,6 +358,14 @@ pub enum Stmt {
         pattern: Spanned<Pattern>,
         ty: Option<Spanned<TypeExpr>>,
         value: Option<Spanned<Expr>>,
+        /// `let Pat = expr else { <diverging block> };` — the let-else
+        /// fallback. `None` for an ordinary `let`. When `Some`, a refutable
+        /// pattern is admitted: the Ok-path binders escape into the enclosing
+        /// scope and the else block runs (and must diverge) on a failed match.
+        /// The block is carried structurally through the checker because the
+        /// divergence obligation is enforced in the type checker — it cannot be
+        /// desugared away in the parser.
+        else_block: Option<Block>,
     },
     Var {
         name: String,

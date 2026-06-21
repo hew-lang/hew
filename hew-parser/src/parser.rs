@@ -3980,6 +3980,7 @@ impl<'src> Parser<'src> {
                     pattern: (Pattern::Identifier(name.clone()), 0..0),
                     ty: None,
                     value: Some((value, 0..0)),
+                    else_block: None,
                 },
                 0..0,
             ));
@@ -5980,9 +5981,45 @@ impl<'src> Parser<'src> {
                     None
                 };
 
+                // `let Pat = expr else { <diverging block> };` — the let-else
+                // fallback clause, parsed AFTER the value and BEFORE the
+                // terminating `;`. The else block is carried structurally so
+                // the checker can enforce that it diverges; it is NOT desugared
+                // away here. `let r? = e else {…}` is rejected: the `?`
+                // propagation suffix already supplies a fallback path, so an
+                // `else` clause would be contradictory. An `else` with no
+                // initialiser (`let x else {…}`) has nothing to bind, so it is
+                // also rejected.
+                let else_block = if self.eat(&Token::Else) {
+                    if propagate {
+                        self.error(
+                            "`?` propagation suffix and an `else` clause cannot both \
+                             appear on a `let`; use one or the other"
+                                .to_string(),
+                        );
+                        return None;
+                    }
+                    if value.is_none() {
+                        self.error(
+                            "`let … else { … }` requires an initialiser before the \
+                             `else` clause"
+                                .to_string(),
+                        );
+                        return None;
+                    }
+                    Some(self.parse_block()?)
+                } else {
+                    None
+                };
+
                 self.expect(&Token::Semicolon)?;
 
-                Stmt::Let { pattern, ty, value }
+                Stmt::Let {
+                    pattern,
+                    ty,
+                    value,
+                    else_block,
+                }
             }
             Some(Token::Var) => {
                 self.advance();
@@ -6152,12 +6189,20 @@ impl<'src> Parser<'src> {
             }
             Some(Token::Return) => {
                 self.advance();
-                let value = if self.peek() == Some(&Token::Semicolon) {
+                let value = if matches!(self.peek(), Some(Token::Semicolon | Token::RightBrace)) {
                     None
                 } else {
                     Some(self.parse_expr()?)
                 };
-                self.expect(&Token::Semicolon)?;
+                // A statement-position `return` normally ends with `;`. When it
+                // is the last item in a block (`}` follows, no `;`), it is the
+                // block's trailing `return` — `parse_block` promotes the
+                // resulting `Stmt::Return` to a trailing `Expr::Return`, so do
+                // not demand a `;` here. This is the `else { return … }`
+                // let-else body and the `if c { return … }`-tail shape.
+                if self.peek() != Some(&Token::RightBrace) {
+                    self.expect(&Token::Semicolon)?;
+                }
                 Stmt::Return(value)
             }
             Some(Token::Defer) => {

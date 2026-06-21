@@ -19945,6 +19945,20 @@ impl Builder {
         if let Some(child_ref) = self.fungible_child_ref_of(actor) {
             let (live_bb, recover_bb) = self.emit_fungible_reresolve(child_ref, actor);
             // recover_bb: not-live → drop the tell and continue.
+            // SHIM(F-04 recover-path payload): the recover edge skips the Send,
+            //   so a heap-owning payload (e.g. an owned `string`) packed into the
+            //   non-binding payload temp is neither delivered nor freed → a leak
+            //   on the not-live path. The integer/BitCopy spine (every supervisor
+            //   example + the dogfood case) is unaffected.
+            // WHY now: payload-drop on the recover edge needs drop-elaboration
+            //   threaded into recover_bb; that is a larger change than this lane,
+            //   and the pre-F-04 behaviour leaked-by-aborting (the trap killed the
+            //   whole process), so this is not a regression for the common case.
+            // WHEN obsolete: when a heap-payload tell to a supervised child is a
+            //   supported, exercised shape.
+            // WHAT: elaborate the payload's owned drop into recover_bb before the
+            //   Goto (mirror the Send-fail path's owner release), or hoist the
+            //   payload pack into live_bb so it is only built on delivery.
             self.start_block(recover_bb);
             self.finish_current_block(Terminator::Goto { target: next });
             // live_bb: the freshly-resolved current child; the Send below targets it.

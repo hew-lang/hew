@@ -144,6 +144,7 @@ fn send_terminator_checks_return_status_and_traps_on_failure() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts =

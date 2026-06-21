@@ -197,6 +197,7 @@ fn emit_to_string(pipeline: &IrPipeline, slug: &str) -> String {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     emit_module(pipeline, &options).expect("supervisor emission should succeed");
@@ -506,6 +507,7 @@ fn supervisor_bootstrap_fails_closed_on_missing_on_crash_symbol() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let err = emit_module(&pipeline, &options)
@@ -532,6 +534,7 @@ fn supervisor_bootstrap_accepts_duration_window() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     emit_module(&pipeline, &options)
@@ -552,6 +555,7 @@ fn supervisor_bootstrap_rejects_invalid_window() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let err = emit_module(&pipeline, &options)

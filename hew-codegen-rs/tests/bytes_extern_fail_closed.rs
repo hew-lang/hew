@@ -162,6 +162,7 @@ fn emit_options(label: &str) -> EmitOptions<'static> {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     }
 }

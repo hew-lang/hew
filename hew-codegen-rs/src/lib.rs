@@ -40,5 +40,5 @@ pub(crate) mod thunks;
 
 pub use llvm::{
     emit_module, emit_module_objects, validate_codegen_front, verify_pipeline, CodegenError,
-    EmitArtefacts, EmitOptions,
+    EmitArtefacts, EmitOptions, OptLevel,
 };

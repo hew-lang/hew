@@ -437,6 +437,7 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> std::path::PathBuf {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts =
@@ -640,6 +641,7 @@ fn mem_floor_is_not_a_wasm_excluded_substrate() {
         wasm: true,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     if let Err(CodegenError::WasmUnsupportedSubstrate { symbol }) = emit_module(&pipeline, &options)
@@ -674,6 +676,7 @@ fn mem_floor_emits_linkable_wasm_module() {
         wasm: true,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options)

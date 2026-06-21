@@ -324,6 +324,7 @@ fn duplex_pair_call_blocks_wasm_emission() {
         wasm: true,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let result = emit_module(&pipeline, &options);
@@ -355,6 +356,7 @@ fn duplex_close_drop_blocks_wasm_emission() {
         wasm: true,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let result = emit_module(&pipeline, &options);
@@ -387,6 +389,7 @@ fn duplex_pair_native_only_succeeds_without_wasm_emit() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts =
@@ -422,6 +425,7 @@ fn non_duplex_pipeline_does_not_trigger_wasm_substrate_error() {
         wasm: false, // avoid invoking wasm-ld in unit tests
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let result = emit_module(&pipeline, &options);

@@ -118,6 +118,10 @@ pub struct CompileArgs {
     /// Compilation target. Omit for native; pass `wasm32-unknown-unknown` for WASM.
     #[arg(long, value_name = "TRIPLE")]
     pub target: Option<String>,
+    /// LLVM middle-end optimization level: `0` (default, no optimization) or
+    /// `2` (the `default<O2>` release pipeline — inlining, SROA, GVN, loop opts).
+    #[arg(long = "opt-level", value_parser = ["0", "2"], default_value = "0", value_name = "LEVEL")]
+    pub opt_level: String,
     /// Diagnostic output format: `text` (default) or `json`.
     #[arg(long, value_enum, default_value_t = DiagnosticFormat::Text, value_name = "FORMAT")]
     pub format: DiagnosticFormat,
@@ -340,6 +344,12 @@ pub struct BuildArgs {
     /// Build with debug info (no optimization, no stripping).
     #[arg(long, short = 'g')]
     pub debug: bool,
+    /// LLVM middle-end optimization level: `0` (default, no optimization) or
+    /// `2` (the `default<O2>` release pipeline). Independent of `-g`: `-g`
+    /// remains O0 unless `--opt-level 2` is also passed (which produces
+    /// lower-fidelity DWARF — inlined frames, optimized-out locals).
+    #[arg(long = "opt-level", value_parser = ["0", "2"], default_value = "0", value_name = "LEVEL")]
+    pub opt_level: String,
     /// Pass an extra library or linker argument to the native link step.
     /// Values may begin with a dash (e.g. `-lMagickWand-7.Q16`).
     #[arg(long = "link-lib", value_name = "PATH", allow_hyphen_values = true)]

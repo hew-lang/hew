@@ -63,7 +63,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew adze observe runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-o2-differential test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -682,6 +682,13 @@ test-hew: hew runtime stdlib
 test-hew-ratchet: hew runtime stdlib
 	@echo "==> Running Hew test suite (ratcheted)"
 	scripts/hew-suite-ratchet.sh
+
+# The -O0-vs-O2 differential-exec parity gate: every compiled `.hew` program
+# must behave identically at -O0 and -O2. The no-miscompile oracle for the LLVM
+# middle-end pipeline (RC9). A divergence is a miscompile and a full stop.
+test-o2-differential: hew runtime stdlib
+	@echo "==> Running -O0-vs-O2 differential-exec parity gate"
+	scripts/o2-differential.sh
 
 test-stdlib-ratchet: hew
 	@echo "==> Type-checking stdlib (ratcheted)"

@@ -223,6 +223,7 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts = emit_module(pipeline, &options).expect("emit_module must succeed");
@@ -324,6 +325,7 @@ fn machine_emit_push_populates_thread_queue_in_fifo_order() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options).expect("emit_module must succeed");

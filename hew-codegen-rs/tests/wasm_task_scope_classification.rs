@@ -214,6 +214,7 @@ fn task_scope_new_call_blocks_wasm_emission() {
         wasm: true,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let result = emit_module(&pipeline, &options);
@@ -247,6 +248,7 @@ fn task_scope_spawn_call_blocks_wasm_emission() {
         wasm: true,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let result = emit_module(&pipeline, &options);
@@ -282,6 +284,7 @@ fn task_scope_wasm_diagnostic_message_names_scope_construct() {
         wasm: true,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let err =
@@ -316,6 +319,7 @@ fn task_scope_native_emission_unaffected() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     emit_module(&pipeline, &options)

@@ -118,6 +118,7 @@ fn emit_child_access_ir_for(slug: &str, target_triple: Option<&str>) -> String {
         wasm: false,
         target_triple,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options).expect("emit_module must succeed");
@@ -247,6 +248,7 @@ fn supervisor_child_get_classified_as_wasm_excluded() {
         wasm: true,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let err = emit_module(&pipeline, &options)

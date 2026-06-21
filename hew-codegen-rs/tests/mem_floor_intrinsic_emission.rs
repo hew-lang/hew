@@ -119,6 +119,7 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts =
@@ -244,6 +245,7 @@ fn unknown_floor_intrinsic_id_fails_closed() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     match emit_module(&pipeline, &options) {

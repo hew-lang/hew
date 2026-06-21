@@ -76,6 +76,7 @@ fn emit_ll_from_tc(source: &str, module_name: &str, tc_output: &TypeCheckOutput)
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options).expect("emit_module must succeed");

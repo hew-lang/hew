@@ -331,11 +331,69 @@ pub struct EmitOptions<'a> {
     /// Whether to emit DWARF debug info (`hew build -g`). When `false` the
     /// emitted module carries zero debug metadata (the legacy behaviour).
     pub debug: bool,
+    /// LLVM middle-end optimization level to run over each emitted module
+    /// before object emission. [`OptLevel::O0`] (the default) runs NO module
+    /// optimization pipeline — only the conditional coroutine lowering — exactly
+    /// matching the legacy behaviour. [`OptLevel::O2`] runs LLVM's `default<O2>`
+    /// pipeline (inlining, SROA, GVN, instcombine, mem2reg, loop opts, DCE) at
+    /// the single object-emission chokepoint. The pipeline is fail-closed: a
+    /// `run_passes` error aborts emission rather than writing an unoptimized or
+    /// half-optimized module. Threaded exactly parallel to the `debug` field
+    /// above; defaults to `O0` so existing callers are behaviour-preserving.
+    pub opt_level: OptLevel,
     /// Path to the originating Hew source file, used as the DWARF
     /// `DICompileUnit`/`DIFile` and to build the byte-offset → line index for
     /// function-entry locations. `None` (or `debug == false`) emits no debug
     /// info. Only consulted when `debug` is `true`.
     pub source_path: Option<&'a Path>,
+}
+
+/// The LLVM middle-end optimization level applied to each emitted module.
+///
+/// `O0` is the default and the historical behaviour: `write_to_file` runs only
+/// the backend (instruction selection / regalloc) passes plus the conditional
+/// coroutine lowering — no IR-level middle-end. `O2` runs LLVM's battle-tested
+/// `default<O2>` module pipeline before object emission. Only the two levels
+/// `{0, 2}` are exposed; intermediate/aggressive levels (O1/O3/Os/Oz) are a
+/// trivial future extension of this enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OptLevel {
+    /// No middle-end optimization (fast compile, debuggable). The default.
+    #[default]
+    O0,
+    /// LLVM `default<O2>` — the SOTA release pipeline.
+    O2,
+}
+
+impl OptLevel {
+    /// Parse a CLI `--opt-level` value (`"0"` or `"2"`) into the enum.
+    /// Returns `None` for any other value so the caller fails closed.
+    pub fn from_cli_str(s: &str) -> Option<Self> {
+        match s {
+            "0" => Some(OptLevel::O0),
+            "2" => Some(OptLevel::O2),
+            _ => None,
+        }
+    }
+}
+
+/// Raise `requested` to `O2` when `HEW_OPT_LEVEL=2` is set in the environment.
+///
+/// This is the test-harness FLOOR (see the call site for the full rationale):
+/// the differential-exec parity gate forces the whole compiled corpus through
+/// O2 by exporting `HEW_OPT_LEVEL=2`, without a per-subcommand flag. The env var
+/// can only RAISE the level (an explicit `--opt-level 2` is never demoted); any
+/// value other than exactly `"2"` is ignored and the requested level stands.
+fn resolve_opt_level_with_env_floor(requested: OptLevel) -> OptLevel {
+    let env_o2 = std::env::var_os("HEW_OPT_LEVEL")
+        .as_deref()
+        .map(|v| v == std::ffi::OsStr::new("2"))
+        .unwrap_or(false);
+    if env_o2 {
+        OptLevel::O2
+    } else {
+        requested
+    }
 }
 
 /// Result of an emit: the paths of every produced artefact, for the CLI to
@@ -501,6 +559,20 @@ fn emit_module_with_options(
         _ => None,
     };
 
+    // Resolve the effective optimization level. The production source of truth is
+    // `options.opt_level` (set from the `--opt-level` CLI flag). The
+    // `HEW_OPT_LEVEL` env var is a TEST-HARNESS FLOOR: it lets the differential-exec
+    // parity gate and the `hew test`/`hew run` ratchet drive the WHOLE corpus
+    // through O2 without threading a flag through every subcommand. It can only
+    // RAISE the level (O0 → O2), never lower it, so it can never weaken a build
+    // that explicitly requested O2.
+    // WHY a floor and not an override: a release build that already asked for O2
+    // must not be silently demoted by a stray `HEW_OPT_LEVEL=0`; an O0 build is the
+    // only one the harness needs to lift. WHEN OBSOLETE: when every subcommand
+    // (`run`/`test`/`eval`) carries its own `--opt-level` flag and the harness sets
+    // it directly. REAL SOLUTION: per-subcommand flag plumbing (a follow-up).
+    let effective_opt_level = resolve_opt_level_with_env_floor(options.opt_level);
+
     // Build the textual IR once as the forensic `.ll` artefact — `opt
     // -passes=verify` runs against it directly. It is classified against the
     // requested target (the explicit `--target` triple, the wasm32 triple, or
@@ -536,6 +608,7 @@ fn emit_module_with_options(
             &triple_str,
             &obj_path,
             debug_input,
+            effective_opt_level,
         )?;
         artefacts.native_obj_path = Some(obj_path);
     }
@@ -551,6 +624,7 @@ fn emit_module_with_options(
             "wasm32-unknown-unknown",
             &wasm_obj_path,
             debug_input,
+            effective_opt_level,
         )?;
         if link_freestanding_wasm {
             let wasm_path = options
@@ -1045,6 +1119,7 @@ fn emit_object_in_process(
     triple: &str,
     out_path: &Path,
     debug: Option<DebugInput<'_>>,
+    opt_level: OptLevel,
 ) -> CodegenResult<()> {
     let _guard = llvm_codegen_lock()
         .lock()
@@ -1052,14 +1127,21 @@ fn emit_object_in_process(
     let machine = target_machine_for_triple(triple)?;
     let ctx = Context::create();
     let llvm_mod = build_module_for_target(&ctx, pipeline, module_name, Some(&machine), debug)?;
-    // Run LLVM's coroutine lowering (CoroSplit et al.) before instruction
-    // selection. `write_to_file` does NOT run the module optimization pipeline,
-    // so a `presplitcoroutine` function would otherwise reach the backend
-    // un-split and fail to lower its `llvm.coro.*` intrinsics. Gated on a
-    // coroutine actually being present, so non-suspending programs pay nothing.
-    if crate::coro::module_has_coroutines(&llvm_mod) {
-        crate::coro::run_coro_passes(&llvm_mod, &machine)?;
-    }
+    // Run the requested optimization pipeline + coroutine lowering before
+    // instruction selection.
+    //
+    // `write_to_file` runs the BACKEND passes (instruction selection, register
+    // allocation) configured on the `TargetMachine`, but NOT the middle-end IR
+    // pipeline (inlining, SROA, GVN, instcombine, loop opts, DCE). At `O0` we run
+    // only the conditional coroutine lowering (CoroSplit et al.) — otherwise a
+    // `presplitcoroutine` function reaches the backend un-split and fails to lower
+    // its `llvm.coro.*` intrinsics. At `O2` we run LLVM's `default<O2>` middle-end
+    // pipeline, which itself includes the coro passes; to keep `coro-split`
+    // running EXACTLY ONCE (and before the O2 inliner sees the split outlines) we
+    // FOLD the coro passes into a single combined pipeline string when a coroutine
+    // is present, and SKIP the standalone `run_coro_passes` call. Without the fold,
+    // `default<O2>` would double-run `coro-split`.
+    run_module_pipeline(&llvm_mod, &machine, opt_level)?;
     machine
         .write_to_file(&llvm_mod, FileType::Object, out_path)
         .llvm_ctx_with(|| {
@@ -1069,6 +1151,60 @@ fn emit_object_in_process(
             )
         })?;
     Ok(())
+}
+
+/// Run the requested middle-end + coroutine pipeline over `llvm_mod` in place,
+/// fail-closed.
+///
+/// - **`O0`**: the legacy behaviour — run the conditional coroutine lowering
+///   ONLY when a coroutine is present; non-suspending programs pay nothing and
+///   no middle-end optimization runs.
+/// - **`O2`**: run LLVM's `default<O2>` module pipeline. When a coroutine is
+///   present, the coro passes are FOLDED into the front of one combined pipeline
+///   string (`globaldce,coro-early,cgscc(coro-split),coro-cleanup,default<O2>`)
+///   so `coro-split` runs exactly once, before the O2 inliner — and the
+///   standalone `run_coro_passes` is skipped to avoid a double-run. When no
+///   coroutine is present, plain `default<O2>` runs.
+///
+/// Any `run_passes` failure maps to [`CodegenError::Llvm`] and aborts emission
+/// (the caller never reaches `write_to_file` with an unverified module). After a
+/// successful pass run the module is re-verified — `default<O2>` reshapes IR
+/// heavily, so a post-pass verify catches an optimizer-exposed invariant
+/// violation at the source rather than as a downstream backend crash.
+fn run_module_pipeline(
+    llvm_mod: &LlvmModule<'_>,
+    machine: &TargetMachine,
+    opt_level: OptLevel,
+) -> CodegenResult<()> {
+    let has_coro = crate::coro::module_has_coroutines(llvm_mod);
+    match opt_level {
+        OptLevel::O0 => {
+            if has_coro {
+                crate::coro::run_coro_passes(llvm_mod, machine)?;
+            }
+            Ok(())
+        }
+        OptLevel::O2 => {
+            // FOLD: coro lowering precedes the O2 inliner in one pipeline string
+            // when coroutines are present; otherwise plain `default<O2>`.
+            let pipeline = if has_coro {
+                "globaldce,coro-early,cgscc(coro-split),coro-cleanup,default<O2>"
+            } else {
+                "default<O2>"
+            };
+            let options = inkwell::passes::PassBuilderOptions::create();
+            llvm_mod
+                .run_passes(pipeline, machine, options)
+                .map_err(|e| {
+                    CodegenError::Llvm(format!("O2 pass pipeline `{pipeline}` failed: {e}"))
+                })?;
+            // Fail closed on any optimizer-exposed IR invariant violation.
+            llvm_mod.verify().map_err(|e| {
+                CodegenError::LlvmVerify(format!("module rejected after O2 pipeline: {e}"))
+            })?;
+            Ok(())
+        }
+    }
 }
 
 fn llvm_codegen_lock() -> &'static Mutex<()> {
@@ -33872,6 +34008,7 @@ mod tests {
             wasm: false,
             target_triple: None,
             debug: false,
+            opt_level: OptLevel::O0,
             source_path: None,
         };
         let host_artefacts = emit_module(&pipeline, &host_opts).expect("host emit");
@@ -33912,6 +34049,7 @@ mod tests {
             wasm: false,
             target_triple: Some(cross_triple),
             debug: false,
+            opt_level: OptLevel::O0,
             source_path: None,
         };
         let cross_artefacts = emit_module(&pipeline, &cross_opts).expect("cross emit");
@@ -39600,6 +39738,7 @@ mod tests {
             wasm: false,
             target_triple: None,
             debug: false,
+            opt_level: OptLevel::O0,
             source_path: None,
         };
         let artefacts = emit_module(&pipeline, &options)
@@ -39745,6 +39884,7 @@ mod tests {
             wasm: false,
             target_triple: None,
             debug: false,
+            opt_level: OptLevel::O0,
             source_path: None,
         };
         let err = emit_module(&pipeline, &options).expect_err(
@@ -40128,6 +40268,7 @@ mod tests {
             wasm: false,
             target_triple: None,
             debug: false,
+            opt_level: OptLevel::O0,
             source_path: None,
         };
         let err = emit_module(&pipeline, &options)
@@ -43103,6 +43244,116 @@ fn main() {
         module
             .verify()
             .unwrap_or_else(|e| panic!("post-O2 module failed verify: {e}"));
+    }
+
+    /// A trivial (non-coroutine) module run through `run_module_pipeline` at
+    /// `O2` takes the plain `default<O2>` branch and stays verifier-clean. The
+    /// post-pass `verify()` inside `run_module_pipeline` is the fail-closed guard;
+    /// this pins that the production seam (not just an ad-hoc `run_passes` call)
+    /// accepts a real module at O2.
+    #[test]
+    fn o2_pipeline_noncoro_module_verifies() {
+        let ctx = Context::create();
+        let module = ctx.create_module("o2_noncoro");
+        let machine = target_machine_for_triple(&native_emission_triple()).expect("host machine");
+        let builder = ctx.create_builder();
+
+        // A non-trivial body so the optimizer has work: add two args, return.
+        let i64_ty = ctx.i64_type();
+        let fn_ty = i64_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false);
+        let f = module.add_function("add2", fn_ty, Some(Linkage::External));
+        let entry = ctx.append_basic_block(f, "entry");
+        builder.position_at_end(entry);
+        let a = f.get_nth_param(0).expect("a").into_int_value();
+        let b = f.get_nth_param(1).expect("b").into_int_value();
+        let sum = builder.build_int_add(a, b, "sum").expect("add");
+        builder.build_return(Some(&sum)).expect("ret");
+        module.verify().expect("pre-O2 verify");
+
+        run_module_pipeline(&module, &machine, OptLevel::O0).expect("O0 pipeline");
+        run_module_pipeline(&module, &machine, OptLevel::O2).expect("O2 pipeline");
+        module.verify().expect("post-O2 verify");
+    }
+
+    /// `module_has_coroutines` reports `false` for a non-coroutine module, so
+    /// `run_module_pipeline` at O2 selects the plain `default<O2>` branch (not the
+    /// folded coro string). Pins the fold-guard predicate the production seam keys
+    /// on — a regression that always reported `true` would double-run coro-split.
+    #[test]
+    fn o2_pipeline_noncoro_takes_default_branch() {
+        let ctx = Context::create();
+        let module = ctx.create_module("fold_guard");
+        let i64_ty = ctx.i64_type();
+        let fn_ty = i64_ty.fn_type(&[], false);
+        let f = module.add_function("k", fn_ty, None);
+        let entry = ctx.append_basic_block(f, "entry");
+        let builder = ctx.create_builder();
+        builder.position_at_end(entry);
+        builder
+            .build_return(Some(&i64_ty.const_int(1, false)))
+            .expect("ret");
+        assert!(
+            !crate::coro::module_has_coroutines(&module),
+            "a plain module must not be treated as a coroutine (would double-run coro-split)"
+        );
+    }
+
+    /// The `HEW_OPT_LEVEL` env var is a FLOOR — it raises O0 → O2 but never
+    /// lowers O2, and ignores any value other than exactly `"2"`. This is the
+    /// test-harness lever the differential-exec gate uses; a regression that let
+    /// it demote an explicit O2 build would silently weaken release codegen.
+    ///
+    /// Serialised via a process-global lock: env vars are process-wide, and the
+    /// codegen test suite runs in-process, so two env-mutating tests must not
+    /// interleave.
+    #[test]
+    fn opt_level_env_floor_raises_but_never_lowers() {
+        use std::sync::Mutex;
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+        // Save + restore the ambient value so the test is hermetic.
+        let saved = std::env::var_os("HEW_OPT_LEVEL");
+        let restore = || match &saved {
+            Some(v) => unsafe { std::env::set_var("HEW_OPT_LEVEL", v) },
+            None => unsafe { std::env::remove_var("HEW_OPT_LEVEL") },
+        };
+
+        unsafe { std::env::remove_var("HEW_OPT_LEVEL") };
+        assert_eq!(resolve_opt_level_with_env_floor(OptLevel::O0), OptLevel::O0);
+        assert_eq!(resolve_opt_level_with_env_floor(OptLevel::O2), OptLevel::O2);
+
+        unsafe { std::env::set_var("HEW_OPT_LEVEL", "2") };
+        assert_eq!(
+            resolve_opt_level_with_env_floor(OptLevel::O0),
+            OptLevel::O2,
+            "HEW_OPT_LEVEL=2 must raise O0 to O2"
+        );
+        assert_eq!(resolve_opt_level_with_env_floor(OptLevel::O2), OptLevel::O2);
+
+        // A non-"2" value is ignored (the floor only acts on exactly "2").
+        unsafe { std::env::set_var("HEW_OPT_LEVEL", "0") };
+        assert_eq!(
+            resolve_opt_level_with_env_floor(OptLevel::O2),
+            OptLevel::O2,
+            "HEW_OPT_LEVEL=0 must never demote an explicit O2 build"
+        );
+        unsafe { std::env::set_var("HEW_OPT_LEVEL", "1") };
+        assert_eq!(resolve_opt_level_with_env_floor(OptLevel::O0), OptLevel::O0);
+
+        restore();
+    }
+
+    /// `OptLevel::from_cli_str` accepts exactly `{"0","2"}` and rejects
+    /// everything else — the fail-closed CLI parse.
+    #[test]
+    fn opt_level_from_cli_str_is_fail_closed() {
+        assert_eq!(OptLevel::from_cli_str("0"), Some(OptLevel::O0));
+        assert_eq!(OptLevel::from_cli_str("2"), Some(OptLevel::O2));
+        assert_eq!(OptLevel::from_cli_str("1"), None);
+        assert_eq!(OptLevel::from_cli_str("3"), None);
+        assert_eq!(OptLevel::from_cli_str(""), None);
+        assert_eq!(OptLevel::from_cli_str("O2"), None);
     }
 }
 

@@ -407,6 +407,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
 

@@ -116,6 +116,7 @@ fn emit_ll(pipeline: &IrPipeline, slug: &str) -> String {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts = emit_module(pipeline, &options).expect("cycle spawn pipeline must emit");

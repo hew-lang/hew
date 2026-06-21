@@ -149,6 +149,7 @@ fn consistency_check_rejects_pending_fact_at_pipeline_finalize() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     match emit_module(&pipeline, &options) {
@@ -184,6 +185,7 @@ fn consistency_check_rejects_pending_hashset_fact_at_pipeline_finalize() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     match emit_module(&pipeline, &options) {
@@ -326,6 +328,7 @@ fn emit_ll(pipeline: IrPipeline, module_name: &str) -> String {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options)
@@ -570,6 +573,7 @@ fn pending_fact_without_matching_call_still_fails_closed() {
             wasm: false,
             target_triple: None,
             debug: false,
+            opt_level: hew_codegen_rs::OptLevel::O0,
             source_path: None,
         },
     ) {

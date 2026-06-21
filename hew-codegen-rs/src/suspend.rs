@@ -802,28 +802,36 @@ fn emit_suspending_read_bind<'ctx>(
 
         fn_ctx.builder.position_at_end(read_proceed_bb);
     }
-    let slot_take = intern_runtime_decl(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        &mut fn_ctx.runtime_decls.borrow_mut(),
-        "hew_read_slot_take_raw",
-    )?;
-    // Use hew_read_slot_take_raw: avoid Windows x64 MSVC sret mismatch.
-    // _raw writes directly to dest_ptr and returns void.
+    // Canonical `hew_read_slot_take(slot) -> BytesTriple`, classified per target
+    // by the R5 ABI classifier (register pair on SysV/AAPCS, sret on MSVC),
+    // replacing the `hew_read_slot_take_raw` out-pointer twin that faked MSVC's
+    // sret ABI. The result triple is stored into the bytes dest slot.
     let (dest_ptr, dest_ty) = place_pointer(fn_ctx, term.result_dest)?;
     if !matches!(dest_ty, BasicTypeEnum::StructType(_)) {
         return Err(CodegenError::FailClosed(format!(
             "SuspendingRead result_dest must be a bytes struct slot, got {dest_ty:?}"
         )));
     }
-    fn_ctx
-        .builder
-        .build_call(
-            slot_take,
-            &[slot.into(), dest_ptr.into()],
-            "suspending_read_take_raw",
-        )
-        .llvm_ctx("hew_read_slot_take_raw call")?;
+    let bytes_triple_ty = crate::runtime_abi::bytes_triple_llvm_ty(fn_ctx);
+    let triple = fn_ctx.llvm_mod.get_triple();
+    let triple_str = triple.as_str().to_string_lossy();
+    let (slot_take, return_abi) = crate::abi_class::declare_aggregate_return(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        fn_ctx.target_data,
+        &triple_str,
+        "hew_read_slot_take",
+        bytes_triple_ty,
+        &[fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default()).into()],
+    )?;
+    crate::runtime_abi::store_classified_bytes_return(
+        fn_ctx,
+        slot_take,
+        return_abi,
+        &[slot.into()],
+        dest_ptr,
+        "hew_read_slot_take",
+    )?;
     if let Some(result_dest) = term.deadline_result_dest {
         if term.to_string {
             // `await conn.read_string() | after d` success path: convert the raw

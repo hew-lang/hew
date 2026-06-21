@@ -108,6 +108,73 @@ pub(crate) fn is_bytes_struct_expansion_consumer(symbol: &str) -> bool {
     )
 }
 
+/// The LLVM struct type matching the runtime `#[repr(C)] BytesTriple`
+/// (`{ ptr, i32, i32 }`, `hew-runtime/src/bytes.rs`). The canonical aggregate
+/// the R5 classifier keys bytes-return producers on.
+pub(crate) fn bytes_triple_llvm_ty<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+) -> inkwell::types::StructType<'ctx> {
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let i32_ty = fn_ctx.ctx.i32_type();
+    fn_ctx
+        .ctx
+        .struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false)
+}
+
+/// Issue a call to a classified bytes-return producer `fv` and store the
+/// returned `BytesTriple` into `dest_ptr` (a `{ptr,i32,i32}` slot), per the
+/// `return_abi` chosen by [`crate::abi_class::declare_aggregate_return`].
+///
+/// The unified flow for every bytes-return runtime producer (replacing the
+/// per-symbol `_raw` out-pointer twins):
+///   - `RegisterPair`: the call returns the `[2 x i64]` register-pair carrier;
+///     store the 16-byte aggregate directly into `dest_ptr` (the `[2 x i64]` and
+///     `{ptr,i32,i32}` byte layouts are identical — the documented reconstruction).
+///   - `Sret`: pass `dest_ptr` as the hidden sret first argument; the runtime
+///     writes the triple in place, so no post-call store is needed.
+pub(crate) fn store_classified_bytes_return<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    fv: inkwell::values::FunctionValue<'ctx>,
+    return_abi: crate::abi_class::AggregateReturnAbi<'ctx>,
+    non_sret_args: &[BasicMetadataValueEnum<'ctx>],
+    dest_ptr: inkwell::values::PointerValue<'ctx>,
+    symbol: &str,
+) -> CodegenResult<()> {
+    match return_abi {
+        crate::abi_class::AggregateReturnAbi::RegisterPair { carrier } => {
+            let call_site = fn_ctx
+                .builder
+                .build_call(fv, non_sret_args, &format!("{symbol}_call"))
+                .llvm_ctx("classified bytes-return call")?;
+            let pair = call_site.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "{symbol} returned void unexpectedly (register-pair class)"
+                ))
+            })?;
+            // The returned `[2 x i64]` is 16 bytes, identical to the dest
+            // `{ptr,i32,i32}` slot's byte layout. Store the aggregate directly.
+            let _ = carrier;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, pair)
+                .llvm_ctx("classified bytes-return store")?;
+            Ok(())
+        }
+        crate::abi_class::AggregateReturnAbi::Sret => {
+            let mut sret_args: Vec<BasicMetadataValueEnum<'ctx>> =
+                Vec::with_capacity(non_sret_args.len() + 1);
+            sret_args.push(dest_ptr.into());
+            sret_args.extend_from_slice(non_sret_args);
+            fn_ctx
+                .builder
+                .build_call(fv, &sret_args, &format!("{symbol}_sret_call"))
+                .llvm_ctx("classified bytes-return (sret) call")?;
+            // The runtime wrote the triple through the sret pointer; no store.
+            Ok(())
+        }
+    }
+}
+
 /// interned extern declaration for `call.symbol()`. The per-symbol
 /// dispatch encodes the ABI-shape decisions documented in the E4 plan
 /// (SHIM(E4) comment in `hew-mir/src/lower.rs` ~1220):
@@ -902,29 +969,47 @@ pub(crate) fn lower_call_runtime_abi(
                     "hew_bytes_slice dest must be a bytes struct slot, got {dest_ty:?}"
                 )));
             }
-            let fv = intern_runtime_decl(
+            // Canonical `hew_bytes_slice(ptr, offset, len, start, end) ->
+            // BytesTriple`, classified per target by the R5 ABI classifier:
+            //   - SysV/AAPCS: the 16-byte BytesTriple returns in a register pair
+            //     ([2 x i64]); store the 16-byte aggregate into the dest
+            //     {ptr,i32,i32} slot (identical byte layout).
+            //   - Windows x64 MSVC: returns indirectly; pass dest as the sret
+            //     pointer and the runtime writes the triple in place.
+            // Replaces the `_raw` out-pointer twin that faked MSVC's sret ABI.
+            let bytes_triple_ty = bytes_triple_llvm_ty(fn_ctx);
+            let triple = fn_ctx.llvm_mod.get_triple();
+            let triple_str = triple.as_str().to_string_lossy();
+            let (fv, return_abi) = crate::abi_class::declare_aggregate_return(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_bytes_slice_raw",
+                fn_ctx.target_data,
+                &triple_str,
+                "hew_bytes_slice",
+                bytes_triple_ty,
+                &[
+                    ptr_ty.into(),
+                    i32_ty.into(),
+                    i32_ty.into(),
+                    i64_ty.into(),
+                    i64_ty.into(),
+                ],
             )?;
-            fn_ctx
-                .builder
-                .build_call(
-                    fv,
-                    &[
-                        data_ptr.into(),
-                        offset_val.into(),
-                        len_val.into(),
-                        start_val.into(),
-                        end_val.into(),
-                        dest_ptr.into(),
-                    ],
-                    "hew_bytes_slice_raw_call",
-                )
-                .llvm_ctx("hew_bytes_slice_raw call")?;
-            // `_raw` writes directly into `dest_ptr`; no try_as_basic_value /
-            // build_store needed.
+            let non_sret_args = [
+                data_ptr.into(),
+                offset_val.into(),
+                len_val.into(),
+                start_val.into(),
+                end_val.into(),
+            ];
+            store_classified_bytes_return(
+                fn_ctx,
+                fv,
+                return_abi,
+                &non_sret_args,
+                dest_ptr,
+                "hew_bytes_slice",
+            )?;
             let _ = (i8_ty, i64_ty);
         }
         F::BytesPush => {

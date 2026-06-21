@@ -342,6 +342,13 @@ pub struct BuildArgs {
     #[arg(long = "emit-obj")]
     pub emit_obj: bool,
     /// Build with debug info (no optimization, no stripping).
+    ///
+    /// Emits DWARF debug info into the native object. gdb and lldb read this
+    /// faithfully on Linux (ELF) and macOS (Mach-O). On Windows the output is
+    /// PE/COFF with embedded DWARF; Windows-native debuggers (and lldb-on-
+    /// Windows) expect CodeView/PDB instead, so DWARF-in-PE is not fully read
+    /// there. Windows-native debuggability is a tracked follow-up:
+    /// <https://github.com/hew-lang/hew/issues/2117>
     #[arg(long, short = 'g')]
     pub debug: bool,
     /// LLVM middle-end optimization level: `0` (default, no optimization) or

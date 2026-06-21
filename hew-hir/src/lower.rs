@@ -21027,7 +21027,13 @@ impl LowerCtx {
                 self.pop_scope();
             }
 
-            if result_ty.is_none() {
+            // Skip diverging arms (Unit = no trailing expr / return-only block;
+            // Never = explicit bottom type) when inferring the match result type,
+            // mirroring `check_match_expr`'s `Ty::Never | Ty::Error` skip.  A
+            // diverging arm body typed as `Unit` by `lower_block` (because it has
+            // no tail expression, e.g. `{ return X; }`) must not constrain the
+            // match result type — only non-diverging arms should set it.
+            if result_ty.is_none() && !matches!(body_hir.ty, ResolvedTy::Unit | ResolvedTy::Never) {
                 result_ty = Some(body_hir.ty.clone());
             }
 

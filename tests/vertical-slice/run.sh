@@ -757,6 +757,9 @@ run_accept_expect_stdout "owned_nested_tuple_clone"
 run_accept_expect_stdout "owned_nested_tuple_bytes"
 run_accept_expect_stdout "owned_nested_tuple_record"
 run_accept_expect_stdout "match_float_literal_arm"
+# match result type is inferred from the non-diverging arm; a return-only arm
+# (typed Unit by lower_block) must not set the match result type.
+run_accept_expect_stdout "match_diverging_arm_result_type"
 run_check_run_expect_stdout "const_ref_init"
 
 # W4.039 — bytes-to-string triple-ABI canonicalisation. Behavioural proof

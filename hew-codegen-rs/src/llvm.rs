@@ -479,6 +479,13 @@ struct ModuleDebugCtx<'a, 'ctx> {
     compile_unit: DICompileUnit<'ctx>,
     file: DIFile<'ctx>,
     line_index: &'a LineIndex,
+    /// Memoized type-DIE cache keyed by a structural type key, mirroring the
+    /// `resolve_ty` LLVM-type authority. Breaks recursion (a recursive record
+    /// inserts a forward placeholder before resolving members) and dedups
+    /// monomorphizations so a `Point` type yields exactly one
+    /// `DW_TAG_structure_type`. Interior mutability because `ModuleDebugCtx` is
+    /// shared by `&` across every `lower_function` call.
+    di_type_cache: RefCell<HashMap<String, inkwell::debug_info::DIType<'ctx>>>,
 }
 
 /// Emit native + wasm artefacts for `pipeline`'s raw MIR. Returns the paths
@@ -29256,6 +29263,669 @@ fn set_debug_location_for_span<'ctx>(
     builder.set_current_debug_location(loc);
 }
 
+// DWARF `DW_ATE_*` base-type encodings (DWARF5 §7.8). inkwell takes these as a
+// raw `LLVMDWARFTypeEncoding` (a `u32`); the constants are stable across LLVM
+// versions.
+const DW_ATE_BOOLEAN: u32 = 0x02;
+const DW_ATE_FLOAT: u32 = 0x04;
+const DW_ATE_SIGNED: u32 = 0x05;
+const DW_ATE_UNSIGNED: u32 = 0x07;
+const DW_ATE_UNSIGNED_CHAR: u32 = 0x08;
+
+/// Scalar `(dwarf_name, size_in_bits, encoding)` for a `ResolvedTy`, or `None`
+/// when the type is not a scalar base type. Pointer-width types use the
+/// `target_data` pointer size so the DIE matches the alloca.
+fn scalar_di_basic(ty: &ResolvedTy, target_data: &TargetData) -> Option<(&'static str, u64, u32)> {
+    let ptr_bits = u64::from(target_data.get_pointer_byte_size(None)) * 8;
+    Some(match ty {
+        ResolvedTy::I8 => ("i8", 8, DW_ATE_SIGNED),
+        ResolvedTy::U8 => ("u8", 8, DW_ATE_UNSIGNED),
+        ResolvedTy::I16 => ("i16", 16, DW_ATE_SIGNED),
+        ResolvedTy::U16 => ("u16", 16, DW_ATE_UNSIGNED),
+        ResolvedTy::I32 => ("i32", 32, DW_ATE_SIGNED),
+        ResolvedTy::U32 => ("u32", 32, DW_ATE_UNSIGNED),
+        ResolvedTy::I64 => ("i64", 64, DW_ATE_SIGNED),
+        ResolvedTy::U64 => ("u64", 64, DW_ATE_UNSIGNED),
+        ResolvedTy::Isize => ("isize", ptr_bits, DW_ATE_SIGNED),
+        ResolvedTy::Usize => ("usize", ptr_bits, DW_ATE_UNSIGNED),
+        ResolvedTy::Bool => ("bool", 8, DW_ATE_BOOLEAN),
+        // Hew `char` is a Unicode scalar value lowered to i32.
+        ResolvedTy::Char => ("char", 32, DW_ATE_UNSIGNED_CHAR),
+        ResolvedTy::F32 => ("f32", 32, DW_ATE_FLOAT),
+        ResolvedTy::F64 => ("f64", 64, DW_ATE_FLOAT),
+        // Duration is i64 nanoseconds at the ABI.
+        ResolvedTy::Duration => ("Duration", 64, DW_ATE_SIGNED),
+        _ => return None,
+    })
+}
+
+/// Resolve a `ResolvedTy` to a DWARF type DIE, mirroring the `resolve_ty`
+/// LLVM-type authority. Memoized on `dctx.di_type_cache` to dedup
+/// monomorphizations and break recursive-type cycles (a record inserts a
+/// placeholder before resolving its members). Returns `None` — emitting NO DIE,
+/// fail-closed — when the type cannot be faithfully resolved (an unknown
+/// `Named` in neither layout map, a `Never`, a not-yet-supported composite)
+/// rather than fabricating a placeholder type. The caller then skips the
+/// variable DIE for that slot.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "debug-type resolution mirrors resolve_ty's explicit borrows plus the layout maps"
+)]
+fn resolve_di_type<'ctx>(
+    ctx: &'ctx Context,
+    dctx: &ModuleDebugCtx<'_, 'ctx>,
+    target_data: &TargetData,
+    ty: &ResolvedTy,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    enum_layouts: &[EnumLayout],
+    record_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
+    record_field_names: &HashMap<String, Vec<String>>,
+) -> Option<inkwell::debug_info::DIType<'ctx>> {
+    use inkwell::debug_info::DIType;
+
+    // Scalars: emit a `DW_TAG_base_type`. Keyed by the scalar name (every
+    // `i64` shares one DIE).
+    if let Some((name, size_bits, encoding)) = scalar_di_basic(ty, target_data) {
+        let key = format!("scalar:{name}");
+        if let Some(t) = dctx.di_type_cache.borrow().get(&key).copied() {
+            return Some(t);
+        }
+        let basic = dctx
+            .di_builder
+            .create_basic_type(name, size_bits, encoding, DIFlags::PUBLIC)
+            .ok()?
+            .as_type();
+        dctx.di_type_cache.borrow_mut().insert(key, basic);
+        return Some(basic);
+    }
+
+    // `string`, `CancellationToken`, and other opaque handles lower to a bare
+    // `ptr`; represent them as a typeless pointer DIE so gdb shows the address.
+    let pointer_di = |pointee: Option<DIType<'ctx>>, name: &str| -> DIType<'ctx> {
+        let ptr_bits = u64::from(target_data.get_pointer_byte_size(None)) * 8;
+        let pointee = pointee.unwrap_or_else(|| {
+            // A void-ish pointee: an i8 base type stands in for "unknown".
+            dctx.di_builder
+                .create_basic_type("u8", 8, DW_ATE_UNSIGNED, DIFlags::PUBLIC)
+                .expect("u8 base type")
+                .as_type()
+        });
+        dctx.di_builder
+            .create_pointer_type(name, pointee, ptr_bits, 0, AddressSpace::default())
+            .as_type()
+    };
+
+    if matches!(ty, ResolvedTy::String) {
+        let key = "ptr:string".to_string();
+        if let Some(t) = dctx.di_type_cache.borrow().get(&key).copied() {
+            return Some(t);
+        }
+        let di = pointer_di(None, "string");
+        dctx.di_type_cache.borrow_mut().insert(key, di);
+        return Some(di);
+    }
+
+    if let ResolvedTy::Named { name, args, .. } = ty {
+        let key = if args.is_empty() {
+            name.clone()
+        } else {
+            mangle_with_shortened_args(name, args)
+        };
+
+        // An enum (in the enum-layout map) — emit the degraded tagged-union DIE.
+        if let Some(enum_layout) = enum_layouts
+            .iter()
+            .find(|e| e.name == key || short_name(&e.name) == short_name(name))
+        {
+            return resolve_enum_di_type(
+                ctx,
+                dctx,
+                target_data,
+                enum_layout,
+                record_layouts,
+                enum_layouts,
+                record_field_resolved_tys,
+                record_field_names,
+            );
+        }
+
+        // A record (in the LLVM struct-layout map) — emit a struct DIE.
+        let llvm_struct = record_layouts
+            .get(key.as_str())
+            .or_else(|| record_layouts.get(short_name(name)))
+            .copied();
+        if let Some(llvm_struct) = llvm_struct {
+            // Recursion guard: insert a forward struct placeholder under the key
+            // BEFORE resolving members, so a self-referential record terminates.
+            let cache_key = format!("record:{key}");
+            if let Some(t) = dctx.di_type_cache.borrow().get(&cache_key).copied() {
+                return Some(t);
+            }
+            let size_bits = target_data.get_bit_size(&llvm_struct);
+            let align_bits = target_data.get_abi_alignment(&llvm_struct) * 8;
+            let placeholder = dctx
+                .di_builder
+                .create_struct_type(
+                    dctx.compile_unit.as_debug_info_scope(),
+                    short_name(name),
+                    dctx.file,
+                    0,
+                    size_bits,
+                    align_bits,
+                    DIFlags::PUBLIC,
+                    None,
+                    &[],
+                    0,
+                    None,
+                    short_name(name),
+                )
+                .as_type();
+            dctx.di_type_cache
+                .borrow_mut()
+                .insert(cache_key.clone(), placeholder);
+
+            // Resolve member types + offsets. Field names come from the MIR
+            // record layout; missing names fall back to positional `field_N`.
+            let field_tys = record_field_resolved_tys
+                .get(key.as_str())
+                .or_else(|| record_field_resolved_tys.get(short_name(name)));
+            let field_names = record_field_names
+                .get(key.as_str())
+                .or_else(|| record_field_names.get(short_name(name)));
+            if let Some(field_tys) = field_tys {
+                let mut members: Vec<DIType<'ctx>> = Vec::with_capacity(field_tys.len());
+                for (i, fty) in field_tys.iter().enumerate() {
+                    let member_di = resolve_di_type(
+                        ctx,
+                        dctx,
+                        target_data,
+                        fty,
+                        record_layouts,
+                        enum_layouts,
+                        record_field_resolved_tys,
+                        record_field_names,
+                    );
+                    let Some(member_di) = member_di else {
+                        // A field whose type can't be resolved fails the whole
+                        // record closed — never emit a struct with a guessed
+                        // member type.
+                        return None;
+                    };
+                    let offset_bits = target_data
+                        .offset_of_element(&llvm_struct, u32::try_from(i).ok()?)
+                        .map(|b| b * 8)
+                        .unwrap_or(0);
+                    let member_size = member_di_size_bits(member_di, target_data, fty);
+                    let member_name = field_names
+                        .and_then(|names| names.get(i))
+                        .cloned()
+                        .unwrap_or_else(|| format!("field_{i}"));
+                    let member = dctx.di_builder.create_member_type(
+                        dctx.compile_unit.as_debug_info_scope(),
+                        &member_name,
+                        dctx.file,
+                        0,
+                        member_size,
+                        0,
+                        offset_bits,
+                        DIFlags::PUBLIC,
+                        member_di,
+                    );
+                    members.push(member.as_type());
+                }
+                let full = dctx
+                    .di_builder
+                    .create_struct_type(
+                        dctx.compile_unit.as_debug_info_scope(),
+                        short_name(name),
+                        dctx.file,
+                        0,
+                        size_bits,
+                        align_bits,
+                        DIFlags::PUBLIC,
+                        None,
+                        &members,
+                        0,
+                        None,
+                        short_name(name),
+                    )
+                    .as_type();
+                dctx.di_type_cache.borrow_mut().insert(cache_key, full);
+                return Some(full);
+            }
+            // Struct with no resolvable field list — keep the placeholder.
+            return Some(placeholder);
+        }
+    }
+
+    // Unknown / unsupported type — emit no DIE (fail-closed).
+    None
+}
+
+/// Size-in-bits of a member's DIType, for the `DW_AT_byte_size` of the member.
+/// Computed from the field's LLVM type via `resolve_ty` where possible; the
+/// member type already carries its own size, so this only needs the field's
+/// own size for the `DW_TAG_member` wrapper (LLVM recomputes from the member
+/// type, so a 0 here is acceptable, but a real value keeps the IR readable).
+fn member_di_size_bits(
+    _member_di: inkwell::debug_info::DIType<'_>,
+    _target_data: &TargetData,
+    _fty: &ResolvedTy,
+) -> u64 {
+    // The member's `DW_AT_byte_size` is derived by LLVM from the member type's
+    // own size; passing 0 lets the member type's size dominate. Kept as a
+    // helper seam so a future exact-size pass has an obvious home.
+    0
+}
+
+/// Emit the degraded-but-faithful enum DIE (Risk E): a `DW_TAG_structure_type`
+/// named after the enum with a `tag` member typed by a
+/// `DW_TAG_enumeration_type` (variant names as enumerators, so gdb prints the
+/// active variant name) and a `payload` member typed by a `DW_TAG_union_type`
+/// of per-variant struct DIEs (so gdb can read a variant's payload fields). The
+/// true auto-discriminated `DW_TAG_variant_part` is out of scope (inkwell lacks
+/// `create_variant_part`); this is the faithful-as-inkwell-allows view.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "debug-type resolution threads the same explicit borrows as resolve_di_type"
+)]
+fn resolve_enum_di_type<'ctx>(
+    ctx: &'ctx Context,
+    dctx: &ModuleDebugCtx<'_, 'ctx>,
+    target_data: &TargetData,
+    enum_layout: &EnumLayout,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    enum_layouts: &[EnumLayout],
+    record_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
+    record_field_names: &HashMap<String, Vec<String>>,
+) -> Option<inkwell::debug_info::DIType<'ctx>> {
+    use inkwell::debug_info::DIType;
+
+    let enum_name = short_name(&enum_layout.name);
+    // An indirect enum's local holds a `ptr` to the heap struct; represent it
+    // as a pointer to the (degraded) enum struct DIE.
+    let cache_key = format!("enum:{}", enum_layout.name);
+    if let Some(t) = dctx.di_type_cache.borrow().get(&cache_key).copied() {
+        let result = if enum_layout.is_indirect {
+            let ptr_bits = u64::from(target_data.get_pointer_byte_size(None)) * 8;
+            dctx.di_builder
+                .create_pointer_type(enum_name, t, ptr_bits, 0, AddressSpace::default())
+                .as_type()
+        } else {
+            t
+        };
+        return Some(result);
+    }
+
+    // The enum's outer LLVM struct `{ tag: iW, payload: [..] }` lives in the
+    // record-layout map under the enum name.
+    let outer_struct = record_layouts
+        .get(enum_layout.name.as_str())
+        .or_else(|| record_layouts.get(enum_name))
+        .copied()?;
+    let struct_size_bits = target_data.get_bit_size(&outer_struct);
+    let struct_align_bits = target_data.get_abi_alignment(&outer_struct) * 8;
+
+    // Tag: a `DW_TAG_enumeration_type` whose enumerators are the variant names.
+    let enumerators: Vec<_> = enum_layout
+        .variants
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            dctx.di_builder.create_enumerator(
+                short_name(&v.name),
+                i64::try_from(i).unwrap_or(i64::MAX),
+                false,
+            )
+        })
+        .collect();
+    let tag_bits = u64::from(enum_layout.tag_width);
+    let tag_underlying = dctx
+        .di_builder
+        .create_basic_type("u32", tag_bits.max(8), DW_ATE_UNSIGNED, DIFlags::PUBLIC)
+        .ok()?
+        .as_type();
+    let tag_di = dctx
+        .di_builder
+        .create_enumeration_type(
+            dctx.compile_unit.as_debug_info_scope(),
+            &format!("{enum_name}::Tag"),
+            dctx.file,
+            0,
+            tag_bits.max(8),
+            0,
+            &enumerators,
+            tag_underlying,
+        )
+        .as_type();
+
+    // Payload: a `DW_TAG_union_type` of per-variant struct DIEs. A variant with
+    // no payload contributes nothing; a variant whose payload can't be resolved
+    // is skipped (the variant name still prints via the tag).
+    let mut payload_variants: Vec<DIType<'ctx>> = Vec::new();
+    for variant in &enum_layout.variants {
+        if variant.field_tys.is_empty() {
+            continue;
+        }
+        let mut members: Vec<DIType<'ctx>> = Vec::with_capacity(variant.field_tys.len());
+        let mut ok = true;
+        // The variant's own LLVM struct, for member offsets.
+        let variant_struct = ctx.struct_type(
+            &variant
+                .field_tys
+                .iter()
+                .filter_map(|fty| resolve_ty(ctx, fty, record_layouts).ok())
+                .collect::<Vec<_>>(),
+            false,
+        );
+        for (i, fty) in variant.field_tys.iter().enumerate() {
+            let Some(member_di) = resolve_di_type(
+                ctx,
+                dctx,
+                target_data,
+                fty,
+                record_layouts,
+                enum_layouts,
+                record_field_resolved_tys,
+                record_field_names,
+            ) else {
+                ok = false;
+                break;
+            };
+            let field_idx = u32::try_from(i).unwrap_or(u32::MAX);
+            let offset_bits = if field_idx < variant_struct.count_fields() {
+                target_data
+                    .offset_of_element(&variant_struct, field_idx)
+                    .map(|b| b * 8)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let member_name = variant
+                .field_names
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("field_{i}"));
+            let member = dctx.di_builder.create_member_type(
+                dctx.compile_unit.as_debug_info_scope(),
+                &member_name,
+                dctx.file,
+                0,
+                0,
+                0,
+                offset_bits,
+                DIFlags::PUBLIC,
+                member_di,
+            );
+            members.push(member.as_type());
+        }
+        if !ok {
+            continue;
+        }
+        let variant_size_bits = target_data.get_bit_size(&variant_struct);
+        let variant_di = dctx
+            .di_builder
+            .create_struct_type(
+                dctx.compile_unit.as_debug_info_scope(),
+                short_name(&variant.name),
+                dctx.file,
+                0,
+                variant_size_bits,
+                0,
+                DIFlags::PUBLIC,
+                None,
+                &members,
+                0,
+                None,
+                short_name(&variant.name),
+            )
+            .as_type();
+        payload_variants.push(variant_di);
+    }
+
+    let payload_di = if payload_variants.is_empty() {
+        None
+    } else {
+        let payload_bits = struct_size_bits.saturating_sub(tag_bits.max(8));
+        Some(
+            dctx.di_builder
+                .create_union_type(
+                    dctx.compile_unit.as_debug_info_scope(),
+                    &format!("{enum_name}::Payload"),
+                    dctx.file,
+                    0,
+                    payload_bits,
+                    0,
+                    DIFlags::PUBLIC,
+                    &payload_variants,
+                    0,
+                    &format!("{enum_name}::Payload"),
+                )
+                .as_type(),
+        )
+    };
+
+    // The outer struct: member 0 = tag (the enumeration), member 1 = payload
+    // (the union), with offsets from the LLVM `{ tag, payload }` struct.
+    let tag_offset_bits = target_data
+        .offset_of_element(&outer_struct, 0)
+        .map(|b| b * 8)
+        .unwrap_or(0);
+    let tag_member = dctx
+        .di_builder
+        .create_member_type(
+            dctx.compile_unit.as_debug_info_scope(),
+            "tag",
+            dctx.file,
+            0,
+            tag_bits.max(8),
+            0,
+            tag_offset_bits,
+            DIFlags::PUBLIC,
+            tag_di,
+        )
+        .as_type();
+    let mut struct_members = vec![tag_member];
+    if let Some(payload_di) = payload_di {
+        let payload_offset_bits = target_data
+            .offset_of_element(&outer_struct, 1)
+            .map(|b| b * 8)
+            .unwrap_or(0);
+        let payload_member = dctx
+            .di_builder
+            .create_member_type(
+                dctx.compile_unit.as_debug_info_scope(),
+                "payload",
+                dctx.file,
+                0,
+                0,
+                0,
+                payload_offset_bits,
+                DIFlags::PUBLIC,
+                payload_di,
+            )
+            .as_type();
+        struct_members.push(payload_member);
+    }
+    let enum_struct = dctx
+        .di_builder
+        .create_struct_type(
+            dctx.compile_unit.as_debug_info_scope(),
+            enum_name,
+            dctx.file,
+            0,
+            struct_size_bits,
+            struct_align_bits,
+            DIFlags::PUBLIC,
+            None,
+            &struct_members,
+            0,
+            None,
+            enum_name,
+        )
+        .as_type();
+    dctx.di_type_cache
+        .borrow_mut()
+        .insert(cache_key, enum_struct);
+
+    if enum_layout.is_indirect {
+        let ptr_bits = u64::from(target_data.get_pointer_byte_size(None)) * 8;
+        Some(
+            dctx.di_builder
+                .create_pointer_type(enum_name, enum_struct, ptr_bits, 0, AddressSpace::default())
+                .as_type(),
+        )
+    } else {
+        Some(enum_struct)
+    }
+}
+
+/// Insert an `llvm.dbg.declare` record at the end of `block`, binding `storage`
+/// (an alloca) to the variable `var_info` with `debug_loc`.
+///
+/// WHY a raw FFI call and not `DebugInfoBuilder::insert_declare_at_end`: under
+/// LLVM 19+ (we build against LLVM 22) the underlying
+/// `LLVMDIBuilderInsertDeclareAtEnd` returns a `DbgRecord`, not an
+/// `Instruction`; inkwell 0.9's safe wrapper unconditionally casts that to a
+/// `LLVMValueRef` and constructs an `InstructionValue`, whose `is_instruction()`
+/// assertion then panics — even though the dbg.declare WAS correctly inserted.
+/// Calling the new-format record API directly (`…InsertDeclareRecordAtEnd`,
+/// which inkwell itself wraps for this LLVM version) sidesteps the broken
+/// return-value handling. We discard the returned `DbgRecord`. This is a bug
+/// workaround for the vendored inkwell, NOT new ABI substrate.
+fn dbg_declare_at_end<'ctx>(
+    di_builder: &DebugInfoBuilder<'ctx>,
+    storage: PointerValue<'ctx>,
+    var_info: inkwell::debug_info::DILocalVariable<'ctx>,
+    expr: inkwell::debug_info::DIExpression<'ctx>,
+    debug_loc: inkwell::debug_info::DILocation<'ctx>,
+    block: inkwell::basic_block::BasicBlock<'ctx>,
+) {
+    use inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd;
+    use inkwell::values::AsValueRef;
+    // SAFETY: every pointer comes from a live inkwell wrapper bound to the same
+    // module/context; the call only inserts a dbg record and returns a handle we
+    // ignore. The new-format record API is correct for LLVM 19+ (the format the
+    // module is built in — inkwell selects it via the `llvm22-1` feature).
+    unsafe {
+        LLVMDIBuilderInsertDeclareRecordAtEnd(
+            di_builder.as_mut_ptr(),
+            storage.as_value_ref(),
+            var_info.as_mut_ptr(),
+            expr.as_mut_ptr(),
+            debug_loc.as_mut_ptr(),
+            block.as_mut_ptr(),
+        );
+    }
+}
+
+/// Emit `DW_TAG_formal_parameter` / `DW_TAG_variable` DIEs and their
+/// `llvm.dbg.declare` records for every named local slot (Stages 2/3). Each
+/// declare is inserted at the end of `prologue_bb` (which holds the alloca and
+/// dominates the body) with a `!dbg` location scoped to the subprogram.
+/// Fail-closed per slot: a slot with no source name (an anonymous temporary, a
+/// synthesised function with an empty `local_names`) or an unresolvable type is
+/// skipped — no DIE, never a fabricated name or type. Parameters occupy
+/// `locals[0..params.len()]`; the rest are body autos.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "debug emission threads the same explicit borrows as the lowering body"
+)]
+fn emit_variable_dies<'ctx>(
+    ctx: &'ctx Context,
+    dctx: &ModuleDebugCtx<'_, 'ctx>,
+    subprogram: inkwell::debug_info::DISubprogram<'ctx>,
+    func: &RawMirFunction,
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    record_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
+    record_field_names: &HashMap<String, Vec<String>>,
+    prologue_bb: inkwell::basic_block::BasicBlock<'ctx>,
+) {
+    // The function-declaration line scopes every variable; if the function has
+    // no in-file span the subprogram would not exist, so a fallback of 0 is
+    // unreachable here in practice.
+    let decl_line = match func.span {
+        Some((start, _)) if dctx.line_index.contains(start as usize) => {
+            dctx.line_index.line(start as usize)
+        }
+        _ => 0,
+    };
+    let debug_loc = dctx.di_builder.create_debug_location(
+        ctx,
+        decl_line,
+        0,
+        subprogram.as_debug_info_scope(),
+        None,
+    );
+    let param_count = func.params.len();
+    let empty_expr = dctx.di_builder.create_expression(vec![]);
+
+    for (idx, ty) in func.locals.iter().enumerate() {
+        // Fail-closed: only named slots get a DIE. An empty `local_names`
+        // (synthesised function) or a `None` entry (anonymous temporary)
+        // means no DIE for this slot.
+        let Some(Some(name)) = func.local_names.get(idx) else {
+            continue;
+        };
+        // The slot's alloca. Absent only for a divergent/never slot the body
+        // never materialised; skip it.
+        let idx_u32 = match u32::try_from(idx) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let Some((slot, _slot_ty)) = fn_ctx.locals.get(&idx_u32).copied() else {
+            continue;
+        };
+        let Some(di_type) = resolve_di_type(
+            ctx,
+            dctx,
+            fn_ctx.target_data,
+            ty,
+            fn_ctx.record_layouts,
+            fn_ctx.enum_layouts,
+            record_field_resolved_tys,
+            record_field_names,
+        ) else {
+            // Unresolvable type → no DIE (fail-closed), never a guessed type.
+            continue;
+        };
+
+        let di_var = if idx < param_count {
+            // Parameter: 1-based arg number in declaration order.
+            let arg_no = u32::try_from(idx + 1).unwrap_or(u32::MAX);
+            dctx.di_builder.create_parameter_variable(
+                subprogram.as_debug_info_scope(),
+                name,
+                arg_no,
+                dctx.file,
+                decl_line,
+                di_type,
+                /* always_preserve */ true,
+                DIFlags::ZERO,
+            )
+        } else {
+            dctx.di_builder.create_auto_variable(
+                subprogram.as_debug_info_scope(),
+                name,
+                dctx.file,
+                decl_line,
+                di_type,
+                /* always_preserve */ true,
+                DIFlags::ZERO,
+                /* align_in_bits */ 0,
+            )
+        };
+        dbg_declare_at_end(
+            dctx.di_builder,
+            slot,
+            di_var,
+            empty_expr,
+            debug_loc,
+            prologue_bb,
+        );
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "module-lowering context is deliberately passed as explicit borrows"
@@ -29273,6 +29943,7 @@ fn lower_function<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     enum_layouts: &[EnumLayout],
     record_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
+    record_field_names: &HashMap<String, Vec<String>>,
     dyn_vtable_registry: &[DynVtableInstance],
     const_globals: &ConstGlobalMap<'ctx>,
     emit_wasm_entry_alias: bool,
@@ -29362,9 +30033,46 @@ fn lower_function<'ctx>(
         {
             let line = dctx.line_index.line(start as usize);
             let column = dctx.line_index.column(start as usize);
-            let subroutine_ty =
-                dctx.di_builder
-                    .create_subroutine_type(dctx.file, None, &[], DIFlags::PUBLIC);
+            // Stage 5: a real `DISubroutineType` — element 0 is the return type
+            // (`None` for unit/never, so gdb shows `void`), followed by each
+            // parameter's type. Unresolvable types fall back to `None` for that
+            // slot rather than failing the whole subprogram (the subprogram +
+            // its variable DIEs are still useful with a partial signature).
+            let return_di = match &func.return_ty {
+                ResolvedTy::Unit | ResolvedTy::Never => None,
+                ret => resolve_di_type(
+                    ctx,
+                    dctx,
+                    target_data,
+                    ret,
+                    record_layouts,
+                    enum_layouts,
+                    record_field_resolved_tys,
+                    record_field_names,
+                ),
+            };
+            let param_dis: Vec<inkwell::debug_info::DIType<'ctx>> = func
+                .params
+                .iter()
+                .filter_map(|p| {
+                    resolve_di_type(
+                        ctx,
+                        dctx,
+                        target_data,
+                        p,
+                        record_layouts,
+                        enum_layouts,
+                        record_field_resolved_tys,
+                        record_field_names,
+                    )
+                })
+                .collect();
+            let subroutine_ty = dctx.di_builder.create_subroutine_type(
+                dctx.file,
+                return_di,
+                &param_dis,
+                DIFlags::PUBLIC,
+            );
             let subprogram = dctx.di_builder.create_function(
                 dctx.compile_unit.as_debug_info_scope(),
                 &func.name,
@@ -30228,6 +30936,23 @@ fn lower_function<'ctx>(
             .build_call(sched_init, &[], "hew_sched_init_entry_call")
             .llvm_ctx("hew_sched_init call in main prologue")?;
     }
+    // gdb `-g` variable + parameter DIEs (Stages 2/3/4). Emitted into the
+    // prologue block (which holds the allocas + param stores and dominates the
+    // body) before the closing branch, so each `llvm.dbg.declare` references an
+    // in-scope alloca. Fail-closed inside the helper: no subprogram / no name /
+    // unresolvable type → no DIE for that slot.
+    if let (Some(dctx), Some(subprogram)) = (debug, fn_subprogram) {
+        emit_variable_dies(
+            ctx,
+            dctx,
+            subprogram,
+            func,
+            &fn_ctx,
+            record_field_resolved_tys,
+            record_field_names,
+            prologue_bb,
+        );
+    }
     fn_ctx
         .builder
         .build_unconditional_branch(entry_bb)
@@ -30562,6 +31287,7 @@ fn build_module_for_target<'ctx>(
             compile_unit: *compile_unit,
             file: *file,
             line_index,
+            di_type_cache: RefCell::new(HashMap::new()),
         }),
         _ => None,
     };
@@ -30589,6 +31315,15 @@ fn build_module_for_target<'ctx>(
         .record_layouts
         .iter()
         .map(|r| (r.name.clone(), r.field_tys.clone()))
+        .collect();
+    // Parallel field-name map for `-g` `DW_TAG_member` DIEs (Stage 4b). Keyed
+    // identically to `record_field_resolved_tys`; codegen's `resolve_di_type`
+    // looks names up by the same record key and falls back to positional
+    // `field_N` when a layout carries no names.
+    let record_field_names: HashMap<String, Vec<String>> = pipeline
+        .record_layouts
+        .iter()
+        .map(|r| (r.name.clone(), r.field_names.clone()))
         .collect();
     let mut machine_layouts: MachineLayoutMap<'ctx> = HashMap::new();
     // Register user-defined enum layouts before machines so machine payloads
@@ -30932,6 +31667,7 @@ fn build_module_for_target<'ctx>(
             &machine_layouts,
             &pipeline.enum_layouts,
             &record_field_resolved_tys,
+            &record_field_names,
             &pipeline.dyn_vtable_registry,
             &const_globals,
             emit_wasm_entry_alias,

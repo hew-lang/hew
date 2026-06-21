@@ -20719,6 +20719,95 @@ mod for_loop_iterable_fail_closed {
         );
     }
 
+    // ── fork-block body type-checking (synthesize_concurrency arm) ───────
+
+    #[test]
+    fn fork_block_body_clean_single_call_has_no_type_errors() {
+        // A clean `fork { f() }` body type-checks with no diagnostics: the
+        // checker visits the body but a well-typed unit call is valid.
+        let output = check_source(
+            r"
+            fn worker() {}
+            fn main() {
+                scope {
+                    fork {
+                        worker();
+                    };
+                };
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "clean single-call fork body should produce no type errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_block_arg_bearing_body_is_type_checked() {
+        // Pre-fold the block body was never visited, so a wrong-typed call
+        // argument inside `fork { ... }` was silently accepted. The fold routes
+        // the body through `check_block`, so the mismatch must now surface as a
+        // type error instead of being bypassed.
+        let output = check_source(
+            r#"
+            fn work(n: i64) { let _ = n; }
+            fn main() {
+                scope {
+                    fork {
+                        work("not an int");
+                    };
+                };
+            }
+            "#,
+        );
+        assert!(
+            output.errors.iter().any(|e| {
+                matches!(
+                    &e.kind,
+                    TypeErrorKind::Mismatch { expected, actual }
+                        if expected == "i64" && actual == "string"
+                )
+            }),
+            "arg-bearing fork body must surface the arg type mismatch; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_block_multi_statement_body_is_type_checked() {
+        // A multi-statement fork body is visited statement-by-statement: a bad
+        // call in the second statement is reported even though the first is
+        // well-typed. (HIR lowering separately fails the multi-statement shape
+        // closed; this test pins only the checker's body coverage.)
+        let output = check_source(
+            r#"
+            fn ok() {}
+            fn work(n: i64) { let _ = n; }
+            fn main() {
+                scope {
+                    fork {
+                        ok();
+                        work("nope");
+                    };
+                };
+            }
+            "#,
+        );
+        assert!(
+            output.errors.iter().any(|e| {
+                matches!(
+                    &e.kind,
+                    TypeErrorKind::Mismatch { expected, actual }
+                        if expected == "i64" && actual == "string"
+                )
+            }),
+            "multi-statement fork body must type-check each statement; got: {:#?}",
+            output.errors
+        );
+    }
+
     #[test]
     fn closure_escape_channel_send_is_escapes() {
         // Case: closure stored-in / sent through a channel.

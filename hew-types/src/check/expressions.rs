@@ -1700,9 +1700,11 @@ impl Checker {
                 // type-checked — the same coverage the named `fork name = call()`
                 // form already enjoys.
                 //
-                // Position gate: like `fork name = call(...)`, `fork { ... }` is
-                // only meaningful inside a `scope { }` body. HIR lowering enforces
-                // the same rule; rejecting here too gives a check-time diagnostic.
+                // Position gate (defence-in-depth): like `fork name = call(...)`,
+                // `fork { ... }` is only meaningful inside a `scope { }` body. The
+                // parser already rejects `fork { }` outside a scope, so this gate is
+                // unreachable via a clean parse; it mirrors the `ForkChild` arm so
+                // the checker never silently accepts an out-of-position fork.
                 if self.task_scope_depth == 0 {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,

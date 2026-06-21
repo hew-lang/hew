@@ -1,0 +1,42 @@
+//! Match expression where the first arm diverges via early return and the
+//! second arm produces the match result type.
+//!
+//! Root cause that was fixed: `lower_match_expr` took the first arm's body
+//! type as the match result type regardless of divergence.  A return-only arm
+//! (`{ return X; }`) is typed `Unit` by `lower_block` (no trailing expression),
+//! so the match node received `ty = Unit`, the `let` binding got an `i8` slot,
+//! but MIR's mixed-divergence recovery correctly made the result_place `ptr`.
+//! That mismatch emitted a codegen ICE: "fail-closed: Move type mismatch:
+//! src=ptr dest=i8".
+//!
+//! The fix mirrors `check_match_expr`: skip `Unit | Never` arms when inferring
+//! the match result type in `lower_match_expr`.
+//!
+//! Observable contract: the program prints two lines and exits 0.
+
+enum Status {
+    Good(string);
+    Bad;
+}
+
+fn parse(input: string, fail: bool) -> Status {
+    // First arm diverges; second arm produces `Status` — the match result type.
+    let result = match fail {
+        true => {
+            return Status::Bad;
+        },
+        false => Status::Good(input),
+    };
+    result
+}
+
+fn main() {
+    match parse("hello", false) {
+        Status::Good(s) => println(s),
+        Status::Bad => println("bad"),
+    }
+    match parse("ignored", true) {
+        Status::Good(_) => println("unexpected"),
+        Status::Bad => println("ok"),
+    }
+}

@@ -1,27 +1,33 @@
 //! S3 codegen test: LLVM emission for `hew_supervisor_child_get`.
 //!
 //! Drives the full HIR → checker → MIR → codegen pipeline on a minimal
-//! supervisor source program that accesses a static child field, then
-//! asserts on the emitted textual LLVM IR that:
+//! supervisor source program that accesses a static child field, then asserts
+//! on the emitted textual LLVM IR that the R5 ABI classifier emits the
+//! per-target canonical `@hew_supervisor_child_get` (the `_raw` out-pointer
+//! twin is removed):
 //!
-//! - `@hew_supervisor_child_get_raw` is declared with the platform-portable
-//!   ABI: `i64 (ptr, i32, ptr)` — returns word0 (tag in low byte) as a plain
-//!   u64; writes the handle to a caller-supplied output pointer.
-//! - A call to `@hew_supervisor_child_get_raw` is present in the emitted
-//!   `get_worker` function body.
+//! - On SysV/AAPCS (linux / aarch64-darwin) the 16-byte `ChildLookupResult` is
+//!   a register pair: the symbol is declared `[2 x i64] (ptr, i32)` and called
+//!   by value — NO sret, NO `_raw`.
+//! - On Windows x64 MSVC the aggregate is returned INDIRECTLY: the symbol is
+//!   declared `void (ptr noalias sret(...), ptr, i32)` and the caller allocates
+//!   the result slot. This is the correct ABI the `_raw` out-pointer twin used
+//!   to fake; the `sret(T)` attribute makes the canonical symbol right on MSVC.
 //! - The WASM classification guard (`uses_wasm_excluded_symbol`) correctly
 //!   marks `hew_supervisor_child_get` as a WASM-excluded symbol when it
 //!   appears in the MIR.
 //!
-//! WHY `_raw`: on Windows x64 (MSVC ABI) Rust returns `ChildLookupResult`
-//! (16 bytes) via a hidden sret pointer — but the previous codegen emitted a
-//! register-return call site, causing the callee to corrupt the supervisor
-//! struct and return a stale heap address as the tag word.  `_raw` returns a
-//! plain `u64` which has no sret ambiguity on any platform.
+//! Trap-206 regression guard: the historical trap 206 was declaring the
+//! field-accurate struct WITHOUT a matching ABI attribute, letting LLVM pick
+//! indirect-sret on MSVC while the caller read a register pair. The SysV
+//! register-pair assertion + the MSVC sret assertion together pin the declared
+//! carrier and the attribute to AGREE on every target.
 //!
 //! LESSONS applied:
-//! - `boundary-fail-closed` (P0): `intern_runtime_decl` must not silently
-//!   fall through for `hew_supervisor_child_get`.
+//! - `boundary-fail-closed` (P0): the classifier must not silently fall through
+//!   for `hew_supervisor_child_get`.
+//! - `aggregate-abi-by-classifier-not-per-symbol` (P0): one classifier keyed on
+//!   `(type, target)`, not a hand-encoded register-pair plus a `_raw` twin.
 //! - `parity-or-tracked-gap` (P1): `hew_supervisor_child_get` is excluded
 //!   from WASM emission via `uses_wasm_excluded_symbol`; tested here.
 
@@ -48,9 +54,31 @@ fn get_worker(app: LocalPid<App>) -> LocalPid<Worker> {
 }
 ";
 
-/// Compile `STATIC_CHILD_ACCESS` through the full HIR → MIR → codegen
-/// pipeline and return the emitted textual LLVM IR string.
+/// The SysV/AAPCS triple the register-pair assertions classify against.
+///
+/// PINNED, not host (`None`): the register-pair ABI is the SysV/AAPCS shape,
+/// which is NOT the host shape on the Windows MSVC runner (there the 16-byte
+/// aggregate classifies `Indirect`/sret). A host-naive `None` made these tests
+/// silently target whatever the runner's host ABI was — green on Linux/macOS,
+/// red on the Windows runner where the host is `x86_64-pc-windows-msvc`. The
+/// textual `.ll` is classified against the requested triple (the diagnostic IR
+/// matches the object emission's ABI), so pinning SysV asserts the SysV shape
+/// on every host. The MSVC shape has its own triple-pinned test below.
+const SYSV_TRIPLE: &str = "x86_64-unknown-linux-gnu";
+
+/// Compile `STATIC_CHILD_ACCESS` for an explicit SysV/AAPCS target and return
+/// the emitted textual LLVM IR string. SysV is pinned (not host) so the
+/// register-pair assertions hold on every CI host, including the Windows MSVC
+/// runner whose host ABI returns the 16-byte aggregate indirectly.
 fn emit_child_access_ir(slug: &str) -> String {
+    emit_child_access_ir_for(slug, Some(SYSV_TRIPLE))
+}
+
+/// Compile `STATIC_CHILD_ACCESS` through the full HIR → MIR → codegen pipeline
+/// for `target_triple` (`None` = host) and return the emitted textual LLVM IR.
+/// The textual `.ll` is classified against the requested target, so the
+/// aggregate ABI shape in the IR reflects that target's C ABI.
+fn emit_child_access_ir_for(slug: &str, target_triple: Option<&str>) -> String {
     let parsed = hew_parser::parse(STATIC_CHILD_ACCESS);
     assert!(
         parsed.errors.is_empty(),
@@ -88,7 +116,7 @@ fn emit_child_access_ir(slug: &str) -> String {
         out_dir: &tmp,
         native: false,
         wasm: false,
-        target_triple: None,
+        target_triple,
         debug: false,
         source_path: None,
     };
@@ -100,39 +128,84 @@ fn emit_child_access_ir(slug: &str) -> String {
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
-/// The emitted IR must declare `@hew_supervisor_child_get_raw` with the
-/// platform-portable ABI: returns `i64` (word0: tag in low byte), takes
-/// `(ptr sup, i32 key, ptr handle_out)`.
+/// On SysV/AAPCS (pinned `x86_64-unknown-linux-gnu`) the canonical
+/// `@hew_supervisor_child_get` is declared with the classified register-pair
+/// ABI: `[2 x i64] (ptr, i32)`. The removed `_raw` out-pointer twin must NOT
+/// appear.
 ///
 /// ABI rationale:
-///   Rust emits `define void @hew_supervisor_child_get(ptr sret([16 x i8]), ptr, i32)`
-///   on Windows x64 (MSVC ABI) — a hidden return pointer.  The _raw variant
-///   returns a plain `u64` (no sret on any platform) and writes the handle
-///   through an output pointer, sidestepping the mismatch entirely.
+///   The 16-byte `ChildLookupResult` aggregate classifies `RegisterPair` on
+///   SysV/AAPCS, so LLVM returns it in `x0:x1` (aarch64) / `rax:rdx` (x86_64)
+///   as a `[2 x i64]` — exactly the shape the `#[repr(C)]` Rust callee returns.
+///   The classifier replaces the old hand-encoded `{ i64, i64 }` decl plus the
+///   `_raw` out-pointer twin with one classified declaration.
 #[test]
-fn supervisor_child_get_declares_correct_abi() {
+fn supervisor_child_get_declares_register_pair_abi_on_sysv() {
     let ir = emit_child_access_ir("declares-abi");
-    // The raw declaration must be present in the emitted IR.
+    // The removed `_raw` twin must be absent everywhere.
     assert!(
-        ir.contains("@hew_supervisor_child_get_raw"),
-        "expected @hew_supervisor_child_get_raw declaration in emitted IR;\ngot:\n{ir}"
+        !ir.contains("hew_supervisor_child_get_raw"),
+        "the removed _raw twin must NOT appear in emitted IR;\ngot:\n{ir}"
     );
-    // Signature: i64 (ptr, i32, ptr) — single-register return, output pointer.
+    // Register-pair declaration: `[2 x i64] (ptr, i32)` — no sret, by-value.
     assert!(
-        ir.contains("i64 @hew_supervisor_child_get_raw(ptr, i32, ptr)"),
-        "expected `i64 @hew_supervisor_child_get_raw(ptr, i32, ptr)` in declaration;\ngot:\n{ir}"
+        ir.contains("declare [2 x i64] @hew_supervisor_child_get(ptr, i32)"),
+        "expected `declare [2 x i64] @hew_supervisor_child_get(ptr, i32)`;\ngot:\n{ir}"
+    );
+    // NEGATIVE: the SysV declaration must NOT be an sret (that would be the
+    // MSVC shape leaking onto a register-pair target — the trap-206 mismatch).
+    assert!(
+        !ir.contains("sret") || !ir.contains("@hew_supervisor_child_get(ptr noalias sret"),
+        "SysV target must NOT emit an sret return for hew_supervisor_child_get;\ngot:\n{ir}"
     );
 }
 
-/// A call to `@hew_supervisor_child_get_raw` must appear in the body of the
-/// compiled `get_worker` function — the codegen translates the MIR symbol
-/// `hew_supervisor_child_get` into a call to the raw variant internally.
+/// A by-value call to the register-pair `@hew_supervisor_child_get` must appear
+/// in the body of the compiled `get_worker` function — the codegen routes the
+/// MIR symbol through the classified canonical symbol, not the removed twin.
 #[test]
 fn supervisor_child_get_call_emitted_in_function_body() {
     let ir = emit_child_access_ir("call-in-body");
     assert!(
-        ir.contains("@hew_supervisor_child_get_raw("),
-        "expected a call to @hew_supervisor_child_get_raw in emitted IR;\ngot:\n{ir}"
+        !ir.contains("hew_supervisor_child_get_raw"),
+        "the removed _raw twin must NOT be called;\ngot:\n{ir}"
+    );
+    assert!(
+        ir.contains("call [2 x i64] @hew_supervisor_child_get("),
+        "expected a register-pair call to @hew_supervisor_child_get;\ngot:\n{ir}"
+    );
+}
+
+/// On Windows x64 MSVC the 16-byte aggregate classifies `Indirect`, so the
+/// canonical `@hew_supervisor_child_get` is declared `void` with a leading
+/// `sret(...) noalias` pointer parameter and the caller allocates the result
+/// slot. This is the correct MSVC ABI the `_raw` twin used to fake — the
+/// register-pair (SysV) + sret (MSVC) pair is the trap-206 regression guard.
+#[test]
+fn supervisor_child_get_declares_sret_abi_on_windows_msvc() {
+    let ir = emit_child_access_ir_for("declares-abi-msvc", Some("x86_64-pc-windows-msvc"));
+    // No removed twin on MSVC either.
+    assert!(
+        !ir.contains("hew_supervisor_child_get_raw"),
+        "the removed _raw twin must NOT appear on MSVC;\ngot:\n{ir}"
+    );
+    // Indirect declaration: void return, leading `ptr noalias sret(...)` param.
+    assert!(
+        ir.contains(
+            "declare void @hew_supervisor_child_get(ptr noalias sret({ i8, i8, [6 x i8], ptr }), ptr, i32)"
+        ),
+        "expected the MSVC sret declaration of @hew_supervisor_child_get;\ngot:\n{ir}"
+    );
+    // The caller must allocate the result slot and pass it by sret.
+    assert!(
+        ir.contains("call void @hew_supervisor_child_get(ptr %child_result_sret"),
+        "expected the MSVC sret call passing the caller-allocated result slot;\ngot:\n{ir}"
+    );
+    // NEGATIVE: MSVC must NOT emit the register-pair return shape (the
+    // historical trap-206 mismatch where the caller read a stale register pair).
+    assert!(
+        !ir.contains("[2 x i64] @hew_supervisor_child_get"),
+        "MSVC must NOT emit the register-pair return for hew_supervisor_child_get;\ngot:\n{ir}"
     );
 }
 

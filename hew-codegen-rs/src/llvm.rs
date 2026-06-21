@@ -501,11 +501,23 @@ fn emit_module_with_options(
         _ => None,
     };
 
-    // Build the textual IR once and reuse it for both targets. `.ll` is also
-    // the cheapest forensic artefact — `opt -passes=verify` runs against it
-    // directly without re-deriving anything.
+    // Build the textual IR once as the forensic `.ll` artefact — `opt
+    // -passes=verify` runs against it directly. It is classified against the
+    // requested target (the explicit `--target` triple, the wasm32 triple, or
+    // the host) so the diagnostic IR matches the object emission's ABI.
+    let textual_triple = match options.target_triple {
+        Some(triple) => triple.to_string(),
+        None if options.wasm && !options.native => "wasm32-unknown-unknown".to_string(),
+        None => native_emission_triple(),
+    };
     let ll_path = options.out_dir.join(format!("{}.ll", options.module_name));
-    emit_textual(pipeline, options.module_name, &ll_path, debug_input)?;
+    emit_textual(
+        pipeline,
+        options.module_name,
+        &ll_path,
+        &textual_triple,
+        debug_input,
+    )?;
     artefacts.ll_path = Some(ll_path.clone());
 
     if options.native {
@@ -30215,6 +30227,12 @@ fn build_module_for_target<'ctx>(
         llvm_mod.set_data_layout(&layout);
         data
     } else {
+        // No target machine (the in-process IR build / `hew check`): still
+        // declare the host triple on the module so target-keyed lowering — the
+        // aggregate ABI classifier, `runtime_size_ty` — reads the correct
+        // target rather than an empty triple. `host_target_data()` IS the host's
+        // layout, so the host triple is the matching authority.
+        llvm_mod.set_triple(&TargetTriple::create(&native_emission_triple()));
         host_target_data()
     };
 
@@ -33533,10 +33551,17 @@ fn emit_textual(
     pipeline: &IrPipeline,
     name: &str,
     out: &Path,
+    triple: &str,
     debug: Option<DebugInput<'_>>,
 ) -> CodegenResult<()> {
+    // Build the diagnostic `.ll` against the SAME target machine the object
+    // emission uses, so the textual IR reflects the requested target's ABI
+    // (the aggregate classifier reads the module triple; a host-triple textual
+    // build of a wasm32 target would emit host-classified aggregate calls in
+    // the diagnostic, misrepresenting what the `.wasm` object actually emits).
+    let machine = target_machine_for_triple(triple)?;
     let ctx = Context::create();
-    let llvm_mod = build_module_for_target(&ctx, pipeline, name, None, debug)?;
+    let llvm_mod = build_module_for_target(&ctx, pipeline, name, Some(&machine), debug)?;
     llvm_mod
         .print_to_file(out)
         .llvm_ctx_with(|| format!("print_to_file {}", out.display()))?;

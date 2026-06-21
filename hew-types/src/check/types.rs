@@ -5,7 +5,7 @@ use crate::module_registry::ModuleRegistry;
 use crate::resolved_ty::ResolvedTy;
 use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
-use hew_parser::ast::{NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr};
+use hew_parser::ast::{NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -2291,8 +2291,19 @@ pub struct Checker {
     /// Tracks the span and originating module where each function was first defined
     /// (for duplicate detection and dead-code source attribution).
     pub(super) fn_def_spans: HashMap<String, (Span, Option<String>)>,
+    /// Declared visibility for each function, keyed by the same registry key used
+    /// in `fn_def_spans` (scoped name: `{module}.{name}` or bare for root).
+    /// Populated alongside `fn_def_spans` during `collect_function_item` and when
+    /// cross-module functions are registered in the import-surface passes.
+    pub(super) fn_visibility: HashMap<String, Visibility>,
     /// Tracks the span where each top-level type/trait namespace name was first defined.
     pub(super) type_def_spans: HashMap<String, Span>,
+    /// Declared visibility for each top-level type/trait/enum/record/alias/const/
+    /// actor/machine, keyed by the qualified registry identity (`{module}.{Name}` or
+    /// bare for root).  Populated during both the own-module and cross-module
+    /// registration passes so the enforcement check can answer "who declared this
+    /// and with what visibility" at every reference site.
+    pub(super) type_visibility: HashMap<String, (Visibility, Option<String>)>,
     /// Per-module type-name uniqueness ledger. Keyed by `(defining-module, name)`
     /// so two different modules may each declare a `pub type` with the same bare
     /// name (e.g. `json.Value` and `toml.Value`) without colliding, while a
@@ -2488,6 +2499,11 @@ pub struct Checker {
     /// failure precisely (e.g. `module 'm' has no exported type 'T'`) instead of
     /// leaking through to the bare-identifier "undefined variable" fallback.
     pub(super) module_type_exports: HashMap<String, HashSet<String>>,
+    /// Qualified type names (`module.Type`) for which a visibility-violation
+    /// diagnostic has already been emitted in the current check pass.  Prevents
+    /// duplicate `E_VISIBILITY` errors when the same private/package type appears in
+    /// multiple positions (e.g. both a parameter and the return type of one fn).
+    pub(super) reported_type_visibility_violations: HashSet<String>,
     /// Maps (`owner_module`, `unqualified_name`) to the module short name the name
     /// was imported from.  Used to mark the owning import as used when an
     /// unqualified function/type is referenced.
@@ -2867,7 +2883,9 @@ impl Checker {
             deferred_cast_checks: Vec::new(),
             deferred_monomorphic_sites: Vec::new(),
             fn_def_spans: HashMap::new(),
+            fn_visibility: HashMap::new(),
             type_def_spans: HashMap::new(),
+            type_visibility: HashMap::new(),
             type_namespace_owners: HashMap::new(),
             flat_file_import_pub_spans: HashMap::new(),
             registered_flat_file_import_sources: HashSet::new(),
@@ -2910,6 +2928,7 @@ impl Checker {
             user_modules: HashSet::new(),
             module_fn_exports: HashSet::new(),
             module_type_exports: HashMap::new(),
+            reported_type_visibility_violations: HashSet::new(),
             unqualified_to_module: HashMap::new(),
             published_bare_type_owners: HashMap::new(),
             published_bare_trait_owners: HashMap::new(),

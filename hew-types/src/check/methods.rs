@@ -5061,16 +5061,61 @@ impl Checker {
                     }
                 }
                 if !self.module_fn_exports.contains(&key) {
-                    for arg in args {
-                        let (expr, sp) = arg.expr();
-                        self.synthesize(expr, sp);
+                    // The function is not a `pub` export.  Determine why:
+                    //   • no fn_visibility entry → truly unknown symbol
+                    //   • fn_visibility entry, access denied → E_VISIBILITY
+                    //   • fn_visibility entry, access allowed → `package fn` accessed
+                    //     from within the same package; fall through to the success path.
+                    if let Some(&vis) = self.fn_visibility.get(&key) {
+                        // Materialise owned copies so the &self borrow from fn_def_spans
+                        // is released before calling synthesize (&mut self).
+                        let decl_module_owned =
+                            self.fn_def_spans.get(&key).and_then(|(_, m)| m.clone());
+                        let decl_span_owned = self
+                            .fn_def_spans
+                            .get(&key)
+                            .map_or_else(|| span.clone(), |(s, _)| s.clone());
+                        let acc_module_owned = self.current_module.clone();
+                        let decl_module = decl_module_owned.as_deref();
+                        if !visibility::access_allowed(
+                            decl_module,
+                            acc_module_owned.as_deref(),
+                            vis,
+                        ) {
+                            // Access denied — synthesize args for error recovery and reject.
+                            for arg in args {
+                                let (expr, sp) = arg.expr();
+                                self.synthesize(expr, sp);
+                            }
+                            let acc_module_str =
+                                acc_module_owned.as_deref().unwrap_or("(root)").to_string();
+                            let err = TypeError::visibility_violation(
+                                vis,
+                                span.clone(),
+                                method,
+                                decl_module.unwrap_or("(root)"),
+                                &acc_module_str,
+                                decl_span_owned,
+                                acc_module_owned,
+                            );
+                            self.errors.push(err);
+                            return Ty::Error;
+                        }
+                        // access_allowed returned true: `package fn` accessible from this
+                        // package — fall through to the success path below.
+                    } else {
+                        // No visibility record: the function is genuinely unknown.
+                        for arg in args {
+                            let (expr, sp) = arg.expr();
+                            self.synthesize(expr, sp);
+                        }
+                        self.report_error(
+                            TypeErrorKind::UndefinedMethod,
+                            span,
+                            format!("no function `{method}` in module `{name}`"),
+                        );
+                        return Ty::Error;
                     }
-                    self.report_error(
-                        TypeErrorKind::UndefinedMethod,
-                        span,
-                        format!("no function `{method}` in module `{name}`"),
-                    );
-                    return Ty::Error;
                 }
                 self.require_unsafe(&key, span);
                 self.reject_if_wasm_native_only_network_module_call(name, span);

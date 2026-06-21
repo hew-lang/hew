@@ -1485,6 +1485,50 @@ impl Checker {
                         .borrow_mut()
                         .insert(ImportKey::new(self.current_module.clone(), module.clone()));
                 }
+                // Visibility enforcement for qualified type references.
+                // Only fires when the resolved name is module-qualified (contains
+                // '.').  Root programs (current_module == None) are subject to
+                // the same check: referencing a private type via a qualified
+                // name is a cross-module access regardless of caller context.
+                // access_allowed handles the None caller correctly.
+                if resolved_name.contains('.') && !resolved_name.contains("::") {
+                    if let Some(&(vis, ref decl_module_opt)) =
+                        self.type_visibility.get(&resolved_name)
+                    {
+                        let decl_module = decl_module_opt.as_deref();
+                        let acc_module = self.current_module.as_deref();
+                        if !visibility::access_allowed(decl_module, acc_module, vis) {
+                            // Deduplicate: emit at most one E_VISIBILITY per qualified
+                            // type name per check pass so a private type appearing in
+                            // multiple positions (e.g. param + return) doesn't produce
+                            // a wall of identical diagnostics.
+                            if self
+                                .reported_type_visibility_violations
+                                .insert(resolved_name.clone())
+                            {
+                                let symbol = resolved_name
+                                    .rsplit_once('.')
+                                    .map_or(resolved_name.as_str(), |(_, n)| n);
+                                let decl_span = self
+                                    .type_def_spans
+                                    .get(&resolved_name)
+                                    .cloned()
+                                    .unwrap_or_else(|| te.1.clone());
+                                let err = TypeError::visibility_violation(
+                                    vis,
+                                    te.1.clone(),
+                                    symbol,
+                                    decl_module.unwrap_or("(root)"),
+                                    acc_module.unwrap_or("(root)"),
+                                    decl_span,
+                                    self.current_module.clone(),
+                                );
+                                self.errors.push(err);
+                            }
+                            return Ty::Error;
+                        }
+                    }
+                }
                 // Auto-parameterise channel handle types: bare `Sender`
                 // becomes `Sender<T>` with a fresh type variable so that
                 // function parameters accept any channel element type.

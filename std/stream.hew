@@ -42,11 +42,11 @@
 import std::fs;
 
 /// A readable stream handle, parameterised by element type.
-type Stream<T> {
+pub type Stream<T> {
 }
 
 /// A writable sink handle, parameterised by element type.
-type Sink<T> {
+pub type Sink<T> {
 }
 
 // ── Stream<T> methods ─────────────────────────────────────────────────

@@ -15,9 +15,9 @@
 // regardless of import order.
 //
 // Harness verb: hew run
-// Expected (after C1 lands): a=7 then b=1000 — each `Widget` keeps its own
-// field width. Today this fixture is RED: `hew run` aborts at the codegen
-// field-type fail-closed. It is the proving fixture C1 flips green.
+// Expected: a=7 then b=1000 — each `Widget` keeps its own field width under
+// qualified layout registration. The underlying registry key qualification fix
+// (same-name type layout via module-qualified identity) is green.
 import hew::widgeti8;
 
 import hew::widgeti64;

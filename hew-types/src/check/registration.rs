@@ -4245,8 +4245,11 @@ impl Checker {
                         prev_span.clone(),
                     ));
                 } else {
-                    self.fn_def_spans
-                        .insert(scoped_name, (span.clone(), self.current_module.clone()));
+                    self.fn_def_spans.insert(
+                        scoped_name.clone(),
+                        (span.clone(), self.current_module.clone()),
+                    );
+                    self.fn_visibility.insert(scoped_name, fd.visibility);
                 }
                 self.register_fn_sig(fd);
             }
@@ -6935,7 +6938,10 @@ impl Checker {
                 // by canonical `module_path` so all `import std::fs` ImportDecls
                 // collapse to the same key.
                 if !self.stdlib_hew_source_already_registered(decl, &module_path) {
-                    self.register_user_module(&short, resolved_items, &decl.spec);
+                    // The full dot-path (e.g. "subpkg.helper") is the declaring-module
+                    // identity used in access-check side tables.
+                    let full_dot_path = decl.path.join(".");
+                    self.register_user_module(&short, &full_dot_path, resolved_items, &decl.spec);
                 }
             }
         } else if let Some(error) =
@@ -7078,6 +7084,17 @@ impl Checker {
         for (item, span) in items {
             match item {
                 Item::TypeDecl(td) => {
+                    // Record visibility for all TypeDecls (both pub and non-pub)
+                    // so the enforcement check can distinguish "private" from "unknown".
+                    let qualified_type = format!("{module_short}.{}", td.name);
+                    self.type_visibility
+                        .entry(qualified_type.clone())
+                        .or_insert((td.visibility, Some(module_short.to_string())));
+                    // Record the declaration span so E_VISIBILITY can point "declared
+                    // here" at the actual declaration for both pub and non-pub types.
+                    self.type_def_spans
+                        .entry(qualified_type)
+                        .or_insert_with(|| span.clone());
                     if !td.visibility.is_pub() {
                         continue;
                     }
@@ -7106,6 +7123,15 @@ impl Checker {
                     }
                 }
                 Item::Machine(md) => {
+                    // Record visibility for all Machines (both pub and non-pub).
+                    let qualified_type = format!("{module_short}.{}", md.name);
+                    self.type_visibility
+                        .entry(qualified_type.clone())
+                        .or_insert((md.visibility, Some(module_short.to_string())));
+                    // Record the declaration span for non-pub machines.
+                    self.type_def_spans
+                        .entry(qualified_type)
+                        .or_insert_with(|| span.clone());
                     if !md.visibility.is_pub() {
                         continue;
                     }
@@ -7153,6 +7179,19 @@ impl Checker {
                             );
                         }
                     }
+                    // Record visibility for all traits (both pub and non-pub) so a
+                    // cross-module qualified reference to a non-pub trait produces a
+                    // precise E_VISIBILITY at the reference site instead of leaking an
+                    // `E_MIR: unknown type` at the MIR boundary. Mirrors the TypeDecl
+                    // and Machine registration above; traits share the type-namespace
+                    // and the same qualified-reference enforcement path in resolution.
+                    let qualified_type = format!("{module_short}.{}", tr.name);
+                    self.type_visibility
+                        .entry(qualified_type.clone())
+                        .or_insert((tr.visibility, Some(module_short.to_string())));
+                    self.type_def_spans
+                        .entry(qualified_type)
+                        .or_insert_with(|| span.clone());
                     if !tr.visibility.is_pub() {
                         continue;
                     }
@@ -7175,19 +7214,40 @@ impl Checker {
                     }
                 }
                 Item::Function(fd) => {
-                    if !fd.visibility.is_pub() {
-                        continue;
-                    }
                     let qualified = format!("{module_short}.{}", fd.name);
+                    // Record visibility for all functions in the visibility table.
+                    self.fn_visibility
+                        .entry(qualified.clone())
+                        .or_insert(fd.visibility);
                     if !self.fn_sigs.contains_key(&qualified) {
                         let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
-                        self.module_fn_exports.insert(qualified.clone());
+                        // Only `Pub` functions are module exports: `package fn` must
+                        // pass the access-allowed check at every call site, so it must
+                        // NOT bypass the check by entering the exports set.  Non-pub
+                        // functions are still registered into fn_sigs so the enforcement
+                        // check can produce a precise E_VISIBILITY diagnostic.
+                        if fd.visibility == hew_parser::ast::Visibility::Pub {
+                            self.module_fn_exports.insert(qualified.clone());
+                        }
                         self.fn_type_param_assoc_bindings
                             .insert(qualified.clone(), assoc_bindings);
                         self.fn_sigs.insert(qualified, sig);
                     }
                 }
                 Item::Actor(ad) => {
+                    // Record visibility for all actors (both pub and non-pub) so a
+                    // cross-module qualified reference to a non-pub actor produces a
+                    // precise E_VISIBILITY at the reference site instead of leaking an
+                    // `E_MIR: unknown type` at the MIR boundary. Mirrors the TypeDecl,
+                    // Machine, and Trait registration above; actors share the
+                    // type-namespace and the same qualified-reference enforcement path.
+                    let qualified_type = format!("{module_short}.{}", ad.name);
+                    self.type_visibility
+                        .entry(qualified_type.clone())
+                        .or_insert((ad.visibility, Some(module_short.to_string())));
+                    self.type_def_spans
+                        .entry(qualified_type)
+                        .or_insert_with(|| span.clone());
                     if !self.register_type_namespace_name(Some(module_short), &ad.name, span) {
                         continue;
                     }
@@ -7200,6 +7260,19 @@ impl Checker {
                 // `module.CONST` field access resolves in the type checker via
                 // the same `env.lookup_ref("{module}.{field}")` guard in
                 // `check_field_access`.
+                //
+                // SHIM (visibility): non-pub consts are not registered, so a
+                // cross-module `module.PRIVATE_CONST` reference fails closed with
+                // "module has no exported constant" rather than a dedicated
+                // E_VISIBILITY. WHY: const references resolve through the value
+                // env / field-access path, which has no visibility-enforcement
+                // consult point — unlike traits/actors/types which share the
+                // type-reference path. WHEN obsolete: when a const-visibility
+                // table + a field-access enforcement consult are added. WHAT the
+                // real solution is: record (visibility, decl_module) for every
+                // const here and check access_allowed in check_field_access,
+                // emitting visibility_violation. Tracked as a follow-on; the
+                // current message is already a clean fail-closed diagnostic.
                 Item::Const(cd) => {
                     if !cd.visibility.is_pub() {
                         continue;
@@ -7652,7 +7725,13 @@ impl Checker {
         }
     }
 
-    /// Register items from a user module under the module's namespace.
+    /// Register items from a user module under the module's short-name namespace.
+    ///
+    /// `module_full_path` is the full dot-separated module path
+    /// (e.g. `"subpkg.helper"` for `import subpkg::helper;`).  It is recorded
+    /// in `fn_def_spans` as the declaring-module identity so the access-allowed
+    /// check can compare full paths (not just the short-name qualifier) when
+    /// enforcing package-visibility boundaries.
     #[expect(
         clippy::too_many_lines,
         clippy::ref_option,
@@ -7661,6 +7740,7 @@ impl Checker {
     pub(super) fn register_user_module(
         &mut self,
         module_short: &str,
+        module_full_path: &str,
         items: &[Spanned<Item>],
         spec: &Option<ImportSpec>,
     ) {
@@ -7696,20 +7776,37 @@ impl Checker {
         for (item, span) in items {
             match item {
                 Item::Function(fd) => {
-                    // Skip non-pub functions (enforce visibility)
-                    if !fd.visibility.is_pub() {
-                        continue;
-                    }
+                    let qualified = format!("{module_short}.{}", fd.name);
+                    // Record visibility for all functions in the visibility table.
+                    self.fn_visibility
+                        .entry(qualified.clone())
+                        .or_insert(fd.visibility);
+                    // Record fn_def_spans under the SHORT-NAME key so the access-
+                    // allowed check in methods.rs can look up the declaring module's
+                    // FULL path.  `collect_function_item` stores the same span under
+                    // the full-path key (e.g. "subpkg.helper.secret"); we mirror it
+                    // under the short-name key ("helper.secret") used at call sites.
+                    self.fn_def_spans
+                        .entry(qualified.clone())
+                        .or_insert_with(|| (span.clone(), Some(module_full_path.to_string())));
 
                     let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
-                    let qualified = format!("{module_short}.{}", fd.name);
-                    self.module_fn_exports.insert(qualified.clone());
+                    // Only `Pub` functions are module exports: `package fn` must
+                    // pass the access-allowed check at every call site, so it must
+                    // NOT bypass the check by entering the exports set.  Non-pub
+                    // functions are still registered into fn_sigs so the enforcement
+                    // check can produce a precise E_VISIBILITY diagnostic.
+                    if fd.visibility == hew_parser::ast::Visibility::Pub {
+                        self.module_fn_exports.insert(qualified.clone());
+                    }
                     self.fn_type_param_assoc_bindings
                         .insert(qualified.clone(), assoc_bindings.clone());
                     self.fn_sigs.insert(qualified, sig.clone());
 
-                    // If named import or glob, also register unqualified (using alias if present)
-                    if Self::should_import_name(&fd.name, spec) {
+                    // If named import or glob, also register unqualified (using alias if present).
+                    // Only pub functions are eligible for unqualified import bindings — private
+                    // functions cannot be imported bare even if they appear in a glob import spec.
+                    if fd.visibility.is_pub() && Self::should_import_name(&fd.name, spec) {
                         let binding_name = Self::resolve_import_name(spec, &fd.name)
                             .unwrap_or_else(|| fd.name.clone());
                         self.fn_type_param_assoc_bindings
@@ -7722,6 +7819,21 @@ impl Checker {
                     }
                 }
                 Item::TypeDecl(td) => {
+                    // Record visibility for all TypeDecls so the enforcement check
+                    // can distinguish "private, not accessible" from "unknown symbol".
+                    // Use module_full_path (not just module_short) so cross-package
+                    // checks compare full paths and don't conflate e.g. "helper" (short)
+                    // with the root package when the module lives at subpkg::helper.
+                    let qualified_type = format!("{module_short}.{}", td.name);
+                    self.type_visibility
+                        .entry(qualified_type.clone())
+                        .or_insert((td.visibility, Some(module_full_path.to_string())));
+                    // Record the declaration span so visibility-violation diagnostics
+                    // can point "declared here" at the actual declaration even when the
+                    // type is not pub (and therefore skips the full namespace registration).
+                    self.type_def_spans
+                        .entry(qualified_type)
+                        .or_insert_with(|| span.clone());
                     if !td.visibility.is_pub() {
                         continue;
                     }
@@ -7752,6 +7864,18 @@ impl Checker {
                     }
                 }
                 Item::Machine(md) => {
+                    // Record visibility for all Machines so the enforcement check
+                    // can distinguish "private, not accessible" from "unknown symbol".
+                    // Use module_full_path for the same reason as TypeDecl above.
+                    let qualified_machine = format!("{module_short}.{}", md.name);
+                    self.type_visibility
+                        .entry(qualified_machine.clone())
+                        .or_insert((md.visibility, Some(module_full_path.to_string())));
+                    // Record the declaration span for non-pub machine types so the
+                    // "declared here" note in E_VISIBILITY points at the actual decl.
+                    self.type_def_spans
+                        .entry(qualified_machine)
+                        .or_insert_with(|| span.clone());
                     if !md.visibility.is_pub() {
                         continue;
                     }
@@ -7800,6 +7924,19 @@ impl Checker {
                             self.mark_imported_trait_used(Some(module_short), &super_trait.name);
                         }
                     }
+                    // Record visibility for all traits so the enforcement check can
+                    // distinguish "private, not accessible" from "unknown symbol".
+                    // Use module_full_path (matching TypeDecl/Machine) so cross-package
+                    // checks compare full paths. Without this a cross-module qualified
+                    // reference to a non-pub trait leaks an `E_MIR: unknown type` at the
+                    // MIR boundary instead of a precise E_VISIBILITY at the reference site.
+                    let qualified_trait = format!("{module_short}.{}", tr.name);
+                    self.type_visibility
+                        .entry(qualified_trait.clone())
+                        .or_insert((tr.visibility, Some(module_full_path.to_string())));
+                    self.type_def_spans
+                        .entry(qualified_trait)
+                        .or_insert_with(|| span.clone());
                     if !tr.visibility.is_pub() {
                         continue;
                     }
@@ -7942,6 +8079,18 @@ impl Checker {
                     }
                 }
                 Item::Actor(ad) => {
+                    // Record visibility for all actors so a cross-module qualified
+                    // reference to a non-pub actor produces a precise E_VISIBILITY at
+                    // the reference site instead of leaking an `E_MIR: unknown type` at
+                    // the MIR boundary. Use module_full_path (matching TypeDecl/Machine/
+                    // Trait) so cross-package checks compare full paths.
+                    let qualified_actor = format!("{module_short}.{}", ad.name);
+                    self.type_visibility
+                        .entry(qualified_actor.clone())
+                        .or_insert((ad.visibility, Some(module_full_path.to_string())));
+                    self.type_def_spans
+                        .entry(qualified_actor)
+                        .or_insert_with(|| span.clone());
                     // Skip non-pub actors (enforce visibility), matching every
                     // other item kind in this loop. A private actor must never
                     // become a module type export, qualified alias, or registered

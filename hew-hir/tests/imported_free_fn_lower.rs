@@ -259,10 +259,11 @@ pub fn entry(n: i64) -> i64 { secret(n) }
     let tco = checker.check_program(&program);
 
     assert!(
-        tco.errors
-            .iter()
-            .any(|err| matches!(err.kind, TypeErrorKind::UndefinedMethod)),
-        "private helper must stay hidden from importer module-qualified calls; errors: {:#?}",
+        tco.errors.iter().any(|err| matches!(
+            &err.kind,
+            TypeErrorKind::VisibilityViolationPrivate { symbol, .. } if symbol == "secret"
+        )),
+        "private helper must produce VisibilityViolationPrivate, not a generic error; errors: {:#?}",
         tco.errors
     );
 }

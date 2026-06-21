@@ -288,6 +288,129 @@ impl TypeError {
         )
     }
 
+    /// Create an `E_VISIBILITY_PRIVATE` error: cross-module access of a
+    /// `private` symbol.
+    ///
+    /// - `acc_span` — the span at the access site (primary underline).
+    /// - `decl_span` — the span of the symbol's declaration (secondary note).
+    /// - `source_module` — the module being checked (for diagnostic routing).
+    #[must_use]
+    pub fn visibility_violation_private(
+        acc_span: Span,
+        symbol: &str,
+        decl_module: &str,
+        acc_module: &str,
+        decl_span: Span,
+        source_module: Option<String>,
+    ) -> Self {
+        let mut err = Self::new(
+            TypeErrorKind::VisibilityViolationPrivate {
+                symbol: symbol.to_string(),
+                decl_module: decl_module.to_string(),
+                acc_module: acc_module.to_string(),
+            },
+            acc_span,
+            format!(
+                "E_VISIBILITY_PRIVATE: `{symbol}` is private to module `{decl_module}`; \
+                 not accessible from `{acc_module}`"
+            ),
+        )
+        .with_note(decl_span, "declared private here");
+        if let Some(m) = source_module {
+            err = err.with_source_module(m);
+        }
+        err
+    }
+
+    /// Create an `E_VISIBILITY_PACKAGE` error: cross-package access of a
+    /// `package`-visible symbol.
+    ///
+    /// - `acc_span` — the span at the access site (primary underline).
+    /// - `decl_span` — the span of the symbol's declaration (secondary note).
+    /// - `source_module` — the module being checked (for diagnostic routing).
+    #[must_use]
+    pub fn visibility_violation_package(
+        acc_span: Span,
+        symbol: &str,
+        decl_module: &str,
+        acc_module: &str,
+        decl_span: Span,
+        source_module: Option<String>,
+    ) -> Self {
+        // Package = parent directory of the declaring module.
+        let decl_package = decl_module
+            .rsplit_once('.')
+            .map_or("(root)", |(parent, _)| parent);
+        let mut err = Self::new(
+            TypeErrorKind::VisibilityViolationPackage {
+                symbol: symbol.to_string(),
+                decl_module: decl_module.to_string(),
+                decl_package: decl_package.to_string(),
+                acc_module: acc_module.to_string(),
+            },
+            acc_span,
+            format!(
+                "E_VISIBILITY_PACKAGE: `{symbol}` is package-visible (package `{decl_package}`); \
+                 not accessible from `{acc_module}`"
+            ),
+        )
+        .with_note(decl_span, "declared package-visible here");
+        if let Some(m) = source_module {
+            err = err.with_source_module(m);
+        }
+        err
+    }
+
+    /// Construct the visibility-violation diagnostic for a non-`pub` symbol
+    /// accessed across a module/package boundary, dispatching on `vis`.
+    ///
+    /// Shared by every reference-site enforcement path (function calls,
+    /// module-qualified method calls, and type references) so the
+    /// `Private` → [`visibility_violation_private`] /
+    /// `Package` → [`visibility_violation_package`] mapping lives in one place.
+    ///
+    /// # Panics
+    ///
+    /// Panics on [`Visibility::Pub`]: callers only reach this after
+    /// `access_allowed` has rejected the reference, which never happens for a
+    /// `pub` symbol.
+    ///
+    /// [`visibility_violation_private`]: Self::visibility_violation_private
+    /// [`visibility_violation_package`]: Self::visibility_violation_package
+    /// [`Visibility::Pub`]: hew_parser::ast::Visibility::Pub
+    #[must_use]
+    pub fn visibility_violation(
+        vis: hew_parser::ast::Visibility,
+        acc_span: Span,
+        symbol: &str,
+        decl_module: &str,
+        acc_module: &str,
+        decl_span: Span,
+        source_module: Option<String>,
+    ) -> Self {
+        match vis {
+            hew_parser::ast::Visibility::Private => Self::visibility_violation_private(
+                acc_span,
+                symbol,
+                decl_module,
+                acc_module,
+                decl_span,
+                source_module,
+            ),
+            hew_parser::ast::Visibility::Package => Self::visibility_violation_package(
+                acc_span,
+                symbol,
+                decl_module,
+                acc_module,
+                decl_span,
+                source_module,
+            ),
+            hew_parser::ast::Visibility::Pub => {
+                unreachable!("visibility_violation called for a pub symbol")
+            }
+        }
+    }
+
     /// Create an actor reference cycle warning.
     #[must_use]
     pub fn actor_ref_cycle(span: Span, cycle_desc: &str) -> Self {
@@ -976,6 +1099,38 @@ pub enum TypeErrorKind {
         /// `"net.Listener"`).
         type_name: String,
     },
+    /// A cross-module or cross-package reference to a `private` symbol.
+    ///
+    /// `private` symbols are accessible only within the module that declares
+    /// them.  Referencing one from a different module is a hard error that
+    /// prevents compilation.
+    ///
+    /// Envelope code: `E_VISIBILITY_PRIVATE`.
+    VisibilityViolationPrivate {
+        /// The name of the symbol that was referenced illegally.
+        symbol: String,
+        /// The dotted module path where the symbol is declared.
+        decl_module: String,
+        /// The dotted module path from which the illegal access was made.
+        acc_module: String,
+    },
+    /// A cross-package reference to a `package`-visible symbol.
+    ///
+    /// `package` symbols are accessible anywhere within the same package
+    /// (modules sharing the same parent-directory path).  Referencing one
+    /// from outside its package is a hard error.
+    ///
+    /// Envelope code: `E_VISIBILITY_PACKAGE`.
+    VisibilityViolationPackage {
+        /// The name of the symbol that was referenced illegally.
+        symbol: String,
+        /// The dotted module path where the symbol is declared.
+        decl_module: String,
+        /// The dotted package path the symbol belongs to (parent of `decl_module`).
+        decl_package: String,
+        /// The dotted module path from which the illegal access was made.
+        acc_module: String,
+    },
 }
 
 impl TypeErrorKind {
@@ -1063,6 +1218,8 @@ impl TypeErrorKind {
             Self::IntrinsicOnMethod { .. } => "IntrinsicOnMethod",
             Self::RefutableLetPattern { .. } => "RefutableLetPattern",
             Self::OpaqueDirectConstruct { .. } => "OpaqueDirectConstruct",
+            Self::VisibilityViolationPrivate { .. } => "VisibilityViolationPrivate",
+            Self::VisibilityViolationPackage { .. } => "VisibilityViolationPackage",
         }
     }
 }

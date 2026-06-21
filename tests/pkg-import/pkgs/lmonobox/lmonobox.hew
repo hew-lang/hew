@@ -10,7 +10,7 @@
 //! heap-owning Box drop falls through the fail-closed gate.
 
 /// Heap-owning record: an owned `string` field forces a real drop helper.
-type Box {
+pub type Box {
     label: string;
 }
 

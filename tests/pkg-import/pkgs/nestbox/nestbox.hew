@@ -11,7 +11,7 @@
 //! lookup diverge and the heap-owning drop fails closed.
 
 /// Heap-owning record: an owned `string` field forces a real drop helper.
-type Box {
+pub type Box {
     label: string;
 }
 

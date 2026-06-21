@@ -49,7 +49,7 @@ fn main() {
             Err(_) => println(f"read error: {tls.last_error()}"),
         }
     } else {
-        println("short write \u{2014} skipping read (TLS data-plane ABI gap)");
+        println("short write — skipping read (TLS data-plane ABI gap)");
     }
     tls.close(stream);
 }

@@ -222,7 +222,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
         let rest = tmpl.slice(pos, tlen);
         let open = rest.find("{{");
         if open < 0 {
-            return Err(TemplateError::UnclosedBlock("template: unclosed `{{if}}` \u{2014} missing `{{end}}`"));
+            return Err(TemplateError::UnclosedBlock("template: unclosed `{{if}}` — missing `{{end}}`"));
         }
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
@@ -257,7 +257,7 @@ fn consume_if_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, range_elem: st
         }
     }
     if end_pos < 0 {
-        return Err(TemplateError::UnclosedBlock("template: unclosed `{{if}}` \u{2014} missing `{{end}}`"));
+        return Err(TemplateError::UnclosedBlock("template: unclosed `{{if}}` — missing `{{end}}`"));
     }
     if cond {
         let branch = tmpl.slice(start, true_end);
@@ -299,7 +299,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
         let rest = tmpl.slice(pos, tlen);
         let open = rest.find("{{");
         if open < 0 {
-            return Err(TemplateError::UnclosedBlock("template: unclosed `{{range}}` \u{2014} missing `{{end}}`"));
+            return Err(TemplateError::UnclosedBlock("template: unclosed `{{range}}` — missing `{{end}}`"));
         }
         let tag_start = pos + open + 2;
         let after_open = tmpl.slice(tag_start, tlen);
@@ -326,7 +326,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
         }
     }
     if end_pos < 0 {
-        return Err(TemplateError::UnclosedBlock("template: unclosed `{{range}}` \u{2014} missing `{{end}}`"));
+        return Err(TemplateError::UnclosedBlock("template: unclosed `{{range}}` — missing `{{end}}`"));
     }
     let body = tmpl.slice(start, body_end);
     let list_start = lookup_list_start(ctx, key);
@@ -417,9 +417,9 @@ fn render_segment(tmpl: string, ctx: Ctx, range_elem: string, in_range: bool) ->
 
 fn unclosed_block_error(block: string) -> TemplateError {
     if block == "if" {
-        TemplateError::UnclosedBlock("template: unclosed `{{if}}` \u{2014} missing `{{end}}`")
+        TemplateError::UnclosedBlock("template: unclosed `{{if}}` — missing `{{end}}`")
     } else {
-        TemplateError::UnclosedBlock("template: unclosed `{{range}}` \u{2014} missing `{{end}}`")
+        TemplateError::UnclosedBlock("template: unclosed `{{range}}` — missing `{{end}}`")
     }
 }
 

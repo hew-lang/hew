@@ -34,7 +34,7 @@ fn quadrant(p: Point) -> string {
 fn main() {
     let a = Point { x: 3, y: 4 };
     let b = Point { x: -2, y: 5 };
-    println(f"d\u{B2} from origin: {distance_from_origin(a)}");
+    println(f"d² from origin: {distance_from_origin(a)}");
     println(f"quadrant of a: {quadrant(a)}");
     println(f"quadrant of b: {quadrant(b)}");
 }

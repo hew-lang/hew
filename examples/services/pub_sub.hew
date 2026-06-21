@@ -56,7 +56,7 @@ actor Broker {
                 delivered = delivered + 1;
             }
         }
-        println(f"[broker] published #{published} \u{2192} {delivered} subscribers");
+        println(f"[broker] published #{published} → {delivered} subscribers");
     }
     receive fn stats() -> i64 {
         println(f"[broker] total published: {published}, subscriptions: {sub_topics.len()}");
@@ -117,5 +117,5 @@ fn main() {
     await carol.count();
     println("");
     println("Pub/sub complete. No channels, no mutexes, no select loops.");
-    println("The broker actor serialises all routing \u{2014} data-race free.");
+    println("The broker actor serialises all routing — data-race free.");
 }

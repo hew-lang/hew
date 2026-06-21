@@ -15,7 +15,7 @@ machine TrafficLight {
 
     state Red {
         entry {
-            println("signal: RED \u{2014} stop");
+            println("signal: RED — stop");
         }
         exit {
             println("leaving red");
@@ -23,12 +23,12 @@ machine TrafficLight {
     }
     state Green {
         entry {
-            println("signal: GREEN \u{2014} go");
+            println("signal: GREEN — go");
         }
     }
     state Yellow {
         entry {
-            println("signal: YELLOW \u{2014} prepare to stop");
+            println("signal: YELLOW — prepare to stop");
         }
     }
 

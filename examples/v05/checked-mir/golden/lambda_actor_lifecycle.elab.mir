@@ -1,19 +1,19 @@
 fn main -> ()
   statements:
-    bind BindingId(0) doubler site=SiteId(0) ty=Duplex<i64, ()>
-    use BindingId(0) doubler site=SiteId(8) ty=Duplex<i64, ()> intent=Read
+    bind BindingId(0) doubler site=SiteId(0) ty=LambdaPid<i64, ()>
+    use BindingId(0) doubler site=SiteId(8) ty=LambdaPid<i64, ()> intent=Read
     eval site=SiteId(7) ty=Result<(), SendError>
     bind BindingId(2) factor site=SiteId(11) ty=i64
-    bind BindingId(3) scale site=SiteId(12) ty=Duplex<i64, i64>
-    use BindingId(3) scale site=SiteId(19) ty=Duplex<i64, i64> intent=Read
+    bind BindingId(3) scale site=SiteId(12) ty=LambdaPid<i64, i64>
+    use BindingId(3) scale site=SiteId(19) ty=LambdaPid<i64, i64> intent=Read
     bind BindingId(5) a site=SiteId(17) ty=Result<i64, AskError>
     use BindingId(5) a site=SiteId(21) ty=Result<i64, AskError> intent=Read
     return site=Some(SiteId(20)) ty=()
     bind BindingId(6) v site=SiteId(22) ty=i64
     use BindingId(6) v site=SiteId(23) ty=i64 intent=Read
     drop BindingId(5) a ty=Result<i64, AskError>
-    drop BindingId(3) scale ty=Duplex<i64, i64>
-    drop BindingId(0) doubler ty=Duplex<i64, ()>
+    drop BindingId(3) scale ty=LambdaPid<i64, i64>
+    drop BindingId(0) doubler ty=LambdaPid<i64, ()>
   drop_plans:
     call[bb0 hew_lambda_actor_new -> bb1] ->
       (none)
@@ -24,32 +24,32 @@ fn main -> ()
     branch[bb2: bb4/bb7] ->
       (none)
     return[bb3] ->
-      drop lambda5 ty=Duplex<i64, i64> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
-      drop lambda0 ty=Duplex<i64, ()> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
+      drop lambda5 ty=LambdaPid<i64, i64> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
+      drop lambda0 ty=LambdaPid<i64, ()> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
     call[bb4 println_i64 -> bb8] ->
       (none)
     branch[bb5: bb9/bb10] ->
       (none)
     panic[bb6] ->
-      drop lambda5 ty=Duplex<i64, i64> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
-      drop lambda0 ty=Duplex<i64, ()> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
+      drop lambda5 ty=LambdaPid<i64, i64> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
+      drop lambda0 ty=LambdaPid<i64, ()> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
     branch[bb7: bb5/bb6] ->
       (none)
     goto[bb8->bb3] ->
       (none)
     cancel[bb8] ->
-      drop lambda5 ty=Duplex<i64, i64> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
-      drop lambda0 ty=Duplex<i64, ()> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
+      drop lambda5 ty=LambdaPid<i64, i64> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
+      drop lambda0 ty=LambdaPid<i64, ()> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
     panic[bb9] ->
-      drop lambda5 ty=Duplex<i64, i64> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
-      drop lambda0 ty=Duplex<i64, ()> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
+      drop lambda5 ty=LambdaPid<i64, i64> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
+      drop lambda0 ty=LambdaPid<i64, ()> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
     call[bb10 println_i64 -> bb11] ->
       (none)
     goto[bb11->bb3] ->
       (none)
     cancel[bb11] ->
-      drop lambda5 ty=Duplex<i64, i64> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
-      drop lambda0 ty=Duplex<i64, ()> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
+      drop lambda5 ty=LambdaPid<i64, i64> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
+      drop lambda0 ty=LambdaPid<i64, ()> kind=lambda_actor_release fn=rt(LambdaActorHandleClose)
 
 fn __hew_lambda_body_main_0 -> ()
   statements:

@@ -30214,6 +30214,12 @@ fn build_module_for_target<'ctx>(
         llvm_mod.set_data_layout(&layout);
         data
     } else {
+        // No target machine (the in-process IR build / `hew check`): still
+        // declare the host triple on the module so target-keyed lowering — the
+        // aggregate ABI classifier, `runtime_size_ty` — reads the correct
+        // target rather than an empty triple. `host_target_data()` IS the host's
+        // layout, so the host triple is the matching authority.
+        llvm_mod.set_triple(&TargetTriple::create(&native_emission_triple()));
         host_target_data()
     };
 

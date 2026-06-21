@@ -2197,53 +2197,130 @@ pub(crate) fn lower_call_runtime_abi(
                 .build_int_truncate(key_i64, i32_ty, "supervisor_child_get key_i32")
                 .llvm_ctx("supervisor_child_get key truncate")?;
 
-            // Alloca a u64 to receive the actor handle from the raw variant.
-            let handle_out = fn_ctx
-                .builder
-                .build_alloca(i64_ty, "child_handle_out")
-                .llvm_ctx("supervisor_child_get handle_out alloca")?;
-
-            // Call hew_supervisor_child_get_raw — returns word0 (tag in low byte)
-            // as i64; writes handle to *handle_out.  Platform-agnostic: no sret.
-            let fv = intern_runtime_decl(
+            // Declare the canonical `hew_supervisor_child_get` with its true
+            // `ChildLookupResult` aggregate return, classified per target by the
+            // R5 ABI classifier:
+            //   - SysV/AAPCS (linux/darwin): the 16-byte aggregate is a register
+            //     pair → declared `[2 x i64]`, no sret. word0 = packed
+            //     (tag,reason,pad); word1 = handle. This is exactly the
+            //     register-pair shape the Rust callee returns for a 16-byte
+            //     `#[repr(C)]` aggregate — the classifier selects it instead of
+            //     the old hand-encoded `{i64,i64}`.
+            //   - Windows x64 MSVC: the aggregate is returned INDIRECTLY → the
+            //     classifier declares `void(ptr sret(ChildLookupResult), ...)`
+            //     and the caller reads the result from its own slot. This is the
+            //     correct ABI the `_raw` out-pointer twin existed to fake;
+            //     `sret(T)` makes the canonical symbol right on MSVC too.
+            // The historical trap 206 was declaring the field-accurate struct
+            // WITHOUT a matching attribute, letting LLVM pick indirect-sret while
+            // the caller read a register pair. The classifier removes that gap:
+            // the declared carrier and the attribute always agree.
+            let child_result_ty = fn_ctx.ctx.struct_type(
+                &[
+                    fn_ctx.ctx.i8_type().into(),               // tag
+                    fn_ctx.ctx.i8_type().into(),               // reason
+                    fn_ctx.ctx.i8_type().array_type(6).into(), // _pad
+                    ptr_ty.into(),                             // handle
+                ],
+                false,
+            );
+            let triple = fn_ctx.llvm_mod.get_triple();
+            let triple_str = triple.as_str().to_string_lossy();
+            let (fv, return_abi) = crate::abi_class::declare_aggregate_return(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
-                &mut fn_ctx.runtime_decls.borrow_mut(),
-                "hew_supervisor_child_get_raw",
+                fn_ctx.target_data,
+                &triple_str,
+                "hew_supervisor_child_get",
+                child_result_ty,
+                &[ptr_ty.into(), i32_ty.into()],
             )?;
-            let llvm_args: [BasicMetadataValueEnum; 3] =
-                [sup_ptr.into(), key_i32.into(), handle_out.into()];
-            let call_site = fn_ctx
-                .builder
-                .build_call(fv, &llvm_args, "hew_supervisor_child_get_raw_call")
-                .llvm_ctx("hew_supervisor_child_get_raw call")?;
-            let word0_i64 = call_site
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed(
-                        "hew_supervisor_child_get_raw returned void unexpectedly".into(),
-                    )
-                })?
-                .into_int_value();
-
-            // word0: packed (tag: u8, reason: u8, _pad: [u8; 6]) — tag in low byte.
-            // Truncate to i8 then zext to i64 for the dest alloca's i64-typed slot.
-            let tag_i8 = fn_ctx
-                .builder
-                .build_int_truncate(word0_i64, fn_ctx.ctx.i8_type(), "child_tag_i8")
-                .llvm_ctx("trunc tag")?;
-            let tag_i64 = fn_ctx
-                .builder
-                .build_int_z_extend(tag_i8, i64_ty, "child_tag_i64")
-                .llvm_ctx("zext tag")?;
-
-            // Load handle from the output pointer alloca.
-            let handle_i64 = fn_ctx
-                .builder
-                .build_load(i64_ty, handle_out, "child_handle_i64")
-                .llvm_ctx("load child handle")?
-                .into_int_value();
+            let (tag_i64, handle_i64) = match return_abi {
+                crate::abi_class::AggregateReturnAbi::RegisterPair { carrier } => {
+                    let call_site = fn_ctx
+                        .builder
+                        .build_call(
+                            fv,
+                            &[sup_ptr.into(), key_i32.into()],
+                            "hew_supervisor_child_get_call",
+                        )
+                        .llvm_ctx("hew_supervisor_child_get call")?;
+                    let pair = call_site
+                        .try_as_basic_value()
+                        .basic()
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed(
+                                "hew_supervisor_child_get returned void unexpectedly".into(),
+                            )
+                        })?
+                        .into_array_value();
+                    let _ = carrier;
+                    // word0: packed (tag,reason,_pad) — tag in the low byte.
+                    let word0 = fn_ctx
+                        .builder
+                        .build_extract_value(pair, 0, "child_word0")
+                        .llvm_ctx("extract child word0")?
+                        .into_int_value();
+                    let word1 = fn_ctx
+                        .builder
+                        .build_extract_value(pair, 1, "child_word1")
+                        .llvm_ctx("extract child word1")?
+                        .into_int_value();
+                    let tag_i8 = fn_ctx
+                        .builder
+                        .build_int_truncate(word0, fn_ctx.ctx.i8_type(), "child_tag_i8")
+                        .llvm_ctx("trunc tag")?;
+                    let tag_i64 = fn_ctx
+                        .builder
+                        .build_int_z_extend(tag_i8, i64_ty, "child_tag_i64")
+                        .llvm_ctx("zext tag")?;
+                    (tag_i64, word1)
+                }
+                crate::abi_class::AggregateReturnAbi::Sret => {
+                    // Caller allocates the result slot; pass its address as the
+                    // hidden sret first argument; read tag (field 0) and handle
+                    // (field 3) from the slot after the call.
+                    let result_slot = fn_ctx
+                        .builder
+                        .build_alloca(child_result_ty, "child_result_sret")
+                        .llvm_ctx("supervisor_child_get sret alloca")?;
+                    fn_ctx
+                        .builder
+                        .build_call(
+                            fv,
+                            &[result_slot.into(), sup_ptr.into(), key_i32.into()],
+                            "hew_supervisor_child_get_sret_call",
+                        )
+                        .llvm_ctx("hew_supervisor_child_get (sret) call")?;
+                    let tag_field = fn_ctx
+                        .builder
+                        .build_struct_gep(child_result_ty, result_slot, 0, "child_sret_tag_gep")
+                        .llvm_ctx("child sret tag GEP")?;
+                    let tag_i8 = fn_ctx
+                        .builder
+                        .build_load(fn_ctx.ctx.i8_type(), tag_field, "child_sret_tag")
+                        .llvm_ctx("child sret tag load")?
+                        .into_int_value();
+                    let tag_i64 = fn_ctx
+                        .builder
+                        .build_int_z_extend(tag_i8, i64_ty, "child_sret_tag_i64")
+                        .llvm_ctx("zext sret tag")?;
+                    let handle_field = fn_ctx
+                        .builder
+                        .build_struct_gep(child_result_ty, result_slot, 3, "child_sret_handle_gep")
+                        .llvm_ctx("child sret handle GEP")?;
+                    let handle_ptr = fn_ctx
+                        .builder
+                        .build_load(ptr_ty, handle_field, "child_sret_handle")
+                        .llvm_ctx("child sret handle load")?
+                        .into_pointer_value();
+                    let handle_i64 = fn_ctx
+                        .builder
+                        .build_ptr_to_int(handle_ptr, i64_ty, "child_sret_handle_i64")
+                        .llvm_ctx("child sret handle ptrtoint")?;
+                    (tag_i64, handle_i64)
+                }
+            };
 
             // The dest alloca has struct type { i64, i64 } (the MIR 2-field
             // flattening of ChildLookupResult registered in lower.rs:412).

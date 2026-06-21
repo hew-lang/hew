@@ -47,16 +47,18 @@
 //!   by-value struct argument/return via a pointer when it is not a single
 //!   element. We classify multi-field aggregates as indirect on wasm32.
 
-// SHIM(R5): the classification layer lands additively — Stage 1 (the classifier
-// + emission helpers, fully unit-tested) precedes Stage 3+ (the production
-// consumers in `intern_runtime_decl` / `lower_call_runtime_abi` / `suspend.rs`).
-// Until the first consumer is wired, the non-test surface reads as dead code.
-// WHEN OBSOLETE: removed the same commit the first production call site lands
-// (Stage 3 wires `hew_supervisor_child_get`'s classified return).
+// SHIM(R5): the classification layer lands additively. The return path is wired
+// (`declare_aggregate_return` drives `hew_supervisor_child_get`'s classified
+// return in `runtime_abi.rs`); the argument path (`apply_arg_attrs`) and the
+// `CoercedInt` variant land with the by-value `bytes`-arg migration. Until every
+// helper has a production consumer the not-yet-wired ones read as dead code.
+// WHEN OBSOLETE: removed the commit the last consumer (the `bytes`-arg migration)
+// lands.
 #![allow(dead_code)]
 
 use inkwell::attributes::AttributeLoc;
 use inkwell::context::Context;
+use inkwell::module::Linkage;
 use inkwell::targets::TargetData;
 use inkwell::types::{AnyTypeEnum, StructType};
 use inkwell::values::FunctionValue;
@@ -263,6 +265,94 @@ pub(crate) fn apply_arg_attrs<'ctx>(
 /// passthrough to `TargetData::get_abi_size`.
 pub(crate) fn aggregate_abi_size(struct_ty: StructType<'_>, target_data: &TargetData) -> u64 {
     target_data.get_abi_size(&struct_ty)
+}
+
+/// How a classified aggregate RETURN is declared at the LLVM boundary, and how
+/// the caller reads the result. Returned by [`declare_aggregate_return`] so the
+/// declaration edge and the call edge agree on one decision.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum AggregateReturnAbi<'ctx> {
+    /// The aggregate is returned by value in a register pair. The declared
+    /// function returns `carrier` (an `[N x i64]` matching the aggregate's
+    /// eightbyte count); the caller extracts each eightbyte from the returned
+    /// value. No sret parameter.
+    RegisterPair {
+        carrier: inkwell::types::ArrayType<'ctx>,
+    },
+    /// The aggregate is returned indirectly. The declared function returns void
+    /// with a leading `sret(aggregate)` pointer parameter; the caller allocates
+    /// the result slot, passes its address, and reads the aggregate from it.
+    Sret,
+}
+
+/// Declare (or fetch) `symbol` as an aggregate-returning runtime function whose
+/// return ABI is chosen by [`classify_aggregate`] for `triple`, attaching the
+/// sret attribute when indirect.
+///
+/// `aggregate_ty` is the true LLVM struct type of the returned aggregate (e.g.
+/// `ChildLookupResult` / `BytesTriple`). `non_sret_params` are the function's
+/// declared parameters EXCLUDING any sret pointer (the helper prepends the sret
+/// pointer parameter itself when the class is indirect).
+///
+/// Returns the `FunctionValue` and an [`AggregateReturnAbi`] telling the caller
+/// how to issue the call and read the result.
+///
+/// # Errors
+///
+/// Fails closed if the target's aggregate ABI is unmodelled, if the aggregate is
+/// classified `Direct`/`CoercedInt` (not yet produced for the runtime corpus —
+/// add the arm when a corpus symbol needs it), or if the required LLVM attribute
+/// is unavailable in this build.
+pub(crate) fn declare_aggregate_return<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &inkwell::module::Module<'ctx>,
+    target_data: &TargetData,
+    triple: &str,
+    symbol: &str,
+    aggregate_ty: StructType<'ctx>,
+    non_sret_params: &[inkwell::types::BasicMetadataTypeEnum<'ctx>],
+) -> CodegenResult<(FunctionValue<'ctx>, AggregateReturnAbi<'ctx>)> {
+    let class = classify_aggregate(aggregate_ty, target_data, triple)?;
+    let ptr_ty = ctx.ptr_type(inkwell::AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    match class {
+        AbiClass::RegisterPair => {
+            // Carrier is an `[N x i64]` matching the aggregate's eightbyte count,
+            // which LLVM returns in the same N-register pair the Rust callee uses
+            // for a `#[repr(C)]` aggregate of this size (SysV/AAPCS INTEGER class).
+            let size = target_data.get_abi_size(&aggregate_ty);
+            let eightbytes = u32::try_from(size.div_ceil(8)).map_err(|_| {
+                CodegenError::FailClosed(format!(
+                    "declare_aggregate_return: aggregate `{symbol}` size {size} overflows the \
+                     eightbyte-count carrier computation"
+                ))
+            })?;
+            let carrier = i64_ty.array_type(eightbytes);
+            let fn_ty = carrier.fn_type(non_sret_params, false);
+            let fv = llvm_mod
+                .get_function(symbol)
+                .unwrap_or_else(|| llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External)));
+            Ok((fv, AggregateReturnAbi::RegisterPair { carrier }))
+        }
+        AbiClass::Indirect => {
+            // void(ptr sret(aggregate) noalias, non_sret_params...).
+            let mut params: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+                Vec::with_capacity(non_sret_params.len() + 1);
+            params.push(ptr_ty.into());
+            params.extend_from_slice(non_sret_params);
+            let fn_ty = ctx.void_type().fn_type(&params, false);
+            let fv = llvm_mod
+                .get_function(symbol)
+                .unwrap_or_else(|| llvm_mod.add_function(symbol, fn_ty, Some(Linkage::External)));
+            apply_return_attrs(ctx, fv, class, aggregate_ty.into(), 0)?;
+            Ok((fv, AggregateReturnAbi::Sret))
+        }
+        AbiClass::Direct | AbiClass::CoercedInt { .. } => Err(CodegenError::FailClosed(format!(
+            "declare_aggregate_return: aggregate `{symbol}` classified {class:?} on `{triple}` — \
+             the Direct/CoercedInt return path is not yet wired for the runtime corpus. Add the \
+             arm when a corpus symbol needs it. (LESSONS: boundary-fail-closed)"
+        ))),
+    }
 }
 
 #[cfg(test)]

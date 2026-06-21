@@ -2822,7 +2822,8 @@ impl Checker {
             | Expr::Clone(operand)
             | Expr::ForkChild { expr: operand, .. }
             | Expr::PostfixTry(operand)
-            | Expr::Yield(Some(operand)) => {
+            | Expr::Yield(Some(operand))
+            | Expr::Return(Some(operand)) => {
                 Self::collect_machine_transition_forbidden_exprs(&operand.0, &operand.1, hits);
             }
             Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
@@ -2988,6 +2989,7 @@ impl Checker {
             Expr::Literal(_)
             | Expr::Identifier(_)
             | Expr::Yield(None)
+            | Expr::Return(None)
             | Expr::This
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)

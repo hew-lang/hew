@@ -256,12 +256,77 @@ impl Checker {
         ));
     }
 
+    /// Type-check the operand of a `return` against the enclosing function's
+    /// declared return type.
+    ///
+    /// This is the single shared shell for ALL `return` positions: the two
+    /// statement-position `Stmt::Return` arms (`check_stmt` and
+    /// `check_stmt_as_expr`) and the expression-position `Expr::Return`
+    /// (`synthesize`). Routing every position through one helper keeps the
+    /// generator-Return extraction, the `Ty::Error` guard, the unit-vs-declared
+    /// mismatch diagnostic, and the `#[on(crash)]` fail-closed gate identical
+    /// across positions (LESSONS `one-construct-one-lowering-shell`).
+    ///
+    /// The return *type* of the construct itself is always `Ty::Never` (a
+    /// `return` diverges); callers assign that directly.
+    pub(super) fn check_return_operand(&mut self, value: Option<&Spanned<Expr>>, span: &Span) {
+        let Some(expected) = self.current_return_type.clone() else {
+            return;
+        };
+        // Inside a gen{} body, `current_return_type` is shaped as
+        // `Generator<Y, R>`. A `return <expr>` targets the Return component R,
+        // not the full Generator type, so `return 1` inside gen{} unifies
+        // against i64 rather than Generator<Y, i64>.
+        let effective_expected = if self.in_generator {
+            let resolved = self.subst.resolve(&expected);
+            match resolved.as_generator() {
+                Some((_, ret)) => ret.clone(),
+                None => expected,
+            }
+        } else {
+            expected
+        };
+        // Guard: do not check against Ty::Error — it would silently suppress
+        // mismatch diagnostics in the returned expression. Synthesize the value
+        // instead so its own errors are still caught.
+        if matches!(self.subst.resolve(&effective_expected), Ty::Error) {
+            if let Some((val, vs)) = value {
+                self.synthesize(val, vs);
+            }
+        } else {
+            match value {
+                Some((val, vs)) => {
+                    self.check_against(val, vs, &effective_expected);
+                }
+                None if effective_expected != Ty::Unit => {
+                    self.errors.push(TypeError::return_type_mismatch(
+                        span.clone(),
+                        &effective_expected,
+                        &Ty::Unit,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        // Fail-closed: a `return <CrashAction>` inside a `#[on(crash)]` hook hits
+        // the same unimplemented lowering path as the tail-expression form.
+        // Reject it here so the user never reaches codegen.
+        if self.in_crash_hook
+            && matches!(
+                self.subst.resolve(&effective_expected),
+                Ty::Named { name, .. } if name == "CrashAction"
+            )
+        {
+            let fn_name = self
+                .current_function
+                .clone()
+                .unwrap_or_else(|| "<unknown>".to_string());
+            self.emit_crash_action_return_error(span, &fn_name);
+        }
+    }
+
     /// Check a statement that may serve as a block's trailing expression.
     /// Returns the "expression type" of the statement.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "statement-as-expr covers many Stmt variants including the crash-hook return gate"
-    )]
     pub(super) fn check_stmt_as_expr(
         &mut self,
         stmt: &Stmt,
@@ -321,60 +386,7 @@ impl Checker {
             }
             Stmt::Expression((expr, es)) => self.synthesize(expr, es),
             Stmt::Return(value) => {
-                if let Some(expected) = self.current_return_type.clone() {
-                    // Inside a gen{} body, `current_return_type` is shaped as
-                    // `Generator<Y, R>`.  A `return <expr>` targets the Return
-                    // component R, not the full Generator type.  Extract R when
-                    // in a generator context so that `return 1` inside gen{}
-                    // unifies against i64 rather than Generator<Y, i64>.
-                    let effective_expected = if self.in_generator {
-                        let resolved = self.subst.resolve(&expected);
-                        match resolved.as_generator() {
-                            Some((_, ret)) => ret.clone(),
-                            None => expected,
-                        }
-                    } else {
-                        expected
-                    };
-                    // Guard: do not check against Ty::Error — it would silently
-                    // suppress mismatch diagnostics in the returned expression.
-                    // Synthesize the value instead so its own errors are still caught.
-                    if matches!(self.subst.resolve(&effective_expected), Ty::Error) {
-                        if let Some((val, vs)) = value {
-                            self.synthesize(val, vs);
-                        }
-                    } else {
-                        match value {
-                            Some((val, vs)) => {
-                                self.check_against(val, vs, &effective_expected);
-                            }
-                            None if effective_expected != Ty::Unit => {
-                                self.errors.push(TypeError::return_type_mismatch(
-                                    span.clone(),
-                                    &effective_expected,
-                                    &Ty::Unit,
-                                ));
-                            }
-                            _ => {}
-                        }
-                    }
-                    // Fail-closed: a `return <CrashAction>;` inside a
-                    // `#[on(crash)]` hook is equivalent to the tail-expression
-                    // form and hits the same unimplemented lowering path.
-                    // Reject it here so the user never reaches codegen.
-                    if self.in_crash_hook
-                        && matches!(
-                            self.subst.resolve(&effective_expected),
-                            Ty::Named { name, .. } if name == "CrashAction"
-                        )
-                    {
-                        let fn_name = self
-                            .current_function
-                            .clone()
-                            .unwrap_or_else(|| "<unknown>".to_string());
-                        self.emit_crash_action_return_error(span, &fn_name);
-                    }
-                }
+                self.check_return_operand(value.as_ref(), span);
                 Ty::Never
             }
             Stmt::Break { .. } | Stmt::Continue { .. } => {
@@ -916,65 +928,14 @@ impl Checker {
                 }
             }
             Stmt::Return(value) => {
-                if let Some(expected) = self.current_return_type.clone() {
-                    // Inside a gen{} body, `current_return_type` is shaped as
-                    // `Generator<Y, R>`.  A `return <expr>` targets the Return
-                    // component R, not the full Generator type.  Extract R when
-                    // in a generator context so that `return 1` inside gen{}
-                    // unifies against i64 rather than Generator<Y, i64>.
-                    let effective_expected = if self.in_generator {
-                        let resolved = self.subst.resolve(&expected);
-                        match resolved.as_generator() {
-                            Some((_, ret)) => ret.clone(),
-                            None => expected,
-                        }
-                    } else {
-                        expected
-                    };
-                    // Guard: do not check against Ty::Error — same as in
-                    // check_stmt_as_expr; synthesize instead to preserve body errors.
-                    if matches!(self.subst.resolve(&effective_expected), Ty::Error) {
-                        if let Some((val, vs)) = value {
-                            self.synthesize(val, vs);
-                        }
-                    } else {
-                        match value {
-                            Some((val, vs)) => {
-                                self.check_against(val, vs, &effective_expected);
-                            }
-                            None if effective_expected != Ty::Unit => {
-                                self.errors.push(TypeError::return_type_mismatch(
-                                    span.clone(),
-                                    &effective_expected,
-                                    &Ty::Unit,
-                                ));
-                            }
-                            _ => {}
-                        }
-                    }
-                    // Fail-closed: a non-final `return <CrashAction>;` inside an
-                    // `#[on(crash)]` hook (e.g. inside an `if` branch, followed by
-                    // more code) hits the same unimplemented lowering path.
-                    //
-                    // Exit inventory (all gated):
-                    //   (1) non-final `return CrashAction`  → THIS guard
-                    //   (2) final/tail `return CrashAction` → check_stmt_as_expr gate
-                    //   (3) tail-expr CrashAction (no return keyword) → items.rs body_is_crash_action
-                    //   (4) if/match expr whose arms all yield CrashAction → flows into (3)
-                    //   (5) let-bound CrashAction, then returned → flows into (1) or (2)
-                    if self.in_crash_hook
-                        && matches!(
-                            self.subst.resolve(&effective_expected),
-                            Ty::Named { name, .. } if name == "CrashAction"
-                        )
-                    {
-                        let fn_name = self
-                            .current_function
-                            .clone()
-                            .unwrap_or_else(|| "<unknown>".to_string());
-                        self.emit_crash_action_return_error(span, &fn_name);
-                    }
-                }
+                // Fail-closed crash-hook gate inventory (all positions covered by
+                // the shared `check_return_operand` shell):
+                //   (1) non-final `return CrashAction`  → THIS site
+                //   (2) final/tail `return CrashAction` → check_stmt_as_expr site
+                //   (3) tail-expr CrashAction (no return keyword) → items.rs body_is_crash_action
+                //   (4) if/match expr whose arms all yield CrashAction → flows into (3)
+                //   (5) let-bound CrashAction, then returned → flows into (1) or (2)
+                self.check_return_operand(value.as_ref(), span);
             }
             Stmt::Loop { label, body } => {
                 if let Some(lbl) = label {

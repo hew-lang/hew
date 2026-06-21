@@ -536,6 +536,19 @@ impl Checker {
             // Yield
             Expr::Yield(value) => self.synthesize_yield(value.as_deref(), span),
 
+            // `return [expr]` in expression position. A `return` diverges, so
+            // the construct itself synthesizes to `Ty::Never` (which unifies
+            // with any expected type). The operand is checked against the
+            // enclosing function's declared return type via the SAME shared
+            // shell as statement-position `Stmt::Return`
+            // (LESSONS `one-construct-one-lowering-shell`) — never against this
+            // expression's expected type, so a mismatched `return` operand is
+            // attributed to the return, not the surrounding expression.
+            Expr::Return(value) => {
+                self.check_return_operand(value.as_deref(), span);
+                Ty::Never
+            }
+
             // Actor self-reference handle — returns LocalPid<Self>, not the actor type itself
             Expr::This => {
                 if let Some(actor_ty) = &self.current_actor_type {
@@ -4847,6 +4860,7 @@ impl Checker {
             | Expr::Timeout { .. }
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
+            | Expr::Return(_)
             | Expr::This
             | Expr::FieldAccess { .. }
             | Expr::Index { .. }

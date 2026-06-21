@@ -351,6 +351,14 @@ fn body_visit_expr(expr: &Expr, out: &mut LambdaBodyFacts) {
             }
         }
         Expr::GenBlock { body } => body_visit_block(body, out),
+        Expr::Return(opt) => {
+            // `return` is a divergent leaf, not a suspend point; just recurse
+            // into the operand so captures referenced by `return <expr>` are
+            // observed.
+            if let Some(boxed) = opt {
+                body_visit_expr(&boxed.0, out);
+            }
+        }
     }
 }
 
@@ -757,6 +765,13 @@ fn esc_visit_expr(
         }
         Expr::Await(inner) => esc_visit_expr(&inner.0, name, in_fork, acc, false),
         Expr::GenBlock { body } => esc_visit_block(body, name, in_fork, acc),
+        Expr::Return(opt) => {
+            // `return <expr>` carries the operand out of the closure; treat it
+            // as an argument-position escape, mirroring `yield <expr>`.
+            if let Some(boxed) = opt {
+                esc_visit_arg(&boxed.0, name, in_fork, acc);
+            }
+        }
     }
 }
 

@@ -1009,7 +1009,9 @@ fn compile_temp_debug_artifact(
     options: &compile::CompileOptions,
     target: &target::ExecutionTarget,
 ) -> CompiledTempExecutable {
-    compile_temp_artifact(input, create_debug_temp_artifact(target), options)
+    // `hew debug` launches a native debugger on the artifact, so it must carry
+    // DWARF debug info — emit it even though the shared `hew run` path does not.
+    compile_temp_artifact(input, create_debug_temp_artifact(target), options, true)
 }
 
 fn compile_temp_run_artifact(
@@ -1017,7 +1019,8 @@ fn compile_temp_run_artifact(
     options: &compile::CompileOptions,
     target: &target::ExecutionTarget,
 ) -> CompiledTempExecutable {
-    compile_temp_artifact(input, create_run_temp_artifact(target), options)
+    // `hew run` is the fast-exec path; no debug info.
+    compile_temp_artifact(input, create_run_temp_artifact(target), options, false)
 }
 
 /// Compile a `.hew` source file to a temporary `.wasm` module for WASI execution.
@@ -1110,6 +1113,7 @@ fn compile_temp_artifact(
     input: &str,
     artifact: CompiledTempExecutable,
     options: &compile::CompileOptions,
+    debug: bool,
 ) -> CompiledTempExecutable {
     // Route through the same path as `hew build` so `hew run` honours
     // `--pkg-path` (resolving `hew::<pkg>` imports) and auto-links the native
@@ -1126,7 +1130,7 @@ fn compile_temp_artifact(
         Path::new(input),
         artifact.path(),
         &target,
-        false,
+        debug,
         // `hew run` is debug-default O0; the `HEW_OPT_LEVEL` env floor lifts the
         // whole corpus to O2 for the differential-exec parity gate.
         hew_codegen_rs::OptLevel::O0,

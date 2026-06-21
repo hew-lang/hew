@@ -1137,26 +1137,26 @@ fn initialise_llvm_targets() {
 /// the `Suspend` terminator arm reconstructs a [`crate::coro::CoroContext`] on
 /// demand to call `emit_suspend`.
 #[derive(Clone, Copy)]
-struct CoroState<'ctx> {
+pub(crate) struct CoroState<'ctx> {
     /// The `coro.begin` handle — the `HewCont` frame pointer.
-    handle: PointerValue<'ctx>,
+    pub(crate) handle: PointerValue<'ctx>,
     /// The opaque `coro.id` token, needed by `coro.suspend` / `coro.free` /
     /// `coro.end`.
-    id_token: inkwell::llvm_sys::prelude::LLVMValueRef,
+    pub(crate) id_token: inkwell::llvm_sys::prelude::LLVMValueRef,
     /// The shared block reached on case `1` of every suspend switch (a
     /// `hew_cont_destroy` tearing the frame down): runs `coro.free` →
     /// `hew_cont_frame_free` then `coro.end` and returns the handle.
-    cleanup_block: inkwell::basic_block::BasicBlock<'ctx>,
+    pub(crate) cleanup_block: inkwell::basic_block::BasicBlock<'ctx>,
     /// The shared block reached on the DEFAULT edge of every suspend switch
     /// (control returns to the executor — the suspend edge that frees the
     /// worker): returns the handle without tearing down the frame.
-    suspend_return_block: inkwell::basic_block::BasicBlock<'ctx>,
+    pub(crate) suspend_return_block: inkwell::basic_block::BasicBlock<'ctx>,
     /// The LLVM type of the LOGICAL return value (the resolved Hew return type,
     /// NOT the ramp's `ptr` return). Used to size the body's return-value slot
     /// and to load+deposit the reply at `Terminator::Return` (W6.010 body-side
     /// value routing). `None` when the logical return is unit/never (the body
     /// deposits no reply).
-    logical_return_ty: Option<BasicTypeEnum<'ctx>>,
+    pub(crate) logical_return_ty: Option<BasicTypeEnum<'ctx>>,
     /// Whether the function's MIR already carries an explicit
     /// `Terminator::Suspend { is_final: true }` (a generator / the synthetic
     /// substrate fixture). A switched-resume coroutine must have EXACTLY ONE
@@ -1166,7 +1166,7 @@ struct CoroState<'ctx> {
     /// final Suspend is the completion point and Return just `ret`s the handle.
     /// When `false` (a SuspendingAsk-only coroutine — no explicit final), the
     /// Return arm IS the natural completion and emits the single final suspend.
-    has_explicit_final_suspend: bool,
+    pub(crate) has_explicit_final_suspend: bool,
     /// The single shared block onto which EVERY `Terminator::Return` of a
     /// SuspendingAsk-driven coroutine converges. Each `Return` block stores its
     /// logical reply into `return_slot` (a memory alloca — no phi needed across
@@ -1177,7 +1177,7 @@ struct CoroState<'ctx> {
     /// "Only one suspend point can be marked as final" if a per-`Return` final
     /// were inlined). `None` for a coroutine that carries an explicit final
     /// Suspend (a generator) — its `Return` arm just `ret`s the handle.
-    final_suspend_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
+    pub(crate) final_suspend_block: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     /// Whether this coroutine is a GENERATOR body (its MIR carries
     /// `Terminator::Yield`). A generator's value channel is the explicit
     /// out-pointer parameter the body publishes each yield into (NOT the
@@ -1185,12 +1185,12 @@ struct CoroState<'ctx> {
     /// value-free `coro.suspend(is_final=true)` — completion just flips
     /// `coro.done` so the consumer's next `GeneratorNext` reads `None`. There is
     /// no `hew_get_reply_channel` / `hew_reply` deposit for a generator.
-    is_generator: bool,
+    pub(crate) is_generator: bool,
 }
 
-struct FnCtx<'a, 'ctx> {
-    ctx: &'ctx Context,
-    llvm_mod: &'a LlvmModule<'ctx>,
+pub(crate) struct FnCtx<'a, 'ctx> {
+    pub(crate) ctx: &'ctx Context,
+    pub(crate) llvm_mod: &'a LlvmModule<'ctx>,
     /// Emit `hew_shutdown_initiate(0)` + `hew_shutdown_wait()` before the
     /// `Terminator::Return` in the native program entry point of an
     /// actor-using program — the implicit actor-drain floor.
@@ -1211,7 +1211,7 @@ struct FnCtx<'a, 'ctx> {
     /// WHAT the real solution is: a MIR-level `Terminator::Drain` emitted by
     /// the lowerer, so the drain is part of the program's control-flow graph
     /// rather than a codegen epilogue injection.
-    emit_drain_epilogue: bool,
+    pub(crate) emit_drain_epilogue: bool,
     /// Emit `hew_wasm_runtime_exit()` before the `Terminator::Return` of the
     /// wasm32 program entry point of an actor-using program — the wasm analogue
     /// of `emit_drain_epilogue`.
@@ -1224,7 +1224,7 @@ struct FnCtx<'a, 'ctx> {
     /// runnable actors to completion synchronously and then performs scheduler
     /// shutdown plus actor cleanup. Without it the mailbox never drains and
     /// short-lived programs skip the runtime cleanup chain.
-    emit_wasm_runtime_exit: bool,
+    pub(crate) emit_wasm_runtime_exit: bool,
     /// Emit `hew_lambda_drain_all(0)` before the `Terminator::Return` of
     /// `main` on the native target so spawned lambda-actor dispatch
     /// threads finish processing their mailboxes before the process
@@ -1232,18 +1232,18 @@ struct FnCtx<'a, 'ctx> {
     /// work-stealing scheduler, so `hew_shutdown_wait` does not cover
     /// them. Always emitted on native `main` (cost is one runtime call
     /// that returns immediately when no lambda actors were spawned).
-    emit_lambda_drain_epilogue: bool,
+    pub(crate) emit_lambda_drain_epilogue: bool,
     /// ABI layout authority for the module target. Native textual emission
     /// carries host data; cross-target emission carries the target machine data.
-    target_data: &'a TargetData,
-    builder: Builder<'ctx>,
-    return_slot: PointerValue<'ctx>,
-    return_ty: BasicTypeEnum<'ctx>,
-    return_resolved_ty: ResolvedTy,
-    execution_context: Option<PointerValue<'ctx>>,
-    closure_call_fallback_context: Option<PointerValue<'ctx>>,
-    execution_context_is_actor_handler: bool,
-    actor_state_ty: Option<StructType<'ctx>>,
+    pub(crate) target_data: &'a TargetData,
+    pub(crate) builder: Builder<'ctx>,
+    pub(crate) return_slot: PointerValue<'ctx>,
+    pub(crate) return_ty: BasicTypeEnum<'ctx>,
+    pub(crate) return_resolved_ty: ResolvedTy,
+    pub(crate) execution_context: Option<PointerValue<'ctx>>,
+    pub(crate) closure_call_fallback_context: Option<PointerValue<'ctx>>,
+    pub(crate) execution_context_is_actor_handler: bool,
+    pub(crate) actor_state_ty: Option<StructType<'ctx>>,
     /// Per-field `StateFieldCloneKind`s for the actor whose handler this
     /// function is, in state-field declaration order (parallel to
     /// `actor_state_ty`'s fields). Populated for `ActorHandler` functions
@@ -1253,22 +1253,22 @@ struct FnCtx<'a, 'ctx> {
     /// never on the LLVM struct shape, which a user record with a
     /// `{ ptr, i32, i32 }` layout could alias (LESSONS:
     /// boundary-fail-closed, checker-authority).
-    actor_state_field_kinds: Option<&'a [StateFieldCloneKind]>,
+    pub(crate) actor_state_field_kinds: Option<&'a [StateFieldCloneKind]>,
     /// Local-register id → (stack slot, slot's LLVM type). Keyed by the
     /// `Place::Local(N)` index — an MIR identity, not a checker derivative.
-    locals: HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
+    pub(crate) locals: HashMap<u32, (PointerValue<'ctx>, BasicTypeEnum<'ctx>)>,
     /// Local-register id → resolved Hew type. Kept alongside `locals` for
     /// ABI helpers that must encode a value from its source type, not only its
     /// LLVM storage shape.
-    local_tys: HashMap<u32, ResolvedTy>,
+    pub(crate) local_tys: HashMap<u32, ResolvedTy>,
     /// Block id → LLVM `BasicBlock`. Populated up front so terminators can
     /// name forward targets.
-    blocks: HashMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
+    pub(crate) blocks: HashMap<u32, inkwell::basic_block::BasicBlock<'ctx>>,
     /// Module-wide runtime-ABI extern declarations interned on first use.
     /// Carried in a `RefCell` so the per-instruction lowering (which only
     /// borrows `FnCtx` immutably) can register new declarations lazily
     /// from inside `Instr::CallRuntimeAbi` and `Instr::Drop` arms.
-    runtime_decls: RefCell<RuntimeDeclMap<'ctx>>,
+    pub(crate) runtime_decls: RefCell<RuntimeDeclMap<'ctx>>,
     /// Module-wide record layouts (A-7). Keyed by record name; values are
     /// the LLVM named struct types registered up front in `build_module`
     /// via `register_record_layouts`. `Instr::RecordInit` /
@@ -1276,16 +1276,16 @@ struct FnCtx<'a, 'ctx> {
     /// to resolve a record-typed local's slot to its `StructType` for GEP
     /// indexing. The map is borrowed (no ownership) — the registered
     /// `StructType<'ctx>` values share the codegen context's lifetime.
-    record_layouts: &'a RecordLayoutMap<'ctx>,
+    pub(crate) record_layouts: &'a RecordLayoutMap<'ctx>,
     /// Module-wide function symbol table. Populated before any body is
     /// lowered by the `declare_function` pass in `build_module`. The borrow
     /// is shared (read-only) — no new declarations are added during body
     /// lowering.
-    fn_symbols: &'a FnSymbolMap<'ctx>,
+    pub(crate) fn_symbols: &'a FnSymbolMap<'ctx>,
     /// Module-wide actor layouts keyed by `ActorLayout.name` at use sites.
     /// Spawn lowering consumes these layouts to emit the WASM bridge metadata
     /// producer before calling into the runtime spawn ABI.
-    actor_layouts: &'a [ActorLayout],
+    pub(crate) actor_layouts: &'a [ActorLayout],
     /// Module-wide machine tagged-union layouts keyed by machine name
     /// (and by `<Name>Event` for event-companion enums). Populated up
     /// front in `build_module` via `register_machine_layouts`.
@@ -1293,10 +1293,10 @@ struct FnCtx<'a, 'ctx> {
     /// codegen consults this through `machine_layout_for_local` to
     /// resolve a machine-typed local's slot to its outer LLVM struct,
     /// per-variant inner structs, and tag integer width.
-    machine_layouts: &'a MachineLayoutMap<'ctx>,
+    pub(crate) machine_layouts: &'a MachineLayoutMap<'ctx>,
     /// Module-wide enum layout descriptors. Used by the heap-owning
     /// composite return boundary check to inspect variant field types.
-    enum_layouts: &'a [EnumLayout],
+    pub(crate) enum_layouts: &'a [EnumLayout],
     /// Per-record field-resolved-type table, keyed by record name. Built
     /// once in `build_module` from `pipeline.record_layouts` and shared by
     /// every per-function lowering context. The synthesis-side hash thunk
@@ -1310,7 +1310,7 @@ struct FnCtx<'a, 'ctx> {
     /// `None` keys (records not in the map) are treated as if every field
     /// were a plain integer — defensive fall-back used by hand-built test
     /// fixtures that do not register a record layout for every named local.
-    record_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
+    pub(crate) record_field_resolved_tys: &'a HashMap<String, Vec<ResolvedTy>>,
     /// Module-wide dyn-trait vtable registry, shared by reference from
     /// `pipeline.dyn_vtable_registry`. Consumed by
     /// `Instr::CoerceToDynTrait` to resolve the
@@ -1324,12 +1324,12 @@ struct FnCtx<'a, 'ctx> {
     /// runs. Reaching codegen for a coercion not in this registry is a
     /// boundary invariant violation; the helper fails closed loudly
     /// rather than silently emitting a misrouted vtable reference.
-    dyn_vtable_registry: &'a [DynVtableInstance],
+    pub(crate) dyn_vtable_registry: &'a [DynVtableInstance],
     /// Module-level `const` globals emitted from `IrPipeline::user_consts`,
     /// keyed by HIR item id. `Instr::ConstGlobalLoad` uses this table to load
     /// the statically-initialized value and fails closed if the descriptor was
     /// not wired into the pipeline.
-    const_globals: &'a ConstGlobalMap<'ctx>,
+    pub(crate) const_globals: &'a ConstGlobalMap<'ctx>,
     /// P5-RX Stage 2a (A625): the runtime `borrow_mode` i32 — the trailing
     /// LLVM parameter of a `<Actor>__recv__<handler>` receive handler threaded
     /// by Stage 1's dispatch trampoline. `Some(_)` ONLY for receive handlers;
@@ -1349,21 +1349,21 @@ struct FnCtx<'a, 'ctx> {
     /// Under `borrow_mode == 0` (copy mode) every gate is a no-op: the handler
     /// already owns its private copy, so behaviour is byte-identical to the
     /// pre-Stage-2a path. The same compiled handler serves both modes.
-    borrow_mode: Option<IntValue<'ctx>>,
+    pub(crate) borrow_mode: Option<IntValue<'ctx>>,
     /// P5-RX Stage 2a (A625): the closed set of MIR `Place::Local` ids that
     /// carry a value derived (transitively, via `Instr::Move`) from a `String`
     /// receive parameter — the "borrow taint" set. Empty for every non-receive
     /// function and for receive handlers with no `String` params. Consulted at
     /// each escape sink (field store / return / re-send) and at every
     /// elaborated drop to decide whether the `borrow_mode` gate applies.
-    borrow_tainted: HashSet<u32>,
+    pub(crate) borrow_tainted: HashSet<u32>,
     /// Per-coroutine emission state, `Some` ONLY for a function whose MIR
     /// carries a `Terminator::Suspend` (R326/R327). The `Suspend` terminator arm
     /// reads this to place each `coro.suspend` + its 3-way switch; the
     /// suspend-return / cleanup epilogue blocks are emitted from it after the
     /// body. `None` for every ordinary (non-suspending) function, which lowers
     /// exactly as before — non-coroutine functions pay nothing.
-    coro: Option<CoroState<'ctx>>,
+    pub(crate) coro: Option<CoroState<'ctx>>,
     /// Lambda-actor body shape (`Tell` or `Ask`), populated ONLY for a
     /// function whose `call_conv` is `FunctionCallConv::LambdaActorBody`.
     /// Consulted by the `Terminator::Return` arm to select the runtime ABI
@@ -1373,25 +1373,25 @@ struct FnCtx<'a, 'ctx> {
     /// `*reply_out` / `*reply_len_out` (the body's `Local(3)` / `Local(4)`
     /// runtime ABI param slots), and returns `i32 0`. `None` for every
     /// other call convention.
-    lambda_actor_shape: Option<hew_mir::LambdaActorShape>,
+    pub(crate) lambda_actor_shape: Option<hew_mir::LambdaActorShape>,
 }
 
 /// Module-level symbol table populated by the declaration pass. Keyed by
 /// function name (a normal module-level identity); the value carries the
 /// LLVM function value plus its return type so `Terminator::Call` can
 /// resolve forward without re-deriving anything from the MIR shape.
-type FnSymbolMap<'ctx> = HashMap<String, FnSymbol<'ctx>>;
+pub(crate) type FnSymbolMap<'ctx> = HashMap<String, FnSymbol<'ctx>>;
 
-type ConstGlobalMap<'ctx> = HashMap<ItemId, ConstGlobal<'ctx>>;
+pub(crate) type ConstGlobalMap<'ctx> = HashMap<ItemId, ConstGlobal<'ctx>>;
 
 #[derive(Clone, Copy)]
-struct ConstGlobal<'ctx> {
-    value: GlobalValue<'ctx>,
-    ty: BasicTypeEnum<'ctx>,
+pub(crate) struct ConstGlobal<'ctx> {
+    pub(crate) value: GlobalValue<'ctx>,
+    pub(crate) ty: BasicTypeEnum<'ctx>,
 }
 
 #[derive(Clone, Copy)]
-enum FnSymbol<'ctx> {
+pub(crate) enum FnSymbol<'ctx> {
     Real {
         value: FunctionValue<'ctx>,
         return_ty: BasicTypeEnum<'ctx>,
@@ -1419,7 +1419,7 @@ enum FnSymbol<'ctx> {
 }
 
 impl<'ctx> FnSymbol<'ctx> {
-    fn real(
+    pub(crate) fn real(
         self,
         callee: &str,
         context: &str,
@@ -1448,7 +1448,7 @@ impl<'ctx> FnSymbol<'ctx> {
 /// C-ABI symbol name (already validated by `RuntimeCall::new`'s allowlist
 /// check). One declaration per symbol per module — repeat references at
 /// multiple call sites share the same LLVM `declare` line.
-type RuntimeDeclMap<'ctx> = HashMap<String, FunctionValue<'ctx>>;
+pub(crate) type RuntimeDeclMap<'ctx> = HashMap<String, FunctionValue<'ctx>>;
 
 #[derive(Debug, Clone, Copy)]
 enum MathBuiltinIntrinsic {
@@ -1526,7 +1526,7 @@ fn runtime_size_ty<'ctx>(
 /// adopts it without signature verification and relies on `Module::verify()` as
 /// the downstream safety net. WHEN-OBSOLETE: replace this adoption path with an
 /// explicit existing-signature check before caching the declaration.
-fn intern_runtime_decl<'ctx>(
+pub(crate) fn intern_runtime_decl<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     decls: &mut RuntimeDeclMap<'ctx>,
@@ -3363,9 +3363,9 @@ fn predeclare_extern_decls<'ctx>(
 /// (W3.020) rather than a struct layout. `Deref`/`DerefMut` forward to the
 /// struct map so existing `.get`/`.insert`/`.keys` call sites are unchanged.
 #[derive(Debug)]
-struct RecordLayoutMap<'ctx> {
-    structs: HashMap<String, StructType<'ctx>>,
-    opaque: std::collections::HashSet<String>,
+pub(crate) struct RecordLayoutMap<'ctx> {
+    pub(crate) structs: HashMap<String, StructType<'ctx>>,
+    pub(crate) opaque: std::collections::HashSet<String>,
 }
 
 impl<'ctx> RecordLayoutMap<'ctx> {
@@ -3585,37 +3585,37 @@ fn fill_record_layout_bodies<'ctx>(
 /// Per-module map from a machine type name to its registered tagged-union
 /// LLVM layout. Populated once per `build_module` from
 /// `IrPipeline.machine_layouts`.
-type MachineLayoutMap<'ctx> = HashMap<String, MachineCodegenLayout<'ctx>>;
+pub(crate) type MachineLayoutMap<'ctx> = HashMap<String, MachineCodegenLayout<'ctx>>;
 
 /// Cached LLVM types for one machine declaration's tagged-union layout.
 #[derive(Clone)]
-struct MachineCodegenLayout<'ctx> {
+pub(crate) struct MachineCodegenLayout<'ctx> {
     /// Outer named LLVM struct: `{ tag: iW, payload: [N x i8] }`. Used by
     /// `place_resolved_ty(Place::MachineTag(local))` to size the alloca
     /// and by `place_pointer` to GEP into field 0 (tag) or field 1
     /// (payload).
-    outer_struct: StructType<'ctx>,
+    pub(crate) outer_struct: StructType<'ctx>,
     /// LLVM integer type for the discriminant tag (`iW` where
     /// `i8`/`i16` selected from the declared variant count. Cached so
     /// `Place::MachineTag` loads use
     /// the same type the alloca was declared with.
-    tag_int_ty: inkwell::types::IntType<'ctx>,
+    pub(crate) tag_int_ty: inkwell::types::IntType<'ctx>,
     /// Per-variant anonymous struct types in declaration order. Index
     /// matches `MachineLayout.variants[i]`. Used by
     /// `place_pointer(Place::MachineVariant { variant_idx, .. })` to
     /// bitcast the payload byte array to the active variant's struct.
-    variant_struct_tys: Vec<StructType<'ctx>>,
+    pub(crate) variant_struct_tys: Vec<StructType<'ctx>>,
     /// Resolved per-variant field types in declaration order. Used by
     /// `place_resolved_ty(Place::MachineVariant { ... })` to surface the
     /// `ResolvedTy` of a payload field load/store without going through
     /// the LLVM type back to a Hew type. Index `i` matches
     /// `MachineLayout.variants[i].field_tys`.
-    variant_field_tys: Vec<Vec<ResolvedTy>>,
+    pub(crate) variant_field_tys: Vec<Vec<ResolvedTy>>,
     /// Static `[N x ptr]` table of state-name strings for `Instr::MachineStateName`.
     /// `state_name_table[i]` is a pointer to a private NUL-terminated read-only
     /// global holding `variants[i].name`. Populated only for the state-side
     /// machine layout; the `<Name>Event` companion layout entry has `None`.
-    state_name_table: Option<inkwell::values::GlobalValue<'ctx>>,
+    pub(crate) state_name_table: Option<inkwell::values::GlobalValue<'ctx>>,
 }
 
 /// Return the native host data-layout string, initialising LLVM's native target
@@ -4976,7 +4976,7 @@ fn resolve_ty<'ctx>(
     primitive_to_llvm(ctx, ty)
 }
 
-fn primitive_to_llvm<'ctx>(
+pub(crate) fn primitive_to_llvm<'ctx>(
     ctx: &'ctx Context,
     ty: &ResolvedTy,
 ) -> CodegenResult<BasicTypeEnum<'ctx>> {
@@ -5780,7 +5780,7 @@ fn lower_call_trait_method(
 // Per-instruction lowering
 // ---------------------------------------------------------------------------
 
-fn place_pointer<'ctx>(
+pub(crate) fn place_pointer<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     place: Place,
 ) -> CodegenResult<(PointerValue<'ctx>, BasicTypeEnum<'ctx>)> {
@@ -12683,7 +12683,7 @@ fn cast_int_signedness(ty: &ResolvedTy) -> CodegenResult<IntSignedness> {
     }
 }
 
-fn expect_int_type<'ctx>(
+pub(crate) fn expect_int_type<'ctx>(
     ty: BasicTypeEnum<'ctx>,
     context: &'static str,
 ) -> CodegenResult<IntType<'ctx>> {

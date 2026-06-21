@@ -71,8 +71,9 @@ static HANDLER_NAME_REGISTRY: PoisonSafe<Option<HashMap<(usize, i32), String>>> 
 /// First registration for a `dispatch_fn` key wins; later registrations for the
 /// same key drop their `type_name` without leaking. The accepted name is
 /// promoted to `&'static str` by leaking it exactly once — only when this call
-/// actually inserts — so the table holds at most one leaked string per type for
-/// the process lifetime, never one per call.
+/// actually inserts — so the table holds at most one leaked string per type,
+/// never one per call. The allocation is owned by the table: it is reclaimed and
+/// freed by `clear_dispatch_registry` at session reset (see its docs).
 ///
 /// `type_name` is taken by value so the leak decision happens under the table
 /// lock: a losing concurrent registration frees its `String` instead of
@@ -192,11 +193,37 @@ pub fn lookup_dispatch_for_actor_id(actor_id: u64) -> Option<usize> {
 /// `profiler::register_reset_hooks`) so that stale dispatch-pointer-to-type-name
 /// mappings from a prior JIT load cycle cannot bleed into a fresh one.
 ///
+/// Each value in `DISPATCH_TYPE_REGISTRY` is a `&'static str` produced by
+/// `Box::leak(String::into_boxed_str(..))` in `register_dispatch_type`. A plain
+/// `map.clear()` would drop the fat pointers but orphan the heap they point to,
+/// so we reclaim each allocation with `Box::from_raw` (the exact inverse of the
+/// `Box::leak` that created it) and let the reconstituted `Box<str>` drop. This
+/// keeps the registry's stored type as `&'static str` — so `lookup_dispatch_type`
+/// can hand out a process-lifetime borrow on the hot path — while still freeing
+/// the backing allocations when the table is reset.
+///
 /// After this call, `lookup_dispatch_type` returns `"Actor"` for all pointers
 /// until `register_dispatch_type` is called again.
 pub(crate) fn clear_dispatch_registry() {
     DISPATCH_TYPE_REGISTRY.access(|guard| {
         if let Some(map) = guard.as_mut() {
+            for leaked in map.values() {
+                // SAFETY: every value was created by
+                // `Box::leak(String::into_boxed_str(..))` in
+                // `register_dispatch_type`, so the pointer owns a live
+                // `Box<str>` allocation and reclaiming it via `Box::from_raw`
+                // is the exact inverse of that leak. `clear_dispatch_registry`
+                // runs only at session reset, after all worker threads are
+                // joined and the exit profile has been written (see
+                // `hew_sched_shutdown`), so no live `&'static str` borrow into
+                // these allocations remains. Each pointer is unique (HashMap
+                // keys are distinct dispatch fns, each leaked exactly once), so
+                // there is no double free. The borrow ends before `map.clear()`
+                // invalidates the entries.
+                let owned: Box<str> =
+                    unsafe { Box::from_raw(std::ptr::from_ref(*leaked).cast_mut()) };
+                drop(owned);
+            }
             map.clear();
         }
     });
@@ -540,6 +567,49 @@ mod tests {
             "Actor",
             "lookup must return default after clear_dispatch_registry"
         );
+    }
+
+    unsafe extern "C-unwind" fn fake_dispatch_reclaim(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _s: *mut std::ffi::c_void,
+        _m: i32,
+        _p: *mut std::ffi::c_void,
+        _n: usize,
+        _borrow_mode: i32,
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
+    }
+
+    /// `clear_dispatch_registry` reclaims the `Box::leak`'d type-name strings.
+    ///
+    /// Repeatedly register-then-clear under the same dispatch key: each register
+    /// leaks one `Box<str>` and each clear must reclaim it. Run under
+    /// `LeakSanitizer` (`make asan`) this reports zero leaked bytes; a plain
+    /// `map.clear()` would orphan one allocation per iteration. The behavioural
+    /// assertion (fallback after clear) backstops the same invariant when
+    /// `AddressSanitizer` is not active.
+    #[test]
+    fn clear_dispatch_registry_reclaims_leaked_strings() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        clear_dispatch_registry();
+
+        for _ in 0..16 {
+            register_dispatch_type(Some(fake_dispatch_reclaim), "ReclaimedActor".to_owned());
+            assert_eq!(
+                lookup_dispatch_type(Some(fake_dispatch_reclaim)),
+                "ReclaimedActor",
+                "type must be registered before clear"
+            );
+            clear_dispatch_registry();
+            assert_eq!(
+                lookup_dispatch_type(Some(fake_dispatch_reclaim)),
+                "Actor",
+                "lookup must fall back after clear reclaims the string"
+            );
+        }
     }
 
     unsafe extern "C-unwind" fn fake_dispatch_e(

@@ -783,6 +783,7 @@ fn compile_build_binary(
 fn emit_obj_only(
     input: &Path,
     target: &target::TargetSpec,
+    debug: bool,
     opt_level: hew_codegen_rs::OptLevel,
     options: &compile::CompileOptions,
 ) -> Result<(), ()> {
@@ -798,6 +799,8 @@ fn emit_obj_only(
         CompileEmitTarget::Native
     };
     // Emit objects only — never link (no freestanding wasm link either).
+    // `-g` threads debug info AND the source path so the object carries a
+    // DWARF line table + variable/type DIEs, matching the linked-binary path.
     let artefacts = emit_module_for_target(
         &pipeline,
         stem,
@@ -805,9 +808,9 @@ fn emit_obj_only(
         emit_target,
         target,
         false,
-        false,
+        debug,
         opt_level,
-        None,
+        if debug { Some(input) } else { None },
     )?;
     let produced = match emit_target {
         CompileEmitTarget::Native => artefacts.native_obj_path,
@@ -851,7 +854,7 @@ fn cmd_build(a: &args::BuildArgs) {
     });
 
     if a.emit_obj {
-        emit_obj_only(&a.input, &target, opt_level, &options).unwrap_or_else(|()| {
+        emit_obj_only(&a.input, &target, a.debug, opt_level, &options).unwrap_or_else(|()| {
             if json {
                 diagnostic_json::flush_json_diagnostics();
             }

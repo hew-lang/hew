@@ -107,7 +107,9 @@ jobs:
           echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/noble/ llvm-toolchain-noble-${{ env.LLVM_VERSION }} main" \
             | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y -qq llvm-${{ env.LLVM_VERSION }} clang-${{ env.LLVM_VERSION }}
+          # libpolly-N-dev supplies libLLVMPolly.a: llvm-config-N --link-static
+          # lists Polly, so llvm-sys requests it at link time.
+          sudo apt-get install -y -qq llvm-${{ env.LLVM_VERSION }} clang-${{ env.LLVM_VERSION }} libpolly-${{ env.LLVM_VERSION }}-dev
           # Make clang-N available as `clang` (hew's link step calls `clang`).
           sudo update-alternatives --install /usr/bin/clang clang \
             /usr/bin/clang-${{ env.LLVM_VERSION }} 100

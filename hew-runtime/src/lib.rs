@@ -333,6 +333,18 @@ pub mod profiler {
             "Actor"
         }
 
+        /// Stub owned dispatch-type lookup when profiler registry is unavailable.
+        ///
+        /// Always returns `"Actor".to_owned()` — the same default the real
+        /// registry returns for unregistered pointers. Mirrors
+        /// `lookup_dispatch_type_by_ptr_owned`, which signal/tracing callers use
+        /// to copy the name under the registry lock; the stub has no registry, so
+        /// there is no lock or race to mirror — only the default value.
+        #[must_use]
+        pub fn lookup_dispatch_type_by_ptr_owned(_dispatch_ptr: usize) -> String {
+            "Actor".to_owned()
+        }
+
         /// Stub handler-name lookup when profiler registry is unavailable.
         ///
         /// Always returns `None` — the same default the real registry returns

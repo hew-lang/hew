@@ -302,8 +302,13 @@ mod shared {
             let context =
                 crate::profiler::actor_registry::handler_name_by_ptr(dispatch_ptr, msg_type)
                     .unwrap_or_else(|| {
+                        // Owned variant: copies the name under
+                        // DISPATCH_TYPE_REGISTRY's lock, closing the
+                        // lookup-to-copy TOCTOU window against a concurrent
+                        // `clear_dispatch_registry` reclaim (the borrowing
+                        // variant releases the lock before returning).
                         let type_name =
-                            crate::profiler::actor_registry::lookup_dispatch_type_by_ptr(
+                            crate::profiler::actor_registry::lookup_dispatch_type_by_ptr_owned(
                                 dispatch_ptr,
                             );
                         if type_name == "Actor" {

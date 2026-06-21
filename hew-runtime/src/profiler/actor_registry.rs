@@ -95,9 +95,66 @@ pub fn register_dispatch_type(dispatch_fn: Option<HewDispatchFn>, type_name: Str
     });
 }
 
+/// Look up the Hew type name for a dispatch function pointer, copied into an
+/// owned `String` **under the registry lock**.
+///
+/// Returns `"Actor".to_owned()` if the dispatch fn is not registered.
+///
+/// Prefer this over [`lookup_dispatch_type`] for any caller that retains the
+/// name (every current caller does). [`lookup_dispatch_type`] returns a
+/// `&'static str` that borrows the registry's `Box::leak`'d backing allocation
+/// and **releases the lock before returning** (see [`PoisonSafe::access`], which
+/// drops its guard when the closure returns). Copying *after* that — e.g.
+/// `lookup_dispatch_type(d).to_owned()` — races a concurrent
+/// `clear_dispatch_registry`, which can `Box::from_raw`-free that allocation in
+/// the gap between lock-release and the copy, leaving the copy to read freed
+/// memory. This helper performs the `to_owned()` **inside** the `access` closure,
+/// so the copy completes while the lock is still held and `clear` cannot run.
+#[must_use]
+pub fn lookup_dispatch_type_owned(dispatch_fn: Option<HewDispatchFn>) -> String {
+    let key = match dispatch_fn.map(|f| f as usize) {
+        Some(k) if k != 0 => k,
+        _ => return "Actor".to_owned(),
+    };
+    lookup_dispatch_type_by_ptr_owned(key)
+}
+
+/// Owned-`String` variant of [`lookup_dispatch_type_by_ptr`] that copies the
+/// name **under the registry lock**.
+///
+/// Returns `"Actor".to_owned()` if the pointer is zero or unregistered. See
+/// [`lookup_dispatch_type_owned`] for why the by-value copy must happen inside
+/// the `access` closure rather than at the call site.
+#[must_use]
+pub fn lookup_dispatch_type_by_ptr_owned(dispatch_ptr: usize) -> String {
+    if dispatch_ptr == 0 {
+        return "Actor".to_owned();
+    }
+    DISPATCH_TYPE_REGISTRY.access(|guard| {
+        // `to_owned()` runs while the lock is held, so it observes the leaked
+        // backing allocation before any concurrent `clear_dispatch_registry`
+        // (which acquires this same lock) can free it.
+        guard
+            .as_ref()
+            .and_then(|m| m.get(&dispatch_ptr).copied())
+            .unwrap_or("Actor")
+            .to_owned()
+    })
+}
+
 /// Look up the Hew type name for a dispatch function pointer.
 ///
 /// Returns `"Actor"` if the dispatch fn is not registered.
+///
+/// **Borrow lifetime caveat:** the returned `&'static str` aliases the
+/// registry's `Box::leak`'d backing allocation and is handed back **after the
+/// registry lock is released**. A caller that copies the name out (`to_owned`,
+/// `format!`, comparison-then-copy) races `clear_dispatch_registry`, which can
+/// free that allocation between the lock-release here and the caller's copy. Any
+/// caller that retains the name must use [`lookup_dispatch_type_owned`] instead,
+/// which copies under the lock. This borrowing variant is retained only for
+/// callers that consume the `&str` transiently with no concurrent clear (none in
+/// the runtime today) and for the `#[cfg(test)]` invariant checks.
 #[must_use]
 pub fn lookup_dispatch_type(dispatch_fn: Option<HewDispatchFn>) -> &'static str {
     let key = match dispatch_fn.map(|f| f as usize) {
@@ -110,6 +167,10 @@ pub fn lookup_dispatch_type(dispatch_fn: Option<HewDispatchFn>) -> &'static str 
 /// Look up the Hew type name for a dispatch function pointer stored as `usize`.
 ///
 /// Returns `"Actor"` if the pointer is zero or has not been registered.
+///
+/// See [`lookup_dispatch_type`] for the borrow-lifetime caveat: retaining
+/// callers must use [`lookup_dispatch_type_by_ptr_owned`].
+#[must_use]
 pub fn lookup_dispatch_type_by_ptr(dispatch_ptr: usize) -> &'static str {
     if dispatch_ptr == 0 {
         return "Actor";
@@ -202,16 +263,24 @@ pub fn lookup_dispatch_for_actor_id(actor_id: u64) -> Option<usize> {
 /// can hand out a process-lifetime borrow on the hot path — while still freeing
 /// the backing allocations when the table is reset.
 ///
-/// Reclaiming here is sound because no `&'static str` into these allocations
-/// outlives the registry. The retaining consumers all copy the name out
-/// immediately: `snapshot_all` into an owned `ActorSnapshot::actor_type: String`,
-/// and `signal`/`tracing` via `format!`/`.to_owned()`. This matters because the
+/// Reclaiming here is sound because no live borrow into these allocations races
+/// the free. Every retaining consumer copies the name out **while holding this
+/// same lock**, via the owned lookup helpers (`lookup_dispatch_type_owned` /
+/// `lookup_dispatch_type_by_ptr_owned`): `snapshot_all` into an owned
+/// `ActorSnapshot::actor_type: String`, and `signal`/`tracing` into their
+/// `String`/`format!` outputs. Because the copy completes inside the
+/// `DISPATCH_TYPE_REGISTRY.access` closure, this `clear` — which acquires the
+/// same lock — cannot interleave between a consumer's lookup and its copy. (The
+/// borrowing `lookup_dispatch_type[_by_ptr]` variants release the lock *before*
+/// returning the `&'static str`; copying after that point is a lookup-to-copy
+/// TOCTOU use-after-free, which is why retaining callers must use the owned
+/// helpers — see their docs.) This lock-scope coupling matters because the
 /// profiler server/sampler threads are NOT joined on this path — they are joined
 /// only by `profiler::shutdown` (reachable from `hew_node_stop`), whereas this
 /// runs from the `session_reset` hook fired by `hew_sched_shutdown` after only
 /// the scheduler workers are joined. A live profiler thread serving
-/// `/api/actors` holds an *owned* `ActorSnapshot`, never a borrow into what we
-/// free here, so the reclaim cannot dangle a snapshot.
+/// `/api/actors` either holds an already-owned `ActorSnapshot` or is mid-copy
+/// under the lock — never a bare borrow into what we free here.
 ///
 /// After this call, `lookup_dispatch_type` returns `"Actor"` for all pointers
 /// until `register_dispatch_type` is called again.
@@ -228,9 +297,11 @@ pub(crate) fn clear_dispatch_registry() {
                 // once), so there is no double free, and the reconstituted
                 // `Box<str>` drops before `map.clear()` invalidates the entry.
                 //
-                // No live borrow into these allocations escapes the registry:
-                // every retaining consumer of `lookup_dispatch_type[_by_ptr]`
-                // copies the name out (see the doc above), so even the profiler
+                // No live borrow into these allocations races this free: every
+                // retaining consumer copies the name out under *this same lock*
+                // via the owned lookup helpers (see the doc above), so a copy
+                // either completed before we acquired the lock or has not started
+                // — it can never interleave with this reclaim. Even the profiler
                 // threads — which this path does NOT join before clearing — hold
                 // owned data, not a pointer into what we free here.
                 let owned: Box<str> =
@@ -375,14 +446,17 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
                 )
             };
 
-            // lookup_dispatch_type acquires DISPATCH_TYPE_REGISTRY — a
-            // different mutex, so nesting here is safe. Copy the name into an
-            // owned `String`: the returned `&'static str` borrows the registry's
-            // leaked backing allocation, which `clear_dispatch_registry` reclaims
-            // at session reset, and the profiler thread consuming this snapshot
-            // is not joined before that reclaim — so the snapshot must own its
-            // copy, never alias the registry (see `ActorSnapshot::actor_type`).
-            let actor_type = lookup_dispatch_type(a.dispatch).to_owned();
+            // lookup_dispatch_type_owned acquires DISPATCH_TYPE_REGISTRY — a
+            // different mutex, so nesting here is safe. The owned variant copies
+            // the name into a `String` *under that lock*, so the copy observes
+            // the registry's leaked backing allocation before any concurrent
+            // `clear_dispatch_registry` (which acquires the same lock) can
+            // `Box::from_raw`-free it. Copying after the lock released — as a
+            // plain `lookup_dispatch_type(..).to_owned()` would — is a
+            // lookup-to-copy TOCTOU read of freed memory, because the profiler
+            // thread consuming this snapshot is not joined before that reclaim
+            // (see `ActorSnapshot::actor_type` and `lookup_dispatch_type_owned`).
+            let actor_type = lookup_dispatch_type_owned(a.dispatch);
 
             result.push(ActorSnapshot {
                 id: a.id,
@@ -1004,5 +1078,87 @@ mod tests {
             gone.is_none(),
             "dispatch ptr must be absent after unregister"
         );
+    }
+
+    unsafe extern "C-unwind" fn fake_dispatch_race(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _s: *mut std::ffi::c_void,
+        _m: i32,
+        _p: *mut std::ffi::c_void,
+        _n: usize,
+        _borrow_mode: i32,
+    ) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
+    }
+
+    /// Regression for the lookup-to-copy TOCTOU use-after-free:
+    /// `lookup_dispatch_type_by_ptr_owned` must copy the type name *under* the
+    /// `DISPATCH_TYPE_REGISTRY` lock, so a concurrent `clear_dispatch_registry`
+    /// (which `Box::from_raw`-frees each leaked `&'static str`) cannot free the
+    /// backing allocation between the lookup and the copy.
+    ///
+    /// The original fix owned the name in `ActorSnapshot` (closing the
+    /// *retained-snapshot-across-clear* dangle) but still copied via
+    /// `lookup_dispatch_type(d).to_owned()` — the `&'static str` was handed back
+    /// after `PoisonSafe::access` released the lock, so the `.to_owned()` raced
+    /// the reclaim. The owned helper closes that window by copying inside the
+    /// `access` closure.
+    ///
+    /// This hammers `lookup_dispatch_type_by_ptr_owned` from reader threads while
+    /// a writer thread register/clears the same key in a tight loop. Under
+    /// `AddressSanitizer` (`make asan`) a copy that read freed memory would be
+    /// reported as a heap-use-after-free; the owned-under-lock helper reads clean.
+    /// Every observed name is either the registered string or the `"Actor"`
+    /// fallback — never a torn or freed value.
+    #[test]
+    fn lookup_owned_is_safe_against_concurrent_clear() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        clear_dispatch_registry();
+
+        let key = fake_dispatch_race as *const () as usize;
+        let stop = Arc::new(AtomicBool::new(false));
+
+        // Writer: register then clear the same key in a tight loop. Each register
+        // leaks one `Box<str>`; each clear reclaims it. The readers race exactly
+        // the post-lookup copy against this reclaim.
+        let writer_stop = Arc::clone(&stop);
+        let writer = std::thread::spawn(move || {
+            while !writer_stop.load(Ordering::Relaxed) {
+                register_dispatch_type(Some(fake_dispatch_race), "RacedActor".to_owned());
+                clear_dispatch_registry();
+            }
+        });
+
+        // Readers: copy the name under the lock via the owned helper. Any value
+        // returned must be a valid, fully-formed string — either the registered
+        // name or the unregistered fallback, never freed bytes.
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                std::thread::spawn(move || {
+                    for _ in 0..20_000 {
+                        let name = lookup_dispatch_type_by_ptr_owned(key);
+                        assert!(
+                            name == "RacedActor" || name == "Actor",
+                            "owned lookup returned an unexpected value: {name:?}"
+                        );
+                    }
+                })
+            })
+            .collect();
+
+        for r in readers {
+            r.join().expect("reader thread panicked (likely a UAF)");
+        }
+        stop.store(true, Ordering::Relaxed);
+        writer.join().expect("writer thread panicked");
+
+        // Leave the registry empty for the next test.
+        clear_dispatch_registry();
     }
 }

@@ -1056,8 +1056,14 @@ pub fn drain_events_json() -> String {
                     crate::profiler::actor_registry::lookup_dispatch_for_actor_id(ev.actor_id)
                         .unwrap_or(0);
                 let type_id = dispatch_ptr as u64;
+                // Owned variant: the name is copied under DISPATCH_TYPE_REGISTRY's
+                // lock, so a concurrent `clear_dispatch_registry` cannot free the
+                // leaked backing allocation between lookup and copy (the borrowing
+                // variant releases the lock before returning — a TOCTOU UAF).
                 let type_name =
-                    crate::profiler::actor_registry::lookup_dispatch_type_by_ptr(dispatch_ptr);
+                    crate::profiler::actor_registry::lookup_dispatch_type_by_ptr_owned(
+                        dispatch_ptr,
+                    );
                 let hname = crate::profiler::actor_registry::handler_name_by_ptr(
                     dispatch_ptr,
                     ev.msg_type,
@@ -1065,7 +1071,7 @@ pub fn drain_events_json() -> String {
                 let actor_type = if type_name == "Actor" && type_id == 0 {
                     None
                 } else {
-                    Some(type_name.to_owned())
+                    Some(type_name)
                 };
                 (type_id, actor_type, hname)
             };

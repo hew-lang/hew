@@ -555,6 +555,12 @@ run_accept_expect_status "actor_counter_init" 42
 # send(10) + send(32) = 42; get() returns 42.
 run_accept_expect_status "actor_receive_fn_named_send" 42
 
+# Accept: a value-returning `receive fn send(...) -> T` invoked via
+# `await ref.send(...)` is a first-class *ask* — the awaited form consumes the
+# reply, so the HIR fire-and-forget gate must not block it. Doubler.send(21)
+# returns 42; `match await d.send(21)` yields Ok(42). Exit 42.
+run_accept_expect_status "actor_awaited_send_returns_value" 42
+
 # COEXIST: state-field spawn args alongside init() params. count=5, base=100 are
 # state fields passed at spawn; multiplier=2 is an init() param. init() runs
 # count = count * multiplier = 5*2 = 10. total() returns count + base = 110.

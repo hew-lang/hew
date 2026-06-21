@@ -25045,7 +25045,34 @@ fn scan_spanned_expr_for_actor_send(expr: &Expr, span: &Span, gate: &mut ActorSe
             scan_spanned_expr_for_actor_send(&duration.0, &duration.1, gate);
         }
         Expr::UnsafeBlock(b) => scan_block_for_actor_send(b, gate),
-        Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
+        Expr::Await(object) => {
+            // `await actor.send(...)` is a legitimate *ask*: the reply is
+            // consumed by the awaiting context, so the fire-and-forget
+            // "reply discarded" gate must not fire on a `.send()` that is the
+            // direct operand of an `await`. (The checker already routes a user
+            // `receive fn send` through normal ask dispatch — this keeps the
+            // HIR pre-pass in agreement.) Walk the receiver/args of the inner
+            // `.send()` for nested actor sends, but skip its leaf gate check.
+            // A bare, *unawaited* `.send()` to a non-unit handler still routes
+            // through the default arm below and trips the gate as before.
+            if let Expr::MethodCall {
+                receiver,
+                method,
+                args,
+            } = &object.0
+            {
+                if method == "send" {
+                    scan_spanned_expr_for_actor_send(&receiver.0, &receiver.1, gate);
+                    for arg in args {
+                        let (e, sp) = arg.expr();
+                        scan_spanned_expr_for_actor_send(e, sp, gate);
+                    }
+                    return;
+                }
+            }
+            scan_spanned_expr_for_actor_send(&object.0, &object.1, gate);
+        }
+        Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) => {
             scan_spanned_expr_for_actor_send(&object.0, &object.1, gate);
         }
         Expr::Index { object, index } => {

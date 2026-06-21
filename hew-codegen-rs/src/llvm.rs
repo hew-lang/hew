@@ -14821,6 +14821,20 @@ fn lower_wire_codec_instr<'ctx>(
             let out_len = builder
                 .build_alloca(size_ty, "wire_encode_out_len")
                 .llvm_ctx("wire encode out_len alloca")?;
+            // RC10: bracket the out-length scratch slot. Range is intra-block —
+            // the serialize thunk writes it synchronously through its address,
+            // the single load below reads it, then it is dead. The thunk does not
+            // retain the pointer and there is no suspend point between the alloca
+            // and the load, so the slot never crosses a suspend even when this
+            // codec lowering runs inside a coroutine body (CoroSplit only spills
+            // values live ACROSS a suspend). SAFE to bracket.
+            emit_lifetime_start(
+                ctx,
+                fn_ctx.llvm_mod,
+                builder,
+                out_len,
+                "wire_encode_out_len_lt_start",
+            )?;
             let ser_fn = get_or_declare_serialize_thunk(ctx, fn_ctx.llvm_mod, &key);
             let raw = builder
                 .build_call(
@@ -14839,6 +14853,14 @@ fn lower_wire_codec_instr<'ctx>(
                 .build_load(size_ty, out_len, "wire_encode_len")
                 .llvm_ctx("wire encode len load")?
                 .into_int_value();
+            // RC10: last read of the out-length slot; end its lifetime here.
+            emit_lifetime_end(
+                ctx,
+                fn_ctx.llvm_mod,
+                builder,
+                out_len,
+                "wire_encode_out_len_lt_end",
+            )?;
             // `hew_bytes_from_static_raw` takes a u32 length; narrow the usize
             // out-length to i32 (the BytesTriple length field is i32 — a wire
             // payload exceeding 4 GiB is not a supported shape).
@@ -14919,6 +14941,19 @@ fn lower_wire_codec_instr<'ctx>(
             let out_size = builder
                 .build_alloca(size_ty, "wire_decode_out_size")
                 .llvm_ctx("wire decode out_size alloca")?;
+            // RC10: bracket the out-size scratch slot. Range is intra-block — the
+            // deserialize thunk writes it synchronously through its address and
+            // codegen never reads it back (the struct width is statically known),
+            // so the slot is dead the instant the call returns. The thunk does not
+            // retain the pointer; no suspend point sits between the alloca and the
+            // call. SAFE to bracket.
+            emit_lifetime_start(
+                ctx,
+                fn_ctx.llvm_mod,
+                builder,
+                out_size,
+                "wire_decode_out_size_lt_start",
+            )?;
             let de_fn = get_or_declare_deserialize_thunk(ctx, fn_ctx.llvm_mod, &key);
             let value_ptr = builder
                 .build_call(
@@ -14933,6 +14968,15 @@ fn lower_wire_codec_instr<'ctx>(
                     CodegenError::FailClosed("wire deserialize thunk returned void".into())
                 })?
                 .into_pointer_value();
+            // RC10: the deserialize call was the slot's only use; end its lifetime
+            // here, before the null-branch control flow (which never touches it).
+            emit_lifetime_end(
+                ctx,
+                fn_ctx.llvm_mod,
+                builder,
+                out_size,
+                "wire_decode_out_size_lt_end",
+            )?;
             // FAIL CLOSED on malformed/adversarial input. The deserialize thunk
             // returns null when the bytes are not a valid encoding of the type
             // (after dropping its partial reconstruction and freeing the malloc
@@ -19772,6 +19816,87 @@ fn build_entry_alloca<'ctx>(
         None => tmp.position_at_end(entry),
     }
     tmp.build_alloca(ty, name).llvm_ctx("entry alloca")
+}
+
+/// Resolve the `@llvm.lifetime.start.p0` / `@llvm.lifetime.end.p0` intrinsic
+/// declaration for the opaque-pointer address space (`p0`).
+///
+/// `llvm.lifetime.start`/`end` are overloaded on the pointer operand's type, so
+/// (like `llvm.coro.size` in `coro.rs`) they resolve via the base name
+/// `llvm.lifetime.start` / `llvm.lifetime.end` plus the `[ptr]` overload type
+/// arg — the `.p0` suffix in the mangled declaration name is what
+/// `get_declaration` PRODUCES, not what `Intrinsic::find` consumes. Fails closed
+/// if the LLVM build does not expose the intrinsic (the marker is an
+/// optimisation hint; a build without it is a build error, never a silent skip).
+///
+/// SIGNATURE (LLVM 22 — confirmed by the RC10 Stage 0 spike): the modern
+/// intrinsic is `void (ptr captures(none))` — a SINGLE pointer operand. The
+/// historical explicit `i64 size` first operand was removed upstream (LLVM
+/// derives the slot size from the pointed-to alloca); a 2-operand call against
+/// the 1-operand declaration is a verifier error in this build. The plan's
+/// stated `(i64, ptr)` shape predates that removal — the spike is exactly why
+/// RC10 R3 required confirming the signature before any production edit.
+fn lifetime_intrinsic<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    end: bool,
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let name = if end {
+        "llvm.lifetime.end"
+    } else {
+        "llvm.lifetime.start"
+    };
+    let ptr_ty: BasicTypeEnum<'ctx> = ctx.ptr_type(AddressSpace::default()).into();
+    Intrinsic::find(name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!("{name} intrinsic not in this LLVM build"))
+        })?
+        .get_declaration(llvm_mod, &[ptr_ty])
+        .ok_or_else(|| CodegenError::FailClosed(format!("{name} declaration failed")))
+}
+
+/// Emit `@llvm.lifetime.start.p0(ptr slot)` at the builder's current position,
+/// marking the start of `slot`'s live range. The matched [`emit_lifetime_end`]
+/// MUST dominate every block that can be reached after the value the slot holds
+/// is last read.
+///
+/// SAFETY CONTRACT (RC10 R1): the caller MUST guarantee the slot's entire live
+/// range is intra-block with no suspend crossing and that the slot's address
+/// does not escape to a call that retains it past the bracket. An over-eager
+/// `lifetime.end` on a slot that a later (post-suspend) read still consumes is a
+/// use-after-free the optimizer weaponizes under `-O2` — strictly worse than no
+/// marker. Never bracket a slot allocated in a coroutine function whose range
+/// might span a `Terminator::Suspend`/`Yield`; let LLVM's CoroSplit own those
+/// frame slots.
+pub(crate) fn emit_lifetime_start<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    slot: PointerValue<'ctx>,
+    label: &str,
+) -> CodegenResult<()> {
+    let intrinsic = lifetime_intrinsic(ctx, llvm_mod, false)?;
+    builder
+        .build_call(intrinsic, &[slot.into()], label)
+        .llvm_ctx("llvm.lifetime.start call")?;
+    Ok(())
+}
+
+/// Emit `@llvm.lifetime.end.p0(ptr slot)` at the builder's current position,
+/// marking the end of `slot`'s live range. See [`emit_lifetime_start`]'s SAFETY
+/// CONTRACT — a premature `end` is a UAF the stack colourer exploits.
+pub(crate) fn emit_lifetime_end<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    slot: PointerValue<'ctx>,
+    label: &str,
+) -> CodegenResult<()> {
+    let intrinsic = lifetime_intrinsic(ctx, llvm_mod, true)?;
+    builder
+        .build_call(intrinsic, &[slot.into()], label)
+        .llvm_ctx("llvm.lifetime.end call")?;
+    Ok(())
 }
 
 /// P5-RX Stage 2a (A625): emit the M-COW copy-on-share retain for a borrowed
@@ -42865,6 +42990,57 @@ fn main() {
             std::mem::size_of::<HewChildSpec>(),
             "HewChildSpec total size mismatch between the LLVM mirror and the Rust struct"
         );
+    }
+
+    /// RC10 Stage 1: the `emit_lifetime_start`/`emit_lifetime_end` helpers emit
+    /// the canonical opaque-pointer `@llvm.lifetime.{start,end}.p0(ptr %slot)`
+    /// shape (LLVM 22 single-operand signature — the explicit size operand was
+    /// removed upstream), and the bracketed module passes `Module::verify()`.
+    /// This is the mechanism gate — it proves the intrinsic resolves and the call
+    /// shape is verifier-clean independent of where the markers are later applied.
+    #[test]
+    fn lifetime_markers_emit_canonical_shape_and_verify() {
+        let ctx = Context::create();
+        let module = ctx.create_module("rc10_lifetime");
+        let builder = ctx.create_builder();
+
+        // void @probe()
+        let fn_ty = ctx.void_type().fn_type(&[], false);
+        let f = module.add_function("probe", fn_ty, None);
+        let entry = ctx.append_basic_block(f, "entry");
+        builder.position_at_end(entry);
+
+        // A 16-byte aggregate slot: { i64, i64 }.
+        let slot_ty = ctx.struct_type(&[ctx.i64_type().into(), ctx.i64_type().into()], false);
+        let slot = builder.build_alloca(slot_ty, "probe_slot").expect("alloca");
+
+        emit_lifetime_start(&ctx, &module, &builder, slot, "lt.start")
+            .expect("emit lifetime.start");
+        // A use between the brackets so the slot is genuinely live.
+        builder
+            .build_store(slot, slot_ty.const_zero())
+            .expect("store into bracketed slot");
+        emit_lifetime_end(&ctx, &module, &builder, slot, "lt.end").expect("emit lifetime.end");
+        builder.build_return(None).expect("ret void");
+
+        let ir = module.print_to_string().to_string();
+        assert!(
+            ir.contains("call void @llvm.lifetime.start.p0(ptr %probe_slot)"),
+            "expected single-operand start marker on the slot:\n{ir}"
+        );
+        assert!(
+            ir.contains("call void @llvm.lifetime.end.p0(ptr %probe_slot)"),
+            "expected single-operand end marker on the slot:\n{ir}"
+        );
+        // The declared intrinsics carry the opaque-pointer overload suffix.
+        assert!(
+            ir.contains("declare void @llvm.lifetime.start.p0(ptr")
+                && ir.contains("declare void @llvm.lifetime.end.p0(ptr"),
+            "expected opaque-pointer intrinsic declarations:\n{ir}"
+        );
+        module
+            .verify()
+            .unwrap_or_else(|e| panic!("bracketed module failed verify: {e}\n\nIR:\n{ir}"));
     }
 }
 

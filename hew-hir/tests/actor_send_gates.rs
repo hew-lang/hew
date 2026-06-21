@@ -151,6 +151,78 @@ fn actor_ask_non_unit_handler_accepted() {
 }
 
 #[test]
+fn awaited_send_non_unit_handler_accepted() {
+    // A user `receive fn send(...) -> T` invoked as an *ask* via
+    // `await ref.send(...)` consumes the reply, so the fire-and-forget
+    // "reply discarded" gate must not fire. Prior to this fix the HIR
+    // pre-pass matched `.send()` by method name regardless of the enclosing
+    // `await`, blocking the awaited ask from lowering while the checker
+    // (correctly) classified it as an ask. Checker and HIR must agree: a
+    // value-returning `receive fn send` is a first-class ask under `await`.
+    let output = lower(
+        r"
+        actor Doubler {
+            receive fn send(n: i64) -> i64 {
+                n * 2
+            }
+        }
+
+        fn main() -> i64 {
+            let d = spawn Doubler;
+            match await d.send(21) {
+                Ok(v) => v,
+                Err(_) => 0,
+            }
+        }
+        ",
+    );
+    assert!(
+        !has_actor_send_diag(&output),
+        "awaited `.send()` ask to a non-unit handler must not trigger \
+         ActorSendRequiresUnitHandler; got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn unawaited_send_non_unit_handler_rejected() {
+    // The mirror of the awaited case: a *bare*, unawaited `ref.send(...)` to a
+    // value-returning `receive fn send` discards the reply. That must still be
+    // rejected — the awaited-ask carve-out only applies when the `.send()` is
+    // the direct operand of an `await`. Here the checker owns the verdict
+    // (`actor ask ... requires await`); this test pins that the HIR gate does
+    // not silently accept the discarded-reply form.
+    let parsed = parser::parse(
+        r"
+        actor Doubler {
+            receive fn send(n: i64) -> i64 {
+                n * 2
+            }
+        }
+
+        fn main() -> i64 {
+            let d = spawn Doubler;
+            d.send(21);
+            0
+        }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tco = checker.check_program(&parsed.program);
+    // The checker rejects the discarded-reply ask before HIR runs; the verdict
+    // lives at the type-check layer, which is the agreed owner.
+    assert!(
+        !tco.errors.is_empty(),
+        "bare `.send()` to a non-unit handler must be rejected (reply discarded)"
+    );
+}
+
+#[test]
 fn actor_send_unknown_handler_skipped() {
     // Defense-in-depth: lambda-actor handles surface as `Duplex<Msg, Reply>`
     // (per `tests/vertical-slice/accept/lambda_method_send.hew`), not as

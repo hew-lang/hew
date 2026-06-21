@@ -5945,7 +5945,29 @@ impl Checker {
             (resolved, _) if resolved.as_local_pid().is_some() => {
                 // `.send(payload)` is the legacy fire-and-forget surface; enforce
                 // the Send bound on the payload.
-                if method == "send" {
+                //
+                // If the actor declares a `receive fn send(...)`, that user-defined
+                // handler takes precedence — skip the legacy early-return and fall
+                // through to the receive-fn dispatch path below. The builtin fire-
+                // and-forget is only the fallback when no such handler exists.
+                let has_user_send_handler = if method == "send" {
+                    resolved.as_local_pid().and_then(|inner| {
+                        if let Ty::Named { name, .. } = inner {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    }).is_some_and(|actor_name| {
+                        self.fn_sigs.contains_key(&format!("{actor_name}::send"))
+                            || matches!(
+                                self.resolve_bare_actor_identity(&actor_name),
+                                BareActorResolution::Resolved(ref id) if self.fn_sigs.contains_key(&format!("{id}::send"))
+                            )
+                    })
+                } else {
+                    false
+                };
+                if method == "send" && !has_user_send_handler {
                     for arg in args {
                         let (expr, sp) = arg.expr();
                         let ty = self.synthesize(expr, sp);
@@ -6157,7 +6179,22 @@ impl Checker {
             // ActorRef methods
             (resolved, _) if resolved.as_actor_ref().is_some() => {
                 let inner = resolved.as_actor_ref().unwrap();
-                if method == "send" {
+                // A user-defined `receive fn send(...)` takes precedence over the
+                // builtin fire-and-forget path. Check for such a handler before
+                // routing to the legacy early-return; fall through to the receive-fn
+                // dispatch block when one exists.
+                let has_user_send_handler = method == "send" && {
+                    if let Ty::Named {
+                        name: ref actor_name,
+                        ..
+                    } = inner
+                    {
+                        self.fn_sigs.contains_key(&format!("{actor_name}::send"))
+                    } else {
+                        false
+                    }
+                };
+                if method == "send" && !has_user_send_handler {
                     for arg in args {
                         let (expr, sp) = arg.expr();
                         let ty = self.synthesize(expr, sp);

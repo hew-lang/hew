@@ -1,0 +1,16 @@
+// Reject: `ref.send(msg)` on a named actor that has no `receive fn send`
+// handler is not yet supported. The builtin fire-and-forget path on LocalPid
+// is NYI. This fixture confirms the compiler fails closed with a clear
+// diagnostic rather than silently misbehaving.
+actor Adder {
+    var count: i64;
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+}
+
+fn main() -> i64 {
+    let a = spawn Adder(count: 0);
+    a.send(10);
+    0
+}

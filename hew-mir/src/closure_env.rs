@@ -510,7 +510,7 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
             }
         }
         HirExprKind::Loop { body, .. } => walk_block_for_suspend(body, found),
-        HirExprKind::Break { value, .. } => {
+        HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 walk_expr_for_suspend(value, found);
             }
@@ -553,6 +553,21 @@ fn walk_stmt_for_suspend(stmt: &hew_hir::HirStmt, found: &mut bool) {
             walk_expr_for_suspend(value, found);
         }
         HirStmtKind::Defer { body, .. } => walk_expr_for_suspend(body, found),
+        HirStmtKind::LetElse {
+            scrutinee,
+            success_prelude,
+            else_body,
+            ..
+        } => {
+            walk_expr_for_suspend(scrutinee, found);
+            for prelude_stmt in success_prelude {
+                walk_stmt_for_suspend(prelude_stmt, found);
+                if *found {
+                    return;
+                }
+            }
+            walk_block_for_suspend(else_body, found);
+        }
         HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
     }
 }

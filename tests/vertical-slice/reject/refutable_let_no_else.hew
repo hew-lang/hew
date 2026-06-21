@@ -1,0 +1,19 @@
+//! Reject: a refutable pattern in a plain `let` with no `else` clause.
+//!
+//! A plain `let` has no failure arm, so a refutable enum-variant pattern is
+//! rejected. With let-else now available, the reworded diagnostic suggests
+//! adding an `else { … }` clause (it must diverge) or using `if let`/`match`.
+
+fn validate(s: string) -> Result<i64, string> {
+    if s == "good" { Ok(1) } else { Err("bad") }
+}
+
+fn parse_one(s: string) -> i64 {
+    let Ok(n) = validate(s);
+    n
+}
+
+fn main() {
+    let v = parse_one("good");
+    println(f"{v}");
+}

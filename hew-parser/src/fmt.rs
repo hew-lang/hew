@@ -2126,7 +2126,8 @@ impl<'a> Formatter<'a> {
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
             | Expr::This
-            | Expr::Yield(None) => true,
+            | Expr::Yield(None)
+            | Expr::Return(None) => true,
             Expr::Tuple(exprs) | Expr::Array(exprs) => exprs
                 .iter()
                 .all(|(expr, _)| Self::can_format_expr_inline(expr)),
@@ -2140,7 +2141,8 @@ impl<'a> Formatter<'a> {
             | Expr::Clone(operand)
             | Expr::PostfixTry(operand)
             | Expr::Await(operand)
-            | Expr::Yield(Some(operand)) => Self::can_format_expr_inline(&operand.0),
+            | Expr::Yield(Some(operand))
+            | Expr::Return(Some(operand)) => Self::can_format_expr_inline(&operand.0),
             Expr::Binary { left, right, .. }
             | Expr::Is {
                 lhs: left,
@@ -2221,7 +2223,12 @@ impl<'a> Formatter<'a> {
 
     fn format_stmt_inline(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let { pattern, ty, value } => {
+            Stmt::Let {
+                pattern,
+                ty,
+                value,
+                else_block,
+            } => {
                 self.write("let ");
                 self.format_pattern(&pattern.0);
                 if let Some(ty) = ty {
@@ -2231,6 +2238,10 @@ impl<'a> Formatter<'a> {
                 if let Some((expr, _)) = value {
                     self.write(" = ");
                     self.format_expr(expr);
+                }
+                if let Some(else_block) = else_block {
+                    self.write(" else ");
+                    self.format_block(else_block, self.source.len());
                 }
                 self.write(";");
             }
@@ -2311,7 +2322,12 @@ impl<'a> Formatter<'a> {
     #[expect(clippy::too_many_lines, reason = "match on all Stmt variants")]
     fn format_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let { pattern, ty, value } => {
+            Stmt::Let {
+                pattern,
+                ty,
+                value,
+                else_block,
+            } => {
                 self.write_indent();
                 self.write("let ");
                 self.format_pattern(&pattern.0);
@@ -2322,6 +2338,10 @@ impl<'a> Formatter<'a> {
                 if let Some(val) = value {
                     self.write(" = ");
                     self.format_expr(&val.0);
+                }
+                if let Some(else_block) = else_block {
+                    self.write(" else ");
+                    self.format_block(else_block, self.source.len());
                 }
                 self.write(";\n");
             }
@@ -3062,6 +3082,13 @@ impl<'a> Formatter<'a> {
             }
             Expr::Yield(val) => {
                 self.write("yield");
+                if let Some(val) = val {
+                    self.write(" ");
+                    self.format_expr(&val.0);
+                }
+            }
+            Expr::Return(val) => {
+                self.write("return");
                 if let Some(val) = val {
                     self.write(" ");
                     self.format_expr(&val.0);

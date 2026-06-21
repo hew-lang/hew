@@ -9,7 +9,7 @@
 
 use std::fmt::Write as _;
 
-use crate::node::{HirBlock, HirExpr, HirExprKind, HirItem, HirModule, HirStmtKind};
+use crate::node::{HirBlock, HirExpr, HirExprKind, HirItem, HirModule, HirStmt, HirStmtKind};
 
 #[must_use]
 #[allow(
@@ -71,6 +71,20 @@ pub fn dump_hir(module: &HirModule) -> String {
                         HirStmtKind::Defer { body, .. } => {
                             writeln!(out, "  defer").expect("write to string");
                             dump_expr(&mut out, body, 4);
+                        }
+                        HirStmtKind::LetElse {
+                            scrutinee,
+                            bindings,
+                            else_body,
+                            ..
+                        } => {
+                            let names: Vec<&str> =
+                                bindings.iter().map(|b| b.name.as_str()).collect();
+                            writeln!(out, "  let-else bind=[{}]", names.join(", "))
+                                .expect("write to string");
+                            dump_expr(&mut out, scrutinee, 4);
+                            writeln!(out, "  else").expect("write to string");
+                            dump_block(&mut out, else_body, 4);
                         }
                     }
                 }
@@ -336,11 +350,49 @@ fn dump_block(out: &mut String, block: &HirBlock, indent: usize) {
                 writeln!(out, "{pad}defer").expect("write to string");
                 dump_expr(out, body, indent + 2);
             }
+            HirStmtKind::LetElse {
+                scrutinee,
+                bindings,
+                success_prelude,
+                else_body,
+                ..
+            } => {
+                let names: Vec<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
+                writeln!(out, "{pad}let-else bind=[{}]", names.join(", "))
+                    .expect("write to string");
+                dump_expr(out, scrutinee, indent + 2);
+                if !success_prelude.is_empty() {
+                    writeln!(out, "{pad}success-prelude").expect("write to string");
+                    dump_stmts(out, success_prelude, indent + 2);
+                }
+                writeln!(out, "{pad}else").expect("write to string");
+                dump_block(out, else_body, indent + 2);
+            }
         }
     }
     if let Some(tail) = &block.tail {
         writeln!(out, "{pad}tail").expect("write to string");
         dump_expr(out, tail, indent + 2);
+    }
+}
+
+/// Dump a flat list of statements (the let-else success prelude) by delegating
+/// each to the same per-statement rendering used inside a block. The prelude
+/// holds only `HirStmtKind::Let` projections, so a minimal renderer suffices.
+fn dump_stmts(out: &mut String, stmts: &[HirStmt], indent: usize) {
+    let pad = " ".repeat(indent);
+    for stmt in stmts {
+        match &stmt.kind {
+            HirStmtKind::Let(binding, value) => {
+                writeln!(out, "{pad}let {}", binding.name).expect("write to string");
+                if let Some(value) = value {
+                    dump_expr(out, value, indent + 2);
+                }
+            }
+            other => {
+                writeln!(out, "{pad}{other:?}").expect("write to string");
+            }
+        }
     }
 }
 
@@ -557,6 +609,19 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                         writeln!(out, "{pad}    defer").expect("write to string");
                         dump_expr(out, body, indent + 6);
                     }
+                    HirStmtKind::LetElse {
+                        scrutinee,
+                        bindings,
+                        else_body,
+                        ..
+                    } => {
+                        let names: Vec<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
+                        writeln!(out, "{pad}    let-else bind=[{}]", names.join(", "))
+                            .expect("write to string");
+                        dump_expr(out, scrutinee, indent + 6);
+                        writeln!(out, "{pad}    else").expect("write to string");
+                        dump_block(out, else_body, indent + 6);
+                    }
                 }
             }
         }
@@ -608,6 +673,19 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                         writeln!(out, "{pad}    defer").expect("write to string");
                         dump_expr(out, body, indent + 6);
                     }
+                    HirStmtKind::LetElse {
+                        scrutinee,
+                        bindings,
+                        else_body,
+                        ..
+                    } => {
+                        let names: Vec<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
+                        writeln!(out, "{pad}    let-else bind=[{}]", names.join(", "))
+                            .expect("write to string");
+                        dump_expr(out, scrutinee, indent + 6);
+                        writeln!(out, "{pad}    else").expect("write to string");
+                        dump_block(out, else_body, indent + 6);
+                    }
                 }
             }
         }
@@ -645,6 +723,19 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                     HirStmtKind::Defer { body, .. } => {
                         writeln!(out, "{pad}    defer").expect("write to string");
                         dump_expr(out, body, indent + 6);
+                    }
+                    HirStmtKind::LetElse {
+                        scrutinee,
+                        bindings,
+                        else_body,
+                        ..
+                    } => {
+                        let names: Vec<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
+                        writeln!(out, "{pad}    let-else bind=[{}]", names.join(", "))
+                            .expect("write to string");
+                        dump_expr(out, scrutinee, indent + 6);
+                        writeln!(out, "{pad}    else").expect("write to string");
+                        dump_block(out, else_body, indent + 6);
                     }
                 }
             }
@@ -1223,6 +1314,12 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
         }
         HirExprKind::Break { label, value } => {
             writeln!(out, "{pad}  break label={label:?}").expect("write to string");
+            if let Some(value) = value {
+                dump_expr(out, value, indent + 4);
+            }
+        }
+        HirExprKind::Return { value } => {
+            writeln!(out, "{pad}  return").expect("write to string");
             if let Some(value) = value {
                 dump_expr(out, value, indent + 4);
             }

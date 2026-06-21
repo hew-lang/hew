@@ -2502,3 +2502,94 @@ fn lower_escaped_string_literal_carries_decoded_bytes() {
         "Instr::StringLit bytes must carry the decoded byte, not the escape notation"
     );
 }
+
+/// Run a source through the full checker + HIR lowering + HIR verifier, then
+/// MIR-lower it, asserting NO diagnostic fires at any stage. Used to pin
+/// error-prop lowerings that previously typechecked cleanly but failed closed
+/// downstream (HIR verify / MIR lowering).
+fn lower_source_checked_verified(src: &str) -> hew_mir::IrPipeline {
+    let parsed = hew_parser::parse(src);
+    assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
+    assert!(
+        tc_output.errors.is_empty(),
+        "typecheck: {:?}",
+        tc_output.errors
+    );
+    let output = lower_program(
+        &parsed.program,
+        &tc_output,
+        &ResolutionCtx,
+        hew_hir::TargetArch::host(),
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "hir lower: {:?}",
+        output.diagnostics
+    );
+    let verify = verify_hir(&output.module);
+    assert!(verify.is_empty(), "hir verify: {verify:?}");
+    let pipeline = lower_hir_module(&output.module);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "mir lower: {:?}",
+        pipeline.diagnostics
+    );
+    pipeline
+}
+
+#[test]
+fn let_else_nested_tuple_payload_escapes_leaf_binders() {
+    // `let Ok((n, s)) = e else { return … };` must destructure the tuple and
+    // bind BOTH `n` and `s` into the enclosing scope. Pre-fix the leaf binders
+    // were dropped, so the rest of the block referenced unbound names and the
+    // HIR verifier rejected them with `identifier has no binding`. This pins
+    // the whole pipeline staying diagnostic-free.
+    lower_source_checked_verified(
+        r#"
+        fn make_pair(good: bool) -> Result<(i64, string), string> {
+            if good { Ok((7, "p")) } else { Err("no") }
+        }
+        fn parse(good: bool) -> Result<i64, string> {
+            let Ok((n, s)) = make_pair(good) else { return Err("fallback") };
+            let _ = s;
+            Ok(n + 35)
+        }
+        fn main() { let _ = parse(true); }
+        "#,
+    );
+}
+
+#[test]
+fn unannotated_let_rhs_if_with_return_branch_infers_value_type() {
+    // An unannotated `let x = if c { v } else { return … }` must carry the
+    // value branch's type (the diverging else is `Never`, not `Unit`), so a
+    // later `x + 1` lowers as integer arithmetic. Pre-fix the else block typed
+    // `Unit`, the binding mis-typed, and `x + 1` failed closed at MIR with
+    // "binary + on non-integer type".
+    lower_source_checked_verified(
+        r#"
+        fn adjust(n: i64) -> Result<i64, string> {
+            let adjusted = if n > 0 { n } else { return Err("non-positive") };
+            Ok(adjusted + 1)
+        }
+        fn main() { let _ = adjust(1); }
+        "#,
+    );
+}
+
+#[test]
+fn return_in_binary_operand_position_infers_value_type() {
+    // The same Never-branch inference must hold when the `if`/`else` sits
+    // directly in a binary-operand position: `ten + if c { … } else { return … }`.
+    lower_source_checked_verified(
+        r#"
+        fn combine(n: i64) -> Result<i64, string> {
+            let ten = 10;
+            Ok(ten + if n == 1 { n + 1 } else { return Err("bad-arg") })
+        }
+        fn main() { let _ = combine(1); }
+        "#,
+    );
+}

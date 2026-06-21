@@ -1031,6 +1031,48 @@ pub struct HirStmt {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirStmtKind {
     Let(HirBinding, Option<HirExpr>),
+    /// `let Pat = scrutinee else { <divergent block> };` — the let-else
+    /// bind-or-diverge primitive.
+    ///
+    /// Unlike `HirExprKind::IfLet` (whose payload bindings are scoped to the
+    /// then-body), a let-else's `bindings` ESCAPE into the enclosing scope:
+    /// after the statement, the Ok-path binders are live for the rest of the
+    /// enclosing block. MIR lowers this as: evaluate the scrutinee, test the
+    /// variant tag, and branch — on a match, bind the payload fields into the
+    /// enclosing-scope `binding_locals` (and do NOT restore them, so they
+    /// persist); on a mismatch, run `else_body`, which is GUARANTEED divergent
+    /// (the type checker enforced `Ty::Never`), so control never falls through
+    /// to an unbound binder.
+    LetElse {
+        /// The matched expression. Its resolved type is the enum being
+        /// destructured.
+        scrutinee: Box<HirExpr>,
+        /// Zero-based variant index of the success-path constructor (e.g. the
+        /// index of `Ok` in `Result`).
+        variant_idx: u32,
+        /// Payload bindings introduced by the success-path pattern. These are
+        /// allocated in the ENCLOSING scope and escape the statement. For an
+        /// aggregate payload field (e.g. the tuple in `Ok((n, s))`) this holds
+        /// a synthetic `__payload_*` temp binding for the whole field; the
+        /// nested leaf binders (`n`, `s`) are produced by `success_prelude`.
+        bindings: Vec<HirMatchArmBinding>,
+        /// Destructure statements for aggregate payload subpatterns
+        /// (`Ok((n, s))`, `Ok(Point { x, y })`). They run on the SUCCESS path,
+        /// after the top-level payload fields are bound and before the
+        /// continuation, projecting the synthetic `__payload_*` temps into
+        /// their leaf binders. Each is a plain `HirStmtKind::Let`; the leaf
+        /// binders escape into the enclosing scope like the top-level
+        /// `bindings`. Empty when no payload field is an aggregate.
+        success_prelude: Vec<HirStmt>,
+        /// Nested constructor checks on payload fields, evaluated after the
+        /// outer tag check and before the bindings are made live. A failed
+        /// nested check routes to `else_body`, same as a top-level tag
+        /// mismatch.
+        payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
+        /// The divergent else block, run when the pattern fails to match. The
+        /// checker has proven it has type `Ty::Never`.
+        else_body: HirBlock,
+    },
     Assign {
         target: HirExpr,
         value: Box<HirExpr>,
@@ -2055,6 +2097,17 @@ pub enum HirExprKind {
     /// follow-up.
     Break {
         label: Option<String>,
+        value: Option<Box<HirExpr>>,
+    },
+    /// `return [expr]` in expression position — a divergent (`Never`-typed)
+    /// early exit from the enclosing function. Sibling of `Break`: a Never-typed
+    /// leaf that MIR seals with `Terminator::Return` (running deferred cleanup
+    /// first), then starts a fresh dead cursor block for any following code.
+    ///
+    /// `value` carries the operand of `return <value>`; `None` is a value-less
+    /// `return` (unit return). The checker has already type-checked the operand
+    /// against the function's declared return type and synthesized `Never`.
+    Return {
         value: Option<Box<HirExpr>>,
     },
     /// `continue;` / `continue @label;` — skip to the next iteration of the

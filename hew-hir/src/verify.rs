@@ -169,6 +169,34 @@ impl Verifier {
                 HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => self.expr(expr),
                 HirStmtKind::Return(None) => {}
                 HirStmtKind::Defer { body, .. } => self.expr(body),
+                HirStmtKind::LetElse {
+                    scrutinee,
+                    bindings,
+                    success_prelude,
+                    else_body,
+                    ..
+                } => {
+                    self.expr(scrutinee);
+                    // The Ok-path bindings escape into the enclosing scope —
+                    // register them here so later references resolve.
+                    for binding in bindings {
+                        self.binding(binding.binding, scrutinee.span.clone());
+                    }
+                    // Aggregate payload destructure (e.g. `Ok((n, s))`): the
+                    // prelude's `Let` statements introduce the leaf binders
+                    // (`n`, `s`) that also escape into the enclosing scope.
+                    // Register them and verify their projection values so a
+                    // later reference resolves and is not flagged unresolved.
+                    for prelude_stmt in success_prelude {
+                        if let HirStmtKind::Let(binding, value) = &prelude_stmt.kind {
+                            self.binding(binding.id, binding.span.clone());
+                            if let Some(value) = value {
+                                self.expr(value);
+                            }
+                        }
+                    }
+                    self.block(else_body);
+                }
             }
         }
         if let Some(tail) = &block.tail {
@@ -712,7 +740,7 @@ impl Verifier {
                     self.block(eb);
                 }
             }
-            HirExprKind::Break { value, .. } => {
+            HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
                 if let Some(value) = value {
                     self.expr(value);
                 }

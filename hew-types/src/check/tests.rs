@@ -11596,6 +11596,7 @@ fn let_bound_literal_coercion() {
         pattern: (Pattern::Identifier("n".to_string()), 4..5),
         ty: None,
         value: Some(make_int_literal(5, 8..9)),
+        else_block: None,
     };
     checker.check_stmt(&let_stmt, &(0..10));
     // Now check: let x: i32 = n
@@ -11617,6 +11618,7 @@ fn let_bound_literal_overflow() {
         pattern: (Pattern::Identifier("n".to_string()), 4..5),
         ty: None,
         value: Some(make_int_literal(2_147_483_648, 8..18)),
+        else_block: None,
     };
     checker.check_stmt(&let_stmt, &(0..19));
     // Now check: let x: i32 = n — should fail with range error
@@ -11647,6 +11649,7 @@ fn derived_intliteral_identifier_coerces_without_const_values() {
             },
             8..13,
         )),
+        else_block: None,
     };
     checker.check_stmt(&source_stmt, &(0..14));
 
@@ -11665,6 +11668,7 @@ fn derived_intliteral_identifier_coerces_without_const_values() {
             23..26,
         )),
         value: Some((Expr::Identifier("n".to_string()), 29..30)),
+        else_block: None,
     };
     checker.check_stmt(&target_stmt, &(20..30));
 
@@ -11688,6 +11692,7 @@ fn negated_literal_let_binding_coerces_signed() {
             },
             8..10,
         )),
+        else_block: None,
     };
     checker.check_stmt(&let_stmt, &(0..11));
 
@@ -11791,6 +11796,7 @@ fn const_explicit_width_assigned_to_wider_type_is_rejected() {
             14..17,
         )),
         value: Some((Expr::Identifier("N".to_string()), 20..21)),
+        else_block: None,
     };
     checker.check_stmt(&target_stmt, &(10..21));
 
@@ -15491,6 +15497,7 @@ mod non_root_module_inference_scope {
             pattern: (Pattern::Identifier("y".to_string()), 14..15),
             ty: None,
             value: Some((cast_expr, 18..26)),
+            else_block: None,
         };
         let fn_decl = FnDecl {
             attributes: vec![],
@@ -15567,6 +15574,7 @@ mod non_root_module_inference_scope {
             pattern: (Pattern::Identifier("y".to_string()), 14..15),
             ty: Some((TypeExpr::Infer, 17..18)),
             value: Some(make_int_literal(42, 21..23)),
+            else_block: None,
         };
         let fn_decl = FnDecl {
             attributes: vec![],
@@ -16019,6 +16027,7 @@ mod non_root_module_inference_scope {
             pattern: (Pattern::Identifier("f".to_string()), 10..11),
             ty: None,
             value: Some((lambda_expr, 14..21)),
+            else_block: None,
         };
         let fn_decl = FnDecl {
             attributes: vec![],
@@ -16371,6 +16380,7 @@ fn module_graph_body_private_local_type_is_available() {
                         },
                         0..10,
                     )),
+                    else_block: None,
                 },
                 0..10,
             )],
@@ -16920,6 +16930,7 @@ mod module_body_diagnostic_envelope {
             pattern: (Pattern::Identifier("y".to_string()), 14..15),
             ty: None,
             value: Some((cast_expr, 18..27)),
+            else_block: None,
         };
         let fn_decl = FnDecl {
             attributes: vec![],
@@ -18224,6 +18235,7 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
                     }),
                     14..16,
                 )),
+                else_block: None,
             },
             10..16,
         )];
@@ -27204,6 +27216,278 @@ mod every_attribute {
             output.errors.is_empty(),
             "irrefutable record let must emit zero checker errors; got: {:#?}",
             output.errors
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // let-else: refutable pattern admitted with a divergent `else` clause
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn let_else_with_diverging_else_no_refutable_error() {
+        // `let Ok(n) = r else { return … };` — a refutable Ok-pattern is
+        // admitted when an else clause is present and the else diverges.
+        let output = check_source(
+            "fn f(r: Result<i64, string>) -> Result<i64, string> {              let Ok(n) = r else { return Err(\"bad\") }; Ok(n) }",
+        );
+        let refutable: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::RefutableLetPattern { .. }))
+            .collect();
+        assert!(
+            refutable.is_empty(),
+            "let-else must NOT emit RefutableLetPattern; got: {:#?}",
+            output.errors
+        );
+        let diverge: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::LetElseDoesNotDiverge))
+            .collect();
+        assert!(
+            diverge.is_empty(),
+            "a diverging else must not trip LetElseDoesNotDiverge; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn let_else_ok_binding_escapes_to_enclosing_scope() {
+        // The Ok-path binder `n` must be visible in the rest of the enclosing
+        // block AFTER the let-else statement. If it did not escape, the use of
+        // `n` would cascade into UndefinedVariable.
+        let output = check_source(
+            "fn f(r: Result<i64, string>) -> Result<i64, string> {              let Ok(n) = r else { return Err(\"bad\") }; Ok(n + 1) }",
+        );
+        let unresolved: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::UndefinedVariable))
+            .collect();
+        assert!(
+            unresolved.is_empty(),
+            "let-else Ok binder must escape to the enclosing scope (no UndefinedVariable); \
+             got: {unresolved:#?}"
+        );
+        assert!(
+            output.errors.is_empty(),
+            "a well-formed let-else must type-check cleanly; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn let_else_non_diverging_else_emits_error() {
+        // `let Ok(n) = r else { 0 };` — the else block produces a value instead
+        // of diverging. It must emit exactly one LetElseDoesNotDiverge error.
+        let output =
+            check_source("fn f(r: Result<i64, string>) -> i64 { let Ok(n) = r else { 0 }; n }");
+        let diverge: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::LetElseDoesNotDiverge))
+            .collect();
+        assert_eq!(
+            diverge.len(),
+            1,
+            "a non-diverging let-else else must emit exactly one LetElseDoesNotDiverge; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn let_else_else_does_not_see_ok_binder() {
+        // The else block runs on the FAILURE path, where the Ok binder is not
+        // bound. Referencing `n` inside the else must be an UndefinedVariable.
+        let output = check_source(
+            "fn f(r: Result<i64, string>) -> i64 { let Ok(n) = r else { return n }; n }",
+        );
+        let unresolved: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::UndefinedVariable))
+            .collect();
+        assert!(
+            !unresolved.is_empty(),
+            "the else block must not see the Ok binder `n`; expected UndefinedVariable, \
+             got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn refutable_let_no_else_message_suggests_else_clause() {
+        // The reworded no-else diagnostic must point users at the `else` clause
+        // (now that let-else exists), while still mentioning if-let / match.
+        let output = check_source("fn main() -> i64 { let opt = Some(5); let Some(x) = opt; x }");
+        let refutable: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::RefutableLetPattern { .. }))
+            .collect();
+        assert_eq!(
+            refutable.len(),
+            1,
+            "expected one RefutableLetPattern; got: {:#?}",
+            output.errors
+        );
+        let msg = &refutable[0].message;
+        assert!(
+            msg.contains("else"),
+            "the reworded refutable-let message must suggest an `else` clause; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn let_else_unit_variant_admitted_and_records_resolution() {
+        // `let E::A = e else { return … };` over a UNIT variant (no payload) is
+        // a valid refutable pattern. It must type-check cleanly: no
+        // RefutableLetPattern, no LetElseDoesNotDiverge, and — critically — the
+        // pattern resolution must be recorded so HIR lowering does not cascade
+        // into "pattern has no resolution" / verifier leakage.
+        let output = check_source(
+            "enum E { A; B(i64); }
+             fn make_e(g: bool) -> E { if g { E::A } else { E::B(3) } }
+             fn f(g: bool) -> Result<i64, string> { let E::A = make_e(g) else { return Err(\"x\") }; Ok(1) }",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "a unit-variant let-else with a diverging else must type-check cleanly; got: {:#?}",
+            output.errors
+        );
+        // A unit variant binds nothing — it must NOT introduce a phantom binding
+        // that warns "unused variable `E::A`".
+        let unused_binding_warns: Vec<_> = output
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("E::A"))
+            .collect();
+        assert!(
+            unused_binding_warns.is_empty(),
+            "a unit-variant pattern binds nothing and must not warn about `E::A`; got: {unused_binding_warns:#?}"
+        );
+    }
+
+    #[test]
+    fn let_else_builtin_none_unit_variant_admitted() {
+        // The common `let None = opt else { … };` idiom (built-in Option unit
+        // variant) rides the same refutable-unit-variant path and type-checks
+        // cleanly with a diverging else.
+        let output = check_source(
+            "fn f(r: Option<i64>) -> Result<i64, string> { let None = r else { return Err(\"some\") }; Ok(0) }",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "a built-in None unit-variant let-else must type-check cleanly; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn refutable_unit_variant_let_no_else_rejected() {
+        // A unit variant in a PLAIN `let` (no else) is refutable and must be
+        // rejected with RefutableLetPattern — the same gate as `let Some(x) =`.
+        let output = check_source("fn f(r: Option<i64>) -> i64 { let None = r; 0 }");
+        let refutable: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::RefutableLetPattern { .. }))
+            .collect();
+        assert_eq!(
+            refutable.len(),
+            1,
+            "a unit-variant plain let must emit exactly one RefutableLetPattern; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn uppercase_plain_binding_is_not_a_unit_variant() {
+        // Regression: an uppercase plain identifier that does NOT resolve to a
+        // unit variant of the value type (e.g. `let INF = 999999;`) is a fresh
+        // binding, not a refutable pattern. The detection is by RESOLUTION, not
+        // by case — so it must bind cleanly (no RefutableLetPattern, no
+        // "undefined variable") and be usable afterwards.
+        let output = check_source("fn f() -> i64 { let INF = 999999; let Foo = 5; INF + Foo }");
+        assert!(
+            output.errors.is_empty(),
+            "an uppercase plain binding that resolves to no variant must bind cleanly; got: {:#?}",
+            output.errors
+        );
+        let refutable: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::RefutableLetPattern { .. }))
+            .collect();
+        assert!(
+            refutable.is_empty(),
+            "uppercase plain bindings must not be treated as refutable patterns; got: {refutable:#?}"
+        );
+    }
+
+    #[test]
+    fn bare_none_over_non_option_is_variant_pattern_not_binding() {
+        // Regression for the let-side/use-side split: a bare `None` is ALWAYS a
+        // variant pattern, independent of the value type, because the use-side
+        // resolves a bare `None` to `Option::None` unconditionally. With the old
+        // value-type-based detection, `let None = 5;` bound `None` as a local
+        // (None is not a variant of `i64`), then any use resolved to the builtin
+        // — a half-built binding that surfaced as "unused variable `None`" plus a
+        // "cannot infer type" at the use. The aligned detection treats `None` as
+        // a refutable variant pattern, so this is a SINGLE clean diagnostic: a
+        // refutable-pattern rejection, with NO `None` binding and NO unused-var.
+        let output = check_source("fn f() { let None = 5; }");
+        let refutable: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::RefutableLetPattern { .. }))
+            .collect();
+        assert_eq!(
+            refutable.len(),
+            1,
+            "`let None = 5;` must be a single refutable-variant rejection; got errors: {:#?}",
+            output.errors
+        );
+        // The split symptom: `None` must NOT be bound as a local, so no
+        // unused-variable warning for `None` may appear.
+        let unused_none = output.warnings.iter().any(|w| {
+            matches!(w.kind, TypeErrorKind::UnusedVariable) && w.message.contains("`None`")
+        });
+        assert!(
+            !unused_none,
+            "`None` must not be a half-built binding (no unused-variable warning); warnings: {:#?}",
+            output.warnings
+        );
+    }
+
+    #[test]
+    fn bare_none_over_generic_is_variant_pattern_not_binding() {
+        // The same alignment must hold over a generic type parameter: `let None
+        // = x;` where `x: T` is a variant pattern, not a binding. The old
+        // detection bound `None` (T is not `Option`), leaving an unused-variable
+        // warning while the use-side would resolve `None` to the builtin —
+        // inconsistent. The aligned detection routes it to the refutability gate.
+        let output = check_source("fn g<T>(x: T) { let None = x; }");
+        let refutable: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::RefutableLetPattern { .. }))
+            .collect();
+        assert_eq!(
+            refutable.len(),
+            1,
+            "`let None = x;` in a generic fn must be a single refutable-variant rejection; \
+             got errors: {:#?}",
+            output.errors
+        );
+        let unused_none = output.warnings.iter().any(|w| {
+            matches!(w.kind, TypeErrorKind::UnusedVariable) && w.message.contains("`None`")
+        });
+        assert!(
+            !unused_none,
+            "`None` over a generic must not be a half-built binding; warnings: {:#?}",
+            output.warnings
         );
     }
 

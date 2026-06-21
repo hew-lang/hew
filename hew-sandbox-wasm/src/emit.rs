@@ -2042,6 +2042,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::Timeout { .. }
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
+            | Expr::Return(_)
             | Expr::This
             | Expr::Cast { .. }
             | Expr::PostfixTry(_)

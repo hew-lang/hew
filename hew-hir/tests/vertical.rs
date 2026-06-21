@@ -1174,6 +1174,7 @@ fn program_with_select(select_expr: Expr) -> Program {
             pattern: (Pattern::Identifier("r".to_string()), 0..1),
             ty: None,
             value: Some((select_expr, 0..1)),
+            else_block: None,
         },
         0..1,
     );

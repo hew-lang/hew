@@ -74,6 +74,13 @@ fn block_contains_remote_actor_ask(block: &HirBlock) -> bool {
             expr_contains_remote_actor_ask(target) || expr_contains_remote_actor_ask(value)
         }
         HirStmtKind::Defer { body, .. } => expr_contains_remote_actor_ask(body),
+        HirStmtKind::LetElse {
+            scrutinee,
+            else_body,
+            ..
+        } => {
+            expr_contains_remote_actor_ask(scrutinee) || block_contains_remote_actor_ask(else_body)
+        }
         HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => false,
     }) || block
         .tail

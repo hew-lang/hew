@@ -256,12 +256,77 @@ impl Checker {
         ));
     }
 
+    /// Type-check the operand of a `return` against the enclosing function's
+    /// declared return type.
+    ///
+    /// This is the single shared shell for ALL `return` positions: the two
+    /// statement-position `Stmt::Return` arms (`check_stmt` and
+    /// `check_stmt_as_expr`) and the expression-position `Expr::Return`
+    /// (`synthesize`). Routing every position through one helper keeps the
+    /// generator-Return extraction, the `Ty::Error` guard, the unit-vs-declared
+    /// mismatch diagnostic, and the `#[on(crash)]` fail-closed gate identical
+    /// across positions (LESSONS `one-construct-one-lowering-shell`).
+    ///
+    /// The return *type* of the construct itself is always `Ty::Never` (a
+    /// `return` diverges); callers assign that directly.
+    pub(super) fn check_return_operand(&mut self, value: Option<&Spanned<Expr>>, span: &Span) {
+        let Some(expected) = self.current_return_type.clone() else {
+            return;
+        };
+        // Inside a gen{} body, `current_return_type` is shaped as
+        // `Generator<Y, R>`. A `return <expr>` targets the Return component R,
+        // not the full Generator type, so `return 1` inside gen{} unifies
+        // against i64 rather than Generator<Y, i64>.
+        let effective_expected = if self.in_generator {
+            let resolved = self.subst.resolve(&expected);
+            match resolved.as_generator() {
+                Some((_, ret)) => ret.clone(),
+                None => expected,
+            }
+        } else {
+            expected
+        };
+        // Guard: do not check against Ty::Error — it would silently suppress
+        // mismatch diagnostics in the returned expression. Synthesize the value
+        // instead so its own errors are still caught.
+        if matches!(self.subst.resolve(&effective_expected), Ty::Error) {
+            if let Some((val, vs)) = value {
+                self.synthesize(val, vs);
+            }
+        } else {
+            match value {
+                Some((val, vs)) => {
+                    self.check_against(val, vs, &effective_expected);
+                }
+                None if effective_expected != Ty::Unit => {
+                    self.errors.push(TypeError::return_type_mismatch(
+                        span.clone(),
+                        &effective_expected,
+                        &Ty::Unit,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        // Fail-closed: a `return <CrashAction>` inside a `#[on(crash)]` hook hits
+        // the same unimplemented lowering path as the tail-expression form.
+        // Reject it here so the user never reaches codegen.
+        if self.in_crash_hook
+            && matches!(
+                self.subst.resolve(&effective_expected),
+                Ty::Named { name, .. } if name == "CrashAction"
+            )
+        {
+            let fn_name = self
+                .current_function
+                .clone()
+                .unwrap_or_else(|| "<unknown>".to_string());
+            self.emit_crash_action_return_error(span, &fn_name);
+        }
+    }
+
     /// Check a statement that may serve as a block's trailing expression.
     /// Returns the "expression type" of the statement.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "statement-as-expr covers many Stmt variants including the crash-hook return gate"
-    )]
     pub(super) fn check_stmt_as_expr(
         &mut self,
         stmt: &Stmt,
@@ -321,60 +386,7 @@ impl Checker {
             }
             Stmt::Expression((expr, es)) => self.synthesize(expr, es),
             Stmt::Return(value) => {
-                if let Some(expected) = self.current_return_type.clone() {
-                    // Inside a gen{} body, `current_return_type` is shaped as
-                    // `Generator<Y, R>`.  A `return <expr>` targets the Return
-                    // component R, not the full Generator type.  Extract R when
-                    // in a generator context so that `return 1` inside gen{}
-                    // unifies against i64 rather than Generator<Y, i64>.
-                    let effective_expected = if self.in_generator {
-                        let resolved = self.subst.resolve(&expected);
-                        match resolved.as_generator() {
-                            Some((_, ret)) => ret.clone(),
-                            None => expected,
-                        }
-                    } else {
-                        expected
-                    };
-                    // Guard: do not check against Ty::Error — it would silently
-                    // suppress mismatch diagnostics in the returned expression.
-                    // Synthesize the value instead so its own errors are still caught.
-                    if matches!(self.subst.resolve(&effective_expected), Ty::Error) {
-                        if let Some((val, vs)) = value {
-                            self.synthesize(val, vs);
-                        }
-                    } else {
-                        match value {
-                            Some((val, vs)) => {
-                                self.check_against(val, vs, &effective_expected);
-                            }
-                            None if effective_expected != Ty::Unit => {
-                                self.errors.push(TypeError::return_type_mismatch(
-                                    span.clone(),
-                                    &effective_expected,
-                                    &Ty::Unit,
-                                ));
-                            }
-                            _ => {}
-                        }
-                    }
-                    // Fail-closed: a `return <CrashAction>;` inside a
-                    // `#[on(crash)]` hook is equivalent to the tail-expression
-                    // form and hits the same unimplemented lowering path.
-                    // Reject it here so the user never reaches codegen.
-                    if self.in_crash_hook
-                        && matches!(
-                            self.subst.resolve(&effective_expected),
-                            Ty::Named { name, .. } if name == "CrashAction"
-                        )
-                    {
-                        let fn_name = self
-                            .current_function
-                            .clone()
-                            .unwrap_or_else(|| "<unknown>".to_string());
-                        self.emit_crash_action_return_error(span, &fn_name);
-                    }
-                }
+                self.check_return_operand(value.as_ref(), span);
                 Ty::Never
             }
             Stmt::Break { .. } | Stmt::Continue { .. } => {
@@ -406,13 +418,62 @@ impl Checker {
         }
     }
 
+    /// Would a bare identifier `name` at a USE-site resolve to a known *unit*
+    /// enum variant / nullary constructor?
+    ///
+    /// This decides, on the let-side, whether a bare pattern identifier is a
+    /// refutable variant pattern (route to the refutability gate) or a fresh
+    /// binding. It must agree with how `synthesize`/`synthesize_identifier`
+    /// (expressions.rs) resolve the SAME bare name at a use-site: a
+    /// disagreement produces a half-built binding, where the let-side binds a
+    /// local that the use-side then shadows with the builtin/global variant,
+    /// leaving an unused-variable warning plus a `cannot infer type` at the use.
+    ///
+    /// Resolution is therefore by the GLOBAL/builtin namespace and is
+    /// independent of the value type, mirroring the use-side exactly:
+    ///   * `None` is special-cased at the use-site (expressions.rs, the
+    ///     `name == "None"` arm of `synthesize`) as `Option::None`
+    ///     *unconditionally*, ahead of any binding lookup — so a bare `None`
+    ///     is always a variant pattern here. A value type that is not `Option`
+    ///     then surfaces as a clean single type mismatch (`None` is
+    ///     `Option<_>`, the value is not), never a stray binding.
+    ///   * any user enum's unit variant is found by the use-side's
+    ///     `resolve_identifier_variant`, which scans every `type_defs` entry
+    ///     for a `VariantDef::Unit` of that name — so the let-side scans the
+    ///     same table the same way.
+    ///
+    /// Qualified paths (`E::A`) are handled by the caller and never reach here.
+    /// Mirrors Rust: a name that names a unit variant/const is always a
+    /// pattern, and a mismatched value type is a plain type error — not a
+    /// binding.
+    fn bare_identifier_resolves_to_unit_variant(&self, name: &str) -> bool {
+        // Builtin `None`: the use-side resolves a bare `None` to `Option::None`
+        // unconditionally and ahead of any binding, so the let-side treats it
+        // as a variant pattern regardless of the value type. (`Some`, `Ok`,
+        // `Err` carry payloads — never bare unit variants.)
+        if name == "None" {
+            return true;
+        }
+        // User enums: scan every type definition for a unit variant of this
+        // name, exactly as the use-side's `resolve_identifier_variant` does.
+        // A bare name that is a unit variant of *any* known enum is a pattern.
+        self.type_defs
+            .values()
+            .any(|td| matches!(td.variants.get(name), Some(VariantDef::Unit)))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "statement checking covers many Stmt variants"
     )]
     pub(super) fn check_stmt(&mut self, stmt: &Stmt, span: &Span) {
         match stmt {
-            Stmt::Let { pattern, ty, value } => {
+            Stmt::Let {
+                pattern,
+                ty,
+                value,
+                else_block,
+            } => {
                 let binding_context = match &pattern.0 {
                     Pattern::Identifier(name) => format!("local binding `{name}`"),
                     _ => "local binding".to_string(),
@@ -532,8 +593,37 @@ impl Checker {
                         more_specific_hole_vars,
                     );
                 }
-                // For simple identifier patterns, track the definition span
-                if let Pattern::Identifier(name) = &pattern.0 {
+                // A constructor-like identifier (`None`, `E::A`) is a refutable
+                // UNIT-VARIANT pattern, not a plain binding — route it to the
+                // refutability gate below so a let-else records its resolution
+                // and a plain `let` is rejected.
+                //
+                // Detection is by RESOLUTION, never by case, and must AGREE
+                // with the use-side: a `::`-qualified path is unambiguously a
+                // variant, and a bare identifier is a unit-variant pattern when
+                // the use-side would resolve it to a known unit variant in the
+                // global/builtin namespace (`None`, any user enum's unit
+                // variant) — independent of the value type. Any other bare
+                // identifier — even an uppercase one like `INF` or `Foo` — is a
+                // fresh binding. This mirrors Rust pattern resolution: a name
+                // that names a unit variant/const is always a pattern (a
+                // mismatched value type is then a clean type error); otherwise
+                // it binds.
+                let identifier_is_unit_variant = match &pattern.0 {
+                    Pattern::Identifier(name) if name.contains("::") => true,
+                    Pattern::Identifier(name) => {
+                        self.bare_identifier_resolves_to_unit_variant(name)
+                    }
+                    _ => false,
+                };
+                // For simple identifier patterns, track the definition span.
+                // A unit-variant identifier is NOT a binding — it falls through
+                // to the refutability gate below.
+                let plain_identifier = match &pattern.0 {
+                    Pattern::Identifier(name) if !identifier_is_unit_variant => Some(name),
+                    _ => None,
+                };
+                if let Some(name) = plain_identifier {
                     if val_ty == Ty::Unit && value.is_some() {
                         self.warnings.push(TypeError {
                             severity: crate::error::Severity::Warning,
@@ -619,33 +709,104 @@ impl Checker {
                         }
                         // Enum-variant constructor (e.g. `Some(x)`) — always refutable.
                         Pattern::Constructor { .. } => Some("enum variant"),
+                        // Unit variant written as a bare/qualified identifier
+                        // (e.g. `None`, `E::A`) — refutable; binds nothing.
+                        Pattern::Identifier(_) if identifier_is_unit_variant => {
+                            Some("enum variant")
+                        }
                         // Literal patterns are always refutable.
                         Pattern::Literal(_) => Some("literal"),
                         // Or-patterns are always refutable.
                         Pattern::Or(_, _) => Some("or-pattern"),
-                        // All other patterns (Tuple, Identifier, Wildcard, Regex, …)
-                        // — either already handled above or not relevant here.
+                        // All other patterns (Tuple, plain Identifier, Wildcard,
+                        // Regex, …) — handled above or not refutable here.
                         _ => None,
                     };
-                    if let Some(kind_label) = maybe_refutable_kind {
-                        // Only emit the refutability error when the value type is
-                        // actually resolved (not Ty::Var / Ty::Error).
-                        if !matches!(resolved_val_ty, Ty::Var(_) | Ty::Error) {
-                            self.report_error(
-                                TypeErrorKind::RefutableLetPattern {
-                                    kind_label: kind_label.to_string(),
-                                },
-                                &pattern.1,
-                                format!(
-                                    "refutable {kind_label} pattern is not allowed in `let`; \
-                                     use `if let` or `match` instead"
-                                ),
-                            );
+                    match (maybe_refutable_kind, else_block) {
+                        // Refutable pattern WITH an `else` clause: this is a
+                        // let-else. The refutable pattern is admitted because
+                        // the else clause supplies the failure path. The else
+                        // block must diverge — it runs when the pattern fails
+                        // and there is no value to bind, so control must not
+                        // fall through to the binding. Check the else block
+                        // BEFORE binding the pattern so the Ok-path binders are
+                        // not visible inside it (they are bound only on the
+                        // success path).
+                        (Some(_), Some(else_blk)) => {
+                            // Record the success-path pattern resolution so HIR
+                            // lowering can consume the same `pattern_resolutions`
+                            // side-table that powers `if let` / `match` /
+                            // `while let`. Without this the let-else lowering
+                            // finds no resolution and fails closed.
+                            self.record_arm_resolution(&pattern.0, &pattern.1, &val_ty);
+                            let else_ty = self.check_block(else_blk, None);
+                            if !matches!(else_ty, Ty::Never)
+                                && !matches!(resolved_val_ty, Ty::Var(_) | Ty::Error)
+                            {
+                                // Span the diagnostic on the else block tail.
+                                // The trailing-expr / last-stmt span brackets
+                                // it; fall back to the pattern span for an
+                                // empty block (which is itself non-diverging).
+                                let else_span = else_blk
+                                    .trailing_expr
+                                    .as_ref()
+                                    .map(|e| e.1.clone())
+                                    .or_else(|| else_blk.stmts.last().map(|(_, sp)| sp.clone()))
+                                    .unwrap_or_else(|| pattern.1.clone());
+                                self.report_error(
+                                    TypeErrorKind::LetElseDoesNotDiverge,
+                                    &else_span,
+                                    "the `else` block of a `let … else` must \
+                                     diverge (e.g. `return`, `break`, `continue`, or a \
+                                     `!`-typed call); it must not fall through to the \
+                                     binding"
+                                        .to_string(),
+                                );
+                            }
                         }
+                        // Refutable pattern with NO `else` clause: rejected. A
+                        // plain `let` has no failure arm, so only irrefutable
+                        // patterns are admitted. Suggest the let-else `else`
+                        // clause (now that it exists) or `if let`/`match`.
+                        (Some(kind_label), None) => {
+                            // Only emit when the value type is actually resolved
+                            // (not Ty::Var / Ty::Error) so a prior root error is
+                            // not buried under a cascade.
+                            if !matches!(resolved_val_ty, Ty::Var(_) | Ty::Error) {
+                                self.report_error(
+                                    TypeErrorKind::RefutableLetPattern {
+                                        kind_label: kind_label.to_string(),
+                                    },
+                                    &pattern.1,
+                                    format!(
+                                        "refutable {kind_label} pattern is not allowed in a \
+                                         plain `let`; add an `else {{ … }}` clause (it \
+                                         must diverge), or use `if let`/`match`"
+                                    ),
+                                );
+                            }
+                        }
+                        // Irrefutable pattern with an `else` clause: the else can
+                        // never run, so divergence is not required. Type-check it
+                        // for error coverage only.
+                        (None, Some(else_blk)) => {
+                            let _ = self.check_block(else_blk, None);
+                        }
+                        (None, None) => {}
                     }
-                    // Always call bind_pattern for error-recovery so the binders exist
-                    // and subsequent uses don't cascade into UnresolvedSymbol.
-                    self.bind_pattern(&pattern.0, &val_ty, false, &pattern.1);
+                    // Call bind_pattern for error-recovery so payload binders
+                    // exist and subsequent uses don't cascade into
+                    // UnresolvedSymbol. Binders are defined into the CURRENT
+                    // (enclosing) scope, so a let-else `let Ok(n) = … else { … };`
+                    // makes `n` visible in the rest of the enclosing block.
+                    //
+                    // A unit-variant identifier (`None`, `E::A`) binds nothing —
+                    // it is a refutable tag-test. Skip bind_pattern so it does
+                    // not introduce a phantom binding (which would otherwise warn
+                    // "unused variable `None`" and shadow the variant constructor).
+                    if !identifier_is_unit_variant {
+                        self.bind_pattern(&pattern.0, &val_ty, false, &pattern.1);
+                    }
                 }
             }
             Stmt::Var { name, ty, value } => {
@@ -916,65 +1077,14 @@ impl Checker {
                 }
             }
             Stmt::Return(value) => {
-                if let Some(expected) = self.current_return_type.clone() {
-                    // Inside a gen{} body, `current_return_type` is shaped as
-                    // `Generator<Y, R>`.  A `return <expr>` targets the Return
-                    // component R, not the full Generator type.  Extract R when
-                    // in a generator context so that `return 1` inside gen{}
-                    // unifies against i64 rather than Generator<Y, i64>.
-                    let effective_expected = if self.in_generator {
-                        let resolved = self.subst.resolve(&expected);
-                        match resolved.as_generator() {
-                            Some((_, ret)) => ret.clone(),
-                            None => expected,
-                        }
-                    } else {
-                        expected
-                    };
-                    // Guard: do not check against Ty::Error — same as in
-                    // check_stmt_as_expr; synthesize instead to preserve body errors.
-                    if matches!(self.subst.resolve(&effective_expected), Ty::Error) {
-                        if let Some((val, vs)) = value {
-                            self.synthesize(val, vs);
-                        }
-                    } else {
-                        match value {
-                            Some((val, vs)) => {
-                                self.check_against(val, vs, &effective_expected);
-                            }
-                            None if effective_expected != Ty::Unit => {
-                                self.errors.push(TypeError::return_type_mismatch(
-                                    span.clone(),
-                                    &effective_expected,
-                                    &Ty::Unit,
-                                ));
-                            }
-                            _ => {}
-                        }
-                    }
-                    // Fail-closed: a non-final `return <CrashAction>;` inside an
-                    // `#[on(crash)]` hook (e.g. inside an `if` branch, followed by
-                    // more code) hits the same unimplemented lowering path.
-                    //
-                    // Exit inventory (all gated):
-                    //   (1) non-final `return CrashAction`  → THIS guard
-                    //   (2) final/tail `return CrashAction` → check_stmt_as_expr gate
-                    //   (3) tail-expr CrashAction (no return keyword) → items.rs body_is_crash_action
-                    //   (4) if/match expr whose arms all yield CrashAction → flows into (3)
-                    //   (5) let-bound CrashAction, then returned → flows into (1) or (2)
-                    if self.in_crash_hook
-                        && matches!(
-                            self.subst.resolve(&effective_expected),
-                            Ty::Named { name, .. } if name == "CrashAction"
-                        )
-                    {
-                        let fn_name = self
-                            .current_function
-                            .clone()
-                            .unwrap_or_else(|| "<unknown>".to_string());
-                        self.emit_crash_action_return_error(span, &fn_name);
-                    }
-                }
+                // Fail-closed crash-hook gate inventory (all positions covered by
+                // the shared `check_return_operand` shell):
+                //   (1) non-final `return CrashAction`  → THIS site
+                //   (2) final/tail `return CrashAction` → check_stmt_as_expr site
+                //   (3) tail-expr CrashAction (no return keyword) → items.rs body_is_crash_action
+                //   (4) if/match expr whose arms all yield CrashAction → flows into (3)
+                //   (5) let-bound CrashAction, then returned → flows into (1) or (2)
+                self.check_return_operand(value.as_ref(), span);
             }
             Stmt::Loop { label, body } => {
                 if let Some(lbl) = label {

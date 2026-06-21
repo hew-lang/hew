@@ -4357,6 +4357,20 @@ fn collect_unknown_self_fields_in_block(
             HirStmtKind::Defer { body, .. } => {
                 collect_unknown_self_fields_in_expr(body, state_fields, seen, unknown);
             }
+            HirStmtKind::LetElse {
+                scrutinee,
+                success_prelude,
+                else_body,
+                ..
+            } => {
+                collect_unknown_self_fields_in_expr(scrutinee, state_fields, seen, unknown);
+                for prelude_stmt in success_prelude {
+                    if let HirStmtKind::Let(_, Some(value)) = &prelude_stmt.kind {
+                        collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
+                    }
+                }
+                collect_unknown_self_fields_in_block(else_body, state_fields, seen, unknown);
+            }
         }
     }
     if let Some(tail) = &block.tail {
@@ -4453,7 +4467,9 @@ fn collect_unknown_self_fields_in_expr(
         | HirExprKind::GenBlock { body: block, .. } => {
             collect_unknown_self_fields_in_block(block, state_fields, seen, unknown);
         }
-        HirExprKind::Yield { value, .. } | HirExprKind::Break { value, .. } => {
+        HirExprKind::Yield { value, .. }
+        | HirExprKind::Break { value, .. }
+        | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
             }
@@ -8244,7 +8260,204 @@ impl Builder {
                     .or_default()
                     .push(body.as_ref().clone());
             }
+            HirStmtKind::LetElse {
+                scrutinee,
+                variant_idx,
+                bindings,
+                success_prelude,
+                payload_variant_predicates,
+                else_body,
+            } => {
+                self.lower_let_else_stmt(
+                    scrutinee,
+                    *variant_idx,
+                    bindings,
+                    success_prelude,
+                    payload_variant_predicates,
+                    else_body,
+                );
+            }
         }
+    }
+
+    /// Lower `let PAT = scrutinee else { <divergent block> };`.
+    ///
+    /// Mirrors `lower_if_let`'s tag-test CFG, with two deliberate differences:
+    ///   1. The success-path payload bindings are inserted into
+    ///      `binding_locals` and NEVER restored — they escape into the
+    ///      enclosing scope so the rest of the block can read them.
+    ///   2. There is no join/result place. On a match, control flows straight
+    ///      into the continuation block (the cursor) with the binders live. On
+    ///      a mismatch, the else block runs; it is divergent (the checker
+    ///      proved `Ty::Never`), so it seals its own block with a diverging
+    ///      terminator and the continuation is reached only via the match edge.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "mirrors lower_if_let's tag-test CFG builder; splitting would require threading many intermediate block ids across helper boundaries"
+    )]
+    fn lower_let_else_stmt(
+        &mut self,
+        scrutinee: &HirExpr,
+        variant_idx: u32,
+        bindings: &[hew_hir::HirMatchArmBinding],
+        success_prelude: &[hew_hir::HirStmt],
+        payload_variant_predicates: &[hew_hir::HirPayloadVariantPredicate],
+        else_body: &hew_hir::HirBlock,
+    ) {
+        // Entry: evaluate scrutinee, load tag, branch.
+        let Some(scrutinee_place) = self.lower_value(scrutinee) else {
+            return;
+        };
+        let scrutinee_local = match scrutinee_place {
+            Place::Local(n) => n,
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "let-else scrutinee place shape".to_string(),
+                        site: scrutinee.site,
+                    },
+                    note: format!(
+                        "let-else scrutinee must lower to Place::Local; got {other:?}. \
+                         The HIR producer should only emit LetElse for enum-typed \
+                         scrutinees backed by a local slot"
+                    ),
+                });
+                return;
+            }
+        };
+
+        let tag_local = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::Move {
+            dest: tag_local,
+            src: Place::EnumTag(scrutinee_local),
+        });
+        let k_local = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: k_local,
+            value: i64::from(variant_idx),
+        });
+        let cond_local = self.alloc_local(ResolvedTy::Bool);
+        self.push_instr(Instr::IntCmp {
+            pred: crate::model::CmpPred::Eq,
+            lhs: tag_local,
+            rhs: k_local,
+            dest: cond_local,
+        });
+
+        let bind_bb = self.alloc_block();
+        let else_bb = self.alloc_block();
+        let cont_bb = self.alloc_block();
+
+        self.finish_current_block(Terminator::Branch {
+            cond: cond_local,
+            then_target: bind_bb,
+            else_target: else_bb,
+        });
+
+        // Match path: bind the payload fields into the ENCLOSING scope's
+        // binding_locals and DO NOT restore — they escape the statement. Then
+        // Goto the continuation, where subsequent statements lower with the
+        // binders live.
+        self.start_block(bind_bb);
+        let mut nested_binding_jobs: Vec<(u32, u32, hew_hir::HirMatchArmBinding)> = Vec::new();
+        for pvp in payload_variant_predicates {
+            // A failed nested check routes to the else block, same as a
+            // top-level tag mismatch.
+            if self
+                .emit_payload_variant_predicate_checks(
+                    pvp,
+                    scrutinee_local,
+                    variant_idx,
+                    else_bb,
+                    scrutinee.site,
+                    &mut nested_binding_jobs,
+                )
+                .is_none()
+            {
+                return;
+            }
+        }
+
+        for binding in bindings {
+            let binding_ty = self.subst_ty(&binding.ty);
+            self.statements.push(MirStatement::Bind {
+                binding: binding.binding,
+                name: binding.name.clone(),
+                site: scrutinee.site,
+                ty: binding_ty.clone(),
+            });
+            self.record_binding_scope(binding.binding);
+            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+                self.owned_locals
+                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+            }
+            let dest = self.alloc_local(binding.ty.clone());
+            self.push_instr(Instr::Move {
+                dest,
+                src: Place::MachineVariant {
+                    local: scrutinee_local,
+                    variant_idx,
+                    field_idx: binding.field_idx,
+                },
+            });
+            // Escape: insert into binding_locals and never restore.
+            self.binding_locals.insert(binding.binding, dest);
+        }
+        for (src_local, src_variant_idx, binding) in nested_binding_jobs {
+            let binding_ty = self.subst_ty(&binding.ty);
+            self.statements.push(MirStatement::Bind {
+                binding: binding.binding,
+                name: binding.name.clone(),
+                site: scrutinee.site,
+                ty: binding_ty.clone(),
+            });
+            self.record_binding_scope(binding.binding);
+            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+                self.owned_locals
+                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+            }
+            let dest = self.alloc_local(binding.ty.clone());
+            self.push_instr(Instr::Move {
+                dest,
+                src: Place::MachineVariant {
+                    local: src_local,
+                    variant_idx: src_variant_idx,
+                    field_idx: binding.field_idx,
+                },
+            });
+            self.binding_locals.insert(binding.binding, dest);
+        }
+        // Aggregate-payload destructure (`Ok((n, s))`): the prelude `Let`
+        // statements project the synthetic `__payload_*` temp into the leaf
+        // binders (`n`, `s`). They run on the SUCCESS path after the top-level
+        // payload fields bind, and like those fields their binding_locals are
+        // inserted (by the normal `Let` lowering) and never restored, so the
+        // leaf binders escape into the enclosing scope for the continuation.
+        for stmt in success_prelude {
+            self.stmt(stmt);
+        }
+        self.finish_current_block(Terminator::Goto { target: cont_bb });
+
+        // No-match path: run the divergent else block. The checker proved it
+        // has type `Ty::Never`, so its body seals the block with a diverging
+        // terminator (Return/Trap). Defensive Goto for malformed HIR where the
+        // else somehow falls through — the cursor is unreachable in the
+        // well-formed case.
+        self.start_block(else_bb);
+        self.active_scopes.push(else_body.scope);
+        for stmt in &else_body.statements {
+            self.stmt(stmt);
+        }
+        if let Some(tail) = &else_body.tail {
+            let _ = self.lower_value(tail);
+        }
+        self.emit_pending_defers(else_body.scope);
+        self.active_scopes.pop();
+        self.finish_current_block(Terminator::Goto { target: cont_bb });
+
+        // Continuation: subsequent statements lower here, with the escaped
+        // binders live in binding_locals.
+        self.start_block(cont_bb);
     }
 
     fn lower_expr_statement(&mut self, expr: &HirExpr) {
@@ -10770,6 +10983,41 @@ impl Builder {
                     target: frame.exit_target,
                 });
                 // Source following `break` lexically is dead; give it a home.
+                let dead = self.alloc_block();
+                self.start_dead_block(dead);
+                None
+            }
+            HirExprKind::Return { value } => {
+                // `return [expr]` in expression position. Reuse the EXACT
+                // seal-and-dead-block discipline as `HirStmtKind::Return`
+                // (LESSONS `one-construct-one-lowering-shell`): lower the
+                // operand, move it to ReturnSlot BEFORE running defers (so
+                // defers cannot corrupt the secured value), emit return-path
+                // defers, then seal with `Terminator::Return` and start a fresh
+                // dead cursor block for any lexically-following code. A `return`
+                // diverges, so this expression yields no value (`None`).
+                if let Some(expr_value) = value {
+                    let value_place = self.lower_value(expr_value);
+                    self.decide(expr_value);
+                    self.mark_returned_binding_moved(expr_value);
+                    self.statements.push(MirStatement::Return {
+                        site: Some(expr_value.site),
+                        ty: self.subst_ty(&expr_value.ty),
+                    });
+                    if let Some(src) = value_place {
+                        self.push_instr(Instr::Move {
+                            dest: Place::ReturnSlot,
+                            src,
+                        });
+                    }
+                } else {
+                    self.statements.push(MirStatement::Return {
+                        site: None,
+                        ty: ResolvedTy::Unit,
+                    });
+                }
+                self.emit_defers_for_return();
+                self.finish_current_block(Terminator::Return);
                 let dead = self.alloc_block();
                 self.start_dead_block(dead);
                 None

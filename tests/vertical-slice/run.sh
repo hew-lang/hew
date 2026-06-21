@@ -760,6 +760,29 @@ run_accept_expect_stdout "match_float_literal_arm"
 # match result type is inferred from the non-diverging arm; a return-only arm
 # (typed Unit by lower_block) must not set the match result type.
 run_accept_expect_stdout "match_diverging_arm_result_type"
+# `return` as a bare expression-position match-arm body (v0.6 error-prop):
+# `0 => return Err(...)` propagates the error; the value arm sets the result.
+run_accept_expect_stdout "return_in_match_arm"
+# let-else bind-or-bail (v0.6 error-prop): `let Ok(n) = e else { return … };`
+# binds the Ok payload into the enclosing scope (used after the statement) or
+# diverges through the else block.
+run_accept_expect_stdout "let_else_bind_or_bail"
+# let-else over a UNIT variant: `let E::A = e else { return … };` and the
+# built-in `let None = opt else { … };` idiom check the variant tag and bind
+# nothing (empty success prelude), matching or diverging through the else.
+run_accept_expect_stdout "let_else_unit_variant"
+# let-else over a nested-tuple payload: `let Ok((n, s)) = e else { return … };`
+# destructures the tuple and escapes BOTH leaf binders into the enclosing scope
+# (the success-path prelude mirrors `match`'s aggregate-payload destructure).
+run_accept_expect_stdout "let_else_tuple_payload"
+# return-as-expression in a diverging branch: an unannotated
+# `let x = if … else { return … }` infers the value branch's type (not Never),
+# so a later `x + 1` lowers as integer arithmetic in let-RHS and binary-operand
+# positions.
+run_accept_expect_stdout "return_expr_unannotated_branch"
+# Combined error-prop idiom: let-else + return-as-expression closing the full
+# errors-as-values program (typed ConfigError, parse_port, load_config).
+run_accept_expect_stdout "error_prop_combined"
 run_check_run_expect_stdout "const_ref_init"
 
 # W4.039 — bytes-to-string triple-ABI canonicalisation. Behavioural proof
@@ -2842,6 +2865,28 @@ if grep -q 'has no binding' "${reject_output}"; then
   cat "${reject_output}" >&2
   exit 1
 fi
+
+# Reject: a `let … else` whose else block does not diverge. The non-diverging
+# else (`{ 0 }`) trips the new E_LET_ELSE_DOES_NOT_DIVERGE diagnostic.
+expect_check_fail_error_count \
+    "${ROOT}/tests/vertical-slice/reject/let_else_non_diverging.hew" \
+    1 \
+    "let_else_non_diverging"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/let_else_non_diverging.hew" \
+    "must diverge" \
+    "let_else_non_diverging_message"
+
+# Reject: a refutable pattern in a plain `let` with no `else`. The reworded
+# diagnostic must suggest adding an `else` clause now that let-else exists.
+expect_check_fail_error_count \
+    "${ROOT}/tests/vertical-slice/reject/refutable_let_no_else.hew" \
+    1 \
+    "refutable_let_no_else"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/refutable_let_no_else.hew" \
+    "else" \
+    "refutable_let_no_else_message"
 
 # .wrapping_as_<W> and .saturating_as_<W> width-conversion methods.
 # Tests exact values: wrapping narrowing/widening/sign-change and

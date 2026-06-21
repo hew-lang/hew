@@ -1,0 +1,30 @@
+//! `return` as a bare match-arm expression (v0.6 error-prop ergonomics).
+//!
+//! Before this slice, `return` was only valid in statement position; a bare
+//! `Err(e) => return Err(...)` arm errored with "return statement in expression
+//! context". `return` is now a first-class divergent (`Never`-typed) expression
+//! usable directly as a match-arm body. The diverging arm contributes `Never`,
+//! so the match's result type comes from the value-producing arm.
+//!
+//! Observable contract: prints the propagated error message then exits 0.
+
+fn checked_div(n: i64, d: i64) -> Result<i64, string> {
+    // The error arm is a bare expression-position `return` — no block, no `;`.
+    let safe = match d {
+        0 => return Err("divide by zero"),
+        _ => d,
+    };
+    Ok(n / safe)
+}
+
+fn run(n: i64, d: i64) -> string {
+    match checked_div(n, d) {
+        Ok(v) => f"ok: {v}",
+        Err(e) => f"err: {e}",
+    }
+}
+
+fn main() {
+    println(run(10, 2));
+    println(run(10, 0));
+}

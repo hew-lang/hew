@@ -1229,7 +1229,9 @@ impl Checker {
                 );
             }
             Expr::UnsafeBlock(block) => self.classify_escapes_in_block(block, in_fork),
-            Expr::Yield(opt) => {
+            // `yield <expr>` and `return <expr>` both carry the operand out of
+            // the closure to a higher-order boundary; same escape context.
+            Expr::Yield(opt) | Expr::Return(opt) => {
                 if let Some(boxed) = opt {
                     self.classify_escapes_in_expr(
                         &boxed.0,
@@ -1676,6 +1678,11 @@ fn collect_lambda_spans_in_expr(
             }
         }
         Expr::GenBlock { body } => collect_lambda_spans_in_block(body, out),
+        Expr::Return(opt) => {
+            if let Some(boxed) = opt {
+                collect_lambda_spans_in_expr(&boxed.0, &boxed.1, out);
+            }
+        }
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::This

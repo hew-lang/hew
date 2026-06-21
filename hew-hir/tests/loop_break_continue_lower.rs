@@ -57,6 +57,15 @@ fn block_has_kind<F: Fn(&HirExprKind) -> bool + Copy>(block: &HirBlock, pred: F)
                     return true;
                 }
             }
+            HirStmtKind::LetElse {
+                scrutinee,
+                else_body,
+                ..
+            } => {
+                if expr_has_kind(scrutinee, pred) || block_has_kind(else_body, pred) {
+                    return true;
+                }
+            }
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
         }
     }

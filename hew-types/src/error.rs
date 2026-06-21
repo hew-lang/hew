@@ -1042,6 +1042,17 @@ pub enum TypeErrorKind {
         /// e.g. `"enum variant"`, `"literal"`, or `"or-pattern"`.
         kind_label: String,
     },
+    /// A `let … else { … }` clause whose else block does not diverge.
+    ///
+    /// The else block of a let-else runs when the refutable pattern fails to
+    /// match. Because control must not fall through to the binding (there is
+    /// no value bound on the failure path), the else block MUST diverge —
+    /// `return`, `break`, `continue`, a `!`-typed call, or any block whose
+    /// type is `Ty::Never`. A non-diverging else block would let execution
+    /// reach code that reads an unbound binder, so it is rejected.
+    ///
+    /// Envelope code: `E_LET_ELSE_DOES_NOT_DIVERGE`.
+    LetElseDoesNotDiverge,
     /// A function carrying `#[intrinsic("…")]` was declared outside the
     /// designated stdlib-floor modules.
     ///
@@ -1217,6 +1228,7 @@ impl TypeErrorKind {
             Self::IntrinsicOutsideFloor { .. } => "IntrinsicOutsideFloor",
             Self::IntrinsicOnMethod { .. } => "IntrinsicOnMethod",
             Self::RefutableLetPattern { .. } => "RefutableLetPattern",
+            Self::LetElseDoesNotDiverge => "LetElseDoesNotDiverge",
             Self::OpaqueDirectConstruct { .. } => "OpaqueDirectConstruct",
             Self::VisibilityViolationPrivate { .. } => "VisibilityViolationPrivate",
             Self::VisibilityViolationPackage { .. } => "VisibilityViolationPackage",

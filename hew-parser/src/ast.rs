@@ -272,6 +272,18 @@ pub enum Expr {
     },
     UnsafeBlock(Box<Block>),
     Yield(Option<Box<Spanned<Expr>>>),
+    /// `return [expr]` in expression position — a divergent (`!`-typed) early
+    /// exit usable anywhere an expression is expected (match arms, `let`
+    /// initialisers, `&&`/`||` operands, `if`-as-expression branches), not just
+    /// at statement position. The operand is the value returned from the
+    /// enclosing function; `None` means `return` with no value (unit return).
+    ///
+    /// Mirrors `Stmt::Return`'s value-or-`None` shape but with no trailing `;`:
+    /// in expression position the operand ends where the surrounding expression
+    /// ends (before a `,`/`}`/`)`/`;` or any token that cannot begin an
+    /// expression). The checker synthesizes `Ty::Never`; HIR lowers it to
+    /// `HirExprKind::Return` (sibling of `HirExprKind::Break`).
+    Return(Option<Box<Spanned<Expr>>>),
     This,
     FieldAccess {
         object: Box<Spanned<Expr>>,
@@ -346,6 +358,14 @@ pub enum Stmt {
         pattern: Spanned<Pattern>,
         ty: Option<Spanned<TypeExpr>>,
         value: Option<Spanned<Expr>>,
+        /// `let Pat = expr else { <diverging block> };` — the let-else
+        /// fallback. `None` for an ordinary `let`. When `Some`, a refutable
+        /// pattern is admitted: the Ok-path binders escape into the enclosing
+        /// scope and the else block runs (and must diverge) on a failed match.
+        /// The block is carried structurally through the checker because the
+        /// divergence obligation is enforced in the type checker — it cannot be
+        /// desugared away in the parser.
+        else_block: Option<Block>,
     },
     Var {
         name: String,

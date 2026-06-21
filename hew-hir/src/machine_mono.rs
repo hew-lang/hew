@@ -927,6 +927,7 @@ fn walk_block(
 
 #[allow(
     clippy::too_many_arguments,
+    clippy::too_many_lines,
     reason = "discovery walker plumbs shared mutable state (seen/order/diagnostics/cap/registries/subst) — refactoring to a struct-with-methods is deferred"
 )]
 fn walk_stmt(
@@ -1009,6 +1010,66 @@ fn walk_stmt(
         HirStmtKind::Defer { body, .. } => {
             walk_expr(
                 body,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+        }
+        HirStmtKind::LetElse {
+            scrutinee,
+            bindings,
+            success_prelude,
+            else_body,
+            ..
+        } => {
+            walk_expr(
+                scrutinee,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+            for binding in bindings {
+                visit_ty(
+                    &binding.ty,
+                    &scrutinee.span,
+                    subst,
+                    machine_decls,
+                    residual_domain,
+                    seen,
+                    order,
+                    cap,
+                    diagnostics,
+                    cap_diag_emitted,
+                );
+            }
+            // Aggregate-payload leaf binders (`Ok((n, s))`) and their
+            // projection values may reach machine types not named elsewhere;
+            // walk the prelude so discovery stays complete.
+            for prelude_stmt in success_prelude {
+                walk_stmt(
+                    prelude_stmt,
+                    subst,
+                    machine_decls,
+                    residual_domain,
+                    seen,
+                    order,
+                    cap,
+                    diagnostics,
+                    cap_diag_emitted,
+                );
+            }
+            walk_block(
+                else_body,
                 subst,
                 machine_decls,
                 residual_domain,
@@ -1905,7 +1966,7 @@ fn walk_expr(
                 );
             }
         }
-        HirExprKind::Break { value, .. } => {
+        HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 walk_expr(
                     value,

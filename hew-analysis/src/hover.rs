@@ -567,7 +567,9 @@ fn hover_binding_in_stmt(
     offset: usize,
 ) -> Option<HoverResult> {
     match stmt {
-        Stmt::Let { pattern, ty, value } => {
+        Stmt::Let {
+            pattern, ty, value, ..
+        } => {
             find_binding_name(pattern, word, offset)?;
             let ty_text = if let Some((type_expr, _)) = ty {
                 format_type_expr_hover(type_expr)

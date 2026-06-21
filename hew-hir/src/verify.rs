@@ -169,6 +169,20 @@ impl Verifier {
                 HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => self.expr(expr),
                 HirStmtKind::Return(None) => {}
                 HirStmtKind::Defer { body, .. } => self.expr(body),
+                HirStmtKind::LetElse {
+                    scrutinee,
+                    bindings,
+                    else_body,
+                    ..
+                } => {
+                    self.expr(scrutinee);
+                    // The Ok-path bindings escape into the enclosing scope —
+                    // register them here so later references resolve.
+                    for binding in bindings {
+                        self.binding(binding.binding, scrutinee.span.clone());
+                    }
+                    self.block(else_body);
+                }
             }
         }
         if let Some(tail) = &block.tail {

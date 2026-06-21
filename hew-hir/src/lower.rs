@@ -3773,6 +3773,14 @@ fn collect_call_sites_in_stmt(
         HirStmtKind::Defer { body, .. } => {
             collect_call_sites_in_expr(body, out, trait_out);
         }
+        HirStmtKind::LetElse {
+            scrutinee,
+            else_body,
+            ..
+        } => {
+            collect_call_sites_in_expr(scrutinee, out, trait_out);
+            collect_call_sites_in_block(else_body, out, trait_out);
+        }
     }
 }
 
@@ -6703,6 +6711,14 @@ impl LowerCtx {
             }
             HirStmtKind::Defer { body, .. } => {
                 self.wrap_var_self_explicit_expr_returns(body, receiver, abi_return_ty);
+            }
+            HirStmtKind::LetElse {
+                scrutinee,
+                else_body,
+                ..
+            } => {
+                self.wrap_var_self_explicit_expr_returns(scrutinee, receiver, abi_return_ty);
+                self.wrap_var_self_explicit_returns_in_block(else_body, receiver, abi_return_ty);
             }
             HirStmtKind::Let(_, None) => {}
         }
@@ -9798,11 +9814,14 @@ impl LowerCtx {
         span: std::ops::Range<usize>,
         return_ty: ResolvedTy,
     ) -> Vec<HirStmt> {
-        // Tuple-let: `let (a, b, ...) = value_expr;`
+        // Tuple-let: `let (a, b, ...) = value_expr;`. A let-else (`else_block:
+        // Some`) is NOT an irrefutable tuple destructure — it routes through
+        // `lower_stmt` → `lower_let_else`, so require `else_block: None` here.
         if let Stmt::Let {
             pattern,
             ty: annotation,
             value: Some(value_expr),
+            else_block: None,
         } = stmt
         {
             if let Pattern::Tuple(element_patterns) = &pattern.0 {
@@ -10447,7 +10466,37 @@ impl LowerCtx {
         return_ty: ResolvedTy,
     ) -> HirStmt {
         let kind = match stmt {
-            Stmt::Let { pattern, ty, value } => {
+            Stmt::Let {
+                pattern,
+                ty,
+                value,
+                else_block,
+            } => {
+                // let-else: `let Pat = scrutinee else { <divergent block> };`.
+                // The Ok-path binders escape into the enclosing scope and the
+                // else block (proven divergent by the checker) runs on a failed
+                // match. Lower to the dedicated `HirStmtKind::LetElse` node and
+                // return early — the ordinary-let machinery below does not apply
+                // (it binds a single name; let-else binds payload fields).
+                if let Some(else_blk) = else_block {
+                    if let Some(value_expr) = value {
+                        if let Some(stmt) =
+                            self.lower_let_else(pattern, value_expr, else_blk, &span)
+                        {
+                            return stmt;
+                        }
+                    }
+                    // Fail-closed: a let-else with no initialiser, or whose
+                    // pattern could not be resolved, lowers to an unsupported
+                    // marker (diagnostics already pushed by lower_let_else).
+                    return HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(
+                            self.unsupported_expr(span.clone(), "let-else lowering"),
+                        ),
+                        span,
+                    };
+                }
                 // `await` on task handles is only legal as a statement-expression
                 // inside a `scope{}` body. Actor asks are value-producing expressions
                 // (the reply lands in MIR's `reply_dest`) and are handled by the
@@ -11372,6 +11421,162 @@ impl LowerCtx {
             kind,
             span,
         }
+    }
+
+    /// Lower `let PAT = scrutinee else { <divergent block> };` to the dedicated
+    /// `HirStmtKind::LetElse` node.
+    ///
+    /// Unlike `lower_if_let_inner`, the success-path payload bindings are
+    /// allocated in the ENCLOSING scope (no `push_scope`/`pop_scope` brackets
+    /// them) so they escape the statement and are live for the rest of the
+    /// enclosing block. The else block is lowered in its own scope and is
+    /// guaranteed divergent by the type checker (it proved `Ty::Never`); MIR
+    /// runs it on the no-match path so control never reaches an unbound binder.
+    ///
+    /// Returns `Some(HirStmt)` on success, `None` on a fail-closed error
+    /// (diagnostics already pushed). Pattern scope mirrors `if let`: only
+    /// single payload-bearing enum-variant constructor patterns (e.g. `Ok(n)`).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "mirrors lower_if_let_inner; splitting would obscure the parallel \
+                  error-handling paths"
+    )]
+    fn lower_let_else(
+        &mut self,
+        pattern: &Spanned<Pattern>,
+        scrutinee_expr: &Spanned<Expr>,
+        else_block: &Block,
+        span: &Span,
+    ) -> Option<HirStmt> {
+        let scrutinee_hir = self.lower_expr(scrutinee_expr, IntentKind::Read);
+        self.try_register_enum_instantiation(&scrutinee_expr.1);
+
+        let pattern_span = &pattern.1;
+        let key = self.mk_key(pattern_span);
+        let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
+            self.unsupported(
+                pattern_span.clone(),
+                "let-else pattern has no resolution; \
+                 only single payload-bearing enum-variant patterns are supported",
+                "let-else-substrate",
+            );
+            let _ = self.lower_block(else_block, &ResolvedTy::Unit);
+            return None;
+        };
+
+        let (PatternKind::VariantCtor, Some(variant_match)) =
+            (resolution.pattern_kind, resolution.variant_match)
+        else {
+            self.unsupported(
+                pattern_span.clone(),
+                "let-else supports only payload-bearing enum-variant patterns \
+                 (e.g. `Ok(n)`); unit variants, wildcards, literals, plain \
+                 bindings, and or-patterns are reserved for a future lane",
+                "let-else-substrate",
+            );
+            let _ = self.lower_block(else_block, &ResolvedTy::Unit);
+            return None;
+        };
+
+        let qualified = format!(
+            "{}::{}",
+            variant_match.type_name, variant_match.variant_name
+        );
+        let Some((_, idx_usize)) = self.machine_ctor_registry.get(&qualified).cloned() else {
+            self.unsupported(
+                pattern_span.clone(),
+                "let-else variant not registered in machine/enum ctor registry",
+                "let-else-substrate",
+            );
+            let _ = self.lower_block(else_block, &ResolvedTy::Unit);
+            return None;
+        };
+        let variant_idx =
+            u32::try_from(idx_usize).expect("variant index exceeds u32::MAX — impossible in Hew");
+
+        // Build the payload-binding specs (same shape as if-let / match).
+        let mut binding_specs = Vec::with_capacity(resolution.payload_bindings.len());
+        let mut binding_error = false;
+        for payload in &resolution.payload_bindings {
+            let ty = match ResolvedTy::from_ty(&payload.ty) {
+                Ok(ty) => ty,
+                Err(err) => {
+                    self.unsupported(
+                        pattern_span.clone(),
+                        format!("unresolved payload binding type in let-else ({err:?})"),
+                        "let-else-substrate",
+                    );
+                    binding_error = true;
+                    continue;
+                }
+            };
+            let Ok(field_idx) = u32::try_from(payload.field_idx) else {
+                self.unsupported(
+                    pattern_span.clone(),
+                    "let-else payload binding field index exceeds u32::MAX",
+                    "let-else-substrate",
+                );
+                binding_error = true;
+                continue;
+            };
+            binding_specs.push((field_idx, payload.binding_name.clone(), ty));
+        }
+
+        // The else block runs on the FAILURE path, where the Ok binders are NOT
+        // in scope. Lower it FIRST, in its own scope, BEFORE binding the
+        // payload into the enclosing scope — so the else block cannot see the
+        // escaping binders (matching the checker's failure-path scoping).
+        self.push_scope();
+        let else_body = self.lower_block(else_block, &ResolvedTy::Unit);
+        self.pop_scope();
+
+        // Bind the payload fields into the ENCLOSING scope (no push/pop) so the
+        // Ok-path binders escape and are live for the rest of the enclosing
+        // block — the defining property of let-else.
+        let bindings: Vec<HirMatchArmBinding> = if binding_error {
+            Vec::new()
+        } else {
+            binding_specs
+                .into_iter()
+                .map(|(field_idx, name, ty)| {
+                    let bound = self.bind(name.clone(), ty.clone(), false, pattern_span.clone());
+                    HirMatchArmBinding {
+                        binding: bound.id,
+                        field_idx,
+                        name,
+                        ty,
+                    }
+                })
+                .collect()
+        };
+
+        let mut payload_variant_predicates =
+            Vec::with_capacity(resolution.payload_variant_patterns.len());
+        let mut pvp_error = false;
+        for pvp in &resolution.payload_variant_patterns {
+            if let Some(pred) = self.build_payload_variant_predicate(pvp, pattern_span) {
+                payload_variant_predicates.push(pred);
+            } else {
+                pvp_error = true;
+                break;
+            }
+        }
+
+        if binding_error || pvp_error {
+            return None;
+        }
+
+        Some(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::LetElse {
+                scrutinee: Box::new(scrutinee_hir),
+                variant_idx,
+                bindings,
+                payload_variant_predicates,
+                else_body,
+            },
+            span: span.clone(),
+        })
     }
 
     /// Shared core of `if let PAT = scrutinee { body } else { else_body }`.
@@ -22397,6 +22602,19 @@ fn collect_general_closure_captures_walk_block(
             HirStmtKind::Defer { body, .. } => {
                 collect_general_closure_captures_walk(body, outer_bindings, seen, captures);
             }
+            HirStmtKind::LetElse {
+                scrutinee,
+                else_body,
+                ..
+            } => {
+                collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
+                collect_general_closure_captures_walk_block(
+                    else_body,
+                    outer_bindings,
+                    seen,
+                    captures,
+                );
+            }
         }
     }
     if let Some(tail) = &block.tail {
@@ -22426,6 +22644,14 @@ fn collect_captures_walk_block(
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
             HirStmtKind::Defer { body, .. } => {
                 collect_captures_walk(body, param_ids, seen, captures, self_id);
+            }
+            HirStmtKind::LetElse {
+                scrutinee,
+                else_body,
+                ..
+            } => {
+                collect_captures_walk(scrutinee, param_ids, seen, captures, self_id);
+                collect_captures_walk_block(else_body, param_ids, seen, captures, self_id);
             }
         }
     }
@@ -22739,6 +22965,42 @@ fn collect_hir_emitted_events(expr: &HirExpr, event_names: &[String]) -> Vec<Str
     events
 }
 
+/// Walk every statement and the tail of a `HirBlock`, collecting machine-emit
+/// event names. Used by the let-else arm (whose `else_body` is a `HirBlock`,
+/// not an `Expr::Block`) so a self-emit inside a let-else fallback is counted
+/// by the emit-cycle check.
+fn collect_hir_emitted_events_in_block(
+    block: &HirBlock,
+    event_names: &[String],
+    out: &mut Vec<String>,
+) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Expr(e) | HirStmtKind::Let(_, Some(e)) | HirStmtKind::Return(Some(e)) => {
+                collect_hir_emitted_events_walk(e, event_names, out);
+            }
+            HirStmtKind::Assign { value, .. } => {
+                collect_hir_emitted_events_walk(value, event_names, out);
+            }
+            HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
+            HirStmtKind::Defer { body, .. } => {
+                collect_hir_emitted_events_walk(body, event_names, out);
+            }
+            HirStmtKind::LetElse {
+                scrutinee,
+                else_body,
+                ..
+            } => {
+                collect_hir_emitted_events_walk(scrutinee, event_names, out);
+                collect_hir_emitted_events_in_block(else_body, event_names, out);
+            }
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_hir_emitted_events_walk(tail, event_names, out);
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "single recursive walker spanning all HirExprKind variants"
@@ -22770,6 +23032,14 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                     HirStmtKind::Defer { body, .. } => {
                         collect_hir_emitted_events_walk(body, event_names, out);
                     }
+                    HirStmtKind::LetElse {
+                        scrutinee,
+                        else_body,
+                        ..
+                    } => {
+                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
+                        collect_hir_emitted_events_in_block(else_body, event_names, out);
+                    }
                 }
             }
             if let Some(tail) = &block.tail {
@@ -22790,6 +23060,14 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                     HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
                     HirStmtKind::Defer { body, .. } => {
                         collect_hir_emitted_events_walk(body, event_names, out);
+                    }
+                    HirStmtKind::LetElse {
+                        scrutinee,
+                        else_body,
+                        ..
+                    } => {
+                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
+                        collect_hir_emitted_events_in_block(else_body, event_names, out);
                     }
                 }
             }
@@ -22905,6 +23183,14 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                     HirStmtKind::Defer { body, .. } => {
                         collect_hir_emitted_events_walk(body, event_names, out);
                     }
+                    HirStmtKind::LetElse {
+                        scrutinee,
+                        else_body,
+                        ..
+                    } => {
+                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
+                        collect_hir_emitted_events_in_block(else_body, event_names, out);
+                    }
                 }
             }
             if let Some(tail) = &body.tail {
@@ -22926,6 +23212,14 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                     HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
                     HirStmtKind::Defer { body, .. } => {
                         collect_hir_emitted_events_walk(body, event_names, out);
+                    }
+                    HirStmtKind::LetElse {
+                        scrutinee,
+                        else_body,
+                        ..
+                    } => {
+                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
+                        collect_hir_emitted_events_in_block(else_body, event_names, out);
                     }
                 }
             }
@@ -22950,6 +23244,14 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                     HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
                     HirStmtKind::Defer { body, .. } => {
                         collect_hir_emitted_events_walk(body, event_names, out);
+                    }
+                    HirStmtKind::LetElse {
+                        scrutinee,
+                        else_body,
+                        ..
+                    } => {
+                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
+                        collect_hir_emitted_events_in_block(else_body, event_names, out);
                     }
                 }
             }
@@ -22981,6 +23283,14 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                     HirStmtKind::Defer { body, .. } => {
                         collect_hir_emitted_events_walk(body, event_names, out);
                     }
+                    HirStmtKind::LetElse {
+                        scrutinee,
+                        else_body,
+                        ..
+                    } => {
+                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
+                        collect_hir_emitted_events_in_block(else_body, event_names, out);
+                    }
                 }
             }
             if let Some(tail) = &body.tail {
@@ -23004,6 +23314,14 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                     HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
                     HirStmtKind::Defer { body, .. } => {
                         collect_hir_emitted_events_walk(body, event_names, out);
+                    }
+                    HirStmtKind::LetElse {
+                        scrutinee,
+                        else_body,
+                        ..
+                    } => {
+                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
+                        collect_hir_emitted_events_in_block(else_body, event_names, out);
                     }
                 }
             }
@@ -23033,6 +23351,14 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                         HirStmtKind::Defer { body, .. } => {
                             collect_hir_emitted_events_walk(body, event_names, out);
                         }
+                        HirStmtKind::LetElse {
+                            scrutinee,
+                            else_body,
+                            ..
+                        } => {
+                            collect_hir_emitted_events_walk(scrutinee, event_names, out);
+                            collect_hir_emitted_events_in_block(else_body, event_names, out);
+                        }
                     }
                 }
                 if let Some(tail) = &block.tail {
@@ -23059,6 +23385,14 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                     HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
                     HirStmtKind::Defer { body, .. } => {
                         collect_hir_emitted_events_walk(body, event_names, out);
+                    }
+                    HirStmtKind::LetElse {
+                        scrutinee,
+                        else_body,
+                        ..
+                    } => {
+                        collect_hir_emitted_events_walk(scrutinee, event_names, out);
+                        collect_hir_emitted_events_in_block(else_body, event_names, out);
                     }
                 }
             }
@@ -25610,6 +25944,14 @@ fn scan_block_for_call_shape(
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
             HirStmtKind::Defer { body, .. } => {
                 scan_expr_for_call_shape(body, callable, diagnostics);
+            }
+            HirStmtKind::LetElse {
+                scrutinee,
+                else_body,
+                ..
+            } => {
+                scan_expr_for_call_shape(scrutinee, callable, diagnostics);
+                scan_block_for_call_shape(else_body, callable, diagnostics);
             }
         }
     }

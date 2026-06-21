@@ -1031,6 +1031,37 @@ pub struct HirStmt {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirStmtKind {
     Let(HirBinding, Option<HirExpr>),
+    /// `let Pat = scrutinee else { <divergent block> };` — the let-else
+    /// bind-or-diverge primitive.
+    ///
+    /// Unlike `HirExprKind::IfLet` (whose payload bindings are scoped to the
+    /// then-body), a let-else's `bindings` ESCAPE into the enclosing scope:
+    /// after the statement, the Ok-path binders are live for the rest of the
+    /// enclosing block. MIR lowers this as: evaluate the scrutinee, test the
+    /// variant tag, and branch — on a match, bind the payload fields into the
+    /// enclosing-scope `binding_locals` (and do NOT restore them, so they
+    /// persist); on a mismatch, run `else_body`, which is GUARANTEED divergent
+    /// (the type checker enforced `Ty::Never`), so control never falls through
+    /// to an unbound binder.
+    LetElse {
+        /// The matched expression. Its resolved type is the enum being
+        /// destructured.
+        scrutinee: Box<HirExpr>,
+        /// Zero-based variant index of the success-path constructor (e.g. the
+        /// index of `Ok` in `Result`).
+        variant_idx: u32,
+        /// Payload bindings introduced by the success-path pattern. These are
+        /// allocated in the ENCLOSING scope and escape the statement.
+        bindings: Vec<HirMatchArmBinding>,
+        /// Nested constructor checks on payload fields, evaluated after the
+        /// outer tag check and before the bindings are made live. A failed
+        /// nested check routes to `else_body`, same as a top-level tag
+        /// mismatch.
+        payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
+        /// The divergent else block, run when the pattern fails to match. The
+        /// checker has proven it has type `Ty::Never`.
+        else_body: HirBlock,
+    },
     Assign {
         target: HirExpr,
         value: Box<HirExpr>,

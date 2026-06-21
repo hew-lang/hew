@@ -6,7 +6,7 @@
 //! usable directly as a match-arm body. The diverging arm contributes `Never`,
 //! so the match's result type comes from the value-producing arm.
 //!
-//! Observable contract: pri64s the propagated error message then exits 0.
+//! Observable contract: prints the propagated error message then exits 0.
 
 fn checked_div(n: i64, d: i64) -> Result<i64, string> {
     // The error arm is a bare expression-position `return` — no block, no `;`.

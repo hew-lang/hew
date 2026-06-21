@@ -101,6 +101,14 @@ fn walk_block(block: &hew_hir::HirBlock, f: &mut impl FnMut(&HirExpr)) {
             HirStmtKind::Defer { body, .. } => {
                 walk_expr(body, f);
             }
+            HirStmtKind::LetElse {
+                scrutinee,
+                else_body,
+                ..
+            } => {
+                walk_expr(scrutinee, f);
+                walk_block(else_body, f);
+            }
         }
     }
     if let Some(t) = &block.tail {

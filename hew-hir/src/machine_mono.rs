@@ -927,6 +927,7 @@ fn walk_block(
 
 #[allow(
     clippy::too_many_arguments,
+    clippy::too_many_lines,
     reason = "discovery walker plumbs shared mutable state (seen/order/diagnostics/cap/registries/subst) — refactoring to a struct-with-methods is deferred"
 )]
 fn walk_stmt(
@@ -1009,6 +1010,49 @@ fn walk_stmt(
         HirStmtKind::Defer { body, .. } => {
             walk_expr(
                 body,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+        }
+        HirStmtKind::LetElse {
+            scrutinee,
+            bindings,
+            else_body,
+            ..
+        } => {
+            walk_expr(
+                scrutinee,
+                subst,
+                machine_decls,
+                residual_domain,
+                seen,
+                order,
+                cap,
+                diagnostics,
+                cap_diag_emitted,
+            );
+            for binding in bindings {
+                visit_ty(
+                    &binding.ty,
+                    &scrutinee.span,
+                    subst,
+                    machine_decls,
+                    residual_domain,
+                    seen,
+                    order,
+                    cap,
+                    diagnostics,
+                    cap_diag_emitted,
+                );
+            }
+            walk_block(
+                else_body,
                 subst,
                 machine_decls,
                 residual_domain,

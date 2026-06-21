@@ -1,0 +1,55 @@
+//! Combined error-prop idiom (v0.6): let-else + return-as-expression.
+//!
+//! The full q175 errors-as-values program: a typed `ConfigError` enum, a
+//! `parse_port` that binds-or-bails with let-else, and a `load_config` that
+//! mixes a let-else, an early `return` guard, and a final `Ok`. `?` cannot be
+//! used because the error types differ (`string` vs `ConfigError`).
+//!
+//! Observable contract: prints the formatted config on success and the typed
+//! error label on each failure path, then exits 0.
+
+enum ConfigError {
+    ParseFailed(string);
+    MissingField(string);
+}
+
+fn validate(s: string) -> Result<i64, string> {
+    if s == "8080" {
+        Ok(8080)
+    } else {
+        Err("not a port")
+    }
+}
+
+fn parse_port(s: string) -> Result<i64, ConfigError> {
+    // let-else: bind the port or bail with a wrapped error (return-as-expr in
+    // the else block).
+    let Ok(n) = validate(s) else {
+        return Err(ConfigError::ParseFailed("invalid"))
+    };
+    Ok(n)
+}
+
+fn load_config(port_str: string, host: string) -> Result<string, ConfigError> {
+    let Ok(port) = parse_port(port_str) else {
+        return Err(ConfigError::ParseFailed("port"))
+    };
+    if host.len() == 0 {
+        return Err(ConfigError::MissingField("host"))
+    }
+    Ok(f"config: {host}:{port}")
+}
+
+fn run(port_str: string, host: string) -> string {
+    match load_config(port_str, host) {
+        Ok(cfg) => cfg,
+        Err(ConfigError::ParseFailed(w)) => f"parse-failed: {w}",
+        Err(ConfigError::MissingField(w)) => f"missing-field: {w}",
+    }
+}
+
+fn main() {
+    println(run("8080", "localhost"));
+    println(run("nope", "localhost"));
+    println(run("8080", ""));
+}

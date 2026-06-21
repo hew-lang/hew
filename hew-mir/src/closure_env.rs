@@ -553,6 +553,14 @@ fn walk_stmt_for_suspend(stmt: &hew_hir::HirStmt, found: &mut bool) {
             walk_expr_for_suspend(value, found);
         }
         HirStmtKind::Defer { body, .. } => walk_expr_for_suspend(body, found),
+        HirStmtKind::LetElse {
+            scrutinee,
+            else_body,
+            ..
+        } => {
+            walk_expr_for_suspend(scrutinee, found);
+            walk_block_for_suspend(else_body, found);
+        }
         HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
     }
 }

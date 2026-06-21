@@ -4357,6 +4357,14 @@ fn collect_unknown_self_fields_in_block(
             HirStmtKind::Defer { body, .. } => {
                 collect_unknown_self_fields_in_expr(body, state_fields, seen, unknown);
             }
+            HirStmtKind::LetElse {
+                scrutinee,
+                else_body,
+                ..
+            } => {
+                collect_unknown_self_fields_in_expr(scrutinee, state_fields, seen, unknown);
+                collect_unknown_self_fields_in_block(else_body, state_fields, seen, unknown);
+            }
         }
     }
     if let Some(tail) = &block.tail {
@@ -8246,7 +8254,192 @@ impl Builder {
                     .or_default()
                     .push(body.as_ref().clone());
             }
+            HirStmtKind::LetElse {
+                scrutinee,
+                variant_idx,
+                bindings,
+                payload_variant_predicates,
+                else_body,
+            } => {
+                self.lower_let_else_stmt(
+                    scrutinee,
+                    *variant_idx,
+                    bindings,
+                    payload_variant_predicates,
+                    else_body,
+                );
+            }
         }
+    }
+
+    /// Lower `let PAT = scrutinee else { <divergent block> };`.
+    ///
+    /// Mirrors `lower_if_let`'s tag-test CFG, with two deliberate differences:
+    ///   1. The success-path payload bindings are inserted into
+    ///      `binding_locals` and NEVER restored — they escape into the
+    ///      enclosing scope so the rest of the block can read them.
+    ///   2. There is no join/result place. On a match, control flows straight
+    ///      into the continuation block (the cursor) with the binders live. On
+    ///      a mismatch, the else block runs; it is divergent (the checker
+    ///      proved `Ty::Never`), so it seals its own block with a diverging
+    ///      terminator and the continuation is reached only via the match edge.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "mirrors lower_if_let's tag-test CFG builder; splitting would require threading many intermediate block ids across helper boundaries"
+    )]
+    fn lower_let_else_stmt(
+        &mut self,
+        scrutinee: &HirExpr,
+        variant_idx: u32,
+        bindings: &[hew_hir::HirMatchArmBinding],
+        payload_variant_predicates: &[hew_hir::HirPayloadVariantPredicate],
+        else_body: &hew_hir::HirBlock,
+    ) {
+        // Entry: evaluate scrutinee, load tag, branch.
+        let Some(scrutinee_place) = self.lower_value(scrutinee) else {
+            return;
+        };
+        let scrutinee_local = match scrutinee_place {
+            Place::Local(n) => n,
+            other => {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: "let-else scrutinee place shape".to_string(),
+                        site: scrutinee.site,
+                    },
+                    note: format!(
+                        "let-else scrutinee must lower to Place::Local; got {other:?}. \
+                         The HIR producer should only emit LetElse for enum-typed \
+                         scrutinees backed by a local slot"
+                    ),
+                });
+                return;
+            }
+        };
+
+        let tag_local = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::Move {
+            dest: tag_local,
+            src: Place::EnumTag(scrutinee_local),
+        });
+        let k_local = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: k_local,
+            value: i64::from(variant_idx),
+        });
+        let cond_local = self.alloc_local(ResolvedTy::Bool);
+        self.push_instr(Instr::IntCmp {
+            pred: crate::model::CmpPred::Eq,
+            lhs: tag_local,
+            rhs: k_local,
+            dest: cond_local,
+        });
+
+        let bind_bb = self.alloc_block();
+        let else_bb = self.alloc_block();
+        let cont_bb = self.alloc_block();
+
+        self.finish_current_block(Terminator::Branch {
+            cond: cond_local,
+            then_target: bind_bb,
+            else_target: else_bb,
+        });
+
+        // Match path: bind the payload fields into the ENCLOSING scope's
+        // binding_locals and DO NOT restore — they escape the statement. Then
+        // Goto the continuation, where subsequent statements lower with the
+        // binders live.
+        self.start_block(bind_bb);
+        let mut nested_binding_jobs: Vec<(u32, u32, hew_hir::HirMatchArmBinding)> = Vec::new();
+        for pvp in payload_variant_predicates {
+            // A failed nested check routes to the else block, same as a
+            // top-level tag mismatch.
+            if self
+                .emit_payload_variant_predicate_checks(
+                    pvp,
+                    scrutinee_local,
+                    variant_idx,
+                    else_bb,
+                    scrutinee.site,
+                    &mut nested_binding_jobs,
+                )
+                .is_none()
+            {
+                return;
+            }
+        }
+
+        for binding in bindings {
+            let binding_ty = self.subst_ty(&binding.ty);
+            self.statements.push(MirStatement::Bind {
+                binding: binding.binding,
+                name: binding.name.clone(),
+                site: scrutinee.site,
+                ty: binding_ty.clone(),
+            });
+            self.record_binding_scope(binding.binding);
+            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+                self.owned_locals
+                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+            }
+            let dest = self.alloc_local(binding.ty.clone());
+            self.push_instr(Instr::Move {
+                dest,
+                src: Place::MachineVariant {
+                    local: scrutinee_local,
+                    variant_idx,
+                    field_idx: binding.field_idx,
+                },
+            });
+            // Escape: insert into binding_locals and never restore.
+            self.binding_locals.insert(binding.binding, dest);
+        }
+        for (src_local, src_variant_idx, binding) in nested_binding_jobs {
+            let binding_ty = self.subst_ty(&binding.ty);
+            self.statements.push(MirStatement::Bind {
+                binding: binding.binding,
+                name: binding.name.clone(),
+                site: scrutinee.site,
+                ty: binding_ty.clone(),
+            });
+            self.record_binding_scope(binding.binding);
+            if ValueClass::of_ty(&binding_ty, &self.type_classes) != ValueClass::BitCopy {
+                self.owned_locals
+                    .push((binding.binding, binding.name.clone(), binding_ty.clone()));
+            }
+            let dest = self.alloc_local(binding.ty.clone());
+            self.push_instr(Instr::Move {
+                dest,
+                src: Place::MachineVariant {
+                    local: src_local,
+                    variant_idx: src_variant_idx,
+                    field_idx: binding.field_idx,
+                },
+            });
+            self.binding_locals.insert(binding.binding, dest);
+        }
+        self.finish_current_block(Terminator::Goto { target: cont_bb });
+
+        // No-match path: run the divergent else block. The checker proved it
+        // has type `Ty::Never`, so its body seals the block with a diverging
+        // terminator (Return/Trap). Defensive Goto for malformed HIR where the
+        // else somehow falls through — the cursor is unreachable in the
+        // well-formed case.
+        self.start_block(else_bb);
+        self.active_scopes.push(else_body.scope);
+        for stmt in &else_body.statements {
+            self.stmt(stmt);
+        }
+        if let Some(tail) = &else_body.tail {
+            let _ = self.lower_value(tail);
+        }
+        self.emit_pending_defers(else_body.scope);
+        self.active_scopes.pop();
+        self.finish_current_block(Terminator::Goto { target: cont_bb });
+
+        // Continuation: subsequent statements lower here, with the escaped
+        // binders live in binding_locals.
+        self.start_block(cont_bb);
     }
 
     fn lower_expr_statement(&mut self, expr: &HirExpr) {

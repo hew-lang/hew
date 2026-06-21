@@ -201,7 +201,9 @@ fn collect_inlay_hints_from_stmt(
     hints: &mut Vec<InlayHint>,
 ) {
     match stmt {
-        Stmt::Let { pattern, ty, value } => {
+        Stmt::Let {
+            pattern, ty, value, ..
+        } => {
             if ty.is_none() {
                 if let Some(value_expr) = value {
                     let span_key = SpanKey {

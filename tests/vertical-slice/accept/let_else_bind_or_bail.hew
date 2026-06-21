@@ -1,0 +1,37 @@
+//! `let-else` bind-or-bail (v0.6 error-prop ergonomics).
+//!
+//! `let Ok(n) = validate(s) else { return Err(...) };` binds the Ok payload
+//! into the ENCLOSING scope or diverges through the else block. The binder `n`
+//! is used AFTER the let-else statement, proving it escaped the statement into
+//! the surrounding block — the defining property of let-else.
+//!
+//! Observable contract: prints the bound value on the Ok path and the
+//! propagated error on the Err path, then exits 0.
+
+fn validate(s: string) -> Result<i64, string> {
+    if s == "good" {
+        Ok(41)
+    } else {
+        Err("bad input")
+    }
+}
+
+fn parse_one(s: string) -> Result<i64, string> {
+    // The else block diverges; on a successful match `n` escapes to here.
+    let Ok(n) = validate(s) else {
+        return Err("invalid")
+    };
+    Ok(n + 1)
+}
+
+fn run(s: string) -> string {
+    match parse_one(s) {
+        Ok(v) => f"ok: {v}",
+        Err(e) => f"err: {e}",
+    }
+}
+
+fn main() {
+    println(run("good"));
+    println(run("nope"));
+}

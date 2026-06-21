@@ -72,6 +72,20 @@ pub fn dump_hir(module: &HirModule) -> String {
                             writeln!(out, "  defer").expect("write to string");
                             dump_expr(&mut out, body, 4);
                         }
+                        HirStmtKind::LetElse {
+                            scrutinee,
+                            bindings,
+                            else_body,
+                            ..
+                        } => {
+                            let names: Vec<&str> =
+                                bindings.iter().map(|b| b.name.as_str()).collect();
+                            writeln!(out, "  let-else bind=[{}]", names.join(", "))
+                                .expect("write to string");
+                            dump_expr(&mut out, scrutinee, 4);
+                            writeln!(out, "  else").expect("write to string");
+                            dump_block(&mut out, else_body, 4);
+                        }
                     }
                 }
                 if let Some(tail) = &func.body.tail {
@@ -336,6 +350,19 @@ fn dump_block(out: &mut String, block: &HirBlock, indent: usize) {
                 writeln!(out, "{pad}defer").expect("write to string");
                 dump_expr(out, body, indent + 2);
             }
+            HirStmtKind::LetElse {
+                scrutinee,
+                bindings,
+                else_body,
+                ..
+            } => {
+                let names: Vec<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
+                writeln!(out, "{pad}let-else bind=[{}]", names.join(", "))
+                    .expect("write to string");
+                dump_expr(out, scrutinee, indent + 2);
+                writeln!(out, "{pad}else").expect("write to string");
+                dump_block(out, else_body, indent + 2);
+            }
         }
     }
     if let Some(tail) = &block.tail {
@@ -557,6 +584,19 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                         writeln!(out, "{pad}    defer").expect("write to string");
                         dump_expr(out, body, indent + 6);
                     }
+                    HirStmtKind::LetElse {
+                        scrutinee,
+                        bindings,
+                        else_body,
+                        ..
+                    } => {
+                        let names: Vec<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
+                        writeln!(out, "{pad}    let-else bind=[{}]", names.join(", "))
+                            .expect("write to string");
+                        dump_expr(out, scrutinee, indent + 6);
+                        writeln!(out, "{pad}    else").expect("write to string");
+                        dump_block(out, else_body, indent + 6);
+                    }
                 }
             }
         }
@@ -608,6 +648,19 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                         writeln!(out, "{pad}    defer").expect("write to string");
                         dump_expr(out, body, indent + 6);
                     }
+                    HirStmtKind::LetElse {
+                        scrutinee,
+                        bindings,
+                        else_body,
+                        ..
+                    } => {
+                        let names: Vec<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
+                        writeln!(out, "{pad}    let-else bind=[{}]", names.join(", "))
+                            .expect("write to string");
+                        dump_expr(out, scrutinee, indent + 6);
+                        writeln!(out, "{pad}    else").expect("write to string");
+                        dump_block(out, else_body, indent + 6);
+                    }
                 }
             }
         }
@@ -645,6 +698,19 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                     HirStmtKind::Defer { body, .. } => {
                         writeln!(out, "{pad}    defer").expect("write to string");
                         dump_expr(out, body, indent + 6);
+                    }
+                    HirStmtKind::LetElse {
+                        scrutinee,
+                        bindings,
+                        else_body,
+                        ..
+                    } => {
+                        let names: Vec<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
+                        writeln!(out, "{pad}    let-else bind=[{}]", names.join(", "))
+                            .expect("write to string");
+                        dump_expr(out, scrutinee, indent + 6);
+                        writeln!(out, "{pad}    else").expect("write to string");
+                        dump_block(out, else_body, indent + 6);
                     }
                 }
             }

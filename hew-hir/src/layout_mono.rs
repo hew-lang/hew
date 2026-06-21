@@ -427,6 +427,18 @@ fn walk_stmt(
         }
         HirStmtKind::Return(None) => {}
         HirStmtKind::Defer { body, .. } => walk_expr(body, subst, residual_domain, disc),
+        HirStmtKind::LetElse {
+            scrutinee,
+            bindings,
+            else_body,
+            ..
+        } => {
+            walk_expr(scrutinee, subst, residual_domain, disc);
+            for binding in bindings {
+                disc.visit_ty(&binding.ty, &scrutinee.span, subst, residual_domain);
+            }
+            walk_block(else_body, subst, residual_domain, disc);
+        }
     }
 }
 

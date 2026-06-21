@@ -245,6 +245,14 @@ fn visit_block<'a>(block: &'a hew_hir::HirBlock, out: &mut Vec<&'a HirExpr>) {
             }
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
             HirStmtKind::Defer { body, .. } => visit_expr(body, out),
+            HirStmtKind::LetElse {
+                scrutinee,
+                else_body,
+                ..
+            } => {
+                visit_expr(scrutinee, out);
+                visit_block(else_body, out);
+            }
         }
     }
     if let Some(tail) = &block.tail {

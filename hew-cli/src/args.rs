@@ -203,7 +203,8 @@ pub struct RunArgs {
     #[arg(long)]
     pub profile: bool,
     /// Pass an extra library or linker argument to the native link step.
-    #[arg(long = "link-lib", value_name = "PATH")]
+    /// Values may begin with a dash (e.g. `-lMagickWand-7.Q16`).
+    #[arg(long = "link-lib", value_name = "PATH", allow_hyphen_values = true)]
     pub link_libs: Vec<String>,
     /// Target triple.
     #[arg(long, value_name = "TRIPLE")]
@@ -251,7 +252,8 @@ pub struct DebugArgs {
     #[arg(long, short = 'g', hide = true)]
     pub debug: bool,
     /// Pass an extra library or linker argument to the native link step.
-    #[arg(long = "link-lib", value_name = "PATH")]
+    /// Values may begin with a dash (e.g. `-lMagickWand-7.Q16`).
+    #[arg(long = "link-lib", value_name = "PATH", allow_hyphen_values = true)]
     pub link_libs: Vec<String>,
     /// Target triple.
     #[arg(long, value_name = "TRIPLE")]
@@ -339,7 +341,8 @@ pub struct BuildArgs {
     #[arg(long, short = 'g')]
     pub debug: bool,
     /// Pass an extra library or linker argument to the native link step.
-    #[arg(long = "link-lib", value_name = "PATH")]
+    /// Values may begin with a dash (e.g. `-lMagickWand-7.Q16`).
+    #[arg(long = "link-lib", value_name = "PATH", allow_hyphen_values = true)]
     pub link_libs: Vec<String>,
     #[command(flatten)]
     pub common: CommonBuildArgs,

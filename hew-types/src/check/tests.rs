@@ -27403,6 +27403,30 @@ mod every_attribute {
     }
 
     #[test]
+    fn uppercase_plain_binding_is_not_a_unit_variant() {
+        // Regression: an uppercase plain identifier that does NOT resolve to a
+        // unit variant of the value type (e.g. `let INF = 999999;`) is a fresh
+        // binding, not a refutable pattern. The detection is by RESOLUTION, not
+        // by case — so it must bind cleanly (no RefutableLetPattern, no
+        // "undefined variable") and be usable afterwards.
+        let output = check_source("fn f() -> i64 { let INF = 999999; let Foo = 5; INF + Foo }");
+        assert!(
+            output.errors.is_empty(),
+            "an uppercase plain binding that resolves to no variant must bind cleanly; got: {:#?}",
+            output.errors
+        );
+        let refutable: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::RefutableLetPattern { .. }))
+            .collect();
+        assert!(
+            refutable.is_empty(),
+            "uppercase plain bindings must not be treated as refutable patterns; got: {refutable:#?}"
+        );
+    }
+
+    #[test]
     fn let_irrefutable_struct_record_keyword_no_error() {
         // `record`-keyword product type is also irrefutable.
         let output = check_source(

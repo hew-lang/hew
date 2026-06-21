@@ -418,6 +418,38 @@ impl Checker {
         }
     }
 
+    /// Does the bare let-pattern identifier `name` resolve to a known *unit*
+    /// enum variant of `val_ty`?
+    ///
+    /// This is the resolution-based replacement for the old case-sensitivity
+    /// heuristic. A let-pattern identifier is a refutable variant pattern only
+    /// when it actually resolves to a unit variant of the value type; every
+    /// other bare identifier (including uppercase ones like `INF` or `Foo`) is
+    /// a fresh binding. Qualified paths (`E::A`) are handled by the caller and
+    /// never reach here. Mirrors Rust: a name resolving to a unit variant is a
+    /// pattern; otherwise it binds.
+    fn bare_identifier_resolves_to_unit_variant(&self, name: &str, val_ty: &Ty) -> bool {
+        let resolved = self.subst.resolve(val_ty);
+        // Built-in `Option<T>`: `None` is the only unit variant (`Some`
+        // carries a payload).
+        if resolved.as_option().is_some() {
+            return name == "None";
+        }
+        // Built-in `Result<T, E>`: both variants carry a payload, so a bare
+        // identifier is never a unit variant here.
+        if resolved.as_result().is_some() {
+            return false;
+        }
+        // User enum: the variant must exist on the value type AND be a unit
+        // variant. A name that is not a variant of this type is a binding.
+        if let Some(type_name) = resolved.type_name() {
+            if let Some(td) = self.lookup_type_def(type_name) {
+                return matches!(td.variants.get(name), Some(VariantDef::Unit));
+            }
+        }
+        false
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "statement checking covers many Stmt variants"
@@ -552,14 +584,22 @@ impl Checker {
                 // A constructor-like identifier (`None`, `E::A`) is a refutable
                 // UNIT-VARIANT pattern, not a plain binding — route it to the
                 // refutability gate below so a let-else records its resolution
-                // and a plain `let` is rejected. Only lowercase/non-qualified
-                // identifiers introduce a binding here.
-                let identifier_is_unit_variant = matches!(
-                    &pattern.0,
-                    Pattern::Identifier(name)
-                        if name.contains("::")
-                            || name.chars().next().is_some_and(char::is_uppercase)
-                );
+                // and a plain `let` is rejected.
+                //
+                // Detection is by RESOLUTION, never by case: a `::`-qualified
+                // path is unambiguously a variant, and a bare identifier is a
+                // unit-variant pattern only when it actually resolves to a unit
+                // variant of the value type. Any other bare identifier — even
+                // an uppercase one like `INF` or `Foo` — is a fresh binding.
+                // This mirrors Rust pattern resolution: a name resolving to a
+                // unit variant/const is a pattern; otherwise it binds.
+                let identifier_is_unit_variant = match &pattern.0 {
+                    Pattern::Identifier(name) if name.contains("::") => true,
+                    Pattern::Identifier(name) => {
+                        self.bare_identifier_resolves_to_unit_variant(name, &val_ty)
+                    }
+                    _ => false,
+                };
                 // For simple identifier patterns, track the definition span.
                 // A unit-variant identifier is NOT a binding — it falls through
                 // to the refutability gate below.

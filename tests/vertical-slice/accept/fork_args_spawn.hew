@@ -9,9 +9,9 @@
 // would corrupt the output; the companion run_e2e test re-runs this fixture
 // under MallocScribble for freed-read determinism.
 //
-// Argument-bearing spawns use the named form exclusively: the block form
-// (`fork { f(…); }`) is nullary because the checker does not visit block
-// bodies, so args there would bypass type-checking.
+// This fixture pins the named arg-bearing form. The block form
+// (`fork { f(args) }`) also accepts arguments now that the checker visits
+// the body; a single direct call of any arity is a first-class fork block.
 //
 // Harness verb: compile + run (exit 0)
 // Expected stdout: see fork_args_spawn.expected
@@ -28,12 +28,12 @@ actor Driver {
         scope {
             fork t = add_print(20, 22);
             await t;
-        }
+        };
         let greeting = "hello" + " world";
         scope {
             fork ts = shout(greeting);
             await ts;
-        }
+        };
         7
     }
 }

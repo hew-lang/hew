@@ -68,6 +68,7 @@ fn option_some_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: vec![],
         locals: vec![option_ty, ResolvedTy::I64, ResolvedTy::I64],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -165,6 +166,7 @@ fn option_string_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: vec![],
         locals: vec![option_ty, ResolvedTy::I64, ResolvedTy::String],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -317,6 +319,7 @@ fn envelope_i64_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: vec![],
         locals: vec![envelope_ty],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -394,6 +397,7 @@ fn bytes_return_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: vec![],
         locals: vec![ResolvedTy::Bytes],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -464,6 +468,7 @@ fn tuple_of_bytes_return_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: vec![],
         locals: vec![tuple_ty],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -547,6 +552,7 @@ fn generic_record_of_string_return_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: vec![],
         locals: vec![pair_ty],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),

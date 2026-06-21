@@ -186,6 +186,7 @@ fn vec_index_i64_mir() -> RawMirFunction {
             ResolvedTy::Bool, // Local(3) oob_flag
             ResolvedTy::I64,  // Local(4) result
         ],
+        local_names: vec![],
         blocks: vec![entry_block, trap_block, cont_block],
         decisions: vec![],
         intrinsic_id: None,

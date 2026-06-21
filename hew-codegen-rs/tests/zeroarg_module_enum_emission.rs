@@ -346,6 +346,7 @@ fn unknown_named_type_still_fails_closed_with_d10() {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![never_ty.clone()],
+            local_names: Vec::new(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,

@@ -60,6 +60,7 @@ fn pipeline_with_call_runtime_abi_parts(
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals,
+            local_names: Vec::new(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,

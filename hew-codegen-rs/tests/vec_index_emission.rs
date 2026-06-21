@@ -131,6 +131,7 @@ fn vec_index_i64_pipeline() -> IrPipeline {
                 ResolvedTy::Bool, // 3 oob_flag
                 ResolvedTy::I64,  // 4 result
             ],
+            local_names: Vec::new(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
@@ -286,6 +287,7 @@ fn vec_index_bool_pipeline() -> IrPipeline {
                 ResolvedTy::Bool,
                 ResolvedTy::Bool,
             ],
+            local_names: Vec::new(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
@@ -441,6 +443,7 @@ fn vec_index_char_pipeline() -> IrPipeline {
                 ResolvedTy::Bool,
                 ResolvedTy::Char,
             ],
+            local_names: Vec::new(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,

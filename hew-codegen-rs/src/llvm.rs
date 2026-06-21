@@ -33900,6 +33900,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![return_ty.clone()],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -34292,6 +34293,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::ClosureInvoke,
             params: vec![env_ptr_ty.clone()],
             locals: vec![env_ptr_ty, ResolvedTy::I64],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -34322,6 +34324,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![env_ty.clone(), fn_ty, ResolvedTy::I64],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -34431,6 +34434,7 @@ mod tests {
                 call_conv: hew_mir::FunctionCallConv::Default,
                 params: vec![],
                 locals: vec![named_record_ty("Point"), named_record_ty("PtrPayload")],
+                local_names: Vec::new(),
                 blocks,
                 decisions: Vec::<DecisionFact>::new(),
                 intrinsic_id: None,
@@ -34560,6 +34564,7 @@ mod tests {
                 call_conv: hew_mir::FunctionCallConv::Default,
                 params: vec![],
                 locals: vec![named_record_ty("Point")],
+                local_names: Vec::new(),
                 blocks: vec![entry, ret],
                 decisions: Vec::<DecisionFact>::new(),
                 intrinsic_id: None,
@@ -34649,6 +34654,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![const_ty.clone()],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -34793,6 +34799,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: Vec::new(),
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -34915,6 +34922,7 @@ mod tests {
             call_conv: FunctionCallConv::ActorHandler,
             params: vec![ResolvedTy::I64],
             locals: vec![ResolvedTy::I64],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -34988,6 +34996,7 @@ mod tests {
                 },
                 ResolvedTy::I64,
             ],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -35069,6 +35078,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![return_ty.clone()],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -35349,6 +35359,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -35571,6 +35582,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals,
+            local_names: Vec::new(),
             blocks,
             decisions: Vec::new(),
             intrinsic_id: None,
@@ -36262,6 +36274,7 @@ mod tests {
                 // local_1: i64 — return value
                 ResolvedTy::I64,
             ],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -36348,6 +36361,7 @@ mod tests {
             // capture-free generator.
             params: vec![ptr_ty.clone()],
             locals: vec![ptr_ty.clone(), ResolvedTy::I64],
+            local_names: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -36464,6 +36478,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![ptr_ty.clone()],
             locals: vec![ptr_ty.clone(), ResolvedTy::I64],
+            local_names: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -36501,6 +36516,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![generator_ty.clone()],
+            local_names: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -36588,6 +36604,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![ResolvedTy::CancellationToken],
             locals: vec![ResolvedTy::CancellationToken, ResolvedTy::Bool],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -37089,6 +37106,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+            local_names: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37150,6 +37168,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+            local_names: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37219,6 +37238,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+            local_names: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37288,6 +37308,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+            local_names: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37351,6 +37372,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![i64_ty],
+            local_names: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37422,6 +37444,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ptr_ty, i64_ty],
+            local_names: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37518,6 +37541,7 @@ mod tests {
                 call_conv: hew_mir::FunctionCallConv::Default,
                 params: vec![],
                 locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+                local_names: Vec::new(),
                 blocks: vec![
                     BasicBlock {
                         id: 0,
@@ -39669,6 +39693,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64, trait_obj.clone()],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: vec![],
@@ -39819,6 +39844,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64, trait_obj.clone()],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: vec![],
@@ -40173,6 +40199,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64, trait_obj.clone()],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: vec![],
@@ -40473,6 +40500,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -40693,6 +40721,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![ptr_ty],
+            local_names: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -40875,6 +40904,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![ptr_ty],
+            local_names: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -41083,6 +41113,7 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![],
+            local_names: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -41191,6 +41222,7 @@ mod tests {
             call_conv: FunctionCallConv::ActorHandler,
             params: vec![],
             locals: vec![ptr_ty],
+            local_names: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -41241,6 +41273,7 @@ mod tests {
             call_conv: FunctionCallConv::ActorHandler,
             params: vec![],
             locals: vec![],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -41271,6 +41304,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -42182,6 +42216,7 @@ fn main() {
             call_conv: FunctionCallConv::ActorHandler,
             params: vec![ResolvedTy::I64],
             locals: vec![ResolvedTy::I64],
+            local_names: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),

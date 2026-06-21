@@ -40,6 +40,7 @@ fn spawn_pipeline(every_ms: Option<u64>) -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: vec![],
         locals: vec![actor_pid_ty.clone()],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],
@@ -75,6 +76,7 @@ fn spawn_pipeline(every_ms: Option<u64>) -> IrPipeline {
         call_conv: FunctionCallConv::ActorHandler,
         params: vec![],
         locals: vec![],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],

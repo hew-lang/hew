@@ -68,6 +68,7 @@ fn send_status_pipeline() -> IrPipeline {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![actor_ty, ResolvedTy::Unit],
+            local_names: Vec::new(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,

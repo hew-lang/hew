@@ -58,6 +58,7 @@ fn pipeline_with_entry_terminator(
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals,
+            local_names: Vec::new(),
             blocks: blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,

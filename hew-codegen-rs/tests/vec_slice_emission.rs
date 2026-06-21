@@ -170,6 +170,7 @@ fn vec_slice_i64_pipeline() -> IrPipeline {
                 vec_ty.clone(),   // 6 result Vec<i64>
                 ResolvedTy::I64,  // 7 returned length
             ],
+            local_names: Vec::new(),
             blocks: blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,

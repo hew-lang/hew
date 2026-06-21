@@ -166,6 +166,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![],
+            local_names: vec![],
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: vec![],

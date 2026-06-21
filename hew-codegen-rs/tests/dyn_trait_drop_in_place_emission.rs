@@ -53,6 +53,7 @@ fn impl_method_stub(name: &str) -> RawMirFunction {
         call_conv: FunctionCallConv::Default,
         params,
         locals,
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],

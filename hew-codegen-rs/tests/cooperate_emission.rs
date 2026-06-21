@@ -65,6 +65,7 @@ fn loop_pipeline_with_sites(cooperate_sites: Vec<CooperateSite>) -> IrPipeline {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: Vec::new(),
             locals: vec![return_ty.clone()],
+            local_names: Vec::new(),
             blocks: blocks.clone(),
             decisions: Vec::new(),
             intrinsic_id: None,

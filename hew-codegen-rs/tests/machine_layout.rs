@@ -87,6 +87,7 @@ fn traffic_light_uses_i8_tagged_union_struct() {
         call_conv: FunctionCallConv::Default,
         params: Vec::new(),
         locals: vec![machine_ty],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -125,6 +126,7 @@ fn repeated_machine_uses_share_one_named_struct_definition() {
         call_conv: FunctionCallConv::Default,
         params: Vec::new(),
         locals: vec![machine_ty.clone(), machine_ty],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -172,6 +174,7 @@ fn two_hundred_fifty_seven_states_use_i16_tag() {
         call_conv: FunctionCallConv::Default,
         params: Vec::new(),
         locals: vec![machine_ty],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -220,6 +223,7 @@ fn constructor_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: Vec::new(),
         locals: vec![machine_ty, ResolvedTy::I64, ResolvedTy::I64],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),

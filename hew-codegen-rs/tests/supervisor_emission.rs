@@ -87,6 +87,7 @@ fn supervisor_pipeline() -> IrPipeline {
         // stub instructions don't run so the alloca is dead in the emitted
         // module.
         locals: vec![bootstrap_return_ty.clone()],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],
@@ -112,6 +113,7 @@ fn supervisor_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: vec![],
         locals: vec![ResolvedTy::I64],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],
@@ -311,6 +313,7 @@ fn on_crash_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::ActorHandler,
         params: vec![],
         locals: vec![],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],
@@ -333,6 +336,7 @@ fn on_crash_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: vec![],
         locals: vec![bootstrap_return_ty.clone()],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],
@@ -355,6 +359,7 @@ fn on_crash_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: vec![],
         locals: vec![ResolvedTy::I64],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],

@@ -56,6 +56,7 @@ fn floor_pipeline(
             call_conv: FunctionCallConv::Default,
             params,
             locals,
+            local_names: Vec::new(),
             blocks: placeholder.clone(),
             decisions: vec![],
             intrinsic_id: Some(intrinsic_id.to_string()),

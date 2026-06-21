@@ -649,6 +649,7 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::ActorHandler,
         params: vec![ResolvedTy::String],
         locals: vec![ResolvedTy::String, boxed_ty, ResolvedTy::I64],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -775,6 +776,7 @@ fn relay_resend_recv_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::ActorHandler,
         params: vec![ResolvedTy::String],
         locals: vec![ResolvedTy::String, actor_ty],
+        local_names: Vec::new(),
         blocks: vec![
             BasicBlock {
                 id: 0,

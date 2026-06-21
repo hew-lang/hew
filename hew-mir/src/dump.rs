@@ -1677,6 +1677,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64],
+            local_names: vec![],
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: vec![],
@@ -1854,6 +1855,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64, ResolvedTy::I64],
+            local_names: vec![],
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: vec![],
@@ -1907,6 +1909,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64, ResolvedTy::I64],
+            local_names: vec![],
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: vec![],
@@ -1946,6 +1949,7 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![],
+            local_names: vec![],
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: vec![],

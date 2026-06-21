@@ -81,6 +81,7 @@ fn colour_red_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: vec![],
         locals: vec![colour_ty, ResolvedTy::I64],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),

@@ -1759,6 +1759,19 @@ pub struct RawMirFunction {
     /// expression and per `Let`-introduced binding. Parameters occupy
     /// `locals[0..params.len()]` (see `params` invariant above).
     pub locals: Vec<ResolvedTy>,
+    /// Source-level binding name for each local slot, parallel to `locals`
+    /// (`local_names[i]` is the name of `Place::Local(i)`, or `None` for an
+    /// anonymous temporary / a slot whose name could not be recovered).
+    /// Threaded from the lowering pass — params from the parameter prologue,
+    /// `let` bindings from the `MirStatement::Bind` stream. Codegen consumes
+    /// this under `hew build -g` to emit `DW_TAG_variable` /
+    /// `DW_TAG_formal_parameter` DIEs with the user's name
+    /// (`create_auto_variable` / `create_parameter_variable`). Fail-closed: a
+    /// `None` entry (or a slot index past the end, for hand-built test MIR
+    /// that leaves this empty) means codegen emits no variable DIE for that
+    /// slot rather than fabricating a name — `local_N` is never invented.
+    /// Empty for synthesised functions and legacy test MIR.
+    pub local_names: Vec<Option<String>>,
     pub blocks: Vec<BasicBlock>,
     pub decisions: Vec<DecisionFact>,
     /// When `Some(catalog_key)`, this function is a `#[intrinsic("key")]`

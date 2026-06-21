@@ -79,6 +79,7 @@ fn pipeline_with_extern(
         call_conv: hew_mir::FunctionCallConv::Default,
         params: vec![],
         locals: locals.clone(),
+        local_names: Vec::new(),
         blocks: blocks.clone(),
         decisions: vec![],
         intrinsic_id: None,

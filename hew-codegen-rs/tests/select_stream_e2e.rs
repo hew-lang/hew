@@ -87,6 +87,7 @@ fn select_stream_i64_pipeline() -> IrPipeline {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![stream_i64.clone()],
             locals: vec![stream_i64, ResolvedTy::I64, ResolvedTy::Duration],
+            local_names: Vec::new(),
             blocks,
             decisions: vec![],
             intrinsic_id: None,

@@ -89,6 +89,7 @@ fn emit_trap_kind_ll(kind: TrapKind, module_name: &str) -> String {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![],
+            local_names: Vec::new(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,

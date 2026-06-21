@@ -107,6 +107,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: vec![machine_ty.clone(), event_ty.clone()],
         locals: vec![machine_ty.clone(), event_ty.clone()],
+        local_names: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -152,6 +153,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
             event_ty.clone(),   // 1: event arg (zeroed)
             machine_ty.clone(), // 2: step return temp
         ],
+        local_names: Vec::new(),
         blocks: vec![
             BasicBlock {
                 id: 0,

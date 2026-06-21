@@ -1713,6 +1713,31 @@ impl Checker {
                     );
                     return Ty::Unit;
                 }
+                // Shape gate: a fork body that is a single bare non-call tail
+                // expression (no stmts, trailing_expr present but not a Call)
+                // must be caught here with the actionable fork-shape message.
+                // Without this gate the body reaches `check_block` against
+                // `Some(&Ty::Unit)`, which emits a generic "type mismatch:
+                // expected `()`, found `<T>`" — unhelpful for the user.
+                //
+                // `fork { 42; }` (with semicolon) becomes a single stmt and
+                // reaches the HIR gate's own ForkBlockBodyUnsupported path,
+                // so we only need to handle the no-semicolon tail case here.
+                if body.stmts.is_empty() {
+                    if let Some(tail) = &body.trailing_expr {
+                        if !matches!(&tail.0, Expr::Call { .. }) {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                "`fork { }` bodies must be a direct function call, \
+                                 e.g. `fork { work() }`; other expression forms are \
+                                 not yet supported"
+                                    .to_string(),
+                            );
+                            return Ty::Unit;
+                        }
+                    }
+                }
                 // Check the body as an anonymous, unit-returning task context.
                 // `task_scope_depth` stays elevated (the body runs inside the
                 // enclosing scope, it does not open a fresh scope boundary), so a

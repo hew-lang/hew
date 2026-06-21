@@ -20809,6 +20809,40 @@ mod for_loop_iterable_fail_closed {
     }
 
     #[test]
+    fn fork_block_tail_expr_non_call_emits_actionable_diagnostic() {
+        // `fork { 42 }` — a bare tail-expression with no semicolon — must
+        // emit the actionable fork-shape message ("fork{} bodies must be a
+        // direct function call") rather than a generic type mismatch.
+        // Regression pin: previously the checker deferred to check_block
+        // which emitted "type mismatch: expected `()`, found `i64`".
+        let output = check_source(
+            r"
+            fn main() {
+                scope {
+                    fork { 42 };
+                };
+            }
+            ",
+        );
+        let has_actionable = output.errors.iter().any(|e| {
+            matches!(&e.kind, TypeErrorKind::InvalidOperation)
+                && e.message.contains("fork")
+                && e.message.contains("direct function call")
+        });
+        assert!(
+            has_actionable,
+            "fork {{ 42 }} (tail expr, no semicolon) must emit the actionable fork-shape \
+             diagnostic, not a generic type mismatch; got: {:#?}",
+            output.errors
+        );
+        // Must still be fail-closed (at least one error).
+        assert!(
+            !output.errors.is_empty(),
+            "fork {{ 42 }} must produce at least one error"
+        );
+    }
+
+    #[test]
     fn closure_escape_channel_send_is_escapes() {
         // Case: closure stored-in / sent through a channel.
         let output = check_source(

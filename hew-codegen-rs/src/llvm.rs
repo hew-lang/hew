@@ -27302,7 +27302,17 @@ fn emit_select_arm_setup<'ctx>(
                 .llvm_ctx("hew_reply_channel_set_parked_waiter call")?;
         }
 
-        let (status, current_has_retained_observer) = match &arms[arm_idx].kind {
+        // `recoverable` marks an arm whose non-zero setup status is a
+        // FAIL-CLOSED send failure (the receiver was unreachable — e.g. a
+        // FUNGIBLE supervisor-child ref resolved to a dead/null child), NOT an
+        // internal setup error. A recoverable failure retires THIS arm (frees
+        // its channel, nulls its array slot so the dispatch + teardown skip it)
+        // and continues setting up the remaining arms, mirroring the single-shot
+        // `hew_actor_ask` path which binds `Err(AskError::*)` on any non-zero
+        // send status instead of trapping. Only ActorAsk is a send surface;
+        // stream/task/channel poll failures stay process-fatal (genuine
+        // registration failures, not a send the program can recover from).
+        let (status, current_has_retained_observer, recoverable) = match &arms[arm_idx].kind {
             SelectArmKind::ActorAsk {
                 actor,
                 msg_type,
@@ -27358,7 +27368,7 @@ fn emit_select_arm_setup<'ctx>(
                         CodegenError::FailClosed("hew_actor_ask_with_channel returned void".into())
                     })?
                     .into_int_value();
-                (status, false)
+                (status, false, true)
             }
             SelectArmKind::StreamNext { stream } => {
                 let binding_place = arms[arm_idx].binding.ok_or_else(|| {
@@ -27414,7 +27424,7 @@ fn emit_select_arm_setup<'ctx>(
                     .builder
                     .build_int_z_extend(failed, i32_ty, &format!("select_stream_status_{slot_idx}"))
                     .llvm_ctx("stream poll status zext")?;
-                (status, true)
+                (status, true, false)
             }
             SelectArmKind::TaskAwait { task } => {
                 fn_ctx
@@ -27446,7 +27456,7 @@ fn emit_select_arm_setup<'ctx>(
                         CodegenError::FailClosed("hew_task_completion_observe returned void".into())
                     })?
                     .into_int_value();
-                (status, true)
+                (status, true, false)
             }
             SelectArmKind::ChannelRecv { receiver, .. } => {
                 // Signal-only readiness poll (mirrors TaskAwait's observe +
@@ -27508,7 +27518,7 @@ fn emit_select_arm_setup<'ctx>(
                         &format!("select_channel_status_{slot_idx}"),
                     )
                     .llvm_ctx("channel poll status zext")?;
-                (status, true)
+                (status, true, false)
             }
             SelectArmKind::AfterTimer { .. } => {
                 unreachable!("wait_arm_indices excludes AfterTimer")
@@ -27516,8 +27526,11 @@ fn emit_select_arm_setup<'ctx>(
         };
 
         // Branch on status: 0 → next ask setup or the wait dispatch; non-zero
-        // → mid-setup recovery (free every channel allocated through
-        // `slot_idx` inclusive, then trap).
+        // → setup recovery. For a RECOVERABLE arm (fungible ActorAsk send to a
+        // dead/unreachable child) the recovery retires this single arm and
+        // continues (see `setup_recover_bb` below); for a non-recoverable arm
+        // (stream/task/channel poll registration failure) it frees every channel
+        // allocated through `slot_idx` inclusive, then traps.
         let zero = i32_ty.const_zero();
         let failed = fn_ctx
             .builder
@@ -27529,6 +27542,56 @@ fn emit_select_arm_setup<'ctx>(
             )
             .llvm_ctx("select ask cmp")?;
         let setup_ok_bb = ctx.append_basic_block(parent_fn, &format!("select_setup_ok_{slot_idx}"));
+
+        if recoverable {
+            // FAIL-CLOSED recoverable arm: a fungible ActorAsk whose send found
+            // an unreachable receiver (dead/null child) returns a non-zero
+            // status from `hew_actor_ask_with_channel`, exactly as the
+            // single-shot ask does before it binds `Err(AskError::*)`. Rather
+            // than abandon the whole select with a process-fatal trap, retire
+            // ONLY this arm and continue: free its channel and NULL its array
+            // slot so `hew_select_first`/`hew_select_ready_index` skip it
+            // (both `continue` on a null slot) and every loser/teardown leg
+            // (all null-guarded `cancel`/`free`) treats it as absent. The arm
+            // never becomes ready, so the select races the remaining ready
+            // arms (or falls through to the `after` deadline if it is the only
+            // / last live arm) — never traps.
+            let setup_recover_bb =
+                ctx.append_basic_block(parent_fn, &format!("select_setup_recover_{slot_idx}"));
+            fn_ctx
+                .builder
+                .build_conditional_branch(failed, setup_recover_bb, setup_ok_bb)
+                .llvm_ctx("select setup recoverable br")?;
+
+            fn_ctx.builder.position_at_end(setup_recover_bb);
+            // Release the caller-side reference the runtime kept on send failure
+            // (`KeepCreatorRef`): `hew_reply_channel_free` runs the channel's
+            // attached await-cancel teardown too, dropping this arm's ref on the
+            // shared suspending-select arbiter (no-op on the blocking path).
+            fn_ctx
+                .builder
+                .build_call(
+                    channel_free,
+                    &[ch_val.into()],
+                    &format!("select_recover_free_{slot_idx}"),
+                )
+                .llvm_ctx("setup-recover free")?;
+            // NULL the slot so the dispatch + every teardown leg skip this arm.
+            let recover_slot = slot_ptr(slot_idx)?;
+            fn_ctx
+                .builder
+                .build_store(recover_slot, ptr_ty.const_null())
+                .llvm_ctx("setup-recover null slot store")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(setup_ok_bb)
+                .llvm_ctx("setup-recover continue br")?;
+
+            // Continue emitting the remaining arms in the OK block.
+            fn_ctx.builder.position_at_end(setup_ok_bb);
+            continue;
+        }
+
         let setup_fail_bb =
             ctx.append_basic_block(parent_fn, &format!("select_setup_fail_{slot_idx}"));
         fn_ctx
@@ -36768,23 +36831,39 @@ mod tests {
             2,
             "expected 2 reply-wait calls (one per winner branch); ir:\n{ir}"
         );
-        // Cancel/free counts across the whole module:
-        //   - winner branches: 2 (each cancels 1 loser, frees winner-self + loser).
-        //   - setup_fail_0: 0 cancels (arm 0 failed first), 1 self-free.
-        //   - setup_fail_1: 1 cancel (arm 0 was successfully submitted),
-        //     2 frees (arm 0 + self).
-        // Totals: 2 (win) + 1 (setup_fail_1) = 3 cancels;
-        //         (1+1)*2 (winners) + 1 (setup_fail_0) + 2 (setup_fail_1) = 7 frees.
+        // Cancel/free counts across the whole module. Both arms are ActorAsk —
+        // a FAIL-CLOSED send surface — so a non-zero ask-issue status routes to
+        // a per-arm RECOVERABLE recovery block (free THIS arm's channel, null
+        // its slot, continue), NOT the process-fatal setup-fail trap. The trap
+        // path (which freed channels [0..=slot_idx] + cancelled prior arms)
+        // therefore never emits for an all-ActorAsk select:
+        //   - winner branches: 2 (each cancels 1 loser, frees winner-self + loser
+        //     → 2 cancels, 4 frees).
+        //   - setup_recover_0 / setup_recover_1: each frees ONLY its own channel
+        //     (no cancel — no ask was successfully queued) → 0 cancels, 2 frees.
+        // Totals: 2 cancels (winner losers only); 4 (winners) + 2 (recover) = 6 frees.
         assert_eq!(
             ir.matches("call void @hew_reply_channel_cancel(").count(),
-            3,
-            "expected 3 cancels (1 loser per winner branch + 1 recovery on \
-             arm-1 ask-issue failure); ir:\n{ir}"
+            2,
+            "expected 2 cancels (1 loser per winner branch; recoverable arms \
+             free without cancel); ir:\n{ir}"
         );
         assert_eq!(
             ir.matches("call void @hew_reply_channel_free(").count(),
-            7,
-            "expected 7 channel frees across winner + setup-fail paths; ir:\n{ir}"
+            6,
+            "expected 6 channel frees across winner + recovery paths; ir:\n{ir}"
+        );
+        // Every ActorAsk arm fails closed: one recoverable recovery block per
+        // arm (the conditional-branch fail edge), and NO process-fatal
+        // setup-fail trap block anywhere in the module.
+        assert!(
+            ir.contains("select_setup_recover_0") && ir.contains("select_setup_recover_1"),
+            "each ActorAsk arm must emit a recoverable recovery block; ir:\n{ir}"
+        );
+        assert!(
+            !ir.contains("select_setup_fail_"),
+            "an all-ActorAsk (fail-closed) select must emit NO process-fatal \
+             setup-fail trap block; ir:\n{ir}"
         );
     }
 
@@ -36917,46 +36996,35 @@ mod tests {
         );
     }
 
-    /// Mid-setup error recovery (Risk R3): if any `hew_actor_ask_with_channel`
-    /// returns non-zero, every channel allocated through that point is
-    /// freed and the path traps. We assert the IR contains a
-    /// `select_setup_fail_N` block per arm with the recovery sequence.
+    /// Mid-setup error recovery (Risk R3) for NON-RECOVERABLE arms: a
+    /// stream/task/channel poll-registration failure is a genuine internal
+    /// setup error (not a fail-closed send surface), so a non-zero status still
+    /// frees every channel allocated through that point and traps. Two
+    /// StreamNext arms keep coverage of the trap path: an ActorAsk arm now
+    /// fails closed (see `fungible_actor_ask_arm_recovers_instead_of_trapping`).
     #[test]
     fn select_setup_failure_branches_free_allocated_channels_and_trap() {
         let arms = vec![
             hew_mir::SelectArm {
-                kind: hew_mir::SelectArmKind::ActorAsk {
-                    actor: Place::DuplexHandle(0),
-                    method: "a".to_string(),
-                    args: Vec::new(),
-                    msg_type: 1,
-                    value: Place::Local(3),
+                kind: hew_mir::SelectArmKind::StreamNext {
+                    stream: Place::DuplexHandle(0),
                 },
                 body_block: 10,
                 binding: Some(Place::Local(1)),
             },
             hew_mir::SelectArm {
-                kind: hew_mir::SelectArmKind::ActorAsk {
-                    actor: Place::DuplexHandle(0),
-                    method: "b".to_string(),
-                    args: Vec::new(),
-                    msg_type: 2,
-                    value: Place::Local(3),
+                kind: hew_mir::SelectArmKind::StreamNext {
+                    stream: Place::DuplexHandle(0),
                 },
                 body_block: 11,
                 binding: Some(Place::Local(2)),
             },
         ];
-        let locals = vec![
-            duplex_ty(),
-            ResolvedTy::I64,
-            ResolvedTy::I64,
-            ResolvedTy::Unit,
-        ];
+        let locals = vec![duplex_ty(), ResolvedTy::I64, ResolvedTy::I64];
         let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
         let ir = emit_select_ir("select_setup_recovery", &pipeline);
 
-        // Per-arm setup-failure blocks must exist.
+        // Per-arm setup-failure blocks must exist for the non-recoverable kind.
         assert!(
             ir.contains("select_setup_fail_0:") && ir.contains("select_setup_fail_1:"),
             "expected per-arm setup-failure blocks; ir:\n{ir}"
@@ -36967,11 +37035,87 @@ mod tests {
             ir.contains("@hew_trap_with_code") && ir.contains("call void @llvm.trap"),
             "expected hew_trap_with_code + llvm.trap on setup-fail path; ir:\n{ir}"
         );
+        // A non-recoverable arm never emits a recoverable recovery block.
+        assert!(
+            !ir.contains("select_setup_recover_"),
+            "stream poll failure is non-recoverable — no recovery block; ir:\n{ir}"
+        );
     }
 
-    /// Setup-fail-1 (arm 1's ask fails) must cancel-then-free arm 0's
-    /// channel (an ask was successfully submitted on arm 0, so a late
-    /// reply is possible) before freeing arm 1's own channel.
+    /// A FUNGIBLE ActorAsk arm whose ask-issue fails (the receiver was
+    /// unreachable — a dead/null fungible supervisor-child ref) FAILS CLOSED:
+    /// it retires this single arm (frees its channel, nulls its slot so the
+    /// dispatch + teardown skip it) and continues, rather than the
+    /// process-fatal setup-fail trap. Mirrors the single-shot `hew_actor_ask`
+    /// path, which binds `Err(AskError::*)` on any non-zero send status.
+    #[test]
+    fn fungible_actor_ask_arm_recovers_instead_of_trapping() {
+        let arms = vec![
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::ActorAsk {
+                    actor: Place::DuplexHandle(0),
+                    method: "ping".to_string(),
+                    args: Vec::new(),
+                    msg_type: 7,
+                    value: Place::Local(2),
+                },
+                body_block: 10,
+                binding: Some(Place::Local(1)),
+            },
+            hew_mir::SelectArm {
+                kind: hew_mir::SelectArmKind::AfterTimer {
+                    duration: Place::Local(3),
+                },
+                body_block: 11,
+                binding: None,
+            },
+        ];
+        let locals = vec![
+            duplex_ty(),          // 0: actor handle
+            ResolvedTy::I64,      // 1: reply slot
+            ResolvedTy::Unit,     // 2: payload
+            ResolvedTy::Duration, // 3: after-arm duration
+        ];
+        let pipeline = pipeline_with_select_arms(arms, locals, &[10, 11], 99);
+        let ir = emit_select_ir("select_ask_recover", &pipeline);
+
+        // The ActorAsk arm fails closed: a recoverable recovery block, NOT a
+        // process-fatal setup-fail trap block.
+        assert!(
+            ir.contains("select_setup_recover_0"),
+            "fungible ActorAsk arm must emit a recoverable recovery block; ir:\n{ir}"
+        );
+        assert!(
+            !ir.contains("select_setup_fail_"),
+            "a fungible ActorAsk arm must NOT emit a process-fatal setup-fail \
+             trap block; ir:\n{ir}"
+        );
+        // The recovery frees the failed channel (its caller-side ref, kept by
+        // the runtime on send failure) and nulls its array slot so the dispatch
+        // + teardown skip it (the null-slot `continue` semantics). Both live in
+        // the recover block; a void `free` call drops its SSA name and LLVM may
+        // suffix the re-GEP'd slot name, so anchor inside the recover block on
+        // the free of the arm's channel value followed by a null-slot store.
+        let recover_idx = ir
+            .find("select_setup_recover_0:")
+            .expect("recover block must exist");
+        let recover_region = &ir[recover_idx..];
+        assert!(
+            recover_region.contains("call void @hew_reply_channel_free(ptr %select_ch_new_0)"),
+            "recovery must free the failed arm's channel; ir:\n{ir}"
+        );
+        assert!(
+            recover_region.contains("store ptr null, ptr %ch_slot_0"),
+            "recovery must null the failed arm's channel-array slot; ir:\n{ir}"
+        );
+    }
+
+    /// Setup-fail-1 (arm 1's NON-RECOVERABLE poll fails) must cancel-then-free
+    /// arm 0's channel before freeing arm 1's own. Arm 0 is a successfully
+    /// set-up ActorAsk whose retained channel can take a late reply, so the
+    /// trap cleanup must cancel (tombstone) it before the free — the cancel
+    /// flag + ref count are the UAF guard (Risk R4). Arm 1 is a StreamNext (a
+    /// non-recoverable poll-registration arm) so the trap path still emits.
     #[test]
     fn select_setup_failure_in_second_arm_cleans_up_first_arm_with_cancel_first() {
         let arms = vec![
@@ -36987,12 +37131,8 @@ mod tests {
                 binding: Some(Place::Local(1)),
             },
             hew_mir::SelectArm {
-                kind: hew_mir::SelectArmKind::ActorAsk {
-                    actor: Place::DuplexHandle(0),
-                    method: "b".to_string(),
-                    args: Vec::new(),
-                    msg_type: 2,
-                    value: Place::Local(3),
+                kind: hew_mir::SelectArmKind::StreamNext {
+                    stream: Place::DuplexHandle(0),
                 },
                 body_block: 11,
                 binding: Some(Place::Local(2)),

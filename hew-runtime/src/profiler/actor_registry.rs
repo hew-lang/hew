@@ -202,6 +202,17 @@ pub fn lookup_dispatch_for_actor_id(actor_id: u64) -> Option<usize> {
 /// can hand out a process-lifetime borrow on the hot path — while still freeing
 /// the backing allocations when the table is reset.
 ///
+/// Reclaiming here is sound because no `&'static str` into these allocations
+/// outlives the registry. The retaining consumers all copy the name out
+/// immediately: `snapshot_all` into an owned `ActorSnapshot::actor_type: String`,
+/// and `signal`/`tracing` via `format!`/`.to_owned()`. This matters because the
+/// profiler server/sampler threads are NOT joined on this path — they are joined
+/// only by `profiler::shutdown` (reachable from `hew_node_stop`), whereas this
+/// runs from the `session_reset` hook fired by `hew_sched_shutdown` after only
+/// the scheduler workers are joined. A live profiler thread serving
+/// `/api/actors` holds an *owned* `ActorSnapshot`, never a borrow into what we
+/// free here, so the reclaim cannot dangle a snapshot.
+///
 /// After this call, `lookup_dispatch_type` returns `"Actor"` for all pointers
 /// until `register_dispatch_type` is called again.
 pub(crate) fn clear_dispatch_registry() {
@@ -212,14 +223,16 @@ pub(crate) fn clear_dispatch_registry() {
                 // `Box::leak(String::into_boxed_str(..))` in
                 // `register_dispatch_type`, so the pointer owns a live
                 // `Box<str>` allocation and reclaiming it via `Box::from_raw`
-                // is the exact inverse of that leak. `clear_dispatch_registry`
-                // runs only at session reset, after all worker threads are
-                // joined and the exit profile has been written (see
-                // `hew_sched_shutdown`), so no live `&'static str` borrow into
-                // these allocations remains. Each pointer is unique (HashMap
-                // keys are distinct dispatch fns, each leaked exactly once), so
-                // there is no double free. The borrow ends before `map.clear()`
-                // invalidates the entries.
+                // is the exact inverse of that leak. Each pointer is unique
+                // (HashMap keys are distinct dispatch fns, each leaked exactly
+                // once), so there is no double free, and the reconstituted
+                // `Box<str>` drops before `map.clear()` invalidates the entry.
+                //
+                // No live borrow into these allocations escapes the registry:
+                // every retaining consumer of `lookup_dispatch_type[_by_ptr]`
+                // copies the name out (see the doc above), so even the profiler
+                // threads — which this path does NOT join before clearing — hold
+                // owned data, not a pointer into what we free here.
                 let owned: Box<str> =
                     unsafe { Box::from_raw(std::ptr::from_ref(*leaked).cast_mut()) };
                 drop(owned);
@@ -282,7 +295,20 @@ pub struct ActorSnapshot {
     pub pid: u64,
     /// Hew actor type name, e.g. `"Counter"`.  Defaults to `"Actor"` when the
     /// type has not been registered via `hew_actor_register_type`.
-    pub actor_type: &'static str,
+    ///
+    /// Owned (`String`, not `&'static str`) so a snapshot never aliases the
+    /// dispatch-type registry's leaked backing allocations. `clear_dispatch_registry`
+    /// (the `session_reset` hook) reclaims those allocations with `Box::from_raw`,
+    /// but it runs after only the *scheduler workers* are joined — NOT the
+    /// profiler server/sampler threads, which are joined solely by
+    /// `profiler::shutdown` on the `hew_node_stop` path. A `HEW_PPROF` program
+    /// with no `HewNode` (the profiler is started via `maybe_start` in
+    /// `hew_sched_init`) therefore has a live profiler thread serving
+    /// `/api/actors` concurrently with `clear_dispatch_registry`. Were this a
+    /// `&'static str` it would dangle in `serve_actors`/`pprof` after the clear;
+    /// copying the name out in `snapshot_all` severs that coupling so the
+    /// snapshot safely outlives the registry.
+    pub actor_type: String,
     /// Current lifecycle state.
     pub state: &'static str,
     /// Total messages dispatched.
@@ -350,8 +376,13 @@ pub fn snapshot_all() -> Vec<ActorSnapshot> {
             };
 
             // lookup_dispatch_type acquires DISPATCH_TYPE_REGISTRY — a
-            // different mutex, so nesting here is safe.
-            let actor_type = lookup_dispatch_type(a.dispatch);
+            // different mutex, so nesting here is safe. Copy the name into an
+            // owned `String`: the returned `&'static str` borrows the registry's
+            // leaked backing allocation, which `clear_dispatch_registry` reclaims
+            // at session reset, and the profiler thread consuming this snapshot
+            // is not joined before that reclaim — so the snapshot must own its
+            // copy, never alias the registry (see `ActorSnapshot::actor_type`).
+            let actor_type = lookup_dispatch_type(a.dispatch).to_owned();
 
             result.push(ActorSnapshot {
                 id: a.id,
@@ -610,6 +641,76 @@ mod tests {
                 "lookup must fall back after clear reclaims the string"
             );
         }
+    }
+
+    /// A snapshot taken before `clear_dispatch_registry` stays valid after it.
+    ///
+    /// Regression for a use-after-free: `clear_dispatch_registry` frees the
+    /// `Box::leak`'d type-name allocations with `Box::from_raw`, but it runs on
+    /// the `session_reset`/`hew_sched_shutdown` path that joins only the
+    /// scheduler workers — NOT the profiler server/sampler threads (joined only
+    /// by `profiler::shutdown` from `hew_node_stop`). A `HEW_PPROF` program with
+    /// no `HewNode` therefore has a live profiler thread holding an
+    /// `ActorSnapshot` while the registry is cleared. If `ActorSnapshot::actor_type`
+    /// were a `&'static str` it would alias the freed allocation and dangle here;
+    /// because the snapshot owns its copy, the name survives the clear intact.
+    ///
+    /// This models that retained-snapshot-across-clear window directly: snapshot,
+    /// clear (frees the backing allocation), then read `actor_type`. Under
+    /// `AddressSanitizer`/`LeakSanitizer` (`make asan`) a borrow would be reported
+    /// as a use-after-free at the post-clear read; the owned `String` reads clean
+    /// and still equals the registered name.
+    #[test]
+    fn snapshot_actor_type_survives_registry_clear() {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        clear_dispatch_registry();
+        REGISTRY.access(|reg| {
+            if let Some(m) = reg.as_mut() {
+                m.clear();
+            }
+        });
+
+        register_dispatch_type(Some(fake_dispatch_reclaim), "RetainedActor".to_owned());
+
+        // SAFETY: zero-initialising a #[repr(C)] HewActor is sound — every atomic
+        // field has a valid zero value and every pointer field is null. `mailbox`
+        // is null so snapshot_all skips the mailbox read. We unregister before the
+        // Box drops so the registry never holds a dangling pointer.
+        let mut actor: Box<HewActor> = unsafe { Box::new(std::mem::zeroed()) };
+        actor.id = 0x0bad_f00d_dead_0001;
+        actor.dispatch = Some(fake_dispatch_reclaim);
+        let actor_ptr: *mut HewActor = &raw mut *actor;
+        // SAFETY: actor_ptr is valid for the duration of this test.
+        unsafe { register(actor_ptr) };
+
+        // Take the snapshot the profiler server thread would hold across teardown.
+        let snapshots = snapshot_all();
+        let snap = snapshots
+            .iter()
+            .find(|s| s.id == actor.id)
+            .cloned()
+            .expect("registered actor must appear in snapshot");
+        assert_eq!(
+            snap.actor_type, "RetainedActor",
+            "snapshot must carry the registered type name before clear"
+        );
+
+        // Now reclaim the leaked backing allocation — the exact byte the field
+        // would have pointed at were it still a borrow.
+        clear_dispatch_registry();
+
+        // Reading the retained snapshot after the clear must not touch freed
+        // memory; the owned copy still holds the name.
+        assert_eq!(
+            snap.actor_type, "RetainedActor",
+            "snapshot actor_type must survive clear_dispatch_registry (owned, not borrowed)"
+        );
+
+        // SAFETY: actor_ptr is still valid; actor has not been freed.
+        unsafe { unregister(actor_ptr) };
     }
 
     unsafe extern "C-unwind" fn fake_dispatch_e(

@@ -428,7 +428,7 @@ fn serve_flat_profile() -> Response<Full<Bytes>> {
 fn actors_json(actors: &[crate::profiler::actor_registry::ActorSnapshot]) -> String {
     json_array(actors, |json, a| {
         let _ = write!(json, r#"{{"id":{},"pid":{},"actor_type":"#, a.id, a.pid);
-        push_json_string(json, a.actor_type);
+        push_json_string(json, &a.actor_type);
         let _ = write!(json, r#","state":"#);
         push_json_string(json, a.state);
         let _ = write!(
@@ -507,11 +507,11 @@ mod tests {
     use crate::profiler::actor_registry::ActorSnapshot;
     use serde_json::json;
 
-    fn make_snapshot(actor_type: &'static str, state: &'static str) -> ActorSnapshot {
+    fn make_snapshot(actor_type: &str, state: &'static str) -> ActorSnapshot {
         ActorSnapshot {
             id: 1,
             pid: 0,
-            actor_type,
+            actor_type: actor_type.to_owned(),
             state,
             messages_processed: 0,
             processing_time_ns: 0,

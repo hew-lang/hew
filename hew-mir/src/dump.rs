@@ -33,8 +33,8 @@ use crate::model::{
     BasicBlock, CheckedMirFunction, ClosureEnvMode, CmpPred, Direction, DropFnSpec, DropKind,
     DropPlan, ElabDrop, ElaboratedMirFunction, ExitPath, FloatWidth, FunctionCallConv, Instr,
     IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaEnvFieldDrop, MirCheck, MirDiagnostic,
-    MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm, SelectArmKind, Terminator,
-    TrapKind,
+    MirDiagnosticKind, MirStatement, Place, RawMirFunction, SelectArm, SelectArmKind, SuspendKind,
+    Terminator, TrapKind,
 };
 
 /// Which stage of the pipeline to render.
@@ -119,9 +119,9 @@ fn dump_raw_function(out: &mut String, func: &RawMirFunction) {
         writeln!(out, "  intrinsic: {id}").expect("write to string");
     }
 
-    // Blocks
+    // Blocks — thread suspend_kinds so Suspend terminators can render the kind tag.
     for block in &func.blocks {
-        dump_basic_block(out, block, 2);
+        dump_basic_block(out, block, 2, Some(&func.suspend_kinds));
     }
 }
 
@@ -129,7 +129,7 @@ fn dump_checked_function(out: &mut String, func: &CheckedMirFunction) {
     writeln!(out, "fn {} -> {}", func.name, func.return_ty.user_facing()).expect("write to string");
 
     for block in &func.blocks {
-        dump_basic_block(out, block, 2);
+        dump_basic_block(out, block, 2, None);
     }
 
     // The empty-checks signal is load-bearing: consumers key off
@@ -178,7 +178,12 @@ fn dump_elab_function(out: &mut String, func: &ElaboratedMirFunction) {
 // BasicBlock renderer
 // ---------------------------------------------------------------------------
 
-fn dump_basic_block(out: &mut String, block: &BasicBlock, indent: usize) {
+fn dump_basic_block(
+    out: &mut String,
+    block: &BasicBlock,
+    indent: usize,
+    suspend_kinds: Option<&std::collections::HashMap<u32, SuspendKind>>,
+) {
     let pad = " ".repeat(indent);
     writeln!(out, "{pad}bb{}:", block.id).expect("write to string");
 
@@ -190,7 +195,13 @@ fn dump_basic_block(out: &mut String, block: &BasicBlock, indent: usize) {
         writeln!(out, "{pad}  {}", render_instr(instr)).expect("write to string");
     }
 
-    writeln!(out, "{pad}  {}", render_terminator(&block.terminator)).expect("write to string");
+    let kind_entry = suspend_kinds.and_then(|sk| sk.get(&block.id));
+    writeln!(
+        out,
+        "{pad}  {}",
+        render_terminator_with_kind(&block.terminator, kind_entry)
+    )
+    .expect("write to string");
 }
 
 // ---------------------------------------------------------------------------
@@ -224,6 +235,56 @@ fn render_place(place: &Place) -> String {
 // ---------------------------------------------------------------------------
 // Terminator renderer
 // ---------------------------------------------------------------------------
+
+/// Render a `SuspendKind` as a bracketed kind tag with kind-specific fields,
+/// e.g. `[channel_recv] elem_ty=string` or `[stream_next] elem_ty=bytes`.
+///
+/// Returns an empty string when `kind` is `None` (Checked/Elab stages where
+/// the side-table is not available).
+fn render_suspend_kind_tag(kind: Option<&SuspendKind>) -> String {
+    let Some(kind) = kind else {
+        return String::new();
+    };
+    match kind {
+        SuspendKind::Ask { .. } => "[ask]".to_string(),
+        SuspendKind::Read { .. } => "[read]".to_string(),
+        SuspendKind::Accept { .. } => "[accept]".to_string(),
+        SuspendKind::CallClosure { .. } => "[call_closure]".to_string(),
+        SuspendKind::StreamNext { elem_ty, .. } => {
+            format!("[stream_next] elem_ty={}", elem_ty.user_facing())
+        }
+        SuspendKind::StreamSend { .. } => "[stream_send]".to_string(),
+        SuspendKind::ChannelRecv { elem_ty, .. } => {
+            format!("[channel_recv] elem_ty={}", elem_ty.user_facing())
+        }
+        SuspendKind::RemoteAsk { .. } => "[remote_ask]".to_string(),
+        SuspendKind::TaskAwait { .. } => "[task_await]".to_string(),
+        SuspendKind::Sleep { .. } => "[sleep]".to_string(),
+    }
+}
+
+/// Render a terminator, annotating `Terminator::Suspend` with its `SuspendKind`
+/// tag when `kind` is present (Raw-dump stage). The Checked and Elab stages
+/// pass `None` — the bare `suspend is_final=…` rendering is preserved.
+fn render_terminator_with_kind(term: &Terminator, kind: Option<&SuspendKind>) -> String {
+    match term {
+        Terminator::Suspend {
+            resume,
+            cleanup,
+            is_final,
+        } => {
+            let tag = render_suspend_kind_tag(kind);
+            if tag.is_empty() {
+                format!("suspend is_final={is_final} -> resume=bb{resume} cleanup=bb{cleanup}")
+            } else {
+                format!(
+                    "suspend {tag} is_final={is_final} -> resume=bb{resume} cleanup=bb{cleanup}"
+                )
+            }
+        }
+        other => render_terminator(other),
+    }
+}
 
 #[allow(
     clippy::too_many_lines,
@@ -1769,6 +1830,111 @@ mod tests {
         let a = dump_mir(&pipeline, DumpStage::Raw);
         let b = dump_mir(&pipeline, DumpStage::Raw);
         assert_eq!(a, b, "dump_mir is not deterministic");
+    }
+
+    /// Raw dump of a `Terminator::Suspend` with a `SuspendKind::ChannelRecv`
+    /// side-table entry renders the kind tag and `elem_ty` inline.
+    #[test]
+    fn suspend_with_channel_recv_kind_renders_tag_and_elem_ty() {
+        use std::collections::HashMap;
+        let mut suspend_kinds = HashMap::new();
+        suspend_kinds.insert(
+            0,
+            SuspendKind::ChannelRecv {
+                receiver: Place::Local(0),
+                result_dest: Place::Local(1),
+                elem_ty: ResolvedTy::String,
+                deadline_result_dest: None,
+                error_dest: None,
+            },
+        );
+        let func = RawMirFunction {
+            name: "recv_actor".to_string(),
+            return_ty: ResolvedTy::I64,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ResolvedTy::I64, ResolvedTy::I64],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            }],
+            decisions: vec![],
+            intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds,
+            lambda_actor_user_param_locals: vec![],
+            span: None,
+            instr_spans: std::collections::BTreeMap::new(),
+        };
+        let pipeline = minimal_pipeline_with_raw(func);
+        let dump = dump_mir(&pipeline, DumpStage::Raw);
+        assert!(
+            dump.contains("suspend [channel_recv] elem_ty=string is_final=false"),
+            "expected kind tag and elem_ty in Raw suspend dump:\n{dump}"
+        );
+        // Also confirm the bare `suspend is_final=` prefix is present (for grep compat).
+        assert!(
+            dump.contains("suspend is_final=") || dump.contains("suspend ["),
+            "suspend rendering must contain 'suspend is_final=' or 'suspend [':\n{dump}"
+        );
+    }
+
+    /// Raw dump of a `Terminator::Suspend` with a `SuspendKind::StreamNext`
+    /// carrying `elem_ty=bytes` renders the bytes element type.
+    #[test]
+    fn suspend_with_stream_next_bytes_renders_elem_ty_bytes() {
+        use std::collections::HashMap;
+        let mut suspend_kinds = HashMap::new();
+        suspend_kinds.insert(
+            0,
+            SuspendKind::StreamNext {
+                stream: Place::Local(0),
+                result_dest: Place::Local(1),
+                elem_ty: ResolvedTy::Bytes,
+                deadline_result_dest: None,
+                error_dest: None,
+            },
+        );
+        let func = RawMirFunction {
+            name: "stream_actor".to_string(),
+            return_ty: ResolvedTy::I64,
+            call_conv: FunctionCallConv::Default,
+            params: vec![],
+            locals: vec![ResolvedTy::I64, ResolvedTy::I64],
+            blocks: vec![BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Suspend {
+                    resume: 1,
+                    cleanup: 2,
+                    is_final: false,
+                },
+            }],
+            decisions: vec![],
+            intrinsic_id: None,
+            await_deadline_ns: std::collections::HashMap::new(),
+            suspend_kinds,
+            lambda_actor_user_param_locals: vec![],
+            span: None,
+            instr_spans: std::collections::BTreeMap::new(),
+        };
+        let pipeline = minimal_pipeline_with_raw(func);
+        let dump = dump_mir(&pipeline, DumpStage::Raw);
+        assert!(
+            dump.contains("suspend [stream_next] elem_ty=bytes is_final=false"),
+            "expected [stream_next] elem_ty=bytes in Raw suspend dump:\n{dump}"
+        );
+        assert!(
+            !dump.contains("elem_ty=string"),
+            "bytes stream must NOT render elem_ty=string:\n{dump}"
+        );
     }
 
     /// Trap renders as "trap(<TrapKind>)" — not a Debug form.

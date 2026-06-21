@@ -30,7 +30,7 @@ fn Caller__recv__go() -> i64 [conv=actor_handler]
     stmt: use BindingId(0) f site=SiteId(6) ty=LocalPid<Fast> intent=Read
     enter_context
     actor0 = spawn_actor Fast cycle_capable=false
-    suspend is_final=false -> resume=bb1 cleanup=bb1
+    suspend [ask] is_final=false -> resume=bb1 cleanup=bb1
   bb1:
     _6 = move etag3
     _7 = const.i64 0

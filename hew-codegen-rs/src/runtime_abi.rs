@@ -2369,6 +2369,21 @@ pub(crate) fn lower_call_runtime_abi(
                         .builder
                         .build_alloca(child_result_ty, "child_result_sret")
                         .llvm_ctx("supervisor_child_get sret alloca")?;
+                    // RC10: bracket the sret result slot. Its entire live range is
+                    // this match arm — written by the sret call, read by the two
+                    // GEP-loads below, then dead. The slot is SAFE to bracket: the
+                    // range is intra-block, it never crosses a suspend, and its
+                    // address escapes only to `hew_supervisor_child_get`, which
+                    // fills the slot synchronously during the call and does not
+                    // retain the pointer. (LESSONS: boundary-fail-closed — the
+                    // bracket is a real live range, not a guess.)
+                    crate::llvm::emit_lifetime_start(
+                        fn_ctx.ctx,
+                        fn_ctx.llvm_mod,
+                        &fn_ctx.builder,
+                        result_slot,
+                        "child_result_sret_lt_start",
+                    )?;
                     fn_ctx
                         .builder
                         .build_call(
@@ -2399,6 +2414,17 @@ pub(crate) fn lower_call_runtime_abi(
                         .build_load(ptr_ty, handle_field, "child_sret_handle")
                         .llvm_ctx("child sret handle load")?
                         .into_pointer_value();
+                    // RC10: last read of the sret slot is the handle load above
+                    // (`tag_i64`/`handle_ptr` are now plain SSA values); the slot
+                    // is dead from here. End its lifetime before the ptrtoint so
+                    // the storage is free to reuse/colour.
+                    crate::llvm::emit_lifetime_end(
+                        fn_ctx.ctx,
+                        fn_ctx.llvm_mod,
+                        &fn_ctx.builder,
+                        result_slot,
+                        "child_result_sret_lt_end",
+                    )?;
                     let handle_i64 = fn_ctx
                         .builder
                         .build_ptr_to_int(handle_ptr, i64_ty, "child_sret_handle_i64")

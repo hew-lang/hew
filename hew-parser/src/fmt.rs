@@ -2126,7 +2126,8 @@ impl<'a> Formatter<'a> {
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
             | Expr::This
-            | Expr::Yield(None) => true,
+            | Expr::Yield(None)
+            | Expr::Return(None) => true,
             Expr::Tuple(exprs) | Expr::Array(exprs) => exprs
                 .iter()
                 .all(|(expr, _)| Self::can_format_expr_inline(expr)),
@@ -2140,7 +2141,8 @@ impl<'a> Formatter<'a> {
             | Expr::Clone(operand)
             | Expr::PostfixTry(operand)
             | Expr::Await(operand)
-            | Expr::Yield(Some(operand)) => Self::can_format_expr_inline(&operand.0),
+            | Expr::Yield(Some(operand))
+            | Expr::Return(Some(operand)) => Self::can_format_expr_inline(&operand.0),
             Expr::Binary { left, right, .. }
             | Expr::Is {
                 lhs: left,
@@ -3062,6 +3064,13 @@ impl<'a> Formatter<'a> {
             }
             Expr::Yield(val) => {
                 self.write("yield");
+                if let Some(val) = val {
+                    self.write(" ");
+                    self.format_expr(&val.0);
+                }
+            }
+            Expr::Return(val) => {
+                self.write("return");
                 if let Some(val) = val {
                     self.write(" ");
                     self.format_expr(&val.0);

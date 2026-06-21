@@ -272,6 +272,18 @@ pub enum Expr {
     },
     UnsafeBlock(Box<Block>),
     Yield(Option<Box<Spanned<Expr>>>),
+    /// `return [expr]` in expression position — a divergent (`!`-typed) early
+    /// exit usable anywhere an expression is expected (match arms, `let`
+    /// initialisers, `&&`/`||` operands, `if`-as-expression branches), not just
+    /// at statement position. The operand is the value returned from the
+    /// enclosing function; `None` means `return` with no value (unit return).
+    ///
+    /// Mirrors `Stmt::Return`'s value-or-`None` shape but with no trailing `;`:
+    /// in expression position the operand ends where the surrounding expression
+    /// ends (before a `,`/`}`/`)`/`;` or any token that cannot begin an
+    /// expression). The checker synthesizes `Ty::Never`; HIR lowers it to
+    /// `HirExprKind::Return` (sibling of `HirExprKind::Break`).
+    Return(Option<Box<Spanned<Expr>>>),
     This,
     FieldAccess {
         object: Box<Spanned<Expr>>,

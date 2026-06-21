@@ -7404,10 +7404,29 @@ impl<'src> Parser<'src> {
             }
             Token::Return => {
                 self.advance();
-                // Return expressions are not typically parsed in expression context
-                // This might be a parsing context issue - skip for now
-                self.error("return statement in expression context".to_string());
-                return None;
+                // `return [expr]` in expression position. Unlike `Stmt::Return`
+                // there is NO trailing `;` here; the operand ends where the
+                // surrounding expression ends. Stop on any token that cannot
+                // begin an expression (`;` / `}` / `)` / `]` / `,`) or `else`
+                // (so a `let Pat = e else { ... }` clause and an
+                // `if cond { return } else { ... }` branch are not swallowed),
+                // yielding `return` with no value. Mirrors the `Yield` shape.
+                let value = if matches!(
+                    self.peek(),
+                    Some(
+                        Token::Semicolon
+                            | Token::RightBrace
+                            | Token::RightParen
+                            | Token::RightBracket
+                            | Token::Comma
+                            | Token::Else
+                    ) | None
+                ) {
+                    None
+                } else {
+                    Some(Box::new(self.parse_expr()?))
+                };
+                Expr::Return(value)
             }
             Token::Scope => {
                 self.advance();

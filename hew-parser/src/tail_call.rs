@@ -154,6 +154,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         | Expr::Lambda { .. }
         | Expr::SpawnLambdaActor { .. }
         | Expr::Yield(None)
+        | Expr::Return(None)
         | Expr::ForkChild { .. } => false,
         Expr::ForkBlock { body } | Expr::GenBlock { body } => block_contains_defer(body),
         Expr::ScopeDeadline { duration, body } => {
@@ -232,7 +233,9 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         Expr::Timeout { expr, duration } => {
             expr_contains_defer(&expr.0) || expr_contains_defer(&duration.0)
         }
-        Expr::Yield(Some(expr)) | Expr::Cast { expr, .. } => expr_contains_defer(&expr.0),
+        Expr::Yield(Some(expr)) | Expr::Return(Some(expr)) | Expr::Cast { expr, .. } => {
+            expr_contains_defer(&expr.0)
+        }
         Expr::FieldAccess { object, .. } => expr_contains_defer(&object.0),
         Expr::Index { object, index } => {
             expr_contains_defer(&object.0) || expr_contains_defer(&index.0)
@@ -346,6 +349,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         | Expr::Lambda { .. }
         | Expr::SpawnLambdaActor { .. }
         | Expr::Yield(None)
+        | Expr::Return(None)
         | Expr::ForkChild { .. } => {}
         // Generator blocks are not tail-call candidates; mark the body
         // so any inner call expressions can still be identified.
@@ -461,7 +465,9 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
             mark_expr(&mut expr.0, false);
             mark_expr(&mut duration.0, false);
         }
-        Expr::Yield(Some(expr)) | Expr::Cast { expr, .. } => mark_expr(&mut expr.0, false),
+        Expr::Yield(Some(expr)) | Expr::Return(Some(expr)) | Expr::Cast { expr, .. } => {
+            mark_expr(&mut expr.0, false);
+        }
         Expr::FieldAccess { object, .. } => mark_expr(&mut object.0, false),
         Expr::Index { object, index } => {
             mark_expr(&mut object.0, false);

@@ -170,8 +170,7 @@ fn grep_file(file_path: string, pat: regex.Pattern, cfg: Config, show_label: boo
     match result {
         Err(e) => {
             let msg = fs.io_error_message(e);
-            io.write_err(f"grep: {file_path}: {msg}
-");
+            io.write_err(f"grep: {file_path}: {msg}\n");
             MatchState { found_any: state.found_any, had_error: true }
         },
         Ok(content) => {
@@ -198,8 +197,7 @@ fn grep_dir(dir_path: string, pat: regex.Pattern, cfg: Config, state: MatchState
     match entries_result {
         Err(e) => {
             let msg = fs.io_error_message(e);
-            io.write_err(f"grep: {dir_path}: {msg}
-");
+            io.write_err(f"grep: {dir_path}: {msg}\n");
             MatchState { found_any: state.found_any, had_error: true }
         },
         Ok(entries) => {
@@ -238,8 +236,7 @@ fn grep_stdin(pat: regex.Pattern, cfg: Config, state: MatchState) -> MatchState 
 fn main() -> i64 {
     match parse_args() {
         Err(msg) => {
-            io.write_err(f"{msg}
-");
+            io.write_err(f"{msg}\n");
             2
         },
         Ok(cfg) => {

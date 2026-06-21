@@ -11,7 +11,7 @@ actor Counter {
     var count: i64;
     receive fn increment(n: i64) {
         count = count + n;
-        println(f"[server] counter incremented by {n} → {count}");
+        println(f"[server] counter incremented by {n} \u{2192} {count}");
     }
     receive fn get_count() -> i64 {
         count

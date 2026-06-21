@@ -20,7 +20,7 @@ fn main() {
     tags.push("runtime");
     tags.push("docs");
     template.ctx_set_list(ctx, "tags", tags);
-    let src = "Hi {{.name}} — {{.commits}} commits{{if .member}} (core member){{end}}.\nTags:{{range .tags}} #{{.}}{{end}}";
+    let src = "Hi {{.name}} \u{2014} {{.commits}} commits{{if .member}} (core member){{end}}.\nTags:{{range .tags}} #{{.}}{{end}}";
     let tmpl = template.parse(src);
     match template.render_try(tmpl, ctx) {
         Ok(rendered) => println(rendered),

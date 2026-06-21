@@ -69,7 +69,7 @@ actor Replica {
     // Local increment — fast, no coordination needed.
     receive fn increment(n: i64) {
         local_count = local_count + n;
-        println(f"  [{name}] +{n} → local={local_count}");
+        println(f"  [{name}] +{n} \u{2192} local={local_count}");
     }
 
     // Push local state to coordinator.
@@ -153,6 +153,6 @@ fn main() {
     println(f"  node-1: {l1}, node-2: {l2}, node-3: {l3}");
     println("");
     println("Distributed counter complete.");
-    println("When Node API lands, add Node::start/connect/lookup —");
+    println("When Node API lands, add Node::start/connect/lookup \u{2014}");
     println("the actor code stays exactly the same.");
 }

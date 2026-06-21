@@ -30,7 +30,7 @@ actor Backend {
         if val == 1 {
             println("[backend] restored to healthy");
         } else {
-            println("[backend] degraded — returning errors");
+            println("[backend] degraded \u{2014} returning errors");
         }
     }
 }
@@ -57,7 +57,7 @@ actor CircuitBreaker {
     receive fn request(id: i64) -> i64 {
         if state == 1 {
             // Open — reject immediately
-            println(f"[breaker] OPEN — rejecting request {id}");
+            println(f"[breaker] OPEN \u{2014} rejecting request {id}");
             -1
         } else {
             let result = await backend.call(id);
@@ -66,7 +66,7 @@ actor CircuitBreaker {
                 failure_count = failure_count + 1;
                 if failure_count >= max_failures {
                     state = 1;
-                    println(f"[breaker] request {id} FAILED — TRIPPED OPEN (count={failure_count})");
+                    println(f"[breaker] request {id} FAILED \u{2014} TRIPPED OPEN (count={failure_count})");
                 } else {
                     println(f"[breaker] request {id} FAILED (count={failure_count})");
                 }
@@ -76,9 +76,9 @@ actor CircuitBreaker {
                 failure_count = 0;
                 if state == 2 {
                     state = 0;
-                    println(f"[breaker] request {id} OK → {result} (HalfOpen → Closed)");
+                    println(f"[breaker] request {id} OK \u{2192} {result} (HalfOpen \u{2192} Closed)");
                 } else {
-                    println(f"[breaker] request {id} OK → {result}");
+                    println(f"[breaker] request {id} OK \u{2192} {result}");
                 }
                 result
             }
@@ -89,7 +89,7 @@ actor CircuitBreaker {
     receive fn probe() {
         if state == 1 {
             state = 2;
-            println("[breaker] Open → HalfOpen (allowing probe)");
+            println("[breaker] Open \u{2192} HalfOpen (allowing probe)");
         }
     }
     receive fn get_state() -> i64 {
@@ -148,5 +148,5 @@ fn main() {
     println(f"Final breaker state: {final_state} (0=Closed)");
     println("");
     println("Circuit breaker complete.");
-    println("The actor IS the state machine — no mutexes, no shared state.");
+    println("The actor IS the state machine \u{2014} no mutexes, no shared state.");
 }

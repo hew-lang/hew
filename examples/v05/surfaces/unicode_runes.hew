@@ -22,7 +22,7 @@ fn classify(cp: i64) -> string {
 }
 
 fn main() {
-    let text = "Hé 9世!";
+    let text = "H\u{E9} 9\u{4E16}!";
     println(f"runes={unicode.rune_count(text)} bytes={text.len()}");
     let runes = unicode.runes(text);
     for i in 0 .. runes.len() {

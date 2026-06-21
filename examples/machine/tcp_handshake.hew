@@ -30,7 +30,7 @@ machine TcpHandshake {
     state SynReceived {
         remote_port: u16;
         entry {
-            println("SYN received — sent SYN-ACK");
+            println("SYN received \u{2014} sent SYN-ACK");
         }
     }
     state Established {
@@ -43,7 +43,7 @@ machine TcpHandshake {
         entry {
 
             // Passive close: we received a FIN from the peer.
-            println("received FIN — entering close-wait");
+            println("received FIN \u{2014} entering close-wait");
         }
     }
 

@@ -139,5 +139,5 @@ fn main() {
     await w1.stats();
     await w2.stats();
     println("");
-    println("Rate limiting complete. No mutexes, no channels — just actors.");
+    println("Rate limiting complete. No mutexes, no channels \u{2014} just actors.");
 }

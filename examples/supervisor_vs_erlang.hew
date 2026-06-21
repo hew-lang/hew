@@ -95,7 +95,7 @@ supervisor ConnectionPool {
 }
 
 fn main() {
-    println("─── Connection Pool Demo ───");
+    println("\u{2500}\u{2500}\u{2500} Connection Pool Demo \u{2500}\u{2500}\u{2500}");
     println("");
     let sup = spawn ConnectionPool;
     sleep_ms(30);

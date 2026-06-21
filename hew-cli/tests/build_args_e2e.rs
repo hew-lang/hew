@@ -4,6 +4,37 @@ use std::process::Command;
 
 use support::{describe_output, hew_binary, repo_root};
 
+/// `--link-lib` must accept values that begin with a dash, such as `-lMagickWand-7.Q16`.
+///
+/// Before the fix, clap interpreted the leading `-` as an unknown flag and
+/// rejected the argument before the file was even opened. The test uses a
+/// non-existent input path so it never reaches the linker, but the error must
+/// be about the missing file, not about an unexpected argument or unknown flag.
+#[test]
+fn link_lib_hyphen_value_is_not_rejected_as_unknown_flag() {
+    for command in ["run", "debug", "build"] {
+        let output = Command::new(hew_binary())
+            .args([
+                command,
+                "--link-lib",
+                "-lMagickWand-7.Q16",
+                "placeholder.hew",
+            ])
+            .current_dir(repo_root())
+            .output()
+            .unwrap();
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("unexpected argument")
+                && !stderr.contains("unknown flag")
+                && !stderr.contains("invalid value")
+                && !stderr.contains("unrecognized"),
+            "`hew {command} --link-lib -lMagickWand-7.Q16` was rejected by clap as a flag: {stderr}",
+        );
+    }
+}
+
 #[test]
 fn werror_flag_is_accepted_by_build_style_commands() {
     // --Werror must stay accepted by the build-style commands even when the

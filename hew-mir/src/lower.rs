@@ -339,6 +339,7 @@ fn register_builtin_record_layouts(
         record_layouts.push(crate::model::RecordLayout {
             name: registration.name.to_string(),
             field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+            field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
         });
         record_field_orders.insert(registration.name.to_string(), fields);
     }
@@ -377,6 +378,7 @@ fn register_builtin_monomorphic_enum_layouts(
             .map(|v| crate::model::MachineVariantLayout {
                 name: v.name.to_string(),
                 field_tys: Vec::new(),
+                field_names: Vec::new(),
             })
             .collect();
         enum_layouts.push(crate::model::EnumLayout {
@@ -1003,6 +1005,7 @@ pub fn lower_hir_module_with_facts(
                     record_layouts.push(crate::model::RecordLayout {
                         name: layout_key.clone(),
                         field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                        field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
                     });
                 }
                 record_field_orders.insert(layout_key, fields);
@@ -1039,6 +1042,7 @@ pub fn lower_hir_module_with_facts(
                     record_layouts.push(crate::model::RecordLayout {
                         name: layout_key.clone(),
                         field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                        field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
                     });
                     record_field_orders.insert(layout_key.clone(), fields);
                 }
@@ -1058,6 +1062,7 @@ pub fn lower_hir_module_with_facts(
                         .map(|v| crate::model::MachineVariantLayout {
                             name: v.name.clone(),
                             field_tys: v.field_tys(),
+                            field_names: v.field_names(),
                         })
                         .collect();
                     // Enum-shaped pub types collide the same way (R6): a
@@ -1083,6 +1088,11 @@ pub fn lower_hir_module_with_facts(
                             .state_fields
                             .iter()
                             .map(|field| field.ty.clone())
+                            .collect(),
+                        field_names: actor
+                            .state_fields
+                            .iter()
+                            .map(|field| field.name.clone())
                             .collect(),
                     });
                 }
@@ -1138,6 +1148,7 @@ pub fn lower_hir_module_with_facts(
         record_layouts.push(crate::model::RecordLayout {
             name: layout.mangled_name.clone(),
             field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+            field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
         });
         record_field_orders.insert(layout.mangled_name.clone(), fields);
     }
@@ -1182,6 +1193,10 @@ pub fn lower_hir_module_with_facts(
             .map(|v| crate::model::MachineVariantLayout {
                 name: v.name.clone(),
                 field_tys: v.field_tys.clone(),
+                // Generic-enum instantiation payloads carry no field names in
+                // the HIR mono layout (names are not load-bearing for value
+                // codegen); `-g` falls back to positional `field_N` here.
+                field_names: Vec::new(),
             })
             .collect();
         enum_layouts.push(crate::model::EnumLayout {
@@ -1221,6 +1236,10 @@ pub fn lower_hir_module_with_facts(
         field_tys: child_lookup_fields
             .iter()
             .map(|(_, ty)| ty.clone())
+            .collect(),
+        field_names: child_lookup_fields
+            .iter()
+            .map(|(name, _)| name.clone())
             .collect(),
     });
     record_field_orders.insert(CHILD_LOOKUP_RESULT_TY_NAME.to_string(), child_lookup_fields);
@@ -3600,6 +3619,7 @@ fn build_machine_layout(md: &HirMachineDecl) -> crate::model::MachineLayout {
                     .iter()
                     .map(|f| default_machine_type_params_to_i64(&f.ty, md))
                     .collect(),
+                field_names: s.fields.iter().map(|f| f.name.clone()).collect(),
             })
             .collect(),
         events: md
@@ -3612,6 +3632,7 @@ fn build_machine_layout(md: &HirMachineDecl) -> crate::model::MachineLayout {
                     .iter()
                     .map(|f| default_machine_type_params_to_i64(&f.ty, md))
                     .collect(),
+                field_names: e.fields.iter().map(|f| f.name.clone()).collect(),
             })
             .collect(),
     }
@@ -6062,6 +6083,7 @@ impl Builder {
             .map(|(name, fields)| crate::model::RecordLayout {
                 name: name.clone(),
                 field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                field_names: fields.iter().map(|(fname, _)| fname.clone()).collect(),
             })
             .collect()
     }
@@ -17117,6 +17139,8 @@ impl Builder {
             .push(crate::model::RecordLayout {
                 name: env_name,
                 field_tys: arg_tys.clone(),
+                // Compiler-internal fork-env record: positional `-g` names.
+                field_names: Vec::new(),
             });
         let field_pairs: Vec<(FieldOffset, Place)> = arg_places
             .iter()
@@ -19252,6 +19276,8 @@ impl Builder {
             .push(crate::model::RecordLayout {
                 name: packed_name,
                 field_tys,
+                // Compiler-internal packed-args record: positional `-g` names.
+                field_names: Vec::new(),
             });
 
         let fields: Vec<(FieldOffset, Place)> = field_places
@@ -20969,6 +20995,8 @@ impl Builder {
             .push(crate::model::RecordLayout {
                 name: env_name,
                 field_tys: captures.iter().map(|capture| capture.ty.clone()).collect(),
+                // Compiler-internal closure-env record: positional `-g` names.
+                field_names: Vec::new(),
             });
 
         let mut field_pairs = Vec::with_capacity(captures.len());
@@ -21666,6 +21694,8 @@ impl Builder {
                 .push(crate::model::RecordLayout {
                     name: env_name,
                     field_tys,
+                    // Compiler-internal lambda-env record: positional `-g` names.
+                    field_names: Vec::new(),
                 });
             let dest = self.alloc_local(env_resolved_ty.clone());
             self.push_instr(Instr::RecordInit {
@@ -22315,6 +22345,8 @@ impl Builder {
                     .push(crate::model::RecordLayout {
                         name: env_name,
                         field_tys,
+                        // Compiler-internal generator-env record: positional names.
+                        field_names: Vec::new(),
                     });
                 let dest = self.alloc_local(env_resolved_ty.clone());
                 self.instructions.push(Instr::RecordInit {
@@ -33478,14 +33510,17 @@ mod enum_layout_tests {
                 MachineVariantLayout {
                     name: "Red".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Green".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Blue".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -33519,10 +33554,12 @@ mod enum_layout_tests {
                     MachineVariantLayout {
                         name: "Some".to_string(),
                         field_tys: vec![ResolvedTy::I64],
+                        field_names: vec![],
                     },
                     MachineVariantLayout {
                         name: "None".to_string(),
                         field_tys: vec![],
+                        field_names: vec![],
                     },
                 ],
                 is_indirect: false,
@@ -33548,10 +33585,12 @@ mod enum_layout_tests {
                     MachineVariantLayout {
                         name: "Empty".to_string(),
                         field_tys: vec![],
+                        field_names: vec![],
                     },
                     MachineVariantLayout {
                         name: "Full".to_string(),
                         field_tys: vec![],
+                        field_names: vec![],
                     },
                 ],
                 is_indirect: false,

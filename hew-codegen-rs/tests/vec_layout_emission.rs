@@ -96,6 +96,7 @@ fn base_pipeline(
         record_layouts: vec![RecordLayout {
             name: "Point".to_string(),
             field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+            field_names: vec![],
         }],
         actor_layouts: vec![],
         supervisor_layouts: vec![],
@@ -282,14 +283,17 @@ fn vec_payload_free_enum_new_routes_bitcopy_not_owned() {
             MachineVariantLayout {
                 name: "Red".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             },
             MachineVariantLayout {
                 name: "Green".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             },
             MachineVariantLayout {
                 name: "Blue".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             },
         ],
         is_indirect: false,
@@ -349,10 +353,12 @@ fn vec_scalar_payload_enum_new_routes_bitcopy_not_owned() {
             MachineVariantLayout {
                 name: "A".to_string(),
                 field_tys: vec![ResolvedTy::I64],
+                field_names: vec![],
             },
             MachineVariantLayout {
                 name: "B".to_string(),
                 field_tys: vec![ResolvedTy::I64],
+                field_names: vec![],
             },
         ],
         is_indirect: false,
@@ -687,6 +693,7 @@ fn vec_layout_contains_thunk_dedups_by_structured_type() {
         record_layouts: vec![RecordLayout {
             name: "Point".to_string(),
             field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+            field_names: vec![],
         }],
         actor_layouts: vec![],
         supervisor_layouts: vec![],
@@ -769,10 +776,12 @@ fn vec_layout_contains_thunk_enum_tag_dispatches_not_byte_compares() {
             MachineVariantLayout {
                 name: "Just".to_string(),
                 field_tys: vec![ResolvedTy::I64],
+                field_names: vec![],
             },
             MachineVariantLayout {
                 name: "Nothing".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             },
         ],
         is_indirect: false,

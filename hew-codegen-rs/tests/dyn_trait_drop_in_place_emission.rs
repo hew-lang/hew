@@ -355,6 +355,7 @@ fn dyn_drop_in_place_for_bitcopy_record_dispatches_record_structural_drop() {
     let counter_layout = RecordLayout {
         name: "Counter".to_string(),
         field_tys: vec![ResolvedTy::I64, ResolvedTy::F64],
+        field_names: vec![],
     };
     let p = pipeline_with(vec![impl_fn], vec![vtable], vec![counter_layout]);
     let ll = emit_ll(&p, "bitcopy_record_pod");
@@ -407,6 +408,7 @@ fn dyn_drop_in_place_for_record_with_string_field_dispatches_structural_drop() {
     let named_layout = RecordLayout {
         name: "Named".to_string(),
         field_tys: vec![ResolvedTy::I64, ResolvedTy::String],
+        field_names: vec![],
     };
     let p = pipeline_with(vec![impl_fn], vec![vtable], vec![named_layout]);
     // Emission must SUCCEED now (previously fail-closed).

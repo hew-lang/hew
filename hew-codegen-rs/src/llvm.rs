@@ -16383,6 +16383,8 @@ pub(crate) fn tuple_inplace_field_kinds<'ctx>(
         .map(|(name, tys)| hew_mir::RecordLayout {
             name: name.clone(),
             field_tys: tys.clone(),
+            // Classifier-only reconstruction (no `-g` consumer); names absent.
+            field_names: Vec::new(),
         })
         .collect();
     let mut kinds: Vec<hew_mir::StateFieldCloneKind> = Vec::with_capacity(elems.len());
@@ -21102,6 +21104,8 @@ fn codegen_record_layouts(fn_ctx: &FnCtx<'_, '_>) -> Vec<hew_mir::RecordLayout> 
         .map(|(name, tys)| hew_mir::RecordLayout {
             name: name.clone(),
             field_tys: tys.clone(),
+            // State-clone classifier reconstruction (no `-g` consumer).
+            field_names: Vec::new(),
         })
         .collect()
 }
@@ -34373,6 +34377,7 @@ mod tests {
             record_layouts: vec![hew_mir::RecordLayout {
                 name: "__hew_closure_env_main_0".to_string(),
                 field_tys: Vec::new(),
+                field_names: Vec::new(),
             }],
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -34454,10 +34459,12 @@ mod tests {
                 RecordLayout {
                     name: "Point".to_string(),
                     field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+                    field_names: vec![],
                 },
                 RecordLayout {
                     name: "PtrPayload".to_string(),
                     field_tys: vec![ResolvedTy::String],
+                    field_names: vec![],
                 },
             ],
             actor_layouts: Vec::new(),
@@ -34583,6 +34590,7 @@ mod tests {
             record_layouts: vec![RecordLayout {
                 name: "Point".to_string(),
                 field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+                field_names: vec![],
             }],
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -36246,10 +36254,12 @@ mod tests {
                 MachineVariantLayout {
                     name: "None".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Some".to_string(),
                     field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -37767,6 +37777,7 @@ mod tests {
                 MachineVariantLayout {
                     name: "Ok".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Err".to_string(),
@@ -37776,6 +37787,7 @@ mod tests {
                         builtin: None,
                         is_opaque: false,
                     }],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -37790,14 +37802,17 @@ mod tests {
                 MachineVariantLayout {
                     name: "Full".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Closed".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "NodeRoutingNotWired".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -37812,6 +37827,7 @@ mod tests {
                 MachineVariantLayout {
                     name: "Ok".to_string(),
                     field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Err".to_string(),
@@ -37821,6 +37837,7 @@ mod tests {
                         builtin: None,
                         is_opaque: false,
                     }],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -37834,6 +37851,7 @@ mod tests {
             variants: vec![MachineVariantLayout {
                 name: "NotFound".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             }],
             is_indirect: false,
         }
@@ -37843,6 +37861,7 @@ mod tests {
         MirRecordLayout {
             name: "MonitorRef".to_string(),
             field_tys: vec![ResolvedTy::I64],
+            field_names: vec![],
         }
     }
 
@@ -37856,14 +37875,17 @@ mod tests {
                 MachineVariantLayout {
                     name: "Empty".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "OneInt".to_string(),
                     field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "TwoInts".to_string(),
                     field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -37874,6 +37896,7 @@ mod tests {
         MirRecordLayout {
             name: "Point".to_string(),
             field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+            field_names: vec![],
         }
     }
 
@@ -37885,10 +37908,12 @@ mod tests {
                 MachineVariantLayout {
                     name: "Some".to_string(),
                     field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "None".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -39210,6 +39235,7 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
             }],
+            field_names: vec![],
         }];
         let enum_fixtures = vec![MirEnumLayout {
             name: "CrashKind".to_string(),
@@ -39218,10 +39244,12 @@ mod tests {
                 MachineVariantLayout {
                     name: "Panic".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Abort".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -39273,6 +39301,7 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
             }],
+            field_names: vec![],
         }];
         let machine_fixtures = vec![hew_mir::MachineLayout {
             name: "Worker".to_string(),
@@ -39280,10 +39309,12 @@ mod tests {
             variants: vec![MachineVariantLayout {
                 name: "Idle".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             }],
             events: vec![MachineVariantLayout {
                 name: "Start".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             }],
         }];
         let map = crate::layout::predeclare_named_layouts(
@@ -39322,6 +39353,7 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
             }],
+            field_names: vec![],
         }];
         let map = crate::layout::predeclare_named_layouts(&ctx, &record_fixtures, &[], &[], &[])
             .expect("predeclare must succeed");
@@ -39348,6 +39380,7 @@ mod tests {
         let record_fixtures = vec![MirRecordLayout {
             name: "Conflict".to_string(),
             field_tys: vec![ResolvedTy::I64],
+            field_names: vec![],
         }];
         let enum_fixtures = vec![MirEnumLayout {
             name: "Conflict".to_string(),
@@ -39355,6 +39388,7 @@ mod tests {
             variants: vec![MachineVariantLayout {
                 name: "Only".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];
@@ -39397,10 +39431,12 @@ mod tests {
                     MachineVariantLayout {
                         name: "None".to_string(),
                         field_tys: vec![],
+                        field_names: vec![],
                     },
                     MachineVariantLayout {
                         name: "Some".to_string(),
                         field_tys: vec![ResolvedTy::U8],
+                        field_names: vec![],
                     },
                 ],
                 is_indirect: false,
@@ -39412,10 +39448,12 @@ mod tests {
                     MachineVariantLayout {
                         name: "None".to_string(),
                         field_tys: vec![],
+                        field_names: vec![],
                     },
                     MachineVariantLayout {
                         name: "Some".to_string(),
                         field_tys: vec![ResolvedTy::U8],
+                        field_names: vec![],
                     },
                 ],
                 is_indirect: false,
@@ -39461,6 +39499,7 @@ mod tests {
                         builtin: None,
                         is_opaque: false,
                     }],
+                    field_names: vec![],
                 }],
                 is_indirect: false,
             },
@@ -39475,6 +39514,7 @@ mod tests {
                         builtin: None,
                         is_opaque: false,
                     }],
+                    field_names: vec![],
                 }],
                 is_indirect: false,
             },
@@ -39528,6 +39568,7 @@ mod tests {
                     MachineVariantLayout {
                         name: "ALeaf".to_string(),
                         field_tys: vec![ResolvedTy::I64],
+                        field_names: vec![],
                     },
                     MachineVariantLayout {
                         name: "AWrap".to_string(),
@@ -39537,6 +39578,7 @@ mod tests {
                             builtin: None,
                             is_opaque: false,
                         }],
+                        field_names: vec![],
                     },
                 ],
                 is_indirect: true,
@@ -39548,6 +39590,7 @@ mod tests {
                     MachineVariantLayout {
                         name: "BLeaf".to_string(),
                         field_tys: vec![ResolvedTy::I64],
+                        field_names: vec![],
                     },
                     MachineVariantLayout {
                         name: "BWrap".to_string(),
@@ -39557,6 +39600,7 @@ mod tests {
                             builtin: None,
                             is_opaque: false,
                         }],
+                        field_names: vec![],
                     },
                 ],
                 is_indirect: true,
@@ -40681,6 +40725,7 @@ mod tests {
         pipeline.record_layouts = vec![RecordLayout {
             name: "ConnActor".to_string(),
             field_tys: vec![conn_ty],
+            field_names: vec![],
         }];
         pipeline.actor_layouts = vec![actor];
 

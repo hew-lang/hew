@@ -53,10 +53,12 @@ fn option_some_pipeline() -> IrPipeline {
             MachineVariantLayout {
                 name: "Some".to_string(),
                 field_tys: vec![ResolvedTy::I64],
+                field_names: vec![],
             },
             MachineVariantLayout {
                 name: "None".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             },
         ],
         is_indirect: false,
@@ -152,10 +154,12 @@ fn option_string_pipeline() -> IrPipeline {
             MachineVariantLayout {
                 name: "Some".to_string(),
                 field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
             },
             MachineVariantLayout {
                 name: "None".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             },
         ],
         is_indirect: false,
@@ -303,11 +307,13 @@ fn envelope_i64_pipeline() -> IrPipeline {
                 // Data(T) instantiated as Data(i64) — bitcopy payload
                 name: "Data".to_string(),
                 field_tys: vec![ResolvedTy::I64],
+                field_names: vec![],
             },
             MachineVariantLayout {
                 // Message(string) — heap-owning, NOT derived from the type param
                 name: "Message".to_string(),
                 field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
             },
         ],
         is_indirect: false,
@@ -545,6 +551,7 @@ fn generic_record_of_string_return_pipeline() -> IrPipeline {
     let record_layout = RecordLayout {
         name: "Pair$$string".to_string(),
         field_tys: vec![ResolvedTy::String, ResolvedTy::String],
+        field_names: vec![],
     };
     let make_fn = RawMirFunction {
         name: "main".to_string(),

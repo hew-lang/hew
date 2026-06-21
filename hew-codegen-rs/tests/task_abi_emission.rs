@@ -425,6 +425,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         record_layouts: vec![RecordLayout {
             name: "__hew_closure_env_main_0".to_string(),
             field_tys: vec![],
+            field_names: vec![],
         }],
         actor_layouts: vec![],
         supervisor_layouts: vec![],

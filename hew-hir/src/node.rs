@@ -921,6 +921,22 @@ impl HirVariant {
         }
     }
 
+    /// Payload field names in declaration order, parallel to [`field_tys`].
+    /// Struct variants carry the source field names; tuple variants synthesize
+    /// positional `0`/`1`/… names (the surface has none). Empty for `Unit`.
+    /// MIR's `MachineVariantLayout.field_names` consumes this for `-g` enum
+    /// payload member DIEs.
+    ///
+    /// [`field_tys`]: HirVariant::field_tys
+    #[must_use]
+    pub fn field_names(&self) -> Vec<String> {
+        match &self.kind {
+            HirVariantKind::Unit => Vec::new(),
+            HirVariantKind::Tuple(tys) => (0..tys.len()).map(|i| i.to_string()).collect(),
+            HirVariantKind::Struct(fields) => fields.iter().map(|(n, _)| n.clone()).collect(),
+        }
+    }
+
     /// True for `Unit` variants. Used by the ctor-arity gate in the call /
     /// struct-init lowering paths.
     #[must_use]

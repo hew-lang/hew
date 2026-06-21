@@ -26,6 +26,7 @@ fn point_layout() -> RecordLayout {
     RecordLayout {
         name: "Point".to_string(),
         field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+        field_names: vec![],
     }
 }
 

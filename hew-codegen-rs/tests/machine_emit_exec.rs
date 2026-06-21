@@ -78,6 +78,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         .map(|n| MachineVariantLayout {
             name: n.to_string(),
             field_tys: Vec::new(),
+            field_names: Vec::new(),
         })
         .collect::<Vec<_>>();
     let events = vec!["SynReceive", "AckReceive"]
@@ -85,6 +86,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         .map(|n| MachineVariantLayout {
             name: n.to_string(),
             field_tys: Vec::new(),
+            field_names: Vec::new(),
         })
         .collect::<Vec<_>>();
     let machine_layout = MachineLayout {

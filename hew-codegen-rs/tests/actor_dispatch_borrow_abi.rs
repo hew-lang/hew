@@ -626,10 +626,12 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
             MachineVariantLayout {
                 name: "Hold".to_string(),
                 field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
             },
             MachineVariantLayout {
                 name: "Empty".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             },
         ],
         is_indirect: false,

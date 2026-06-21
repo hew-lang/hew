@@ -56,6 +56,7 @@ fn unit_variant(name: &str) -> MachineVariantLayout {
     MachineVariantLayout {
         name: name.to_string(),
         field_tys: Vec::new(),
+        field_names: Vec::new(),
     }
 }
 
@@ -213,6 +214,7 @@ fn constructor_pipeline() -> IrPipeline {
             MachineVariantLayout {
                 name: "WithValue".to_string(),
                 field_tys: vec![ResolvedTy::I64],
+                field_names: vec![],
             },
         ],
         events: Vec::new(),

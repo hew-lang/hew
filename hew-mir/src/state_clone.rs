@@ -1620,6 +1620,7 @@ mod tests {
                     },
                     ResolvedTy::String,
                 ],
+                field_names: vec![],
             },
             RecordLayout {
                 name: "Entry".to_string(),
@@ -1632,6 +1633,7 @@ mod tests {
                         is_opaque: false,
                     },
                 ],
+                field_names: vec![],
             },
         ];
         let ty = ResolvedTy::Named {
@@ -1678,10 +1680,12 @@ mod tests {
                         is_opaque: false,
                     },
                 ],
+                field_names: vec![],
             },
             RecordLayout {
                 name: "Leaf".to_string(),
                 field_tys: vec![ResolvedTy::I64],
+                field_names: vec![],
             },
         ];
         let mut v = HashSet::new();
@@ -1724,6 +1728,7 @@ mod tests {
                 },
                 ResolvedTy::I32,
             ],
+            field_names: vec![],
         }];
         let mut v = HashSet::new();
         let result = classify_state_field(
@@ -1774,6 +1779,7 @@ mod tests {
         let records = vec![RecordLayout {
             name: key.clone(),
             field_tys: vec![ResolvedTy::I64, ResolvedTy::String],
+            field_names: vec![],
         }];
         let mut v = HashSet::new();
         let result = classify_state_field(
@@ -1802,6 +1808,7 @@ mod tests {
         let records = vec![RecordLayout {
             name: key.clone(),
             field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+            field_names: vec![],
         }];
         let mut v = HashSet::new();
         let result = classify_state_field(
@@ -1838,6 +1845,7 @@ mod tests {
             name: key.clone(),
             // The substituted field is the opaque handle, NOT the bare `T`.
             field_tys: vec![ResolvedTy::named_opaque("json.Value", vec![])],
+            field_names: vec![],
         }];
         let mut v = HashSet::new();
         let result = classify_state_field_full(
@@ -1894,11 +1902,13 @@ mod tests {
             RecordLayout {
                 name: key.clone(),
                 field_tys: vec![ResolvedTy::I64, ResolvedTy::named_user("Value", vec![])],
+                field_names: vec![],
             },
             // The nested `Value` record so the field recursion classifies cleanly.
             RecordLayout {
                 name: "Value".to_string(),
                 field_tys: vec![ResolvedTy::I64],
+                field_names: vec![],
             },
         ];
         let mut v = HashSet::new();
@@ -1934,10 +1944,12 @@ mod tests {
                 MachineVariantLayout {
                     name: "Full".to_string(),
                     field_tys: vec![ResolvedTy::String],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Empty".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -2010,10 +2022,12 @@ mod tests {
                 MachineVariantLayout {
                     name: "Some".to_string(),
                     field_tys: vec![ResolvedTy::String],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "None".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -2059,10 +2073,12 @@ mod tests {
                 MachineVariantLayout {
                     name: "Ok".to_string(),
                     field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Err".to_string(),
                     field_tys: vec![ResolvedTy::String],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -2093,10 +2109,12 @@ mod tests {
                 MachineVariantLayout {
                     name: "Message".to_string(),
                     field_tys: vec![ResolvedTy::String],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Empty".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -2134,6 +2152,7 @@ mod tests {
                     params: vec![],
                     ret: Box::new(ResolvedTy::Unit),
                 }],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];
@@ -2186,6 +2205,7 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
             }],
+            field_names: vec![],
         }];
         let enums = vec![EnumLayout {
             name: "Envelope".to_string(),
@@ -2193,6 +2213,7 @@ mod tests {
             variants: vec![MachineVariantLayout {
                 name: "Message".to_string(),
                 field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];
@@ -2230,6 +2251,7 @@ mod tests {
         let records = vec![RecordLayout {
             name: "Value".to_string(),
             field_tys: vec![ResolvedTy::I64],
+            field_names: vec![],
         }];
         // Simulates `json.Value` opaque handle — its bare decl name is `"Value"`.
         let opaque_names = vec!["Value".to_string()];
@@ -2273,6 +2295,7 @@ mod tests {
                 MachineVariantLayout {
                     name: "Lit".to_string(),
                     field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     // Self-referential variant — the `Neg(Expr)` payload is the
@@ -2284,6 +2307,7 @@ mod tests {
                         builtin: None,
                         is_opaque: false,
                     }],
+                    field_names: vec![],
                 },
             ],
             is_indirect: true,
@@ -2357,6 +2381,7 @@ mod tests {
         let records = vec![RecordLayout {
             name: "Value".to_string(),
             field_tys: vec![ResolvedTy::I64],
+            field_names: vec![],
         }];
         // The opaque handle field carries the identity discriminator.
         let ty = named_opaque("Value", vec![]);
@@ -2387,10 +2412,12 @@ mod tests {
                 MachineVariantLayout {
                     name: "Foo".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Bar".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -2419,6 +2446,7 @@ mod tests {
         let records = vec![RecordLayout {
             name: "Value".to_string(),
             field_tys: vec![ResolvedTy::I64],
+            field_names: vec![],
         }];
         let opaque_names = vec!["Value".to_string()];
         let ty = named("Value", vec![]); // is_opaque: false
@@ -2447,6 +2475,7 @@ mod tests {
             variants: vec![MachineVariantLayout {
                 name: "V".to_string(),
                 field_tys: vec![named_opaque("Value", vec![])],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];
@@ -2569,6 +2598,7 @@ mod tests {
         let records = vec![RecordLayout {
             name: "Holder".to_string(),
             field_tys: vec![named_opaque("Value", vec![])],
+            field_names: vec![],
         }];
         let mut v = HashSet::new();
         let ty = ResolvedTy::named_user("Vec", vec![ResolvedTy::named_user("Holder", vec![])]);
@@ -2585,6 +2615,7 @@ mod tests {
         let records = vec![RecordLayout {
             name: "Value".to_string(),
             field_tys: vec![ResolvedTy::I64],
+            field_names: vec![],
         }];
         let opaque_names = vec!["Value".to_string()];
         let mut v = HashSet::new();

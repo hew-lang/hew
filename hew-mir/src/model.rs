@@ -585,6 +585,14 @@ pub struct RecordLayout {
     /// Field types in declaration order. Index `i` corresponds to
     /// `FieldOffset(i)`.
     pub field_tys: Vec<ResolvedTy>,
+    /// Field names in declaration order, parallel to `field_tys`
+    /// (`field_names[i]` is the source name of `FieldOffset(i)`). Threaded
+    /// from the HIR record field declarations at the MIR projection. Codegen
+    /// consumes this under `hew build -g` to emit named `DW_TAG_member` DIEs
+    /// so gdb prints `pt.x`, not `pt.<field0>`. Empty for layouts built
+    /// without names (hand-built test fixtures); codegen falls back to a
+    /// positional `field_N` name in that case rather than failing.
+    pub field_names: Vec<String>,
 }
 
 /// Layout descriptor for an `actor` declaration. The state field list follows
@@ -902,6 +910,13 @@ pub struct MachineVariantLayout {
     pub name: String,
     /// Payload field types in declaration order. Empty for zero-field states.
     pub field_tys: Vec<ResolvedTy>,
+    /// Payload field names in declaration order, parallel to `field_tys`.
+    /// Threaded from the HIR variant payload field declarations at the MIR
+    /// projection so codegen's `-g` enum DIEs name each variant's payload
+    /// members (`shape.payload.Circle.radius`). Empty for unit variants and
+    /// for hand-built test fixtures; codegen falls back to positional
+    /// `field_N` names when a name is absent.
+    pub field_names: Vec<String>,
 }
 
 /// Layout descriptor for a `machine` declaration.
@@ -5323,6 +5338,7 @@ mod heap_owning_tests {
         let records = vec![RecordLayout {
             name: "Holder".to_string(),
             field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+            field_names: vec![],
         }];
         let ty = ResolvedTy::named_user("Holder", vec![]);
         assert!(ty_contains_unclonable_opaque(&ty, &records, &[]));
@@ -5336,6 +5352,7 @@ mod heap_owning_tests {
             variants: vec![MachineVariantLayout {
                 name: "V".to_string(),
                 field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];
@@ -5356,6 +5373,7 @@ mod heap_owning_tests {
         let records = vec![RecordLayout {
             name: "Value".to_string(),
             field_tys: vec![ResolvedTy::I64],
+            field_names: vec![],
         }];
         let user_value = ResolvedTy::named_user("Value", vec![]);
         assert!(!ty_contains_unclonable_opaque(&user_value, &records, &[]));
@@ -5393,6 +5411,7 @@ mod heap_owning_tests {
         let records = vec![RecordLayout {
             name: "Dq".to_string(),
             field_tys: vec![ResolvedTy::I64],
+            field_names: vec![],
         }];
         let user_record = ResolvedTy::named_user("Dq", vec![]);
         let names = vec!["Dq".to_string()];
@@ -5420,6 +5439,7 @@ mod heap_owning_tests {
         let records = vec![RecordLayout {
             name: "Value".to_string(),
             field_tys: vec![ResolvedTy::I64],
+            field_names: vec![],
         }];
         // Qualified, discriminator-cleared opaque handle (`is_opaque: false`),
         // exactly the shape a captured local's binding type reaches MIR with.
@@ -5494,6 +5514,7 @@ mod heap_owning_tests {
             variants: vec![MachineVariantLayout {
                 name: "Full".to_string(),
                 field_tys: vec![ResolvedTy::I64],
+                field_names: vec![],
             }],
             is_indirect: false,
         };
@@ -5544,6 +5565,7 @@ mod heap_owning_tests {
         let records = vec![RecordLayout {
             name: "Pair".to_string(),
             field_tys: vec![ResolvedTy::named_user("Dq", vec![]), ResolvedTy::I64],
+            field_names: vec![],
         }];
         let pair = ResolvedTy::named_user("Pair", vec![]);
         let names = vec!["Dq".to_string()];
@@ -5582,6 +5604,7 @@ mod heap_owning_tests {
                 name: "Full".to_string(),
                 // The substituted payload carries the unclonable opaque handle.
                 field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];
@@ -5609,6 +5632,7 @@ mod heap_owning_tests {
             variants: vec![MachineVariantLayout {
                 name: "Full".to_string(),
                 field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];
@@ -5638,6 +5662,7 @@ mod heap_owning_tests {
             variants: vec![MachineVariantLayout {
                 name: "Full".to_string(),
                 field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];
@@ -5663,6 +5688,7 @@ mod heap_owning_tests {
             variants: vec![MachineVariantLayout {
                 name: "Full".to_string(),
                 field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];

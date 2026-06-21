@@ -259,6 +259,7 @@ mod tests {
             emit_dir: None,
             dump_mir: None,
             target: None,
+            opt_level: "0".to_string(),
             format: crate::args::DiagnosticFormat::Text,
         });
         let mut dispatcher = RecordingDispatcher::default();
@@ -276,6 +277,7 @@ mod tests {
             target: None,
             emit_obj: false,
             debug: false,
+            opt_level: "0".to_string(),
             link_libs: Vec::new(),
             common: crate::args::CommonBuildArgs::default(),
             format: crate::args::DiagnosticFormat::Text,

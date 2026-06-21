@@ -175,6 +175,7 @@ fn emit_textual_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts =
@@ -280,6 +281,7 @@ fn duplex_exemplar_module_verifies() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     emit_module(&pipeline, &options).expect("the duplex exemplar must pass `Module::verify()`");

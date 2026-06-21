@@ -65,6 +65,7 @@ fn emit_ll_with_checker(source: &str, module_name: &str) -> String {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts =
@@ -103,6 +104,7 @@ fn try_emit_ll(source: &str, module_name: &str) -> Result<String, String> {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options).map_err(|e| format!("{e:?}"))?;

@@ -450,6 +450,7 @@ fn task_abi_emission_task_new_declare() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     emit_module(&pipeline, &options).expect("hew_task_new emission should succeed");
@@ -480,6 +481,7 @@ fn task_abi_emission_task_await_blocking_declare() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     emit_module(&pipeline, &options).expect("hew_task_await_blocking emission should succeed");
@@ -508,6 +510,7 @@ fn task_abi_emission_task_get_result_declare() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     emit_module(&pipeline, &options).expect("hew_task_get_result emission should succeed");
@@ -532,6 +535,7 @@ fn task_abi_emission_task_free_declare() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     emit_module(&pipeline, &options).expect("hew_task_free emission should succeed");
@@ -648,6 +652,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     emit_module(&pipeline, &options)
@@ -700,6 +705,7 @@ fn task_abi_emission_spawn_task_direct_synthesizes_wrapper() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     emit_module(&pipeline, &options).expect("SpawnTaskDirect emission should succeed");
@@ -731,6 +737,7 @@ fn task_abi_emission_spawn_task_direct_rejects_contextless_target() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     match emit_module(&pipeline, &options) {
@@ -758,6 +765,7 @@ fn task_abi_emission_spawn_task_closure_threads_execution_context() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     emit_module(&pipeline, &options).expect("SpawnTaskClosure emission should succeed");
@@ -792,6 +800,7 @@ fn task_abi_emission_task_spawn_thread_fail_closed() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     match emit_module(&pipeline, &options) {

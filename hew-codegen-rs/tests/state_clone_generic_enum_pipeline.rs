@@ -92,6 +92,7 @@ fn emit_ll(source: &str, module_name: &str) -> String {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options).expect("pipeline must emit successfully");

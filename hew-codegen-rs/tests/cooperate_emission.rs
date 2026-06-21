@@ -17,6 +17,7 @@ fn emit_ll_result(pipeline: &IrPipeline, module_name: &str) -> Result<String, Co
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts = emit_module(pipeline, &options)?;

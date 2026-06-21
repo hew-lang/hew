@@ -146,6 +146,7 @@ fn emit_ll(pipeline: &IrPipeline, module_name: &str) -> String {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts =
@@ -200,6 +201,7 @@ fn elab_drop_plan_duplex_close_blocks_wasm_emission() {
         wasm: true,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let result = emit_module(&pipeline, &options);
@@ -310,6 +312,7 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let result = emit_module(&pipeline, &options);

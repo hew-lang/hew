@@ -122,6 +122,7 @@ fn emit_ll(pipeline: IrPipeline, module_name: &str) -> String {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts =
@@ -846,6 +847,7 @@ fn vec_layout_contains_thunk_emits_for_wasm_target() {
         wasm: true,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let result = emit_module(&pipeline, &options);

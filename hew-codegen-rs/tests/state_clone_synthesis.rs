@@ -137,6 +137,7 @@ fn try_emit_to_string(pipeline: &IrPipeline, slug: &str) -> Result<String, Codeg
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     emit_module(pipeline, &options)?;

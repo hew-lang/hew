@@ -129,6 +129,7 @@ fn compile_to_ll(pipeline: &IrPipeline, module_name: &str) -> PathBuf {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     emit_module(pipeline, &options)

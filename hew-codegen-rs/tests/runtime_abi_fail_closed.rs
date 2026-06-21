@@ -143,6 +143,7 @@ fn call_runtime_abi_fails_closed_with_symbol_in_message() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let result = emit_module(&pipeline, &options);
@@ -205,6 +206,7 @@ fn call_runtime_abi_succeeds_for_lambda_actor_release() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let result = emit_module(&pipeline, &options);
@@ -232,6 +234,7 @@ fn actor_link_and_monitor_runtime_calls_are_codegen_reachable_without_dest() {
             wasm: false,
             target_triple: None,
             debug: false,
+            opt_level: hew_codegen_rs::OptLevel::O0,
             source_path: None,
         };
         let result = emit_module(&pipeline, &options);
@@ -258,6 +261,7 @@ fn actor_monitor_runtime_call_with_dest_still_fails_closed() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let result = emit_module(&pipeline, &options);

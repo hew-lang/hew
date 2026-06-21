@@ -135,6 +135,7 @@ fn emit_ll(pipeline: IrPipeline, module_name: &str) -> String {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts = emit_module(&pipeline, &options)
@@ -795,6 +796,7 @@ fn hashmap_layout_emit_for_wasm_target_emits_descriptor_object() {
         wasm: true,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts = emit_module_objects(&pipeline, &options)
@@ -852,6 +854,7 @@ fn hashset_layout_emit_for_wasm_target_emits_descriptor_object() {
         wasm: true,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     let artefacts = emit_module_objects(&pipeline, &options)
@@ -925,6 +928,7 @@ fn lower_hashmap_layout_probe_with_wrong_arity_fails_closed() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     match emit_module(&pipeline, &options) {
@@ -961,6 +965,7 @@ fn lower_hashset_layout_probe_with_wrong_arity_fails_closed() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     match emit_module(&pipeline, &options) {
@@ -994,6 +999,7 @@ fn lower_hashmap_layout_probe_with_dest_fails_closed() {
         wasm: false,
         target_triple: None,
         debug: false,
+        opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: None,
     };
     match emit_module(&pipeline, &options) {

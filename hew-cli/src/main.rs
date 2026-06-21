@@ -389,6 +389,7 @@ fn emit_module(
     emit_dir: &Path,
     emit_target: CompileEmitTarget,
     link_freestanding_wasm: bool,
+    opt_level: hew_codegen_rs::OptLevel,
 ) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
     emit_module_with_triple(
         pipeline,
@@ -398,6 +399,7 @@ fn emit_module(
         None,
         link_freestanding_wasm,
         false,
+        opt_level,
         None,
     )
 }
@@ -420,6 +422,7 @@ fn emit_module_with_triple(
     target_triple: Option<&str>,
     link_freestanding_wasm: bool,
     debug: bool,
+    opt_level: hew_codegen_rs::OptLevel,
     source_path: Option<&Path>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
     let options = hew_codegen_rs::EmitOptions {
@@ -429,6 +432,7 @@ fn emit_module_with_triple(
         wasm: emit_target == CompileEmitTarget::Wasm,
         target_triple,
         debug,
+        opt_level,
         source_path,
     };
     let result = if emit_target == CompileEmitTarget::Wasm && !link_freestanding_wasm {
@@ -470,6 +474,7 @@ fn emit_module_for_target(
     target: &target::TargetSpec,
     link_freestanding_wasm: bool,
     debug: bool,
+    opt_level: hew_codegen_rs::OptLevel,
     source_path: Option<&Path>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, ()> {
     let codegen_triple = match emit_target {
@@ -484,6 +489,7 @@ fn emit_module_for_target(
         codegen_triple.as_deref(),
         link_freestanding_wasm,
         debug,
+        opt_level,
         source_path,
     )
 }
@@ -516,6 +522,7 @@ pub(crate) fn compile_native_binary(input: &Path, bin_path: &Path) -> Result<(),
         emit_dir,
         CompileEmitTarget::Native,
         true,
+        hew_codegen_rs::OptLevel::O0,
     )?;
     let obj = artefacts.native_obj_path.as_deref().ok_or_else(|| {
         eprintln!("E_NOT_YET_IMPLEMENTED: native codegen did not produce an object");
@@ -523,6 +530,11 @@ pub(crate) fn compile_native_binary(input: &Path, bin_path: &Path) -> Result<(),
     link_native_object(obj, bin_path)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "cohesive frontend->MIR->emit->link pipeline already at the line boundary; \
+              threading opt_level tipped it over — splitting it would obscure the linear flow"
+)]
 pub(crate) fn compile_native_from_program(
     program: hew_parser::ast::Program,
     source: &str,
@@ -605,14 +617,20 @@ pub(crate) fn compile_native_from_program(
         .unwrap_or("module");
     let emit_target = if target.is_wasm() {
         CompileEmitTarget::Wasm
-    } else {
-        if !target.can_link_with_host_tools() {
-            eprintln!("{}", target.unsupported_native_link_error());
-            return Err(());
-        }
+    } else if target.can_link_with_host_tools() {
         CompileEmitTarget::Native
+    } else {
+        eprintln!("{}", target.unsupported_native_link_error());
+        return Err(());
     };
-    let artefacts = emit_module(&pipeline, module_name, emit_dir, emit_target, false)?;
+    let artefacts = emit_module(
+        &pipeline,
+        module_name,
+        emit_dir,
+        emit_target,
+        false,
+        hew_codegen_rs::OptLevel::O0,
+    )?;
 
     match emit_target {
         CompileEmitTarget::Native => {
@@ -686,11 +704,16 @@ fn link_native_object_for_target(
 
 /// Build a native (or wasm) binary for an explicit target, writing it to
 /// `output_path`. Reuses the front-end → MIR → emit → link chain.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the build path threads each emit/link knob explicitly; grouping obscures the flow"
+)]
 fn compile_build_binary(
     input: &Path,
     output_path: &Path,
     target: &target::TargetSpec,
     debug: bool,
+    opt_level: hew_codegen_rs::OptLevel,
     extra_libs: &[String],
     options: &compile::CompileOptions,
 ) -> Result<(), ()> {
@@ -715,6 +738,7 @@ fn compile_build_binary(
         // yields a runnable `.wasm`; the native branch links separately below.
         emit_target == CompileEmitTarget::Wasm,
         debug,
+        opt_level,
         Some(input),
     )?;
 
@@ -759,6 +783,7 @@ fn compile_build_binary(
 fn emit_obj_only(
     input: &Path,
     target: &target::TargetSpec,
+    opt_level: hew_codegen_rs::OptLevel,
     options: &compile::CompileOptions,
 ) -> Result<(), ()> {
     let (pipeline, _native_pkg_dirs) = lower_file_to_mir_for_target(input, target, options)?;
@@ -781,6 +806,7 @@ fn emit_obj_only(
         target,
         false,
         false,
+        opt_level,
         None,
     )?;
     let produced = match emit_target {
@@ -813,8 +839,19 @@ fn cmd_build(a: &args::BuildArgs) {
     });
     let options = a.to_compile_options();
 
+    // The clap `value_parser` already constrains `--opt-level` to {"0","2"}, so
+    // `from_cli_str` cannot return `None` here; fail closed regardless rather than
+    // silently defaulting if the parser contract ever drifts.
+    let opt_level = hew_codegen_rs::OptLevel::from_cli_str(&a.opt_level).unwrap_or_else(|| {
+        eprintln!(
+            "Error: invalid --opt-level `{}` (expected 0 or 2)",
+            a.opt_level
+        );
+        std::process::exit(2);
+    });
+
     if a.emit_obj {
-        emit_obj_only(&a.input, &target, &options).unwrap_or_else(|()| {
+        emit_obj_only(&a.input, &target, opt_level, &options).unwrap_or_else(|()| {
             if json {
                 diagnostic_json::flush_json_diagnostics();
             }
@@ -842,6 +879,7 @@ fn cmd_build(a: &args::BuildArgs) {
         &output_path,
         &target,
         a.debug,
+        opt_level,
         &a.link_libs,
         &options,
     )
@@ -893,14 +931,31 @@ fn cmd_compile(a: &args::CompileArgs) {
         .and_then(|s| s.to_str())
         .unwrap_or("module");
 
+    // The clap `value_parser` constrains `--opt-level` to {"0","2"}; fail closed
+    // if that contract ever drifts rather than silently defaulting.
+    let opt_level = hew_codegen_rs::OptLevel::from_cli_str(&a.opt_level).unwrap_or_else(|| {
+        eprintln!(
+            "Error: invalid --opt-level `{}` (expected 0 or 2)",
+            a.opt_level
+        );
+        std::process::exit(2);
+    });
+
     let emit_target = resolve_compile_emit_target(a.target.as_deref());
-    let artefacts = emit_module(&pipeline, module_name, emit_dir, emit_target, true)
-        .unwrap_or_else(|()| {
-            if json {
-                diagnostic_json::flush_json_diagnostics();
-            }
-            std::process::exit(1);
-        });
+    let artefacts = emit_module(
+        &pipeline,
+        module_name,
+        emit_dir,
+        emit_target,
+        true,
+        opt_level,
+    )
+    .unwrap_or_else(|()| {
+        if json {
+            diagnostic_json::flush_json_diagnostics();
+        }
+        std::process::exit(1);
+    });
 
     // Link the native object into an executable using the shared
     // `link::link_executable` path. This resolves `libhew.a` (the
@@ -1017,6 +1072,9 @@ fn compile_temp_wasi_module(
             &target_spec,
             false,
             false,
+            // The WASI `run`/`eval` path is debug-default O0; the `HEW_OPT_LEVEL`
+            // env floor lifts the whole corpus to O2 for the differential gate.
+            hew_codegen_rs::OptLevel::O0,
             None,
         )?;
         let obj = artefacts.wasm_obj_path.as_deref().ok_or_else(|| {
@@ -1069,6 +1127,9 @@ fn compile_temp_artifact(
         artifact.path(),
         &target,
         false,
+        // `hew run` is debug-default O0; the `HEW_OPT_LEVEL` env floor lifts the
+        // whole corpus to O2 for the differential-exec parity gate.
+        hew_codegen_rs::OptLevel::O0,
         &[],
         options,
     )

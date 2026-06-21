@@ -513,6 +513,16 @@ expect_check_fail_contains \
     'cannot assign to immutable field `count`' \
     "actor_let_field_assign"
 
+# Reject: `ref.send(msg)` on a named actor with NO `receive fn send` handler is
+# NYI (the builtin fire-and-forget `LocalPid.send` path is not yet lowered).
+# Confirms the compiler fails closed with a diagnostic, not a silent wrong output.
+# This is the complement of `actor_receive_fn_named_send`: with a user handler the
+# call succeeds; without one it still fails closed cleanly.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/actor_builtin_send_no_handler.hew" \
+    'no checker-produced rewrite entry for this method call' \
+    "actor_builtin_send_no_handler"
+
 # Actor field mutability accept side: a `let` field set at spawn time is
 # readable from handlers while the `var` field takes the writes.
 # step=7 applied twice: exit 14.
@@ -539,6 +549,11 @@ run_accept_expect_status "actor_counter_reorder" 42
 # Actor body with init + on(start): initial=9, boot increments to 10, increment(32) = 42.
 # The exit code being 42 (not 41) proves on(start) fired before the first message.
 run_accept_expect_status "actor_counter_init" 42
+
+# Accept: a user-defined `receive fn send` is a first-class handler — not the
+# legacy builtin fire-and-forget. `ref.send(n)` must dispatch to the handler.
+# send(10) + send(32) = 42; get() returns 42.
+run_accept_expect_status "actor_receive_fn_named_send" 42
 
 # COEXIST: state-field spawn args alongside init() params. count=5, base=100 are
 # state fields passed at spawn; multiplier=2 is an init() param. init() runs

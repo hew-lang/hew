@@ -400,7 +400,7 @@ pub(crate) fn lower_call_runtime_abi(
                     .llvm_ctx("hew_lambda_actor_ask reply len load")?
                     .into_int_value();
                 let dest_local = composite_dest_local(d, "hew_lambda_actor_ask")?;
-                let result_layout = machine_layout_for_local(fn_ctx, dest_local)?;
+                let result_layout = crate::layout::machine_layout_for_local(fn_ctx, dest_local)?;
                 let ok_fields = result_layout.variant_field_tys.first().ok_or_else(|| {
                     CodegenError::FailClosed(format!(
                         "hew_lambda_actor_ask dest local {dest_local} has no Ok variant in \
@@ -1386,8 +1386,8 @@ pub(crate) fn lower_call_runtime_abi(
             let vec_ptr = load_duplex_handle(fn_ctx, args[0], "hew_vec_get_layout arg0")?;
             let index_val = load_int_arg(fn_ctx, args[1], i64_ty, "hew_vec_get_layout arg1")?;
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, dest_place)?;
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, dest_ty, "get")?;
-            let fv = get_or_declare_layout_vec_runtime(
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, dest_ty, "get")?;
+            let fv = crate::layout::get_or_declare_layout_vec_runtime(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
                 "hew_vec_get_layout",

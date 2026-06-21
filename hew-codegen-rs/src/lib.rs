@@ -31,6 +31,7 @@
 /// helper, the switched-resume skeleton emitter, and the coro-pass runner.
 pub(crate) mod arith;
 pub mod coro;
+pub(crate) mod layout;
 pub mod llvm;
 pub(crate) mod runtime_abi;
 pub(crate) mod suspend;

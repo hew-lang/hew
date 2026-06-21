@@ -58,9 +58,9 @@ use hew_mir::{
     CheckedMirFunction, ChildInitArg, CmpPred, CooperateKind, CooperateSite, DynVtableInstance,
     ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth,
     FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
-    LambdaEnvFieldDrop, MachineLayout, MachineVariantLayout, MirConst, MirConstValue, Place,
-    RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout,
-    SupervisorLayout, SuspendKind, Terminator, TrapKind,
+    LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, Place, RawMirFunction,
+    RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout, SupervisorLayout,
+    SuspendKind, Terminator, TrapKind,
 };
 use hew_types::{NumericWidth, ResolvedTy, WireCodecDirection};
 // Single source of truth for the trap discriminants codegen emits. Importing
@@ -3369,7 +3369,7 @@ pub(crate) struct RecordLayoutMap<'ctx> {
 }
 
 impl<'ctx> RecordLayoutMap<'ctx> {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             structs: HashMap::new(),
             opaque: std::collections::HashSet::new(),
@@ -3388,150 +3388,6 @@ impl std::ops::DerefMut for RecordLayoutMap<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.structs
     }
-}
-
-/// Register every named-form record from `layouts` as an LLVM named struct
-/// type on `ctx`, populating the body with each field's LLVM lowering.
-///
-/// Two-pass to support records that reference each other by name (forward /
-/// mutual references are valid Hew; the struct body resolution must see
-/// every record's opaque type before we attempt to set any body):
-/// 1. Pass 1: create an opaque named struct for every record so cross-
-///    references can resolve.
-/// 2. Pass 2: lower each field type and call `set_body` on the opaque
-///    struct.
-///
-/// Returns the populated map. Fails closed if any field type cannot be
-/// lowered — e.g. a record field with a `Tuple` or `Array` type (Cluster 2
-/// composite lowering pending), or a `Named` type that names neither a
-/// registered record nor a built-in handle. The MIR producer + checker
-/// would have rejected such a record at HIR-validation time, so reaching
-/// the fail-closed arm here is itself a bug.
-/// Allocate one opaque LLVM named struct for every record / enum / machine
-/// outer type (and every `<Name>Event` companion) in the pipeline, returning
-/// a `RecordLayoutMap` pre-populated with those opaque handles.
-///
-/// This MUST run before any body-fill pass (`fill_record_layout_bodies`,
-/// `build_tagged_union_layout`) because each of those passes resolves
-/// field/variant types through `resolve_ty`, which in turn looks names up
-/// in this map. Without predeclaration, a record field of enum type (or an
-/// enum payload of record type, etc.) would fall through `resolve_ty` to
-/// `primitive_to_llvm`'s D10 fail-closed sentinel — the symptom W4.012
-/// Stage 2 fixes.
-///
-/// **Within-class duplicates** (the same enum name appearing twice in
-/// `pipeline.enum_layouts`, etc.) are tolerated: the second registration
-/// is a no-op against the first opaque. This matches the pre-Stage-2
-/// behaviour where `register_enum_layouts` would silently overwrite the
-/// map entry on a repeated name. Repeated layouts are produced by the
-/// current pipeline for some generic-enum monomorphisations (e.g.
-/// `Option$$i64` registered along multiple stdlib paths); a strict
-/// fail-closed there would regress existing passing tests.
-///
-/// **Cross-class duplicates** (a record and an enum sharing a name) surface
-/// as `CodegenError::FailClosed` — defence in depth for a MIR-producer
-/// invariant (layout names should be disjoint across record/enum/machine
-/// spaces).
-fn predeclare_named_layouts<'ctx>(
-    ctx: &'ctx Context,
-    records: &[RecordLayout],
-    enums: &[EnumLayout],
-    machines: &[MachineLayout],
-    opaque_handle_names: &[String],
-) -> CodegenResult<RecordLayoutMap<'ctx>> {
-    // `class_owner` tracks which class first registered each name so a
-    // later registration from a different class can fail-closed with a
-    // useful diagnostic. Within-class repeats are silently idempotent.
-    #[derive(Copy, Clone, PartialEq, Eq)]
-    enum Class {
-        Record,
-        Enum,
-        Machine,
-    }
-    impl Class {
-        fn label(self) -> &'static str {
-            match self {
-                Class::Record => "record",
-                Class::Enum => "enum",
-                Class::Machine => "machine",
-            }
-        }
-    }
-    let mut map: RecordLayoutMap<'ctx> = RecordLayoutMap::new();
-    map.opaque.extend(opaque_handle_names.iter().cloned());
-    let mut class_owner: HashMap<String, Class> = HashMap::new();
-    let insert = |map: &mut RecordLayoutMap<'ctx>,
-                  owners: &mut HashMap<String, Class>,
-                  class: Class,
-                  name: &str|
-     -> CodegenResult<()> {
-        if let Some(existing) = owners.get(name) {
-            if *existing == class {
-                // Within-class duplicate: idempotent no-op against the
-                // already-allocated opaque struct.
-                return Ok(());
-            }
-            return Err(CodegenError::FailClosed(format!(
-                "duplicate layout name `{name}` across {} and {} layout classes — \
-                 MIR producer must use disjoint type names across record/enum/machine spaces",
-                existing.label(),
-                class.label()
-            )));
-        }
-        let st = ctx.opaque_struct_type(name);
-        map.insert(name.to_string(), st);
-        owners.insert(name.to_string(), class);
-        Ok(())
-    };
-    for layout in records {
-        insert(&mut map, &mut class_owner, Class::Record, &layout.name)?;
-    }
-    for layout in enums {
-        insert(&mut map, &mut class_owner, Class::Enum, &layout.name)?;
-    }
-    for layout in machines {
-        insert(&mut map, &mut class_owner, Class::Machine, &layout.name)?;
-        insert(
-            &mut map,
-            &mut class_owner,
-            Class::Machine,
-            &format!("{}Event", layout.name),
-        )?;
-    }
-    Ok(map)
-}
-
-/// Pass 2 of record-layout registration: walk every record's field list,
-/// lower each field type to LLVM via `resolve_ty`, and `set_body` on the
-/// opaque struct allocated by `predeclare_named_layouts`.
-///
-/// Because the map already contains opaque entries for every other record,
-/// every enum, and every machine outer/event struct in the pipeline, a
-/// record field of `Named { name: "<EnumName>" }` (or any other registered
-/// name) resolves to that opaque type rather than tripping the D10
-/// fail-closed sentinel in `primitive_to_llvm`.
-fn fill_record_layout_bodies<'ctx>(
-    ctx: &'ctx Context,
-    layouts: &[RecordLayout],
-    map: &RecordLayoutMap<'ctx>,
-) -> CodegenResult<()> {
-    for layout in layouts {
-        let st = map.get(&layout.name).copied().ok_or_else(|| {
-            CodegenError::FailClosed(format!(
-                "record `{}` missing from predeclared layout map — \
-                 predeclare_named_layouts must run before fill_record_layout_bodies",
-                layout.name
-            ))
-        })?;
-        let mut field_tys: Vec<BasicTypeEnum<'ctx>> = Vec::with_capacity(layout.field_tys.len());
-        for fty in &layout.field_tys {
-            field_tys.push(resolve_ty(ctx, fty, map)?);
-        }
-        // packed = false: use the target's natural alignment per
-        // `RecordLayout` doc (A-6b). LESSONS: parity-or-tracked-gap.
-        st.set_body(&field_tys, false);
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -3618,295 +3474,10 @@ pub(crate) struct MachineCodegenLayout<'ctx> {
     pub(crate) state_name_table: Option<inkwell::values::GlobalValue<'ctx>>,
 }
 
-/// Return the native host data-layout string, initialising LLVM's native target
-/// exactly once per process (guarded by `OnceLock`).
-///
-/// `TargetData` wraps a raw pointer and is not `Sync`, so we cache the
-/// layout *string* (which is `Sync`) and construct a fresh `TargetData`
-/// from it on each call via `TargetData::create`. `TargetData::create` is
-/// cheap — it only parses the layout string into target-description tables;
-/// it does not allocate LLVM IR or touch the global PassManager.
-///
-/// Object emission passes target-specific `TargetData` into module
-/// construction. This host helper is only for target-agnostic IR inspection
-/// tests and the debug `.ll` artefact.
-fn host_data_layout_string() -> &'static str {
-    use std::sync::OnceLock;
-    static HOST_DL: OnceLock<String> = OnceLock::new();
-    HOST_DL.get_or_init(|| {
-        // `initialize_native` is idempotent; `base=true` registers only
-        // the target description, not the asm printer/parser.
-        Target::initialize_native(&InitializationConfig {
-            base: true,
-            ..InitializationConfig::default()
-        })
-        .expect(
-            "host_data_layout_string: native LLVM target failed to initialise — \
-             the host platform is not supported by this build of LLVM",
-        );
-        let triple = TargetMachine::get_default_triple();
-        let target = Target::from_triple(&triple)
-            .expect("host_data_layout_string: no LLVM target for host triple");
-        // OptimizationLevel / RelocMode / CodeModel do not affect the data
-        // layout string; use defaults to minimise setup cost.
-        let tm = target
-            .create_target_machine(
-                &triple,
-                "generic",
-                "",
-                inkwell::OptimizationLevel::None,
-                inkwell::targets::RelocMode::Default,
-                inkwell::targets::CodeModel::Default,
-            )
-            .expect("host_data_layout_string: TargetMachine construction failed");
-        tm.get_target_data()
-            .get_data_layout()
-            .as_str()
-            .to_string_lossy()
-            .into_owned()
-    })
-}
-
 /// Construct a `TargetData` for the native host from the cached data-layout
 /// string. See `host_data_layout_string` for initialisation details.
-fn host_target_data() -> TargetData {
-    TargetData::create(host_data_layout_string())
-}
-
-/// Register every machine from `pipeline.machine_layouts` as a named LLVM
-/// tagged-union struct. See the module-level "Layout invariants" block
-/// for the struct shape and access pattern.
-///
-/// Variant payload structs are anonymous; only the outer machine type
-/// is named so `Place::MachineTag(local)` slots can be alloca'd by name.
-///
-/// LESSONS: `feedback_fail_closed_not_pretend` — out-of-range variant or
-/// unsupported payload type returns `CodegenError::FailClosed`, never a
-/// silent fallback to variant 0 or a zero-sized payload.
-fn register_machine_layouts<'ctx>(
-    ctx: &'ctx Context,
-    llvm_mod: &LlvmModule<'ctx>,
-    machine_layouts: &[MachineLayout],
-    record_layout_map: &mut RecordLayoutMap<'ctx>,
-    enum_layouts: &[EnumLayout],
-    target_data: Option<&TargetData>,
-) -> CodegenResult<MachineLayoutMap<'ctx>> {
-    let mut map: MachineLayoutMap<'ctx> = HashMap::new();
-    for layout in machine_layouts {
-        // Within-class duplicate guard (mirrors `register_enum_layouts`):
-        // a second `set_body` against the same predeclared opaque struct
-        // is invalid LLVM. Skip the repeat if the outer struct's
-        // per-variant metadata is already present.
-        if map.contains_key(&layout.name) {
-            continue;
-        }
-        // The state-side machine value: `<Name>` with state-variant payloads.
-        let mut machine_cg = build_tagged_union_layout(
-            ctx,
-            &layout.name,
-            &layout.variants,
-            record_layout_map,
-            enum_layouts,
-            target_data,
-        )?;
-        // Build the per-machine state-name string table. Each entry is a
-        // pointer to a private NUL-terminated read-only global; the table
-        // itself is a private `[N x ptr]` constant. `Instr::MachineStateName`
-        // reads the machine's tag and GEPs into this table.
-        machine_cg.state_name_table = Some(build_state_name_table(
-            ctx,
-            llvm_mod,
-            &layout.name,
-            &layout.variants,
-        )?);
-        // Register the outer struct in the shared layout map so
-        // `resolve_ty` finds `ResolvedTy::Named { name: "<Name>" }`
-        // naturally — the alloca slot for a `self: <Name>` parameter
-        // resolves the same way a record-typed local does.
-        record_layout_map.insert(layout.name.clone(), machine_cg.outer_struct);
-        map.insert(layout.name.clone(), machine_cg);
-
-        // The companion event enum: `<Name>Event` with event-variant
-        // payloads. Tag bit width is derived from the event count
-        let event_name = format!("{}Event", layout.name);
-        let event_cg = build_tagged_union_layout(
-            ctx,
-            &event_name,
-            &layout.events,
-            record_layout_map,
-            enum_layouts,
-            target_data,
-        )?;
-        record_layout_map.insert(event_name.clone(), event_cg.outer_struct);
-        map.insert(event_name, event_cg);
-    }
-    Ok(map)
-}
-
-/// LLVM tagged-union struct, inserting into the shared `machine_layouts` map
-/// so that `Place::MachineTag` / `Place::MachineVariant` codegen can look up
-/// enum-typed locals by their type name.
-///
-/// User enums share the tagged-union substrate (`{ tag: iW, payload: [N x i8] }`)
-/// with machine states and event companions. Monomorphic enums of every
-/// variant shape (unit, tuple, struct) lower end-to-end through this
-/// substrate — `build_tagged_union_layout` walks per-variant `field_tys` and
-/// emits an alignment-correct payload byte array sized to the widest variant.
-/// Generic enums (`enum Maybe<T> { ... }`) are fully supported via the
-/// `EnumLayoutRegistry` substrate; each instantiation arrives in `enum_layouts`
-/// under a mangled name (e.g. `Option$$i64`) and is registered here.
-fn register_enum_layouts<'ctx>(
-    ctx: &'ctx Context,
-    enum_layouts: &[EnumLayout],
-    record_layout_map: &mut RecordLayoutMap<'ctx>,
-    machine_layout_map: &mut MachineLayoutMap<'ctx>,
-    target_data: Option<&TargetData>,
-) -> CodegenResult<()> {
-    // Within-class duplicate enum-layout entries (the same mangled name
-    // registered along multiple stdlib paths) are tolerated by
-    // `predeclare_named_layouts` as a no-op. Here we must also skip the
-    // duplicate body-fill, because `build_tagged_union_layout` calls
-    // `set_body` on the predeclared opaque — a second `set_body` against
-    // the same struct is invalid LLVM. The first registration wins;
-    // `machine_layout_map` retains the per-variant metadata it produced.
-    //
-    // Process in dependency order: `build_tagged_union_layout` queries the
-    // ABI size of each variant's LLVM struct via `TargetData::get_abi_size`.
-    // If a variant's field type is itself an enum whose body is not yet set
-    // (still opaque), `get_abi_size` returns 0 and the outer payload array
-    // is under-sized, silently corrupting extraction GEPs. Topological
-    // ordering ensures inner enums (e.g. `Option<i64>`) are fully registered
-    // before outer enums that reference them (e.g.
-    // `Result<Option<i64>, TimeoutError>`).
-    //
-    // WHY the input order is wrong: `try_register_enum_instantiation_ty` in
-    // the HIR uses a LIFO worklist that inserts `Result<Option<T>, E>` before
-    // `Option<T>` because the outer type is popped and inserted first, then
-    // its args are enqueued. This is a pre-existing HIR-side ordering gap;
-    // sorting here is the fail-closed fix rather than a silent mis-size.
-    //
-    // WHEN OBSOLETE: if the HIR registration is changed to emit inner types
-    // before outer types (e.g. by switching to post-order traversal), this
-    // sort remains a no-op (already ordered correctly) and can be removed.
-    //
-    // Algorithm: Kahn's topological sort over the named-enum dependency graph.
-    // Edge A → B means "A's body references B's named struct" (B must be
-    // set before A). The sort is stable within each tier so unrelated layouts
-    // keep their input order, which is important for the first-registration-wins
-    // dedup policy.
-    let names: HashSet<&str> = enum_layouts.iter().map(|l| l.name.as_str()).collect();
-
-    // `deps(i)` = indices of enum_layouts that layout `i` depends on
-    // (i.e., names that appear as variant field types and are themselves
-    // enum layout names).
-    let dep_of: Vec<Vec<usize>> = enum_layouts
-        .iter()
-        .map(|layout| {
-            let mut deps: Vec<usize> = Vec::new();
-            for variant in &layout.variants {
-                for field_ty in &variant.field_tys {
-                    collect_named_enum_deps(field_ty, &names, enum_layouts, &mut deps);
-                }
-            }
-            deps.sort_unstable();
-            deps.dedup();
-            // Drop self-dependency (shouldn't exist for non-recursive enums, but
-            // be defensive).
-            let self_idx = enum_layouts
-                .iter()
-                .position(|l| l.name == layout.name)
-                .unwrap_or(usize::MAX);
-            deps.retain(|&d| d != self_idx);
-            deps
-        })
-        .collect();
-
-    // In-degree for Kahn's: in_degree[i] = number of enum deps layout i still
-    // needs before it can be processed (= dep_of[i].len() initially).
-    let n = enum_layouts.len();
-    let in_degree: Vec<usize> = dep_of.iter().map(|d| d.len()).collect();
-
-    // Build a reverse-adjacency: for each layout d, which layouts depend on d.
-    let mut reverse: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for (i, deps) in dep_of.iter().enumerate() {
-        for &d in deps {
-            reverse[d].push(i);
-        }
-    }
-
-    // Kahn's algorithm with a VecDeque for stable (input-order) processing.
-    let mut order: Vec<usize> = Vec::with_capacity(n);
-    {
-        let mut in_deg = in_degree.clone();
-        // Use a stable queue: drain zero-in-degree nodes in input index order.
-        let mut queue: std::collections::VecDeque<usize> =
-            (0..n).filter(|&i| in_deg[i] == 0).collect();
-        while let Some(i) = queue.pop_front() {
-            order.push(i);
-            for &j in &reverse[i] {
-                in_deg[j] -= 1;
-                if in_deg[j] == 0 {
-                    queue.push_back(j);
-                }
-            }
-        }
-        if order.len() != n {
-            // Cycle detected: a non-indirect (inline, value-typed) enum field
-            // creates a circular inline layout. Fail closed with a diagnostic.
-            //
-            // Non-indirect enum values are laid out inline (finite-size tagged
-            // unions). A layout cycle among non-indirect enums would produce a
-            // zero-byte payload alloca — a silent miscompile that the LLVM
-            // verifier does not catch. Indirect (boxed) enums are already
-            // excluded from cycle edges by `collect_named_enum_deps`; only a
-            // genuine inline-layout cycle reaches this branch.
-            //
-            // WHY: the fallback to input order was the original behaviour and
-            // produced a zero-byte alloca for the cyclic variant.
-            // WHEN OBSOLETE: never — an inline layout cycle is structurally
-            // unrepresentable. If the type is boxed, declare it `indirect enum`
-            // so the pointer-shaped layout eliminates the cycle.
-            let cycle_names: Vec<&str> = enum_layouts
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !order.contains(i))
-                .map(|(_, l)| l.name.as_str())
-                .collect();
-            return Err(CodegenError::FailClosed(format!(
-                "cyclic enum layout detected — non-indirect Hew enums are inline value types \
-                 and cannot form a layout cycle; \
-                 the following enum name(s) form a layout cycle: {}. \
-                 Declare the enum(s) as `indirect enum` to break the cycle (indirect enums \
-                 are heap-boxed and hold a pointer, which has a fixed finite size).",
-                cycle_names.join(", ")
-            )));
-        }
-    }
-
-    for i in order {
-        let layout = &enum_layouts[i];
-        if machine_layout_map.contains_key(&layout.name) {
-            continue;
-        }
-        // Convert `EnumLayout.variants` (which are `MachineVariantLayout`)
-        // directly — they share the same shape (`name`, `field_tys`).
-        let enum_cg = build_tagged_union_layout(
-            ctx,
-            &layout.name,
-            &layout.variants,
-            record_layout_map,
-            enum_layouts,
-            target_data,
-        )?;
-        // Register the outer struct so `resolve_ty` resolves
-        // `ResolvedTy::Named { name: "<EnumName>" }` the same way as a
-        // machine-typed or record-typed local. (The opaque was inserted
-        // by `predeclare_named_layouts`; this overwrite stores the same
-        // `StructType` handle that `set_body` mutated in place.)
-        record_layout_map.insert(layout.name.clone(), enum_cg.outer_struct);
-        machine_layout_map.insert(layout.name.clone(), enum_cg);
-    }
-    Ok(())
+pub(crate) fn host_target_data() -> TargetData {
+    TargetData::create(crate::layout::host_data_layout_string())
 }
 
 /// Collect indices into `enum_layouts` that `field_ty` directly or
@@ -3922,7 +3493,7 @@ fn register_enum_layouts<'ctx>(
 /// calculated. Including indirect dependencies as layout edges would incorrectly
 /// classify a valid mutually-recursive `indirect enum` pair (A ↔ B, both
 /// boxed) as a layout cycle and fail-closed.
-fn collect_named_enum_deps(
+pub(crate) fn collect_named_enum_deps(
     field_ty: &ResolvedTy,
     names: &HashSet<&str>,
     enum_layouts: &[EnumLayout],
@@ -3958,169 +3529,7 @@ fn collect_named_enum_deps(
     }
 }
 
-/// Shared builder for the machine-value and event-companion tagged-union
-/// LLVM types. Both share the `{ tag: iW, payload: [N x i8] }` shape
-/// described in the layout-invariants block above.
-///
-/// Payload byte count is `TargetData::get_abi_size` of the variant's LLVM
-/// struct — ABI-correct for the host native target including inter-field
-/// padding (see sizing note in the block comment above). `record_layouts`
-/// is no longer a parameter; variant LLVM types are resolved through
-/// `record_layout_map` (the already-populated LLVM type map), which carries
-/// the same type information without needing raw `RecordLayout` access.
-fn build_tagged_union_layout<'ctx>(
-    ctx: &'ctx Context,
-    outer_name: &str,
-    variants: &[MachineVariantLayout],
-    record_layout_map: &RecordLayoutMap<'ctx>,
-    enum_layouts: &[EnumLayout],
-    target_data: Option<&TargetData>,
-) -> CodegenResult<MachineCodegenLayout<'ctx>> {
-    // Build each variant's LLVM struct type first, then query its ABI size.
-    // This order is required: `get_abi_size` operates on a completed LLVM
-    // type; we cannot query sizes incrementally from `ResolvedTy` fields
-    // without replicating LLVM's padding rules.
-    let mut variant_struct_tys: Vec<StructType<'ctx>> = Vec::with_capacity(variants.len());
-    let mut variant_field_tys: Vec<Vec<ResolvedTy>> = Vec::with_capacity(variants.len());
-    for variant in variants {
-        let field_tys: Vec<BasicTypeEnum<'ctx>> = variant
-            .field_tys
-            .iter()
-            .map(|fty| {
-                // `indirect enum` field types must resolve to `ptr` (not the
-                // named struct), because indirect-enum variables are
-                // heap-allocated and every field reference is a heap pointer.
-                // `resolve_ty` normally returns the named struct when the name
-                // appears in the struct-layout map (struct-first ordering for
-                // W4.011 collision safety: a user record can share a short name
-                // with a stdlib `#[opaque]` handle, e.g. user `Value` vs
-                // `json.Value`).
-                //
-                // Gate on `is_indirect_enum` — the same precise predicate that
-                // `declare_function`, `lower_function`, and `lower_vec_index`
-                // use — rather than the opaque-set proxy. The opaque set also
-                // contains every `#[opaque]` stdlib handle name; checking it
-                // before `resolve_ty` would invert the struct-first invariant
-                // for any user aggregate whose short name collides with an
-                // opaque-handle entry, causing an undersized payload (fail-open
-                // heap corruption). `#[opaque]` handle fields still resolve to
-                // `ptr` through `resolve_ty`'s own post-struct opaque check, so
-                // no field shape regresses.
-                if let ResolvedTy::Named { name, .. } = fty {
-                    if is_indirect_enum(name, enum_layouts) {
-                        return Ok(ctx.ptr_type(AddressSpace::default()).into());
-                    }
-                }
-                resolve_ty(ctx, fty, record_layout_map)
-            })
-            .collect::<CodegenResult<Vec<_>>>()?;
-        variant_struct_tys.push(ctx.struct_type(&field_tys, false));
-        variant_field_tys.push(variant.field_tys.clone());
-    }
-
-    // Compute the max ABI byte count AND max ABI alignment across all
-    // variant structs. Empty-variant unions yield 0 for both; we floor the
-    // byte count at 1 so field 1 is always a non-empty array and GEP indices
-    // stay consistent regardless of payload presence, and floor the alignment
-    // at 1 so the payload element type is well-defined.
-    //
-    // Alignment-aware payload typing: the payload is emitted as
-    // `[ceil(payload_bytes / max_align) x i{max_align*8}]`. The element type
-    // gives the payload field its natural alignment of `max_align` bytes, so
-    // variant-struct GEPs (which bitcast the payload pointer to the variant
-    // struct type) target pointers whose alignment meets the variant's
-    // most-aligned field. Primitive ABI alignments (i8=1, i16=2, i32=4,
-    // i64=8, ptr=8 on the targets Hew currently emits for) are consistent
-    // across native and wasm32 data layouts, so this single IR shape is
-    // valid on every target Hew lowers to. See the "Alignment" note in the
-    // layout-invariants block above.
-    let host_td;
-    let td = if let Some(td) = target_data {
-        td
-    } else {
-        host_td = host_target_data();
-        &host_td
-    };
-    let mut max_bytes: u64 = 0;
-    let mut max_align: u32 = 0;
-    for vs in &variant_struct_tys {
-        let abi_bytes = td.get_abi_size(vs);
-        if abi_bytes > max_bytes {
-            max_bytes = abi_bytes;
-        }
-        let abi_align = td.get_abi_alignment(vs);
-        if abi_align > max_align {
-            max_align = abi_align;
-        }
-    }
-    let payload_align = max_align.max(1);
-    // Round payload byte count up to a multiple of `payload_align` so the
-    // array element count `K = payload_bytes / payload_align` is exact.
-    let payload_align_u64 = u64::from(payload_align);
-    let payload_bytes = {
-        let bytes = max_bytes.max(1);
-        // `bytes` and `payload_align_u64` are non-zero; round bytes up to a
-        // multiple of `payload_align_u64` so the array element count is exact.
-        bytes.div_ceil(payload_align_u64) * payload_align_u64
-    };
-    let element_count_u64 = payload_bytes / payload_align_u64;
-    let element_count_u32 = u32::try_from(element_count_u64).map_err(|_| {
-        CodegenError::FailClosed(format!(
-            "machine `{outer_name}` payload element count {element_count_u64} exceeds u32 — \
-             a variant with > 4 GiB payload is unsupported"
-        ))
-    })?;
-    // Element bit width: `payload_align` bytes => `payload_align * 8` bits.
-    // Cap at 64 because LLVM's array element types and Hew's primitive set
-    // top out at i64; an alignment >8 on a Hew variant would imply a vector
-    // or aggregate field type the current substrate does not lower.
-    if payload_align > 8 {
-        return Err(CodegenError::FailClosed(format!(
-            "machine `{outer_name}` requires payload alignment {payload_align} > 8 bytes — \
-             Hew's primitive substrate tops out at i64 (8-byte alignment); a variant \
-             field with a wider alignment requirement is unsupported"
-        )));
-    }
-    let element_bits = payload_align * 8;
-    let element_bits_nz = std::num::NonZeroU32::new(element_bits).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "machine `{outer_name}` derived zero-bit payload element — \
-             payload_align computation is invalid"
-        ))
-    })?;
-    let payload_element_int_ty = ctx
-        .custom_width_int_type(element_bits_nz)
-        // JUSTIFIED: Display-format preserved. `custom_width_int_type` returns
-        // `Result<IntType, LLVMString>`, and the original wrap uses `{e}` (not
-        // `{e:?}`) to render the inkwell `LLVMString` as the LLVM diagnostic
-        // text without quoting it. Migrating to `LlvmResultExt::llvm_ctx` would
-        // silently switch to Debug projection (`{e:?}`) and change the
-        // user-visible error text. The lane plan §B4 deliberately leaves this
-        // one Display call un-migrated; if a second Display site ever appears,
-        // introduce a sibling `.llvm_ctx_display` helper.
-        .map_err(|e| CodegenError::Llvm(format!("custom_width_int_type({element_bits}): {e}")))?;
-
-    let tag_int_ty = tag_int_type_for_variant_count(ctx, outer_name, variants.len())?;
-    let payload_arr_ty = payload_element_int_ty.array_type(element_count_u32);
-
-    let outer_struct = record_layout_map.get(outer_name).copied().ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "tagged-union layout `{outer_name}` missing from predeclared layout map — \
-             predeclare_named_layouts must include every enum/machine outer + <Name>Event name"
-        ))
-    })?;
-    outer_struct.set_body(&[tag_int_ty.into(), payload_arr_ty.into()], false);
-
-    Ok(MachineCodegenLayout {
-        outer_struct,
-        tag_int_ty,
-        variant_struct_tys,
-        variant_field_tys,
-        state_name_table: None,
-    })
-}
-
-fn tag_int_type_for_variant_count<'ctx>(
+pub(crate) fn tag_int_type_for_variant_count<'ctx>(
     ctx: &'ctx Context,
     _outer_name: &str,
     variant_count: usize,
@@ -4142,7 +3551,7 @@ fn tag_int_type_for_variant_count<'ctx>(
 /// tag as the array index. Each per-state string is itself a separate
 /// private global (so the table holds opaque `ptr` values, matching
 /// `ResolvedTy::String`'s ABI in LLVM IR).
-fn build_state_name_table<'ctx>(
+pub(crate) fn build_state_name_table<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     machine_name: &str,
@@ -4333,93 +3742,6 @@ fn emit_const_globals<'ctx>(
     Ok(globals)
 }
 
-/// Locate a machine's tagged-union codegen layout for an MIR local known
-/// to hold a machine value. Reads the local's resolved type and consults
-/// the machine layout map. Fails closed if the local is not a machine
-/// type or the machine name is not registered.
-pub(crate) fn machine_layout_for_local<'a, 'ctx>(
-    fn_ctx: &'a FnCtx<'_, 'ctx>,
-    local: u32,
-) -> CodegenResult<&'a MachineCodegenLayout<'ctx>> {
-    let ty = fn_ctx.local_tys.get(&local).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "Place::MachineTag/MachineVariant references local {local} which has no \
-             resolved type — the MIR producer must allocate the machine local before \
-             projecting through it"
-        ))
-    })?;
-    let (name, args) = match ty {
-        ResolvedTy::Named { name, args, .. } => (name, args),
-        other => {
-            return Err(CodegenError::FailClosed(format!(
-                "Place::MachineTag/MachineVariant references local {local} whose type \
-                 is {other:?}, not a named machine type"
-            )));
-        }
-    };
-    // Generic-enum monomorphisations are registered under the mangled key
-    // (e.g. `"Option$$i64"`) by `register_enum_layouts`. When the local's
-    // type carries type args, compute the same mangled key used at
-    // registration so the lookup succeeds.
-    // WHY: bare-name lookup fails for any instantiated generic enum because
-    //   `register_enum_layouts` stores under `hir_layout.mangled_name`, not
-    //   the origin enum name. Bare lookup is correct only for monomorphic enums
-    //   (no type args) and machine/actor layouts.
-    // WHEN-OBSOLETE: if the layout map is ever re-keyed by a richer
-    //   identifier (e.g. a `(origin_id, mono_args)` pair), this branch goes away.
-    let lookup_key: String = if args.is_empty() {
-        // Monomorphic enums/machines register under their bare declaration
-        // name (`register_enum_layouts` / `register_machine_layouts` key by
-        // `EnumLayout.name` = the HIR `decl.name`, which is unqualified). A
-        // Place at an IMPORTER carries the module-qualified name (`fs.IoError`)
-        // because the local's `ResolvedTy::Named` was resolved against the
-        // importing scope. Strip the `module.` prefix when the qualified key
-        // is absent but the bare name is registered, mirroring the generic-enum
-        // branch's `short_name` fallback below.
-        // WHY: without this, constructing/matching an imported enum-with-data
-        //   (e.g. `IoError` from `std::fs`/`std::net`) fails closed at codegen
-        //   even though MIR registered the layout under the bare name.
-        // WHEN-OBSOLETE: if layouts are re-keyed by `(module, name)` so the
-        //   importer's qualified lookup matches directly.
-        if fn_ctx.machine_layouts.contains_key(name) {
-            name.clone()
-        } else {
-            short_name(name).to_string()
-        }
-    } else {
-        // Shorten the type-arg spine for the full-outer-name key too: the
-        // registration side keys on bare args, so a raw `mangle(name, args)`
-        // carrying a qualified payload would never hit and only the short_key
-        // fallback would save it. Keying both candidates off the shortened
-        // spine removes that raw-args trap at this layout-lookup site.
-        let key = mangle_with_shortened_args(name, args);
-        if !fn_ctx.machine_layouts.contains_key(&key) {
-            let short_key = mangle_with_shortened_args(short_name(name), args);
-            if fn_ctx.machine_layouts.contains_key(&short_key) {
-                short_key
-            } else if fn_ctx.machine_layouts.contains_key(short_name(name)) {
-                short_name(name).to_string()
-            } else {
-                return Err(CodegenError::FailClosed(format!(
-                    "Place::MachineTag/MachineVariant references generic enum `{name}` \
-                     with type args {args:?}: mangled key `{key}` is not in \
-                     IrPipeline.machine_layouts — the monomorphisation was not registered \
-                     by `register_enum_layouts` (registration-mismatch)"
-                )));
-            }
-        } else {
-            key
-        }
-    };
-    fn_ctx.machine_layouts.get(&lookup_key).ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "Place::MachineTag/MachineVariant references machine `{name}` which is not \
-             in IrPipeline.machine_layouts — registration mismatch between MIR producer \
-             and codegen"
-        ))
-    })
-}
-
 pub(crate) fn short_name(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(_, short)| short)
 }
@@ -4597,76 +3919,6 @@ fn needs_normalization(ty: &ResolvedTy) -> bool {
     }
 }
 
-/// Resolve the mangled `enum_layouts` registration key for a `ResolvedTy::Named`
-/// enum composite, matching the scheme `register_enum_layouts` uses (bare name
-/// for monomorphic enums, `mangle(short_name, args)` for generic
-/// instantiations). This key is also the `<Enum>` segment of the synthesised
-/// `__hew_enum_drop_inplace_<Enum>` helper, so the W5.020 caller-side drop and
-/// the synthesis pass agree on one symbol. Fails closed for any non-enum or
-/// unregistered type rather than guessing a key.
-fn enum_layout_key_for_ty(fn_ctx: &FnCtx<'_, '_>, ty: &ResolvedTy) -> CodegenResult<String> {
-    let ResolvedTy::Named { name, args, .. } = ty else {
-        return Err(CodegenError::FailClosed(format!(
-            "enum in-place drop: ElabDrop::ty {ty:?} is not a named enum type"
-        )));
-    };
-    let short = short_name(name);
-    let key = if args.is_empty() {
-        fn_ctx
-            .enum_layouts
-            .iter()
-            .find(|el| el.name == *name || short_name(&el.name) == short)
-            .map(|el| el.name.clone())
-    } else {
-        let mangled = mangle_with_shortened_args(short, args);
-        fn_ctx
-            .enum_layouts
-            .iter()
-            .find(|el| el.name == mangled || el.name == *name)
-            .map(|el| el.name.clone())
-    };
-    key.ok_or_else(|| {
-        CodegenError::FailClosed(format!(
-            "enum in-place drop: enum type `{name}` (args {args:?}) has no entry in \
-             IrPipeline.enum_layouts — the MIR producer emitted an EnumInPlace drop for \
-             an unregistered enum (registration mismatch)"
-        ))
-    })
-}
-
-/// True when `ty` is an inline tagged-union enum composite whose active
-/// variant can own heap (`Result<T, string>`, `Option<string>`, a user enum
-/// with an owned-payload variant). This is the W5.020 caller-side drop's
-/// coverage predicate: the composite-return boundary admits exactly these
-/// shapes (the MIR elaborator emits a matching `DropKind::EnumInPlace`), and
-/// fails closed for every other heap-owning composite (tuples, records, and —
-/// caught earlier by the checker — recursive value types). Mirrors the MIR
-/// `ty_is_heap_owning_enum_composite`; indirect (heap-boxed) enums are excluded
-/// because their payload drop runs through the boxed-storage release path.
-fn is_heap_owning_enum_composite_return(ty: &ResolvedTy, enum_layouts: &[EnumLayout]) -> bool {
-    let ResolvedTy::Named { name, args, .. } = ty else {
-        return false;
-    };
-    let short = short_name(name);
-    let layout = if args.is_empty() {
-        enum_layouts
-            .iter()
-            .find(|el| el.name == *name || short_name(&el.name) == short)
-    } else {
-        let mangled = mangle_with_shortened_args(short, args);
-        enum_layouts
-            .iter()
-            .find(|el| el.name == mangled || el.name == *name)
-    };
-    let Some(layout) = layout else {
-        return false;
-    };
-    if layout.is_indirect {
-        return false;
-    }
-    ty_contains_heap_owning(ty, enum_layouts)
-}
-
 /// True when a function return type is a SINGLE heap-owning leaf (`bytes`) that
 /// lowers to an LLVM struct only as an ABI detail — not a composite carrying
 /// interior owners.
@@ -4690,23 +3942,6 @@ fn is_heap_owning_enum_composite_return(ty: &ResolvedTy, enum_layouts: &[EnumLay
 /// `DropKind::TupleInPlace` / `DropKind::RecordInPlace` spine.
 fn is_single_heap_owning_leaf_return(ty: &ResolvedTy) -> bool {
     matches!(ty, ResolvedTy::Bytes)
-}
-
-/// True when a function return type is a heap-owning **tuple** composite whose
-/// per-element drop the W5.021 spine emits (`DropKind::TupleInPlace` +
-/// `__hew_tuple_drop_inplace_<key>`). The caller's tuple binding (or the
-/// `__tuple_N` destructure temp's element bindings) assumes the per-element drop
-/// obligation, so the composite-return boundary admits exactly this shape.
-///
-/// Keyed on the SEMANTIC property — a `ResolvedTy::Tuple` carrying at least one
-/// heap-owning element via the single `ty_contains_heap_owning` authority — not
-/// an incidental LLVM-shape proxy, so MIR (`ty_is_heap_owning_tuple`) and
-/// codegen agree on exactly which returns own heap (LESSONS:
-/// dedup-semantic-boundary, boundary-fail-closed). A tuple whose elements are
-/// all BitCopy never reaches here (`ty_contains_heap_owning` is false), and the
-/// gate's `StructType` arm only fires for heap-owning shapes anyway.
-fn is_heap_owning_tuple_composite_return(ty: &ResolvedTy, enum_layouts: &[EnumLayout]) -> bool {
-    matches!(ty, ResolvedTy::Tuple(_)) && ty_contains_heap_owning(ty, enum_layouts)
 }
 
 /// True when a function return type is a heap-owning **record** composite whose
@@ -4780,18 +4015,6 @@ fn is_heap_owning_record_composite_return(
     is_record && ty_contains_heap_owning(ty, enum_layouts)
 }
 
-/// Returns `true` when the named enum registered in `enum_layouts` has
-/// `is_indirect = true`, meaning every variable of the type holds a
-/// heap pointer rather than an inline tagged-union struct.
-fn is_indirect_enum(name: &str, enum_layouts: &[EnumLayout]) -> bool {
-    // Look up by exact name first, then by short (unqualified) name so
-    // module-qualified enums (`"mod.Expr"`) match `"Expr"` entries.
-    enum_layouts
-        .iter()
-        .find(|el| el.name == name || el.name == short_name(name))
-        .is_some_and(|el| el.is_indirect)
-}
-
 /// Resolve the "struct base pointer" for a machine/enum local — the
 /// pointer that GEP instructions should index into to access the tagged-union
 /// body.
@@ -4823,7 +4046,7 @@ fn resolve_machine_base_ptr<'ctx>(
         .get(&local)
         .and_then(|ty| {
             if let ResolvedTy::Named { name, .. } = ty {
-                Some(is_indirect_enum(name, fn_ctx.enum_layouts))
+                Some(crate::layout::is_indirect_enum(name, fn_ctx.enum_layouts))
             } else {
                 None
             }
@@ -5837,7 +5060,7 @@ pub(crate) fn place_pointer<'ctx>(
         // MIR so future enum-only drop / lifecycle policies have a
         // separate surface to attach to, but the codegen seam is one GEP.
         Place::MachineTag(local) | Place::EnumTag(local) => {
-            let layout = machine_layout_for_local(fn_ctx, local)?;
+            let layout = crate::layout::machine_layout_for_local(fn_ctx, local)?;
             // For indirect enums the alloca holds a heap pointer rather than
             // the struct inline; load through it to get the struct base.
             let base_ptr = resolve_machine_base_ptr(fn_ctx, local)?;
@@ -5857,7 +5080,7 @@ pub(crate) fn place_pointer<'ctx>(
             variant_idx,
             field_idx,
         } => {
-            let layout = machine_layout_for_local(fn_ctx, local)?;
+            let layout = crate::layout::machine_layout_for_local(fn_ctx, local)?;
             let variant_idx_usize = variant_idx as usize;
             let variant_struct = layout
                 .variant_struct_tys
@@ -7539,10 +6762,10 @@ fn get_or_declare_drop_helper<'ctx>(
 /// Caller (`emit_field_clone_step`) handles UserRecord separately
 /// because it calls a per-record synthesised helper rather than a runtime
 /// extern.
-const HASHMAP_CLONE_LAYOUT_SYMBOL: &str = "hew_hashmap_clone_layout";
-const HASHMAP_FREE_LAYOUT_SYMBOL: &str = "hew_hashmap_free_layout";
-const HASHSET_CLONE_LAYOUT_SYMBOL: &str = "hew_hashset_clone_layout";
-const HASHSET_FREE_LAYOUT_SYMBOL: &str = "hew_hashset_free_layout";
+pub(crate) const HASHMAP_CLONE_LAYOUT_SYMBOL: &str = "hew_hashmap_clone_layout";
+pub(crate) const HASHMAP_FREE_LAYOUT_SYMBOL: &str = "hew_hashmap_free_layout";
+pub(crate) const HASHSET_CLONE_LAYOUT_SYMBOL: &str = "hew_hashset_clone_layout";
+pub(crate) const HASHSET_FREE_LAYOUT_SYMBOL: &str = "hew_hashset_free_layout";
 /// Witness-managed Vec clone/free pair (W5.002 F0b). Single-arg, descriptor
 /// read from the handle — the Vec companion of the HashMap/HashSet
 /// `*_clone_layout`/`*_free_layout` family. These supersede the legacy
@@ -7552,133 +6775,8 @@ const HASHSET_FREE_LAYOUT_SYMBOL: &str = "hew_hashset_free_layout";
 /// `String` Vecs and fails closed only on `LayoutManaged` elements. The legacy
 /// symbols remain for non-state Vec drops/clones (locals, returns, user
 /// `Vec.clone()`); their retirement is W5.003 scope.
-const VEC_CLONE_MANAGED_SYMBOL: &str = "hew_vec_clone_managed";
-const VEC_FREE_MANAGED_SYMBOL: &str = "hew_vec_free_managed";
-
-/// The single layout-witness descriptor for a runtime-managed collection's
-/// memory lifecycle (W5.001 F0a).
-///
-/// Codegen derives BOTH the clone and the drop symbol for a collection
-/// state field from this ONE descriptor, so the two operations — and the
-/// constructor's `*_with_layout` ABI family they must pair with — can never
-/// select mismatched runtime symbols. This is the structural retirement of
-/// the W4.045 UAF class: there is no longer an independent per-type symbol
-/// *selection* on the clone side and the drop side that can drift apart (the
-/// prior bug was a drop arm branching on the element kind while the
-/// constructor and clone arms did not — `codegen-abi-authority` /
-/// `lifecycle-symmetry` P0). A new collection type registers its symbol
-/// pair here once; clone and drop derive mechanically.
-///
-/// Returns `None` for non-collection kinds (`String`/`Bytes`/`BitCopy`/
-/// `IoHandle`/`UserRecord`), which continue through their dedicated
-/// `clone_helper_for_kind` / `drop_helper_for_kind` / synthesised-helper
-/// arms unchanged.
-///
-/// This is the SOLE selection authority for collection clone/drop symbols.
-/// The matching arms in `clone_helper_for_kind` / `drop_helper_for_kind`
-/// are retired to `unreachable!` because the only callers
-/// (`emit_field_clone_step` / `emit_field_drop_step`) consult this witness
-/// first and never fall through to the per-type helper arm for a collection.
-struct CollectionLayoutWitness {
-    /// Allocating clone helper: `fn(*const handle) -> *mut handle`.
-    clone_sym: &'static str,
-    /// Free helper: `fn(*mut handle)`.
-    drop_sym: &'static str,
-}
-
-fn collection_layout_witness(
-    kind: &StateFieldCloneKind,
-) -> CodegenResult<Option<CollectionLayoutWitness>> {
-    // Defence-in-depth backstop (round-4): a collection whose element/key/value
-    // transitively carries an `OpaqueHandle` must NOT select the managed
-    // clone/free pair — the managed clone shallow-copies the opaque pointer and
-    // double-frees / UAFs on supervisor restart. The MIR classifier already fails
-    // closed before such a kind can be produced (`ty_contains_unclonable_opaque`),
-    // so this is unreachable in practice; it stays as a codegen-side fail-close so
-    // no future producer can route an opaque-bearing container through the managed
-    // collection symbols.
-    if matches!(
-        kind,
-        StateFieldCloneKind::Vec { .. }
-            | StateFieldCloneKind::HashMap { .. }
-            | StateFieldCloneKind::HashSet { .. }
-    ) && kind.contains_opaque_handle()
-    {
-        return Err(CodegenError::FailClosed(format!(
-            "collection state field {kind:?} transitively carries an opaque handle \
-             with no clone-dup helper; the managed clone/free pair would shallow-copy \
-             the handle and double-free / use-after-free on supervisor restart. The \
-             MIR classifier should have rejected this with OpaqueInContainer."
-        )));
-    }
-    // Same backstop for the closure-pair class: a closure pair's environment
-    // box has a sole owner and no retain, so the managed clone would alias it
-    // (double free at the two containers' releases), and closure-pair Vecs are
-    // constructed/released through the dedicated pointer-element +
-    // `hew_vec_free_closure_pairs` path, never the managed witness. The MIR
-    // value-class gate (`supports_value_class_drop_spine`) and the actor-state
-    // closure guard reject these before codegen; this stays as the fail-close.
-    if matches!(
-        kind,
-        StateFieldCloneKind::Vec { .. }
-            | StateFieldCloneKind::HashMap { .. }
-            | StateFieldCloneKind::HashSet { .. }
-    ) && kind.contains_closure_pair()
-    {
-        return Err(CodegenError::FailClosed(format!(
-            "collection state field {kind:?} transitively carries a closure pair; \
-             the managed clone/free pair would alias its sole-owner environment \
-             box. The MIR value-class gate should have rejected this kind."
-        )));
-    }
-    Ok(match kind {
-        StateFieldCloneKind::Vec { .. } => Some(CollectionLayoutWitness {
-            // Constructor lowering stamps every layout-backed Vec<T> handle with
-            // its `HewTypeLayout` descriptor; the managed pair reads it from the
-            // handle and pairs allocate/free so they cannot drift (W4.045 UAF
-            // class). Layout-absent Vecs (legacy typed constructors) clone/free
-            // by `elem_kind`. LayoutManaged elements fail closed in the runtime.
-            clone_sym: VEC_CLONE_MANAGED_SYMBOL,
-            drop_sym: VEC_FREE_MANAGED_SYMBOL,
-        }),
-        StateFieldCloneKind::HashMap { .. } => Some(CollectionLayoutWitness {
-            // Constructor lowering routes every HashMap<K,V> handle through
-            // `hew_hashmap_new_with_layout`; clone/free MUST pair with the
-            // matching `*_layout` family (CLAUDE.md §1; W4.045 UAF class).
-            clone_sym: HASHMAP_CLONE_LAYOUT_SYMBOL,
-            drop_sym: HASHMAP_FREE_LAYOUT_SYMBOL,
-        }),
-        StateFieldCloneKind::HashSet { .. } => Some(CollectionLayoutWitness {
-            // Companion of the HashMap pairing. The constructor routes every
-            // HashSet<T> handle through `hew_hashset_new_with_layout`; the
-            // element kind is irrelevant — there is no `hew_hashset_new` call
-            // in codegen, so clone/free always use the `*_layout` family.
-            clone_sym: HASHSET_CLONE_LAYOUT_SYMBOL,
-            drop_sym: HASHSET_FREE_LAYOUT_SYMBOL,
-        }),
-        StateFieldCloneKind::BitCopy { .. }
-        | StateFieldCloneKind::String
-        | StateFieldCloneKind::Bytes
-        | StateFieldCloneKind::Tuple { .. }
-        | StateFieldCloneKind::Array { .. }
-        | StateFieldCloneKind::IoHandle { .. }
-        | StateFieldCloneKind::UserRecord { .. }
-        // Enum is NOT a runtime-managed collection: its clone/drop is a
-        // tag-dispatched payload walk (W5.006 Slices 3/4), not a single
-        // `*_layout` symbol pair. It returns `None` here so the caller
-        // routes to the dedicated enum dispatch arm rather than the
-        // collection witness.
-        | StateFieldCloneKind::Enum { .. }
-        // OpaqueHandle is a pointer-width BitCopy-class handle (e.g. json.Value,
-        // cron.Expr). No layout-managed runtime collection; falls through to the
-        // per-kind helpers where clone fails closed and drop is a no-op.
-        | StateFieldCloneKind::OpaqueHandle { .. }
-        // ClosurePair is not a runtime-managed collection: its drop is the
-        // env free-thunk dispatch in `emit_field_drop_step`'s dedicated arm
-        // and its clone is the rollback refusal in `emit_field_clone_step`.
-        | StateFieldCloneKind::ClosurePair => None,
-    })
-}
+pub(crate) const VEC_CLONE_MANAGED_SYMBOL: &str = "hew_vec_clone_managed";
+pub(crate) const VEC_FREE_MANAGED_SYMBOL: &str = "hew_vec_free_managed";
 
 fn clone_helper_for_kind(kind: &StateFieldCloneKind) -> CodegenResult<Option<CloneHelper>> {
     match kind {
@@ -7951,7 +7049,7 @@ fn get_or_declare_inplace_thunk<'ctx>(
 /// non-zero = partial-clone rollback complete). Declaring here lets a
 /// classified actor body call into a nested record helper that is
 /// synthesised later in the same module pass.
-fn get_or_declare_record_clone_inplace<'ctx>(
+pub(crate) fn get_or_declare_record_clone_inplace<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     record_name: &str,
@@ -7991,7 +7089,7 @@ pub(crate) fn get_or_declare_record_drop_inplace<'ctx>(
 /// only the active variant's owned payload fields. The caller must have
 /// memcpy'd `dst <- src` first (the wholesale state memcpy satisfies this),
 /// so the tag and inactive/bitcopy payload bytes are already correct.
-fn get_or_declare_enum_clone_inplace<'ctx>(
+pub(crate) fn get_or_declare_enum_clone_inplace<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
     enum_name: &str,
@@ -8737,7 +7835,7 @@ fn emit_field_clone_step<'ctx>(
     // authority. Non-collection kinds fall through to their dedicated
     // `clone_helper_for_kind` arm. BitCopy yields `None` there and is a
     // caller-filter error.
-    let helper = match collection_layout_witness(kind)? {
+    let helper = match crate::layout::collection_layout_witness(kind)? {
         Some(witness) => CloneHelper::Allocating {
             name: witness.clone_sym,
         },
@@ -9165,7 +8263,7 @@ fn emit_field_drop_step<'ctx>(
             // selection authority, paired with the clone symbol so the two can
             // never drift (W4.045 UAF class). Non-collection kinds fall through
             // to their dedicated `drop_helper_for_kind` arm.
-            let helper = match collection_layout_witness(kind)? {
+            let helper = match crate::layout::collection_layout_witness(kind)? {
                 Some(witness) => DropHelper {
                     name: witness.drop_sym,
                 },
@@ -15572,7 +14670,7 @@ fn lower_actor_state_field_store(
                 // descriptor and cannot drift (W4.045 UAF class). All three
                 // `*_free_*` symbols are null-tolerant, so the spawn-time
                 // zero-initialised first store needs no extra guard.
-                let witness = collection_layout_witness(kind)?.ok_or_else(|| {
+                let witness = crate::layout::collection_layout_witness(kind)?.ok_or_else(|| {
                     CodegenError::FailClosed(format!(
                         "ActorStateFieldStore field {idx}: collection kind {kind:?} \
                          has no layout witness; `collection_layout_witness` and the \
@@ -16738,19 +15836,6 @@ fn is_bool_vec_runtime_symbol(symbol: &str) -> bool {
     )
 }
 
-fn is_layout_vec_runtime_symbol(symbol: &str) -> bool {
-    matches!(
-        symbol,
-        "hew_vec_push_layout"
-            | "hew_vec_get_layout"
-            | "hew_vec_set_layout"
-            | "hew_vec_pop_layout"
-            | "hew_vec_contains_thunk"
-            | "hew_vec_remove_at_layout"
-            | "hew_vec_clone_layout"
-    )
-}
-
 fn is_vec_i32_get_set_symbol(symbol: &str) -> bool {
     matches!(symbol, "hew_vec_get_i32" | "hew_vec_set_i32")
 }
@@ -16793,65 +15878,6 @@ fn get_or_declare_vec_constructor<'ctx>(
     Ok(llvm_mod.add_function(
         symbol,
         vec_constructor_fn_type(ctx, symbol)?,
-        Some(Linkage::External),
-    ))
-}
-
-fn layout_vec_fn_type<'ctx>(
-    ctx: &'ctx Context,
-    symbol: &str,
-) -> CodegenResult<inkwell::types::FunctionType<'ctx>> {
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let i64_ty = ctx.i64_type();
-    let i32_ty = ctx.i32_type();
-    match symbol {
-        "hew_vec_push_layout" => Ok(ctx
-            .void_type()
-            .fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)),
-        "hew_vec_get_layout" => {
-            Ok(ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false))
-        }
-        "hew_vec_set_layout" => Ok(ctx.void_type().fn_type(
-            &[ptr_ty.into(), i64_ty.into(), ptr_ty.into(), ptr_ty.into()],
-            false,
-        )),
-        "hew_vec_pop_layout" => {
-            Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false))
-        }
-        // W3.032 Slice 3: `i32 hew_vec_contains_thunk(ptr vec, ptr val, ptr eq_fn)`.
-        // The third operand is a pointer to a codegen-emitted equality thunk;
-        // the runtime treats `Option<HewVecEqThunk>` as a nullable function
-        // pointer (null is rejected by `abort_null_eq_fn`).
-        "hew_vec_contains_thunk" => {
-            Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false))
-        }
-        // W3.003: `void hew_vec_remove_at_layout(ptr vec, i64 index, ptr layout)`.
-        // Index-based remove for BitCopy layout-backed elements; the hidden
-        // layout pointer is synthesized by codegen from the Vec element type.
-        "hew_vec_remove_at_layout" => Ok(ctx
-            .void_type()
-            .fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false)),
-        // W3.003: `ptr hew_vec_clone_layout(ptr vec, ptr layout) -> ptr`.
-        // BitCopy bulk-copy clone; returns a freshly allocated *mut HewVec.
-        // The hidden layout pointer is synthesized by codegen from the Vec element type.
-        "hew_vec_clone_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
-        _ => Err(CodegenError::FailClosed(format!(
-            "not a layout Vec runtime symbol: {symbol}"
-        ))),
-    }
-}
-
-pub(crate) fn get_or_declare_layout_vec_runtime<'ctx>(
-    ctx: &'ctx Context,
-    llvm_mod: &LlvmModule<'ctx>,
-    symbol: &str,
-) -> CodegenResult<FunctionValue<'ctx>> {
-    if let Some(fv) = llvm_mod.get_function(symbol) {
-        return Ok(fv);
-    }
-    Ok(llvm_mod.add_function(
-        symbol,
-        layout_vec_fn_type(ctx, symbol)?,
         Some(Linkage::External),
     ))
 }
@@ -16902,44 +15928,6 @@ pub(crate) fn abi_size_align<'ctx>(
         )));
     }
     Ok((size, align))
-}
-
-pub(crate) fn layout_descriptor_ptr<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    elem_ty: BasicTypeEnum<'ctx>,
-    label: &str,
-) -> CodegenResult<PointerValue<'ctx>> {
-    // `HewTypeLayout { size: usize, align: usize, ownership_kind: u8 }`. The two
-    // leading fields are target-width `usize`, not host-width `i64`: wasm32 has
-    // `usize = i32`, so the size/align measurements and the descriptor struct
-    // shape both flow from the active `TargetData` exactly as the
-    // `hashmap_*_layout_descriptor_ptr` width authority does. A host-width
-    // fallback here would be silent wrong-code on wasm32.
-    let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
-    let ctx = fn_ctx.ctx;
-    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
-    let i8_ty = ctx.i8_type();
-    let layout_ty = ctx.struct_type(&[usize_ty.into(), usize_ty.into(), i8_ty.into()], false);
-    // Dedup name mirrors the `hashmap_*_layout_descriptor_ptr` authority: a
-    // module only ever targets one machine, so a native (i64) and a wasm32
-    // (i32) descriptor for the same `(label, size, align)` never co-exist in
-    // one module. The `(size, align)` measurements already shift with the
-    // target width, so the name stays stable per target without a width suffix
-    // — native IR is unchanged, wasm32 emits its own `_4_4_`/`_16_8_` globals.
-    let global_name = format!("__hew_layout_{label}_{size}_{align}_plain");
-    if let Some(global) = fn_ctx.llvm_mod.get_global(&global_name) {
-        return Ok(global.as_pointer_value());
-    }
-    let init = layout_ty.const_named_struct(&[
-        usize_ty.const_int(size, false).into(),
-        usize_ty.const_int(u64::from(align), false).into(),
-        i8_ty.const_zero().into(),
-    ]);
-    let global = fn_ctx.llvm_mod.add_global(layout_ty, None, &global_name);
-    global.set_constant(true);
-    global.set_linkage(Linkage::Private);
-    global.set_initializer(&init);
-    Ok(global.as_pointer_value())
 }
 
 // ---------------------------------------------------------------------------
@@ -17225,195 +16213,10 @@ pub(crate) fn emit_tuple_drop_inplace_body_only<'ctx>(
     emit_aggregate_drop_inplace_body(ctx, llvm_mod, drop_fn, tuple_struct, &kinds)
 }
 
-/// Emit (or reuse) a `HewVecElemLayout`-shaped private constant for an owned
-/// Vec element type, returning a pointer suitable for the owned constructor's
-/// `layout` parameter.
-///
-/// The struct shape must match `hew_cabi::vec::HewVecElemLayout`:
-/// `{ size: usize, align: usize, ownership_kind: u8, clone_fn: *const fn,
-/// drop_fn: *const fn }`. `ownership_kind = LayoutManaged (2)`; the two thunk
-/// fields point at the element's per-type `__hew_record/enum_{clone,drop}_
-/// inplace_<key>` helpers (their bodies seeded by
-/// `collect_vec_owned_element_seeds`). Dedup by `(size, align, key)` so two
-/// distinct element shapes never collapse onto one descriptor.
-///
-/// Fails closed for any element with no resolvable thunk path — the owned ABI
-/// must never reference a non-existent thunk (`boundary-fail-closed`).
-fn owned_elem_layout_descriptor_ptr<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    elem_resolved_ty: &ResolvedTy,
-    elem_llvm_ty: BasicTypeEnum<'ctx>,
-    label: &str,
-) -> CodegenResult<PointerValue<'ctx>> {
-    let Some((kind, key)) = crate::thunks::owned_elem_thunk_key(fn_ctx, elem_resolved_ty) else {
-        return Err(CodegenError::FailClosed(format!(
-            "owned Vec element `{elem_resolved_ty:?}` has no resolvable record/enum \
-             in-place thunk path at `{label}`; the checker must not route a \
-             non-thunkable element through the owned ABI"
-        )));
-    };
-    let (size, align) = abi_size_align(elem_llvm_ty, Some(fn_ctx.target_data))?;
-    let kind_tag = match kind {
-        OwnedElemThunkKind::Record => "rec",
-        OwnedElemThunkKind::Enum => "enum",
-        OwnedElemThunkKind::Tuple => "tup",
-        OwnedElemThunkKind::Collection => "coll",
-    };
-    let global_name = format!("__hew_vec_elem_layout_{kind_tag}_{key}_{size}_{align}");
-    if let Some(g) = fn_ctx.llvm_mod.get_global(&global_name) {
-        return Ok(g.as_pointer_value());
-    }
-    let (clone_fn, drop_fn) = match kind {
-        OwnedElemThunkKind::Record => (
-            get_or_declare_record_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-            get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-        ),
-        OwnedElemThunkKind::Enum => (
-            get_or_declare_enum_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-            get_or_declare_enum_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-        ),
-        OwnedElemThunkKind::Tuple => {
-            // The tuple thunk BODY is synthesized eagerly here (it has no
-            // registry-driven seeding pass, unlike record/enum): a tuple shape
-            // is referenced only through this descriptor, so synthesize-on-first-
-            // descriptor is the natural seeding point. Idempotent: the emitter
-            // no-ops if the body already exists.
-            let elems = match elem_resolved_ty {
-                ResolvedTy::Tuple(elems) => elems,
-                _ => {
-                    return Err(CodegenError::FailClosed(format!(
-                        "owned tuple descriptor at `{label}`: element {elem_resolved_ty:?} is \
-                         not a tuple but resolved to the Tuple thunk kind"
-                    )));
-                }
-            };
-            crate::thunks::emit_tuple_inplace_thunk_bodies(fn_ctx, &key, elems, elem_llvm_ty)?;
-            (
-                get_or_declare_tuple_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-                get_or_declare_tuple_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-            )
-        }
-        OwnedElemThunkKind::Collection => {
-            // The collection-handle wrapper thunk BODY is synthesized eagerly
-            // here (like the tuple thunk — no registry-driven seeding): a
-            // collection element is referenced only through this descriptor.
-            // Idempotent: the emitter no-ops if the body already exists.
-            let (clone_sym, drop_sym) = collection_elem_clone_drop_syms(fn_ctx, elem_resolved_ty)
-                .ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "owned collection descriptor at `{label}`: element \
-                         {elem_resolved_ty:?} has no canonical clone/free primitive \
-                         (closure-pair Vec elements are a separate lane)"
-                ))
-            })?;
-            crate::thunks::emit_collection_handle_thunk_bodies(fn_ctx, &key, clone_sym, drop_sym)?;
-            (
-                get_or_declare_collection_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-                get_or_declare_collection_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
-            )
-        }
-    };
-    let ctx = fn_ctx.ctx;
-    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
-    let i8_ty = ctx.i8_type();
-    let ptr_ty = ctx.ptr_type(AddressSpace::default());
-    let layout_ty = ctx.struct_type(
-        &[
-            usize_ty.into(),
-            usize_ty.into(),
-            i8_ty.into(),
-            ptr_ty.into(),
-            ptr_ty.into(),
-        ],
-        false,
-    );
-    // ownership_kind = LayoutManaged (HewTypeOwnershipKind::LayoutManaged = 2).
-    let init = layout_ty.const_named_struct(&[
-        usize_ty.const_int(size, false).into(),
-        usize_ty.const_int(u64::from(align), false).into(),
-        i8_ty.const_int(2, false).into(),
-        clone_fn.as_global_value().as_pointer_value().into(),
-        drop_fn.as_global_value().as_pointer_value().into(),
-    ]);
-    let g = fn_ctx.llvm_mod.add_global(layout_ty, None, &global_name);
-    g.set_constant(true);
-    g.set_linkage(Linkage::Private);
-    g.set_initializer(&init);
-    Ok(g.as_pointer_value())
-}
-
-/// Synthesize (or reuse) the constant `HewVecElemLayout` witness static
-/// describing one channel/stream element type for the layout-witness
-/// recv/send ABI (`hew_channel_*_layout` / `hew_stream_*_layout`).
-///
-/// Encoding contract — must mirror `hew-runtime/src/channel_common.rs`:
-/// - `String` (ownership kind 1): pointer-sized element slot; the queue
-///   envelope is content-encoded (the runtime materialises a fresh
-///   header-aware cstring on decode).
-/// - `Bytes` (kind 3): `BytesTriple`-sized slot; content-encoded envelope.
-/// - scalars / BitCopy aggregates (kind 0, Plain): the raw representation,
-///   witness-width wide, no thunks.
-/// - heap-owning record/enum/tuple (kind 2, LayoutManaged): the W5.016 owned
-///   descriptor with the per-type `__hew_*_{clone,drop}_inplace` thunks,
-///   reused verbatim via [`owned_elem_layout_descriptor_ptr`].
-///
-/// The heap-ownership split reuses the Vec classifier
-/// (`resolved_ty_element_owns_heap_for_owned_vec`) so the channel/stream
-/// witness can never disagree with the Vec witness about one element type.
-fn channel_elem_layout_witness_ptr<'ctx>(
-    fn_ctx: &FnCtx<'_, 'ctx>,
-    elem_ty: &ResolvedTy,
-    label: &str,
-) -> CodegenResult<PointerValue<'ctx>> {
-    match elem_ty {
-        ResolvedTy::String => {
-            let ptr_bytes = u64::from(fn_ctx.target_data.get_pointer_byte_size(None));
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "pointer byte size fits u32 on every supported target"
-            )]
-            let align = ptr_bytes as u32;
-            const_elem_witness_global(fn_ctx, "__hew_elem_layout_string", ptr_bytes, align, 1)
-        }
-        ResolvedTy::Bytes => {
-            let triple_ty = fn_ctx.ctx.struct_type(
-                &[
-                    fn_ctx.ctx.ptr_type(AddressSpace::default()).into(),
-                    fn_ctx.ctx.i32_type().into(),
-                    fn_ctx.ctx.i32_type().into(),
-                ],
-                false,
-            );
-            let (size, align) = abi_size_align(triple_ty.into(), Some(fn_ctx.target_data))?;
-            const_elem_witness_global(fn_ctx, "__hew_elem_layout_bytes", size, align, 3)
-        }
-        _ if resolved_ty_element_owns_heap_for_owned_vec(fn_ctx, elem_ty) => {
-            let elem_llvm_ty = resolve_ty(fn_ctx.ctx, elem_ty, fn_ctx.record_layouts)?;
-            owned_elem_layout_descriptor_ptr(fn_ctx, elem_ty, elem_llvm_ty, label)
-        }
-        _ => {
-            // Plain: scalars (i8..i64, u8..u64, f32/f64, bool, char) and
-            // BitCopy aggregates ride the raw representation. The checker owns
-            // the admission decision; an element type it should not have
-            // admitted still gets a deterministic width here rather than a
-            // silent misdecode (the runtime cross-checks envelope width).
-            let elem_llvm_ty = resolve_ty(fn_ctx.ctx, elem_ty, fn_ctx.record_layouts)?;
-            let (size, align) = abi_size_align(elem_llvm_ty, Some(fn_ctx.target_data))?;
-            const_elem_witness_global(
-                fn_ctx,
-                &format!("__hew_elem_layout_plain_{size}_{align}"),
-                size,
-                align,
-                0,
-            )
-        }
-    }
-}
-
 /// Emit (or reuse) a thunk-less constant `HewVecElemLayout` global. The
 /// struct shape `{usize, usize, i8, ptr, ptr}` matches `hew-cabi::vec` and
 /// the thunk-bearing twin emitted by [`owned_elem_layout_descriptor_ptr`].
-fn const_elem_witness_global<'ctx>(
+pub(crate) fn const_elem_witness_global<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     global_name: &str,
     size: u64,
@@ -17750,36 +16553,6 @@ pub(crate) fn mix_into_hash_acc<'ctx>(
     Ok(())
 }
 
-/// Map a primitive `ResolvedTy` to the runtime-defined key layout extern
-/// (`hew_layout_key_<prim>` in `hew-runtime/src/layout_intrinsics.rs`). Returns
-/// `None` for non-primitive shapes (records, tuples, etc.), which fall through
-/// to the codegen-synthesised per-record layout path.
-///
-/// Stage C3 (DI-017): the resolver-authority cutover admits Hash+Eq primitives
-/// (i32/i64/u32/u64/bool/char/string/bytes) as HashMap keys / HashSet
-/// elements. Synthesising per-primitive hash/eq thunks in codegen is
-/// unnecessary (and impossible for `string` whose LLVM repr is a pointer to a
-/// C string) — instead, route to the runtime-shipped static descriptors that
-/// embed the canonical hash/eq/drop function pointers.
-fn primitive_key_layout_extern_name(rty: &ResolvedTy) -> Option<&'static str> {
-    Some(match rty {
-        ResolvedTy::I32 => "hew_layout_key_i32",
-        ResolvedTy::I64 => "hew_layout_key_i64",
-        ResolvedTy::U32 => "hew_layout_key_u32",
-        ResolvedTy::U64 => "hew_layout_key_u64",
-        ResolvedTy::Bool => "hew_layout_key_bool",
-        ResolvedTy::Char => "hew_layout_key_char",
-        ResolvedTy::String => "hew_layout_key_string",
-        ResolvedTy::Bytes => "hew_layout_key_bytes",
-        // F32/F64 ship `hash_fn = None` / `eq_fn = None` (DI-003 fail-closed-
-        // by-absence). They should never reach codegen because the resolver
-        // rejects them with `BoundsNotSatisfied(Hash, _)`. Returning `None`
-        // here falls through to the codegen-synthesis path, which itself
-        // hard-errors on floats — defence in depth.
-        _ => return None,
-    })
-}
-
 /// Counterpart to `primitive_key_layout_extern_name` for the value side. Maps
 /// primitive `ResolvedTy` to `hew_layout_val_<prim>`. Returns `None` for
 /// non-primitive shapes which fall through to the codegen-emitted Plain
@@ -17844,7 +16617,7 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
     // be hashed by the generic thunk emitter and need the runtime's
     // canonical hash function. See `primitive_key_layout_extern_name`.
     if let Some(rty) = resolved_ty {
-        if let Some(name) = primitive_key_layout_extern_name(rty) {
+        if let Some(name) = crate::layout::primitive_key_layout_extern_name(rty) {
             return Ok(declare_extern_layout_global(fn_ctx, name));
         }
     }
@@ -18569,7 +17342,7 @@ fn lower_hashmap_layout_probe(
             // emitted `@__hew_layout_probe_*` global is the unforgeable witness
             // that the descriptor width follows the active target.
             let (_, elem_ty) = place_pointer(fn_ctx, args[0])?;
-            let _ = layout_descriptor_ptr(fn_ctx, elem_ty, "probe")?;
+            let _ = crate::layout::layout_descriptor_ptr(fn_ctx, elem_ty, "probe")?;
         }
         _ => {
             return Err(CodegenError::FailClosed(format!(
@@ -19161,15 +17934,19 @@ fn lower_vec_constructor_call(
     let fv = get_or_declare_vec_constructor(fn_ctx.ctx, fn_ctx.llvm_mod, runtime_symbol)?;
     let call = match ctor {
         VecCtor::BitCopyLayout(elem_llvm_ty) => {
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, elem_llvm_ty, "new")?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, elem_llvm_ty, "new")?;
             fn_ctx
                 .builder
                 .build_call(fv, &[layout_ptr.into()], "hew_vec_new_with_layout_call")
                 .llvm_ctx("hew_vec_new_with_layout call")?
         }
         VecCtor::Owned(elem_llvm_ty) => {
-            let layout_ptr =
-                owned_elem_layout_descriptor_ptr(fn_ctx, elem_ty, elem_llvm_ty, "new")?;
+            let layout_ptr = crate::layout::owned_elem_layout_descriptor_ptr(
+                fn_ctx,
+                elem_ty,
+                elem_llvm_ty,
+                "new",
+            )?;
             fn_ctx
                 .builder
                 .build_call(
@@ -19251,7 +18028,7 @@ pub(crate) fn lower_layout_vec_direct_call(
     }
 
     let vec_ptr = load_duplex_handle(fn_ctx, args[0], &format!("{callee} arg0"))?;
-    let fv = get_or_declare_layout_vec_runtime(fn_ctx.ctx, fn_ctx.llvm_mod, callee)?;
+    let fv = crate::layout::get_or_declare_layout_vec_runtime(fn_ctx.ctx, fn_ctx.llvm_mod, callee)?;
     match callee {
         "hew_vec_push_layout" => {
             if let Some(d) = dest {
@@ -19260,7 +18037,7 @@ pub(crate) fn lower_layout_vec_direct_call(
                 )));
             }
             let (data_ptr, elem_ty) = place_pointer(fn_ctx, args[1])?;
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, elem_ty, "push")?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, elem_ty, "push")?;
             fn_ctx
                 .builder
                 .build_call(
@@ -19283,7 +18060,7 @@ pub(crate) fn lower_layout_vec_direct_call(
                 "hew_vec_get_layout_arg1",
             )?;
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, dest_ty, "get")?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, dest_ty, "get")?;
             let call = fn_ctx
                 .builder
                 .build_call(
@@ -19319,7 +18096,7 @@ pub(crate) fn lower_layout_vec_direct_call(
                 "hew_vec_set_layout_arg1",
             )?;
             let (data_ptr, elem_ty) = place_pointer(fn_ctx, args[2])?;
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, elem_ty, "set")?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, elem_ty, "set")?;
             fn_ctx
                 .builder
                 .build_call(
@@ -19341,7 +18118,7 @@ pub(crate) fn lower_layout_vec_direct_call(
                 )
             })?;
             let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, dest_ty, "pop")?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, dest_ty, "pop")?;
             let call = fn_ctx
                 .builder
                 .build_call(
@@ -19484,7 +18261,8 @@ pub(crate) fn lower_layout_vec_direct_call(
                          is not a layout-descriptor-backed record/tuple"
                     ))
                 })?;
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, layout_elem_ty, "remove")?;
+            let layout_ptr =
+                crate::layout::layout_descriptor_ptr(fn_ctx, layout_elem_ty, "remove")?;
             fn_ctx
                 .builder
                 .build_call(
@@ -19525,7 +18303,7 @@ pub(crate) fn lower_layout_vec_direct_call(
                          is not a layout-descriptor-backed record/tuple"
                     ))
                 })?;
-            let layout_ptr = layout_descriptor_ptr(fn_ctx, layout_elem_ty, "clone")?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, layout_elem_ty, "clone")?;
             let call = fn_ctx
                 .builder
                 .build_call(
@@ -21496,7 +20274,7 @@ fn emit_one_elab_drop_unguarded(fn_ctx: &FnCtx<'_, '_>, drop: &ElabDrop) -> Code
                     df = drop.drop_fn,
                 )));
             }
-            let enum_name = enum_layout_key_for_ty(fn_ctx, &drop.ty)?;
+            let enum_name = crate::layout::enum_layout_key_for_ty(fn_ctx, &drop.ty)?;
             // The helper body is synthesised by `emit_state_clone_drop_synthesis`
             // (seeded with every `EnumInPlace`-dropped enum). A declaration with
             // no body would link-fail; refuse to emit a dangling call.
@@ -21769,7 +20547,10 @@ const AGGREGATE_DROP_DEPTH_BOUND: u32 = 64;
 /// (`dedup-semantic-boundary`). Consults the record/enum field registries so a
 /// `Header { name: string }` element (owns heap via a field, not a type arg) is
 /// correctly recognised.
-fn resolved_ty_element_owns_heap_for_owned_vec(fn_ctx: &FnCtx<'_, '_>, elem: &ResolvedTy) -> bool {
+pub(crate) fn resolved_ty_element_owns_heap_for_owned_vec(
+    fn_ctx: &FnCtx<'_, '_>,
+    elem: &ResolvedTy,
+) -> bool {
     match elem {
         // Bare scalar/string/bytes elements take the non-owned paths.
         ResolvedTy::String | ResolvedTy::Bytes => false,
@@ -23859,7 +22640,7 @@ pub(crate) fn store_recv_option_via_layout<'ctx>(
     recv_symbol: &str,
     elem_ty: &ResolvedTy,
 ) -> CodegenResult<()> {
-    let witness = channel_elem_layout_witness_ptr(fn_ctx, elem_ty, recv_symbol)?;
+    let witness = crate::layout::channel_elem_layout_witness_ptr(fn_ctx, elem_ty, recv_symbol)?;
     let (tag_ptr, tag_ty) = place_pointer(fn_ctx, Place::EnumTag(dest_local))?;
     let BasicTypeEnum::IntType(tag_int) = tag_ty else {
         return Err(CodegenError::FailClosed(format!(
@@ -25374,7 +24155,8 @@ fn lower_terminator<'ctx>(
                         "{callee} value local _{value_local} has no registered type"
                     ))
                 })?;
-                let witness = channel_elem_layout_witness_ptr(fn_ctx, &elem_ty, callee)?;
+                let witness =
+                    crate::layout::channel_elem_layout_witness_ptr(fn_ctx, &elem_ty, callee)?;
                 let handle_ptr =
                     load_duplex_handle(fn_ctx, *handle_arg, &format!("{callee} handle"))?;
                 let (value_ptr, _) = place_pointer(fn_ctx, *value_arg)?;
@@ -25468,7 +24250,7 @@ fn lower_terminator<'ctx>(
                 lower_vec_constructor_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
-            if is_layout_vec_runtime_symbol(callee) {
+            if crate::layout::is_layout_vec_runtime_symbol(callee) {
                 lower_layout_vec_direct_call(fn_ctx, callee, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
@@ -29868,7 +28650,7 @@ fn declare_function<'ctx>(
     let resolve_value_ty = |ty: &ResolvedTy| -> CodegenResult<BasicTypeEnum<'ctx>> {
         let raw = resolve_ty(ctx, ty, record_layouts)?;
         if let ResolvedTy::Named { name, .. } = ty {
-            if is_indirect_enum(name, enum_layouts) {
+            if crate::layout::is_indirect_enum(name, enum_layouts) {
                 return Ok(ctx.ptr_type(AddressSpace::default()).into());
             }
         }
@@ -30521,7 +29303,7 @@ fn lower_function<'ctx>(
             } else {
                 let raw_ty = resolve_ty(ctx, ty, record_layouts)?;
                 if let ResolvedTy::Named { name, .. } = ty {
-                    if is_indirect_enum(name, enum_layouts) {
+                    if crate::layout::is_indirect_enum(name, enum_layouts) {
                         ctx.ptr_type(inkwell::AddressSpace::default()).into()
                     } else {
                         raw_ty
@@ -30581,7 +29363,7 @@ fn lower_function<'ctx>(
         } else {
             continue;
         };
-        if !is_indirect_enum(ty_name, enum_layouts) {
+        if !crate::layout::is_indirect_enum(ty_name, enum_layouts) {
             continue;
         }
         // Locate the outer struct type for the indirect enum.
@@ -31034,9 +29816,15 @@ fn lower_function<'ctx>(
     // LESSONS: boundary-fail-closed, migration-completeness.
     if matches!(return_ty_llvm, BasicTypeEnum::StructType(_))
         && ty_contains_heap_owning(&func.return_ty, fn_ctx.enum_layouts)
-        && !is_heap_owning_enum_composite_return(&func.return_ty, fn_ctx.enum_layouts)
+        && !crate::layout::is_heap_owning_enum_composite_return(
+            &func.return_ty,
+            fn_ctx.enum_layouts,
+        )
         && !is_single_heap_owning_leaf_return(&func.return_ty)
-        && !is_heap_owning_tuple_composite_return(&func.return_ty, fn_ctx.enum_layouts)
+        && !crate::layout::is_heap_owning_tuple_composite_return(
+            &func.return_ty,
+            fn_ctx.enum_layouts,
+        )
         && !is_heap_owning_record_composite_return(
             &func.return_ty,
             fn_ctx.record_layouts,
@@ -31484,14 +30272,14 @@ fn build_module_for_target<'ctx>(
     // enum); without the predeclare-all-then-fill-all ordering, the record
     // body-fill would call `resolve_ty` against a map containing only
     // record opaques and trip the D10 fail-closed sentinel on `kind`.
-    let mut record_layouts = predeclare_named_layouts(
+    let mut record_layouts = crate::layout::predeclare_named_layouts(
         ctx,
         &pipeline.record_layouts,
         &pipeline.enum_layouts,
         &pipeline.machine_layouts,
         &pipeline.opaque_handle_names,
     )?;
-    fill_record_layout_bodies(ctx, &pipeline.record_layouts, &record_layouts)?;
+    crate::layout::fill_record_layout_bodies(ctx, &pipeline.record_layouts, &record_layouts)?;
     // Build a quick lookup from record name → field ResolvedTys, shared by
     // every per-function lowering context. The synthesis path consults this
     // when walking a struct hash thunk so a `bool` field (i8 storage, low
@@ -31537,7 +30325,7 @@ fn build_module_for_target<'ctx>(
                 .any(|t| resolved_ty_references_machine(t, &machine_short_names))
         })
     });
-    register_enum_layouts(
+    crate::layout::register_enum_layouts(
         ctx,
         &machine_free_enums,
         &mut record_layouts,
@@ -31548,7 +30336,7 @@ fn build_module_for_target<'ctx>(
     // Outer structs + `<Name>Event` companions were predeclared above; this
     // call sets each body on the existing opaque. The richer per-variant
     // metadata (inner structs, tag int type) lives in `machine_layouts`.
-    let machine_layout_map = register_machine_layouts(
+    let machine_layout_map = crate::layout::register_machine_layouts(
         ctx,
         &llvm_mod,
         &pipeline.machine_layouts,
@@ -31559,7 +30347,7 @@ fn build_module_for_target<'ctx>(
     machine_layouts.extend(machine_layout_map);
     // Second enum pass: the machine-referencing instantiations, sized now
     // that every machine body is set.
-    register_enum_layouts(
+    crate::layout::register_enum_layouts(
         ctx,
         &machine_ref_enums,
         &mut record_layouts,
@@ -38787,12 +37575,12 @@ mod tests {
     ) -> CompositeHelperHarness<'ctx> {
         let target_data = host_target_data();
         let mut record_layouts: RecordLayoutMap<'ctx> =
-            predeclare_named_layouts(ctx, record_fixtures, enum_fixtures, &[], &[])
+            crate::layout::predeclare_named_layouts(ctx, record_fixtures, enum_fixtures, &[], &[])
                 .expect("named-layout predeclaration must succeed");
-        fill_record_layout_bodies(ctx, record_fixtures, &record_layouts)
+        crate::layout::fill_record_layout_bodies(ctx, record_fixtures, &record_layouts)
             .expect("record-layout body fill must succeed");
         let mut machine_layouts: MachineLayoutMap<'ctx> = HashMap::new();
-        register_enum_layouts(
+        crate::layout::register_enum_layouts(
             ctx,
             enum_fixtures,
             &mut record_layouts,
@@ -40109,15 +38897,27 @@ mod tests {
             ],
             is_indirect: false,
         }];
-        let mut map = predeclare_named_layouts(&ctx, &record_fixtures, &enum_fixtures, &[], &[])
-            .expect("predeclare must succeed");
+        let mut map = crate::layout::predeclare_named_layouts(
+            &ctx,
+            &record_fixtures,
+            &enum_fixtures,
+            &[],
+            &[],
+        )
+        .expect("predeclare must succeed");
         let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
-        register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
-            .expect("enum body-fill must succeed against predeclared opaque");
+        crate::layout::register_enum_layouts(
+            &ctx,
+            &enum_fixtures,
+            &mut map,
+            &mut machine_layouts,
+            None,
+        )
+        .expect("enum body-fill must succeed against predeclared opaque");
         // Now fill the record body. `resolve_ty` on the `CrashKind` field
         // must find the predeclared opaque in `map` rather than fall
         // through to `primitive_to_llvm`'s D10 arm.
-        fill_record_layout_bodies(&ctx, &record_fixtures, &map)
+        crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map)
             .expect("record body-fill must resolve enum-typed field via predeclared opaque");
         assert!(
             map.contains_key("CrashKind"),
@@ -40157,8 +38957,14 @@ mod tests {
                 field_tys: vec![],
             }],
         }];
-        let map = predeclare_named_layouts(&ctx, &record_fixtures, &[], &machine_fixtures, &[])
-            .expect("predeclare must succeed for record+machine");
+        let map = crate::layout::predeclare_named_layouts(
+            &ctx,
+            &record_fixtures,
+            &[],
+            &machine_fixtures,
+            &[],
+        )
+        .expect("predeclare must succeed for record+machine");
         assert!(
             map.contains_key("Worker"),
             "predeclare must register machine outer struct name"
@@ -40167,7 +38973,7 @@ mod tests {
             map.contains_key("WorkerEvent"),
             "predeclare must register <Name>Event companion"
         );
-        fill_record_layout_bodies(&ctx, &record_fixtures, &map)
+        crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map)
             .expect("record body-fill must resolve machine-typed field via predeclared opaque");
     }
 
@@ -40188,9 +38994,9 @@ mod tests {
                 is_opaque: false,
             }],
         }];
-        let map = predeclare_named_layouts(&ctx, &record_fixtures, &[], &[], &[])
+        let map = crate::layout::predeclare_named_layouts(&ctx, &record_fixtures, &[], &[], &[])
             .expect("predeclare must succeed");
-        let err = fill_record_layout_bodies(&ctx, &record_fixtures, &map)
+        let err = crate::layout::fill_record_layout_bodies(&ctx, &record_fixtures, &map)
             .expect_err("record body-fill must fail-closed on unknown Named type");
         match err {
             CodegenError::FailClosed(msg) => {
@@ -40223,8 +39029,14 @@ mod tests {
             }],
             is_indirect: false,
         }];
-        let err = predeclare_named_layouts(&ctx, &record_fixtures, &enum_fixtures, &[], &[])
-            .expect_err("duplicate names across classes must fail-closed");
+        let err = crate::layout::predeclare_named_layouts(
+            &ctx,
+            &record_fixtures,
+            &enum_fixtures,
+            &[],
+            &[],
+        )
+        .expect_err("duplicate names across classes must fail-closed");
         match err {
             CodegenError::FailClosed(msg) => {
                 assert!(
@@ -40280,11 +39092,17 @@ mod tests {
                 is_indirect: false,
             },
         ];
-        let mut map = predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
+        let mut map = crate::layout::predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
             .expect("predeclare must tolerate within-class duplicate enum names");
         let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
-        register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
-            .expect("register_enum_layouts must skip within-class duplicate body-fill");
+        crate::layout::register_enum_layouts(
+            &ctx,
+            &enum_fixtures,
+            &mut map,
+            &mut machine_layouts,
+            None,
+        )
+        .expect("register_enum_layouts must skip within-class duplicate body-fill");
         assert!(
             machine_layouts.contains_key("Option$$u8"),
             "metadata for the deduplicated enum must be registered exactly once"
@@ -40332,11 +39150,17 @@ mod tests {
                 is_indirect: false,
             },
         ];
-        let mut map = predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
+        let mut map = crate::layout::predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
             .expect("predeclare must succeed even for cyclic names");
         let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
-        let err = register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
-            .expect_err("cyclic enum layout must fail-closed, not silently miscompile");
+        let err = crate::layout::register_enum_layouts(
+            &ctx,
+            &enum_fixtures,
+            &mut map,
+            &mut machine_layouts,
+            None,
+        )
+        .expect_err("cyclic enum layout must fail-closed, not silently miscompile");
         match err {
             CodegenError::FailClosed(msg) => {
                 assert!(
@@ -40409,11 +39233,17 @@ mod tests {
                 is_indirect: true,
             },
         ];
-        let mut map = predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
+        let mut map = crate::layout::predeclare_named_layouts(&ctx, &[], &enum_fixtures, &[], &[])
             .expect("predeclare must succeed for mutual indirect enum pair");
         let mut machine_layouts: MachineLayoutMap<'_> = HashMap::new();
-        register_enum_layouts(&ctx, &enum_fixtures, &mut map, &mut machine_layouts, None)
-            .expect("mutual indirect enum pair must compile: both fields are pointer-shaped");
+        crate::layout::register_enum_layouts(
+            &ctx,
+            &enum_fixtures,
+            &mut map,
+            &mut machine_layouts,
+            None,
+        )
+        .expect("mutual indirect enum pair must compile: both fields are pointer-shaped");
         assert!(
             machine_layouts.contains_key("A"),
             "layout for indirect enum A must be registered"

@@ -1692,6 +1692,39 @@ impl Checker {
                 // The fork statement itself produces no value.
                 Ty::Unit
             }
+            Expr::ForkBlock { body } => {
+                // `fork { ... }` is a fire-and-forget anonymous child task,
+                // `≈ fork _ = (|| { body })()`. Its body is checked here as a
+                // zero-parameter, unit-returning closure context so that body
+                // statements, callee arguments, and the tail expression are all
+                // type-checked — the same coverage the named `fork name = call()`
+                // form already enjoys.
+                //
+                // Position gate: like `fork name = call(...)`, `fork { ... }` is
+                // only meaningful inside a `scope { }` body. HIR lowering enforces
+                // the same rule; rejecting here too gives a check-time diagnostic.
+                if self.task_scope_depth == 0 {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "`fork { ... }` is only valid inside a `scope { }` body".to_string(),
+                    );
+                    return Ty::Unit;
+                }
+                // Check the body as an anonymous, unit-returning task context.
+                // `task_scope_depth` stays elevated (the body runs inside the
+                // enclosing scope, it does not open a fresh scope boundary), so a
+                // nested `fork name = call()` inside the body still passes its
+                // position gate. Save/restore `current_return_type` exactly as the
+                // `Expr::GenBlock` arm does so the enclosing function's return
+                // type is not polluted.
+                let prev_return_type = self.current_return_type.take();
+                self.current_return_type = Some(Ty::Unit);
+                self.check_block(body, Some(&Ty::Unit));
+                self.current_return_type = prev_return_type;
+                // The fork statement itself produces no value.
+                Ty::Unit
+            }
             Expr::SpawnLambdaActor {
                 is_move,
                 params,

@@ -3389,18 +3389,53 @@ fn compound_assign_op_str(op: CompoundAssignOp) -> &'static str {
     }
 }
 
-fn escape_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            '\0' => out.push_str("\\0"),
-            other => out.push(other),
+/// Escape a single character for use inside a double-quoted string or
+/// f-string literal part.
+///
+/// Covers the full escape set the parser resolves:
+///   `\n \t \r \\ \" \0 \xNN \u{...}`
+///
+/// • Named escapes for the six ASCII control chars the parser recognises by
+///   name (`\n`, `\t`, `\r`, `\\`, `\"`, `\0`).
+/// • `\xNN` (two lowercase hex digits) for any other non-printable ASCII byte
+///   (code point < 0x20 or == 0x7F).
+/// • `\u{HHHH}` (uppercase hex, no leading zeros beyond the minimum) for any
+///   non-ASCII Unicode scalar.
+/// • Printable ASCII passes through verbatim.
+///
+/// `fstring_braces`: when `true`, also escape `{` and `}` as `\{` / `\}` so
+/// they survive round-trip inside an f-string interpolation boundary.
+fn escape_str_char(c: char, out: &mut String, fstring_braces: bool) {
+    match c {
+        '\\' => out.push_str("\\\\"),
+        '"' => out.push_str("\\\""),
+        '\n' => out.push_str("\\n"),
+        '\t' => out.push_str("\\t"),
+        '\r' => out.push_str("\\r"),
+        '\0' => out.push_str("\\0"),
+        '{' if fstring_braces => out.push_str("\\{"),
+        '}' if fstring_braces => out.push_str("\\}"),
+        c if c.is_ascii() => {
+            let b = c as u8;
+            if b < 0x20 || b == 0x7f {
+                // Non-printable ASCII not covered by a named escape above.
+                let _ = write!(out, "\\x{b:02x}");
+            } else {
+                out.push(c);
+            }
         }
+        c => {
+            // Non-ASCII Unicode scalar.
+            let cp = c as u32;
+            let _ = write!(out, "\\u{{{cp:X}}}");
+        }
+    }
+}
+
+fn escape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for c in s.chars() {
+        escape_str_char(c, &mut out, false);
     }
     out
 }
@@ -3414,19 +3449,9 @@ fn escape_string(s: &str) -> String {
 /// string *plus* `{` and `}`, which delimit interpolation holes and must be
 /// written as `\{` / `\}` to survive round-trip.
 fn escape_fstring_literal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+    let mut out = String::with_capacity(s.len() + 4);
     for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"),
-            '\t' => out.push_str("\\t"),
-            '\r' => out.push_str("\\r"),
-            '\0' => out.push_str("\\0"),
-            '{' => out.push_str("\\{"),
-            '}' => out.push_str("\\}"),
-            other => out.push(other),
-        }
+        escape_str_char(c, &mut out, true);
     }
     out
 }

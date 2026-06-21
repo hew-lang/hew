@@ -2411,3 +2411,210 @@ fn fmt_fstring_with_interp_and_escapes_preserved() {
         "interpolated expression should be preserved.\nOutput: {out}"
     );
 }
+
+// -----------------------------------------------------------------------
+// \xNN and \u{...} escape faithfulness — plain strings and f-strings
+//
+// The parser resolves `\xNN` to a raw byte and `\u{HHHH}` to a Unicode
+// scalar before storing them in the AST.  The formatter must re-escape
+// those resolved values back to their source form so that the output
+// round-trips faithfully — especially for non-printable / invisible chars
+// that are indistinguishable from surrounding text when emitted as raw bytes.
+// -----------------------------------------------------------------------
+
+/// Plain string: `\xNN` non-printable ASCII bytes must be re-escaped, not
+/// silently emitted as raw bytes in the formatted output.
+#[test]
+fn fmt_string_xnn_escape_preserved_exact() {
+    // \x07 is BEL (U+0007), non-printable, byte value 0x07.
+    // The formatter must emit `\x07` not a literal BEL byte.
+    let src = r#"fn main() { let s = "bell\x07end"; }"#;
+    let p1 = parse(src);
+    assert!(p1.errors.is_empty(), "parse errors: {:?}", p1.errors);
+
+    let formatted = format_program(&p1.program);
+
+    // Exact-value check: must re-emit as \x07, not a raw byte.
+    assert_eq!(
+        formatted, "fn main() {\n    let s = \"bell\\x07end\";\n}\n",
+        "plain-string \\xNN must be re-escaped in formatter output;\nActual: {formatted:?}"
+    );
+
+    // Idempotency.
+    let p2 = parse(&formatted);
+    assert!(p2.errors.is_empty(), "reparse errors: {:?}", p2.errors);
+    let formatted2 = format_program(&p2.program);
+    assert_eq!(
+        formatted, formatted2,
+        "plain-string \\xNN formatter output is not idempotent"
+    );
+}
+
+/// Plain string: `\u{...}` invisible / non-ASCII Unicode must be re-escaped.
+#[test]
+fn fmt_string_unicode_invisible_escape_preserved_exact() {
+    // \u{200B} is ZERO WIDTH SPACE — invisible, non-printable in context.
+    // The formatter must re-emit \u{200B}, not a raw zero-width-space byte sequence.
+    let src = r#"fn main() { let s = "a\u{200B}b"; }"#;
+    let p1 = parse(src);
+    assert!(p1.errors.is_empty(), "parse errors: {:?}", p1.errors);
+
+    let formatted = format_program(&p1.program);
+
+    // Exact-value check: must re-emit as \u{200B}.
+    assert_eq!(
+        formatted, "fn main() {\n    let s = \"a\\u{200B}b\";\n}\n",
+        "plain-string \\u{{...}} must be re-escaped in formatter output;\nActual: {formatted:?}"
+    );
+
+    // Idempotency.
+    let p2 = parse(&formatted);
+    assert!(p2.errors.is_empty(), "reparse errors: {:?}", p2.errors);
+    let formatted2 = format_program(&p2.program);
+    assert_eq!(
+        formatted, formatted2,
+        "plain-string \\u{{...}} formatter output is not idempotent"
+    );
+}
+
+/// f-string: `\xNN` non-printable ASCII bytes in literal parts must be
+/// re-escaped, not emitted as raw bytes.
+#[test]
+fn fmt_fstring_xnn_escape_preserved_exact() {
+    // \x07 (BEL) in a literal part adjacent to an interpolation.
+    let src = r#"fn main() { let s = f"bell\x07{x}end"; }"#;
+    let p1 = parse(src);
+    assert!(p1.errors.is_empty(), "parse errors: {:?}", p1.errors);
+
+    let formatted = format_program(&p1.program);
+
+    // Exact-value check: must re-emit as \x07, not a raw byte.
+    assert_eq!(
+        formatted, "fn main() {\n    let s = f\"bell\\x07{x}end\";\n}\n",
+        "f-string \\xNN must be re-escaped in formatter output;\nActual: {formatted:?}"
+    );
+
+    // Idempotency.
+    let p2 = parse(&formatted);
+    assert!(p2.errors.is_empty(), "reparse errors: {:?}", p2.errors);
+    let formatted2 = format_program(&p2.program);
+    assert_eq!(
+        formatted, formatted2,
+        "f-string \\xNN formatter output is not idempotent"
+    );
+}
+
+/// f-string: `\u{...}` invisible Unicode in literal parts must be re-escaped.
+#[test]
+fn fmt_fstring_unicode_invisible_escape_preserved_exact() {
+    // \u{200B} (ZERO WIDTH SPACE) in a literal part adjacent to interpolation.
+    let src = r#"fn main() { let s = f"a\u{200B}{x}b"; }"#;
+    let p1 = parse(src);
+    assert!(p1.errors.is_empty(), "parse errors: {:?}", p1.errors);
+
+    let formatted = format_program(&p1.program);
+
+    // Exact-value check: must re-emit as \u{200B}.
+    assert_eq!(
+        formatted, "fn main() {\n    let s = f\"a\\u{200B}{x}b\";\n}\n",
+        "f-string \\u{{...}} must be re-escaped in formatter output;\nActual: {formatted:?}"
+    );
+
+    // Idempotency.
+    let p2 = parse(&formatted);
+    assert!(p2.errors.is_empty(), "reparse errors: {:?}", p2.errors);
+    let formatted2 = format_program(&p2.program);
+    assert_eq!(
+        formatted, formatted2,
+        "f-string \\u{{...}} formatter output is not idempotent"
+    );
+}
+
+/// Full escape set round-trip on plain strings: every escape sequence the
+/// parser accepts must survive format → re-parse with identical AST value.
+///
+/// Covers: `\n \t \r \\ \" \x07 \u{200B}`.
+/// (`\0` resolves to NUL which the validator rejects in string literals.)
+#[test]
+fn fmt_string_full_escape_set_roundtrip() {
+    use hew_parser::ast_eq::program_eq_ignoring_spans;
+
+    // Each input has one escape; exact re-emit verified by AST equality.
+    let cases = [
+        r#"fn f() { let s = "a\nb"; }"#,
+        r#"fn f() { let s = "a\tb"; }"#,
+        r#"fn f() { let s = "a\rb"; }"#,
+        r#"fn f() { let s = "a\\b"; }"#,
+        r#"fn f() { let s = "a\"b"; }"#,
+        r#"fn f() { let s = "a\x07b"; }"#,
+        r#"fn f() { let s = "a\u{200B}b"; }"#,
+    ];
+
+    for src in &cases {
+        let p1 = parse(src);
+        assert!(
+            p1.errors.is_empty(),
+            "parse failed for {src:?}: {:?}",
+            p1.errors
+        );
+
+        let formatted = format_program(&p1.program);
+
+        let p2 = parse(&formatted);
+        assert!(
+            p2.errors.is_empty(),
+            "reparse failed for {src:?}:\nFormatted: {formatted:?}\nErrors: {:?}",
+            p2.errors
+        );
+
+        assert!(
+            program_eq_ignoring_spans(&p1.program, &p2.program),
+            "AST mismatch for {src:?}.\nFormatted: {formatted:?}"
+        );
+
+        let formatted2 = format_program(&p2.program);
+        assert_eq!(formatted, formatted2, "idempotency failure for {src:?}");
+    }
+}
+
+/// Full escape set round-trip on f-string literal parts.
+#[test]
+fn fmt_fstring_full_escape_set_roundtrip() {
+    use hew_parser::ast_eq::program_eq_ignoring_spans;
+
+    let cases = [
+        r#"fn f(x: i64) { let s = f"a\n{x}b"; }"#,
+        r#"fn f(x: i64) { let s = f"a\t{x}b"; }"#,
+        r#"fn f(x: i64) { let s = f"a\r{x}b"; }"#,
+        r#"fn f(x: i64) { let s = f"a\\{x}b"; }"#,
+        r#"fn f(x: i64) { let s = f"a\"{x}b"; }"#,
+        r#"fn f(x: i64) { let s = f"a\x07{x}b"; }"#,
+        r#"fn f(x: i64) { let s = f"a\u{200B}{x}b"; }"#,
+    ];
+
+    for src in &cases {
+        let p1 = parse(src);
+        assert!(
+            p1.errors.is_empty(),
+            "parse failed for {src:?}: {:?}",
+            p1.errors
+        );
+
+        let formatted = format_program(&p1.program);
+
+        let p2 = parse(&formatted);
+        assert!(
+            p2.errors.is_empty(),
+            "reparse failed for {src:?}:\nFormatted: {formatted:?}\nErrors: {:?}",
+            p2.errors
+        );
+
+        assert!(
+            program_eq_ignoring_spans(&p1.program, &p2.program),
+            "AST mismatch for {src:?}.\nFormatted: {formatted:?}"
+        );
+
+        let formatted2 = format_program(&p2.program);
+        assert_eq!(formatted, formatted2, "idempotency failure for {src:?}");
+    }
+}

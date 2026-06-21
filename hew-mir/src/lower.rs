@@ -3423,6 +3423,9 @@ fn synthesize_machine_step_fn(
         // Synthesised machine-`step` dispatch: no faithful source bindings,
         // so no `-g` variable DIEs (consistent with `span: None`).
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: blocks.clone(),
         decisions: Vec::new(),
         intrinsic_id: None,
@@ -4821,6 +4824,13 @@ fn lower_function(
             .collect(),
         locals: builder.locals.clone(),
         local_names: builder.local_names.clone(),
+        local_scopes: builder
+            .local_scopes
+            .iter()
+            .map(|s| s.map(|sc| sc.0))
+            .collect(),
+        local_decl_bytes: builder.local_decl_bytes.clone(),
+        scope_table: builder.build_scope_table(),
         blocks,
         decisions: builder.decisions.clone(),
         // W5.005 / F1b: carry the floor-intrinsic catalog id from HIR so
@@ -5386,6 +5396,19 @@ struct LoopFrame {
     body_scope: ScopeId,
 }
 
+/// Accumulated lexical-scope facts for one HIR `ScopeId`, built incrementally
+/// while lowering a function body (see `Builder::scope_info`). `parent` is the
+/// enclosing scope (the frame below this one on `active_scopes` at first
+/// observation); `None` for the function-body root scope. `min_start`/`max_end`
+/// widen to cover every source byte-span lowered under this scope, giving
+/// codegen a source byte-range it maps to a `DILexicalBlock`'s PC extent.
+#[derive(Debug, Clone, Copy)]
+struct ScopeInfoEntry {
+    parent: Option<ScopeId>,
+    min_start: u32,
+    max_end: u32,
+}
+
 #[derive(Debug, Default)]
 struct Builder {
     /// Checker-authority stream for the *current* basic block. Drained
@@ -5438,6 +5461,18 @@ struct Builder {
     /// a name. A side-table-shaped `Vec` (not a field on every binding-insert
     /// site) keeps the many `binding_locals.insert` call sites unchanged.
     local_names: Vec<Option<String>>,
+    /// gdb `-g` lexical scoping, parallel to `local_names`. `local_scopes[i]` is
+    /// the HIR `ScopeId` the binding occupying `Place::Local(i)` was declared in
+    /// (or `None` for params / anonymous temporaries / unscoped slots). Resolved
+    /// in `resolve_local_names_from_binds` from `binding_scope`. Codegen scopes
+    /// each variable DIE to the matching `DILexicalBlock`, so a shadowed inner
+    /// `first` does not share the outer's function-wide scope.
+    local_scopes: Vec<Option<ScopeId>>,
+    /// gdb `-g` declaration line, parallel to `local_names`. `local_decl_bytes[i]`
+    /// is the source start-byte of the `let` that introduced `Place::Local(i)`
+    /// (or `None`). Codegen maps it to a line so each local DIE carries its own
+    /// declaration line rather than the function-declaration line.
+    local_decl_bytes: Vec<Option<u32>>,
     /// Maps `BindingId` to the `Local(N)` slot that holds the binding's
     /// initialiser. Cluster 1 reads the slot directly; later clusters add
     /// drop-cleanup and rebinding semantics.
@@ -5530,6 +5565,27 @@ struct Builder {
     /// drop set per-iteration and CFG-correct: outer-scope bindings keep their
     /// function-exit drop, inner-scope bindings get one drop per iteration.
     binding_scope: HashMap<BindingId, ScopeId>,
+    /// gdb `-g` lexical-block scoping. Accumulates, per HIR `ScopeId` ever active
+    /// while lowering this function's body, the scope's parent `ScopeId` (the
+    /// scope directly below it on `active_scopes` when first observed) and the
+    /// source byte-extent `[min_start, max_end)` of every statement/instruction
+    /// span lowered under it. Updated incrementally in `push_instr` and
+    /// `record_binding_scope` (both fire while the scope's frame is on the stack
+    /// top) — so no instrumentation of the 11 `active_scopes.push` sites is
+    /// needed. Drained at finalize into `RawMirFunction.scope_table` for codegen
+    /// to build one `DILexicalBlock` per scope, parented per `parent`, with PC
+    /// ranges derived from byte-extent → line. A shadowed inner `let first` is
+    /// recorded under its own (inner) scope, so its variable DIE and the inner
+    /// block's instruction `DILocation`s land in a distinct lexical block — the
+    /// outer `first` no longer leaks into the inner breakpoint's frame.
+    scope_info: HashMap<ScopeId, ScopeInfoEntry>,
+    /// gdb `-g`: source start-byte of each `let`-binding's declaration, captured
+    /// at `record_binding_scope` from the live lowering cursor. Resolved to the
+    /// binding's slot in `resolve_local_names_from_binds` so each local DIE gets
+    /// its OWN declaration line — two same-named shadowed locals on different
+    /// lines stay distinct even before lexical-block scoping. Absent → codegen
+    /// falls back to the function-declaration line.
+    binding_decl_byte: HashMap<BindingId, u32>,
     /// Map from each loop-body back-edge `Goto`'s emitting block id to the HIR
     /// `ScopeId` of the loop body that closes there. Populated immediately
     /// before each loop's body→header (or body→inc) `Terminator::Goto` is
@@ -6381,6 +6437,40 @@ impl Builder {
     fn record_binding_scope(&mut self, binding: BindingId) {
         let scope = self.active_scopes.last().copied().unwrap_or(ScopeId(0));
         self.binding_scope.insert(binding, scope);
+        if let Some(span) = self.current_span {
+            self.binding_decl_byte.insert(binding, span.0);
+            self.note_scope_span(span);
+        }
+    }
+
+    /// Widen the active scope's recorded byte-extent to cover `span`, and record
+    /// its parent (the frame directly below the active scope) the first time the
+    /// scope is observed. Drives the `-g` `DILexicalBlock` PC ranges. A no-op
+    /// when no scope is active (only the pre-body synthetic param Binds, which
+    /// carry no user-visible variable DIE anyway).
+    fn note_scope_span(&mut self, span: (u32, u32)) {
+        let depth = self.active_scopes.len();
+        let Some(&scope) = self.active_scopes.last() else {
+            return;
+        };
+        let parent = depth.checked_sub(2).map(|i| self.active_scopes[i]);
+        let (start, end) = span;
+        self.scope_info
+            .entry(scope)
+            .and_modify(|e| {
+                e.min_start = e.min_start.min(start);
+                e.max_end = e.max_end.max(end);
+                // The first observation fixes the parent; a scope can be
+                // re-entered (loop body), but its lexical parent is invariant.
+                if e.parent.is_none() {
+                    e.parent = parent;
+                }
+            })
+            .or_insert(ScopeInfoEntry {
+                parent,
+                min_start: start,
+                max_end: end,
+            });
     }
 
     /// Emit a `hew_gen_free` release for every generator/`AsyncGenerator`
@@ -6681,6 +6771,10 @@ impl Builder {
         // temporaries push `None`; named bindings overwrite it via
         // `record_local_name` after registering the slot in `binding_locals`.
         self.local_names.push(None);
+        // gdb `-g` scope/decl-line side-tables stay parallel to `local_names`;
+        // filled (alongside the name) in `resolve_local_names_from_binds`.
+        self.local_scopes.push(None);
+        self.local_decl_bytes.push(None);
         Place::Local(id)
     }
 
@@ -6698,22 +6792,84 @@ impl Builder {
         }
     }
 
+    /// Build the `-g` lexical-block table from the incrementally-accumulated
+    /// `scope_info`. Emits one [`MirScope`] per scope that is referenced by a
+    /// named local OR appears on any such scope's parent chain, so codegen can
+    /// parent every block up to the function-body root. A scope with no recorded
+    /// byte-extent (never observed a span) is skipped — it has no instructions
+    /// to scope and no local to host. Deterministic order (sorted by id) keeps
+    /// the emitted DWARF stable.
+    fn build_scope_table(&self) -> Vec<crate::model::MirScope> {
+        use std::collections::BTreeSet;
+        // Seed with every scope that hosts a named local, then walk parents.
+        let mut wanted: BTreeSet<ScopeId> = self
+            .local_scopes
+            .iter()
+            .filter_map(|s| *s)
+            .filter(|s| self.scope_info.contains_key(s))
+            .collect();
+        let mut frontier: Vec<ScopeId> = wanted.iter().copied().collect();
+        while let Some(sc) = frontier.pop() {
+            if let Some(entry) = self.scope_info.get(&sc) {
+                if let Some(parent) = entry.parent {
+                    if self.scope_info.contains_key(&parent) && wanted.insert(parent) {
+                        frontier.push(parent);
+                    }
+                }
+            }
+        }
+        wanted
+            .into_iter()
+            .filter_map(|sc| {
+                let e = self.scope_info.get(&sc)?;
+                Some(crate::model::MirScope {
+                    id: sc.0,
+                    // Drop a parent that is not itself in the emitted set
+                    // (defensive: an unobserved parent → root-level block).
+                    parent: e
+                        .parent
+                        .filter(|p| self.scope_info.contains_key(p))
+                        .map(|p| p.0),
+                    start: e.min_start,
+                    end: e.max_end,
+                })
+            })
+            .collect()
+    }
+
     /// Populate `local_names` for `let`-bound locals from the emitted
     /// `MirStatement::Bind` stream. Each `Bind` carries the source binding id
     /// and name; `binding_locals` maps that id to the slot the initialiser
     /// landed in. Resolving the two together names every `let` binding that
     /// occupies a plain `Place::Local`, uniformly, without instrumenting the
     /// many per-RHS-shape `binding_locals.insert` sites in the `Let` arm.
-    /// Parameters are named directly in `lower_params`. Fail-closed: a binding
-    /// whose final place is not a `Place::Local` (handle places) keeps its
-    /// `None` and gets no DIE. Called once at finalize, before the
-    /// `RawMirFunction` is built.
+    /// Parameters are named directly in `lower_params`. Also fills the parallel
+    /// `local_scopes` / `local_decl_bytes` side-tables for `-g` lexical scoping.
+    /// Fail-closed: a binding whose final place is not a `Place::Local` (handle
+    /// places) keeps its `None` and gets no DIE. Called once at finalize, before
+    /// the `RawMirFunction` is built.
     fn resolve_local_names_from_binds(&mut self, blocks: &[BasicBlock]) {
         for block in blocks {
             for stmt in &block.statements {
                 if let MirStatement::Bind { binding, name, .. } = stmt {
                     if let Some(place) = self.binding_locals.get(binding).copied() {
                         self.record_local_name(place, name);
+                        // gdb `-g`: a shadowed inner `let first` and its outer
+                        // sibling occupy DISTINCT slots (each `let` allocs a
+                        // fresh local), so naming both is correct; the loss of
+                        // the inner DIE happened downstream when both shared the
+                        // function-wide DI scope and decl line. Carry the per-
+                        // binding scope + decl-byte so codegen scopes each to
+                        // its own lexical block on its own line.
+                        if let Place::Local(id) = place {
+                            let id = id as usize;
+                            if let Some(slot) = self.local_scopes.get_mut(id) {
+                                *slot = self.binding_scope.get(binding).copied();
+                            }
+                            if let Some(slot) = self.local_decl_bytes.get_mut(id) {
+                                *slot = self.binding_decl_byte.get(binding).copied();
+                            }
+                        }
                     }
                 }
             }
@@ -6764,6 +6920,7 @@ impl Builder {
         if let Some(span) = self.current_span {
             let idx = u32::try_from(self.instructions.len()).unwrap_or(u32::MAX);
             self.instr_spans.insert((self.current_block_id, idx), span);
+            self.note_scope_span(span);
         }
         self.instructions.push(instr);
     }
@@ -6811,6 +6968,12 @@ impl Builder {
         if let Some(span) = self.current_span {
             let idx = u32::try_from(self.instructions.len()).unwrap_or(u32::MAX);
             self.instr_spans.insert((self.current_block_id, idx), span);
+            // gdb `-g`: a call statement (`println(first)`) lowers to a
+            // TERMINATOR, so its span must also widen the active scope's
+            // byte-extent — otherwise the inner block's range stops just short
+            // of the call and the call's `DILocation` falls back to the outer
+            // scope, hiding a shadowed inner binding at the call's breakpoint.
+            self.note_scope_span(span);
         }
     }
 
@@ -16753,6 +16916,9 @@ impl Builder {
             locals: vec![],
             // Synthesised task-entry adapter: no user bindings, no `-g` DIEs.
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks,
             decisions: vec![],
             intrinsic_id: None,
@@ -17260,6 +17426,9 @@ impl Builder {
             locals: builder.locals.clone(),
             // Synthesised closure-invoke shim: no faithful user bindings.
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: blocks.clone(),
             decisions: builder.decisions.clone(),
             intrinsic_id: None,
@@ -21199,6 +21368,9 @@ impl Builder {
             locals: builder.locals.clone(),
             // Synthesised closure-invoke shim: no faithful user bindings.
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks,
             decisions: builder.decisions.clone(),
             intrinsic_id: None,
@@ -21351,6 +21523,9 @@ impl Builder {
             locals: builder.locals.clone(),
             // Synthesised closure-invoke shim: no faithful user bindings.
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: blocks.clone(),
             decisions: builder.decisions.clone(),
             intrinsic_id: None,
@@ -21831,6 +22006,9 @@ impl Builder {
             locals: body_locals.clone(),
             // Synthesised lambda-actor body (runtime ABI shape): no `-g` DIEs.
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: body_blocks.clone(),
             decisions: body_builder.decisions.clone(),
             intrinsic_id: None,
@@ -22509,6 +22687,9 @@ impl Builder {
             locals: body_locals_with_state.clone(),
             // Synthesised generator body: no faithful user bindings, no DIEs.
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: blocks.clone(),
             decisions: body_builder.decisions.clone(),
             intrinsic_id: None,

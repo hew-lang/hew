@@ -1752,6 +1752,21 @@ pub enum SuspendKind {
     Sleep { duration_ms: Place },
 }
 
+/// A lexical scope's facts for gdb `-g` `DILexicalBlock` emission, threaded from
+/// the MIR lowering pass (see [`RawMirFunction::scope_table`]). `id` is the raw
+/// HIR `ScopeId` value (matching `RawMirFunction::local_scopes` entries);
+/// `parent` is the enclosing scope's id, or `None` for the function-body root;
+/// `start`/`end` are the source byte-extent covering every span lowered under
+/// this scope. Codegen builds a `DILexicalBlock` per entry and uses the
+/// byte-extent → line to scope instruction `DILocation`s by source containment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MirScope {
+    pub id: u32,
+    pub parent: Option<u32>,
+    pub start: u32,
+    pub end: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawMirFunction {
     pub name: String,
@@ -1787,6 +1802,31 @@ pub struct RawMirFunction {
     /// slot rather than fabricating a name — `local_N` is never invented.
     /// Empty for synthesised functions and legacy test MIR.
     pub local_names: Vec<Option<String>>,
+    /// gdb `-g` lexical scoping, parallel to `locals`/`local_names`.
+    /// `local_scopes[i]` is the raw HIR `ScopeId` value the binding occupying
+    /// `Place::Local(i)` was declared in, or `None` for params / anonymous
+    /// temporaries / slots whose scope could not be recovered. Threaded from the
+    /// lowering pass. Codegen consumes this under `-g` to scope each
+    /// `DW_TAG_variable` to a `DILexicalBlock` (built from `scope_table`), so a
+    /// shadowed inner `let first` gets its OWN DIE in its OWN block and the
+    /// outer `first` no longer leaks into the inner breakpoint's frame. Empty for
+    /// synthesised functions and legacy test MIR (→ flat subprogram scoping).
+    pub local_scopes: Vec<Option<u32>>,
+    /// gdb `-g` declaration line, parallel to `locals`/`local_names`.
+    /// `local_decl_bytes[i]` is the source start-byte of the `let` that
+    /// introduced `Place::Local(i)`, or `None`. Codegen maps it through the
+    /// byte→line index so each local DIE carries its own declaration line rather
+    /// than the function-declaration line. Empty for synthesised / legacy MIR.
+    pub local_decl_bytes: Vec<Option<u32>>,
+    /// gdb `-g` lexical-block table. One entry per HIR `ScopeId` referenced by
+    /// `local_scopes` (and every ancestor up to the function-body root), giving
+    /// the scope's parent and source byte-extent `[start, end)`. Codegen builds
+    /// one `DILexicalBlock` per entry, parented per `parent` (rooted at the
+    /// subprogram), and assigns each instruction's `DILocation` to the innermost
+    /// scope whose byte-extent contains the instruction's start byte. Empty →
+    /// codegen falls back to flat subprogram scoping (the pre-`-g`-lexical
+    /// behaviour), which is correct for any function with no shadowing.
+    pub scope_table: Vec<MirScope>,
     pub blocks: Vec<BasicBlock>,
     pub decisions: Vec<DecisionFact>,
     /// When `Some(catalog_key)`, this function is a `#[intrinsic("key")]`

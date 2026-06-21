@@ -113,6 +113,9 @@ fn duplex_exemplar_pipeline() -> IrPipeline {
                 ResolvedTy::I64,   // 4 len
             ],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,

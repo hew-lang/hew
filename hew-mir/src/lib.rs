@@ -55,7 +55,7 @@ pub use model::{
     ElaboratedMirFunction, EnumLayout, ExitPath, ExternDecl, FieldOffset, FloatWidth,
     FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaActorShape,
     LambdaCapture, LambdaEnvFieldDrop, MachineLayout, MachineVariantLayout, MirCheck, MirConst,
-    MirConstValue, MirDiagnostic, MirDiagnosticKind, MirStatement, Place, PointerWidth,
+    MirConstValue, MirDiagnostic, MirDiagnosticKind, MirScope, MirStatement, Place, PointerWidth,
     PolymorphicMirFunction, RawMirFunction, RecordLayout, RegexLiteral, RuntimeCall, SelectArm,
     SelectArmKind, SendAliasMode, Strategy, SupervisorChildLayout, SupervisorLayout, SuspendKind,
     Terminator, ThirFunction, TraitObjectStorage, TrapKind, WitnessOperand,

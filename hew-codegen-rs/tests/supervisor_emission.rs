@@ -88,6 +88,9 @@ fn supervisor_pipeline() -> IrPipeline {
         // module.
         locals: vec![bootstrap_return_ty.clone()],
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],
@@ -114,6 +117,9 @@ fn supervisor_pipeline() -> IrPipeline {
         params: vec![],
         locals: vec![ResolvedTy::I64],
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],
@@ -314,6 +320,9 @@ fn on_crash_pipeline() -> IrPipeline {
         params: vec![],
         locals: vec![],
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],
@@ -337,6 +346,9 @@ fn on_crash_pipeline() -> IrPipeline {
         params: vec![],
         locals: vec![bootstrap_return_ty.clone()],
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],
@@ -360,6 +372,9 @@ fn on_crash_pipeline() -> IrPipeline {
         params: vec![],
         locals: vec![ResolvedTy::I64],
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],

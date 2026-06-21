@@ -45,6 +45,9 @@ fn trivial_main() -> RawMirFunction {
         params: vec![],
         locals: vec![ResolvedTy::I64],
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],

@@ -71,9 +71,9 @@ use hew_mir::{
     CheckedMirFunction, ChildInitArg, CmpPred, CooperateKind, CooperateSite, DynVtableInstance,
     ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth,
     FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
-    LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, Place, RawMirFunction,
-    RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout, SupervisorLayout,
-    SuspendKind, Terminator, TrapKind,
+    LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, Place,
+    RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout,
+    SupervisorLayout, SuspendKind, Terminator, TrapKind,
 };
 use hew_types::{NumericWidth, ResolvedTy, WireCodecDirection};
 // Single source of truth for the trap discriminants codegen emits. Importing
@@ -29244,6 +29244,7 @@ fn set_debug_location_for_span<'ctx>(
     debug: Option<&ModuleDebugCtx<'_, 'ctx>>,
     subprogram: Option<inkwell::debug_info::DISubprogram<'ctx>>,
     span: Option<&(u32, u32)>,
+    lexical_scopes: Option<&LexicalScopes<'ctx>>,
 ) {
     let (Some(dctx), Some(subprogram), Some(&(start, _end))) = (debug, subprogram, span) else {
         return;
@@ -29253,13 +29254,17 @@ fn set_debug_location_for_span<'ctx>(
     }
     let line = dctx.line_index.line(start as usize);
     let column = dctx.line_index.column(start as usize);
-    let loc = dctx.di_builder.create_debug_location(
-        ctx,
-        line,
-        column,
-        subprogram.as_debug_info_scope(),
-        None,
-    );
+    // Scope the location to the innermost lexical block whose source extent
+    // contains this instruction's start byte — so an instruction inside a
+    // shadowing `{ }` reports the inner block as its current scope, and the
+    // debugger resolves a shadowed name to the inner binding. No containing
+    // block (or no lexical table) → the flat subprogram scope, unchanged.
+    let scope = lexical_scopes
+        .and_then(|ls| ls.scope_for_byte(start))
+        .unwrap_or_else(|| subprogram.as_debug_info_scope());
+    let loc = dctx
+        .di_builder
+        .create_debug_location(ctx, line, column, scope, None);
     builder.set_current_debug_location(loc);
 }
 
@@ -29711,7 +29716,7 @@ fn resolve_enum_di_type<'ctx>(
             continue;
         }
         let variant_size_bits = target_data.get_bit_size(&variant_struct);
-        let variant_di = dctx
+        let variant_struct_di = dctx
             .di_builder
             .create_struct_type(
                 dctx.compile_unit.as_debug_info_scope(),
@@ -29728,13 +29733,51 @@ fn resolve_enum_di_type<'ctx>(
                 short_name(&variant.name),
             )
             .as_type();
-        payload_variants.push(variant_di);
+        // A `DW_TAG_union_type`'s children must be `DW_TAG_member`s — LLVM's
+        // DWARF emitter drops any union element that is a bare composite type
+        // (the empty-union bug the live-debugger check caught). Wrap the variant
+        // struct in a member named after the variant, at union offset 0 (every
+        // union member overlays the same payload bytes), so gdb can read
+        // `status.payload.Packet.code`.
+        let variant_member = dctx
+            .di_builder
+            .create_member_type(
+                dctx.compile_unit.as_debug_info_scope(),
+                short_name(&variant.name),
+                dctx.file,
+                0,
+                variant_size_bits,
+                0,
+                0,
+                DIFlags::PUBLIC,
+                variant_struct_di,
+            )
+            .as_type();
+        payload_variants.push(variant_member);
     }
+
+    // The outer struct: member 0 = tag (the enumeration), member 1 = payload
+    // (the union), with offsets from the LLVM `{ tag, payload }` struct.
+    let tag_offset_bits = target_data
+        .offset_of_element(&outer_struct, 0)
+        .map(|b| b * 8)
+        .unwrap_or(0);
+    // Payload byte-offset within the enclosing enum struct (after the tag +
+    // its alignment padding). The payload union's own size is the bytes from
+    // this offset to the end of the enum — `struct_size - payload_offset` — NOT
+    // `struct_size - tag_bits`, which ignored the tag→payload padding and made
+    // the union one byte larger than the space it occupies (extending past the
+    // object). Falls back to the tag-width subtraction only if the offset query
+    // fails (a 1-element struct with no payload field, which carries no union).
+    let payload_offset_bits = target_data
+        .offset_of_element(&outer_struct, 1)
+        .map(|b| b * 8)
+        .unwrap_or(tag_bits.max(8));
 
     let payload_di = if payload_variants.is_empty() {
         None
     } else {
-        let payload_bits = struct_size_bits.saturating_sub(tag_bits.max(8));
+        let payload_bits = struct_size_bits.saturating_sub(payload_offset_bits);
         Some(
             dctx.di_builder
                 .create_union_type(
@@ -29752,13 +29795,6 @@ fn resolve_enum_di_type<'ctx>(
                 .as_type(),
         )
     };
-
-    // The outer struct: member 0 = tag (the enumeration), member 1 = payload
-    // (the union), with offsets from the LLVM `{ tag, payload }` struct.
-    let tag_offset_bits = target_data
-        .offset_of_element(&outer_struct, 0)
-        .map(|b| b * 8)
-        .unwrap_or(0);
     let tag_member = dctx
         .di_builder
         .create_member_type(
@@ -29775,10 +29811,7 @@ fn resolve_enum_di_type<'ctx>(
         .as_type();
     let mut struct_members = vec![tag_member];
     if let Some(payload_di) = payload_di {
-        let payload_offset_bits = target_data
-            .offset_of_element(&outer_struct, 1)
-            .map(|b| b * 8)
-            .unwrap_or(0);
+        // Reuse the payload offset computed for the union's byte-size above.
         let payload_member = dctx
             .di_builder
             .create_member_type(
@@ -29867,10 +29900,98 @@ fn dbg_declare_at_end<'ctx>(
     }
 }
 
+/// gdb `-g` lexical-block map for one function. Holds one `DILexicalBlock` per
+/// HIR scope in the MIR `scope_table`, parented per the table and rooted at the
+/// subprogram, plus a byte-range index for resolving an instruction span to its
+/// innermost enclosing scope. Empty (`blocks` empty) for any function whose MIR
+/// carries no `scope_table` — every variable and location then falls back to the
+/// flat subprogram scope, exactly the pre-lexical behaviour.
+struct LexicalScopes<'ctx> {
+    /// Raw HIR scope id → its `DILexicalBlock`.
+    blocks: HashMap<u32, inkwell::debug_info::DILexicalBlock<'ctx>>,
+    /// `(start, end, scope_id)` for every scope, sorted by ascending extent
+    /// width so the FIRST containing entry is the innermost (tightest) scope.
+    ranges: Vec<(u32, u32, u32)>,
+}
+
+impl<'ctx> LexicalScopes<'ctx> {
+    /// Build the lexical-block map from `func.scope_table`. Parents are created
+    /// before children (the table is walked until every block whose parent is
+    /// ready is built), so each `create_lexical_block` has its parent `DIScope`
+    /// in hand. A scope whose parent id is absent from the table roots at the
+    /// subprogram. Fail-safe: a malformed cyclic parent chain (impossible from a
+    /// lexical HIR, but defended against) stops the build with whatever blocks
+    /// resolved, leaving the rest to fall back to the subprogram scope.
+    fn build(
+        dctx: &ModuleDebugCtx<'_, 'ctx>,
+        subprogram: inkwell::debug_info::DISubprogram<'ctx>,
+        func: &RawMirFunction,
+    ) -> Self {
+        use inkwell::debug_info::AsDIScope;
+        let mut blocks: HashMap<u32, inkwell::debug_info::DILexicalBlock<'ctx>> = HashMap::new();
+        let mut ranges: Vec<(u32, u32, u32)> = Vec::new();
+        // Fixed-point build: each pass creates every scope whose parent is the
+        // subprogram (None) or an already-built block. Bounded by the table
+        // length — a lexical tree resolves in depth-many passes.
+        let mut remaining: Vec<&MirScope> = func.scope_table.iter().collect();
+        loop {
+            let mut progressed = false;
+            let mut still: Vec<&MirScope> = Vec::new();
+            for sc in remaining {
+                let parent_scope = match sc.parent {
+                    None => Some(subprogram.as_debug_info_scope()),
+                    Some(pid) => blocks.get(&pid).map(|b| b.as_debug_info_scope()),
+                };
+                let Some(parent_scope) = parent_scope else {
+                    // Parent not yet built (or genuinely absent — a parent id
+                    // not in the table resolves to None above, so this branch
+                    // is only "not yet built"); retry next pass.
+                    still.push(sc);
+                    continue;
+                };
+                let line = dctx.line_index.line(sc.start as usize);
+                let column = dctx.line_index.column(sc.start as usize);
+                let block =
+                    dctx.di_builder
+                        .create_lexical_block(parent_scope, dctx.file, line, column);
+                blocks.insert(sc.id, block);
+                ranges.push((sc.start, sc.end, sc.id));
+                progressed = true;
+            }
+            if still.is_empty() || !progressed {
+                break;
+            }
+            remaining = still;
+        }
+        // Innermost-first: a tighter (narrower) extent wins a containment test.
+        ranges.sort_by_key(|&(s, e, _)| e.saturating_sub(s));
+        Self { blocks, ranges }
+    }
+
+    /// The `DIScope` for the variable/instruction whose source byte is `byte`:
+    /// the innermost scope whose `[start, end)` contains it, or `None` (→ caller
+    /// falls back to the subprogram). `ranges` is sorted innermost-first.
+    fn scope_for_byte(&self, byte: u32) -> Option<inkwell::debug_info::DIScope<'ctx>> {
+        use inkwell::debug_info::AsDIScope;
+        self.ranges
+            .iter()
+            .find(|&&(s, e, _)| byte >= s && byte < e)
+            .and_then(|&(_, _, id)| self.blocks.get(&id))
+            .map(|b| b.as_debug_info_scope())
+    }
+
+    /// The `DIScope` for a named local declared in raw HIR scope `scope_id`, or
+    /// `None` when that scope has no lexical block (→ subprogram fallback).
+    fn scope_for_id(&self, scope_id: u32) -> Option<inkwell::debug_info::DIScope<'ctx>> {
+        use inkwell::debug_info::AsDIScope;
+        self.blocks.get(&scope_id).map(|b| b.as_debug_info_scope())
+    }
+}
+
 /// Emit `DW_TAG_formal_parameter` / `DW_TAG_variable` DIEs and their
 /// `llvm.dbg.declare` records for every named local slot (Stages 2/3). Each
 /// declare is inserted at the end of `prologue_bb` (which holds the alloca and
-/// dominates the body) with a `!dbg` location scoped to the subprogram.
+/// dominates the body) with a `!dbg` location scoped to its lexical block.
 /// Fail-closed per slot: a slot with no source name (an anonymous temporary, a
 /// synthesised function with an empty `local_names`) or an unresolvable type is
 /// skipped — no DIE, never a fabricated name or type. Parameters occupy
@@ -29888,9 +30009,11 @@ fn emit_variable_dies<'ctx>(
     record_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
     record_field_names: &HashMap<String, Vec<String>>,
     prologue_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    lexical_scopes: &LexicalScopes<'ctx>,
 ) {
-    // The function-declaration line scopes every variable; if the function has
-    // no in-file span the subprogram would not exist, so a fallback of 0 is
+    // The function-declaration line is the fallback scope/line for a slot that
+    // carries no per-binding span (params, synthesised locals). If the function
+    // has no in-file span the subprogram would not exist, so a fallback of 0 is
     // unreachable here in practice.
     let decl_line = match func.span {
         Some((start, _)) if dctx.line_index.contains(start as usize) => {
@@ -29898,13 +30021,6 @@ fn emit_variable_dies<'ctx>(
         }
         _ => 0,
     };
-    let debug_loc = dctx.di_builder.create_debug_location(
-        ctx,
-        decl_line,
-        0,
-        subprogram.as_debug_info_scope(),
-        None,
-    );
     let param_count = func.params.len();
     let empty_expr = dctx.di_builder.create_expression(vec![]);
 
@@ -29938,8 +30054,36 @@ fn emit_variable_dies<'ctx>(
             continue;
         };
 
+        // Each local's own declaration line keeps two same-named shadowed
+        // locals distinct (a `None` decl-byte → the function-decl line).
+        let var_line = func
+            .local_decl_bytes
+            .get(idx)
+            .copied()
+            .flatten()
+            .filter(|b| dctx.line_index.contains(*b as usize))
+            .map_or(decl_line, |b| dctx.line_index.line(b as usize));
+        // Scope each local to its lexical block. The shadowed inner `first` is
+        // recorded under its own (inner) HIR scope, so it lands in a distinct
+        // `DILexicalBlock` from the outer `first` — both DIEs survive and the
+        // debugger resolves each at its own PC range. A slot with no recorded
+        // scope (or a scope without a block) falls back to the subprogram.
+        let var_scope = func
+            .local_scopes
+            .get(idx)
+            .copied()
+            .flatten()
+            .and_then(|sid| lexical_scopes.scope_for_id(sid))
+            .unwrap_or_else(|| subprogram.as_debug_info_scope());
+        // The dbg.declare's location must sit in the variable's own scope (the
+        // verifier requires the location scope to match/descend the variable's).
+        let var_debug_loc = dctx
+            .di_builder
+            .create_debug_location(ctx, var_line, 0, var_scope, None);
+
         let di_var = if idx < param_count {
-            // Parameter: 1-based arg number in declaration order.
+            // Parameter: 1-based arg number in declaration order. Params are
+            // always function-wide — scope them to the subprogram, not a block.
             let arg_no = u32::try_from(idx + 1).unwrap_or(u32::MAX);
             dctx.di_builder.create_parameter_variable(
                 subprogram.as_debug_info_scope(),
@@ -29953,24 +30097,58 @@ fn emit_variable_dies<'ctx>(
             )
         } else {
             dctx.di_builder.create_auto_variable(
-                subprogram.as_debug_info_scope(),
+                var_scope,
                 name,
                 dctx.file,
-                decl_line,
+                var_line,
                 di_type,
                 /* always_preserve */ true,
                 DIFlags::ZERO,
                 /* align_in_bits */ 0,
             )
         };
+        // A parameter's declare uses the subprogram-scoped location; a body
+        // auto uses its lexical-block-scoped location.
+        let declare_loc = if idx < param_count {
+            dctx.di_builder.create_debug_location(
+                ctx,
+                decl_line,
+                0,
+                subprogram.as_debug_info_scope(),
+                None,
+            )
+        } else {
+            var_debug_loc
+        };
         dbg_declare_at_end(
             dctx.di_builder,
             slot,
             di_var,
             empty_expr,
-            debug_loc,
+            declare_loc,
             prologue_bb,
         );
+    }
+}
+
+/// Apply `optnone` + `noinline` to a `-g`-built function so its locals stay
+/// faithfully inspectable. `optnone` requires `noinline` (LLVM verifier rule)
+/// and tells instruction selection to leave the body unoptimized, which keeps
+/// every alloca store eager — the property a debugger needs to read a local at
+/// any breakpoint. Best-effort: if the LLVM build does not expose these enum
+/// attributes (kind id 0), the function is left as-is rather than failing the
+/// whole build — a missing optnone degrades debug fidelity, it does not produce
+/// wrong code.
+fn apply_optnone_for_debug<'ctx>(ctx: &'ctx Context, func: inkwell::values::FunctionValue<'ctx>) {
+    use inkwell::attributes::{Attribute, AttributeLoc};
+    for name in ["noinline", "optnone"] {
+        let kind_id = Attribute::get_named_enum_kind_id(name);
+        if kind_id != 0 {
+            func.add_attribute(
+                AttributeLoc::Function,
+                ctx.create_enum_attribute(kind_id, 0),
+            );
+        }
     }
 }
 
@@ -30006,6 +30184,20 @@ fn lower_function<'ctx>(
         ))
     })?;
     let (llvm_fn, return_ty_llvm, _returns_unit) = symbol.real(&func.name, "lower_function")?;
+    // gdb `-g`: mark every debug-built non-coroutine function `optnone noinline`
+    // so the backend keeps each local's stack slot eagerly written. Without it,
+    // even at `-O0` LLVM's instruction selection coalesces a `store slot; load
+    // slot` pair into a register and DEFERS the slot store past the load's use —
+    // leaving a `dbg.declare` slot stale at a breakpoint set on the using line.
+    // That is exactly what made a shadowed inner `let first = …; println(first)`
+    // read the pre-store slot value at the `println` breakpoint. `optnone`
+    // restores the faithful one-store-per-assignment shape real `-O0` frontends
+    // (clang/rustc) rely on for trustworthy locals. Skipped for coroutines: a
+    // `presplitcoroutine` MUST run `CoroSplit`, which `optnone` would block — and
+    // suspend-carrying bodies are excluded from `-g` debug info anyway.
+    if debug.is_some() && !is_coroutine_function(func) {
+        apply_optnone_for_debug(ctx, llvm_fn);
+    }
     // W5.005 / F1b (Decision 4 Option A, D343): a `#[intrinsic("mem.*")]`
     // floor function carries a typed catalog id threaded from HIR. Its MIR
     // `blocks` are a bodyless placeholder — synthesize the real trampoline
@@ -30145,6 +30337,16 @@ fn lower_function<'ctx>(
             );
             Some(loc)
         }
+        _ => None,
+    };
+
+    // gdb `-g` lexical-block map: built once per function from the MIR
+    // `scope_table` and the now-established subprogram. Scopes every variable
+    // DIE and every instruction `DILocation` by source containment, so shadowed
+    // locals resolve to the right binding at the right PC. Empty (no blocks) for
+    // any function with no `scope_table` — flat subprogram scoping, unchanged.
+    let lexical_scopes: Option<LexicalScopes<'ctx>> = match (debug, fn_subprogram) {
+        (Some(dctx), Some(subprogram)) => Some(LexicalScopes::build(dctx, subprogram, func)),
         _ => None,
     };
 
@@ -30989,7 +31191,9 @@ fn lower_function<'ctx>(
     // body) before the closing branch, so each `llvm.dbg.declare` references an
     // in-scope alloca. Fail-closed inside the helper: no subprogram / no name /
     // unresolvable type → no DIE for that slot.
-    if let (Some(dctx), Some(subprogram)) = (debug, fn_subprogram) {
+    if let (Some(dctx), Some(subprogram), Some(ls)) =
+        (debug, fn_subprogram, lexical_scopes.as_ref())
+    {
         emit_variable_dies(
             ctx,
             dctx,
@@ -30999,6 +31203,7 @@ fn lower_function<'ctx>(
             record_field_resolved_tys,
             record_field_names,
             prologue_bb,
+            ls,
         );
     }
     fn_ctx
@@ -31024,6 +31229,7 @@ fn lower_function<'ctx>(
                 fn_subprogram,
                 func.instr_spans
                     .get(&(block.id, u32::try_from(instr_idx).unwrap_or(u32::MAX))),
+                lexical_scopes.as_ref(),
             );
             lower_instruction(&fn_ctx, instr, block.id, drop_plans)?;
         }
@@ -31051,6 +31257,7 @@ fn lower_function<'ctx>(
                 block.id,
                 u32::try_from(block.instructions.len()).unwrap_or(u32::MAX),
             )),
+            lexical_scopes.as_ref(),
         );
         lower_terminator(
             &fn_ctx,
@@ -34689,6 +34896,9 @@ mod tests {
             params: vec![],
             locals: vec![return_ty.clone()],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -35082,6 +35292,9 @@ mod tests {
             params: vec![env_ptr_ty.clone()],
             locals: vec![env_ptr_ty, ResolvedTy::I64],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -35113,6 +35326,9 @@ mod tests {
             params: vec![],
             locals: vec![env_ty.clone(), fn_ty, ResolvedTy::I64],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -35224,6 +35440,9 @@ mod tests {
                 params: vec![],
                 locals: vec![named_record_ty("Point"), named_record_ty("PtrPayload")],
                 local_names: Vec::new(),
+                local_scopes: Vec::new(),
+                local_decl_bytes: Vec::new(),
+                scope_table: Vec::new(),
                 blocks,
                 decisions: Vec::<DecisionFact>::new(),
                 intrinsic_id: None,
@@ -35356,6 +35575,9 @@ mod tests {
                 params: vec![],
                 locals: vec![named_record_ty("Point")],
                 local_names: Vec::new(),
+                local_scopes: Vec::new(),
+                local_decl_bytes: Vec::new(),
+                scope_table: Vec::new(),
                 blocks: vec![entry, ret],
                 decisions: Vec::<DecisionFact>::new(),
                 intrinsic_id: None,
@@ -35447,6 +35669,9 @@ mod tests {
             params: vec![],
             locals: vec![const_ty.clone()],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -35592,6 +35817,9 @@ mod tests {
             params: vec![],
             locals: Vec::new(),
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -35715,6 +35943,9 @@ mod tests {
             params: vec![ResolvedTy::I64],
             locals: vec![ResolvedTy::I64],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -35789,6 +36020,9 @@ mod tests {
                 ResolvedTy::I64,
             ],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -35871,6 +36105,9 @@ mod tests {
             params: vec![],
             locals: vec![return_ty.clone()],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -36152,6 +36389,9 @@ mod tests {
             params: vec![],
             locals: vec![ResolvedTy::I64],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -36375,6 +36615,9 @@ mod tests {
             params: vec![],
             locals,
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks,
             decisions: Vec::new(),
             intrinsic_id: None,
@@ -37069,6 +37312,9 @@ mod tests {
                 ResolvedTy::I64,
             ],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -37156,6 +37402,9 @@ mod tests {
             params: vec![ptr_ty.clone()],
             locals: vec![ptr_ty.clone(), ResolvedTy::I64],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37273,6 +37522,9 @@ mod tests {
             params: vec![ptr_ty.clone()],
             locals: vec![ptr_ty.clone(), ResolvedTy::I64],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37311,6 +37563,9 @@ mod tests {
             params: vec![],
             locals: vec![generator_ty.clone()],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37399,6 +37654,9 @@ mod tests {
             params: vec![ResolvedTy::CancellationToken],
             locals: vec![ResolvedTy::CancellationToken, ResolvedTy::Bool],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -37901,6 +38159,9 @@ mod tests {
             params: vec![],
             locals: vec![ptr_ty.clone(), ptr_ty.clone()],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37963,6 +38224,9 @@ mod tests {
             params: vec![],
             locals: vec![ptr_ty.clone(), ptr_ty.clone()],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -38033,6 +38297,9 @@ mod tests {
             params: vec![],
             locals: vec![ptr_ty.clone(), ptr_ty.clone()],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -38103,6 +38370,9 @@ mod tests {
             params: vec![],
             locals: vec![ptr_ty.clone(), ptr_ty.clone()],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -38167,6 +38437,9 @@ mod tests {
             params: vec![],
             locals: vec![i64_ty],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -38239,6 +38512,9 @@ mod tests {
             params: vec![],
             locals: vec![ptr_ty, i64_ty],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -38336,6 +38612,9 @@ mod tests {
                 params: vec![],
                 locals: vec![ptr_ty.clone(), ptr_ty.clone()],
                 local_names: Vec::new(),
+                local_scopes: Vec::new(),
+                local_decl_bytes: Vec::new(),
+                scope_table: Vec::new(),
                 blocks: vec![
                     BasicBlock {
                         id: 0,
@@ -40522,6 +40801,9 @@ mod tests {
             params: vec![],
             locals: vec![ResolvedTy::I64, trait_obj.clone()],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: vec![],
@@ -40673,6 +40955,9 @@ mod tests {
             params: vec![],
             locals: vec![ResolvedTy::I64, trait_obj.clone()],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: vec![],
@@ -41028,6 +41313,9 @@ mod tests {
             params: vec![],
             locals: vec![ResolvedTy::I64, trait_obj.clone()],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: vec![],
@@ -41329,6 +41617,9 @@ mod tests {
             params: vec![],
             locals: vec![],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -41551,6 +41842,9 @@ mod tests {
             params: vec![],
             locals: vec![ptr_ty],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -41734,6 +42028,9 @@ mod tests {
             params: vec![],
             locals: vec![ptr_ty],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -41943,6 +42240,9 @@ mod tests {
             params: vec![],
             locals: vec![],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -42052,6 +42352,9 @@ mod tests {
             params: vec![],
             locals: vec![ptr_ty],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -42103,6 +42406,9 @@ mod tests {
             params: vec![],
             locals: vec![],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -42134,6 +42440,9 @@ mod tests {
             params: vec![],
             locals: vec![],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -43046,6 +43355,9 @@ fn main() {
             params: vec![ResolvedTy::I64],
             locals: vec![ResolvedTy::I64],
             local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),

@@ -54,6 +54,9 @@ fn impl_method_stub(name: &str) -> RawMirFunction {
         params,
         locals,
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],

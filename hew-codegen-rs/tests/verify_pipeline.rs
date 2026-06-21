@@ -29,6 +29,9 @@ fn pipeline_const_42() -> IrPipeline {
         params: vec![],
         locals: vec![return_ty.clone()],
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -90,6 +93,9 @@ fn pipeline_unsupported_array_return() -> IrPipeline {
         params: vec![],
         locals: Vec::new(),
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),

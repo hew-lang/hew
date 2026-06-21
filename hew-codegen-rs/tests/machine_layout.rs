@@ -89,6 +89,9 @@ fn traffic_light_uses_i8_tagged_union_struct() {
         params: Vec::new(),
         locals: vec![machine_ty],
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -128,6 +131,9 @@ fn repeated_machine_uses_share_one_named_struct_definition() {
         params: Vec::new(),
         locals: vec![machine_ty.clone(), machine_ty],
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -176,6 +182,9 @@ fn two_hundred_fifty_seven_states_use_i16_tag() {
         params: Vec::new(),
         locals: vec![machine_ty],
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -226,6 +235,9 @@ fn constructor_pipeline() -> IrPipeline {
         params: Vec::new(),
         locals: vec![machine_ty, ResolvedTy::I64, ResolvedTy::I64],
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),

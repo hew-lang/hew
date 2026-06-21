@@ -652,6 +652,9 @@ fn boxed_enum_recv_pipeline() -> IrPipeline {
         params: vec![ResolvedTy::String],
         locals: vec![ResolvedTy::String, boxed_ty, ResolvedTy::I64],
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -779,6 +782,9 @@ fn relay_resend_recv_pipeline() -> IrPipeline {
         params: vec![ResolvedTy::String],
         locals: vec![ResolvedTy::String, actor_ty],
         local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![
             BasicBlock {
                 id: 0,

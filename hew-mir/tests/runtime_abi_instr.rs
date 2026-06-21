@@ -299,6 +299,9 @@ fn raw_mir_basic_block_round_trips_call_runtime_abi() {
         params: vec![],
         locals: vec![ResolvedTy::I64],
         local_names: vec![],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],

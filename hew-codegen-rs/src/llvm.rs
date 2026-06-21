@@ -71,9 +71,9 @@ use hew_mir::{
     CheckedMirFunction, ChildInitArg, CmpPred, CooperateKind, CooperateSite, DynVtableInstance,
     ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth,
     FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
-    LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, Place, RawMirFunction,
-    RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout, SupervisorLayout,
-    SuspendKind, Terminator, TrapKind,
+    LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, Place,
+    RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout,
+    SupervisorLayout, SuspendKind, Terminator, TrapKind,
 };
 use hew_types::{NumericWidth, ResolvedTy, WireCodecDirection};
 // Single source of truth for the trap discriminants codegen emits. Importing
@@ -479,6 +479,13 @@ struct ModuleDebugCtx<'a, 'ctx> {
     compile_unit: DICompileUnit<'ctx>,
     file: DIFile<'ctx>,
     line_index: &'a LineIndex,
+    /// Memoized type-DIE cache keyed by a structural type key, mirroring the
+    /// `resolve_ty` LLVM-type authority. Breaks recursion (a recursive record
+    /// inserts a forward placeholder before resolving members) and dedups
+    /// monomorphizations so a `Point` type yields exactly one
+    /// `DW_TAG_structure_type`. Interior mutability because `ModuleDebugCtx` is
+    /// shared by `&` across every `lower_function` call.
+    di_type_cache: RefCell<HashMap<String, inkwell::debug_info::DIType<'ctx>>>,
 }
 
 /// Emit native + wasm artefacts for `pipeline`'s raw MIR. Returns the paths
@@ -16383,6 +16390,8 @@ pub(crate) fn tuple_inplace_field_kinds<'ctx>(
         .map(|(name, tys)| hew_mir::RecordLayout {
             name: name.clone(),
             field_tys: tys.clone(),
+            // Classifier-only reconstruction (no `-g` consumer); names absent.
+            field_names: Vec::new(),
         })
         .collect();
     let mut kinds: Vec<hew_mir::StateFieldCloneKind> = Vec::with_capacity(elems.len());
@@ -21102,6 +21111,8 @@ fn codegen_record_layouts(fn_ctx: &FnCtx<'_, '_>) -> Vec<hew_mir::RecordLayout> 
         .map(|(name, tys)| hew_mir::RecordLayout {
             name: name.clone(),
             field_tys: tys.clone(),
+            // State-clone classifier reconstruction (no `-g` consumer).
+            field_names: Vec::new(),
         })
         .collect()
 }
@@ -29233,6 +29244,7 @@ fn set_debug_location_for_span<'ctx>(
     debug: Option<&ModuleDebugCtx<'_, 'ctx>>,
     subprogram: Option<inkwell::debug_info::DISubprogram<'ctx>>,
     span: Option<&(u32, u32)>,
+    lexical_scopes: Option<&LexicalScopes<'ctx>>,
 ) {
     let (Some(dctx), Some(subprogram), Some(&(start, _end))) = (debug, subprogram, span) else {
         return;
@@ -29242,14 +29254,902 @@ fn set_debug_location_for_span<'ctx>(
     }
     let line = dctx.line_index.line(start as usize);
     let column = dctx.line_index.column(start as usize);
-    let loc = dctx.di_builder.create_debug_location(
-        ctx,
-        line,
-        column,
-        subprogram.as_debug_info_scope(),
-        None,
-    );
+    // Scope the location to the innermost lexical block whose source extent
+    // contains this instruction's start byte — so an instruction inside a
+    // shadowing `{ }` reports the inner block as its current scope, and the
+    // debugger resolves a shadowed name to the inner binding. No containing
+    // block (or no lexical table) → the flat subprogram scope, unchanged.
+    let scope = lexical_scopes
+        .and_then(|ls| ls.scope_for_byte(start))
+        .unwrap_or_else(|| subprogram.as_debug_info_scope());
+    let loc = dctx
+        .di_builder
+        .create_debug_location(ctx, line, column, scope, None);
     builder.set_current_debug_location(loc);
+}
+
+// DWARF `DW_ATE_*` base-type encodings (DWARF5 §7.8). inkwell takes these as a
+// raw `LLVMDWARFTypeEncoding` (a `u32`); the constants are stable across LLVM
+// versions.
+const DW_ATE_BOOLEAN: u32 = 0x02;
+const DW_ATE_FLOAT: u32 = 0x04;
+const DW_ATE_SIGNED: u32 = 0x05;
+const DW_ATE_UNSIGNED: u32 = 0x07;
+const DW_ATE_UNSIGNED_CHAR: u32 = 0x08;
+
+/// Scalar `(dwarf_name, size_in_bits, encoding)` for a `ResolvedTy`, or `None`
+/// when the type is not a scalar base type. Pointer-width types use the
+/// `target_data` pointer size so the DIE matches the alloca.
+fn scalar_di_basic(ty: &ResolvedTy, target_data: &TargetData) -> Option<(&'static str, u64, u32)> {
+    let ptr_bits = u64::from(target_data.get_pointer_byte_size(None)) * 8;
+    Some(match ty {
+        ResolvedTy::I8 => ("i8", 8, DW_ATE_SIGNED),
+        ResolvedTy::U8 => ("u8", 8, DW_ATE_UNSIGNED),
+        ResolvedTy::I16 => ("i16", 16, DW_ATE_SIGNED),
+        ResolvedTy::U16 => ("u16", 16, DW_ATE_UNSIGNED),
+        ResolvedTy::I32 => ("i32", 32, DW_ATE_SIGNED),
+        ResolvedTy::U32 => ("u32", 32, DW_ATE_UNSIGNED),
+        ResolvedTy::I64 => ("i64", 64, DW_ATE_SIGNED),
+        ResolvedTy::U64 => ("u64", 64, DW_ATE_UNSIGNED),
+        ResolvedTy::Isize => ("isize", ptr_bits, DW_ATE_SIGNED),
+        ResolvedTy::Usize => ("usize", ptr_bits, DW_ATE_UNSIGNED),
+        ResolvedTy::Bool => ("bool", 8, DW_ATE_BOOLEAN),
+        // Hew `char` is a Unicode scalar value lowered to i32.
+        ResolvedTy::Char => ("char", 32, DW_ATE_UNSIGNED_CHAR),
+        ResolvedTy::F32 => ("f32", 32, DW_ATE_FLOAT),
+        ResolvedTy::F64 => ("f64", 64, DW_ATE_FLOAT),
+        // Duration is i64 nanoseconds at the ABI.
+        ResolvedTy::Duration => ("Duration", 64, DW_ATE_SIGNED),
+        _ => return None,
+    })
+}
+
+/// Resolve a `ResolvedTy` to a DWARF type DIE, mirroring the `resolve_ty`
+/// LLVM-type authority. Memoized on `dctx.di_type_cache` to dedup
+/// monomorphizations and break recursive-type cycles (a record inserts a
+/// placeholder before resolving its members). Returns `None` — emitting NO DIE,
+/// fail-closed — when the type cannot be faithfully resolved (an unknown
+/// `Named` in neither layout map, a `Never`, a not-yet-supported composite)
+/// rather than fabricating a placeholder type. The caller then skips the
+/// variable DIE for that slot.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "debug-type resolution mirrors resolve_ty's explicit borrows plus the layout maps"
+)]
+fn resolve_di_type<'ctx>(
+    ctx: &'ctx Context,
+    dctx: &ModuleDebugCtx<'_, 'ctx>,
+    target_data: &TargetData,
+    ty: &ResolvedTy,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    enum_layouts: &[EnumLayout],
+    record_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
+    record_field_names: &HashMap<String, Vec<String>>,
+) -> Option<inkwell::debug_info::DIType<'ctx>> {
+    use inkwell::debug_info::DIType;
+
+    // Scalars: emit a `DW_TAG_base_type`. Keyed by the scalar name (every
+    // `i64` shares one DIE).
+    if let Some((name, size_bits, encoding)) = scalar_di_basic(ty, target_data) {
+        let key = format!("scalar:{name}");
+        if let Some(t) = dctx.di_type_cache.borrow().get(&key).copied() {
+            return Some(t);
+        }
+        let basic = dctx
+            .di_builder
+            .create_basic_type(name, size_bits, encoding, DIFlags::PUBLIC)
+            .ok()?
+            .as_type();
+        dctx.di_type_cache.borrow_mut().insert(key, basic);
+        return Some(basic);
+    }
+
+    // `string`, `CancellationToken`, and other opaque handles lower to a bare
+    // `ptr`; represent them as a typeless pointer DIE so gdb shows the address.
+    let pointer_di = |pointee: Option<DIType<'ctx>>, name: &str| -> DIType<'ctx> {
+        let ptr_bits = u64::from(target_data.get_pointer_byte_size(None)) * 8;
+        let pointee = pointee.unwrap_or_else(|| {
+            // A void-ish pointee: an i8 base type stands in for "unknown".
+            dctx.di_builder
+                .create_basic_type("u8", 8, DW_ATE_UNSIGNED, DIFlags::PUBLIC)
+                .expect("u8 base type")
+                .as_type()
+        });
+        dctx.di_builder
+            .create_pointer_type(name, pointee, ptr_bits, 0, AddressSpace::default())
+            .as_type()
+    };
+
+    if matches!(ty, ResolvedTy::String) {
+        let key = "ptr:string".to_string();
+        if let Some(t) = dctx.di_type_cache.borrow().get(&key).copied() {
+            return Some(t);
+        }
+        let di = pointer_di(None, "string");
+        dctx.di_type_cache.borrow_mut().insert(key, di);
+        return Some(di);
+    }
+
+    if let ResolvedTy::Named { name, args, .. } = ty {
+        let key = if args.is_empty() {
+            name.clone()
+        } else {
+            mangle_with_shortened_args(name, args)
+        };
+
+        // An enum (in the enum-layout map) — emit the degraded tagged-union DIE.
+        if let Some(enum_layout) = enum_layouts
+            .iter()
+            .find(|e| e.name == key || short_name(&e.name) == short_name(name))
+        {
+            return resolve_enum_di_type(
+                ctx,
+                dctx,
+                target_data,
+                enum_layout,
+                record_layouts,
+                enum_layouts,
+                record_field_resolved_tys,
+                record_field_names,
+            );
+        }
+
+        // A record (in the LLVM struct-layout map) — emit a struct DIE.
+        let llvm_struct = record_layouts
+            .get(key.as_str())
+            .or_else(|| record_layouts.get(short_name(name)))
+            .copied();
+        if let Some(llvm_struct) = llvm_struct {
+            // Recursion guard: insert a forward struct placeholder under the key
+            // BEFORE resolving members, so a self-referential record terminates.
+            let cache_key = format!("record:{key}");
+            if let Some(t) = dctx.di_type_cache.borrow().get(&cache_key).copied() {
+                return Some(t);
+            }
+            let size_bits = target_data.get_bit_size(&llvm_struct);
+            let align_bits = target_data.get_abi_alignment(&llvm_struct) * 8;
+            let placeholder = dctx
+                .di_builder
+                .create_struct_type(
+                    dctx.compile_unit.as_debug_info_scope(),
+                    short_name(name),
+                    dctx.file,
+                    0,
+                    size_bits,
+                    align_bits,
+                    DIFlags::PUBLIC,
+                    None,
+                    &[],
+                    0,
+                    None,
+                    short_name(name),
+                )
+                .as_type();
+            dctx.di_type_cache
+                .borrow_mut()
+                .insert(cache_key.clone(), placeholder);
+
+            // Resolve member types + offsets. Field names come from the MIR
+            // record layout; missing names fall back to positional `field_N`.
+            let field_tys = record_field_resolved_tys
+                .get(key.as_str())
+                .or_else(|| record_field_resolved_tys.get(short_name(name)));
+            let field_names = record_field_names
+                .get(key.as_str())
+                .or_else(|| record_field_names.get(short_name(name)));
+            if let Some(field_tys) = field_tys {
+                let mut members: Vec<DIType<'ctx>> = Vec::with_capacity(field_tys.len());
+                for (i, fty) in field_tys.iter().enumerate() {
+                    let member_di = resolve_di_type(
+                        ctx,
+                        dctx,
+                        target_data,
+                        fty,
+                        record_layouts,
+                        enum_layouts,
+                        record_field_resolved_tys,
+                        record_field_names,
+                    );
+                    let Some(member_di) = member_di else {
+                        // A field whose type can't be resolved fails the whole
+                        // record closed — never emit a struct with a guessed
+                        // member type.
+                        return None;
+                    };
+                    let offset_bits = target_data
+                        .offset_of_element(&llvm_struct, u32::try_from(i).ok()?)
+                        .map(|b| b * 8)
+                        .unwrap_or(0);
+                    let member_size = member_di_size_bits(member_di, target_data, fty);
+                    let member_name = field_names
+                        .and_then(|names| names.get(i))
+                        .cloned()
+                        .unwrap_or_else(|| format!("field_{i}"));
+                    let member = dctx.di_builder.create_member_type(
+                        dctx.compile_unit.as_debug_info_scope(),
+                        &member_name,
+                        dctx.file,
+                        0,
+                        member_size,
+                        0,
+                        offset_bits,
+                        DIFlags::PUBLIC,
+                        member_di,
+                    );
+                    members.push(member.as_type());
+                }
+                let full = dctx
+                    .di_builder
+                    .create_struct_type(
+                        dctx.compile_unit.as_debug_info_scope(),
+                        short_name(name),
+                        dctx.file,
+                        0,
+                        size_bits,
+                        align_bits,
+                        DIFlags::PUBLIC,
+                        None,
+                        &members,
+                        0,
+                        None,
+                        short_name(name),
+                    )
+                    .as_type();
+                dctx.di_type_cache.borrow_mut().insert(cache_key, full);
+                return Some(full);
+            }
+            // Struct with no resolvable field list — keep the placeholder.
+            return Some(placeholder);
+        }
+    }
+
+    // Unknown / unsupported type — emit no DIE (fail-closed).
+    None
+}
+
+/// Size-in-bits of a member's DIType, for the `DW_AT_byte_size` of the member.
+/// Computed from the field's LLVM type via `resolve_ty` where possible; the
+/// member type already carries its own size, so this only needs the field's
+/// own size for the `DW_TAG_member` wrapper (LLVM recomputes from the member
+/// type, so a 0 here is acceptable, but a real value keeps the IR readable).
+fn member_di_size_bits(
+    _member_di: inkwell::debug_info::DIType<'_>,
+    _target_data: &TargetData,
+    _fty: &ResolvedTy,
+) -> u64 {
+    // The member's `DW_AT_byte_size` is derived by LLVM from the member type's
+    // own size; passing 0 lets the member type's size dominate. Kept as a
+    // helper seam so a future exact-size pass has an obvious home.
+    0
+}
+
+/// Emit the degraded-but-faithful enum DIE (Risk E): a `DW_TAG_structure_type`
+/// named after the enum with a `tag` member typed by a
+/// `DW_TAG_enumeration_type` (variant names as enumerators, so gdb prints the
+/// active variant name) and a `payload` member typed by a `DW_TAG_union_type`
+/// of per-variant struct DIEs (so gdb can read a variant's payload fields). The
+/// true auto-discriminated `DW_TAG_variant_part` is out of scope (inkwell lacks
+/// `create_variant_part`); this is the faithful-as-inkwell-allows view.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "debug-type resolution threads the same explicit borrows as resolve_di_type"
+)]
+fn resolve_enum_di_type<'ctx>(
+    ctx: &'ctx Context,
+    dctx: &ModuleDebugCtx<'_, 'ctx>,
+    target_data: &TargetData,
+    enum_layout: &EnumLayout,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    enum_layouts: &[EnumLayout],
+    record_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
+    record_field_names: &HashMap<String, Vec<String>>,
+) -> Option<inkwell::debug_info::DIType<'ctx>> {
+    use inkwell::debug_info::DIType;
+
+    let enum_name = short_name(&enum_layout.name);
+    // An indirect enum's local holds a `ptr` to the heap struct; represent it
+    // as a pointer to the (degraded) enum struct DIE.
+    let cache_key = format!("enum:{}", enum_layout.name);
+    if let Some(t) = dctx.di_type_cache.borrow().get(&cache_key).copied() {
+        let result = if enum_layout.is_indirect {
+            let ptr_bits = u64::from(target_data.get_pointer_byte_size(None)) * 8;
+            dctx.di_builder
+                .create_pointer_type(enum_name, t, ptr_bits, 0, AddressSpace::default())
+                .as_type()
+        } else {
+            t
+        };
+        return Some(result);
+    }
+
+    // The enum's outer LLVM struct `{ tag: iW, payload: [..] }` lives in the
+    // record-layout map under the enum name.
+    let outer_struct = record_layouts
+        .get(enum_layout.name.as_str())
+        .or_else(|| record_layouts.get(enum_name))
+        .copied()?;
+    let struct_size_bits = target_data.get_bit_size(&outer_struct);
+    let struct_align_bits = target_data.get_abi_alignment(&outer_struct) * 8;
+
+    // Tag: a `DW_TAG_enumeration_type` whose enumerators are the variant names.
+    let enumerators: Vec<_> = enum_layout
+        .variants
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            dctx.di_builder.create_enumerator(
+                short_name(&v.name),
+                i64::try_from(i).unwrap_or(i64::MAX),
+                false,
+            )
+        })
+        .collect();
+    let tag_bits = u64::from(enum_layout.tag_width);
+    let tag_underlying = dctx
+        .di_builder
+        .create_basic_type("u32", tag_bits.max(8), DW_ATE_UNSIGNED, DIFlags::PUBLIC)
+        .ok()?
+        .as_type();
+    let tag_di = dctx
+        .di_builder
+        .create_enumeration_type(
+            dctx.compile_unit.as_debug_info_scope(),
+            &format!("{enum_name}::Tag"),
+            dctx.file,
+            0,
+            tag_bits.max(8),
+            0,
+            &enumerators,
+            tag_underlying,
+        )
+        .as_type();
+
+    // Recursion guard (Risk C): a recursive enum (`indirect enum List { Cons {
+    // tail: List }; Nil }`) would re-enter this function while resolving the
+    // `tail: List` payload field, with no cache entry yet → infinite recursion
+    // → stack overflow. Insert a placeholder struct DIE (tag member only) under
+    // the cache key BEFORE the payload loop, so the recursive field resolves to
+    // a pointer-to-placeholder and terminates. The full struct (with the
+    // payload union) overwrites the placeholder at the end; recursive references
+    // legitimately point at the tag-only placeholder, which gdb resolves by
+    // name — the standard forward-declared-composite pattern.
+    let tag_offset_for_placeholder = target_data
+        .offset_of_element(&outer_struct, 0)
+        .map(|b| b * 8)
+        .unwrap_or(0);
+    let placeholder_tag_member = dctx
+        .di_builder
+        .create_member_type(
+            dctx.compile_unit.as_debug_info_scope(),
+            "tag",
+            dctx.file,
+            0,
+            tag_bits.max(8),
+            0,
+            tag_offset_for_placeholder,
+            DIFlags::PUBLIC,
+            tag_di,
+        )
+        .as_type();
+    let placeholder = dctx
+        .di_builder
+        .create_struct_type(
+            dctx.compile_unit.as_debug_info_scope(),
+            enum_name,
+            dctx.file,
+            0,
+            struct_size_bits,
+            struct_align_bits,
+            DIFlags::PUBLIC,
+            None,
+            &[placeholder_tag_member],
+            0,
+            None,
+            enum_name,
+        )
+        .as_type();
+    dctx.di_type_cache
+        .borrow_mut()
+        .insert(cache_key.clone(), placeholder);
+
+    // Payload: a `DW_TAG_union_type` of per-variant struct DIEs. A variant with
+    // no payload contributes nothing; a variant whose payload can't be resolved
+    // is skipped (the variant name still prints via the tag).
+    let mut payload_variants: Vec<DIType<'ctx>> = Vec::new();
+    for variant in &enum_layout.variants {
+        if variant.field_tys.is_empty() {
+            continue;
+        }
+        let mut members: Vec<DIType<'ctx>> = Vec::with_capacity(variant.field_tys.len());
+        let mut ok = true;
+        // The variant's own LLVM struct, for member offsets.
+        let variant_struct = ctx.struct_type(
+            &variant
+                .field_tys
+                .iter()
+                .filter_map(|fty| resolve_ty(ctx, fty, record_layouts).ok())
+                .collect::<Vec<_>>(),
+            false,
+        );
+        for (i, fty) in variant.field_tys.iter().enumerate() {
+            let Some(member_di) = resolve_di_type(
+                ctx,
+                dctx,
+                target_data,
+                fty,
+                record_layouts,
+                enum_layouts,
+                record_field_resolved_tys,
+                record_field_names,
+            ) else {
+                ok = false;
+                break;
+            };
+            let field_idx = u32::try_from(i).unwrap_or(u32::MAX);
+            let offset_bits = if field_idx < variant_struct.count_fields() {
+                target_data
+                    .offset_of_element(&variant_struct, field_idx)
+                    .map(|b| b * 8)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let member_name = variant
+                .field_names
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("field_{i}"));
+            let member = dctx.di_builder.create_member_type(
+                dctx.compile_unit.as_debug_info_scope(),
+                &member_name,
+                dctx.file,
+                0,
+                0,
+                0,
+                offset_bits,
+                DIFlags::PUBLIC,
+                member_di,
+            );
+            members.push(member.as_type());
+        }
+        if !ok {
+            continue;
+        }
+        let variant_size_bits = target_data.get_bit_size(&variant_struct);
+        let variant_struct_di = dctx
+            .di_builder
+            .create_struct_type(
+                dctx.compile_unit.as_debug_info_scope(),
+                short_name(&variant.name),
+                dctx.file,
+                0,
+                variant_size_bits,
+                0,
+                DIFlags::PUBLIC,
+                None,
+                &members,
+                0,
+                None,
+                short_name(&variant.name),
+            )
+            .as_type();
+        // A `DW_TAG_union_type`'s children must be `DW_TAG_member`s — LLVM's
+        // DWARF emitter drops any union element that is a bare composite type
+        // (the empty-union bug the live-debugger check caught). Wrap the variant
+        // struct in a member named after the variant, at union offset 0 (every
+        // union member overlays the same payload bytes), so gdb can read
+        // `status.payload.Packet.code`.
+        let variant_member = dctx
+            .di_builder
+            .create_member_type(
+                dctx.compile_unit.as_debug_info_scope(),
+                short_name(&variant.name),
+                dctx.file,
+                0,
+                variant_size_bits,
+                0,
+                0,
+                DIFlags::PUBLIC,
+                variant_struct_di,
+            )
+            .as_type();
+        payload_variants.push(variant_member);
+    }
+
+    // The outer struct: member 0 = tag (the enumeration), member 1 = payload
+    // (the union), with offsets from the LLVM `{ tag, payload }` struct.
+    let tag_offset_bits = target_data
+        .offset_of_element(&outer_struct, 0)
+        .map(|b| b * 8)
+        .unwrap_or(0);
+    // Payload byte-offset within the enclosing enum struct (after the tag +
+    // its alignment padding). The payload union's own size is the bytes from
+    // this offset to the end of the enum — `struct_size - payload_offset` — NOT
+    // `struct_size - tag_bits`, which ignored the tag→payload padding and made
+    // the union one byte larger than the space it occupies (extending past the
+    // object). Falls back to the tag-width subtraction only if the offset query
+    // fails (a 1-element struct with no payload field, which carries no union).
+    let payload_offset_bits = target_data
+        .offset_of_element(&outer_struct, 1)
+        .map(|b| b * 8)
+        .unwrap_or(tag_bits.max(8));
+
+    let payload_di = if payload_variants.is_empty() {
+        None
+    } else {
+        let payload_bits = struct_size_bits.saturating_sub(payload_offset_bits);
+        Some(
+            dctx.di_builder
+                .create_union_type(
+                    dctx.compile_unit.as_debug_info_scope(),
+                    &format!("{enum_name}::Payload"),
+                    dctx.file,
+                    0,
+                    payload_bits,
+                    0,
+                    DIFlags::PUBLIC,
+                    &payload_variants,
+                    0,
+                    &format!("{enum_name}::Payload"),
+                )
+                .as_type(),
+        )
+    };
+    let tag_member = dctx
+        .di_builder
+        .create_member_type(
+            dctx.compile_unit.as_debug_info_scope(),
+            "tag",
+            dctx.file,
+            0,
+            tag_bits.max(8),
+            0,
+            tag_offset_bits,
+            DIFlags::PUBLIC,
+            tag_di,
+        )
+        .as_type();
+    let mut struct_members = vec![tag_member];
+    if let Some(payload_di) = payload_di {
+        // Reuse the payload offset computed for the union's byte-size above.
+        let payload_member = dctx
+            .di_builder
+            .create_member_type(
+                dctx.compile_unit.as_debug_info_scope(),
+                "payload",
+                dctx.file,
+                0,
+                0,
+                0,
+                payload_offset_bits,
+                DIFlags::PUBLIC,
+                payload_di,
+            )
+            .as_type();
+        struct_members.push(payload_member);
+    }
+    let enum_struct = dctx
+        .di_builder
+        .create_struct_type(
+            dctx.compile_unit.as_debug_info_scope(),
+            enum_name,
+            dctx.file,
+            0,
+            struct_size_bits,
+            struct_align_bits,
+            DIFlags::PUBLIC,
+            None,
+            &struct_members,
+            0,
+            None,
+            enum_name,
+        )
+        .as_type();
+    dctx.di_type_cache
+        .borrow_mut()
+        .insert(cache_key, enum_struct);
+
+    if enum_layout.is_indirect {
+        let ptr_bits = u64::from(target_data.get_pointer_byte_size(None)) * 8;
+        Some(
+            dctx.di_builder
+                .create_pointer_type(enum_name, enum_struct, ptr_bits, 0, AddressSpace::default())
+                .as_type(),
+        )
+    } else {
+        Some(enum_struct)
+    }
+}
+
+/// Insert an `llvm.dbg.declare` record at the end of `block`, binding `storage`
+/// (an alloca) to the variable `var_info` with `debug_loc`.
+///
+/// WHY a raw FFI call and not `DebugInfoBuilder::insert_declare_at_end`: under
+/// LLVM 19+ (we build against LLVM 22) the underlying
+/// `LLVMDIBuilderInsertDeclareAtEnd` returns a `DbgRecord`, not an
+/// `Instruction`; inkwell 0.9's safe wrapper unconditionally casts that to a
+/// `LLVMValueRef` and constructs an `InstructionValue`, whose `is_instruction()`
+/// assertion then panics — even though the dbg.declare WAS correctly inserted.
+/// Calling the new-format record API directly (`…InsertDeclareRecordAtEnd`,
+/// which inkwell itself wraps for this LLVM version) sidesteps the broken
+/// return-value handling. We discard the returned `DbgRecord`. This is a bug
+/// workaround for the vendored inkwell, NOT new ABI substrate.
+fn dbg_declare_at_end<'ctx>(
+    di_builder: &DebugInfoBuilder<'ctx>,
+    storage: PointerValue<'ctx>,
+    var_info: inkwell::debug_info::DILocalVariable<'ctx>,
+    expr: inkwell::debug_info::DIExpression<'ctx>,
+    debug_loc: inkwell::debug_info::DILocation<'ctx>,
+    block: inkwell::basic_block::BasicBlock<'ctx>,
+) {
+    use inkwell::llvm_sys::debuginfo::LLVMDIBuilderInsertDeclareRecordAtEnd;
+    use inkwell::values::AsValueRef;
+    // SAFETY: every pointer comes from a live inkwell wrapper bound to the same
+    // module/context; the call only inserts a dbg record and returns a handle we
+    // ignore. The new-format record API is correct for LLVM 19+ (the format the
+    // module is built in — inkwell selects it via the `llvm22-1` feature).
+    unsafe {
+        LLVMDIBuilderInsertDeclareRecordAtEnd(
+            di_builder.as_mut_ptr(),
+            storage.as_value_ref(),
+            var_info.as_mut_ptr(),
+            expr.as_mut_ptr(),
+            debug_loc.as_mut_ptr(),
+            block.as_mut_ptr(),
+        );
+    }
+}
+
+/// gdb `-g` lexical-block map for one function. Holds one `DILexicalBlock` per
+/// HIR scope in the MIR `scope_table`, parented per the table and rooted at the
+/// subprogram, plus a byte-range index for resolving an instruction span to its
+/// innermost enclosing scope. Empty (`blocks` empty) for any function whose MIR
+/// carries no `scope_table` — every variable and location then falls back to the
+/// flat subprogram scope, exactly the pre-lexical behaviour.
+struct LexicalScopes<'ctx> {
+    /// Raw HIR scope id → its `DILexicalBlock`.
+    blocks: HashMap<u32, inkwell::debug_info::DILexicalBlock<'ctx>>,
+    /// `(start, end, scope_id)` for every scope, sorted by ascending extent
+    /// width so the FIRST containing entry is the innermost (tightest) scope.
+    ranges: Vec<(u32, u32, u32)>,
+}
+
+impl<'ctx> LexicalScopes<'ctx> {
+    /// Build the lexical-block map from `func.scope_table`. Parents are created
+    /// before children (the table is walked until every block whose parent is
+    /// ready is built), so each `create_lexical_block` has its parent `DIScope`
+    /// in hand. A scope whose parent id is absent from the table roots at the
+    /// subprogram. Fail-safe: a malformed cyclic parent chain (impossible from a
+    /// lexical HIR, but defended against) stops the build with whatever blocks
+    /// resolved, leaving the rest to fall back to the subprogram scope.
+    fn build(
+        dctx: &ModuleDebugCtx<'_, 'ctx>,
+        subprogram: inkwell::debug_info::DISubprogram<'ctx>,
+        func: &RawMirFunction,
+    ) -> Self {
+        use inkwell::debug_info::AsDIScope;
+        let mut blocks: HashMap<u32, inkwell::debug_info::DILexicalBlock<'ctx>> = HashMap::new();
+        let mut ranges: Vec<(u32, u32, u32)> = Vec::new();
+        // Fixed-point build: each pass creates every scope whose parent is the
+        // subprogram (None) or an already-built block. Bounded by the table
+        // length — a lexical tree resolves in depth-many passes.
+        let mut remaining: Vec<&MirScope> = func.scope_table.iter().collect();
+        loop {
+            let mut progressed = false;
+            let mut still: Vec<&MirScope> = Vec::new();
+            for sc in remaining {
+                let parent_scope = match sc.parent {
+                    None => Some(subprogram.as_debug_info_scope()),
+                    Some(pid) => blocks.get(&pid).map(|b| b.as_debug_info_scope()),
+                };
+                let Some(parent_scope) = parent_scope else {
+                    // Parent not yet built (or genuinely absent — a parent id
+                    // not in the table resolves to None above, so this branch
+                    // is only "not yet built"); retry next pass.
+                    still.push(sc);
+                    continue;
+                };
+                let line = dctx.line_index.line(sc.start as usize);
+                let column = dctx.line_index.column(sc.start as usize);
+                let block =
+                    dctx.di_builder
+                        .create_lexical_block(parent_scope, dctx.file, line, column);
+                blocks.insert(sc.id, block);
+                ranges.push((sc.start, sc.end, sc.id));
+                progressed = true;
+            }
+            if still.is_empty() || !progressed {
+                break;
+            }
+            remaining = still;
+        }
+        // Innermost-first: a tighter (narrower) extent wins a containment test.
+        ranges.sort_by_key(|&(s, e, _)| e.saturating_sub(s));
+        Self { blocks, ranges }
+    }
+
+    /// The `DIScope` for the variable/instruction whose source byte is `byte`:
+    /// the innermost scope whose `[start, end)` contains it, or `None` (→ caller
+    /// falls back to the subprogram). `ranges` is sorted innermost-first.
+    fn scope_for_byte(&self, byte: u32) -> Option<inkwell::debug_info::DIScope<'ctx>> {
+        use inkwell::debug_info::AsDIScope;
+        self.ranges
+            .iter()
+            .find(|&&(s, e, _)| byte >= s && byte < e)
+            .and_then(|&(_, _, id)| self.blocks.get(&id))
+            .map(|b| b.as_debug_info_scope())
+    }
+
+    /// The `DIScope` for a named local declared in raw HIR scope `scope_id`, or
+    /// `None` when that scope has no lexical block (→ subprogram fallback).
+    fn scope_for_id(&self, scope_id: u32) -> Option<inkwell::debug_info::DIScope<'ctx>> {
+        use inkwell::debug_info::AsDIScope;
+        self.blocks.get(&scope_id).map(|b| b.as_debug_info_scope())
+    }
+}
+
+/// Emit `DW_TAG_formal_parameter` / `DW_TAG_variable` DIEs and their
+/// `llvm.dbg.declare` records for every named local slot (Stages 2/3). Each
+/// declare is inserted at the end of `prologue_bb` (which holds the alloca and
+/// dominates the body) with a `!dbg` location scoped to its lexical block.
+/// Fail-closed per slot: a slot with no source name (an anonymous temporary, a
+/// synthesised function with an empty `local_names`) or an unresolvable type is
+/// skipped — no DIE, never a fabricated name or type. Parameters occupy
+/// `locals[0..params.len()]`; the rest are body autos.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "debug emission threads the same explicit borrows as the lowering body"
+)]
+fn emit_variable_dies<'ctx>(
+    ctx: &'ctx Context,
+    dctx: &ModuleDebugCtx<'_, 'ctx>,
+    subprogram: inkwell::debug_info::DISubprogram<'ctx>,
+    func: &RawMirFunction,
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    record_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
+    record_field_names: &HashMap<String, Vec<String>>,
+    prologue_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    lexical_scopes: &LexicalScopes<'ctx>,
+) {
+    // The function-declaration line is the fallback scope/line for a slot that
+    // carries no per-binding span (params, synthesised locals). If the function
+    // has no in-file span the subprogram would not exist, so a fallback of 0 is
+    // unreachable here in practice.
+    let decl_line = match func.span {
+        Some((start, _)) if dctx.line_index.contains(start as usize) => {
+            dctx.line_index.line(start as usize)
+        }
+        _ => 0,
+    };
+    let param_count = func.params.len();
+    let empty_expr = dctx.di_builder.create_expression(vec![]);
+
+    for (idx, ty) in func.locals.iter().enumerate() {
+        // Fail-closed: only named slots get a DIE. An empty `local_names`
+        // (synthesised function) or a `None` entry (anonymous temporary)
+        // means no DIE for this slot.
+        let Some(Some(name)) = func.local_names.get(idx) else {
+            continue;
+        };
+        // The slot's alloca. Absent only for a divergent/never slot the body
+        // never materialised; skip it.
+        let idx_u32 = match u32::try_from(idx) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let Some((slot, _slot_ty)) = fn_ctx.locals.get(&idx_u32).copied() else {
+            continue;
+        };
+        let Some(di_type) = resolve_di_type(
+            ctx,
+            dctx,
+            fn_ctx.target_data,
+            ty,
+            fn_ctx.record_layouts,
+            fn_ctx.enum_layouts,
+            record_field_resolved_tys,
+            record_field_names,
+        ) else {
+            // Unresolvable type → no DIE (fail-closed), never a guessed type.
+            continue;
+        };
+
+        // Each local's own declaration line keeps two same-named shadowed
+        // locals distinct (a `None` decl-byte → the function-decl line).
+        let var_line = func
+            .local_decl_bytes
+            .get(idx)
+            .copied()
+            .flatten()
+            .filter(|b| dctx.line_index.contains(*b as usize))
+            .map_or(decl_line, |b| dctx.line_index.line(b as usize));
+        // Scope each local to its lexical block. The shadowed inner `first` is
+        // recorded under its own (inner) HIR scope, so it lands in a distinct
+        // `DILexicalBlock` from the outer `first` — both DIEs survive and the
+        // debugger resolves each at its own PC range. A slot with no recorded
+        // scope (or a scope without a block) falls back to the subprogram.
+        let var_scope = func
+            .local_scopes
+            .get(idx)
+            .copied()
+            .flatten()
+            .and_then(|sid| lexical_scopes.scope_for_id(sid))
+            .unwrap_or_else(|| subprogram.as_debug_info_scope());
+        // The dbg.declare's location must sit in the variable's own scope (the
+        // verifier requires the location scope to match/descend the variable's).
+        let var_debug_loc = dctx
+            .di_builder
+            .create_debug_location(ctx, var_line, 0, var_scope, None);
+
+        let di_var = if idx < param_count {
+            // Parameter: 1-based arg number in declaration order. Params are
+            // always function-wide — scope them to the subprogram, not a block.
+            let arg_no = u32::try_from(idx + 1).unwrap_or(u32::MAX);
+            dctx.di_builder.create_parameter_variable(
+                subprogram.as_debug_info_scope(),
+                name,
+                arg_no,
+                dctx.file,
+                decl_line,
+                di_type,
+                /* always_preserve */ true,
+                DIFlags::ZERO,
+            )
+        } else {
+            dctx.di_builder.create_auto_variable(
+                var_scope,
+                name,
+                dctx.file,
+                var_line,
+                di_type,
+                /* always_preserve */ true,
+                DIFlags::ZERO,
+                /* align_in_bits */ 0,
+            )
+        };
+        // A parameter's declare uses the subprogram-scoped location; a body
+        // auto uses its lexical-block-scoped location.
+        let declare_loc = if idx < param_count {
+            dctx.di_builder.create_debug_location(
+                ctx,
+                decl_line,
+                0,
+                subprogram.as_debug_info_scope(),
+                None,
+            )
+        } else {
+            var_debug_loc
+        };
+        dbg_declare_at_end(
+            dctx.di_builder,
+            slot,
+            di_var,
+            empty_expr,
+            declare_loc,
+            prologue_bb,
+        );
+    }
+}
+
+/// Apply `optnone` + `noinline` to a `-g`-built function so its locals stay
+/// faithfully inspectable. `optnone` requires `noinline` (LLVM verifier rule)
+/// and tells instruction selection to leave the body unoptimized, which keeps
+/// every alloca store eager — the property a debugger needs to read a local at
+/// any breakpoint. Best-effort: if the LLVM build does not expose these enum
+/// attributes (kind id 0), the function is left as-is rather than failing the
+/// whole build — a missing optnone degrades debug fidelity, it does not produce
+/// wrong code.
+fn apply_optnone_for_debug<'ctx>(ctx: &'ctx Context, func: inkwell::values::FunctionValue<'ctx>) {
+    use inkwell::attributes::{Attribute, AttributeLoc};
+    for name in ["noinline", "optnone"] {
+        let kind_id = Attribute::get_named_enum_kind_id(name);
+        if kind_id != 0 {
+            func.add_attribute(
+                AttributeLoc::Function,
+                ctx.create_enum_attribute(kind_id, 0),
+            );
+        }
+    }
 }
 
 #[expect(
@@ -29269,6 +30169,7 @@ fn lower_function<'ctx>(
     machine_layouts: &MachineLayoutMap<'ctx>,
     enum_layouts: &[EnumLayout],
     record_field_resolved_tys: &HashMap<String, Vec<ResolvedTy>>,
+    record_field_names: &HashMap<String, Vec<String>>,
     dyn_vtable_registry: &[DynVtableInstance],
     const_globals: &ConstGlobalMap<'ctx>,
     emit_wasm_entry_alias: bool,
@@ -29283,6 +30184,20 @@ fn lower_function<'ctx>(
         ))
     })?;
     let (llvm_fn, return_ty_llvm, _returns_unit) = symbol.real(&func.name, "lower_function")?;
+    // gdb `-g`: mark every debug-built non-coroutine function `optnone noinline`
+    // so the backend keeps each local's stack slot eagerly written. Without it,
+    // even at `-O0` LLVM's instruction selection coalesces a `store slot; load
+    // slot` pair into a register and DEFERS the slot store past the load's use —
+    // leaving a `dbg.declare` slot stale at a breakpoint set on the using line.
+    // That is exactly what made a shadowed inner `let first = …; println(first)`
+    // read the pre-store slot value at the `println` breakpoint. `optnone`
+    // restores the faithful one-store-per-assignment shape real `-O0` frontends
+    // (clang/rustc) rely on for trustworthy locals. Skipped for coroutines: a
+    // `presplitcoroutine` MUST run `CoroSplit`, which `optnone` would block — and
+    // suspend-carrying bodies are excluded from `-g` debug info anyway.
+    if debug.is_some() && !is_coroutine_function(func) {
+        apply_optnone_for_debug(ctx, llvm_fn);
+    }
     // W5.005 / F1b (Decision 4 Option A, D343): a `#[intrinsic("mem.*")]`
     // floor function carries a typed catalog id threaded from HIR. Its MIR
     // `blocks` are a bodyless placeholder — synthesize the real trampoline
@@ -29358,9 +30273,46 @@ fn lower_function<'ctx>(
         {
             let line = dctx.line_index.line(start as usize);
             let column = dctx.line_index.column(start as usize);
-            let subroutine_ty =
-                dctx.di_builder
-                    .create_subroutine_type(dctx.file, None, &[], DIFlags::PUBLIC);
+            // Stage 5: a real `DISubroutineType` — element 0 is the return type
+            // (`None` for unit/never, so gdb shows `void`), followed by each
+            // parameter's type. Unresolvable types fall back to `None` for that
+            // slot rather than failing the whole subprogram (the subprogram +
+            // its variable DIEs are still useful with a partial signature).
+            let return_di = match &func.return_ty {
+                ResolvedTy::Unit | ResolvedTy::Never => None,
+                ret => resolve_di_type(
+                    ctx,
+                    dctx,
+                    target_data,
+                    ret,
+                    record_layouts,
+                    enum_layouts,
+                    record_field_resolved_tys,
+                    record_field_names,
+                ),
+            };
+            let param_dis: Vec<inkwell::debug_info::DIType<'ctx>> = func
+                .params
+                .iter()
+                .filter_map(|p| {
+                    resolve_di_type(
+                        ctx,
+                        dctx,
+                        target_data,
+                        p,
+                        record_layouts,
+                        enum_layouts,
+                        record_field_resolved_tys,
+                        record_field_names,
+                    )
+                })
+                .collect();
+            let subroutine_ty = dctx.di_builder.create_subroutine_type(
+                dctx.file,
+                return_di,
+                &param_dis,
+                DIFlags::PUBLIC,
+            );
             let subprogram = dctx.di_builder.create_function(
                 dctx.compile_unit.as_debug_info_scope(),
                 &func.name,
@@ -29385,6 +30337,16 @@ fn lower_function<'ctx>(
             );
             Some(loc)
         }
+        _ => None,
+    };
+
+    // gdb `-g` lexical-block map: built once per function from the MIR
+    // `scope_table` and the now-established subprogram. Scopes every variable
+    // DIE and every instruction `DILocation` by source containment, so shadowed
+    // locals resolve to the right binding at the right PC. Empty (no blocks) for
+    // any function with no `scope_table` — flat subprogram scoping, unchanged.
+    let lexical_scopes: Option<LexicalScopes<'ctx>> = match (debug, fn_subprogram) {
+        (Some(dctx), Some(subprogram)) => Some(LexicalScopes::build(dctx, subprogram, func)),
         _ => None,
     };
 
@@ -30224,6 +31186,26 @@ fn lower_function<'ctx>(
             .build_call(sched_init, &[], "hew_sched_init_entry_call")
             .llvm_ctx("hew_sched_init call in main prologue")?;
     }
+    // gdb `-g` variable + parameter DIEs (Stages 2/3/4). Emitted into the
+    // prologue block (which holds the allocas + param stores and dominates the
+    // body) before the closing branch, so each `llvm.dbg.declare` references an
+    // in-scope alloca. Fail-closed inside the helper: no subprogram / no name /
+    // unresolvable type → no DIE for that slot.
+    if let (Some(dctx), Some(subprogram), Some(ls)) =
+        (debug, fn_subprogram, lexical_scopes.as_ref())
+    {
+        emit_variable_dies(
+            ctx,
+            dctx,
+            subprogram,
+            func,
+            &fn_ctx,
+            record_field_resolved_tys,
+            record_field_names,
+            prologue_bb,
+            ls,
+        );
+    }
     fn_ctx
         .builder
         .build_unconditional_branch(entry_bb)
@@ -30247,6 +31229,7 @@ fn lower_function<'ctx>(
                 fn_subprogram,
                 func.instr_spans
                     .get(&(block.id, u32::try_from(instr_idx).unwrap_or(u32::MAX))),
+                lexical_scopes.as_ref(),
             );
             lower_instruction(&fn_ctx, instr, block.id, drop_plans)?;
         }
@@ -30274,6 +31257,7 @@ fn lower_function<'ctx>(
                 block.id,
                 u32::try_from(block.instructions.len()).unwrap_or(u32::MAX),
             )),
+            lexical_scopes.as_ref(),
         );
         lower_terminator(
             &fn_ctx,
@@ -30558,6 +31542,7 @@ fn build_module_for_target<'ctx>(
             compile_unit: *compile_unit,
             file: *file,
             line_index,
+            di_type_cache: RefCell::new(HashMap::new()),
         }),
         _ => None,
     };
@@ -30585,6 +31570,15 @@ fn build_module_for_target<'ctx>(
         .record_layouts
         .iter()
         .map(|r| (r.name.clone(), r.field_tys.clone()))
+        .collect();
+    // Parallel field-name map for `-g` `DW_TAG_member` DIEs (Stage 4b). Keyed
+    // identically to `record_field_resolved_tys`; codegen's `resolve_di_type`
+    // looks names up by the same record key and falls back to positional
+    // `field_N` when a layout carries no names.
+    let record_field_names: HashMap<String, Vec<String>> = pipeline
+        .record_layouts
+        .iter()
+        .map(|r| (r.name.clone(), r.field_names.clone()))
         .collect();
     let mut machine_layouts: MachineLayoutMap<'ctx> = HashMap::new();
     // Register user-defined enum layouts before machines so machine payloads
@@ -30928,6 +31922,7 @@ fn build_module_for_target<'ctx>(
             &machine_layouts,
             &pipeline.enum_layouts,
             &record_field_resolved_tys,
+            &record_field_names,
             &pipeline.dyn_vtable_registry,
             &const_globals,
             emit_wasm_entry_alias,
@@ -33900,6 +34895,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![return_ty.clone()],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -34292,6 +35291,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::ClosureInvoke,
             params: vec![env_ptr_ty.clone()],
             locals: vec![env_ptr_ty, ResolvedTy::I64],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -34322,6 +35325,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![env_ty.clone(), fn_ty, ResolvedTy::I64],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -34370,6 +35377,7 @@ mod tests {
             record_layouts: vec![hew_mir::RecordLayout {
                 name: "__hew_closure_env_main_0".to_string(),
                 field_tys: Vec::new(),
+                field_names: Vec::new(),
             }],
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -34431,6 +35439,10 @@ mod tests {
                 call_conv: hew_mir::FunctionCallConv::Default,
                 params: vec![],
                 locals: vec![named_record_ty("Point"), named_record_ty("PtrPayload")],
+                local_names: Vec::new(),
+                local_scopes: Vec::new(),
+                local_decl_bytes: Vec::new(),
+                scope_table: Vec::new(),
                 blocks,
                 decisions: Vec::<DecisionFact>::new(),
                 intrinsic_id: None,
@@ -34450,10 +35462,12 @@ mod tests {
                 RecordLayout {
                     name: "Point".to_string(),
                     field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+                    field_names: vec![],
                 },
                 RecordLayout {
                     name: "PtrPayload".to_string(),
                     field_tys: vec![ResolvedTy::String],
+                    field_names: vec![],
                 },
             ],
             actor_layouts: Vec::new(),
@@ -34560,6 +35574,10 @@ mod tests {
                 call_conv: hew_mir::FunctionCallConv::Default,
                 params: vec![],
                 locals: vec![named_record_ty("Point")],
+                local_names: Vec::new(),
+                local_scopes: Vec::new(),
+                local_decl_bytes: Vec::new(),
+                scope_table: Vec::new(),
                 blocks: vec![entry, ret],
                 decisions: Vec::<DecisionFact>::new(),
                 intrinsic_id: None,
@@ -34578,6 +35596,7 @@ mod tests {
             record_layouts: vec![RecordLayout {
                 name: "Point".to_string(),
                 field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+                field_names: vec![],
             }],
             actor_layouts: Vec::new(),
             supervisor_layouts: Vec::new(),
@@ -34649,6 +35668,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![const_ty.clone()],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -34793,6 +35816,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: Vec::new(),
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -34915,6 +35942,10 @@ mod tests {
             call_conv: FunctionCallConv::ActorHandler,
             params: vec![ResolvedTy::I64],
             locals: vec![ResolvedTy::I64],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -34988,6 +36019,10 @@ mod tests {
                 },
                 ResolvedTy::I64,
             ],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -35069,6 +36104,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![return_ty.clone()],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -35349,6 +36388,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -35571,6 +36614,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals,
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks,
             decisions: Vec::new(),
             intrinsic_id: None,
@@ -36234,10 +37281,12 @@ mod tests {
                 MachineVariantLayout {
                     name: "None".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Some".to_string(),
                     field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -36262,6 +37311,10 @@ mod tests {
                 // local_1: i64 — return value
                 ResolvedTy::I64,
             ],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -36348,6 +37401,10 @@ mod tests {
             // capture-free generator.
             params: vec![ptr_ty.clone()],
             locals: vec![ptr_ty.clone(), ResolvedTy::I64],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -36464,6 +37521,10 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![ptr_ty.clone()],
             locals: vec![ptr_ty.clone(), ResolvedTy::I64],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -36501,6 +37562,10 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![generator_ty.clone()],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -36588,6 +37653,10 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![ResolvedTy::CancellationToken],
             locals: vec![ResolvedTy::CancellationToken, ResolvedTy::Bool],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -37089,6 +38158,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37150,6 +38223,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37219,6 +38296,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37288,6 +38369,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37351,6 +38436,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![i64_ty],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37422,6 +38511,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ptr_ty, i64_ty],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -37518,6 +38611,10 @@ mod tests {
                 call_conv: hew_mir::FunctionCallConv::Default,
                 params: vec![],
                 locals: vec![ptr_ty.clone(), ptr_ty.clone()],
+                local_names: Vec::new(),
+                local_scopes: Vec::new(),
+                local_decl_bytes: Vec::new(),
+                scope_table: Vec::new(),
                 blocks: vec![
                     BasicBlock {
                         id: 0,
@@ -37743,6 +38840,7 @@ mod tests {
                 MachineVariantLayout {
                     name: "Ok".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Err".to_string(),
@@ -37752,6 +38850,7 @@ mod tests {
                         builtin: None,
                         is_opaque: false,
                     }],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -37766,14 +38865,17 @@ mod tests {
                 MachineVariantLayout {
                     name: "Full".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Closed".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "NodeRoutingNotWired".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -37788,6 +38890,7 @@ mod tests {
                 MachineVariantLayout {
                     name: "Ok".to_string(),
                     field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Err".to_string(),
@@ -37797,6 +38900,7 @@ mod tests {
                         builtin: None,
                         is_opaque: false,
                     }],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -37810,6 +38914,7 @@ mod tests {
             variants: vec![MachineVariantLayout {
                 name: "NotFound".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             }],
             is_indirect: false,
         }
@@ -37819,6 +38924,7 @@ mod tests {
         MirRecordLayout {
             name: "MonitorRef".to_string(),
             field_tys: vec![ResolvedTy::I64],
+            field_names: vec![],
         }
     }
 
@@ -37832,14 +38938,17 @@ mod tests {
                 MachineVariantLayout {
                     name: "Empty".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "OneInt".to_string(),
                     field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "TwoInts".to_string(),
                     field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -37850,6 +38959,7 @@ mod tests {
         MirRecordLayout {
             name: "Point".to_string(),
             field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+            field_names: vec![],
         }
     }
 
@@ -37861,10 +38971,12 @@ mod tests {
                 MachineVariantLayout {
                     name: "Some".to_string(),
                     field_tys: vec![ResolvedTy::I64],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "None".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -39186,6 +40298,7 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
             }],
+            field_names: vec![],
         }];
         let enum_fixtures = vec![MirEnumLayout {
             name: "CrashKind".to_string(),
@@ -39194,10 +40307,12 @@ mod tests {
                 MachineVariantLayout {
                     name: "Panic".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Abort".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -39249,6 +40364,7 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
             }],
+            field_names: vec![],
         }];
         let machine_fixtures = vec![hew_mir::MachineLayout {
             name: "Worker".to_string(),
@@ -39256,10 +40372,12 @@ mod tests {
             variants: vec![MachineVariantLayout {
                 name: "Idle".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             }],
             events: vec![MachineVariantLayout {
                 name: "Start".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             }],
         }];
         let map = crate::layout::predeclare_named_layouts(
@@ -39298,6 +40416,7 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
             }],
+            field_names: vec![],
         }];
         let map = crate::layout::predeclare_named_layouts(&ctx, &record_fixtures, &[], &[], &[])
             .expect("predeclare must succeed");
@@ -39324,6 +40443,7 @@ mod tests {
         let record_fixtures = vec![MirRecordLayout {
             name: "Conflict".to_string(),
             field_tys: vec![ResolvedTy::I64],
+            field_names: vec![],
         }];
         let enum_fixtures = vec![MirEnumLayout {
             name: "Conflict".to_string(),
@@ -39331,6 +40451,7 @@ mod tests {
             variants: vec![MachineVariantLayout {
                 name: "Only".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];
@@ -39373,10 +40494,12 @@ mod tests {
                     MachineVariantLayout {
                         name: "None".to_string(),
                         field_tys: vec![],
+                        field_names: vec![],
                     },
                     MachineVariantLayout {
                         name: "Some".to_string(),
                         field_tys: vec![ResolvedTy::U8],
+                        field_names: vec![],
                     },
                 ],
                 is_indirect: false,
@@ -39388,10 +40511,12 @@ mod tests {
                     MachineVariantLayout {
                         name: "None".to_string(),
                         field_tys: vec![],
+                        field_names: vec![],
                     },
                     MachineVariantLayout {
                         name: "Some".to_string(),
                         field_tys: vec![ResolvedTy::U8],
+                        field_names: vec![],
                     },
                 ],
                 is_indirect: false,
@@ -39437,6 +40562,7 @@ mod tests {
                         builtin: None,
                         is_opaque: false,
                     }],
+                    field_names: vec![],
                 }],
                 is_indirect: false,
             },
@@ -39451,6 +40577,7 @@ mod tests {
                         builtin: None,
                         is_opaque: false,
                     }],
+                    field_names: vec![],
                 }],
                 is_indirect: false,
             },
@@ -39504,6 +40631,7 @@ mod tests {
                     MachineVariantLayout {
                         name: "ALeaf".to_string(),
                         field_tys: vec![ResolvedTy::I64],
+                        field_names: vec![],
                     },
                     MachineVariantLayout {
                         name: "AWrap".to_string(),
@@ -39513,6 +40641,7 @@ mod tests {
                             builtin: None,
                             is_opaque: false,
                         }],
+                        field_names: vec![],
                     },
                 ],
                 is_indirect: true,
@@ -39524,6 +40653,7 @@ mod tests {
                     MachineVariantLayout {
                         name: "BLeaf".to_string(),
                         field_tys: vec![ResolvedTy::I64],
+                        field_names: vec![],
                     },
                     MachineVariantLayout {
                         name: "BWrap".to_string(),
@@ -39533,6 +40663,7 @@ mod tests {
                             builtin: None,
                             is_opaque: false,
                         }],
+                        field_names: vec![],
                     },
                 ],
                 is_indirect: true,
@@ -39669,6 +40800,10 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64, trait_obj.clone()],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: vec![],
@@ -39819,6 +40954,10 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64, trait_obj.clone()],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: vec![],
@@ -40173,6 +41312,10 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64, trait_obj.clone()],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: vec![],
@@ -40473,6 +41616,10 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -40653,6 +41800,7 @@ mod tests {
         pipeline.record_layouts = vec![RecordLayout {
             name: "ConnActor".to_string(),
             field_tys: vec![conn_ty],
+            field_names: vec![],
         }];
         pipeline.actor_layouts = vec![actor];
 
@@ -40693,6 +41841,10 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![ptr_ty],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -40875,6 +42027,10 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![ptr_ty],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -41083,6 +42239,10 @@ mod tests {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -41191,6 +42351,10 @@ mod tests {
             call_conv: FunctionCallConv::ActorHandler,
             params: vec![],
             locals: vec![ptr_ty],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![
                 BasicBlock {
                     id: 0,
@@ -41241,6 +42405,10 @@ mod tests {
             call_conv: FunctionCallConv::ActorHandler,
             params: vec![],
             locals: vec![],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -41271,6 +42439,10 @@ mod tests {
             call_conv: FunctionCallConv::Default,
             params: vec![],
             locals: vec![],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),
@@ -42182,6 +43354,10 @@ fn main() {
             call_conv: FunctionCallConv::ActorHandler,
             params: vec![ResolvedTy::I64],
             locals: vec![ResolvedTy::I64],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: vec![BasicBlock {
                 id: 0,
                 statements: Vec::new(),

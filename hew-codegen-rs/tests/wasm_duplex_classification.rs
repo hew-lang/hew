@@ -76,6 +76,10 @@ fn pipeline_with_duplex_pair_call() -> IrPipeline {
                 duplex_ty(),     // 1 Duplex A
                 duplex_ty(),     // 2 Duplex B
             ],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
@@ -158,6 +162,10 @@ fn pipeline_with_duplex_close_drop() -> IrPipeline {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![duplex_ty()], // 0 Duplex handle
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
@@ -242,6 +250,10 @@ fn pipeline_no_duplex() -> IrPipeline {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64, ResolvedTy::I64],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,

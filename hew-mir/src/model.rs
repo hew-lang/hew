@@ -585,6 +585,14 @@ pub struct RecordLayout {
     /// Field types in declaration order. Index `i` corresponds to
     /// `FieldOffset(i)`.
     pub field_tys: Vec<ResolvedTy>,
+    /// Field names in declaration order, parallel to `field_tys`
+    /// (`field_names[i]` is the source name of `FieldOffset(i)`). Threaded
+    /// from the HIR record field declarations at the MIR projection. Codegen
+    /// consumes this under `hew build -g` to emit named `DW_TAG_member` DIEs
+    /// so gdb prints `pt.x`, not `pt.<field0>`. Empty for layouts built
+    /// without names (hand-built test fixtures); codegen falls back to a
+    /// positional `field_N` name in that case rather than failing.
+    pub field_names: Vec<String>,
 }
 
 /// Layout descriptor for an `actor` declaration. The state field list follows
@@ -902,6 +910,13 @@ pub struct MachineVariantLayout {
     pub name: String,
     /// Payload field types in declaration order. Empty for zero-field states.
     pub field_tys: Vec<ResolvedTy>,
+    /// Payload field names in declaration order, parallel to `field_tys`.
+    /// Threaded from the HIR variant payload field declarations at the MIR
+    /// projection so codegen's `-g` enum DIEs name each variant's payload
+    /// members (`shape.payload.Circle.radius`). Empty for unit variants and
+    /// for hand-built test fixtures; codegen falls back to positional
+    /// `field_N` names when a name is absent.
+    pub field_names: Vec<String>,
 }
 
 /// Layout descriptor for a `machine` declaration.
@@ -1737,6 +1752,21 @@ pub enum SuspendKind {
     Sleep { duration_ms: Place },
 }
 
+/// A lexical scope's facts for gdb `-g` `DILexicalBlock` emission, threaded from
+/// the MIR lowering pass (see [`RawMirFunction::scope_table`]). `id` is the raw
+/// HIR `ScopeId` value (matching `RawMirFunction::local_scopes` entries);
+/// `parent` is the enclosing scope's id, or `None` for the function-body root;
+/// `start`/`end` are the source byte-extent covering every span lowered under
+/// this scope. Codegen builds a `DILexicalBlock` per entry and uses the
+/// byte-extent → line to scope instruction `DILocation`s by source containment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MirScope {
+    pub id: u32,
+    pub parent: Option<u32>,
+    pub start: u32,
+    pub end: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawMirFunction {
     pub name: String,
@@ -1759,6 +1789,44 @@ pub struct RawMirFunction {
     /// expression and per `Let`-introduced binding. Parameters occupy
     /// `locals[0..params.len()]` (see `params` invariant above).
     pub locals: Vec<ResolvedTy>,
+    /// Source-level binding name for each local slot, parallel to `locals`
+    /// (`local_names[i]` is the name of `Place::Local(i)`, or `None` for an
+    /// anonymous temporary / a slot whose name could not be recovered).
+    /// Threaded from the lowering pass — params from the parameter prologue,
+    /// `let` bindings from the `MirStatement::Bind` stream. Codegen consumes
+    /// this under `hew build -g` to emit `DW_TAG_variable` /
+    /// `DW_TAG_formal_parameter` DIEs with the user's name
+    /// (`create_auto_variable` / `create_parameter_variable`). Fail-closed: a
+    /// `None` entry (or a slot index past the end, for hand-built test MIR
+    /// that leaves this empty) means codegen emits no variable DIE for that
+    /// slot rather than fabricating a name — `local_N` is never invented.
+    /// Empty for synthesised functions and legacy test MIR.
+    pub local_names: Vec<Option<String>>,
+    /// gdb `-g` lexical scoping, parallel to `locals`/`local_names`.
+    /// `local_scopes[i]` is the raw HIR `ScopeId` value the binding occupying
+    /// `Place::Local(i)` was declared in, or `None` for params / anonymous
+    /// temporaries / slots whose scope could not be recovered. Threaded from the
+    /// lowering pass. Codegen consumes this under `-g` to scope each
+    /// `DW_TAG_variable` to a `DILexicalBlock` (built from `scope_table`), so a
+    /// shadowed inner `let first` gets its OWN DIE in its OWN block and the
+    /// outer `first` no longer leaks into the inner breakpoint's frame. Empty for
+    /// synthesised functions and legacy test MIR (→ flat subprogram scoping).
+    pub local_scopes: Vec<Option<u32>>,
+    /// gdb `-g` declaration line, parallel to `locals`/`local_names`.
+    /// `local_decl_bytes[i]` is the source start-byte of the `let` that
+    /// introduced `Place::Local(i)`, or `None`. Codegen maps it through the
+    /// byte→line index so each local DIE carries its own declaration line rather
+    /// than the function-declaration line. Empty for synthesised / legacy MIR.
+    pub local_decl_bytes: Vec<Option<u32>>,
+    /// gdb `-g` lexical-block table. One entry per HIR `ScopeId` referenced by
+    /// `local_scopes` (and every ancestor up to the function-body root), giving
+    /// the scope's parent and source byte-extent `[start, end)`. Codegen builds
+    /// one `DILexicalBlock` per entry, parented per `parent` (rooted at the
+    /// subprogram), and assigns each instruction's `DILocation` to the innermost
+    /// scope whose byte-extent contains the instruction's start byte. Empty →
+    /// codegen falls back to flat subprogram scoping (the pre-`-g`-lexical
+    /// behaviour), which is correct for any function with no shadowing.
+    pub scope_table: Vec<MirScope>,
     pub blocks: Vec<BasicBlock>,
     pub decisions: Vec<DecisionFact>,
     /// When `Some(catalog_key)`, this function is a `#[intrinsic("key")]`
@@ -5310,6 +5378,7 @@ mod heap_owning_tests {
         let records = vec![RecordLayout {
             name: "Holder".to_string(),
             field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+            field_names: vec![],
         }];
         let ty = ResolvedTy::named_user("Holder", vec![]);
         assert!(ty_contains_unclonable_opaque(&ty, &records, &[]));
@@ -5323,6 +5392,7 @@ mod heap_owning_tests {
             variants: vec![MachineVariantLayout {
                 name: "V".to_string(),
                 field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];
@@ -5343,6 +5413,7 @@ mod heap_owning_tests {
         let records = vec![RecordLayout {
             name: "Value".to_string(),
             field_tys: vec![ResolvedTy::I64],
+            field_names: vec![],
         }];
         let user_value = ResolvedTy::named_user("Value", vec![]);
         assert!(!ty_contains_unclonable_opaque(&user_value, &records, &[]));
@@ -5380,6 +5451,7 @@ mod heap_owning_tests {
         let records = vec![RecordLayout {
             name: "Dq".to_string(),
             field_tys: vec![ResolvedTy::I64],
+            field_names: vec![],
         }];
         let user_record = ResolvedTy::named_user("Dq", vec![]);
         let names = vec!["Dq".to_string()];
@@ -5407,6 +5479,7 @@ mod heap_owning_tests {
         let records = vec![RecordLayout {
             name: "Value".to_string(),
             field_tys: vec![ResolvedTy::I64],
+            field_names: vec![],
         }];
         // Qualified, discriminator-cleared opaque handle (`is_opaque: false`),
         // exactly the shape a captured local's binding type reaches MIR with.
@@ -5481,6 +5554,7 @@ mod heap_owning_tests {
             variants: vec![MachineVariantLayout {
                 name: "Full".to_string(),
                 field_tys: vec![ResolvedTy::I64],
+                field_names: vec![],
             }],
             is_indirect: false,
         };
@@ -5531,6 +5605,7 @@ mod heap_owning_tests {
         let records = vec![RecordLayout {
             name: "Pair".to_string(),
             field_tys: vec![ResolvedTy::named_user("Dq", vec![]), ResolvedTy::I64],
+            field_names: vec![],
         }];
         let pair = ResolvedTy::named_user("Pair", vec![]);
         let names = vec!["Dq".to_string()];
@@ -5569,6 +5644,7 @@ mod heap_owning_tests {
                 name: "Full".to_string(),
                 // The substituted payload carries the unclonable opaque handle.
                 field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];
@@ -5596,6 +5672,7 @@ mod heap_owning_tests {
             variants: vec![MachineVariantLayout {
                 name: "Full".to_string(),
                 field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];
@@ -5625,6 +5702,7 @@ mod heap_owning_tests {
             variants: vec![MachineVariantLayout {
                 name: "Full".to_string(),
                 field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];
@@ -5650,6 +5728,7 @@ mod heap_owning_tests {
             variants: vec![MachineVariantLayout {
                 name: "Full".to_string(),
                 field_tys: vec![ResolvedTy::named_opaque("Value", vec![])],
+                field_names: vec![],
             }],
             is_indirect: false,
         }];

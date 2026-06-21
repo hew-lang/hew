@@ -37,6 +37,10 @@ fn trap_fn(kind: TrapKind) -> RawMirFunction {
         call_conv: hew_mir::FunctionCallConv::Default,
         params: vec![],
         locals: vec![],
+        local_names: vec![],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],

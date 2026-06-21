@@ -64,6 +64,10 @@ fn base_pipeline(
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals,
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
@@ -209,6 +213,7 @@ fn point_layout() -> RecordLayout {
     RecordLayout {
         name: "Point".to_string(),
         field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+        field_names: vec![],
     }
 }
 
@@ -357,6 +362,7 @@ fn hash_thunk_walks_fields_in_declaration_order() {
     let layout = RecordLayout {
         name: "Pt3".to_string(),
         field_tys: vec![ResolvedTy::I32, ResolvedTy::I64, ResolvedTy::I32],
+        field_names: vec![],
     };
     let ll = emit_hashmap_probe_ll(named("Pt3"), ResolvedTy::I64, vec![layout], "field_order");
     let body = ll
@@ -391,6 +397,7 @@ fn hash_thunk_loads_typed_field_widths() {
     let layout = RecordLayout {
         name: "Mixed".to_string(),
         field_tys: vec![ResolvedTy::Bool, ResolvedTy::Char],
+        field_names: vec![],
     };
     let ll = emit_hashmap_probe_ll(
         named("Mixed"),
@@ -441,6 +448,7 @@ fn hash_thunk_does_not_hash_padding_bytes() {
     let layout = RecordLayout {
         name: "Pad".to_string(),
         field_tys: vec![ResolvedTy::I32, ResolvedTy::I64],
+        field_names: vec![],
     };
     let ll = emit_hashmap_probe_ll(named("Pad"), ResolvedTy::I64, vec![layout], "padding");
     let body = ll
@@ -519,6 +527,10 @@ fn hash_thunk_dedup_one_per_record_per_module() {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![named("Point"), ResolvedTy::I64],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
@@ -663,6 +675,10 @@ fn hash_thunk_dedup_no_double_emit_with_vec_contains_eq_thunk() {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![vec_ty, named("Point"), ResolvedTy::I64, ResolvedTy::Bool],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
@@ -1032,6 +1048,7 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
     let pair_layout = RecordLayout {
         name: "Pair".to_string(),
         field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+        field_names: vec![],
     };
     let entry = BasicBlock {
         id: 0,
@@ -1076,6 +1093,10 @@ fn hash_thunk_dedup_isolates_distinct_records_with_same_size_align() {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![named("Point"), named("Pair"), ResolvedTy::I64],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,

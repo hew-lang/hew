@@ -78,6 +78,10 @@ fn pipeline_with_elab_drop_plan() -> IrPipeline {
                 ResolvedTy::I64, // 0 return value
                 duplex_ty(),     // 1 Duplex handle A
             ],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,
@@ -253,6 +257,10 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals: vec![ResolvedTy::I64],
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: raw_blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,

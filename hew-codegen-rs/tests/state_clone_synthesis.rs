@@ -44,6 +44,10 @@ fn trivial_main() -> RawMirFunction {
         call_conv: FunctionCallConv::Default,
         params: vec![],
         locals: vec![ResolvedTy::I64],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],
@@ -165,6 +169,7 @@ fn state_clone_counter_bitcopy_only_emits_wholesale_memcpy() {
     let record = RecordLayout {
         name: "Counter".into(),
         field_tys: vec![ResolvedTy::I64],
+        field_names: vec![],
     };
     let ir = emit_to_string(
         &pipeline_with(vec![counter], vec![record]),
@@ -262,6 +267,7 @@ fn state_clone_chatroom_string_and_vec_clone_with_rollback() {
                 is_opaque: false,
             },
         ],
+        field_names: vec![],
     };
     let ir = emit_to_string(
         &pipeline_with(vec![chat], vec![record]),
@@ -374,6 +380,7 @@ fn state_clone_router_three_vecs_full_rollback_chain() {
     let record = RecordLayout {
         name: "Router".into(),
         field_tys: router.state_field_tys.clone(),
+        field_names: vec![],
     };
     let ir = emit_to_string(&pipeline_with(vec![router], vec![record]), "router-3vec");
 
@@ -410,6 +417,7 @@ fn state_clone_workspace_nested_user_record_synthesizes_record_helper() {
                 is_opaque: false,
             }, // payload
         ],
+        field_names: vec![],
     };
     let workspace_record = RecordLayout {
         name: "Workspace".into(),
@@ -422,6 +430,7 @@ fn state_clone_workspace_nested_user_record_synthesizes_record_helper() {
             }, // entry
             ResolvedTy::String, // name
         ],
+        field_names: vec![],
     };
     let workspace_actor = classified_actor(
         "Workspace",
@@ -505,6 +514,7 @@ fn state_clone_connection_actor_returns_null_up_front() {
     let record = RecordLayout {
         name: "NetReader".into(),
         field_tys: vec![storage_ty],
+        field_names: vec![],
     };
     let ir = emit_to_string(
         &pipeline_with(vec![conn_actor], vec![record]),
@@ -588,6 +598,7 @@ fn state_clone_alloc_fail_per_field_rollback_cardinality_and_order() {
     let record = RecordLayout {
         name: "QuadOwned".into(),
         field_tys: actor.state_field_tys.clone(),
+        field_names: vec![],
     };
     let ir = emit_to_string(&pipeline_with(vec![actor], vec![record]), "quad-owned");
 
@@ -679,6 +690,7 @@ fn state_clone_bytes_refcount_bump_has_no_failure_path() {
     let record = RecordLayout {
         name: "BytesHolder".into(),
         field_tys: vec![ResolvedTy::Bytes],
+        field_names: vec![],
     };
     let ir = emit_to_string(&pipeline_with(vec![actor], vec![record]), "bytes-refcount");
 
@@ -722,6 +734,7 @@ fn state_clone_bytes_pointer_shaped_field_fails_closed() {
     let record = RecordLayout {
         name: "PointerBackedBytes".into(),
         field_tys: vec![ResolvedTy::String],
+        field_names: vec![],
     };
 
     let err = try_emit_to_string(
@@ -793,6 +806,7 @@ fn state_clone_hashmap_and_hashset_string_elem_route_to_layout_helpers() {
     let record = RecordLayout {
         name: "MapAndSetStringElem".into(),
         field_tys: actor.state_field_tys.clone(),
+        field_names: vec![],
     };
     let ir = emit_to_string(
         &pipeline_with(vec![actor], vec![record]),
@@ -861,6 +875,7 @@ fn state_clone_hashmap_and_hashset_layout_route_to_layout_free() {
     let key_record = RecordLayout {
         name: "K".into(),
         field_tys: vec![ResolvedTy::I64],
+        field_names: vec![],
     };
     let actor = classified_actor(
         "MapAndSetLayout",
@@ -879,6 +894,7 @@ fn state_clone_hashmap_and_hashset_layout_route_to_layout_free() {
     let actor_record = RecordLayout {
         name: "MapAndSetLayout".into(),
         field_tys: actor.state_field_tys.clone(),
+        field_names: vec![],
     };
     let ir = emit_to_string(
         &pipeline_with(vec![actor], vec![actor_record, key_record]),
@@ -984,6 +1000,7 @@ fn state_clone_actor_enum_field_tag_dispatches_payload_clone_and_drop() {
     let record = RecordLayout {
         name: "Mailbox".into(),
         field_tys: vec![maybe_ty],
+        field_names: vec![],
     };
     let mut pipeline = pipeline_with(vec![mailbox], vec![record]);
     pipeline.enum_layouts = vec![EnumLayout {
@@ -993,10 +1010,12 @@ fn state_clone_actor_enum_field_tag_dispatches_payload_clone_and_drop() {
             MachineVariantLayout {
                 name: "Just".into(),
                 field_tys: vec![ResolvedTy::String],
+                field_names: vec![],
             },
             MachineVariantLayout {
                 name: "Nothing".into(),
                 field_tys: vec![],
+                field_names: vec![],
             },
         ],
         is_indirect: false,

@@ -26,6 +26,7 @@ fn point_layout() -> RecordLayout {
     RecordLayout {
         name: "Point".to_string(),
         field_tys: vec![ResolvedTy::I64, ResolvedTy::I64],
+        field_names: vec![],
     }
 }
 
@@ -58,6 +59,10 @@ fn pipeline_with_entry_terminator(
             call_conv: hew_mir::FunctionCallConv::Default,
             params: vec![],
             locals,
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: blocks.clone(),
             decisions: vec![],
             intrinsic_id: None,

@@ -783,6 +783,7 @@ fn compile_build_binary(
 fn emit_obj_only(
     input: &Path,
     target: &target::TargetSpec,
+    debug: bool,
     opt_level: hew_codegen_rs::OptLevel,
     options: &compile::CompileOptions,
 ) -> Result<(), ()> {
@@ -798,6 +799,8 @@ fn emit_obj_only(
         CompileEmitTarget::Native
     };
     // Emit objects only — never link (no freestanding wasm link either).
+    // `-g` threads debug info AND the source path so the object carries a
+    // DWARF line table + variable/type DIEs, matching the linked-binary path.
     let artefacts = emit_module_for_target(
         &pipeline,
         stem,
@@ -805,9 +808,9 @@ fn emit_obj_only(
         emit_target,
         target,
         false,
-        false,
+        debug,
         opt_level,
-        None,
+        if debug { Some(input) } else { None },
     )?;
     let produced = match emit_target {
         CompileEmitTarget::Native => artefacts.native_obj_path,
@@ -851,7 +854,7 @@ fn cmd_build(a: &args::BuildArgs) {
     });
 
     if a.emit_obj {
-        emit_obj_only(&a.input, &target, opt_level, &options).unwrap_or_else(|()| {
+        emit_obj_only(&a.input, &target, a.debug, opt_level, &options).unwrap_or_else(|()| {
             if json {
                 diagnostic_json::flush_json_diagnostics();
             }
@@ -1009,7 +1012,9 @@ fn compile_temp_debug_artifact(
     options: &compile::CompileOptions,
     target: &target::ExecutionTarget,
 ) -> CompiledTempExecutable {
-    compile_temp_artifact(input, create_debug_temp_artifact(target), options)
+    // `hew debug` launches a native debugger on the artifact, so it must carry
+    // DWARF debug info — emit it even though the shared `hew run` path does not.
+    compile_temp_artifact(input, create_debug_temp_artifact(target), options, true)
 }
 
 fn compile_temp_run_artifact(
@@ -1017,7 +1022,8 @@ fn compile_temp_run_artifact(
     options: &compile::CompileOptions,
     target: &target::ExecutionTarget,
 ) -> CompiledTempExecutable {
-    compile_temp_artifact(input, create_run_temp_artifact(target), options)
+    // `hew run` is the fast-exec path; no debug info.
+    compile_temp_artifact(input, create_run_temp_artifact(target), options, false)
 }
 
 /// Compile a `.hew` source file to a temporary `.wasm` module for WASI execution.
@@ -1110,6 +1116,7 @@ fn compile_temp_artifact(
     input: &str,
     artifact: CompiledTempExecutable,
     options: &compile::CompileOptions,
+    debug: bool,
 ) -> CompiledTempExecutable {
     // Route through the same path as `hew build` so `hew run` honours
     // `--pkg-path` (resolving `hew::<pkg>` imports) and auto-links the native
@@ -1126,7 +1133,7 @@ fn compile_temp_artifact(
         Path::new(input),
         artifact.path(),
         &target,
-        false,
+        debug,
         // `hew run` is debug-default O0; the `HEW_OPT_LEVEL` env floor lifts the
         // whole corpus to O2 for the differential-exec parity gate.
         hew_codegen_rs::OptLevel::O0,

@@ -78,6 +78,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         .map(|n| MachineVariantLayout {
             name: n.to_string(),
             field_tys: Vec::new(),
+            field_names: Vec::new(),
         })
         .collect::<Vec<_>>();
     let events = vec!["SynReceive", "AckReceive"]
@@ -85,6 +86,7 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         .map(|n| MachineVariantLayout {
             name: n.to_string(),
             field_tys: Vec::new(),
+            field_names: Vec::new(),
         })
         .collect::<Vec<_>>();
     let machine_layout = MachineLayout {
@@ -107,6 +109,10 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: vec![machine_ty.clone(), event_ty.clone()],
         locals: vec![machine_ty.clone(), event_ty.clone()],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),
@@ -152,6 +158,10 @@ fn tcp_handshake_emit_pipeline() -> IrPipeline {
             event_ty.clone(),   // 1: event arg (zeroed)
             machine_ty.clone(), // 2: step return temp
         ],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![
             BasicBlock {
                 id: 0,

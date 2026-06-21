@@ -300,6 +300,7 @@ fn user_type_named_vec_does_not_route_to_container_arm() {
     let records = vec![hew_mir::model::RecordLayout {
         name: "Vec".to_string(),
         field_tys: vec![ResolvedTy::I64],
+        field_names: vec![],
     }];
     let result = hew_mir::classify_state_field(
         &ResolvedTy::Named {
@@ -331,6 +332,7 @@ fn user_type_named_actor_ref_does_not_route_to_bitcopy_arm() {
     let records = vec![hew_mir::model::RecordLayout {
         name: "ActorRef".to_string(),
         field_tys: vec![ResolvedTy::String],
+        field_names: vec![],
     }];
     let result = hew_mir::classify_state_field(
         &ResolvedTy::Named {
@@ -468,6 +470,7 @@ fn workspace_visited_set_terminates_classifier_directly() {
             },
             ResolvedTy::I64,
         ],
+        field_names: vec![],
     }];
     let result = classify_actor_state_fields(
         &[ResolvedTy::Named {

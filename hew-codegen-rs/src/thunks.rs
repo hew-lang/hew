@@ -335,6 +335,8 @@ pub(crate) fn ask_reply_drop_thunk_ptr<'ctx>(
         .map(|(name, tys)| hew_mir::RecordLayout {
             name: name.clone(),
             field_tys: tys.clone(),
+            // Drop-classifier reconstruction (no `-g` consumer); names absent.
+            field_names: Vec::new(),
         })
         .collect();
     let mut visited = HashSet::new();

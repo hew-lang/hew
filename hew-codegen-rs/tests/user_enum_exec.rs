@@ -63,14 +63,17 @@ fn colour_red_pipeline() -> IrPipeline {
             MachineVariantLayout {
                 name: "Red".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             },
             MachineVariantLayout {
                 name: "Green".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             },
             MachineVariantLayout {
                 name: "Blue".to_string(),
                 field_tys: vec![],
+                field_names: vec![],
             },
         ],
         is_indirect: false,
@@ -81,6 +84,10 @@ fn colour_red_pipeline() -> IrPipeline {
         call_conv: FunctionCallConv::Default,
         params: vec![],
         locals: vec![colour_ty, ResolvedTy::I64],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: Vec::new(),

@@ -180,6 +180,10 @@ fn caller_with_dispatch(
         call_conv: FunctionCallConv::Default,
         params,
         locals,
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],
@@ -368,6 +372,10 @@ fn call_trait_method_fails_closed_when_receiver_not_fat_pointer() {
         call_conv: FunctionCallConv::Default,
         params: vec![ResolvedTy::I64], // <-- not a TraitObject!
         locals: vec![ResolvedTy::I64, ResolvedTy::I64],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],

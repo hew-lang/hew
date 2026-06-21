@@ -64,6 +64,10 @@ fn impl_method_stub(
         call_conv: FunctionCallConv::Default,
         params,
         locals,
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],
@@ -390,6 +394,10 @@ fn impl_method_stub_value_recv(name: &str, ret: ResolvedTy) -> RawMirFunction {
         call_conv: FunctionCallConv::Default,
         params,
         locals,
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: vec![BasicBlock {
             id: 0,
             statements: vec![],

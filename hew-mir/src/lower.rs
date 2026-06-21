@@ -339,6 +339,7 @@ fn register_builtin_record_layouts(
         record_layouts.push(crate::model::RecordLayout {
             name: registration.name.to_string(),
             field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+            field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
         });
         record_field_orders.insert(registration.name.to_string(), fields);
     }
@@ -377,6 +378,7 @@ fn register_builtin_monomorphic_enum_layouts(
             .map(|v| crate::model::MachineVariantLayout {
                 name: v.name.to_string(),
                 field_tys: Vec::new(),
+                field_names: Vec::new(),
             })
             .collect();
         enum_layouts.push(crate::model::EnumLayout {
@@ -1003,6 +1005,7 @@ pub fn lower_hir_module_with_facts(
                     record_layouts.push(crate::model::RecordLayout {
                         name: layout_key.clone(),
                         field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                        field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
                     });
                 }
                 record_field_orders.insert(layout_key, fields);
@@ -1039,6 +1042,7 @@ pub fn lower_hir_module_with_facts(
                     record_layouts.push(crate::model::RecordLayout {
                         name: layout_key.clone(),
                         field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                        field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
                     });
                     record_field_orders.insert(layout_key.clone(), fields);
                 }
@@ -1058,6 +1062,7 @@ pub fn lower_hir_module_with_facts(
                         .map(|v| crate::model::MachineVariantLayout {
                             name: v.name.clone(),
                             field_tys: v.field_tys(),
+                            field_names: v.field_names(),
                         })
                         .collect();
                     // Enum-shaped pub types collide the same way (R6): a
@@ -1083,6 +1088,11 @@ pub fn lower_hir_module_with_facts(
                             .state_fields
                             .iter()
                             .map(|field| field.ty.clone())
+                            .collect(),
+                        field_names: actor
+                            .state_fields
+                            .iter()
+                            .map(|field| field.name.clone())
                             .collect(),
                     });
                 }
@@ -1138,6 +1148,7 @@ pub fn lower_hir_module_with_facts(
         record_layouts.push(crate::model::RecordLayout {
             name: layout.mangled_name.clone(),
             field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+            field_names: fields.iter().map(|(name, _)| name.clone()).collect(),
         });
         record_field_orders.insert(layout.mangled_name.clone(), fields);
     }
@@ -1182,6 +1193,10 @@ pub fn lower_hir_module_with_facts(
             .map(|v| crate::model::MachineVariantLayout {
                 name: v.name.clone(),
                 field_tys: v.field_tys.clone(),
+                // Generic-enum instantiation payloads carry no field names in
+                // the HIR mono layout (names are not load-bearing for value
+                // codegen); `-g` falls back to positional `field_N` here.
+                field_names: Vec::new(),
             })
             .collect();
         enum_layouts.push(crate::model::EnumLayout {
@@ -1221,6 +1236,10 @@ pub fn lower_hir_module_with_facts(
         field_tys: child_lookup_fields
             .iter()
             .map(|(_, ty)| ty.clone())
+            .collect(),
+        field_names: child_lookup_fields
+            .iter()
+            .map(|(name, _)| name.clone())
             .collect(),
     });
     record_field_orders.insert(CHILD_LOOKUP_RESULT_TY_NAME.to_string(), child_lookup_fields);
@@ -3401,6 +3420,12 @@ fn synthesize_machine_step_fn(
         call_conv: crate::model::FunctionCallConv::Default,
         params,
         locals,
+        // Synthesised machine-`step` dispatch: no faithful source bindings,
+        // so no `-g` variable DIEs (consistent with `span: None`).
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
         blocks: blocks.clone(),
         decisions: Vec::new(),
         intrinsic_id: None,
@@ -3597,6 +3622,7 @@ fn build_machine_layout(md: &HirMachineDecl) -> crate::model::MachineLayout {
                     .iter()
                     .map(|f| default_machine_type_params_to_i64(&f.ty, md))
                     .collect(),
+                field_names: s.fields.iter().map(|f| f.name.clone()).collect(),
             })
             .collect(),
         events: md
@@ -3609,6 +3635,7 @@ fn build_machine_layout(md: &HirMachineDecl) -> crate::model::MachineLayout {
                     .iter()
                     .map(|f| default_machine_type_params_to_i64(&f.ty, md))
                     .collect(),
+                field_names: e.fields.iter().map(|f| f.name.clone()).collect(),
             })
             .collect(),
     }
@@ -4778,6 +4805,10 @@ fn lower_function(
         return_ty: return_ty.clone(),
         statements: thir_statements,
     };
+    // Name the `let`-bound locals from the emitted `Bind` stream before the
+    // blocks are moved into the raw function — params were already named in
+    // `lower_params`. Feeds the `-g` variable DIEs.
+    builder.resolve_local_names_from_binds(&blocks);
     // `CheckedMirFunction` mirrors `RawMirFunction.blocks` directly
     // (widened in Slice 2 from a single-block field to a vec). The
     // elaborator + check_function consume the block vec; legacy
@@ -4792,6 +4823,14 @@ fn lower_function(
             .map(|p| builder.subst_ty(&p.ty))
             .collect(),
         locals: builder.locals.clone(),
+        local_names: builder.local_names.clone(),
+        local_scopes: builder
+            .local_scopes
+            .iter()
+            .map(|s| s.map(|sc| sc.0))
+            .collect(),
+        local_decl_bytes: builder.local_decl_bytes.clone(),
+        scope_table: builder.build_scope_table(),
         blocks,
         decisions: builder.decisions.clone(),
         // W5.005 / F1b: carry the floor-intrinsic catalog id from HIR so
@@ -5357,6 +5396,19 @@ struct LoopFrame {
     body_scope: ScopeId,
 }
 
+/// Accumulated lexical-scope facts for one HIR `ScopeId`, built incrementally
+/// while lowering a function body (see `Builder::scope_info`). `parent` is the
+/// enclosing scope (the frame below this one on `active_scopes` at first
+/// observation); `None` for the function-body root scope. `min_start`/`max_end`
+/// widen to cover every source byte-span lowered under this scope, giving
+/// codegen a source byte-range it maps to a `DILexicalBlock`'s PC extent.
+#[derive(Debug, Clone, Copy)]
+struct ScopeInfoEntry {
+    parent: Option<ScopeId>,
+    min_start: u32,
+    max_end: u32,
+}
+
 #[derive(Debug, Default)]
 struct Builder {
     /// Checker-authority stream for the *current* basic block. Drained
@@ -5398,6 +5450,29 @@ struct Builder {
     /// Type-indexed local registers. `locals[i]` is the `ResolvedTy` of
     /// `Place::Local(i as u32)`.
     locals: Vec<ResolvedTy>,
+    /// Source-level binding name for each local slot, parallel to `locals`
+    /// (`local_names[i]` is the name of `Place::Local(i)`, or `None` for an
+    /// anonymous temporary). Populated at the param prologue and `let`
+    /// lowering sites from the HIR `HirBinding.name`; every other
+    /// `alloc_local` pushes `None`. Drained into `RawMirFunction.local_names`
+    /// for codegen's `-g` variable DIEs (`create_auto_variable` /
+    /// `create_parameter_variable`). Best-effort and fail-closed: a `None`
+    /// entry means codegen emits no DIE for that slot rather than fabricating
+    /// a name. A side-table-shaped `Vec` (not a field on every binding-insert
+    /// site) keeps the many `binding_locals.insert` call sites unchanged.
+    local_names: Vec<Option<String>>,
+    /// gdb `-g` lexical scoping, parallel to `local_names`. `local_scopes[i]` is
+    /// the HIR `ScopeId` the binding occupying `Place::Local(i)` was declared in
+    /// (or `None` for params / anonymous temporaries / unscoped slots). Resolved
+    /// in `resolve_local_names_from_binds` from `binding_scope`. Codegen scopes
+    /// each variable DIE to the matching `DILexicalBlock`, so a shadowed inner
+    /// `first` does not share the outer's function-wide scope.
+    local_scopes: Vec<Option<ScopeId>>,
+    /// gdb `-g` declaration line, parallel to `local_names`. `local_decl_bytes[i]`
+    /// is the source start-byte of the `let` that introduced `Place::Local(i)`
+    /// (or `None`). Codegen maps it to a line so each local DIE carries its own
+    /// declaration line rather than the function-declaration line.
+    local_decl_bytes: Vec<Option<u32>>,
     /// Maps `BindingId` to the `Local(N)` slot that holds the binding's
     /// initialiser. Cluster 1 reads the slot directly; later clusters add
     /// drop-cleanup and rebinding semantics.
@@ -5490,6 +5565,27 @@ struct Builder {
     /// drop set per-iteration and CFG-correct: outer-scope bindings keep their
     /// function-exit drop, inner-scope bindings get one drop per iteration.
     binding_scope: HashMap<BindingId, ScopeId>,
+    /// gdb `-g` lexical-block scoping. Accumulates, per HIR `ScopeId` ever active
+    /// while lowering this function's body, the scope's parent `ScopeId` (the
+    /// scope directly below it on `active_scopes` when first observed) and the
+    /// source byte-extent `[min_start, max_end)` of every statement/instruction
+    /// span lowered under it. Updated incrementally in `push_instr` and
+    /// `record_binding_scope` (both fire while the scope's frame is on the stack
+    /// top) — so no instrumentation of the 11 `active_scopes.push` sites is
+    /// needed. Drained at finalize into `RawMirFunction.scope_table` for codegen
+    /// to build one `DILexicalBlock` per scope, parented per `parent`, with PC
+    /// ranges derived from byte-extent → line. A shadowed inner `let first` is
+    /// recorded under its own (inner) scope, so its variable DIE and the inner
+    /// block's instruction `DILocation`s land in a distinct lexical block — the
+    /// outer `first` no longer leaks into the inner breakpoint's frame.
+    scope_info: HashMap<ScopeId, ScopeInfoEntry>,
+    /// gdb `-g`: source start-byte of each `let`-binding's declaration, captured
+    /// at `record_binding_scope` from the live lowering cursor. Resolved to the
+    /// binding's slot in `resolve_local_names_from_binds` so each local DIE gets
+    /// its OWN declaration line — two same-named shadowed locals on different
+    /// lines stay distinct even before lexical-block scoping. Absent → codegen
+    /// falls back to the function-declaration line.
+    binding_decl_byte: HashMap<BindingId, u32>,
     /// Map from each loop-body back-edge `Goto`'s emitting block id to the HIR
     /// `ScopeId` of the loop body that closes there. Populated immediately
     /// before each loop's body→header (or body→inc) `Terminator::Goto` is
@@ -6043,6 +6139,7 @@ impl Builder {
             .map(|(name, fields)| crate::model::RecordLayout {
                 name: name.clone(),
                 field_tys: fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                field_names: fields.iter().map(|(fname, _)| fname.clone()).collect(),
             })
             .collect()
     }
@@ -6340,6 +6437,40 @@ impl Builder {
     fn record_binding_scope(&mut self, binding: BindingId) {
         let scope = self.active_scopes.last().copied().unwrap_or(ScopeId(0));
         self.binding_scope.insert(binding, scope);
+        if let Some(span) = self.current_span {
+            self.binding_decl_byte.insert(binding, span.0);
+            self.note_scope_span(span);
+        }
+    }
+
+    /// Widen the active scope's recorded byte-extent to cover `span`, and record
+    /// its parent (the frame directly below the active scope) the first time the
+    /// scope is observed. Drives the `-g` `DILexicalBlock` PC ranges. A no-op
+    /// when no scope is active (only the pre-body synthetic param Binds, which
+    /// carry no user-visible variable DIE anyway).
+    fn note_scope_span(&mut self, span: (u32, u32)) {
+        let depth = self.active_scopes.len();
+        let Some(&scope) = self.active_scopes.last() else {
+            return;
+        };
+        let parent = depth.checked_sub(2).map(|i| self.active_scopes[i]);
+        let (start, end) = span;
+        self.scope_info
+            .entry(scope)
+            .and_modify(|e| {
+                e.min_start = e.min_start.min(start);
+                e.max_end = e.max_end.max(end);
+                // The first observation fixes the parent; a scope can be
+                // re-entered (loop body), but its lexical parent is invariant.
+                if e.parent.is_none() {
+                    e.parent = parent;
+                }
+            })
+            .or_insert(ScopeInfoEntry {
+                parent,
+                min_start: start,
+                max_end: end,
+            });
     }
 
     /// Emit a `hew_gen_free` release for every generator/`AsyncGenerator`
@@ -6602,6 +6733,9 @@ impl Builder {
         for param in &func.params {
             let slot = self.alloc_local(param.ty.clone());
             self.binding_locals.insert(param.id, slot);
+            // Record the parameter name for `-g` `DW_TAG_formal_parameter`
+            // DIEs (codegen's `create_parameter_variable`).
+            self.record_local_name(slot, &param.name);
             // A fn-typed parameter's closure env is provably heap (the checker
             // `Escapes`-classifies any closure crossing a call boundary as an
             // argument), so it may transfer env ownership into an owning
@@ -6633,7 +6767,113 @@ impl Builder {
         // map).
         let resolved = self.subst_ty(&ty);
         self.locals.push(resolved);
+        // Keep the name side-table in lockstep with `locals`. Anonymous
+        // temporaries push `None`; named bindings overwrite it via
+        // `record_local_name` after registering the slot in `binding_locals`.
+        self.local_names.push(None);
+        // gdb `-g` scope/decl-line side-tables stay parallel to `local_names`;
+        // filled (alongside the name) in `resolve_local_names_from_binds`.
+        self.local_scopes.push(None);
+        self.local_decl_bytes.push(None);
         Place::Local(id)
+    }
+
+    /// Record a source-level binding name for an already-allocated local
+    /// slot, for `-g` variable DIEs. A no-op for any place that is not a
+    /// `Place::Local` (e.g. a `Place::LambdaActorHandle` wrapping a handle id
+    /// has no plain alloca to attach a `DILocalVariable` to) or whose index
+    /// is out of range. Best-effort and fail-closed: an unnameable slot keeps
+    /// its `None` and simply gets no DIE.
+    fn record_local_name(&mut self, place: Place, name: &str) {
+        if let Place::Local(id) = place {
+            if let Some(slot) = self.local_names.get_mut(id as usize) {
+                *slot = Some(name.to_string());
+            }
+        }
+    }
+
+    /// Build the `-g` lexical-block table from the incrementally-accumulated
+    /// `scope_info`. Emits one [`MirScope`] per scope that is referenced by a
+    /// named local OR appears on any such scope's parent chain, so codegen can
+    /// parent every block up to the function-body root. A scope with no recorded
+    /// byte-extent (never observed a span) is skipped — it has no instructions
+    /// to scope and no local to host. Deterministic order (sorted by id) keeps
+    /// the emitted DWARF stable.
+    fn build_scope_table(&self) -> Vec<crate::model::MirScope> {
+        use std::collections::BTreeSet;
+        // Seed with every scope that hosts a named local, then walk parents.
+        let mut wanted: BTreeSet<ScopeId> = self
+            .local_scopes
+            .iter()
+            .filter_map(|s| *s)
+            .filter(|s| self.scope_info.contains_key(s))
+            .collect();
+        let mut frontier: Vec<ScopeId> = wanted.iter().copied().collect();
+        while let Some(sc) = frontier.pop() {
+            if let Some(entry) = self.scope_info.get(&sc) {
+                if let Some(parent) = entry.parent {
+                    if self.scope_info.contains_key(&parent) && wanted.insert(parent) {
+                        frontier.push(parent);
+                    }
+                }
+            }
+        }
+        wanted
+            .into_iter()
+            .filter_map(|sc| {
+                let e = self.scope_info.get(&sc)?;
+                Some(crate::model::MirScope {
+                    id: sc.0,
+                    // Drop a parent that is not itself in the emitted set
+                    // (defensive: an unobserved parent → root-level block).
+                    parent: e
+                        .parent
+                        .filter(|p| self.scope_info.contains_key(p))
+                        .map(|p| p.0),
+                    start: e.min_start,
+                    end: e.max_end,
+                })
+            })
+            .collect()
+    }
+
+    /// Populate `local_names` for `let`-bound locals from the emitted
+    /// `MirStatement::Bind` stream. Each `Bind` carries the source binding id
+    /// and name; `binding_locals` maps that id to the slot the initialiser
+    /// landed in. Resolving the two together names every `let` binding that
+    /// occupies a plain `Place::Local`, uniformly, without instrumenting the
+    /// many per-RHS-shape `binding_locals.insert` sites in the `Let` arm.
+    /// Parameters are named directly in `lower_params`. Also fills the parallel
+    /// `local_scopes` / `local_decl_bytes` side-tables for `-g` lexical scoping.
+    /// Fail-closed: a binding whose final place is not a `Place::Local` (handle
+    /// places) keeps its `None` and gets no DIE. Called once at finalize, before
+    /// the `RawMirFunction` is built.
+    fn resolve_local_names_from_binds(&mut self, blocks: &[BasicBlock]) {
+        for block in blocks {
+            for stmt in &block.statements {
+                if let MirStatement::Bind { binding, name, .. } = stmt {
+                    if let Some(place) = self.binding_locals.get(binding).copied() {
+                        self.record_local_name(place, name);
+                        // gdb `-g`: a shadowed inner `let first` and its outer
+                        // sibling occupy DISTINCT slots (each `let` allocs a
+                        // fresh local), so naming both is correct; the loss of
+                        // the inner DIE happened downstream when both shared the
+                        // function-wide DI scope and decl line. Carry the per-
+                        // binding scope + decl-byte so codegen scopes each to
+                        // its own lexical block on its own line.
+                        if let Place::Local(id) = place {
+                            let id = id as usize;
+                            if let Some(slot) = self.local_scopes.get_mut(id) {
+                                *slot = self.binding_scope.get(binding).copied();
+                            }
+                            if let Some(slot) = self.local_decl_bytes.get_mut(id) {
+                                *slot = self.binding_decl_byte.get(binding).copied();
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Allocate a fresh `BasicBlock` id without switching the cursor.
@@ -6680,6 +6920,7 @@ impl Builder {
         if let Some(span) = self.current_span {
             let idx = u32::try_from(self.instructions.len()).unwrap_or(u32::MAX);
             self.instr_spans.insert((self.current_block_id, idx), span);
+            self.note_scope_span(span);
         }
         self.instructions.push(instr);
     }
@@ -6727,6 +6968,12 @@ impl Builder {
         if let Some(span) = self.current_span {
             let idx = u32::try_from(self.instructions.len()).unwrap_or(u32::MAX);
             self.instr_spans.insert((self.current_block_id, idx), span);
+            // gdb `-g`: a call statement (`println(first)`) lowers to a
+            // TERMINATOR, so its span must also widen the active scope's
+            // byte-extent — otherwise the inner block's range stops just short
+            // of the call and the call's `DILocation` falls back to the outer
+            // scope, hiding a shadowed inner binding at the call's breakpoint.
+            self.note_scope_span(span);
         }
     }
 
@@ -16667,6 +16914,11 @@ impl Builder {
             call_conv: crate::model::FunctionCallConv::TaskEntry,
             params: vec![],
             locals: vec![],
+            // Synthesised task-entry adapter: no user bindings, no `-g` DIEs.
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks,
             decisions: vec![],
             intrinsic_id: None,
@@ -17053,6 +17305,8 @@ impl Builder {
             .push(crate::model::RecordLayout {
                 name: env_name,
                 field_tys: arg_tys.clone(),
+                // Compiler-internal fork-env record: positional `-g` names.
+                field_names: Vec::new(),
             });
         let field_pairs: Vec<(FieldOffset, Place)> = arg_places
             .iter()
@@ -17170,6 +17424,11 @@ impl Builder {
             call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             params: vec![env_ptr_ty],
             locals: builder.locals.clone(),
+            // Synthesised closure-invoke shim: no faithful user bindings.
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: blocks.clone(),
             decisions: builder.decisions.clone(),
             intrinsic_id: None,
@@ -19186,6 +19445,8 @@ impl Builder {
             .push(crate::model::RecordLayout {
                 name: packed_name,
                 field_tys,
+                // Compiler-internal packed-args record: positional `-g` names.
+                field_names: Vec::new(),
             });
 
         let fields: Vec<(FieldOffset, Place)> = field_places
@@ -20903,6 +21164,8 @@ impl Builder {
             .push(crate::model::RecordLayout {
                 name: env_name,
                 field_tys: captures.iter().map(|capture| capture.ty.clone()).collect(),
+                // Compiler-internal closure-env record: positional `-g` names.
+                field_names: Vec::new(),
             });
 
         let mut field_pairs = Vec::with_capacity(captures.len());
@@ -21103,6 +21366,11 @@ impl Builder {
             call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             params: raw_params,
             locals: builder.locals.clone(),
+            // Synthesised closure-invoke shim: no faithful user bindings.
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks,
             decisions: builder.decisions.clone(),
             intrinsic_id: None,
@@ -21253,6 +21521,11 @@ impl Builder {
             call_conv: crate::model::FunctionCallConv::ClosureInvoke,
             params: raw_params,
             locals: builder.locals.clone(),
+            // Synthesised closure-invoke shim: no faithful user bindings.
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: blocks.clone(),
             decisions: builder.decisions.clone(),
             intrinsic_id: None,
@@ -21596,6 +21869,8 @@ impl Builder {
                 .push(crate::model::RecordLayout {
                     name: env_name,
                     field_tys,
+                    // Compiler-internal lambda-env record: positional `-g` names.
+                    field_names: Vec::new(),
                 });
             let dest = self.alloc_local(env_resolved_ty.clone());
             self.push_instr(Instr::RecordInit {
@@ -21729,6 +22004,11 @@ impl Builder {
                 ptr_ty.clone(),  // reply_len_out
             ],
             locals: body_locals.clone(),
+            // Synthesised lambda-actor body (runtime ABI shape): no `-g` DIEs.
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: body_blocks.clone(),
             decisions: body_builder.decisions.clone(),
             intrinsic_id: None,
@@ -22243,6 +22523,8 @@ impl Builder {
                     .push(crate::model::RecordLayout {
                         name: env_name,
                         field_tys,
+                        // Compiler-internal generator-env record: positional names.
+                        field_names: Vec::new(),
                     });
                 let dest = self.alloc_local(env_resolved_ty.clone());
                 self.instructions.push(Instr::RecordInit {
@@ -22403,6 +22685,11 @@ impl Builder {
             call_conv: crate::model::FunctionCallConv::Default,
             params: gen_body_params,
             locals: body_locals_with_state.clone(),
+            // Synthesised generator body: no faithful user bindings, no DIEs.
+            local_names: Vec::new(),
+            local_scopes: Vec::new(),
+            local_decl_bytes: Vec::new(),
+            scope_table: Vec::new(),
             blocks: blocks.clone(),
             decisions: body_builder.decisions.clone(),
             intrinsic_id: None,
@@ -33404,14 +33691,17 @@ mod enum_layout_tests {
                 MachineVariantLayout {
                     name: "Red".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Green".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
                 MachineVariantLayout {
                     name: "Blue".to_string(),
                     field_tys: vec![],
+                    field_names: vec![],
                 },
             ],
             is_indirect: false,
@@ -33445,10 +33735,12 @@ mod enum_layout_tests {
                     MachineVariantLayout {
                         name: "Some".to_string(),
                         field_tys: vec![ResolvedTy::I64],
+                        field_names: vec![],
                     },
                     MachineVariantLayout {
                         name: "None".to_string(),
                         field_tys: vec![],
+                        field_names: vec![],
                     },
                 ],
                 is_indirect: false,
@@ -33474,10 +33766,12 @@ mod enum_layout_tests {
                     MachineVariantLayout {
                         name: "Empty".to_string(),
                         field_tys: vec![],
+                        field_names: vec![],
                     },
                     MachineVariantLayout {
                         name: "Full".to_string(),
                         field_tys: vec![],
+                        field_names: vec![],
                     },
                 ],
                 is_indirect: false,

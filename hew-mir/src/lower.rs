@@ -5425,6 +5425,24 @@ struct ScopeInfoEntry {
     max_end: u32,
 }
 
+/// A stable, fungible supervisor-child reference: `(supervisor, slot)`.
+///
+/// Stands in for a specific child INSTANCE the way OTP's `{via, Sup, Name}`
+/// does — it identifies the slot/role, and the current occupant is re-resolved
+/// at each use. Carries no actor pointer, so it is yield-safe to hold: after a
+/// restart the next send re-resolves to the fresh child, and there is never a
+/// dangling child pointer to dereference.
+#[derive(Debug, Clone, Copy)]
+struct FungibleChildRef {
+    /// The supervisor handle place (`Place::ActorHandle(M)` for the
+    /// `LocalPid<Supervisor>`). Supervisors are not restarted under the caller,
+    /// so this place stays valid for the binding's lifetime — re-loadable at
+    /// each send site.
+    sup_place: Place,
+    /// The static child slot index within `HewSupervisor.children[]`.
+    slot_index: u32,
+}
+
 #[derive(Debug, Default)]
 struct Builder {
     /// Checker-authority stream for the *current* basic block. Drained
@@ -5493,6 +5511,27 @@ struct Builder {
     /// initialiser. Cluster 1 reads the slot directly; later clusters add
     /// drop-cleanup and rebinding semantics.
     binding_locals: HashMap<BindingId, Place>,
+    /// F-04 fungible supervisor-child reference table. Maps the handle local id
+    /// produced by `lower_supervisor_child_get` (`Place::ActorHandle(N)`) to the
+    /// stable `(supervisor, slot)` reference it stands for.
+    ///
+    /// A supervised child handle is FUNGIBLE: it names a ROLE (the slot), not a
+    /// specific actor instance. The supervisor frees and replaces the underlying
+    /// actor on restart, so a snapshotted `*mut HewActor` dangles across a yield.
+    /// Rather than snapshot the resolved pointer, the handle carries this
+    /// reference and EACH send/ask re-resolves the current live child via
+    /// `hew_supervisor_child_get(sup, slot)` (the existing slot-table resolver,
+    /// race-free under `children_lock`). The reference never owns a child
+    /// pointer, so the stale-handle-across-yield UAF dissolves by construction
+    /// and a send to a not-live child fail-closes as a recoverable error rather
+    /// than a program-killing trap.
+    ///
+    /// Keyed by the handle local id because `let a = sup.w` binds `a` directly to
+    /// the same `Place::ActorHandle(N)` (no copy — see the `Let` arm), so both
+    /// `sup.w.tick()` and `let a = sup.w; …; a.tick()` resolve their receiver to
+    /// the same local and find the same ref here. Function-scoped (fresh per
+    /// builder via `Default`), matching `binding_locals`.
+    fungible_child_refs: HashMap<u32, FungibleChildRef>,
     decisions: Vec<DecisionFact>,
     /// NEW-6b: maps the id of a basic block that ends in `Terminator::SuspendingAsk`
     /// to the constant deadline (nanoseconds) of an `await … | after d` combinator.
@@ -19247,11 +19286,18 @@ impl Builder {
         None
     }
 
-    /// Emit the MIR sequence for a static supervisor child-slot access.
+    /// Emit the MIR sequence for a static supervisor child-slot access (F-04
+    /// fungible reference).
     ///
     /// Called from the `HirExprKind::FieldAccess` intercept arm after the
     /// checker has confirmed the LHS is a supervisor with a static child at
-    /// `slot_index`. Produces the following CFG shape:
+    /// `slot_index`. The result is a FUNGIBLE child reference: it names the
+    /// `(supervisor, slot)` role, not a specific actor instance, and the current
+    /// occupant is RE-RESOLVED at each send/ask (see `emit_fungible_reresolve`).
+    /// The accessor itself no longer traps on a not-live slot — liveness is the
+    /// send's concern, surfaced there as a recoverable error.
+    ///
+    /// Produces:
     ///
     /// ```text
     /// entry_bb (current)
@@ -19260,29 +19306,30 @@ impl Builder {
     ///   CallRuntimeAbi { "hew_supervisor_child_get",
     ///                    args: [sup_place, idx_place],
     ///                    dest: result_place }
-    ///   RecordFieldLoad { record: result_place, field_offset: 0, dest: tag_place }   -- tag (i64)
-    ///   IntCmp { pred: Eq, lhs: tag_place, rhs: zero_place, dest: is_live_flag }
-    ///   Branch { cond: is_live_flag, then: success_bb, else: trap_bb }
-    ///
-    /// trap_bb
-    ///   Trap { kind: SupervisorChildUnavailable }
-    ///
-    /// success_bb  [cursor here after call]
     ///   RecordFieldLoad { record: result_place, field_offset: 1, dest: raw_handle }  -- i64 handle
     ///   Move { dest: handle_place (ActorHandle(N)), src: raw_handle }
     ///   [cursor stays here for subsequent lowering]
     /// ```
     ///
-    /// Returns `Some(handle_place)` on the success path. `handle_place` is
-    /// `Place::ActorHandle(N)` where N is the backing local index of a freshly
-    /// allocated `LocalPid<ChildActor>` local (typed as `result_ty` from the
-    /// checker — the checker is the authority on the child actor type).
+    /// The initial child-get seeds the alloca so an immediate same-expression use
+    /// (`sup.w.tick()`) and the eventual binding (`let a = sup.w`) both have a
+    /// well-formed handle. The crucial change vs. the snapshot model is that the
+    /// handle local is recorded in `fungible_child_refs`, so a later send through
+    /// it re-resolves rather than reusing this seed pointer. On a not-live slot at
+    /// the accessor the handle is seeded with the (null) wire value; the send
+    /// re-resolve is what decides liveness, so the seed value is never trusted as
+    /// the send target.
+    ///
+    /// Returns `Some(handle_place)`. `handle_place` is `Place::ActorHandle(N)`
+    /// where N is the backing local index of a freshly allocated
+    /// `LocalPid<ChildActor>` local (typed as `result_ty` from the checker — the
+    /// checker is the authority on the child actor type).
     ///
     /// S3 codegen interprets `CallRuntimeAbi` with a `__HewChildLookupResult`-typed
     /// dest as a struct-return call, emitting `{ i64, ptr }` in LLVM IR and storing
-    /// the struct into the alloca slot. `RecordFieldLoad` at index 0 extracts `tag`
-    /// and at index 1 extracts the handle pointer (reinterpreted as i64 at the MIR
-    /// layer; S3 emits `ptrtoint` when writing to the handle alloca).
+    /// the struct into the alloca slot. `RecordFieldLoad` at index 1 extracts the
+    /// handle pointer (reinterpreted as i64 at the MIR layer; S3 emits `ptrtoint`
+    /// when writing to the handle alloca).
     fn lower_supervisor_child_get(
         &mut self,
         object: &HirExpr,
@@ -19293,6 +19340,43 @@ impl Builder {
         // Lower the supervisor object expression to get the supervisor PID place.
         let sup_place = self.lower_value(object)?;
 
+        // Allocate the final ActorHandle place typed as `result_ty`
+        // (the checker-authority `LocalPid<ChildActor>` type for this site).
+        let handle_local = self.alloc_local(result_ty.clone());
+        let Place::Local(handle_id) = handle_local else {
+            unreachable!("alloc_local always returns Place::Local");
+        };
+        let handle_place = Place::ActorHandle(handle_id);
+
+        // Record the fungible reference BEFORE seeding so a re-resolve at any
+        // send through `handle_place` knows the `(sup, slot)` to re-fetch.
+        self.fungible_child_refs.insert(
+            handle_id,
+            FungibleChildRef {
+                sup_place,
+                slot_index,
+            },
+        );
+
+        // Seed the alloca with one resolve (no trap, no liveness branch — the
+        // send re-resolves and is the sole liveness authority).
+        self.emit_child_get_into(sup_place, slot_index, handle_place);
+
+        // The `instr_places` function in lower.rs surfaces `handle_place` to the
+        // dataflow seed pass, maintaining the same bookkeeping invariant as
+        // `lower_spawn_actor`.
+
+        Some(handle_place)
+    }
+
+    /// Emit a `hew_supervisor_child_get(sup, slot)` call and store the resolved
+    /// `*mut HewActor` (field 1) into `handle_place`, with NO liveness branch.
+    ///
+    /// On a not-live slot the runtime returns a null handle (field 1 == null);
+    /// the caller (the accessor seed, or `emit_fungible_reresolve`) is responsible
+    /// for whatever liveness handling is required. This is the shared "resolve the
+    /// current child pointer into the handle slot" primitive.
+    fn emit_child_get_into(&mut self, sup_place: Place, slot_index: u32, handle_place: Place) {
         // Emit a constant for the static slot index.
         let idx_place = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::ConstI64 {
@@ -19319,47 +19403,8 @@ impl Builder {
             .expect("hew_supervisor_child_get is an allowlisted runtime symbol"),
         ));
 
-        // Extract tag (field 0, type i64 — zero-extended from the u8 wire byte).
-        let tag_place = self.alloc_local(ResolvedTy::I64);
-        self.push_instr(Instr::RecordFieldLoad {
-            record: result_place,
-            field_offset: FieldOffset(0),
-            dest: tag_place,
-        });
-
-        // Emit `zero_place = 0i64` for the comparison.
-        let zero_place = self.alloc_local(ResolvedTy::I64);
-        self.push_instr(Instr::ConstI64 {
-            dest: zero_place,
-            value: 0,
-        });
-
-        // Branch: tag == 0 (Live) → success_bb; tag != 0 → trap_bb.
-        let is_live_flag = self.alloc_local(ResolvedTy::Bool);
-        self.push_instr(Instr::IntCmp {
-            pred: CmpPred::Eq,
-            lhs: tag_place,
-            rhs: zero_place,
-            dest: is_live_flag,
-        });
-
-        let trap_bb = self.alloc_block();
-        let success_bb = self.alloc_block();
-        self.finish_current_block(Terminator::Branch {
-            cond: is_live_flag,
-            then_target: success_bb,
-            else_target: trap_bb,
-        });
-
-        // Trap block: child is Transient (1) or Dead (2) at observation time.
-        self.start_block(trap_bb);
-        self.finish_current_block(Terminator::Trap {
-            kind: TrapKind::SupervisorChildUnavailable,
-        });
-
-        // Success block: extract the handle pointer (field 1, i64 at MIR level).
+        // Extract the handle pointer (field 1, i64 at MIR level).
         // S3 emits a `ptrtoint`/`inttoptr` as needed for the wire representation.
-        self.start_block(success_bb);
         let raw_handle = self.alloc_local(ResolvedTy::I64);
         self.push_instr(Instr::RecordFieldLoad {
             record: result_place,
@@ -19367,26 +19412,12 @@ impl Builder {
             dest: raw_handle,
         });
 
-        // Allocate the final ActorHandle place typed as `result_ty`
-        // (the checker-authority `LocalPid<ChildActor>` type for this site).
-        let handle_local = self.alloc_local(result_ty.clone());
-        let Place::Local(handle_id) = handle_local else {
-            unreachable!("alloc_local always returns Place::Local");
-        };
-        let handle_place = Place::ActorHandle(handle_id);
-
         // Move the i64 wire value into the typed ActorHandle slot.
         // S3 emits the appropriate cast; at MIR level they are the same storage.
         self.push_instr(Instr::Move {
             dest: handle_place,
             src: raw_handle,
         });
-
-        // The `instr_places` function in lower.rs surfaces `handle_place` to the
-        // dataflow seed pass, maintaining the same bookkeeping invariant as
-        // `lower_spawn_actor`.
-
-        Some(handle_place)
     }
 
     /// Emit `Instr::CallRuntimeAbi` for a `.send` on an actor/duplex handle.
@@ -19760,6 +19791,111 @@ impl Builder {
         })
     }
 
+    /// Returns the `(sup, slot)` fungible reference for `place` if it is a
+    /// supervisor-child handle, else `None`.
+    fn fungible_child_ref_of(&self, place: Place) -> Option<FungibleChildRef> {
+        match place {
+            Place::ActorHandle(id) => self.fungible_child_refs.get(&id).copied(),
+            _ => None,
+        }
+    }
+
+    /// F-04: re-resolve a fungible child reference into its handle alloca at the
+    /// send site, branching on the current liveness of the slot.
+    ///
+    /// Emits `hew_supervisor_child_get(sup, slot)`, stores the fresh `*mut
+    /// HewActor` into `handle_place`, and branches:
+    /// - Live (`tag == 0`)  → continues in the returned `live_bb` (cursor parked
+    ///   there) with `handle_place` holding the CURRENT live child pointer.
+    /// - not-Live (`tag != 0`) → branches to `recover_bb` (the caller wires the
+    ///   recoverable fail-closed path there — e.g. skip the tell, or build an
+    ///   `Err` for an ask).
+    ///
+    /// Because the pointer is fetched fresh under the slot lock at the instant of
+    /// the send and used immediately in the same turn, the "valid only within the
+    /// current scheduler turn" borrow contract is honoured structurally rather
+    /// than by user discipline — the stale-handle UAF cannot arise.
+    ///
+    /// Returns `(live_bb, recover_bb)`. The current block is finished with the
+    /// liveness branch; NEITHER block is started — the caller fills `recover_bb`
+    /// first, then `start_block(live_bb)` to continue with the send (this mirrors
+    /// the trap-block-then-success-block ordering the old accessor used, keeping
+    /// the `start_block` empty-buffer invariant satisfied).
+    fn emit_fungible_reresolve(
+        &mut self,
+        child_ref: FungibleChildRef,
+        handle_place: Place,
+    ) -> (u32, u32) {
+        let FungibleChildRef {
+            sup_place,
+            slot_index,
+        } = child_ref;
+
+        // Re-fetch into the same opaque struct so we can read BOTH the tag and
+        // the handle. We reuse the result place for both extracts.
+        let idx_place = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: idx_place,
+            value: i64::from(slot_index),
+        });
+        let result_place = self.alloc_local(ResolvedTy::Named {
+            name: CHILD_LOOKUP_RESULT_TY_NAME.to_string(),
+            args: vec![],
+            builtin: None,
+            is_opaque: false,
+        });
+        self.push_instr(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                "hew_supervisor_child_get",
+                vec![sup_place, idx_place],
+                Some(result_place),
+            )
+            .expect("hew_supervisor_child_get is an allowlisted runtime symbol"),
+        ));
+
+        // Store the fresh handle pointer (field 1) into the handle alloca so the
+        // Send terminator delivers to the CURRENT child.
+        let raw_handle = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::RecordFieldLoad {
+            record: result_place,
+            field_offset: FieldOffset(1),
+            dest: raw_handle,
+        });
+        self.push_instr(Instr::Move {
+            dest: handle_place,
+            src: raw_handle,
+        });
+
+        // Extract the tag (field 0) and branch on liveness.
+        let tag_place = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::RecordFieldLoad {
+            record: result_place,
+            field_offset: FieldOffset(0),
+            dest: tag_place,
+        });
+        let zero_place = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: zero_place,
+            value: 0,
+        });
+        let is_live_flag = self.alloc_local(ResolvedTy::Bool);
+        self.push_instr(Instr::IntCmp {
+            pred: CmpPred::Eq,
+            lhs: tag_place,
+            rhs: zero_place,
+            dest: is_live_flag,
+        });
+
+        let live_bb = self.alloc_block();
+        let recover_bb = self.alloc_block();
+        self.finish_current_block(Terminator::Branch {
+            cond: is_live_flag,
+            then_target: live_bb,
+            else_target: recover_bb,
+        });
+        (live_bb, recover_bb)
+    }
+
     fn lower_actor_send(
         &mut self,
         receiver: &HirExpr,
@@ -19797,6 +19933,23 @@ impl Builder {
         let actor = self.lower_value(receiver)?;
         let value = self.lower_actor_payload(args, site)?;
         let next = self.alloc_block();
+        // F-04: a fire-and-forget send through a FUNGIBLE supervisor-child
+        // reference re-resolves the current live child at the send site. On a
+        // not-live slot (mid-restart or permanently down) the send fail-closes as
+        // a recoverable no-op (the message is dropped, NOT a program-killing
+        // trap) — the tell's contract is best-effort delivery, so dropping into a
+        // restart window is the correct recoverable behaviour. The `recover_bb`
+        // joins straight to `next` so control flow continues normally; `live_bb`
+        // becomes the current cursor where the Send terminator is emitted with the
+        // freshly-resolved child pointer.
+        if let Some(child_ref) = self.fungible_child_ref_of(actor) {
+            let (live_bb, recover_bb) = self.emit_fungible_reresolve(child_ref, actor);
+            // recover_bb: not-live → drop the tell and continue.
+            self.start_block(recover_bb);
+            self.finish_current_block(Terminator::Goto { target: next });
+            // live_bb: the freshly-resolved current child; the Send below targets it.
+            self.start_block(live_bb);
+        }
         // Determine alias mode: look up the first argument's span in the
         // checker's `actor_send_aliasing` map.  Only an explicit `Alias`
         // classification promotes the mode; every `Copy(reason)` variant and
@@ -19936,6 +20089,21 @@ impl Builder {
                         return None;
                     }
                     let actor_place = self.lower_value(actor)?;
+                    // F-04: a select arm asking a FUNGIBLE supervisor-child
+                    // reference re-resolves the current child into the handle
+                    // alloca before the select dispatch. Like the single-shot
+                    // ask, no liveness branch is needed here: a not-live slot
+                    // resolves to a null handle, and the runtime ask path
+                    // fail-closes a null/stale actor to an ask error
+                    // (`actor_send_result_internal_reply` null-guard) rather than
+                    // a UAF or trap.
+                    if let Some(child_ref) = self.fungible_child_ref_of(actor_place) {
+                        self.emit_child_get_into(
+                            child_ref.sup_place,
+                            child_ref.slot_index,
+                            actor_place,
+                        );
+                    }
                     let arg_places: Option<Vec<Place>> =
                         args.iter().map(|a| self.lower_value(a)).collect();
                     let arg_places = arg_places?;
@@ -20294,6 +20462,19 @@ impl Builder {
             return None;
         }
         let actor = self.lower_value(receiver)?;
+        // F-04: an ask through a FUNGIBLE supervisor-child reference re-resolves
+        // the current child at the ask site. Unlike the tell path, the ask needs
+        // NO liveness branch: a not-live slot resolves to a null handle, and the
+        // existing ask err path fail-closes a null/stale actor to
+        // `Err(AskError::ActorStopped)` (`actor_send_result_internal_reply`
+        // null-guards at actor.rs:4078 → `ErrActorStopped` →
+        // `hew_actor_ask_take_last_error` → `Err`). So storing the freshly
+        // resolved pointer (null when not-live) into the handle alloca is
+        // sufficient: a live child is asked, a not-live one yields a recoverable
+        // `Err` rather than a UAF or trap.
+        if let Some(child_ref) = self.fungible_child_ref_of(actor) {
+            self.emit_child_get_into(child_ref.sup_place, child_ref.slot_index, actor);
+        }
         let value = self.lower_actor_payload(args, site)?;
         // `result_dest` holds `Result<R, AskError>` — the R-ASK unified return type.
         // Its type comes from the HIR expression's checker-assigned type, which is

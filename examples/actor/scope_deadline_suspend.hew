@@ -16,7 +16,7 @@
 actor Worker {
     var fired: i64 = 0;
 
-    // The scoped child sleeps 100ms; the deadline is 20ms, so the deadline wins
+    // The scoped child sleeps 500ms; the deadline is 20ms, so the deadline wins
     // and the recovery body runs (fired = 7).
     receive fn timeout_wins() -> i64 {
         scope {
@@ -46,7 +46,7 @@ actor Worker {
 }
 
 fn nap_long() {
-    sleep_ms(100);
+    sleep_ms(500);
 }
 
 fn nap_short() {
@@ -55,7 +55,7 @@ fn nap_short() {
 
 fn main() {
     let w = spawn Worker(fired: 0);
-    // Deadline (20ms) beats the 100ms child: the recovery body runs.
+    // Deadline (20ms) beats the 500ms child: the recovery body runs.
     let t = await w.timeout_wins();
     match t {
         Ok(v) => println(f"timeout={v}"),

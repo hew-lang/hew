@@ -535,6 +535,20 @@ impl<'a> ProfileChecker<'a> {
             | Expr::PostfixTry(operand) => {
                 self.check_expr(operand);
             }
+            Expr::Return(operand) => {
+                // `return` in expression position is not yet lowered by the
+                // sandbox-wasm emitter (it emits `unsupported`). Reject it here
+                // so the gap fails closed before emission. Still walk the
+                // operand for completeness.
+                self.reject(
+                    span.clone(),
+                    "reserved_runtime_feature",
+                    "`return` in expression position is reserved for a later sandbox VM milestone",
+                );
+                if let Some(operand) = operand {
+                    self.check_expr(operand);
+                }
+            }
             Expr::Clone(operand) => {
                 // `clone expr` produces an independent deep copy. The emitter
                 // lowers this by evaluating the operand then forcing a deep clone

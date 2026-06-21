@@ -244,7 +244,7 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         Expr::Cast { expr, .. } => {
             collect_calls_in_expr(expr.as_ref(), calls);
         }
-        Expr::Yield(Some(y)) => {
+        Expr::Yield(Some(y)) | Expr::Return(Some(y)) => {
             collect_calls_in_expr(y.as_ref(), calls);
         }
         Expr::If {
@@ -352,7 +352,8 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
-        | Expr::Yield(None) => {}
+        | Expr::Yield(None)
+        | Expr::Return(None) => {}
     }
 }
 

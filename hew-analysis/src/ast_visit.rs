@@ -670,7 +670,8 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             | Expr::Clone(operand)
             | Expr::Await(operand)
             | Expr::PostfixTry(operand)
-            | Expr::Yield(Some(operand)) => {
+            | Expr::Yield(Some(operand))
+            | Expr::Return(Some(operand)) => {
                 self.walk_expr(&operand.0, &operand.1, body);
             }
             Expr::Tuple(elements) | Expr::Array(elements) | Expr::Join(elements) => {
@@ -821,6 +822,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             Expr::Literal(_)
             | Expr::This
             | Expr::Yield(None)
+            | Expr::Return(None)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}

@@ -486,7 +486,8 @@ fn collect_inlay_hints_from_expr(
         Expr::Cast { expr: inner, .. }
         | Expr::PostfixTry(inner)
         | Expr::Await(inner)
-        | Expr::Yield(Some(inner)) => {
+        | Expr::Yield(Some(inner))
+        | Expr::Return(Some(inner)) => {
             collect_inlay_hints_from_expr(source, &inner.0, tc, hints);
         }
         Expr::Range { start, end, .. } => {
@@ -514,7 +515,8 @@ fn collect_inlay_hints_from_expr(
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
-        | Expr::Yield(None) => {}
+        | Expr::Yield(None)
+        | Expr::Return(None) => {}
         Expr::GenBlock { body } => {
             collect_inlay_hints_from_block(source, body, tc, hints);
         }

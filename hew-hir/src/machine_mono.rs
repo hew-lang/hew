@@ -1905,7 +1905,7 @@ fn walk_expr(
                 );
             }
         }
-        HirExprKind::Break { value, .. } => {
+        HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 walk_expr(
                     value,

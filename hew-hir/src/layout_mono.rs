@@ -625,7 +625,10 @@ fn walk_expr(
         }
         HirExprKind::Break {
             value: Some(value), ..
-        } => walk_expr(value, subst, residual_domain, disc),
+        }
+        | HirExprKind::Return { value: Some(value) } => {
+            walk_expr(value, subst, residual_domain, disc);
+        }
         HirExprKind::NumericMethod { receiver, arg, .. } => {
             walk_expr(receiver, subst, residual_domain, disc);
             walk_expr(arg, subst, residual_domain, disc);
@@ -699,6 +702,7 @@ fn walk_expr(
         | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Yield { value: None, .. }
         | HirExprKind::Break { value: None, .. }
+        | HirExprKind::Return { value: None }
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}

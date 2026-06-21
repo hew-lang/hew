@@ -510,7 +510,7 @@ fn walk_expr_for_suspend(expr: &HirExpr, found: &mut bool) {
             }
         }
         HirExprKind::Loop { body, .. } => walk_block_for_suspend(body, found),
-        HirExprKind::Break { value, .. } => {
+        HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 walk_expr_for_suspend(value, found);
             }

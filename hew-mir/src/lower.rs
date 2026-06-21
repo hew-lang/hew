@@ -4453,7 +4453,9 @@ fn collect_unknown_self_fields_in_expr(
         | HirExprKind::GenBlock { body: block, .. } => {
             collect_unknown_self_fields_in_block(block, state_fields, seen, unknown);
         }
-        HirExprKind::Yield { value, .. } | HirExprKind::Break { value, .. } => {
+        HirExprKind::Yield { value, .. }
+        | HirExprKind::Break { value, .. }
+        | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 collect_unknown_self_fields_in_expr(value, state_fields, seen, unknown);
             }
@@ -10770,6 +10772,41 @@ impl Builder {
                     target: frame.exit_target,
                 });
                 // Source following `break` lexically is dead; give it a home.
+                let dead = self.alloc_block();
+                self.start_dead_block(dead);
+                None
+            }
+            HirExprKind::Return { value } => {
+                // `return [expr]` in expression position. Reuse the EXACT
+                // seal-and-dead-block discipline as `HirStmtKind::Return`
+                // (LESSONS `one-construct-one-lowering-shell`): lower the
+                // operand, move it to ReturnSlot BEFORE running defers (so
+                // defers cannot corrupt the secured value), emit return-path
+                // defers, then seal with `Terminator::Return` and start a fresh
+                // dead cursor block for any lexically-following code. A `return`
+                // diverges, so this expression yields no value (`None`).
+                if let Some(expr_value) = value {
+                    let value_place = self.lower_value(expr_value);
+                    self.decide(expr_value);
+                    self.mark_returned_binding_moved(expr_value);
+                    self.statements.push(MirStatement::Return {
+                        site: Some(expr_value.site),
+                        ty: self.subst_ty(&expr_value.ty),
+                    });
+                    if let Some(src) = value_place {
+                        self.push_instr(Instr::Move {
+                            dest: Place::ReturnSlot,
+                            src,
+                        });
+                    }
+                } else {
+                    self.statements.push(MirStatement::Return {
+                        site: None,
+                        ty: ResolvedTy::Unit,
+                    });
+                }
+                self.emit_defers_for_return();
+                self.finish_current_block(Terminator::Return);
                 let dead = self.alloc_block();
                 self.start_dead_block(dead);
                 None

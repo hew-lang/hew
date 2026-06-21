@@ -1227,6 +1227,12 @@ fn dump_expr(out: &mut String, expr: &HirExpr, indent: usize) {
                 dump_expr(out, value, indent + 4);
             }
         }
+        HirExprKind::Return { value } => {
+            writeln!(out, "{pad}  return").expect("write to string");
+            if let Some(value) = value {
+                dump_expr(out, value, indent + 4);
+            }
+        }
         HirExprKind::Continue { label } => {
             writeln!(out, "{pad}  continue label={label:?}").expect("write to string");
         }

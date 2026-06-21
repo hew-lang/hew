@@ -3991,7 +3991,7 @@ fn collect_call_sites_in_expr(
                 collect_call_sites_in_block(eb, out, trait_out);
             }
         }
-        HirExprKind::Break { value, .. } => {
+        HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 collect_call_sites_in_expr(value, out, trait_out);
             }
@@ -6985,7 +6985,9 @@ impl LowerCtx {
                     }
                 }
             }
-            HirExprKind::Yield { value, .. } | HirExprKind::Break { value, .. } => {
+            HirExprKind::Yield { value, .. }
+            | HirExprKind::Break { value, .. }
+            | HirExprKind::Return { value } => {
                 if let Some(value) = value {
                     self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
                 }
@@ -12648,6 +12650,30 @@ impl LowerCtx {
                     ResolvedTy::Unit
                 };
                 (HirExprKind::Yield { value, yield_ty }, ResolvedTy::Unit)
+            }
+            Expr::Return(value) => {
+                // `return [expr]` in expression position. Lower the operand with
+                // `Consume` intent — exactly as the statement form
+                // (`Stmt::Return`) — since the value leaves the function. The
+                // construct is `Never`-typed (it diverges); MIR seals it with
+                // `Terminator::Return` via the same shell as `HirStmtKind::Return`
+                // (LESSONS `one-construct-one-lowering-shell`).
+                let value = value
+                    .as_deref()
+                    .map(|value| Box::new(self.lower_expr(value, IntentKind::Consume)));
+                // TI-5 escape check (defense-in-depth, mirrors the statement
+                // form): a `Task<T>` handle must not escape via `return`.
+                if let Some(expr) = &value {
+                    if matches!(expr.ty, ResolvedTy::Task(_)) {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::TaskCannotEscape,
+                            span.clone(),
+                            "a `Task<T>` handle cannot escape via `return`; \
+                             await it inside the `scope{}` body with `await name`",
+                        ));
+                    }
+                }
+                (HirExprKind::Return { value }, ResolvedTy::Never)
             }
             Expr::MethodCall {
                 receiver,
@@ -21837,7 +21863,9 @@ fn collect_captures_walk(
         | HirExprKind::GenBlock { body: block, .. } => {
             collect_captures_walk_block(block, param_ids, seen, captures, self_id);
         }
-        HirExprKind::Yield { value, .. } | HirExprKind::Break { value, .. } => {
+        HirExprKind::Yield { value, .. }
+        | HirExprKind::Break { value, .. }
+        | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 collect_captures_walk(value, param_ids, seen, captures, self_id);
             }
@@ -22143,7 +22171,9 @@ fn collect_general_closure_captures_walk(
         | HirExprKind::GenBlock { body: block, .. } => {
             collect_general_closure_captures_walk_block(block, outer_bindings, seen, captures);
         }
-        HirExprKind::Yield { value, .. } | HirExprKind::Break { value, .. } => {
+        HirExprKind::Yield { value, .. }
+        | HirExprKind::Break { value, .. }
+        | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
             }
@@ -23010,7 +23040,7 @@ fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: 
                 }
             }
         }
-        HirExprKind::Break { value, .. } => {
+        HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 collect_hir_emitted_events_walk(value, event_names, out);
             }
@@ -26001,7 +26031,7 @@ fn scan_expr_for_call_shape(
                 scan_block_for_call_shape(eb, callable, diagnostics);
             }
         }
-        HirExprKind::Break { value, .. } => {
+        HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 scan_expr_for_call_shape(value, callable, diagnostics);
             }

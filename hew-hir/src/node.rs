@@ -2057,6 +2057,17 @@ pub enum HirExprKind {
         label: Option<String>,
         value: Option<Box<HirExpr>>,
     },
+    /// `return [expr]` in expression position — a divergent (`Never`-typed)
+    /// early exit from the enclosing function. Sibling of `Break`: a Never-typed
+    /// leaf that MIR seals with `Terminator::Return` (running deferred cleanup
+    /// first), then starts a fresh dead cursor block for any following code.
+    ///
+    /// `value` carries the operand of `return <value>`; `None` is a value-less
+    /// `return` (unit return). The checker has already type-checked the operand
+    /// against the function's declared return type and synthesized `Never`.
+    Return {
+        value: Option<Box<HirExpr>>,
+    },
     /// `continue;` / `continue @label;` — skip to the next iteration of the
     /// innermost enclosing loop, or of the nearest enclosing loop carrying the
     /// requested label, transferring control to that loop's continue target (the

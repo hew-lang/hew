@@ -712,7 +712,7 @@ impl Verifier {
                     self.block(eb);
                 }
             }
-            HirExprKind::Break { value, .. } => {
+            HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
                 if let Some(value) = value {
                     self.expr(value);
                 }

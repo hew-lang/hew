@@ -80,7 +80,9 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         | HirExprKind::Scope { body: block }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => visit_block(block, out),
-        HirExprKind::Yield { value, .. } | HirExprKind::Break { value, .. } => {
+        HirExprKind::Yield { value, .. }
+        | HirExprKind::Break { value, .. }
+        | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 visit_expr(value, out);
             }

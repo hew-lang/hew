@@ -887,6 +887,9 @@ mod ast_surface {
             Expr::Timeout { .. } => Some("scope / structured-concurrency block"),
             Expr::UnsafeBlock(_) => Some("unsafe block"),
             Expr::Yield(_) => Some("scope / structured-concurrency block"),
+            // `return` in expression position is reserved_runtime_feature in
+            // the sandbox VM (see profile.rs); no parity corpus entry yet.
+            Expr::Return(_) => None,
             Expr::This => None, // `self` — only meaningful inside actor/impl context.
             Expr::FieldAccess { .. } => Some("record StructInit + field access"),
             Expr::Index { .. } => Some("array literal + index + len"),

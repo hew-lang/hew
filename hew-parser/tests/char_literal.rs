@@ -57,3 +57,40 @@ fn char_literal_single_quote_escape() {
     let expr = parse_expr(r"fn main() { let c = '\''; }");
     assert_eq!(expr, Expr::Literal(Literal::Char('\'')));
 }
+
+#[test]
+fn char_literal_unicode_escape_bmp() {
+    // \u{...} now decodes to the scalar — required so the formatter can write
+    // an invisible char as an escape rather than a raw codepoint.
+    let expr = parse_expr(r"fn main() { let c = '\u{202E}'; }");
+    assert_eq!(expr, Expr::Literal(Literal::Char('\u{202E}')));
+}
+
+#[test]
+fn char_literal_unicode_escape_supplementary() {
+    let expr = parse_expr(r"fn main() { let c = '\u{1F600}'; }");
+    assert_eq!(expr, Expr::Literal(Literal::Char('\u{1F600}')));
+}
+
+#[test]
+fn char_literal_unicode_escape_min_digits() {
+    let expr = parse_expr(r"fn main() { let c = '\u{9}'; }");
+    assert_eq!(expr, Expr::Literal(Literal::Char('\u{9}')));
+}
+
+#[test]
+fn char_literal_hex_byte_escape() {
+    let expr = parse_expr(r"fn main() { let c = '\x41'; }");
+    assert_eq!(expr, Expr::Literal(Literal::Char('A')));
+}
+
+#[test]
+fn char_literal_rejects_unterminated_unicode_escape() {
+    // The lexer regex requires a closing `}`; an unterminated escape must not
+    // silently parse — fail closed.
+    let result = hew_parser::parse(r"fn main() { let c = '\u{202E'; }");
+    assert!(
+        !result.errors.is_empty(),
+        "unterminated \\u{{ escape must be rejected"
+    );
+}

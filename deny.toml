@@ -26,6 +26,10 @@ allow = [
 
   # Unicode data files — unicode-ident, unicode-normalization, etc.
   "Unicode-3.0",
+  # Unicode License Agreement for Data Files and Software (2016 version) —
+  # same permissive Unicode-data family as Unicode-3.0.  Required by
+  # finl_unicode v1.4.0, which ships a read-only General_Category table.
+  "Unicode-DFS-2016",
 
   # Public domain / permissive data
   "CC0-1.0",             # notify crate (ships in hew-cli)

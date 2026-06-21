@@ -16,6 +16,7 @@ workspace = true
 hew-lexer = { path = "../hew-lexer" }
 serde.workspace = true
 serde_json.workspace = true
+finl_unicode.workspace = true
 
 [dev-dependencies]
 walkdir = "2"

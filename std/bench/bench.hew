@@ -111,7 +111,7 @@ impl SuiteMethods for Suite {
             if i > 0 {
                 json = json + ",";
             }
-            json = json + f"\{\"name\":\"{r.name}\",\"iterations\":{r.iterations},\"avg_ns\":{r.avg_ns},\"min_ns\":{r.min_ns},\"max_ns\":{r.max_ns},\"total_ns\":{r.total_ns}\\}";
+            json = json + f"\{\"name\":\"{r.name}\",\"iterations\":{r.iterations},\"avg_ns\":{r.avg_ns},\"min_ns\":{r.min_ns},\"max_ns\":{r.max_ns},\"total_ns\":{r.total_ns}\\\}";
         }
         json = json + "]}";
         println(json);

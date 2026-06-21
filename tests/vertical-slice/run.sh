@@ -767,6 +767,10 @@ run_accept_expect_stdout "return_in_match_arm"
 # binds the Ok payload into the enclosing scope (used after the statement) or
 # diverges through the else block.
 run_accept_expect_stdout "let_else_bind_or_bail"
+# let-else over a UNIT variant: `let E::A = e else { return … };` and the
+# built-in `let None = opt else { … };` idiom check the variant tag and bind
+# nothing (empty success prelude), matching or diverging through the else.
+run_accept_expect_stdout "let_else_unit_variant"
 # let-else over a nested-tuple payload: `let Ok((n, s)) = e else { return … };`
 # destructures the tuple and escapes BOTH leaf binders into the enclosing scope
 # (the success-path prelude mirrors `match`'s aggregate-payload destructure).

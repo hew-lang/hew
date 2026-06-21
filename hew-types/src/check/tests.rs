@@ -27340,6 +27340,69 @@ mod every_attribute {
     }
 
     #[test]
+    fn let_else_unit_variant_admitted_and_records_resolution() {
+        // `let E::A = e else { return … };` over a UNIT variant (no payload) is
+        // a valid refutable pattern. It must type-check cleanly: no
+        // RefutableLetPattern, no LetElseDoesNotDiverge, and — critically — the
+        // pattern resolution must be recorded so HIR lowering does not cascade
+        // into "pattern has no resolution" / verifier leakage.
+        let output = check_source(
+            "enum E { A; B(i64); }
+             fn make_e(g: bool) -> E { if g { E::A } else { E::B(3) } }
+             fn f(g: bool) -> Result<i64, string> { let E::A = make_e(g) else { return Err(\"x\") }; Ok(1) }",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "a unit-variant let-else with a diverging else must type-check cleanly; got: {:#?}",
+            output.errors
+        );
+        // A unit variant binds nothing — it must NOT introduce a phantom binding
+        // that warns "unused variable `E::A`".
+        let unused_binding_warns: Vec<_> = output
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("E::A"))
+            .collect();
+        assert!(
+            unused_binding_warns.is_empty(),
+            "a unit-variant pattern binds nothing and must not warn about `E::A`; got: {unused_binding_warns:#?}"
+        );
+    }
+
+    #[test]
+    fn let_else_builtin_none_unit_variant_admitted() {
+        // The common `let None = opt else { … };` idiom (built-in Option unit
+        // variant) rides the same refutable-unit-variant path and type-checks
+        // cleanly with a diverging else.
+        let output = check_source(
+            "fn f(r: Option<i64>) -> Result<i64, string> { let None = r else { return Err(\"some\") }; Ok(0) }",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "a built-in None unit-variant let-else must type-check cleanly; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn refutable_unit_variant_let_no_else_rejected() {
+        // A unit variant in a PLAIN `let` (no else) is refutable and must be
+        // rejected with RefutableLetPattern — the same gate as `let Some(x) =`.
+        let output = check_source("fn f(r: Option<i64>) -> i64 { let None = r; 0 }");
+        let refutable: Vec<_> = output
+            .errors
+            .iter()
+            .filter(|e| matches!(e.kind, TypeErrorKind::RefutableLetPattern { .. }))
+            .collect();
+        assert_eq!(
+            refutable.len(),
+            1,
+            "a unit-variant plain let must emit exactly one RefutableLetPattern; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
     fn let_irrefutable_struct_record_keyword_no_error() {
         // `record`-keyword product type is also irrefutable.
         let output = check_source(

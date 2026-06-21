@@ -1,0 +1,63 @@
+//! `let-else` over a UNIT variant (v0.6 error-prop ergonomics).
+//!
+//! `let E::A = make_e() else { return Err(...) };` checks the variant TAG and
+//! binds nothing — a unit variant carries no payload. On a match, control falls
+//! through to the rest of the enclosing block; on a mismatch the else block
+//! diverges. This is the no-payload sibling of `let Ok(n) = … else { … };`:
+//! the success prelude is empty, the MIR is a tag-test plus a diverge.
+//!
+//! The common `let None = opt else { … };` idiom rides the same path (built-in
+//! Option unit variant), exercised here alongside a user-enum unit variant.
+//!
+//! Observable contract: prints the fall-through value on the match path and the
+//! propagated error on the mismatch path, then exits 0.
+
+enum E {
+    A;
+    B(i64);
+}
+
+fn make_e(good: bool) -> E {
+    if good {
+        E::A
+    } else {
+        E::B(3)
+    }
+}
+
+fn parse(good: bool) -> Result<string, string> {
+    // User-enum unit variant: matches E::A (binds nothing) or diverges.
+    let E::A = make_e(good) else {
+        return Err("not-A")
+    };
+    Ok("unit")
+}
+
+fn require_none(r: Option<i64>) -> Result<string, string> {
+    // Built-in Option unit variant: matches None or diverges.
+    let None = r else {
+        return Err("had-some")
+    };
+    Ok("none")
+}
+
+fn show_parse(good: bool) -> string {
+    match parse(good) {
+        Ok(v) => f"ok: {v}",
+        Err(e) => f"err: {e}",
+    }
+}
+
+fn show_none(r: Option<i64>) -> string {
+    match require_none(r) {
+        Ok(v) => f"ok: {v}",
+        Err(e) => f"err: {e}",
+    }
+}
+
+fn main() {
+    println(show_parse(true));
+    println(show_parse(false));
+    println(show_none(None));
+    println(show_none(Some(9)));
+}

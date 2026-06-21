@@ -549,8 +549,25 @@ impl Checker {
                         more_specific_hole_vars,
                     );
                 }
-                // For simple identifier patterns, track the definition span
-                if let Pattern::Identifier(name) = &pattern.0 {
+                // A constructor-like identifier (`None`, `E::A`) is a refutable
+                // UNIT-VARIANT pattern, not a plain binding — route it to the
+                // refutability gate below so a let-else records its resolution
+                // and a plain `let` is rejected. Only lowercase/non-qualified
+                // identifiers introduce a binding here.
+                let identifier_is_unit_variant = matches!(
+                    &pattern.0,
+                    Pattern::Identifier(name)
+                        if name.contains("::")
+                            || name.chars().next().is_some_and(char::is_uppercase)
+                );
+                // For simple identifier patterns, track the definition span.
+                // A unit-variant identifier is NOT a binding — it falls through
+                // to the refutability gate below.
+                let plain_identifier = match &pattern.0 {
+                    Pattern::Identifier(name) if !identifier_is_unit_variant => Some(name),
+                    _ => None,
+                };
+                if let Some(name) = plain_identifier {
                     if val_ty == Ty::Unit && value.is_some() {
                         self.warnings.push(TypeError {
                             severity: crate::error::Severity::Warning,
@@ -636,12 +653,17 @@ impl Checker {
                         }
                         // Enum-variant constructor (e.g. `Some(x)`) — always refutable.
                         Pattern::Constructor { .. } => Some("enum variant"),
+                        // Unit variant written as a bare/qualified identifier
+                        // (e.g. `None`, `E::A`) — refutable; binds nothing.
+                        Pattern::Identifier(_) if identifier_is_unit_variant => {
+                            Some("enum variant")
+                        }
                         // Literal patterns are always refutable.
                         Pattern::Literal(_) => Some("literal"),
                         // Or-patterns are always refutable.
                         Pattern::Or(_, _) => Some("or-pattern"),
-                        // All other patterns (Tuple, Identifier, Wildcard, Regex, …)
-                        // — either already handled above or not relevant here.
+                        // All other patterns (Tuple, plain Identifier, Wildcard,
+                        // Regex, …) — handled above or not refutable here.
                         _ => None,
                     };
                     match (maybe_refutable_kind, else_block) {
@@ -716,12 +738,19 @@ impl Checker {
                         }
                         (None, None) => {}
                     }
-                    // Always call bind_pattern for error-recovery so the binders exist
-                    // and subsequent uses don't cascade into UnresolvedSymbol. The
-                    // binders are defined into the CURRENT (enclosing) scope, so a
-                    // let-else `let Ok(n) = … else { … };` makes `n` visible in the
-                    // rest of the enclosing block.
-                    self.bind_pattern(&pattern.0, &val_ty, false, &pattern.1);
+                    // Call bind_pattern for error-recovery so payload binders
+                    // exist and subsequent uses don't cascade into
+                    // UnresolvedSymbol. Binders are defined into the CURRENT
+                    // (enclosing) scope, so a let-else `let Ok(n) = … else { … };`
+                    // makes `n` visible in the rest of the enclosing block.
+                    //
+                    // A unit-variant identifier (`None`, `E::A`) binds nothing —
+                    // it is a refutable tag-test. Skip bind_pattern so it does
+                    // not introduce a phantom binding (which would otherwise warn
+                    // "unused variable `None`" and shadow the variant constructor).
+                    if !identifier_is_unit_variant {
+                        self.bind_pattern(&pattern.0, &val_ty, false, &pattern.1);
+                    }
                 }
             }
             Stmt::Var { name, ty, value } => {

@@ -65,7 +65,7 @@ fn Inbox__recv__run(i64) -> () [conv=actor_handler]
   bb3:
     stmt: eval site=SiteId(11) ty=()
     stmt: use BindingId(4) rx site=SiteId(16) ty=Receiver<string> intent=Read
-    suspend [channel_recv] elem_ty=string is_final=false -> resume=bb4 cleanup=bb4
+    _10 = suspend.channel_recv _7 elem_ty=string -> resume=bb4 cleanup=bb4
   bb4:
     _11 = move etag10
     _12 = const.i64 0

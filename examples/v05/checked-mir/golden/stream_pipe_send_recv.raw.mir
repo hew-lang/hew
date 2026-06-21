@@ -86,7 +86,7 @@ fn Echo__recv__run(i64) -> () [conv=actor_handler]
   bb9:
     _20 = call hew_string_to_bytes(_19) -> bb10
   bb10:
-    suspend [stream_send] is_final=false -> resume=bb11 cleanup=bb11
+    suspend.stream_send _5 _20 -> resume=bb11 cleanup=bb11
   bb11:
     stmt: eval site=SiteId(11) ty=()
     goto bb6
@@ -105,7 +105,7 @@ fn Echo__recv__run(i64) -> () [conv=actor_handler]
     branch _24 ? bb15 : bb16
   bb15:
     stmt: use BindingId(5) input site=SiteId(32) ty=Stream<bytes> intent=Read
-    suspend [stream_next] elem_ty=bytes is_final=false -> resume=bb17 cleanup=bb17
+    _25 = suspend.stream_next _7 elem_ty=bytes -> resume=bb17 cleanup=bb17
   bb16:
     stmt: eval site=SiteId(44) ty=()
     stmt: use BindingId(5) input site=SiteId(46) ty=Stream<bytes> intent=Consume

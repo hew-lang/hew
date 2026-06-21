@@ -16,7 +16,7 @@ fn SlowWorker__recv__compute(i64) -> i64 [conv=actor_handler]
   bb0:
     enter_context
     _1 = const.i64 50
-    suspend [sleep] is_final=false -> resume=bb1 cleanup=bb1
+    suspend.sleep _1 -> resume=bb1 cleanup=bb1
   bb1:
     stmt: eval site=SiteId(1) ty=()
     stmt: use BindingId(1) query site=SiteId(4) ty=i64 intent=Read

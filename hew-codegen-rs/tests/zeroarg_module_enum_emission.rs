@@ -210,13 +210,13 @@ fn construct_and_match_imported_ioerror_variant_round_trips() {
         r#"
         import std::fs;
         fn make_err() -> Result<i64, fs.IoError> {
-            Err(IoError::ConnectionRefused(111))
+            Err(IoError::NotFound(111))
         }
         fn main() {
             match make_err() {
                 Ok(v) => println(f"ok: {v}"),
                 Err(e) => match e {
-                    IoError::ConnectionRefused(code) => println(f"refused {code}"),
+                    IoError::NotFound(code) => println(f"not_found {code}"),
                     _ => println("other"),
                 },
             }
@@ -228,7 +228,7 @@ fn construct_and_match_imported_ioerror_variant_round_trips() {
         "constructing+matching imported `fs.IoError` must compile and run;\nstderr:\n{stderr}"
     );
     assert!(
-        stdout.contains("refused 111"),
+        stdout.contains("not_found 111"),
         "matched arm must bind the payload and run; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
@@ -238,7 +238,7 @@ fn construct_and_match_imported_ioerror_variant_round_trips() {
 }
 
 /// The same round-trip across the `std::net` surface that motivated the fix:
-/// `net.try_connect` returns `Result<_, fs.IoError>`; connecting to a closed
+/// `net.try_connect` returns `Result<_, net.NetError>`; connecting to a closed
 /// port on localhost yields `ConnectionRefused`, matched at the importer.
 #[test]
 fn net_try_connect_error_match_round_trips() {
@@ -252,7 +252,7 @@ fn net_try_connect_error_match_round_trips() {
             match net.try_connect("127.0.0.1:1") {
                 Ok(_) => println("connected"),
                 Err(e) => match e {
-                    IoError::ConnectionRefused(_) => println("refused"),
+                    NetError::ConnectionRefused(_) => println("refused"),
                     _ => println("other"),
                 },
             }
@@ -261,7 +261,7 @@ fn net_try_connect_error_match_round_trips() {
     );
     assert!(
         ok,
-        "`net.try_connect` + match on IoError must compile and run;\nstderr:\n{stderr}"
+        "`net.try_connect` + match on NetError must compile and run;\nstderr:\n{stderr}"
     );
     assert!(
         stdout.contains("refused") || stdout.contains("other"),

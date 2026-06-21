@@ -81,7 +81,7 @@ pub(crate) struct SuspendingReadEmit {
     pub(crate) cleanup: u32,
     /// NEW-6c `await conn.read() | after d` deadline (nanoseconds). `Some(ns)`
     /// schedules the common await-cancel arbiter against the read slot; timeout
-    /// binds `Err(IoError::TimedOut(0))`. `None` is a plain suspending read.
+    /// binds `Err(NetError::TimedOut(0))`. `None` is a plain suspending read.
     pub(crate) deadline_ns: Option<i64>,
 }
 
@@ -92,15 +92,15 @@ pub(crate) struct SuspendingAcceptEmit {
     pub(crate) result_dest: Place,
     /// When present, this accept is the source of `await ln.accept() | after d`.
     /// `result_dest` remains the raw `Connection` slot; codegen binds
-    /// `Ok(result_dest)` or `Err(IoError::TimedOut)` into this outer Result slot
+    /// `Ok(result_dest)` or `Err(NetError::TimedOut)` into this outer Result slot
     /// after resolving the await-cancel arbiter.
     pub(crate) deadline_result_dest: Option<Place>,
-    /// `IoError` payload slot for the deadline Err arm. Present exactly when
+    /// `NetError` payload slot for the deadline Err arm. Present exactly when
     /// `deadline_result_dest` is present.
     pub(crate) error_dest: Option<Place>,
     /// NEW-6d `await ln.accept() | after d` deadline (nanoseconds). `Some(ns)`
     /// schedules the common await-cancel arbiter against the read slot; timeout
-    /// binds `Err(IoError::TimedOut(0))`. `None` is a plain suspending accept.
+    /// binds `Err(NetError::TimedOut(0))`. `None` is a plain suspending accept.
     pub(crate) deadline_ns: Option<i64>,
     pub(crate) resume: u32,
     pub(crate) cleanup: u32,
@@ -320,7 +320,7 @@ pub(crate) fn emit_suspending_read_terminator<'ctx>(
         && (term.deadline_result_dest.is_none() || term.error_dest.is_none())
     {
         return Err(CodegenError::FailClosed(
-            "SuspendingRead deadline reached codegen without Result/IoError destinations".into(),
+            "SuspendingRead deadline reached codegen without Result/NetError destinations".into(),
         ));
     }
 
@@ -621,7 +621,7 @@ pub(crate) fn emit_suspending_read_terminator<'ctx>(
             CodegenError::FailClosed("SuspendingRead fail-closed missing Result dest".into())
         })?;
         let error_dest = term.error_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingRead fail-closed missing IoError dest".into())
+            CodegenError::FailClosed("SuspendingRead fail-closed missing NetError dest".into())
         })?;
         emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
         fn_ctx
@@ -707,7 +707,7 @@ pub(crate) fn emit_suspending_read_terminator<'ctx>(
 /// resumed us (enqueue_resume). The bytes are already deposited in `slot`;
 /// `hew_read_slot_take_raw` writes them into `result_dest` on the fast path.
 /// On a deadline carrier the deadline-vs-read arbiter runs first (timeout binds
-/// `Err(IoError::TimedOut)`). Release the creator ref and branch to the MIR
+/// `Err(NetError::TimedOut)`). Release the creator ref and branch to the MIR
 /// resume block. Split out so the suspend-point seam owns the suspend + abandon
 /// scaffolding while this owns the value routing.
 #[allow(
@@ -792,7 +792,7 @@ fn emit_suspending_read_bind<'ctx>(
             CodegenError::FailClosed("SuspendingRead timeout missing Result dest".into())
         })?;
         let error_dest = term.error_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingRead timeout missing IoError dest".into())
+            CodegenError::FailClosed("SuspendingRead timeout missing NetError dest".into())
         })?;
         emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
         fn_ctx
@@ -850,7 +850,7 @@ fn emit_suspending_read_bind<'ctx>(
                 .ok_or_else(|| {
                     CodegenError::FailClosed("hew_bytes_to_string returned void".into())
                 })?;
-            // result_dest is Result<string, IoError>; tag=0, Ok variant field 0 = ptr.
+            // result_dest is Result<string, NetError>; tag=0, Ok variant field 0 = ptr.
             // Write the string pointer directly into the Ok variant field — no
             // intermediate alloca needed since `string_val` is already a ptr value.
             let dest_local = composite_dest_local(result_dest, "SuspendingRead read_string ok")?;
@@ -967,7 +967,7 @@ pub(crate) fn emit_suspending_accept_terminator<'ctx>(
         && (term.deadline_result_dest.is_none() || term.error_dest.is_none())
     {
         return Err(CodegenError::FailClosed(
-            "SuspendingAccept deadline reached codegen without Result/IoError destinations".into(),
+            "SuspendingAccept deadline reached codegen without Result/NetError destinations".into(),
         ));
     }
 
@@ -1105,7 +1105,7 @@ pub(crate) fn emit_suspending_accept_terminator<'ctx>(
     )?;
 
     // ── register_err: the registration failed; no accept will ever arrive.
-    // Cancel + free the slot. On a deadline path, emit IoError::TimedOut into the
+    // Cancel + free the slot. On a deadline path, emit NetError::TimedOut into the
     // Result destination. On the plain path, bind an INVALID `Connection`. ──────
     fn_ctx.builder.position_at_end(register_err_bb);
     fn_ctx
@@ -1292,7 +1292,7 @@ pub(crate) fn emit_suspending_accept_terminator<'ctx>(
             CodegenError::FailClosed("SuspendingAccept fail-closed missing Result dest".into())
         })?;
         let error_dest = term.error_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingAccept fail-closed missing IoError dest".into())
+            CodegenError::FailClosed("SuspendingAccept fail-closed missing NetError dest".into())
         })?;
         emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
         fn_ctx
@@ -1474,7 +1474,7 @@ fn emit_suspending_accept_bind<'ctx>(
             CodegenError::FailClosed("SuspendingAccept timeout missing Result dest".into())
         })?;
         let error_dest = term.error_dest.ok_or_else(|| {
-            CodegenError::FailClosed("SuspendingAccept timeout missing IoError dest".into())
+            CodegenError::FailClosed("SuspendingAccept timeout missing NetError dest".into())
         })?;
         emit_read_deadline_timeout_err(fn_ctx, result_dest, error_dest)?;
         fn_ctx
@@ -1502,7 +1502,7 @@ fn emit_suspending_accept_bind<'ctx>(
         .llvm_ctx("suspending accept connection store")?;
     if let Some(result_dest) = term.deadline_result_dest {
         // `await ln.accept() | after d` success path: wrap the accepted Connection
-        // in `Ok(_)` into the Result<Connection, IoError> destination.
+        // in `Ok(_)` into the Result<Connection, NetError> destination.
         emit_result_ok(fn_ctx, result_dest, Some(term.result_dest))?;
     }
     fn_ctx

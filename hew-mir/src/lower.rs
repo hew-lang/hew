@@ -19816,7 +19816,7 @@ impl Builder {
                 deadline_ns.map(|_| self.alloc_local(self.subst_ty(&expr.ty)));
             let error_dest = deadline_ns.map(|_| {
                 self.alloc_local(ResolvedTy::Named {
-                    name: "IoError".to_string(),
+                    name: "NetError".to_string(),
                     args: Vec::new(),
                     builtin: None,
                     is_opaque: false,
@@ -20126,12 +20126,12 @@ impl Builder {
     ) -> Option<Place> {
         let listener_place = self.lower_value(listener)?;
 
-        // When a deadline is active, `expr.ty` is `Result<Connection, IoError>` (set
+        // When a deadline is active, `expr.ty` is `Result<Connection, NetError>` (set
         // by HIR). The raw `Connection` slot is the `result_dest`; codegen wraps it
-        // into `Ok(_)` or binds `Err(IoError::TimedOut)` into `deadline_result_dest`.
+        // into `Ok(_)` or binds `Err(NetError::TimedOut)` into `deadline_result_dest`.
         // Without a deadline, `expr.ty` is `Connection` directly.
         let conn_ty = if deadline_ns.is_some() {
-            // Extract the Ok arm type (Connection) from Result<Connection, IoError>.
+            // Extract the Ok arm type (Connection) from Result<Connection, NetError>.
             match &expr.ty {
                 hew_types::ResolvedTy::Named { args, .. } if !args.is_empty() => {
                     self.subst_ty(&args[0])
@@ -20151,7 +20151,7 @@ impl Builder {
                 deadline_ns.map(|_| self.alloc_local(self.subst_ty(&expr.ty)));
             let error_dest = deadline_ns.map(|_| {
                 self.alloc_local(hew_types::ResolvedTy::Named {
-                    name: "IoError".to_string(),
+                    name: "NetError".to_string(),
                     args: Vec::new(),
                     builtin: None,
                     is_opaque: false,

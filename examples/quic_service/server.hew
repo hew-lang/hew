@@ -15,16 +15,16 @@
 //
 // Optional:
 //   HEW_QUIC_SERVICE_PORT=4545 hew run examples/quic_service/server.hew
-import std::net::quic;
+import std::net;
 
-import std::fs;
+import std::net::quic;
 
 import std::os;
 
-fn assert_ok(result: Result<(), fs.IoError>) {
+fn assert_ok(result: Result<(), net.NetError>) {
     match result {
         Ok(_) => assert(true),
-        Err(e) => panic("quic operation failed: " + fs.io_error_message(e)),
+        Err(e) => panic("quic operation failed: " + net.net_error_message(e)),
     }
 }
 

@@ -33,7 +33,7 @@
 //! }
 //! ```
 
-import std::fs;
+import std::net;
 
 /// An open WebSocket connection handle.
 ///
@@ -58,7 +58,7 @@ trait ConnMethods {
     fn send_text(self, msg: string) -> i64;
 
     /// Send a text message over the connection.
-    fn try_send_text(self, msg: string) -> Result<(), fs.IoError>;
+    fn try_send_text(self, msg: string) -> Result<(), net.NetError>;
 
     /// Block until a message is received and return it.
     fn recv(self) -> Message;
@@ -66,10 +66,10 @@ trait ConnMethods {
     /// Receive a message with a per-call deadline.
     ///
     /// `deadline_ms <= 0` disables the deadline and behaves like `recv`.
-    /// Returns `Err(IoError::TimedOut(0))` on deadline expiry. On other
-    /// failures returns `Err(IoError::Other(0))` (WebSocket errors carry
+    /// Returns `Err(NetError::TimedOut(0))` on deadline expiry. On other
+    /// failures returns `Err(NetError::Other(0))` (WebSocket errors carry
     /// no OS errno channel).
-    fn recv_timeout(self, deadline_ms: i64) -> Result<Message, fs.IoError>;
+    fn recv_timeout(self, deadline_ms: i64) -> Result<Message, net.NetError>;
 
     /// Close the WebSocket connection.
     fn close(self);
@@ -92,12 +92,12 @@ impl ConnMethods for Conn {
             hew_ws_send_text(conn, msg) as i64
         }
     }
-    fn try_send_text(conn: Conn, msg: string) -> Result<(), fs.IoError> {
+    fn try_send_text(conn: Conn, msg: string) -> Result<(), net.NetError> {
         let n: i64 = unsafe {
             hew_ws_send_text(conn, msg) as i64
         };
         if n < 0 {
-            Err(fs.io_error_from_errno(0))
+            Err(net.net_error_from_errno(0))
         } else {
             Ok(())
         } // WebSocket errors carry no OS errno
@@ -107,7 +107,7 @@ impl ConnMethods for Conn {
             hew_ws_recv(conn)
         }
     }
-    fn recv_timeout(conn: Conn, deadline_ms: i64) -> Result<Message, fs.IoError> {
+    fn recv_timeout(conn: Conn, deadline_ms: i64) -> Result<Message, net.NetError> {
         let msg: Message = unsafe { // INTERNAL-ABI: deadline_ms cast to i32 for FFI
             hew_ws_recv_timeout(conn, deadline_ms as i32)
         };
@@ -120,9 +120,9 @@ impl ConnMethods for Conn {
         if valid {
             Ok(msg)
         } else if timed_out == 1 {
-            Err(fs.io_error_timed_out())
+            Err(net.net_error_timed_out())
         } else {
-            Err(fs.io_error_from_errno(0))
+            Err(net.net_error_from_errno(0))
         }
     }
     fn close(conn: Conn) {

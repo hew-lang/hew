@@ -7,6 +7,7 @@
 //! # Examples
 //!
 //! ```
+//! import std::net;
 //! import std::net::tls;
 //!
 //! fn main() {
@@ -14,17 +15,17 @@
 //!     let request = "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
 //!     match tls.try_write(stream, hew_string_to_bytes(request)) {
 //!         Ok(_) => {},
-//!         Err(err) => panic(fs.io_error_message(err)),
+//!         Err(err) => panic(net.net_error_message(err)),
 //!     }
 //!     let response = match tls.read(stream, 4096) {
 //!         Ok(data) => data,
-//!         Err(err) => panic(fs.io_error_message(err)),
+//!         Err(err) => panic(net.net_error_message(err)),
 //!     };
 //!     tls.close(stream);
 //! }
 //! ```
 
-import std::fs;
+import std::net;
 
 /// An established TLS connection to a remote host.
 ///
@@ -51,15 +52,15 @@ const TLS_STATUS_TLS_ERROR: i32 = 2;
 
 const TLS_STATUS_IO_ERROR: i32 = 3;
 
-fn tls_error_from_status(status: i32, _message: string) -> fs.IoError { // INTERNAL-ABI: TLS FFI bridge reports a small status enum plus thread-local last_error
+fn tls_error_from_status(status: i32, _message: string) -> net.NetError { // INTERNAL-ABI: TLS FFI bridge reports a small status enum plus thread-local last_error
     if status == TLS_STATUS_RETRYABLE {
-        IoError::TimedOut(0)
+        NetError::TimedOut(0)
     } else {
-        IoError::Other(0)
+        NetError::Other(0)
     }
 }
 
-fn tls_write_result(raw: TlsWriteFfiResult) -> Result<i64, fs.IoError> { // INTERNAL-ABI: bridge helper lifts raw FFI status into Result while leaving detail in last_error()
+fn tls_write_result(raw: TlsWriteFfiResult) -> Result<i64, net.NetError> { // INTERNAL-ABI: bridge helper lifts raw FFI status into Result while leaving detail in last_error()
     if raw.status == TLS_STATUS_SUCCESS {
         Ok(raw.written as i64)
     } else {
@@ -67,7 +68,7 @@ fn tls_write_result(raw: TlsWriteFfiResult) -> Result<i64, fs.IoError> { // INTE
     }
 }
 
-fn tls_read_result(raw: TlsReadFfiResult) -> Result<bytes, fs.IoError> { // INTERNAL-ABI: bridge helper lifts raw FFI status into Result while leaving detail in last_error()
+fn tls_read_result(raw: TlsReadFfiResult) -> Result<bytes, net.NetError> { // INTERNAL-ABI: bridge helper lifts raw FFI status into Result while leaving detail in last_error()
     if raw.status == TLS_STATUS_SUCCESS {
         Ok(raw.data)
     } else {
@@ -85,14 +86,14 @@ trait TlsStreamMethods {
 
     /// Write raw bytes to the TLS stream.
     ///
-    /// Returns the number of bytes written, or `Err(fs.IoError)` on failure.
-    fn try_write(self, data: bytes) -> Result<i64, fs.IoError>;
+    /// Returns the number of bytes written, or `Err(net.NetError)` on failure.
+    fn try_write(self, data: bytes) -> Result<i64, net.NetError>;
 
     /// Read up to `size` bytes from the TLS stream.
     ///
-    /// Returns `Ok(bytes)` on success or orderly EOF, or `Err(fs.IoError)` on
+    /// Returns `Ok(bytes)` on success or orderly EOF, or `Err(net.NetError)` on
     /// retryable/TLS/I-O failures. Use `last_error()` for the precise class.
-    fn read(self, size: i64) -> Result<bytes, fs.IoError>;
+    fn read(self, size: i64) -> Result<bytes, net.NetError>;
 
     /// Close the TLS connection and release resources.
     fn close(self);
@@ -109,12 +110,12 @@ impl TlsStreamMethods for TlsStream {
             -1
         }
     }
-    fn try_write(stream: TlsStream, data: bytes) -> Result<i64, fs.IoError> {
+    fn try_write(stream: TlsStream, data: bytes) -> Result<i64, net.NetError> {
         tls_write_result(unsafe {
             hew_tls_write_result(stream, data)
         })
     }
-    fn read(stream: TlsStream, size: i64) -> Result<bytes, fs.IoError> {
+    fn read(stream: TlsStream, size: i64) -> Result<bytes, net.NetError> {
         tls_read_result(unsafe {
             hew_tls_read_result(stream, size as i32)
         })
@@ -161,16 +162,16 @@ pub fn write(stream: TlsStream, data: bytes) -> i64 {
 
 /// Write raw bytes to a TLS stream.
 ///
-/// Returns the number of bytes written, or `Err(fs.IoError)` on failure.
-pub fn try_write(stream: TlsStream, data: bytes) -> Result<i64, fs.IoError> {
+/// Returns the number of bytes written, or `Err(net.NetError)` on failure.
+pub fn try_write(stream: TlsStream, data: bytes) -> Result<i64, net.NetError> {
     stream.try_write(data)
 }
 
 /// Read up to `size` bytes from a TLS stream.
 ///
-/// Returns `Ok(bytes)` on success or orderly EOF, or `Err(fs.IoError)` on
+/// Returns `Ok(bytes)` on success or orderly EOF, or `Err(net.NetError)` on
 /// retryable/TLS/I-O failures. Call `last_error()` for the precise detail.
-pub fn read(stream: TlsStream, size: i64) -> Result<bytes, fs.IoError> {
+pub fn read(stream: TlsStream, size: i64) -> Result<bytes, net.NetError> {
     stream.read(size)
 }
 

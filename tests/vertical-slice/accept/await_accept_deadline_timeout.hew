@@ -1,14 +1,14 @@
 // Accept fixture (NEW-6d): `await ln.accept() | after d` — deadline elapses
 // before any client connects, so the suspending accept resolves to
-// `Err(IoError::TimedOut(_))`.
+// `Err(NetError::TimedOut(_))`.
 //
 // Run under HEW_WORKERS=1: Server creates a fresh listener on port 0 and
 // parks worker-free on the accept slot. No client connects. The deadline
-// timer fires and resumes the actor with Err(IoError::TimedOut) -> exit 7.
+// timer fires and resumes the actor with Err(NetError::TimedOut) -> exit 7.
 // A blocking accept would strand the lone worker and hang.
 //
 // Exit-code contract: timeout Err(TimedOut) -> 7; unexpected Ok -> 42;
-// wrong IoError variant -> 8; no actor exit -> main fallback 99.
+// wrong NetError variant -> 8; no actor exit -> main fallback 99.
 import std::net;
 
 actor Server {
@@ -18,7 +18,7 @@ actor Server {
             Ok(_conn) => 42,
             Err(e) => {
                 match e {
-                    IoError::TimedOut(_code) => 7,
+                    NetError::TimedOut(_code) => 7,
                     _ => 8,
                 }
             },

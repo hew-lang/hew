@@ -1,6 +1,6 @@
 // Accept fixture (NEW-6d): `await ln.accept() | after d` — the simplest
 // deadline-accept form. An actor creates a listener, parks on accept with a
-// short deadline, and receives Err(IoError::TimedOut) because no client
+// short deadline, and receives Err(NetError::TimedOut) because no client
 // connects. This was the original reject-deferred placeholder; it now
 // compiles and runs cleanly under v0.5.
 //

@@ -6,7 +6,7 @@
 // Expected diagnostic substring: "non-suspendable context"
 import std::net::{Connection};
 
-fn helper(conn: Connection) -> Result<bytes, fs.IoError> {
+fn helper(conn: Connection) -> Result<bytes, net.NetError> {
     await conn.read() | after 50ms
 }
 

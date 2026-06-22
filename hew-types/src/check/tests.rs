@@ -18818,7 +18818,7 @@ mod wasm_rejects {
         );
     }
 
-    // ── TLS / QUIC / DNS / OS reject + CryptoRandom warn ───────────────────
+    // ── TLS / QUIC / DNS / OS / CryptoRandom reject ────────────────────────
 
     fn check_wasm_with_registry(source: &str) -> TypeCheckOutput {
         let result = hew_parser::parse(source);
@@ -18906,28 +18906,28 @@ mod wasm_rejects {
     }
 
     #[test]
-    fn wasm_warns_crypto_random_bytes() {
-        // crypto.random_bytes is a WARNING, not an error, because the wasm32
-        // implementation falls back to a seeded non-cryptographic PRNG.
+    fn wasm_rejects_crypto_random_bytes() {
+        // crypto.random_bytes requires secure entropy. On wasm32, no secure
+        // implementation is linked, so the checker must fail closed.
         let source = concat!(
             "import std::crypto::crypto;\n",
             "fn main() { crypto.random_bytes(16); }\n",
         );
         let output = check_wasm_with_registry(source);
         assert!(
-            has_platform_limitation_warning(&output),
-            "crypto.random_bytes should emit a PlatformLimitation warning on WASM; got warnings: {:?}",
-            output.warnings
-        );
-        assert!(
-            platform_warning_contains(&output, "random_bytes"),
-            "warning message should mention crypto.random_bytes; got: {:?}",
-            output.warnings
-        );
-        assert!(
-            !has_platform_limitation_error(&output),
-            "crypto.random_bytes should NOT be a compile-time error on WASM; got errors: {:?}",
+            has_platform_limitation_error(&output),
+            "crypto.random_bytes should be a compile-time error on WASM; got errors: {:?}",
             output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "random_bytes"),
+            "error message should mention crypto.random_bytes; got: {:?}",
+            output.errors
+        );
+        assert!(
+            !has_platform_limitation_warning(&output),
+            "crypto.random_bytes should not emit a PlatformLimitation warning on WASM; got warnings: {:?}",
+            output.warnings
         );
     }
 

@@ -5279,10 +5279,11 @@ impl Checker {
                         }
                         _ => {}
                     }
-                    // Warn-level module-qualified calls with degraded wasm32
-                    // semantics (non-cryptographic PRNG fallback).
+                    // crypto.random_bytes depends on a native-only secure entropy
+                    // source absent from the wasm32 link set; reject so secure
+                    // randomness fails closed on wasm32.
                     if name == "crypto" && method == "random_bytes" {
-                        self.warn_wasm_limitation(span, WasmUnsupportedFeature::CryptoRandom);
+                        self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
                     }
                 }
                 if let Some(sig) = self.fn_sigs.get(&key).cloned() {

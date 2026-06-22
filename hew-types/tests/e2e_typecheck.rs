@@ -5185,7 +5185,7 @@ fn await_stream_recv_int_element_admitted() {
     );
 }
 
-// ── WASM gate: std::crypto::encrypt and std::crypto::sign (native-only) ──────
+// ── WASM gate: std::crypto native-only surfaces ─────────────────────────────
 
 /// `std::crypto::encrypt` module calls are rejected on wasm32 with a structured
 /// `PlatformLimitation` diagnostic.  The encrypt and sign modules are backed by
@@ -5228,6 +5228,25 @@ fn wasm_rejects_crypto_sign_module_calls() {
                 && e.message.contains("std::crypto::sign")
         }),
         "expected PlatformLimitation for sign module call on wasm32, got: {:#?}",
+        output.errors
+    );
+}
+
+/// `std::crypto::crypto.random_bytes` is rejected on wasm32 with a structured
+/// `PlatformLimitation` diagnostic. The secure entropy source is native-only
+/// and absent from the wasm32 link set.
+#[test]
+fn wasm_rejects_crypto_random_bytes_module_call() {
+    let output = typecheck_inline_wasm(
+        "import std::crypto::crypto;\n\
+         fn main() { let _ = crypto.random_bytes(32); }",
+    );
+    assert!(
+        output.errors.iter().any(|e| {
+            e.kind == hew_types::error::TypeErrorKind::PlatformLimitation
+                && e.message.contains("random_bytes")
+        }),
+        "expected PlatformLimitation for crypto.random_bytes on wasm32, got: {:#?}",
         output.errors
     );
 }

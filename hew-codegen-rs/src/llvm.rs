@@ -29740,7 +29740,7 @@ fn resolve_di_type<'ctx>(
         let basic = dctx
             .di_builder
             .create_basic_type(name, size_bits, encoding, DIFlags::PUBLIC)
-            .ok()?
+            .expect("DWARF base type for a scalar is infallible")
             .as_type();
         dctx.di_type_cache.borrow_mut().insert(key, basic);
         return Some(basic);
@@ -29859,7 +29859,10 @@ fn resolve_di_type<'ctx>(
                         return None;
                     };
                     let offset_bits = target_data
-                        .offset_of_element(&llvm_struct, u32::try_from(i).ok()?)
+                        .offset_of_element(
+                            &llvm_struct,
+                            u32::try_from(i).expect("struct field count fits in u32"),
+                        )
                         .map(|b| b * 8)
                         .unwrap_or(0);
                     let member_size = member_di_size_bits(member_di, target_data, fty);
@@ -29990,7 +29993,7 @@ fn resolve_enum_di_type<'ctx>(
     let tag_underlying = dctx
         .di_builder
         .create_basic_type("u32", tag_bits.max(8), DW_ATE_UNSIGNED, DIFlags::PUBLIC)
-        .ok()?
+        .expect("DWARF base type for the enum tag is infallible")
         .as_type();
     let tag_di = dctx
         .di_builder
@@ -31814,6 +31817,7 @@ fn actor_name_from_handler_symbol(symbol: &str) -> Option<&str> {
         .or_else(|| {
             let after_on_stop = symbol.split_once("__on_stop__")?;
             // Verify the suffix is a decimal index (no empty or non-numeric).
+            // JUSTIFIED: malformed indexed stop-hook suffixes are not handler symbols.
             after_on_stop.1.parse::<usize>().ok()?;
             Some(after_on_stop.0)
         })

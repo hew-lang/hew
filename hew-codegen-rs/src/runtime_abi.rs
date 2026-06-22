@@ -1573,6 +1573,9 @@ pub(crate) fn lower_call_runtime_abi(
             let mut llvm_args: Vec<BasicMetadataValueEnum> =
                 vec![vec_ptr.into(), start_val.into(), end_val.into()];
             if symbol == "hew_vec_slice_range_layout" {
+                // DEDUP-TODO: share this hidden layout-pointer synthesis with
+                // `llvm.rs::lower_layout_vec_direct_call` so the descriptor
+                // slice ABI has one codegen helper.
                 let vec_resolved_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
                 let elem_hew_ty = match &vec_resolved_ty {
                     ResolvedTy::Named {

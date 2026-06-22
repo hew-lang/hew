@@ -145,11 +145,6 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     //    (no user surface yields a ptr-element Vec).
     "hew_vec_get_ptr",
     "hew_vec_slice_range_ptr",
-    // -- G5 generic Vec slice descriptor variants are runtime-backed and
-    //    covered by the Hew ratchet fixtures, but no checked-MIR golden fixture
-    //    exercises a layout/owned range-slice today.
-    "hew_vec_slice_range_layout",
-    "hew_vec_slice_range_owned",
     // -- Per-type slice-range symbols replaced by the unified bytesize path.
     //    I32/I64/F64 scalar slice-range now routes through
     //    `hew_vec_slice_range_bytesize` (layout-aware, overflow-checked);

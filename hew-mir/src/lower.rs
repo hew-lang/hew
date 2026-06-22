@@ -7571,6 +7571,34 @@ impl Builder {
         })
     }
 
+    /// True when a non-owned Vec element is backed by a runtime layout
+    /// descriptor, matching codegen's `layout_vec_element_needs_descriptor`
+    /// constructor authority. This is intentionally layout-membership based,
+    /// not `ValueClass::BitCopy` based: payload-free and scalar-payload direct
+    /// enums own no heap and are constructed as layout Vecs, but they are not
+    /// marked `BitCopy` in the HIR value-class table.
+    fn vec_element_uses_layout_descriptor(&self, elem_ty: &ResolvedTy) -> bool {
+        match elem_ty {
+            ResolvedTy::Tuple(_) => true,
+            ResolvedTy::Named { name, args, .. } => {
+                let short = short_name(name);
+                let key = if args.is_empty() {
+                    name.clone()
+                } else {
+                    mangle_layout_key(short, args)
+                };
+                self.record_field_orders
+                    .keys()
+                    .any(|known| known == &key || short_name(known) == short)
+                    || self.enum_layouts.iter().any(|el| {
+                        !el.is_indirect
+                            && (el.name == key || el.name == *name || short_name(&el.name) == short)
+                    })
+            }
+            _ => false,
+        }
+    }
+
     /// True when `vec_ty` is a `Vec<T>` whose element `T` is an owned-Vec element.
     /// Substitutes through the monomorphisation map first so a polymorphic
     /// receiver type resolves to its concrete element before the owned-ness
@@ -16602,12 +16630,7 @@ impl Builder {
             | ResolvedTy::F64 => "hew_vec_slice_range_bytesize",
             ResolvedTy::String => "hew_vec_slice_range_str",
             _ if self.is_owned_vec_element(&elem_ty) => "hew_vec_slice_range_owned",
-            ResolvedTy::Named { .. }
-                if ValueClass::of_ty(&elem_ty, &self.type_classes) == ValueClass::BitCopy =>
-            {
-                "hew_vec_slice_range_layout"
-            }
-            ResolvedTy::Tuple(_) => "hew_vec_slice_range_layout",
+            _ if self.vec_element_uses_layout_descriptor(&elem_ty) => "hew_vec_slice_range_layout",
             ResolvedTy::Named { .. } => "hew_vec_slice_range_ptr",
             other => {
                 self.diagnostics.push(MirDiagnostic {

@@ -87,6 +87,32 @@ fn emit_ll_from_tc(source: &str, module_name: &str, tc_output: &TypeCheckOutput)
     std::fs::read_to_string(ll_path).expect("read emitted .ll")
 }
 
+#[test]
+fn hashmap_get_layout_call_uses_clone_runtime_abi() {
+    let ll = emit_ll_checked(
+        r#"fn main() -> i64 {
+            let m: HashMap<string, string> = HashMap::new();
+            m.insert("k", "owned-value");
+            let got: Option<string> = m.get("k");
+            match got {
+                Some(s) => {
+                    if s == "owned-value" { 0 } else { 1 }
+                },
+                None => 2,
+            }
+        }"#,
+        "hashmap_get_clone_abi",
+    );
+    assert!(
+        ll.contains("@hew_hashmap_get_clone_layout"),
+        "HashMap::get must lower to the clone-on-get runtime ABI; got:\n{ll}"
+    );
+    assert!(
+        !ll.contains("call ptr @hew_hashmap_get_layout"),
+        "HashMap::get must not borrow a map slot and memcpy it into Option<V>; got:\n{ll}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Change 1a: IntArithSaturating Add/Sub → .sat intrinsics
 // ---------------------------------------------------------------------------

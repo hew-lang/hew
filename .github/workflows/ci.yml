@@ -252,12 +252,13 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
       - name: Free runner disk
-        # This job runs a release build (hew-runtime + hew-lsp), a wasm32 build,
-        # and the full debug workspace nextest run on one ubuntu-24.04 runner.
-        # That combination is the same shape release-gate documents as
-        # disk-marginal; the runner process itself died of ENOSPC twice (after
-        # all tests passed, and again mid-test-step — see PR #1994). Mirror the
-        # same preinstalled-toolchain purge release-gate already carries.
+        # This job installs LLVM 22.1.5 (~1.5 GB), builds the release hew-runtime
+        # + hew-lsp binaries, the wasm32-wasip1 runtime, and runs the full debug
+        # workspace nextest suite — all on one ubuntu-24.04 runner (~14 GB free).
+        # The runner died of ENOSPC twice before this step was added (PR #1994).
+        # Code coverage moved to the nightly workflow (c24721fa) so target/llvm-cov-target/
+        # no longer accumulates here; the preinstalled-toolchain purge below still
+        # recovers the headroom the LLVM download + workspace nextest target/ needs.
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true

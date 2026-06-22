@@ -107,7 +107,7 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     "basics/float_arithmetic": "runnable",
     "basics/float_division": "runnable",
     # Non-finite f64 equality (NaN/±Infinity) executes at native parity now that
-    # the sandbox VM compares f64 operands with IEEE OEQ/ONE semantics.
+    # the sandbox VM compares f64 operands with IEEE OEQ/UNE semantics.
     "basics/float_nonfinite_compare": "runnable",
     "basics/mixed_numeric": "runnable",
     # Statement-position if/match/if-let lower to branch terminators in sandbox

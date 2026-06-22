@@ -1,0 +1,39 @@
+// IEEE-754 NaN comparison semantics.
+//
+// NaN != NaN  must be true  (UNE — unordered-not-equal).
+// NaN == NaN  must be false (OEQ — ordered-equal).
+// Ordered comparisons (< <= > >=) with NaN must be false.
+fn main() -> i64 {
+    let nan: f64 = 0.0 / 0.0;
+    let one: f64 = 1.0;
+    let two: f64 = 2.0;
+    // NaN != NaN → true
+    if nan != nan {} else {
+        return 1;
+    }
+    // NaN == NaN → false
+    if nan == nan {
+        return 2;
+    }
+    // 1.0 != 2.0 → true
+    if one != two {} else {
+        return 3;
+    }
+    // 1.0 != 1.0 → false
+    if one != one {
+        return 4;
+    }
+    // 1.0 == 1.0 → true
+    if one == one {} else {
+        return 5;
+    }
+    // NaN < 1.0 → false (ordered)
+    if nan < one {
+        return 6;
+    }
+    // NaN > 1.0 → false (ordered)
+    if nan > one {
+        return 7;
+    }
+    return 0;
+}

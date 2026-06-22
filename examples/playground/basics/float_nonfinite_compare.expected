@@ -3,6 +3,6 @@ nan==inf false
 inf==inf true
 neg_inf==inf false
 neg_zero==zero true
-nan!=nan false
-nan!=inf false
+nan!=nan true
+nan!=inf true
 inf!=neg_inf true

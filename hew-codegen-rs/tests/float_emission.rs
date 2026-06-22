@@ -174,8 +174,16 @@ fn float_emission_rem_emits_frem() {
     );
 }
 
+// IEEE-754 comparison predicate coverage.
+//
+// `==`         → OEQ (ordered-equal):         NaN == NaN is false.
+// `!=`         → UNE (unordered-not-equal):   NaN != NaN is true.
+// `< <= > >=`  → ordered predicates:          any NaN operand yields false.
+//
+// Prior to this fix `!=` incorrectly emitted ONE (ordered-not-equal), making
+// NaN != NaN return false — violating IEEE-754.
 #[test]
-fn float_emission_cmp_emits_ordered_fcmp_for_f64_and_f32() {
+fn float_emission_cmp_emits_correct_fcmp_predicates() {
     let ll = emit_ll(
         "fn main() -> i64 {
             let a: f64 = 1.0;
@@ -190,9 +198,21 @@ fn float_emission_cmp_emits_ordered_fcmp_for_f64_and_f32() {
         }",
         "float_cmp",
     );
+    // == must be ordered-equal so that NaN == NaN is false.
+    assert!(
+        ll.contains("fcmp oeq double"),
+        "float `==` must emit `fcmp oeq double`; got:\n{ll}"
+    );
+    // != must be unordered-not-equal so that NaN != NaN is true (IEEE-754).
+    assert!(
+        ll.contains("fcmp une double"),
+        "float `!=` must emit `fcmp une double`; got:\n{ll}"
+    );
+    assert!(
+        !ll.contains("fcmp one double"),
+        "float `!=` must NOT emit `fcmp one double` (ONE makes NaN != NaN false); got:\n{ll}"
+    );
     for expected in [
-        "fcmp oeq double",
-        "fcmp one double",
         "fcmp olt double",
         "fcmp ole double",
         "fcmp ogt double",
@@ -200,7 +220,7 @@ fn float_emission_cmp_emits_ordered_fcmp_for_f64_and_f32() {
     ] {
         assert!(
             ll.contains(expected),
-            "FloatCmp must emit ordered `{expected}`; got:\n{ll}"
+            "float ordered comparison must emit `{expected}`; got:\n{ll}"
         );
     }
 }

@@ -301,8 +301,9 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "non-finite f64 comparison (`==`/`!=`)",
-        // f64 `==`/`!=` now mirror native `fcmp OEQ`/`ONE`: NaN never equal,
-        // ±Infinity compare by sign, -0.0 == 0.0. Pinned to float_nonfinite_compare.
+        // f64 `==`/`!=` now mirror native `fcmp OEQ`/`UNE`: NaN never equal,
+        // NaN is always unequal, ±Infinity compare by sign, -0.0 == 0.0. Pinned
+        // to float_nonfinite_compare.
         probe: "fn main() {\n    let nan: f64 = 0.0 / 0.0;\n    println(nan == nan);\n}\n",
         coverage: Coverage::Parity("float_nonfinite_compare"),
     },

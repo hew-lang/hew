@@ -34,8 +34,8 @@ const PARITY_CASES: &[ParityCase] = &[
     },
     ParityCase {
         // Non-finite f64 equality: NaN never equal, ±Infinity compare by sign,
-        // -0.0 == 0.0. `==` mirrors native `fcmp OEQ` and `!=` mirrors `fcmp ONE`
-        // (false whenever a NaN operand is present), proving the sandbox no longer
+        // -0.0 == 0.0. `==` mirrors native `fcmp OEQ` and `!=` mirrors `fcmp UNE`
+        // (true whenever a NaN operand is present), proving the sandbox no longer
         // collapses NaN/±Infinity through the canonical-JSON path.
         test_name: "float_nonfinite_compare",
         source_rel: "examples/playground/basics/float_nonfinite_compare.hew",

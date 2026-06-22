@@ -343,6 +343,7 @@ expect_check_fail_contains \
 run_accept_expect_status "map_literal_string_keys" 0
 run_accept_expect_status "map_literal_empty_annotated" 0
 run_accept_expect_stdout "array_literal_float_sum"
+run_accept_expect_status "float_nan_semantics" 0
 run_accept_expect_stdout "array_literal_string_for_each"
 run_accept_expect_status "iter_manual_next_42" 42
 run_accept_expect_status "gen_next_stack_bounded" 0

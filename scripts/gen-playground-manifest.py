@@ -50,6 +50,7 @@ EXAMPLE_ORDER = {
         "stmt_match",
         "string_interpolation",
         "clone_value",
+        "display_scalars",
     ),
     "concurrency": (
         "actor_pipeline",
@@ -80,6 +81,8 @@ EXAMPLE_ORDER = {
         "structural_bounds",
         "record_equality",
         "tuple_values",
+        "generic_aggregate_eq",
+        "option_result_methods",
     ),
 }
 
@@ -174,6 +177,16 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     # types/tuple_values: tuple construction and positional let-destructure;
     # lowered as anonymous records with _0/_1/… fields — sandbox-runnable.
     "types/tuple_values": "runnable",
+    # types/generic_aggregate_eq: structural == on generic records and aggregates
+    # containing Vec<T>; the emitter routes through cmp.eq and the VM's
+    # canonicalComparable handles records and vectors recursively.
+    "types/generic_aggregate_eq": "runnable",
+    # types/option_result_methods: is_some/is_none/is_ok/is_err/unwrap/unwrap_or
+    # now lower via enum.tag/enum.payload bytecode sequences.
+    "types/option_result_methods": "runnable",
+    # basics/display_scalars: f-string interpolation for all canonical integer
+    # and char primitives that gained Display impls in #2137.
+    "basics/display_scalars": "runnable",
 }
 
 # Entries omitted from WASI_CAPABILITY default to "runnable".

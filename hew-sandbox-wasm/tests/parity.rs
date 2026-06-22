@@ -229,6 +229,35 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/playground/types/tuple_values.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        // `==` on generic records and aggregates containing Vec<T>: the checker
+        // now resolves equality eligibility after substituting the generic
+        // arguments, so Pair<i64, string> compares structurally. The emitter
+        // already routes `==` through `cmp.eq`; the VM's `canonicalComparable`
+        // handles records, enums, and vectors recursively.
+        test_name: "generic_aggregate_eq",
+        source_rel: "examples/playground/types/generic_aggregate_eq.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Option/Result marker methods: `is_some`, `is_none`, `is_ok`, `is_err`,
+        // `unwrap`, `unwrap_or`. The emitter now lowers these via enum.tag /
+        // enum.payload bytecode sequences rather than falling through to
+        // emit_unsupported. The profile explicitly admits these methods on
+        // Option/Result receiver types.
+        test_name: "option_result_methods",
+        source_rel: "examples/playground/types/option_result_methods.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // f-string interpolation (`{x}`) for integer and char types that gained
+        // Display impls: i8/i16/i32, u8/u16/u32, u64, isize, usize, char. The
+        // VM stores all integers as i64/u64 BigInt and renders them via
+        // renderStdout, so the interpolated output matches native printf output.
+        test_name: "display_scalars",
+        source_rel: "examples/playground/basics/display_scalars.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

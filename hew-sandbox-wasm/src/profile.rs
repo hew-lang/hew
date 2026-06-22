@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use hew_parser::ast::{CallArg, Expr, ImportDecl, Item, Pattern, Program, Spanned, Stmt, TypeExpr};
-use hew_types::{check::SpanKey, Ty};
+use hew_types::{check::SpanKey, BuiltinType, Ty};
 
 use crate::Diagnostic;
 
@@ -643,6 +643,25 @@ impl<'a> ProfileChecker<'a> {
                 for arg in args {
                     self.check_expr(arg.expr());
                 }
+                // Security gate: crypto.random_bytes has no secure entropy source in
+                // the browser sandbox (the native wasm32 link set omits the CSPRNG).
+                // Surface a PlatformLimitation here — the same kind the type checker
+                // emits on --target wasm32 — so playground error messages are
+                // security-focused rather than generic "unknown method".
+                if method == "random_bytes" {
+                    if let Expr::Identifier(module) = &receiver.0 {
+                        if module == "crypto" {
+                            self.reject(
+                                span.clone(),
+                                "PlatformLimitation",
+                                "`crypto.random_bytes` is not available in the browser sandbox: \
+                                 secure entropy requires a native entropy source absent from the \
+                                 wasm32 link set",
+                            );
+                            return;
+                        }
+                    }
+                }
                 if !self.method_is_admitted(receiver, method) {
                     self.reject(
                         span.clone(),
@@ -835,9 +854,11 @@ impl<'a> ProfileChecker<'a> {
             }
         }
         match receiver_ty.materialize_literal_defaults() {
-            Ty::String => matches!(method, "len" | "slice"),
-            Ty::Array(_, _) | Ty::Slice(_) => matches!(method, "len" | "get"),
-            Ty::Named { name, .. } if name == "Vec" => matches!(method, "len" | "push" | "get"),
+            Ty::String => matches!(method, "len" | "slice" | "to_string"),
+            Ty::Array(_, _) | Ty::Slice(_) => matches!(method, "len" | "get" | "to_string"),
+            Ty::Named { name, .. } if name == "Vec" => {
+                matches!(method, "len" | "push" | "get" | "to_string")
+            }
             Ty::Named { name, .. }
                 if name.eq_ignore_ascii_case("Regex")
                     || name.ends_with(".Regex")
@@ -845,7 +866,21 @@ impl<'a> ProfileChecker<'a> {
             {
                 matches!(method, "find" | "is_match" | "replace" | "free")
             }
-            _ => false,
+            Ty::Named {
+                builtin: Some(BuiltinType::Option),
+                ..
+            } => matches!(
+                method,
+                "is_some" | "is_none" | "unwrap" | "unwrap_or" | "to_string"
+            ),
+            Ty::Named {
+                builtin: Some(BuiltinType::Result),
+                ..
+            } => matches!(
+                method,
+                "is_ok" | "is_err" | "unwrap" | "unwrap_or" | "to_string"
+            ),
+            _ => matches!(method, "to_string"),
         }
     }
 

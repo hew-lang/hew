@@ -6,7 +6,7 @@ use hew_parser::ast::{
     TypeDeclKind, VariantKind,
 };
 use hew_types::check::{SpanKey, TypeDefKind, VariantDef};
-use hew_types::Ty;
+use hew_types::{BuiltinType, Ty};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -1071,8 +1071,98 @@ impl<'a> PackageEmitter<'a> {
             });
         id
     }
-}
 
+    fn register_fmt_to_string(&mut self) -> String {
+        let id = "sym:std.fmt.to_string".to_string();
+        self.stdlib_symbols
+            .entry(id.clone())
+            .or_insert(StdlibSymbol {
+                id: id.clone(),
+                module: "std.fmt".to_string(),
+                name: "to_string".to_string(),
+                params: vec!["type:opaque.any".to_string()],
+                result: "type:string".to_string(),
+                capability: None,
+                admission: "allowed".to_string(),
+            });
+        id
+    }
+
+    /// Ensure the Option<T> or Result<T,E> enum layout is registered in
+    /// `enum_layouts` and `enum_variant_tags` so the VM can decode the value.
+    ///
+    /// Called whenever a `Some`, `None`, `Ok`, or `Err` constructor is emitted
+    /// (i.e. not just at actor-ask result sites). The full variant layout is
+    /// required so `enum.tag` and `enum.payload` work correctly.
+    fn ensure_option_result_layout(&mut self, ty: &Ty) {
+        let (type_name, type_id, some_ok_variant, none_err_variant) = match ty {
+            Ty::Named {
+                builtin: Some(BuiltinType::Option),
+                args,
+                ..
+            } => {
+                let inner = args.first().cloned().unwrap_or(Ty::Unit);
+                let inner_id = self.type_id_for_ty(&inner);
+                let type_id = self.type_id_for_named("Option", std::slice::from_ref(&inner));
+                (
+                    "Option",
+                    type_id,
+                    VariantLayout {
+                        name: "Some".to_string(),
+                        tag: 0,
+                        payload: vec![inner_id.clone()],
+                    },
+                    VariantLayout {
+                        name: "None".to_string(),
+                        tag: 1,
+                        payload: vec![],
+                    },
+                )
+            }
+            Ty::Named {
+                builtin: Some(BuiltinType::Result),
+                args,
+                ..
+            } => {
+                let ok_ty = args.first().cloned().unwrap_or(Ty::Unit);
+                let err_ty = args.get(1).cloned().unwrap_or(Ty::Unit);
+                let ok_id = self.type_id_for_ty(&ok_ty);
+                let err_id = self.type_id_for_ty(&err_ty);
+                let type_id = self.type_id_for_named("Result", &[ok_ty.clone(), err_ty.clone()]);
+                (
+                    "Result",
+                    type_id,
+                    VariantLayout {
+                        name: "Ok".to_string(),
+                        tag: 0,
+                        payload: vec![ok_id],
+                    },
+                    VariantLayout {
+                        name: "Err".to_string(),
+                        tag: 1,
+                        payload: vec![err_id],
+                    },
+                )
+            }
+            _ => return,
+        };
+        self.enum_layouts
+            .entry(type_id.clone())
+            .or_insert(EnumLayout {
+                id: type_id.clone(),
+                name: type_name.to_string(),
+                variants: vec![some_ok_variant, none_err_variant],
+            });
+        self.type_layouts
+            .entry(type_id.clone())
+            .or_insert(TypeLayout {
+                id: type_id.clone(),
+                kind: "enum".to_string(),
+                name: type_name.to_string(),
+                parameters: Vec::new(),
+            });
+    }
+}
 #[derive(Debug, Clone)]
 struct LoopTargets {
     continue_id: String,
@@ -1681,6 +1771,27 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                         None,
                     );
                     Ok(dst)
+                } else if matches!(name.as_str(), "None" | "Some" | "Ok" | "Err") {
+                    // Bare builtin enum constructors not registered in enum_variant_tags
+                    // (Option/Result are builtins). Look up the resolved type via
+                    // the type output to emit the correct enum.new.
+                    let ty = self.ty_for_expr(expr);
+                    self.package.ensure_option_result_layout(&ty);
+                    let type_id = self.package.type_id_for_ty(&ty);
+                    let tag: u64 = match name.as_str() {
+                        "Some" | "Ok" => 0,
+                        "None" | "Err" => 1,
+                        _ => unreachable!(),
+                    };
+                    let dst = self.temp_local(&ty, Some(span.clone()));
+                    self.emit_instruction(
+                        "enum.new",
+                        Some(dst.clone()),
+                        vec![Operand::ty(type_id), Operand::literal(tag)],
+                        Some(span.clone()),
+                        None,
+                    );
+                    Ok(dst)
                 } else if let Some((machine, state)) = self.machine_state_path(name) {
                     // `Machine::State` constructs a machine value in that state.
                     let type_id = self.package.type_id_for_named(&machine, &[]);
@@ -2243,6 +2354,27 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 Ok(self.emit_const_unit(Some(span)))
             }
             Expr::Identifier(name) if name == "Vec::new" => Ok(self.lower_vector_new(span)),
+            // Builtin Option/Result constructors: Some, None, Ok, Err.
+            // These are NOT registered in enum_variant_tags (Option/Result are
+            // builtins, not user-declared) so they need explicit handling.
+            // Tag convention: Some/Ok = 0, None/Err = 1 (matches native codegen).
+            Expr::Identifier(name) if matches!(name.as_str(), "Some" | "None" | "Ok" | "Err") => {
+                let result_ty = self.ty_for_span(&span);
+                self.package.ensure_option_result_layout(&result_ty);
+                let type_id = self.package.type_id_for_ty(&result_ty);
+                let tag: u64 = match name.as_str() {
+                    "Some" | "Ok" => 0,
+                    "None" | "Err" => 1,
+                    _ => unreachable!(),
+                };
+                let mut operands = vec![Operand::ty(type_id), Operand::literal(tag)];
+                for arg in args {
+                    operands.push(Operand::local(self.lower_expr(arg.expr())?));
+                }
+                let dst = self.temp_local(&result_ty, Some(span.clone()));
+                self.emit_instruction("enum.new", Some(dst.clone()), operands, Some(span), None);
+                Ok(dst)
+            }
             Expr::Identifier(name) if self.package.enum_variant_tags.contains_key(name) => {
                 let (type_id, tag, _) = self.package.enum_variant_tags.get(name).cloned().unwrap();
                 let mut operands = vec![Operand::ty(type_id), Operand::literal(tag as u64)];
@@ -2662,6 +2794,125 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 );
                 Ok(dst)
             }
+            // `x.to_string()` for scalar types — emit a `fmt.to_string` stdlib
+            // call. The VM's `fmt.to_string` handler routes through `renderStdout`
+            // which produces the same decimal/float representation as native.
+            "to_string" => {
+                let symbol_id = self.package.register_fmt_to_string();
+                let dst = self.temp_local(&Ty::String, Some(span.clone()));
+                self.emit_instruction(
+                    "call.stdlib",
+                    Some(dst.clone()),
+                    vec![Operand::symbol(symbol_id), Operand::local(receiver_local)],
+                    Some(span),
+                    None,
+                );
+                Ok(dst)
+            }
+            // Option/Result predicate and extraction methods. Both types use the
+            // same tag convention: Some/Ok = tag 0, None/Err = tag 1.
+            "is_some" | "is_none" | "is_ok" | "is_err" => {
+                let receiver_ty = self.ty_for_expr(receiver);
+                let is_option = matches!(
+                    receiver_ty,
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Option),
+                        ..
+                    }
+                );
+                let is_result = matches!(
+                    receiver_ty,
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Result),
+                        ..
+                    }
+                );
+                if !is_option && !is_result {
+                    self.emit_unsupported(Some(span.clone()));
+                    return Ok(self.emit_const_unit(Some(span)));
+                }
+                self.package.ensure_option_result_layout(&receiver_ty);
+                // Some = tag 0, None = tag 1. Ok = tag 0, Err = tag 1.
+                let positive_tag_value: u64 = 0; // Some / Ok
+                let positive = matches!(method, "is_some" | "is_ok");
+                let tag_local = self.temp_local(&Ty::I64, Some(span.clone()));
+                self.emit_instruction(
+                    "enum.tag",
+                    Some(tag_local.clone()),
+                    vec![Operand::local(receiver_local)],
+                    Some(span.clone()),
+                    None,
+                );
+                let tag_check = self.temp_local(&Ty::I64, Some(span.clone()));
+                self.emit_instruction(
+                    "const.i64",
+                    Some(tag_check.clone()),
+                    vec![Operand::literal(positive_tag_value)],
+                    Some(span.clone()),
+                    None,
+                );
+                let dst = self.temp_local(&Ty::Bool, Some(span.clone()));
+                let cmp_op = if positive { "cmp.eq" } else { "cmp.ne" };
+                self.emit_instruction(
+                    cmp_op,
+                    Some(dst.clone()),
+                    vec![Operand::local(tag_local), Operand::local(tag_check)],
+                    Some(span),
+                    None,
+                );
+                Ok(dst)
+            }
+            "unwrap" => {
+                let receiver_ty = self.ty_for_expr(receiver);
+                let is_option = matches!(
+                    receiver_ty,
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Option),
+                        ..
+                    }
+                );
+                let is_result = matches!(
+                    receiver_ty,
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Result),
+                        ..
+                    }
+                );
+                if !is_option && !is_result {
+                    self.emit_unsupported(Some(span.clone()));
+                    return Ok(self.emit_const_unit(Some(span)));
+                }
+                self.package.ensure_option_result_layout(&receiver_ty);
+                Ok(self.lower_option_result_unwrap(receiver_local, is_option, span))
+            }
+            "unwrap_or" => {
+                let receiver_ty = self.ty_for_expr(receiver);
+                let is_option = matches!(
+                    receiver_ty,
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Option),
+                        ..
+                    }
+                );
+                let is_result = matches!(
+                    receiver_ty,
+                    Ty::Named {
+                        builtin: Some(BuiltinType::Result),
+                        ..
+                    }
+                );
+                if !is_option && !is_result {
+                    self.emit_unsupported(Some(span.clone()));
+                    return Ok(self.emit_const_unit(Some(span)));
+                }
+                self.package.ensure_option_result_layout(&receiver_ty);
+                let Some(default_arg) = args.first() else {
+                    self.emit_unsupported(Some(span.clone()));
+                    return Ok(self.emit_const_unit(Some(span)));
+                };
+                let default_local = self.lower_expr(default_arg.expr())?;
+                Ok(self.lower_option_result_unwrap_or(receiver_local, default_local, span))
+            }
             // WASM-TODO(#1451): record `.clone()` lowers to a real deep-copy thunk on
             // the native path (`__hew_record_clone_inplace_<R>`), but the
             // sandbox emitter has no record-clone opcode yet. It falls through
@@ -2674,6 +2925,187 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 Ok(self.emit_const_unit(Some(span)))
             }
         }
+    }
+
+    /// Lower `opt.unwrap()` / `res.unwrap()` for Option and Result.
+    ///
+    /// Emits an enum-tag check: tag == 0 (Some/Ok) → extract and return
+    /// payload[0]; tag != 0 (None/Err) → panic.
+    fn lower_option_result_unwrap(
+        &mut self,
+        receiver_local: String,
+        is_option: bool,
+        span: std::ops::Range<usize>,
+    ) -> String {
+        let result_ty = self.ty_for_span(&span);
+        let result_local = self.declare_local(None, &result_ty, true, Some(span.clone()));
+        let span_ref = self.package.spans.span_ref(&span);
+        let (some_idx, some_id) = self.new_block("unwrap_some", span_ref.clone());
+        let (panic_idx, panic_id) = self.new_block("unwrap_panic", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("unwrap_exit", span_ref.clone());
+
+        let tag_local = self.temp_local(&Ty::I64, Some(span.clone()));
+        self.emit_instruction(
+            "enum.tag",
+            Some(tag_local.clone()),
+            vec![Operand::local(receiver_local.clone())],
+            Some(span.clone()),
+            None,
+        );
+        let zero_local = self.temp_local(&Ty::I64, Some(span.clone()));
+        self.emit_instruction(
+            "const.i64",
+            Some(zero_local.clone()),
+            vec![Operand::literal(0_u64)],
+            Some(span.clone()),
+            None,
+        );
+        let cond = self.temp_local(&Ty::Bool, Some(span.clone()));
+        self.emit_instruction(
+            "cmp.eq",
+            Some(cond.clone()),
+            vec![Operand::local(tag_local), Operand::local(zero_local)],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br_if(
+            Operand::local(cond),
+            some_id,
+            panic_id,
+            vec![],
+            span_ref.clone(),
+        ));
+
+        // Some/Ok branch: extract payload[0]
+        self.switch_to(some_idx);
+        let payload_local = self.temp_local(&result_ty, Some(span.clone()));
+        self.emit_instruction(
+            "enum.payload",
+            Some(payload_local.clone()),
+            vec![Operand::local(receiver_local), Operand::literal(0_u64)],
+            Some(span.clone()),
+            None,
+        );
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![
+                Operand::local(result_local.clone()),
+                Operand::local(payload_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br(exit_id.clone(), vec![], span_ref.clone()));
+
+        // None/Err branch: panic
+        self.switch_to(panic_idx);
+        let msg_text = if is_option {
+            "unwrap called on None"
+        } else {
+            "unwrap called on Err"
+        };
+        let msg_local = self.lower_literal(&Literal::String(msg_text.to_string()), span.clone());
+        self.emit_instruction(
+            "panic",
+            None,
+            vec![Operand::local(msg_local)],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br(exit_id, vec![], span_ref));
+
+        self.switch_to(exit_idx);
+        result_local
+    }
+
+    /// Lower `opt.unwrap_or(default)` / `res.unwrap_or(default)`.
+    ///
+    /// Emits an enum-tag check: tag == 0 (Some/Ok) → extract payload[0];
+    /// tag != 0 (None/Err) → return the pre-evaluated default.
+    fn lower_option_result_unwrap_or(
+        &mut self,
+        receiver_local: String,
+        default_local: String,
+        span: std::ops::Range<usize>,
+    ) -> String {
+        let result_ty = self.ty_for_span(&span);
+        let result_local = self.declare_local(None, &result_ty, true, Some(span.clone()));
+        let span_ref = self.package.spans.span_ref(&span);
+        let (some_idx, some_id) = self.new_block("unwrap_or_some", span_ref.clone());
+        let (default_idx, default_id) = self.new_block("unwrap_or_default", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("unwrap_or_exit", span_ref.clone());
+
+        let tag_local = self.temp_local(&Ty::I64, Some(span.clone()));
+        self.emit_instruction(
+            "enum.tag",
+            Some(tag_local.clone()),
+            vec![Operand::local(receiver_local.clone())],
+            Some(span.clone()),
+            None,
+        );
+        let zero_local = self.temp_local(&Ty::I64, Some(span.clone()));
+        self.emit_instruction(
+            "const.i64",
+            Some(zero_local.clone()),
+            vec![Operand::literal(0_u64)],
+            Some(span.clone()),
+            None,
+        );
+        let cond = self.temp_local(&Ty::Bool, Some(span.clone()));
+        self.emit_instruction(
+            "cmp.eq",
+            Some(cond.clone()),
+            vec![Operand::local(tag_local), Operand::local(zero_local)],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br_if(
+            Operand::local(cond),
+            some_id,
+            default_id,
+            vec![],
+            span_ref.clone(),
+        ));
+
+        // Some/Ok branch: extract payload[0]
+        self.switch_to(some_idx);
+        let payload_local = self.temp_local(&result_ty, Some(span.clone()));
+        self.emit_instruction(
+            "enum.payload",
+            Some(payload_local.clone()),
+            vec![Operand::local(receiver_local), Operand::literal(0_u64)],
+            Some(span.clone()),
+            None,
+        );
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![
+                Operand::local(result_local.clone()),
+                Operand::local(payload_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br(exit_id.clone(), vec![], span_ref.clone()));
+
+        // None/Err branch: use the default
+        self.switch_to(default_idx);
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![
+                Operand::local(result_local.clone()),
+                Operand::local(default_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br(exit_id, vec![], span_ref));
+
+        self.switch_to(exit_idx);
+        result_local
     }
 
     fn lower_match(

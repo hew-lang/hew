@@ -1,0 +1,64 @@
+// F-04 fail-closed guard for the SELECT-ask path: a `select` arm asking a
+// fungible reference to a PERMANENTLY-DEAD child fail-closes recoverably — the
+// dead-child arm is skipped (it never becomes ready), so the select falls
+// through to its `after` arm. It NEVER traps the program.
+//
+// The budget is intensity 1: a sustained crash loop exhausts it, so the child
+// ends permanently Dead (BudgetExhausted) and will never restart again. Each
+// crash drives through the SAME held fungible handle, re-resolving to the
+// current child.
+//
+// Once the child is down, a single-shot ask returns Err (the recoverable arm,
+// 20) and the select's dead-child ask arm is skipped so the `after 100ms` arm
+// wins (25). Exit 46 = 20 + 25 + 1, the sentinel proving BOTH the single-shot
+// ask Err'd AND the select reached its after arm — neither trapped. Pre-F-04 the
+// select-ask through the dead handle issued a failed setup status that codegen
+// treated as process-fatal (HEW_TRAP_ACTOR_SEND_FAILED → SIGTRAP, exit 133),
+// even though the tell + single-shot ask siblings already fail-closed.
+actor Worker {
+    var value: i64 = 5;
+    receive fn get_value() -> i64 {
+        value
+    }
+    receive fn crash_me() {
+        panic("worker crash");
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+
+    child w1: Worker(value: 5);
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let w = sup.w1;
+    // Exhaust the restart budget through the held handle: the child ends
+    // permanently Dead. The loop is generous so the terminal decision is reached
+    // regardless of restart-window timing; the settle lets the supervisor finish
+    // processing the final terminal crash.
+    for _ in 0 .. 5 {
+        w.crash_me();
+        sleep_ms(80);
+    }
+    sleep_ms(200);
+
+    // Single-shot ask to a permanently-dead child: recoverable Err, NOT a trap.
+    let ask_code = match await w.get_value() {
+        Ok(_) => 1,
+        Err(_) => 20,
+    };
+    // Select-ask through the same dead fungible handle: the dead-child arm is
+    // skipped (never ready), so the `after` arm wins — NOT a trap.
+    let select_code = select {
+        reply from w.get_value() => reply,
+        after 100ms => 25,
+    };
+    if ask_code == 20 && select_code == 25 {
+        46
+    } else {
+        ask_code + select_code
+    }
+}

@@ -31,14 +31,17 @@ fn main -> i64
       (none)
     cancel[bb0] ->
       (none)
-    branch[bb1: bb3/bb2] ->
+    branch[bb1: bb3/bb4] ->
       (none)
-    panic[bb2] ->
+    return[bb2] ->
+      drop actor2 ty=LocalPid<Worker> kind=resource
       drop _1 ty=LocalPid<AppSupervisor> kind=resource
-    send[bb3  -> bb4] ->
+    send[bb3  -> bb2] ->
       (none)
-    return[bb4] ->
-      drop actor8 ty=LocalPid<Worker> kind=resource
+    goto[bb4->bb2] ->
+      (none)
+    cancel[bb4] ->
+      drop actor2 ty=LocalPid<Worker> kind=resource
       drop _1 ty=LocalPid<AppSupervisor> kind=resource
 
 fn i32::fmt -> string

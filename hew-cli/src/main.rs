@@ -518,6 +518,17 @@ struct BuildArgs {
     options: compile::CompileOptions,
 }
 
+fn parse_backend(value: &str) -> compile::CodegenBackend {
+    match value {
+        "mlir" => compile::CodegenBackend::Mlir,
+        "cpp" => compile::CodegenBackend::Cpp,
+        other => {
+            eprintln!("Error: unknown backend '{other}' (expected 'mlir' or 'cpp')");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn parse_build_args(args: &[String]) -> BuildArgs {
     let mut input = None;
     let mut output = None;
@@ -549,6 +560,9 @@ fn parse_build_args(args: &[String]) -> BuildArgs {
             "--emit-json" => {
                 set_codegen_mode(&mut options, compile::CodegenMode::EmitJson);
             }
+            "--emit-cpp" => {
+                set_codegen_mode(&mut options, compile::CodegenMode::EmitCpp);
+            }
             "--emit-mlir" => {
                 set_codegen_mode(&mut options, compile::CodegenMode::EmitMlir);
             }
@@ -560,6 +574,17 @@ fn parse_build_args(args: &[String]) -> BuildArgs {
             }
             s if s.starts_with("--target=") => {
                 options.target = Some(s.strip_prefix("--target=").unwrap().to_string());
+            }
+            "--backend" => {
+                i += 1;
+                if i >= args.len() {
+                    eprintln!("Error: --backend requires an argument");
+                    std::process::exit(1);
+                }
+                options.backend = parse_backend(&args[i]);
+            }
+            s if s.starts_with("--backend=") => {
+                options.backend = parse_backend(s.strip_prefix("--backend=").unwrap());
             }
             "--pkg-path" => {
                 i += 1;
@@ -650,9 +675,11 @@ Build/check options:
   --debug, -g                     Build with debug info (no optimization, no stripping)
   --emit-ast                      Emit enriched AST as JSON
   --emit-json                     Emit full codegen IR as JSON (same as msgpack, for debugging)
+  --emit-cpp                      Emit generated C++ source
   --emit-mlir                     Emit MLIR instead of linking
   --emit-llvm                     Emit LLVM IR instead of linking
   --emit-obj                      Emit object code instead of linking
+  --backend <mlir|cpp>            Select backend for native builds (default: mlir)
   --pkg-path <dir>                Override package search directory (default: .adze/packages/)
   --link-lib <path>               Extra static library to pass to the linker
 
@@ -680,4 +707,25 @@ Shell completions:
 Shorthand:
   hew file.hew                    Same as: hew build file.hew"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn parse_build_args_accepts_cpp_backend() {
+        let parsed = parse_build_args(&args(&["main.hew", "--backend=cpp"]));
+        assert_eq!(parsed.options.backend, compile::CodegenBackend::Cpp);
+    }
+
+    #[test]
+    fn parse_build_args_accepts_emit_cpp() {
+        let parsed = parse_build_args(&args(&["main.hew", "--emit-cpp"]));
+        assert_eq!(parsed.options.codegen_mode, compile::CodegenMode::EmitCpp);
+    }
 }

@@ -232,6 +232,7 @@ endif()
 # ── Hew codegen library ───────────────────────────────────────────────────
 add_library(HewCodegen STATIC
   codegen.cpp
+  cpp_emitter.cpp
   debug_info.cpp
 )
 

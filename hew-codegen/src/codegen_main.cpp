@@ -10,6 +10,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "hew/codegen.h"
+#include "hew/cpp_emitter.h"
 #include "hew/mlir/HewDialect.h"
 #include "hew/mlir/HewOps.h"
 #include "hew/mlir/MLIRGen.h"
@@ -44,6 +45,7 @@ struct Options {
   std::string output_path;
   bool emit_mlir = false;
   bool emit_llvm = false;
+  bool emit_cpp = false;
   bool emit_object = false;
   bool input_json = false;
   bool debug_info = false;
@@ -54,7 +56,8 @@ void printUsage() {
   std::cerr << "Usage: hew-codegen [options] [input.msgpack]\n"
             << "  (no input file = read msgpack AST from stdin)\n"
             << "\n"
-            << "Options:\n"
+             << "Options:\n"
+            << "  --emit-cpp          Dump generated C++ source to stdout\n"
             << "  --emit-mlir         Dump MLIR to stdout\n"
             << "  --emit-llvm         Dump LLVM IR to stdout\n"
             << "  --emit-obj          Emit object file (default if no emit flag)\n"
@@ -73,6 +76,8 @@ auto parse_args(int argc, char *argv[]) -> Options {
     if (args[i] == "--help" || args[i] == "-h") {
       printUsage();
       std::exit(0);
+    } else if (args[i] == "--emit-cpp") {
+      opts.emit_cpp = true;
     } else if (args[i] == "--emit-mlir") {
       opts.emit_mlir = true;
     } else if (args[i] == "--emit-llvm") {
@@ -150,6 +155,26 @@ auto main(int argc, char *argv[]) -> int {
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << "\n";
     return 1;
+  }
+
+  if (opts.emit_cpp) {
+    try {
+      const auto source = hew::emitCppSource(program);
+      if (opts.output_path.empty()) {
+        std::cout << source;
+      } else {
+        std::ofstream output(opts.output_path, std::ios::binary);
+        if (!output) {
+          std::cerr << "Error: could not open output file: " << opts.output_path << "\n";
+          return 1;
+        }
+        output << source;
+      }
+    } catch (const std::exception &e) {
+      std::cerr << "Error: " << e.what() << "\n";
+      return 1;
+    }
+    return 0;
   }
 
   // Set up MLIR context

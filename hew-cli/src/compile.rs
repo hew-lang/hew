@@ -13,6 +13,7 @@ pub enum CodegenMode {
     LinkExecutable,
     EmitAst,
     EmitJson,
+    EmitCpp,
     EmitMlir,
     EmitLlvm,
     EmitObj,
@@ -22,6 +23,7 @@ impl CodegenMode {
     fn codegen_flag(self) -> Option<&'static str> {
         match self {
             Self::LinkExecutable | Self::EmitAst | Self::EmitJson => None,
+            Self::EmitCpp => Some("--emit-cpp"),
             Self::EmitMlir => Some("--emit-mlir"),
             Self::EmitLlvm => Some("--emit-llvm"),
             Self::EmitObj => Some("--emit-obj"),
@@ -29,11 +31,19 @@ impl CodegenMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CodegenBackend {
+    #[default]
+    Mlir,
+    Cpp,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
     pub werror: bool,
     pub no_typecheck: bool,
     pub codegen_mode: CodegenMode,
+    pub backend: CodegenBackend,
     pub target: Option<String>,
     /// Build with debug info (no optimizations, no stripping).
     pub debug: bool,
@@ -54,6 +64,66 @@ fn line_map_from_source(source: &str) -> Vec<usize> {
         }
     }
     map
+}
+
+fn default_output_path(input: &str, target: Option<&str>) -> String {
+    let default_output = Path::new(input)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("a.out")
+        .to_string();
+    let suffix = super::platform::exe_suffix();
+    if !suffix.is_empty() && target.is_none() && !default_output.ends_with(suffix) {
+        format!("{default_output}{suffix}")
+    } else {
+        default_output
+    }
+}
+
+fn run_codegen(
+    codegen_bin: &str,
+    ast_data: &[u8],
+    codegen_flag: &str,
+    target: Option<&str>,
+    debug: bool,
+    output: Option<&str>,
+) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(codegen_bin);
+    cmd.arg(codegen_flag)
+        .stdin(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit());
+    if let Some(target) = target {
+        cmd.arg(format!("--target={target}"));
+    }
+    if debug {
+        cmd.arg("--debug");
+    }
+    if let Some(output_path) = output {
+        cmd.arg("-o").arg(output_path);
+        cmd.stdout(std::process::Stdio::null());
+    } else {
+        cmd.stdout(std::process::Stdio::inherit());
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Error: cannot start hew-codegen: {e}"))?;
+
+    child
+        .stdin
+        .take()
+        .expect("stdin should be piped")
+        .write_all(ast_data)
+        .map_err(|e| format!("Error: cannot write to hew-codegen: {e}"))?;
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("Error: hew-codegen failed: {e}"))?;
+    if !status.success() {
+        return Err("codegen failed".into());
+    }
+
+    Ok(())
 }
 
 fn render_inferred_type_serialization_diagnostic(
@@ -549,44 +619,80 @@ pub fn compile(
         line_map.as_deref(),
     );
 
-    // 5. Invoke hew-codegen
     let codegen_bin = find_codegen_binary()?;
+    if options.codegen_mode == CodegenMode::EmitCpp {
+        run_codegen(
+            &codegen_bin,
+            &ast_data,
+            "--emit-cpp",
+            options.target.as_deref(),
+            options.debug,
+            output,
+        )?;
+        return Ok(output.unwrap_or("").to_string());
+    }
+
+    if options.backend == CodegenBackend::Cpp {
+        if matches!(
+            options.codegen_mode,
+            CodegenMode::EmitMlir | CodegenMode::EmitLlvm
+        ) {
+            return Err("Error: --backend=cpp does not support --emit-mlir or --emit-llvm".into());
+        }
+
+        let cpp_temp = tempfile::Builder::new()
+            .prefix("hew_")
+            .suffix(".cpp")
+            .tempfile()
+            .map_err(|e| format!("Error: cannot create temp file: {e}"))?
+            .into_temp_path();
+        let cpp_path = cpp_temp.display().to_string();
+
+        run_codegen(
+            &codegen_bin,
+            &ast_data,
+            "--emit-cpp",
+            options.target.as_deref(),
+            options.debug,
+            Some(&cpp_path),
+        )?;
+
+        if options.codegen_mode == CodegenMode::EmitObj {
+            let output_path = output.unwrap_or("output.o");
+            super::link::compile_cpp_source(
+                &cpp_path,
+                output_path,
+                options.target.as_deref(),
+                options.debug,
+                true,
+                &extra_libs,
+            )?;
+            return Ok(output_path.to_string());
+        }
+
+        let default_output = default_output_path(input, options.target.as_deref());
+        let output_path = output.unwrap_or(&default_output);
+        super::link::compile_cpp_source(
+            &cpp_path,
+            output_path,
+            options.target.as_deref(),
+            options.debug,
+            false,
+            &extra_libs,
+        )?;
+        return Ok(output_path.to_string());
+    }
+
+    // 5. Invoke hew-codegen
     if let Some(codegen_flag) = options.codegen_mode.codegen_flag() {
-        let mut cmd = std::process::Command::new(&codegen_bin);
-        cmd.arg(codegen_flag)
-            .stdin(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::inherit());
-        if let Some(target) = &options.target {
-            cmd.arg(format!("--target={target}"));
-        }
-        if options.debug {
-            cmd.arg("--debug");
-        }
-        if let Some(output_path) = output {
-            cmd.arg("-o").arg(output_path);
-            cmd.stdout(std::process::Stdio::null());
-        } else {
-            cmd.stdout(std::process::Stdio::inherit());
-        }
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Error: cannot start hew-codegen: {e}"))?;
-
-        child
-            .stdin
-            .take()
-            .expect("stdin should be piped")
-            .write_all(&ast_data)
-            .map_err(|e| format!("Error: cannot write to hew-codegen: {e}"))?;
-
-        let status = child
-            .wait()
-            .map_err(|e| format!("Error: hew-codegen failed: {e}"))?;
-        if !status.success() {
-            return Err("codegen failed".into());
-        }
-
+        run_codegen(
+            &codegen_bin,
+            &ast_data,
+            codegen_flag,
+            options.target.as_deref(),
+            options.debug,
+            output,
+        )?;
         return Ok(output.unwrap_or("").to_string());
     }
 
@@ -629,19 +735,7 @@ pub fn compile(
     }
 
     // 6. Link
-    let default_output = Path::new(input)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("a.out")
-        .to_string();
-    // Append platform exe suffix when compiling for native host
-    let suffix = super::platform::exe_suffix();
-    let default_output =
-        if !suffix.is_empty() && options.target.is_none() && !default_output.ends_with(suffix) {
-            format!("{default_output}{suffix}")
-        } else {
-            default_output
-        };
+    let default_output = default_output_path(input, options.target.as_deref());
     let output_path = output.unwrap_or(&default_output);
     super::link::link_executable(
         &obj_path,
@@ -1557,6 +1651,16 @@ mod tests {
     fn test_line_map_empty() {
         let map = line_map_from_source("");
         assert_eq!(map, vec![0]);
+    }
+
+    #[test]
+    fn emit_cpp_codegen_flag_is_exposed() {
+        assert_eq!(CodegenMode::EmitCpp.codegen_flag(), Some("--emit-cpp"));
+    }
+
+    #[test]
+    fn compile_options_default_to_mlir_backend() {
+        assert_eq!(CompileOptions::default().backend, CodegenBackend::Mlir);
     }
 
     #[test]

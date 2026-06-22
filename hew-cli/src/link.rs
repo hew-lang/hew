@@ -2,6 +2,14 @@
 //! the final binary from the object file emitted by `hew-codegen` and the Hew
 //! runtime library.
 
+fn sanitize_output_path(output_path: &str) -> String {
+    if output_path.starts_with('-') {
+        format!("./{output_path}")
+    } else {
+        output_path.to_string()
+    }
+}
+
 fn runtime_lib_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "hew_runtime.lib"
@@ -33,11 +41,7 @@ pub fn link_executable(
     let runtime_lib = find_runtime_lib(runtime_lib_name())?;
 
     // Prevent output paths starting with '-' from being interpreted as cc flags
-    let safe_output = if output_path.starts_with('-') {
-        format!("./{output_path}")
-    } else {
-        output_path.to_string()
-    };
+    let safe_output = sanitize_output_path(output_path);
 
     // Prefer clang (consistent with the LLVM/MLIR toolchain), fall back to cc.
     #[cfg(not(target_os = "windows"))]
@@ -166,6 +170,102 @@ pub fn link_executable(
             eprintln!("{hint}");
         }
         return Err("linking failed".into());
+    }
+
+    Ok(())
+}
+
+/// Compile generated C++ source either to an object file (`emit_object = true`)
+/// or directly to a native executable.
+pub fn compile_cpp_source(
+    source_path: &str,
+    output_path: &str,
+    target: Option<&str>,
+    debug: bool,
+    emit_object: bool,
+    extra_libs: &[String],
+) -> Result<(), String> {
+    #[cfg(not(target_os = "windows"))]
+    let compiler = if has_tool("clang++") {
+        "clang++"
+    } else if has_tool("c++") {
+        "c++"
+    } else {
+        return Err("Error: clang++ (or c++) not found. Install a C++ compiler.".into());
+    };
+    #[cfg(target_os = "windows")]
+    let compiler = if has_tool("clang++") {
+        "clang++"
+    } else {
+        return Err("Error: clang++ not found. Install LLVM to use --backend=cpp.".into());
+    };
+
+    let mut cmd = std::process::Command::new(compiler);
+    cmd.arg("-std=c++20").arg(source_path);
+
+    if emit_object {
+        cmd.arg("-c");
+    }
+
+    if let Some(target) = target {
+        cmd.arg(format!("--target={target}"));
+    }
+
+    if debug {
+        cmd.args(["-O0", "-g"]);
+    } else {
+        cmd.arg("-O2");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    if !emit_object && has_tool("ld.lld") {
+        cmd.arg("-fuse-ld=lld");
+    }
+    #[cfg(target_os = "windows")]
+    if !emit_object && has_tool("lld-link") {
+        cmd.arg("-fuse-ld=lld-link");
+    }
+
+    if !emit_object {
+        for lib in extra_libs {
+            cmd.arg(lib);
+        }
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            cmd.arg("-Wl,--gc-sections");
+            if !debug {
+                cmd.arg("-Wl,--strip-all");
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            cmd.arg("-Wl,-dead_strip");
+            if !debug {
+                cmd.arg("-Wl,-x");
+            }
+        }
+    }
+
+    let safe_output = sanitize_output_path(output_path);
+    cmd.arg("-o").arg(&safe_output);
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Error: cannot invoke C++ compiler: {e}"))?;
+
+    let stderr_text = String::from_utf8_lossy(&output.stderr);
+    if !stderr_text.is_empty() {
+        eprint!("{stderr_text}");
+    }
+
+    if !output.status.success() {
+        return Err(if emit_object {
+            "C++ compilation failed".into()
+        } else {
+            "C++ compilation/linking failed".into()
+        });
     }
 
     Ok(())
@@ -755,11 +855,7 @@ mod tests {
     #[test]
     fn output_path_dash_prefix_is_sanitised() {
         let output_path = "-evil";
-        let safe = if output_path.starts_with('-') {
-            format!("./{output_path}")
-        } else {
-            output_path.to_string()
-        };
+        let safe = sanitize_output_path(output_path);
         assert_eq!(safe, "./-evil");
     }
 

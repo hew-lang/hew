@@ -54,6 +54,22 @@ target_link_libraries(test_translate PRIVATE
 
 add_test(NAME translate COMMAND test_translate)
 
+# ── C++ emitter test ─────────────────────────────────────────────────────────
+add_executable(test_cpp_emitter test_cpp_emitter.cpp)
+
+target_include_directories(test_cpp_emitter PRIVATE
+  ${PROJECT_SOURCE_DIR}/include
+  ${PROJECT_BINARY_DIR}/include
+)
+
+target_link_libraries(test_cpp_emitter PRIVATE
+  HewCodegen
+  HewMLIRDialect
+  $<$<NOT:$<BOOL:${HEW_STATIC_LINK}>>:${MLIR_SHARED_LIB}>
+)
+
+add_test(NAME cpp_emitter COMMAND test_cpp_emitter)
+
 # ── End-to-end example tests (compile + run .hew files) ─────────────────────
 # E2E tests use the hew CLI (Rust compiler driver) for full-pipeline compilation.
 if(NOT HEW_CLI)

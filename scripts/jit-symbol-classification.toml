@@ -242,6 +242,7 @@ stable = [
   "hew_hashmap_clone_layout",
   "hew_hashmap_contains_key_layout",
   "hew_hashmap_free_layout",
+  "hew_hashmap_get_clone_layout",
   "hew_hashmap_get_layout",
   "hew_hashmap_insert_layout",
   "hew_hashmap_keys_layout",

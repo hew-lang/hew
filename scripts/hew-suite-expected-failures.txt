@@ -11,15 +11,5 @@
 #
 # Format: <test_function_name>  # <root_cause>; converging lane: <lane>
 #
-# Total: 5 unique failing test function names.
+# Total: 1 unique failing test function name.
 test_generic_vec_iter_i64  # G5 split follow-on: Hew-level Vec<T>::iter substrate
-# G6 generic record clone (RED until the per-mono clone/drop synthesis lands in
-# the codegen slice of feat/v06-generic-record-clone). The clone of a generic
-# record instantiation resolves a declared-but-undefined
-# `__hew_record_clone_inplace_<R>` thunk and the module fails LLVM verify until
-# the thunk is synthesised per concrete instantiation. Delete these four lines
-# in the codegen slice when they flip green.
-test_generic_record_clone_scalar_independence  # G6: per-mono record clone synthesis; converging lane: G6
-test_generic_record_clone_string_field  # G6: per-mono record clone synthesis; converging lane: G6
-test_generic_record_clone_nested  # G6: per-mono record clone synthesis; converging lane: G6
-test_generic_record_clone_multi_instantiation  # G6: per-mono record clone synthesis; converging lane: G6

@@ -8997,6 +8997,57 @@ fn collect_record_inplace_drop_seeds(
     seeds
 }
 
+/// Collect the monomorphised record layout key of every `RecordCloneInplace`
+/// instruction in raw MIR so its `__hew_record_clone_inplace_<key>` /
+/// `__hew_record_drop_inplace_<key>` thunk PAIR is synthesised by
+/// `emit_state_clone_drop_synthesis`.
+///
+/// `clone <record>` lowers to `RecordCloneInplace { record_name, .. }`, where
+/// `record_name` is the monomorphised layout key (the bare name for a
+/// monomorphic record, the mangled `Pair$$i64$i64` for a generic instantiation —
+/// see `user_record_layout_key` in hew-mir). A generic instantiation reaches
+/// the synthesis pass through NO other seed:
+///
+///  * `user_clone_record_seeds` (the checker-side clone seed) carries the bare
+///    declared name (`Pair`), which never matches the mangled layout key; and
+///  * the drop twin (`collect_record_inplace_drop_seeds`) only fires for a
+///    record with a non-trivial drop, so a generic record whose fields are all
+///    Copy (`Pair<i64, i64>`) is cloned but never drop-seeded.
+///
+/// Without this seed the generic clone thunk is declared-but-undefined and LLVM
+/// verify rejects the module. Seeding the clone site directly closes the gap;
+/// because the synthesis loop emits the clone AND drop body together per key,
+/// the thunk pair stays symmetric — there is no clone without its matching drop
+/// (the leak / double-free hazard on unwind).
+///
+/// A seed is registered only when `record_name` names a registered layout, so
+/// the key the synthesis pass emits a body under is exactly the key the clone
+/// call resolves; a `record_name` with no registered layout is left unseeded
+/// and fails closed loudly at LLVM verify rather than silently aliasing.
+fn collect_record_clone_inplace_seeds(
+    raw_mir: &[RawMirFunction],
+    record_layouts: &[RecordLayout],
+) -> Vec<String> {
+    let mut seeds: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for func in raw_mir {
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                let Instr::RecordCloneInplace { record_name, .. } = instr else {
+                    continue;
+                };
+                if !record_layouts.iter().any(|rl| rl.name == *record_name) {
+                    continue;
+                }
+                if seen.insert(record_name.clone()) {
+                    seeds.push(record_name.clone());
+                }
+            }
+        }
+    }
+    seeds
+}
+
 /// D2 / W3.031 — collect the record/enum layout keys of every type that
 /// appears as a `dyn Trait` CONCRETE so its
 /// `__hew_{record,enum}_drop_inplace_<key>` body is synthesised before
@@ -32240,6 +32291,17 @@ fn build_module_for_target<'ctx>(
     for seed in &pipeline.user_clone_record_seeds {
         if !vec_owned_record_seeds.contains(seed) {
             vec_owned_record_seeds.push(seed.clone());
+        }
+    }
+    // Generic record-clone instantiations: `clone Pair<i64, i64>` lowers to a
+    // `RecordCloneInplace` keyed by the monomorphised layout (`Pair$$i64$i64`),
+    // which the bare-name `user_clone_record_seeds` above does not cover and
+    // which the `RecordInPlace` drop twin only covers when the record has a
+    // non-trivial drop. Seed the clone site directly so the per-mono clone/drop
+    // thunk pair is synthesised together (R1: no clone without its drop).
+    for seed in collect_record_clone_inplace_seeds(&pipeline.raw_mir, &pipeline.record_layouts) {
+        if !vec_owned_record_seeds.contains(&seed) {
+            vec_owned_record_seeds.push(seed);
         }
     }
     emit_state_clone_drop_synthesis(

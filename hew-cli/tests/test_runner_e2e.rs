@@ -209,6 +209,31 @@ fn no_test_files_in_directory_exits_non_zero() {
 }
 
 #[test]
+fn no_test_files_allow_empty_exits_zero() {
+    let dir = support::tempdir();
+    write_file(dir.path(), "notes/readme.txt", "not a Hew test\n");
+
+    let output = Command::new(hew_binary())
+        .arg("test")
+        .arg(".")
+        .arg("--no-color")
+        .arg("--allow-empty")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        output.stdout.is_empty(),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("No test files found."), "stderr: {stderr}");
+}
+
+#[test]
 fn test_zero_functions_exits_nonzero() {
     let output = run_suite(
         &[("helpers_test.hew", "fn helper() -> i64 {\n    42\n}\n")],

@@ -32,6 +32,7 @@ fn owned_vec_runtime_symbol(method: &str) -> Option<&'static str> {
         "get" => Some("hew_vec_get_owned"),
         "set" => Some("hew_vec_set_owned"),
         "pop" => Some("hew_vec_pop_owned"),
+        "contains" => Some("hew_vec_contains_owned"),
         "clone" => Some("hew_vec_clone_owned"),
         _ => None,
     }
@@ -3643,7 +3644,7 @@ impl Checker {
             // `vec_element_op_symbol`). Scoped to the element-typed ops with a
             // runtime-backed generic path; every other method/element keeps
             // failing closed by dropping the entry.
-            if matches!(method, "push" | "get" | "set" | "pop")
+            if matches!(method, "push" | "get" | "set" | "pop" | "contains")
                 && self.is_vec_element_abstract_type_param(&elem_ty)
             {
                 return;
@@ -4273,8 +4274,10 @@ impl Checker {
             // owned routing only covers the methods the owned runtime ops
             // implement (`hew_vec_{push,get,set,pop,clone}_owned`); `remove`
             // on owned elements remains fail-closed until its owned op lands.
-            if matches!(method, "push" | "get" | "set" | "pop" | "clone")
-                && self.vec_owned_element_admissible(elem_ty)
+            if matches!(
+                method,
+                "push" | "get" | "set" | "pop" | "contains" | "clone"
+            ) && self.vec_owned_element_admissible(elem_ty)
             {
                 if let Some(owned) = owned_vec_runtime_symbol(method) {
                     return Some(owned);
@@ -4307,6 +4310,16 @@ impl Checker {
             };
             self.report_error(TypeErrorKind::InvalidOperation, span, message);
             return None;
+        }
+        if method == "contains"
+            && sym == "hew_vec_contains_thunk"
+            // Equality-eligible Copy records/tuples already use the thunked
+            // BitCopy layout Vec path. Only non-Copy, owned-admissible elements
+            // are upgraded to the owned descriptor ABI.
+            && !self.vec_element_has_copy_layout(elem_ty)
+            && self.vec_owned_element_admissible(elem_ty)
+        {
+            return Some("hew_vec_contains_owned");
         }
         Some(sym)
     }
@@ -4842,8 +4855,9 @@ impl Checker {
                     let eligibility =
                         crate::eq_eligibility::ty_is_eq_eligible(&resolved_elem, &self.type_defs);
                     let is_copy = self.vec_element_has_copy_layout(&resolved_elem);
+                    let is_owned_admissible = self.vec_owned_element_admissible(&resolved_elem);
                     if matches!(eligibility, crate::eq_eligibility::EqEligibility::Eligible)
-                        && is_copy
+                        && (is_copy || is_owned_admissible)
                     {
                         self.record_resolved_vec_call("contains", &resolved_elem, span);
                     } else if matches!(eligibility, crate::eq_eligibility::EqEligibility::Eligible)

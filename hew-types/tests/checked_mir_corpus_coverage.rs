@@ -141,7 +141,7 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     // -- Pre-staged codegen intercept with no in-corpus producer
     //    (network actor attach requires a live net surface fixture).
     "hew_tcp_attach_local",
-    // -- Element-type variants with no source-reachable producer
+    // -- Ptr element-type variants with no source-reachable producer
     //    (no user surface yields a ptr-element Vec).
     "hew_vec_get_ptr",
     "hew_vec_slice_range_ptr",

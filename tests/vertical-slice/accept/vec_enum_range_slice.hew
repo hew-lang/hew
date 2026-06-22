@@ -1,0 +1,21 @@
+enum Colour { Red; Green; Blue; }
+
+fn tag(c: Colour) -> i64 {
+    match c {
+        Colour::Red => 1,
+        Colour::Green => 2,
+        Colour::Blue => 3,
+    }
+}
+
+fn main() {
+    let colours: Vec<Colour> = Vec::new();
+    colours.push(Colour::Red);
+    colours.push(Colour::Green);
+    colours.push(Colour::Blue);
+    colours.push(Colour::Red);
+    let middle = colours[1..3];
+    println(middle.len());
+    println(tag(middle.get(0)));
+    println(tag(middle.get(1)));
+}

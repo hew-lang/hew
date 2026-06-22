@@ -1,0 +1,32 @@
+//! Generic Vec<T>::contains must re-resolve through the concrete element ABI.
+
+import std::testing;
+
+type VecContainsName {
+    label: string;
+}
+
+fn generic_contains<T>(xs: Vec<T>, needle: T) -> bool {
+    xs.contains(needle)
+}
+
+#[test]
+fn test_generic_vec_contains_i64_string_owned_record() {
+    let ints: Vec<i64> = Vec::new();
+    ints.push(10);
+    ints.push(20);
+    testing.assert_true(generic_contains(ints, 20));
+    testing.assert_false(generic_contains(ints, 99));
+
+    let names: Vec<string> = Vec::new();
+    names.push("ada");
+    names.push("grace");
+    testing.assert_true(generic_contains(names, "grace"));
+    testing.assert_false(generic_contains(names, "linus"));
+
+    let records: Vec<VecContainsName> = Vec::new();
+    records.push(VecContainsName { label: "owned" });
+    records.push(VecContainsName { label: "record" });
+    testing.assert_true(generic_contains(records, VecContainsName { label: "record" }));
+    testing.assert_false(generic_contains(records, VecContainsName { label: "missing" }));
+}

@@ -1123,6 +1123,107 @@ pub unsafe extern "C" fn hew_vec_slice_range_str(
     }
 }
 
+/// Allocate a new `HewVec` populated from `v[start..end)` for `BitCopy`
+/// layout-backed elements. The fresh vec is constructed with the same
+/// thunk-less layout descriptor and receives a byte-for-byte copy of the
+/// selected initialized element range.
+///
+/// # Safety
+///
+/// - `v` must be a valid layout-backed `HewVec`.
+/// - `layout` must match the layout descriptor stamped into `v`.
+/// - The returned pointer must be freed via [`hew_vec_free`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_slice_range_layout(
+    v: *mut HewVec,
+    start: i64,
+    end: i64,
+    layout: *const HewTypeLayout,
+) -> *mut HewVec {
+    cabi_guard!(v.is_null() || layout.is_null(), ptr::null_mut());
+    // SAFETY: guards reject null pointers; helper validates BitCopy layout semantics.
+    unsafe {
+        validate_bitcopy_layout_operation(v, layout);
+        let (start_u, end_u) = check_slice_bounds(v, start, end);
+        let count = end_u - start_u;
+        let out = hew_vec_new_with_layout(layout);
+        if out.is_null() {
+            libc::abort();
+        }
+        if count == 0 {
+            return out;
+        }
+        ensure_cap_raw(out, count);
+        let elem_size = (*layout).size;
+        let byte_count = count.checked_mul(elem_size).unwrap_or_else(|| {
+            let msg = b"PANIC: Vec layout slice byte count overflow\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        });
+        let start_byte = start_u.checked_mul(elem_size).unwrap_or_else(|| {
+            let msg = b"PANIC: Vec layout slice start offset overflow\n\0";
+            write_stderr(&msg[..msg.len() - 1]);
+            libc::abort();
+        });
+        let src = (*v).data.add(start_byte);
+        core::ptr::copy_nonoverlapping(src, (*out).data, byte_count);
+        (*out).len = count;
+        out
+    }
+}
+
+/// Allocate a new `HewVec` populated from `v[start..end)` for owned
+/// descriptor-backed elements. Each selected element is deep-cloned through the
+/// stamped `HewVecElemLayout.clone_fn`, so the returned vec owns independent
+/// element heaps and frees through `hew_vec_free_owned`.
+///
+/// # Safety
+///
+/// `v` must be an owned-element `HewVec`. The returned pointer must be freed
+/// via [`hew_vec_free_owned`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_slice_range_owned(
+    v: *mut HewVec,
+    start: i64,
+    end: i64,
+) -> *mut HewVec {
+    cabi_guard!(v.is_null(), ptr::null_mut());
+    // SAFETY: guard rejects null; descriptor presence/thunks are validated by helpers.
+    unsafe {
+        let layout = owned_descriptor(v);
+        let clone_fn = owned_clone_fn(layout);
+        let (start_u, end_u) = check_slice_bounds(v, start, end);
+        let count = end_u - start_u;
+        let out = hew_vec_new_with_elem_layout(layout);
+        if out.is_null() {
+            libc::abort();
+        }
+        if count == 0 {
+            return out;
+        }
+        ensure_cap_raw(out, count);
+        let elem_size = layout.size;
+        for i in 0..count {
+            let src = (*v).data.add((start_u + i) * elem_size);
+            let dst = (*out).data.add(i * elem_size);
+            core::ptr::copy_nonoverlapping(src, dst, elem_size);
+            let status = clone_fn(
+                src.cast::<core::ffi::c_void>(),
+                dst.cast::<core::ffi::c_void>(),
+            );
+            if status != 0 {
+                (*out).len = i;
+                hew_vec_free_owned(out);
+                let msg = b"PANIC: Vec owned slice clone failed\n\0";
+                write_stderr(&msg[..msg.len() - 1]);
+                libc::abort();
+            }
+            (*out).len = i + 1;
+        }
+        out
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Set
 // ---------------------------------------------------------------------------
@@ -2830,6 +2931,50 @@ pub unsafe extern "C" fn hew_vec_equals_thunk(
             }
         }
         1
+    }
+}
+
+/// Compare elements of an owned-element Vec using a caller-provided equality
+/// thunk. The comparison borrows each live slot; it does not clone or drop
+/// elements and therefore preserves the owned Vec's descriptor discipline.
+///
+/// # Safety
+///
+/// - `v` may be null; null returns 0.
+/// - `val` may be null; null returns 0. Otherwise it must point to one
+///   readable element blob.
+/// - `eq_fn` must be a valid non-null function pointer matching
+///   [`HewVecEqThunk`]. A null callback aborts with a named diagnostic.
+/// - `v` must be an owned-element `HewVec` created with
+///   [`hew_vec_new_with_elem_layout`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_contains_owned(
+    v: *const HewVec,
+    val: *const core::ffi::c_void,
+    eq_fn: Option<HewVecEqThunk>,
+) -> i32 {
+    cabi_guard!(v.is_null() || val.is_null(), 0);
+    let Some(eq_fn) = eq_fn else {
+        // SAFETY: abort path is safe at the C ABI boundary.
+        unsafe { abort_null_eq_fn() }
+    };
+    // SAFETY: null pointers were rejected above; owned_descriptor validates the
+    // stamped descriptor before we inspect slots.
+    unsafe {
+        let layout = owned_descriptor(v);
+        let len = (*v).len;
+        if len > (*v).cap || (len > 0 && (*v).data.is_null()) {
+            abort_layout_aware_operation();
+        }
+        let elem_size = layout.size;
+        let data = (*v).data;
+        for i in 0..len {
+            let elem_ptr = data.add(i * elem_size).cast::<core::ffi::c_void>();
+            if eq_fn(elem_ptr, val) != 0 {
+                return 1;
+            }
+        }
+        0
     }
 }
 

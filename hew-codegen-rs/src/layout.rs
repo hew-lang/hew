@@ -952,6 +952,7 @@ pub(crate) fn is_layout_vec_runtime_symbol(symbol: &str) -> bool {
             | "hew_vec_contains_thunk"
             | "hew_vec_remove_at_layout"
             | "hew_vec_clone_layout"
+            | "hew_vec_slice_range_layout"
     )
 }
 
@@ -993,6 +994,13 @@ pub(crate) fn layout_vec_fn_type<'ctx>(
         // BitCopy bulk-copy clone; returns a freshly allocated *mut HewVec.
         // The hidden layout pointer is synthesized by codegen from the Vec element type.
         "hew_vec_clone_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
+        // `ptr hew_vec_slice_range_layout(ptr vec, i64 start, i64 end, ptr layout) -> ptr`.
+        // Range-slice for BitCopy layout-backed elements; the hidden layout
+        // pointer is synthesized by codegen from the Vec element type.
+        "hew_vec_slice_range_layout" => Ok(ptr_ty.fn_type(
+            &[ptr_ty.into(), i64_ty.into(), i64_ty.into(), ptr_ty.into()],
+            false,
+        )),
         _ => Err(CodegenError::FailClosed(format!(
             "not a layout Vec runtime symbol: {symbol}"
         ))),

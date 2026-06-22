@@ -392,6 +392,21 @@ extern "C" {
         rhs: *const HewVec,
         eq_fn: Option<HewVecEqThunk>,
     ) -> i32;
+    // WASM-TODO(#1451): mirror the descriptor Vec contains/slice symbols in the
+    // wasm/sandbox runtime path; native stays fail-closed through the C ABI
+    // declarations below until that parity sweep lands.
+    pub fn hew_vec_contains_owned(
+        v: *const HewVec,
+        data: *const c_void,
+        eq_fn: Option<HewVecEqThunk>,
+    ) -> i32;
+    pub fn hew_vec_slice_range_layout(
+        v: *mut HewVec,
+        start: i64,
+        end: i64,
+        layout: *const HewTypeLayout,
+    ) -> *mut HewVec;
+    pub fn hew_vec_slice_range_owned(v: *mut HewVec, start: i64, end: i64) -> *mut HewVec;
 
     // Remove
     pub fn hew_vec_remove_i32(v: *mut HewVec, val: i32);

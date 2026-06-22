@@ -2,8 +2,9 @@
 //
 // Pins `hew_vec_get_str` (fresh owned string from indexing), the
 // layout-witness record getter (`hew_vec_get_layout`), string-element
-// slice (`hew_vec_slice_range_str`), and the owned-element scope-exit
-// drop (`hew_vec_free_owned`) plus per-string drops.
+// slice (`hew_vec_slice_range_str`), owned-element slice
+// (`hew_vec_slice_range_owned`), and the owned-element scope-exit drop
+// (`hew_vec_free_owned`) plus per-string drops.
 type Point {
     x: i64;
     y: i64;
@@ -35,6 +36,9 @@ fn main() {
     println(p.x);
     let tags: Vec<Tag> = Vec::new();
     tags.push(Tag { name: "a", n: 1 });
+    tags.push(Tag { name: "b", n: 2 });
     let t = tags.get(0);
     println(t.n);
+    let tail_tags = tags[1..2];
+    println(tail_tags.get(0).n);
 }

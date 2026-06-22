@@ -27171,9 +27171,27 @@ fn render_elem_ty(ty: &ResolvedTy) -> String {
         ResolvedTy::Usize => "usize".to_string(),
         ResolvedTy::F32 => "f32".to_string(),
         ResolvedTy::F64 => "f64".to_string(),
-        ResolvedTy::String => "String".to_string(),
+        ResolvedTy::String => "string".to_string(),
         ResolvedTy::Bytes => "bytes".to_string(),
+        ResolvedTy::Duration => "duration".to_string(),
         ResolvedTy::Unit => "()".to_string(),
+        ResolvedTy::Function { params, ret } => {
+            let params = params
+                .iter()
+                .map(render_elem_ty)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("fn({params}) -> {}", render_elem_ty(ret))
+        }
+        ResolvedTy::Closure { params, ret, .. } => {
+            let params = params
+                .iter()
+                .map(render_elem_ty)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("closure({params}) -> {}", render_elem_ty(ret))
+        }
+        ResolvedTy::TypeParam { name } => name.clone(),
         ResolvedTy::Named { name, args, .. } if args.is_empty() => name.clone(),
         ResolvedTy::Named { name, args, .. } => {
             let arg_list = args
@@ -27235,9 +27253,14 @@ fn check_vec_index_element_type(
                 | ResolvedTy::U32
                 | ResolvedTy::I64
                 | ResolvedTy::U64
+                | ResolvedTy::Isize
+                | ResolvedTy::Usize
                 | ResolvedTy::F32
                 | ResolvedTy::F64
                 | ResolvedTy::String
+                | ResolvedTy::Named { .. }
+                | ResolvedTy::Tuple(_)
+                | ResolvedTy::TypeParam { .. }
         )
     } else {
         matches!(
@@ -27252,11 +27275,14 @@ fn check_vec_index_element_type(
                 | ResolvedTy::U32
                 | ResolvedTy::I64
                 | ResolvedTy::U64
+                | ResolvedTy::Isize
+                | ResolvedTy::Usize
                 | ResolvedTy::F32
                 | ResolvedTy::F64
                 | ResolvedTy::String
                 | ResolvedTy::Named { .. }
                 | ResolvedTy::Tuple(_)
+                | ResolvedTy::TypeParam { .. }
                 // Closure-pair elements: `xs[i]` loads the pair out of the
                 // slot's heap box (`hew_vec_get_ptr` + codegen unbox). The
                 // range-slice form stays unsupported — a sliced vec would
@@ -27279,8 +27305,9 @@ fn check_vec_index_element_type(
             format!(
                 "Vec<{rendered}> range-slice (xs[a..b]) is not yet supported. \
                  Supported element types for Vec range-slicing are: \
-                 bool, char, i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, \
-                 and String."
+                 bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
+                 usize, f32, f64, string, tuples, user-defined types, and \
+                 type-parameter elements."
             ),
         )
     } else {
@@ -27291,8 +27318,9 @@ fn check_vec_index_element_type(
             format!(
                 "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
                  Supported element types for Vec scalar indexing are: \
-                 bool, char, i8, u8, i16, u16, i32, u32, i64, u64, f32, f64, \
-                 String, tuples, and user-defined types (records, enums, \
+                 bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
+                 usize, f32, f64, string, tuples, type-parameter elements, \
+                 and user-defined types (records, enums, \
                  Duplex, etc.)."
             ),
         )

@@ -83,8 +83,8 @@ pub enum VecGetElem {
 
 /// Element-type discriminator for `Vec<T>::slice_range` runtime entries
 /// (`hew_vec_slice_range_*`). Narrower than [`VecGetElem`] because slice
-/// does not have a bool path today and the layout/owned paths are not
-/// yet wired in the runtime.
+/// does not have a bool path today; descriptor-backed record/tuple elements
+/// route through the `Layout`/`Owned` substrate variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter)]
 pub enum VecSliceElem {
     #[default]
@@ -92,6 +92,8 @@ pub enum VecSliceElem {
     F64,
     I32,
     I64,
+    Layout,
+    Owned,
     Ptr,
     Str,
 }
@@ -677,6 +679,8 @@ impl RuntimeCallFamily {
             Self::VecSliceRange(VecSliceElem::F64) => "hew_vec_slice_range_f64",
             Self::VecSliceRange(VecSliceElem::I32) => "hew_vec_slice_range_i32",
             Self::VecSliceRange(VecSliceElem::I64) => "hew_vec_slice_range_i64",
+            Self::VecSliceRange(VecSliceElem::Layout) => "hew_vec_slice_range_layout",
+            Self::VecSliceRange(VecSliceElem::Owned) => "hew_vec_slice_range_owned",
             Self::VecSliceRange(VecSliceElem::Ptr) => "hew_vec_slice_range_ptr",
             Self::VecSliceRange(VecSliceElem::Str) => "hew_vec_slice_range_str",
             // Vtable
@@ -911,6 +915,8 @@ impl RuntimeCallFamily {
             "hew_vec_slice_range_f64" => Self::VecSliceRange(VecSliceElem::F64),
             "hew_vec_slice_range_i32" => Self::VecSliceRange(VecSliceElem::I32),
             "hew_vec_slice_range_i64" => Self::VecSliceRange(VecSliceElem::I64),
+            "hew_vec_slice_range_layout" => Self::VecSliceRange(VecSliceElem::Layout),
+            "hew_vec_slice_range_owned" => Self::VecSliceRange(VecSliceElem::Owned),
             "hew_vec_slice_range_ptr" => Self::VecSliceRange(VecSliceElem::Ptr),
             "hew_vec_slice_range_str" => Self::VecSliceRange(VecSliceElem::Str),
             // Vtable

@@ -7571,6 +7571,34 @@ impl Builder {
         })
     }
 
+    /// True when a non-owned Vec element is backed by a runtime layout
+    /// descriptor, matching codegen's `layout_vec_element_needs_descriptor`
+    /// constructor authority. This is intentionally layout-membership based,
+    /// not `ValueClass::BitCopy` based: payload-free and scalar-payload direct
+    /// enums own no heap and are constructed as layout Vecs, but they are not
+    /// marked `BitCopy` in the HIR value-class table.
+    fn vec_element_uses_layout_descriptor(&self, elem_ty: &ResolvedTy) -> bool {
+        match elem_ty {
+            ResolvedTy::Tuple(_) => true,
+            ResolvedTy::Named { name, args, .. } => {
+                let short = short_name(name);
+                let key = if args.is_empty() {
+                    name.clone()
+                } else {
+                    mangle_layout_key(short, args)
+                };
+                self.record_field_orders
+                    .keys()
+                    .any(|known| known == &key || short_name(known) == short)
+                    || self.enum_layouts.iter().any(|el| {
+                        !el.is_indirect
+                            && (el.name == key || el.name == *name || short_name(&el.name) == short)
+                    })
+            }
+            _ => false,
+        }
+    }
+
     /// True when `vec_ty` is a `Vec<T>` whose element `T` is an owned-Vec element.
     /// Substitutes through the monomorphisation map first so a polymorphic
     /// receiver type resolves to its concrete element before the owned-ness
@@ -7640,6 +7668,7 @@ impl Builder {
                 | hew_types::VecMethod::Get
                 | hew_types::VecMethod::Set
                 | hew_types::VecMethod::Pop
+                | hew_types::VecMethod::Contains
         ) {
             return None;
         }
@@ -7659,7 +7688,7 @@ impl Builder {
         // authority subsumes the verdict table here, mirroring the concrete
         // path's precedence (owned-ness wins over the value-class token).
         if self.is_owned_vec_element(elem) {
-            // The four element ops are the only `vec_method` values that reach
+            // The element ops are the only `vec_method` values that reach
             // here (guarded by the `matches!` above); the remaining variants
             // are monomorphic and never carry the `_FAMILY` placeholder.
             let owned_symbol = match vec_method {
@@ -7667,10 +7696,11 @@ impl Builder {
                 hew_types::VecMethod::Get => "hew_vec_get_owned",
                 hew_types::VecMethod::Set => "hew_vec_set_owned",
                 hew_types::VecMethod::Pop => "hew_vec_pop_owned",
+                hew_types::VecMethod::Contains => "hew_vec_contains_owned",
                 other => unreachable!(
                     "resolve_polymorphic_vec_element_symbol reached the owned arm \
                      for non-element Vec method {other:?}; the `matches!` guard \
-                     above admits only push/get/set/pop"
+                     above admits only push/get/set/pop/contains"
                 ),
             };
             return Some(owned_symbol.to_string());
@@ -16317,6 +16347,10 @@ impl Builder {
     ///
     /// Unsupported element types emit `MirDiagnostic::NotYetImplemented`
     /// and return `None` (tracked gap, not silent shim).
+    #[expect(
+        clippy::too_many_lines,
+        reason = "explicit CFG construction plus element ABI dispatch must stay adjacent"
+    )]
     fn lower_vec_index(
         &mut self,
         container: &HirExpr,
@@ -16415,7 +16449,9 @@ impl Builder {
             ResolvedTy::I16 => "hew_vec_get_i16",
             ResolvedTy::U16 => "hew_vec_get_u16",
             ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => "hew_vec_get_i32",
-            ResolvedTy::I64 | ResolvedTy::U64 => "hew_vec_get_i64",
+            ResolvedTy::I64 | ResolvedTy::U64 | ResolvedTy::Isize | ResolvedTy::Usize => {
+                "hew_vec_get_i64"
+            }
             ResolvedTy::F32 => "hew_vec_get_f32",
             ResolvedTy::F64 => "hew_vec_get_f64",
             ResolvedTy::String => "hew_vec_get_str",
@@ -16534,10 +16570,11 @@ impl Builder {
     /// `IndexOutOfBounds`), matching B-2's discipline that each trap
     /// reports its true cause.
     ///
-    /// Element-type dispatch (`hew_vec_slice_range_T`) covers the same
-    /// set as `hew_vec_get_T` (C-2) plus `str`: i32/u32, i64/u64, f64,
-    /// Named heap (ptr), and `String`. For Vec<String> the runtime
-    /// copies each element into the fresh header-aware vec and sets
+    /// Element-type dispatch (`hew_vec_slice_range_T`) covers scalar
+    /// bitcopy elements through the bytesize-generic path, `string` through
+    /// retain-on-slice, pointer-shaped named heap handles, and
+    /// descriptor-backed layout/owned records. For Vec<String> the runtime
+    /// retains each element into the fresh header-aware vec and sets
     /// `elem_kind == String` so the existing free-on-drop path releases them.
     #[expect(
         clippy::too_many_lines,
@@ -16554,7 +16591,8 @@ impl Builder {
         site: hew_hir::SiteId,
     ) -> Option<Place> {
         // Resolve element type from the result Vec<T> for runtime dispatch.
-        let elem_ty = match result_ty {
+        let result_ty = self.subst_ty(result_ty);
+        let elem_ty = match &result_ty {
             ResolvedTy::Named { name, args, .. } if name == "Vec" && !args.is_empty() => {
                 args[0].clone()
             }
@@ -16586,11 +16624,13 @@ impl Builder {
             | ResolvedTy::U32
             | ResolvedTy::I64
             | ResolvedTy::U64
+            | ResolvedTy::Isize
+            | ResolvedTy::Usize
             | ResolvedTy::F32
             | ResolvedTy::F64 => "hew_vec_slice_range_bytesize",
             ResolvedTy::String => "hew_vec_slice_range_str",
-            // HIR rejects range-slices for Named elements today; this arm stays
-            // as a fail-closed backstop for any future gate relaxation.
+            _ if self.is_owned_vec_element(&elem_ty) => "hew_vec_slice_range_owned",
+            _ if self.vec_element_uses_layout_descriptor(&elem_ty) => "hew_vec_slice_range_layout",
             ResolvedTy::Named { .. } => "hew_vec_slice_range_ptr",
             other => {
                 self.diagnostics.push(MirDiagnostic {
@@ -16599,9 +16639,8 @@ impl Builder {
                         site,
                     },
                     note: "hew_vec_slice_range_T dispatch: element types supported are \
-                           i32/u32, i64/u64, f64, str (String), and Named heap types. \
-                           bool/char and other scalars map to i32/i64 in a future \
-                           width-normalisation slice."
+                           scalar bitcopy elements, string, pointer-shaped named heap \
+                           handles, and descriptor-backed layout/owned records."
                         .to_string(),
                 });
                 return None;
@@ -31748,10 +31787,13 @@ fn is_vec_receiver_borrow_symbol(callee: &str) -> bool {
             | "hew_vec_contains_f64"
             | "hew_vec_contains_str"
             | "hew_vec_contains_thunk"
+            | "hew_vec_contains_owned"
             | "hew_vec_slice_range_i32"
             | "hew_vec_slice_range_i64"
             | "hew_vec_slice_range_f64"
             | "hew_vec_slice_range_bytesize"
+            | "hew_vec_slice_range_layout"
+            | "hew_vec_slice_range_owned"
             | "hew_vec_slice_range_str"
             | "hew_vec_slice_range_ptr"
             | "hew_vec_append"

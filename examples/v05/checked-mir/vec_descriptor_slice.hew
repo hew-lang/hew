@@ -1,0 +1,32 @@
+enum CheckedMirColour {
+    Red;
+    Green;
+    Blue;
+}
+
+type CheckedMirPoint {
+    x: i64;
+    y: i64;
+}
+
+fn checked_mir_colour_tag(c: CheckedMirColour) -> i64 {
+    match c {
+        CheckedMirColour::Red => 1,
+        CheckedMirColour::Green => 2,
+        CheckedMirColour::Blue => 3,
+    }
+}
+
+fn main() {
+    let colours: Vec<CheckedMirColour> = Vec::new();
+    colours.push(CheckedMirColour::Red);
+    colours.push(CheckedMirColour::Green);
+    colours.push(CheckedMirColour::Blue);
+    let colour_slice = colours[1..3];
+    println(checked_mir_colour_tag(colour_slice.get(0)));
+    let points: Vec<CheckedMirPoint> = Vec::new();
+    points.push(CheckedMirPoint { x: 10, y: 20 });
+    points.push(CheckedMirPoint { x: 30, y: 40 });
+    let point_slice = points[0..2];
+    println(point_slice.get(1).y);
+}

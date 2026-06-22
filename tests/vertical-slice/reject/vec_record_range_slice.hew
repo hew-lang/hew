@@ -1,8 +1,0 @@
-record Point { x: i64, y: i64 }
-
-fn main() {
-    let ps: Vec<Point> = Vec::new();
-    ps.push(Point { x: 1, y: 2 });
-    let head = ps[0..1];
-    println(head.len());
-}

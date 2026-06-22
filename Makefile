@@ -213,12 +213,16 @@ ci-preflight:
 #
 # Build-graph note: cargo clippy and cargo nextest both compile the hew-cli
 # library, so `make hew` (cargo build -p hew-cli) after them only pays for the
-# final link step (~1–2 s on a warm tree).  Running it here eliminates the
-# redundant compile triggered by make lint → hew-fmt-check later in the fallback
-# lane (hew-fmt-check requires target/debug/hew but nextest does not produce it).
+# final link step (~1–2 s on a warm tree).  Some nextest smoke tests execute
+# `hew run`, which links against target/debug/libhew.a; build the stdlib archive
+# before nextest so a fresh checkout does not fail smoke with "cannot find
+# libhew.a". Running `make hew` here also eliminates the redundant compile
+# triggered by make lint → hew-fmt-check later in the fallback lane
+# (hew-fmt-check requires target/debug/hew but nextest does not produce it).
 ci-preflight-smoke:
 	cargo fmt --all -- --check
 	cargo clippy --workspace --tests -- -D warnings
+	$(MAKE) stdlib
 	cargo nextest run --workspace --profile smoke
 	$(MAKE) hew
 

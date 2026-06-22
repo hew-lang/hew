@@ -178,7 +178,14 @@ sandbox-fixtures-check:
 	cargo run -p xtask -- sandbox-fixtures --check
 
 sandbox-parity: hew stdlib
-	npm --prefix hew-sandbox-vm ci
+	@set -e; \
+	if [ ! -d hew-sandbox-vm/node_modules ] || [ ! -f hew-sandbox-vm/node_modules/.package-lock.stamp ] || [ hew-sandbox-vm/package-lock.json -nt hew-sandbox-vm/node_modules/.package-lock.stamp ]; then \
+		echo "npm --prefix hew-sandbox-vm ci"; \
+		npm --prefix hew-sandbox-vm ci; \
+		touch hew-sandbox-vm/node_modules/.package-lock.stamp; \
+	else \
+		echo "hew-sandbox-vm dependencies are fresh; skipping install"; \
+	fi
 	npm --prefix hew-sandbox-vm run build
 	cargo test -p hew-sandbox-wasm --test parity --test parity_ratchet
 

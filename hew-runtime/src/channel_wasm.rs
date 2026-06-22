@@ -266,9 +266,10 @@ fn send_bytes(sender: &HewWasmChannelSender, bytes: Vec<u8>, api_name: &str) {
     match sender.inner.try_send(bytes) {
         Ok(()) | Err(TrySendError::Closed) => {}
         Err(TrySendError::Full) => {
-            crate::set_last_error(format!(
-                "{api_name}: channel is full; message dropped (blocking send not yet implemented for wasm32)"
-            ));
+            panic!(
+                "{api_name}: channel is full; blocking send is not available on wasm32 \
+                 (cooperative scheduler does not yet support yield/resume for send parks)"
+            );
         }
     }
 }
@@ -276,8 +277,8 @@ fn send_bytes(sender: &HewWasmChannelSender, bytes: Vec<u8>, api_name: &str) {
 /// Send one element of any witness-describable type through the channel
 /// (the wasm32 counterpart of the native `hew_channel_send_layout`). The
 /// element is deep-copied into the envelope; the caller keeps its value.
-/// Non-blocking: a full queue drops the message and records a diagnostic
-/// (blocking send needs cooperative yield/resume parity).
+/// Non-blocking: a full queue traps because blocking send needs cooperative
+/// yield/resume parity.
 ///
 /// # Safety
 ///
@@ -765,64 +766,18 @@ mod tests {
         }
     }
 
-    // When a WASM channel is full, hew_channel_send_layout must set the last
-    // error and silently drop the message rather than trapping with a panic.
     #[test]
-    fn abi_send_layout_full_sets_last_error() {
+    #[should_panic(expected = "channel is full; blocking send is not available on wasm32")]
+    fn send_bytes_full_traps() {
         crate::hew_clear_error();
         let _guard = crate::runtime_test_guard();
-        let pair = hew_channel_new(1);
-        // SAFETY: extracted handles are used only within this test and are
-        // closed exactly once before returning.
-        unsafe {
-            let tx = hew_channel_pair_sender(pair);
-            let rx = hew_channel_pair_receiver(pair);
-            hew_channel_pair_free(pair);
+        let (tx, _rx) = channel(1);
+        let tx = HewWasmChannelSender::new(tx);
 
-            let plain_witness = plain_layout(8, 8);
+        // Fill the channel to capacity.
+        send_bytes(&tx, vec![1], "hew_channel_send_layout");
 
-            // Fill the channel to capacity.
-            let one: i64 = 1;
-            hew_channel_send_layout(tx, std::ptr::addr_of!(one).cast(), &raw const plain_witness);
-
-            // Send to a full channel — must NOT panic; must set last error.
-            let two: i64 = 2;
-            hew_channel_send_layout(tx, std::ptr::addr_of!(two).cast(), &raw const plain_witness);
-
-            let err_ptr = crate::hew_last_error();
-            assert!(
-                !err_ptr.is_null(),
-                "hew_last_error should be set after send on full channel"
-            );
-            let err = CStr::from_ptr(err_ptr).to_str().unwrap();
-            assert!(
-                err.contains("full") || err.contains("Full"),
-                "error message should mention full channel, got: {err:?}"
-            );
-
-            // Only the first message should be in the queue.
-            let mut value: i64 = -1;
-            let rc = hew_channel_try_recv_layout(
-                rx,
-                std::ptr::addr_of_mut!(value).cast(),
-                &raw const plain_witness,
-            );
-            assert_eq!(rc, 1);
-            assert_eq!(value, 1, "first element must be dequeued");
-
-            // The second message must have been dropped (not enqueued).
-            let rc = hew_channel_try_recv_layout(
-                rx,
-                std::ptr::addr_of_mut!(value).cast(),
-                &raw const plain_witness,
-            );
-            assert_eq!(
-                rc, 0,
-                "full-channel send must not enqueue the dropped message"
-            );
-
-            hew_channel_sender_close(tx);
-            hew_channel_receiver_close(rx);
-        }
+        // Send to a full channel — must trap rather than silently dropping.
+        send_bytes(&tx, vec![2], "hew_channel_send_layout");
     }
 }

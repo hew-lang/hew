@@ -307,6 +307,10 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/managed_record_or_enum_eq.hew" \
   "layout-managed/non-Copy" \
   "managed_record_or_enum_eq"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/generic_aggregate_eq_unknown.hew" \
+  "aggregate equality eligibility is unknown" \
+  "generic_aggregate_eq_unknown"
 # Declaration-level generic bounds are authority at nominal instantiation sites:
 # valid arguments compile, invalid arguments fail closed at the reference site.
 compile_accept "generic_decl_bound_satisfied"

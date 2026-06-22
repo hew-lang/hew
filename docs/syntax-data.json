@@ -194,6 +194,7 @@
     "events": "Machine input-event vocabulary block header (contextual inside machine body)",
     "emits": "Machine Mealy-output manifest block header (contextual inside machine body)",
     "reenter": "Machine transition self-re-entry modifier (contextual after target state name)",
+    "initial": "Machine composite-state initial-substate marker (contextual before nested state decl)",
     "mailbox": "Actor mailbox configuration block",
     "overflow": "Mailbox overflow policy",
     "intensity": "Supervisor restart-budget field (intensity: N within <duration>)",

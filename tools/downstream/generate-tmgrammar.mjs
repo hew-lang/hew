@@ -69,7 +69,7 @@ const keywordGroups = {
   ],
 
   'keyword.actor.hew': [
-    'actor', 'fork', 'init', 'move', 'receive', 'spawn', 'terminate', 'this',
+    'actor', 'fork', 'init', 'move', 'receive', 'spawn', 'this',
   ],
 
   'keyword.supervisor.hew': [
@@ -78,7 +78,8 @@ const keywordGroups = {
 
   'constant.language.strategy.hew': [
     'permanent', 'transient', 'temporary',
-    'one_for_one', 'one_for_all', 'rest_for_one',
+    'one_for_one', 'one_for_all', 'rest_for_one', 'simple_one_for_one',
+    'pool', 'brutal_kill',
   ],
 
   'keyword.wire.hew': [...kw.wire],

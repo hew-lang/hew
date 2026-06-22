@@ -43,10 +43,14 @@ fn lowers_full_checker_admitted_matrix_examples_to_numeric_cast_instrs() {
     );
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
 
-    let casts: Vec<_> = p
+    let main = p
         .raw_mir
         .iter()
-        .flat_map(|func| &func.blocks)
+        .find(|func| func.name == "main")
+        .expect("main function lowered");
+    let casts: Vec<_> = main
+        .blocks
+        .iter()
         .flat_map(|block| &block.instructions)
         .filter_map(|instr| match instr {
             Instr::NumericCast { from_ty, to_ty, .. } => Some((from_ty.clone(), to_ty.clone())),

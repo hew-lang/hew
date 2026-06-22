@@ -112,11 +112,15 @@ fn check_machines_or_ast_fallback(
     path: &str,
     source: &str,
     ast_machines: &[MachineDecl],
+    supports_no_check: bool,
 ) -> MachineCheckResult {
     if ast_machines.iter().any(|m| !m.type_params.is_empty()) {
-        eprintln!(
-            "{path}: advisory: generic machine(s) skipping HIR checks — use --no-check to suppress"
-        );
+        let suppression_hint = if supports_no_check {
+            " — use --no-check to suppress"
+        } else {
+            ""
+        };
+        eprintln!("{path}: warning: generic machine(s) skipping HIR checks{suppression_hint}");
         return MachineCheckResult::AstFallback;
     }
 
@@ -133,7 +137,9 @@ fn cmd_list(path: &str) {
     let source = read_source(path);
     let machines = parse_machines(path, &source);
 
-    let _ = check_machines_or_ast_fallback(path, &source, &machines);
+    // `list` renders from the AST below, but keeps fail-closed HIR validation
+    // for non-generic machines.
+    check_machines_or_ast_fallback(path, &source, &machines, false);
 
     for md in &machines {
         println!("machine {} {{", md.name);
@@ -183,7 +189,7 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
     let ast_machines = parse_machines(path, &source);
 
     if args.check {
-        match check_machines_or_ast_fallback(path, &source, &ast_machines) {
+        match check_machines_or_ast_fallback(path, &source, &ast_machines, true) {
             MachineCheckResult::AstFallback => {
                 // Fall through to AST rendering below.
             }

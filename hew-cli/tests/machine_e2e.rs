@@ -386,7 +386,7 @@ fn emits_fixture() -> &'static str {
      }\n"
 }
 
-/// Generic machine — HIR path must not crash; falls back to AST with advisory.
+/// Generic machine — HIR path must not crash; falls back to AST with a warning.
 fn generic_fixture() -> &'static str {
     "machine Box<T> {\n\
      \x20   events {\n\
@@ -650,12 +650,12 @@ fn machine_list_shows_emits_section() {
 // ── fix 4: generic machines fall back to AST (no crash) ──────────────────────
 
 #[test]
-fn machine_diagram_generic_fallback_exits_zero_with_advisory() {
+fn machine_diagram_generic_fallback_exits_zero_with_warning() {
     let dir = support::tempdir();
     let input = dir.path().join("box.hew");
     std::fs::write(&input, generic_fixture()).unwrap();
 
-    // Default (check) path — must not crash; must emit advisory on stderr.
+    // Default (check) path — must not crash; must emit warning on stderr.
     let output = Command::new(hew_binary())
         .args(["machine", "diagram"])
         .arg(&input)
@@ -669,8 +669,10 @@ fn machine_diagram_generic_fallback_exits_zero_with_advisory() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("advisory"),
-        "must emit advisory for generic machine; stderr:\n{stderr}"
+        stderr.contains(
+            "warning: generic machine(s) skipping HIR checks — use --no-check to suppress"
+        ),
+        "must emit warning with suppression hint for generic machine; stderr:\n{stderr}"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -680,7 +682,7 @@ fn machine_diagram_generic_fallback_exits_zero_with_advisory() {
 }
 
 #[test]
-fn machine_list_generic_lists_with_advisory() {
+fn machine_list_generic_lists_with_warning() {
     let dir = support::tempdir();
     let input = dir.path().join("box.hew");
     std::fs::write(&input, generic_fixture()).unwrap();
@@ -707,8 +709,12 @@ fn machine_list_generic_lists_with_advisory() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("advisory: generic machine(s) skipping HIR checks"),
+        stderr.contains("warning: generic machine(s) skipping HIR checks"),
         "stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("--no-check"),
+        "list warning must not mention unsupported --no-check flag; stderr:\n{stderr}"
     );
 }
 

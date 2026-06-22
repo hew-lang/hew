@@ -180,6 +180,54 @@ fn toml_encoding_round_trips_under_wasi() {
     assert_eq!(stdout.as_ref(), "hew\n", "stderr:\n{stderr}");
 }
 
+// WINDOWS-TODO: requires wasmtime runtime which is not configured on Windows.
+#[cfg_attr(windows, ignore)]
+#[test]
+fn wasm_channel_send_full_traps_instead_of_dropping() {
+    require_wasi_runner();
+
+    let dir = support::tempdir();
+    let source = dir.path().join("channel_send_full_traps_wasi.hew");
+    fs::write(
+        &source,
+        r#"import std::channel::channel;
+
+fn main() {
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(2);
+
+    tx.send("msg-1");
+    tx.send("msg-2");
+    tx.send("msg-3");
+    tx.close();
+
+    match rx.try_recv() { Some(s) => println(s), None => println("empty-1") }
+    match rx.try_recv() { Some(s) => println(s), None => println("empty-2") }
+    match rx.try_recv() { Some(s) => println(s), None => println("empty-3-DROPPED") }
+    match rx.try_recv() { Some(s) => println(s), None => println("drained") }
+    rx.close();
+}
+"#,
+    )
+    .expect("write channel full-send WASI source");
+
+    let output = run_wasi_example(&source);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "full wasm channel send must trap rather than exiting successfully\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        stderr.contains("channel is full"),
+        "trap diagnostic should name the full channel\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+    assert!(
+        !stdout.contains("empty-3-DROPPED"),
+        "full send must not silently drop and continue\nstdout:\n{stdout}\nstderr:\n{stderr}",
+    );
+}
+
 // The layout-keyed `HashMap<Record, V>` / `HashSet<string>` runtime ABI
 // (`hew_hashmap_*_layout` / `hew_hashset_*_layout`) is target-agnostic: the
 // modules are not `cfg`-gated against wasm32 and codegen lowers their callees

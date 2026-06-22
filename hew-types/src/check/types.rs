@@ -1917,6 +1917,7 @@ pub struct TypeDef {
     pub kind: TypeDefKind,
     pub name: String,
     pub type_params: Vec<String>,
+    pub bounds: HashMap<String, Vec<String>>,
     pub fields: HashMap<String, Ty>,
     /// Field names in **declaration order** (source order as written by the user).
     ///
@@ -2359,6 +2360,12 @@ pub struct Checker {
     /// identical instantiations at different source positions are
     /// distinct violations and must each report once.
     pub(super) reported_machine_bound_violations: HashSet<(String, Vec<Ty>, SpanKey)>,
+    /// Dedup set for declaration-level generic type bounds. Keyed by
+    /// `(type_name, resolved_type_args, span_key)`: type annotations,
+    /// constructor synthesis, and expected-type coercion may all observe the
+    /// same nominal instantiation, but the reference site should emit one
+    /// `BoundsNotSatisfied` diagnostic.
+    pub(super) reported_type_def_bound_violations: HashSet<(String, Vec<Ty>, SpanKey)>,
     /// Trait bounds declared on each actor's generic type parameters, keyed by
     /// actor name. Populated during `register_actor_decl` from
     /// `ActorDecl.type_params`. Consulted at the use site by
@@ -2888,6 +2895,7 @@ impl Checker {
             machine_type_param_bounds: HashMap::new(),
             machine_const_params: HashMap::new(),
             reported_machine_bound_violations: HashSet::new(),
+            reported_type_def_bound_violations: HashSet::new(),
             actor_type_param_bounds: HashMap::new(),
             reported_actor_bound_violations: HashSet::new(),
             actors_with_periodic_handlers: HashMap::new(),

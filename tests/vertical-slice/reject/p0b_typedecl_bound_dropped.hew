@@ -1,0 +1,7 @@
+// P0-B: declaration-level generic bounds must reject arguments without the trait.
+type NoDisplay { n: i64; }
+type Box<T: Display> { value: T; }
+
+fn main() {
+    let _ = Box { value: NoDisplay { n: 1 } };
+}

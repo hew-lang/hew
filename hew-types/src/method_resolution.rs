@@ -412,6 +412,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: "Stream".to_string(),
                 type_params: vec![],
+                bounds: HashMap::new(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
                 methods: HashMap::new(),
@@ -453,6 +454,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: "Wrapper".to_string(),
                 type_params: vec!["T".to_string()],
+                bounds: HashMap::new(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
                 methods: HashMap::new(),
@@ -500,6 +502,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: "Sender".to_string(),
                 type_params: vec![],
+                bounds: HashMap::new(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
                 methods: {
@@ -546,6 +549,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: "Receiver".to_string(),
                 type_params: vec![],
+                bounds: HashMap::new(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
                 methods: {

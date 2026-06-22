@@ -494,13 +494,12 @@ impl Checker {
                     }
                 }
             }
-            let result_ty = Ty::normalize_named(
-                type_name,
-                inferred_args
-                    .drain(..)
-                    .map(|ty| self.subst.resolve(&ty))
-                    .collect(),
-            );
+            let resolved_args: Vec<Ty> = inferred_args
+                .drain(..)
+                .map(|ty| self.subst.resolve(&ty))
+                .collect();
+            self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
+            let result_ty = Ty::normalize_named(type_name, resolved_args);
             self.record_type(span, &result_ty);
             return Some(result_ty);
         }
@@ -729,6 +728,7 @@ impl Checker {
                 .iter()
                 .map(|ty| self.subst.resolve(ty))
                 .collect();
+            self.enforce_type_def_instantiation_bounds(&type_name, &resolved_args, span);
             return Ty::normalize_named(type_name, resolved_args);
         }
 

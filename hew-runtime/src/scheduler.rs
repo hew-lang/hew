@@ -1905,11 +1905,11 @@ fn activate_actor(actor: *mut HewActor) {
                     //
                     // D-A.2 (R326/R327): the trampoline returns the dispatch
                     // suspend outcome as a nullable continuation handle — `null`
-                    // for a run-to-completion handler (every handler today; the
-                    // suspend substrate is dormant), or the `coro.begin` handle
-                    // when a handler suspended. The handle is captured here; the
-                    // production park edge (commit 4) consumes a non-null handle
-                    // to park the activation.
+                    // for a run-to-completion handler, or the `coro.begin`
+                    // handle produced by live suspending-terminator codegen when
+                    // a handler suspended. The handle is captured here; the
+                    // production park edge consumes a non-null handle to park the
+                    // activation.
                     let dispatch_result = catch_unwind(AssertUnwindSafe(|| unsafe {
                         dispatch(
                             ec_ptr,
@@ -1959,10 +1959,10 @@ fn activate_actor(actor: *mut HewActor) {
                     }
 
                     // D-A.2: the suspend handle the trampoline returned. `null`
-                    // on the run-to-completion path (every handler today — no
-                    // source construct produces a `coro.suspend` while the
-                    // substrate is dormant); a non-null handle is parked on the
-                    // suspend edge below.
+                    // on the run-to-completion path; live suspending-terminator
+                    // codegen returns a non-null handle for in-handler
+                    // await/ask/recv suspends, and the suspend edge parks it
+                    // below.
                     let suspend_handle: *mut c_void = if let Ok(handle) = &dispatch_result {
                         *handle
                     } else {
@@ -2061,13 +2061,13 @@ fn activate_actor(actor: *mut HewActor) {
                     // non-final `coro.suspend` and handed back its `coro.begin`
                     // frame handle. Park it against the executor and break out of
                     // the message loop WITHOUT re-enqueuing — the worker is freed
-                    // to run other actors; a wake (`enqueue_resume`) later
-                    // re-enqueues this actor and the resume re-entry drives the
-                    // parked continuation. The per-actor lock was already released
-                    // on the dispatch-return edge above (FG2). `park_suspended_activation`
-                    // publishes `Parked` + stores the handle + CAS `Running → Suspended`
-                    // and drains a lost wake (FG3). Dormant today: no handler
-                    // returns a non-null handle (no source produces a suspend).
+                    // to run other actors; a wake (`enqueue_resume`) later puts
+                    // this actor back on the scheduler run queue and the resume
+                    // re-entry drives the parked continuation. The per-actor lock
+                    // was already released on the dispatch-return edge above (FG2).
+                    // `park_suspended_activation` publishes `Parked` + stores the
+                    // handle + CAS `Running → Suspended` and drains a lost wake
+                    // (FG3).
                     if !suspend_handle.is_null() {
                         // SAFETY: `actor` is owned by this frame (Running CAS held);
                         // `suspend_handle` is the live, suspended continuation the

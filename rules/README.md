@@ -20,6 +20,7 @@ gate CI. `warning`/`info`/`hint` rules report without failing.
 | `rules/rust/fail-closed/` | codegen + checker fail-closed | CLAUDE.md §2 (Fail-Closed Codegen), §3 (Type Inference Boundary) |
 | `rules/rust/panics-nyi/` | panic / NYI hygiene | no new NYI; `unreachable!("desc")`; propagate errors |
 | `rules/rust/concurrency-drop/` | concurrency + drop safety | CLAUDE.md §1 (Drop Safety), §9 (Concurrency Safety) |
+| `rules/rust/hygiene/` | unsafe / debug hygiene | `// SAFETY:` justification, `transmute` audit, no `dbg!` |
 | `rules/hew/` | Hew-language patterns (`.hew`) | idiomatic / redundant-construct lints |
 
 ## Conventions
@@ -53,6 +54,13 @@ Counts are findings on the tree when written; `0` rules are regression guards.
 |------|------|---------|
 | `lock-unwrap` | 10 | `$M.lock().unwrap()/.expect()` — unwraps a poisoned lock (CLAUDE.md §9; prefer the poison-safe accessor). |
 | `explicit-leak-review` | 3 | `mem::forget` / `Box::leak` — RAII escapes to audit for drop-safety (CLAUDE.md §1). |
+
+### Rust — hygiene (`warning` / `hint`)
+| Rule | Hits | Catches |
+|------|------|---------|
+| `unsafe-without-safety` | 54 | `unsafe { … }` block lacking a `// SAFETY:` justification (the repo convention; ~98.5% already carry one). |
+| `transmute-audit` | 10 | `mem::transmute(…)` / `transmute::<…>(…)` — the most dangerous `unsafe` op; review inventory. |
+| `dbg-macro` | 0 | `dbg!(…)` left in code — preventive guard against shipping debug output. |
 
 ### Hew (`.hew`)
 | Rule | Hits | Fix | Catches |

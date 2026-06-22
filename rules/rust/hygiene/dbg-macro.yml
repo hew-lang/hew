@@ -1,0 +1,27 @@
+id: dbg-macro
+language: rust
+severity: warning
+message: '`dbg!` left in code — a debug-only macro that must be removed before committing.'
+note: |
+  `dbg!(..)` writes to stderr and is meant only for transient local debugging; it
+  must never ship. There are currently zero uses in the tree, so this is a
+  preventive regression guard. Matches every spelling (`dbg!()`, `dbg!(x)`,
+  `dbg!(a, b)`, multiline). Test/bench/example code is excluded — consistent with
+  the other macro-hygiene guards here — both via path globs and an inline
+  `#[cfg(test)]` module guard, since a throwaway `dbg!` while debugging a test is
+  lower-risk and self-evident in test output.
+ignores:
+  - '**/tests/**'
+  - '**/*test*.rs'
+  - '**/*_tests.rs'
+  - '**/benches/**'
+  - '**/examples/**'
+rule:
+  pattern: dbg!($$$)
+  not:
+    inside:
+      kind: mod_item
+      stopBy: end
+      follows:
+        kind: attribute_item
+        regex: 'cfg\(.*\btest\b'

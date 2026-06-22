@@ -680,6 +680,39 @@ fn machine_diagram_generic_fallback_exits_zero_with_advisory() {
 }
 
 #[test]
+fn machine_list_generic_lists_with_advisory() {
+    let dir = support::tempdir();
+    let input = dir.path().join("box.hew");
+    std::fs::write(&input, generic_fixture()).unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["machine", "list"])
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "generic machine list must not fail; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("machine Box {"), "stdout:\n{stdout}");
+    assert!(stdout.contains("  States:"), "stdout:\n{stdout}");
+    assert!(stdout.contains("    Empty"), "stdout:\n{stdout}");
+    assert!(stdout.contains("    Full { value }"), "stdout:\n{stdout}");
+    assert!(stdout.contains("  Events:"), "stdout:\n{stdout}");
+    assert!(stdout.contains("    Put { value }"), "stdout:\n{stdout}");
+    assert!(stdout.contains("  Transitions: 2"), "stdout:\n{stdout}");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("advisory: generic machine(s) skipping HIR checks"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn machine_diagram_generic_json_carries_type_params() {
     let dir = support::tempdir();
     let input = dir.path().join("box.hew");

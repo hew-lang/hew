@@ -103,15 +103,37 @@ fn check_and_lower(path: &str, source: &str) -> Vec<HirMachineDecl> {
         .collect()
 }
 
-fn cmd_list(path: &str) {
-    let source = read_source(path);
-    let hir_machines = check_and_lower(path, &source);
-    let machines = parse_machines(path, &source);
+enum MachineCheckResult {
+    Checked(Vec<HirMachineDecl>),
+    AstFallback,
+}
 
+fn check_machines_or_ast_fallback(
+    path: &str,
+    source: &str,
+    ast_machines: &[MachineDecl],
+) -> MachineCheckResult {
+    if ast_machines.iter().any(|m| !m.type_params.is_empty()) {
+        eprintln!(
+            "{path}: advisory: generic machine(s) skipping HIR checks — use --no-check to suppress"
+        );
+        return MachineCheckResult::AstFallback;
+    }
+
+    let hir_machines = check_and_lower(path, source);
     if hir_machines.is_empty() {
         eprintln!("No machines found in {path}");
         std::process::exit(1);
     }
+
+    MachineCheckResult::Checked(hir_machines)
+}
+
+fn cmd_list(path: &str) {
+    let source = read_source(path);
+    let machines = parse_machines(path, &source);
+
+    let _ = check_machines_or_ast_fallback(path, &source, &machines);
 
     for md in &machines {
         println!("machine {} {{", md.name);
@@ -158,77 +180,62 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
         args.format.clone().unwrap_or(MachineFormat::Mermaid)
     };
 
-    // Parse AST first. Any machine with non-empty type_params cannot be
-    // monomorphised by the HIR pipeline — fall back to AST renderers for
-    // those machines with an advisory on stderr (fix 4: generic crash guard).
     let ast_machines = parse_machines(path, &source);
 
     if args.check {
-        // fix 4: if any machine in the file is generic, lower_program would crash
-        // in the machine-mono pass. Detect before invoking it and fall through
-        // to AST rendering with a stderr advisory.
-        let any_generic = ast_machines.iter().any(|m| !m.type_params.is_empty());
-        if any_generic {
-            eprintln!(
-                "{path}: advisory: generic machine(s) skipping HIR checks — use --no-check to suppress"
-            );
-            // Fall through to AST rendering below.
-        } else {
-            // Run HIR checks first; exit non-zero on any machine error.
-            let hir_machines = check_and_lower(path, &source);
-
-            if hir_machines.is_empty() {
-                eprintln!("No machines found in {path}");
-                std::process::exit(1);
+        match check_machines_or_ast_fallback(path, &source, &ast_machines) {
+            MachineCheckResult::AstFallback => {
+                // Fall through to AST rendering below.
             }
+            MachineCheckResult::Checked(hir_machines) => {
+                // HIR is flat by invariant — composite grouping and the emits
+                // manifest live only on the AST. Build both side-tables keyed by
+                // machine name, threaded alongside the HIR (same pattern as
+                // groups_by_name that already existed for composites).
+                let groups_by_name: std::collections::HashMap<
+                    &str,
+                    &[hew_parser::ast::CompositeGroup],
+                > = ast_machines
+                    .iter()
+                    .map(|m| (m.name.as_str(), m.composite_groups.as_slice()))
+                    .collect();
+                // fix 3: emits manifest side-table for the HIR path.
+                let emits_by_name: std::collections::HashMap<&str, &[String]> = ast_machines
+                    .iter()
+                    .map(|m| (m.name.as_str(), m.emits.as_slice()))
+                    .collect();
 
-            // HIR is flat by invariant — composite grouping and the emits
-            // manifest live only on the AST. Build both side-tables keyed by
-            // machine name, threaded alongside the HIR (same pattern as
-            // groups_by_name that already existed for composites).
-            let groups_by_name: std::collections::HashMap<
-                &str,
-                &[hew_parser::ast::CompositeGroup],
-            > = ast_machines
-                .iter()
-                .map(|m| (m.name.as_str(), m.composite_groups.as_slice()))
-                .collect();
-            // fix 3: emits manifest side-table for the HIR path.
-            let emits_by_name: std::collections::HashMap<&str, &[String]> = ast_machines
-                .iter()
-                .map(|m| (m.name.as_str(), m.emits.as_slice()))
-                .collect();
-
-            // Filter by --machine if specified.
-            let filtered: Vec<&HirMachineDecl> = if let Some(name) = &args.machine_name {
-                let matched: Vec<_> = hir_machines.iter().filter(|m| &m.name == name).collect();
-                if matched.is_empty() {
-                    eprintln!("No machine named `{name}` found in {path}");
-                    std::process::exit(1);
-                }
-                matched
-            } else {
-                hir_machines.iter().collect()
-            };
-
-            for machine in filtered {
-                let groups = groups_by_name
-                    .get(machine.name.as_str())
-                    .copied()
-                    .unwrap_or(&[]);
-                let emits = emits_by_name
-                    .get(machine.name.as_str())
-                    .copied()
-                    .unwrap_or(&[]);
-                match format {
-                    MachineFormat::Mermaid => print_mermaid_hir(machine, groups, emits),
-                    MachineFormat::Graphviz | MachineFormat::Dot => {
-                        print_dot_hir(machine, groups, emits);
+                // Filter by --machine if specified.
+                let filtered: Vec<&HirMachineDecl> = if let Some(name) = &args.machine_name {
+                    let matched: Vec<_> = hir_machines.iter().filter(|m| &m.name == name).collect();
+                    if matched.is_empty() {
+                        eprintln!("No machine named `{name}` found in {path}");
+                        std::process::exit(1);
                     }
-                    MachineFormat::Json => print_json_hir(machine, groups, emits),
+                    matched
+                } else {
+                    hir_machines.iter().collect()
+                };
+
+                for machine in filtered {
+                    let groups = groups_by_name
+                        .get(machine.name.as_str())
+                        .copied()
+                        .unwrap_or(&[]);
+                    let emits = emits_by_name
+                        .get(machine.name.as_str())
+                        .copied()
+                        .unwrap_or(&[]);
+                    match format {
+                        MachineFormat::Mermaid => print_mermaid_hir(machine, groups, emits),
+                        MachineFormat::Graphviz | MachineFormat::Dot => {
+                            print_dot_hir(machine, groups, emits);
+                        }
+                        MachineFormat::Json => print_json_hir(machine, groups, emits),
+                    }
                 }
+                return;
             }
-            return;
         }
     }
 

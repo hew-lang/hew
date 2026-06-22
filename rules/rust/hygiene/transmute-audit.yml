@@ -1,0 +1,42 @@
+id: transmute-audit
+language: rust
+severity: hint
+message: >-
+  `transmute` — the most dangerous `unsafe` operation. Verify the source and
+  target types have identical layout (size + alignment) and that the resulting
+  reference/pointer lifetime is sound. Prefer a typed cast (`as`) or
+  `from_raw`/`from_bits` where one exists. Small review inventory (audit).
+note: |
+  This is a deliberately complete inventory of `transmute` call sites, not a bug
+  signal — `transmute` reinterprets bits with zero checking, so every site is a
+  layout/lifetime obligation a reviewer must re-verify when the source or target
+  type changes. Matches the fully-qualified (`std::mem::` / `core::mem::`),
+  module-qualified (`mem::`), and imported (bare `transmute`) forms, each in both
+  the plain and turbofish (`transmute::<Src, Dst>(..)`) spellings.
+  `transmute_copy` is intentionally NOT matched: it is a distinct (still unsafe,
+  but non-aliasing) operation and there are none in the tree.
+files:
+  - '**/src/**'
+ignores:
+  - '**/tests/**'
+  - '**/*test*.rs'
+  - '**/*_tests.rs'
+  - '**/benches/**'
+  - '**/examples/**'
+rule:
+  any:
+    - pattern: std::mem::transmute($$$)
+    - pattern: 'std::mem::transmute::<$$$T>($$$)'
+    - pattern: core::mem::transmute($$$)
+    - pattern: 'core::mem::transmute::<$$$T>($$$)'
+    - pattern: mem::transmute($$$)
+    - pattern: 'mem::transmute::<$$$T>($$$)'
+    - pattern: transmute($$$)
+    - pattern: 'transmute::<$$$T>($$$)'
+  not:
+    inside:
+      kind: mod_item
+      stopBy: end
+      follows:
+        kind: attribute_item
+        regex: 'cfg\(.*\btest\b'

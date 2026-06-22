@@ -1068,11 +1068,23 @@ impl Checker {
                     key_ty: key_ty.clone(),
                     val_ty: val_ty.clone(),
                     source_module: self.current_module.clone(),
+                    is_abstract_key_param: false,
                 });
             return true; // optimistically admit; finalization will fail closed
         }
 
-        if !self.validate_hashmap_value_clone_type(&resolved_val, span) {
+        let is_abstract_key_param = matches!(
+            &resolved_key,
+            Ty::Named { name, args, builtin: None }
+                if args.is_empty() && self.is_type_param_in_scope(name)
+        );
+        let is_abstract_val_param = matches!(
+            &resolved_val,
+            Ty::Named { name, args, builtin: None }
+                if args.is_empty() && self.is_type_param_in_scope(name)
+        );
+
+        if !is_abstract_val_param && !self.validate_hashmap_value_clone_type(&resolved_val, span) {
             return false;
         }
 
@@ -1082,11 +1094,15 @@ impl Checker {
         if matches!(&resolved_key, Ty::Named { .. }) {
             self.deferred_hashmap_admission
                 .entry(SpanKey::in_module(span, self.current_module_idx))
+                .and_modify(|existing| {
+                    existing.is_abstract_key_param |= is_abstract_key_param;
+                })
                 .or_insert_with(|| DeferredHashMapAdmission {
                     span: span.clone(),
                     key_ty: resolved_key.clone(),
                     val_ty: resolved_val.clone(),
                     source_module: self.current_module.clone(),
+                    is_abstract_key_param,
                 });
             return true;
         }
@@ -3273,6 +3289,7 @@ mod tests {
                 key_ty: Ty::normalize_named("Point".to_string(), vec![]),
                 val_ty: Ty::I64,
                 source_module: None,
+                is_abstract_key_param: false,
             },
         );
         checker.finalize_hashmap_admission();
@@ -3355,6 +3372,7 @@ mod tests {
                 key_ty: Ty::normalize_named("Bad".to_string(), vec![]),
                 val_ty: Ty::I64,
                 source_module: None,
+                is_abstract_key_param: false,
             },
         );
         checker.finalize_hashmap_admission();
@@ -3463,6 +3481,7 @@ mod tests {
                 key_ty: Ty::normalize_named("K".to_string(), vec![]),
                 val_ty: Ty::I64,
                 source_module: None,
+                is_abstract_key_param: false,
             },
         );
         checker.finalize_hashmap_admission();
@@ -3498,6 +3517,7 @@ mod tests {
                 key_ty: Ty::normalize_named("Handle".to_string(), vec![]),
                 val_ty: Ty::I64,
                 source_module: None,
+                is_abstract_key_param: false,
             },
         );
         checker.finalize_hashmap_admission();
@@ -3537,6 +3557,7 @@ mod tests {
                 key_ty: Ty::normalize_named("Color".to_string(), vec![]),
                 val_ty: Ty::I64,
                 source_module: None,
+                is_abstract_key_param: false,
             },
         );
         checker.finalize_hashmap_admission();
@@ -3574,6 +3595,7 @@ mod tests {
                 key_ty: Ty::normalize_named("Point".to_string(), vec![]),
                 val_ty: Ty::normalize_named("Pos".to_string(), vec![]),
                 source_module: None,
+                is_abstract_key_param: false,
             },
         );
         checker.finalize_hashmap_admission();

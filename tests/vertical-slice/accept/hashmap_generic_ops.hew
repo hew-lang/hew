@@ -1,0 +1,51 @@
+// Accept fixture: HashMap<K, V> methods inside a generic function honor K bounds.
+
+fn put<K: Hash + Eq, V>(m: HashMap<K, V>, k: K, v: V) {
+    m.insert(k, v);
+}
+
+fn get_or<K: Hash + Eq, V>(m: HashMap<K, V>, k: K, fallback: V) -> V {
+    match m.get(k) {
+        Some(v) => v,
+        None => fallback,
+    }
+}
+
+fn has_key<K: Hash + Eq, V>(m: HashMap<K, V>, k: K) -> bool {
+    m.contains_key(k)
+}
+
+fn drop_key<K: Hash + Eq, V>(m: HashMap<K, V>, k: K) -> bool {
+    m.remove(k)
+}
+
+fn count<K: Hash + Eq, V>(m: HashMap<K, V>) -> i64 {
+    m.len()
+}
+
+fn check_i64_value() -> i64 {
+    let m: HashMap<string, i64> = HashMap::new();
+    put(m, "hello", 42);
+    if !has_key(m, "hello") { return 1; }
+    if get_or(m, "hello", 0) != 42 { return 2; }
+    if count(m) != 1 { return 3; }
+    if !drop_key(m, "hello") { return 4; }
+    if has_key(m, "hello") { return 5; }
+    if count(m) != 0 { return 6; }
+    0
+}
+
+fn check_string_value() -> i64 {
+    let m: HashMap<i64, string> = HashMap::new();
+    put(m, 7, "seven");
+    let got = get_or(m, 7, "missing");
+    if got != "seven" { return 11; }
+    if !drop_key(m, 7) { return 12; }
+    0
+}
+
+fn main() -> i64 {
+    let a = check_i64_value();
+    if a != 0 { return a; }
+    check_string_value()
+}

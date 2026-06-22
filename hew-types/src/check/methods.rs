@@ -530,6 +530,14 @@ impl Checker {
                 continue;
             }
 
+            // Bare type-parameter keys are checked against their declared
+            // `K: Hash + Eq` bounds at the call site.  They have no concrete
+            // layout fact before monomorphization; the HashMap handle bakes the
+            // substituted K/V layouts at `HashMap::new()` for each instantiation.
+            if check.is_abstract_key_param {
+                continue;
+            }
+
             // Still unresolved at the checker boundary → fail closed, but
             // deduplicate across multiple call sites that share the same
             // unresolved root vars.
@@ -3499,7 +3507,95 @@ impl Checker {
                 self.ty_to_dispatch_pattern(val_ty),
             ],
         };
-        self.record_resolved_collection_call("Map", method, &receiver, span);
+        if !self.is_hashmap_abstract_key_param(key_ty) {
+            self.record_resolved_collection_call("Map", method, &receiver, span);
+            return;
+        }
+        let key_param_name = self
+            .hashmap_abstract_key_param_name(key_ty)
+            .expect("abstract HashMap key param was checked above");
+
+        let key_pattern = self.ty_to_dispatch_pattern(key_ty);
+        let registry = collection_dispatch_registry_impl();
+        let resolved = resolve_method_call(&registry, "Map", method, &receiver, &|marker, ty| {
+            if *ty == key_pattern {
+                return self.type_param_has_marker_bound(&key_param_name, marker);
+            }
+            let ty = Self::dispatch_pattern_to_ty(ty);
+            self.registry.implements_marker(&ty, marker)
+        });
+        match resolved {
+            Ok(call) => {
+                self.resolved_calls
+                    .insert(SpanKey::in_module(span, self.current_module_idx), call);
+            }
+            Err(LookupError::BoundsNotSatisfied {
+                unsatisfied,
+                witness,
+                ..
+            }) => {
+                let witness_ty = Self::dispatch_pattern_to_ty(&witness);
+                let bound_summary = unsatisfied
+                    .iter()
+                    .map(|b| format!("{}: {}", b.var, b.trait_name))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.report_error(
+                    TypeErrorKind::BoundsNotSatisfied,
+                    span,
+                    format!(
+                        "`{}` does not satisfy the required bounds for \
+                         `Map::{method}` ({bound_summary})",
+                        witness_ty.user_facing()
+                    ),
+                );
+            }
+            Err(LookupError::NoImpl { .. } | LookupError::UnknownMethod { .. }) => {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "internal compiler error: collection resolver could \
+                         not locate `Map::{method}` for receiver `{receiver:?}`"
+                    ),
+                );
+            }
+        }
+    }
+
+    fn hashmap_abstract_key_param_name(&self, key_ty: &Ty) -> Option<String> {
+        match self.subst.resolve(key_ty).materialize_literal_defaults() {
+            Ty::Named {
+                name,
+                args,
+                builtin: None,
+            } if args.is_empty() && self.is_type_param_in_scope(&name) => Some(name),
+            _ => None,
+        }
+    }
+
+    fn type_param_has_marker_bound(&self, param_name: &str, marker: MarkerTrait) -> bool {
+        let marker_name = marker.to_string();
+        for frame in self.current_type_param_bounds.iter().rev() {
+            if let Some(bounds) = frame.bounds.get(param_name) {
+                return bounds.iter().any(|bound| bound == &marker_name);
+            }
+        }
+        if let Some(fn_name) = self.current_function.as_ref() {
+            if let Some(sig) = self.fn_sigs.get(fn_name) {
+                if sig.type_params.iter().any(|param| param == param_name) {
+                    return sig
+                        .type_param_bounds
+                        .get(param_name)
+                        .is_some_and(|bounds| bounds.iter().any(|bound| bound == &marker_name));
+                }
+            }
+        }
+        false
+    }
+
+    fn is_hashmap_abstract_key_param(&self, key_ty: &Ty) -> bool {
+        self.hashmap_abstract_key_param_name(key_ty).is_some()
     }
 
     fn record_resolved_hashset_call(&mut self, method: &str, elem_ty: &Ty, span: &Span) {
@@ -7994,6 +8090,7 @@ mod tests {
                 key_ty: Ty::Error,
                 val_ty: Ty::I64,
                 source_module: None,
+                is_abstract_key_param: false,
             },
         );
 
@@ -8020,6 +8117,7 @@ mod tests {
                 key_ty: Ty::String,
                 val_ty: Ty::Var(TypeVar::fresh()),
                 source_module: None,
+                is_abstract_key_param: false,
             },
         );
 
@@ -8034,6 +8132,69 @@ mod tests {
              Ty::Var; got: {:?}",
             checker.errors
         );
+    }
+
+    /// An abstract key parameter already admitted under its generic bounds has
+    /// no concrete layout fact until monomorphization substitutes K/V.
+    #[test]
+    fn finalize_hashmap_admission_skips_abstract_key_param() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 60..70;
+        checker.deferred_hashmap_admission.insert(
+            SpanKey::in_module(&span, 0),
+            DeferredHashMapAdmission {
+                span: span.clone(),
+                key_ty: Ty::normalize_named("K".to_string(), vec![]),
+                val_ty: Ty::normalize_named("V".to_string(), vec![]),
+                source_module: None,
+                is_abstract_key_param: true,
+            },
+        );
+
+        checker.finalize_hashmap_admission();
+
+        assert!(
+            checker.errors.is_empty(),
+            "abstract HashMap key params are checked via declared bounds, not layout eligibility; got: {:?}",
+            checker.errors
+        );
+        assert!(
+            checker.hashmap_layout_facts.is_empty(),
+            "abstract HashMap key params must not produce concrete layout facts"
+        );
+    }
+
+    #[test]
+    fn record_resolved_hashmap_call_abstract_key_emits_resolved_call() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        checker
+            .current_type_param_bounds
+            .push(crate::check::types::TypeParamScope::new(
+                std::collections::HashMap::from([
+                    ("K".to_string(), vec!["Hash".to_string(), "Eq".to_string()]),
+                    ("V".to_string(), vec![]),
+                ]),
+                std::collections::HashMap::new(),
+            ));
+        let span = 80..90;
+
+        checker.record_resolved_hashmap_call(
+            "insert",
+            &Ty::normalize_named("K".to_string(), vec![]),
+            &Ty::normalize_named("V".to_string(), vec![]),
+            &span,
+        );
+
+        assert!(
+            checker.errors.is_empty(),
+            "declared K: Hash + Eq bounds must satisfy HashMap method dispatch; got: {:?}",
+            checker.errors
+        );
+        let call = checker
+            .resolved_calls
+            .get(&SpanKey::in_module(&span, 0))
+            .expect("generic HashMap method dispatch must record a resolved call");
+        assert_eq!(call.target.symbol_name, "hew_hashmap_insert_layout");
     }
 
     /// Two deferred `HashMap` admissions sharing the same unresolved
@@ -8053,6 +8214,7 @@ mod tests {
                 key_ty: Ty::Var(key_var),
                 val_ty: Ty::Var(val_var),
                 source_module: None,
+                is_abstract_key_param: false,
             },
         );
         checker.deferred_hashmap_admission.insert(
@@ -8062,6 +8224,7 @@ mod tests {
                 key_ty: Ty::Var(key_var),
                 val_ty: Ty::Var(val_var),
                 source_module: None,
+                is_abstract_key_param: false,
             },
         );
 

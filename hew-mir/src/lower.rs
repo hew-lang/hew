@@ -11169,11 +11169,28 @@ impl Builder {
             } => {
                 let src_place = self.lower_value(src)?;
                 let record_ty = self.subst_ty(&expr.ty);
+                // Key the clone thunk by the MONOMORPHISED record layout: a
+                // generic instantiation (`clone Pair<i64, i64>`) must resolve
+                // `__hew_record_clone_inplace_Pair$$i64$i64`, not the bare
+                // `Pair` — the bare name names no monomorphic layout, so the
+                // call resolves a declared-but-undefined thunk that fails LLVM
+                // verify (the G6 / E2 bug). A monomorphic record keeps its bare
+                // declared name BYTE-IDENTICALLY via the `record_name.clone()`
+                // arm, so monomorphic goldens and behaviour are unchanged. The
+                // drop side already keys via the same `user_record_layout_key`
+                // helper (`record_inplace_drop_name`), so the clone/drop thunk
+                // PAIR stays symmetric per instantiation (R1).
+                let layout_name = match monomorphic_user_record_key(&record_ty) {
+                    Some(_) => record_name.clone(),
+                    None => {
+                        user_record_layout_key(&record_ty).unwrap_or_else(|| record_name.clone())
+                    }
+                };
                 let dest = self.alloc_local(record_ty);
                 self.instructions.push(Instr::RecordCloneInplace {
                     dest,
                     src: src_place,
-                    record_name: record_name.clone(),
+                    record_name: layout_name,
                 });
                 Some(dest)
             }

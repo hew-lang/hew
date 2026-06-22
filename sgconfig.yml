@@ -9,8 +9,10 @@
 #
 # Metavariables use the usual `$NAME` (single) / `$$$` (variadic) syntax. The
 # `expandoChar` below is the internal placeholder ast-grep substitutes for `$`
-# so patterns parse as valid Hew; `_` is identifier-valid and leaves literal
-# `_` wildcards in patterns (e.g. `Some(_)`) untouched.
+# so patterns parse as valid Hew; `_` is identifier-valid, so it does not
+# collide with `_`-prefixed identifiers in real code. Note: a bare `_` does
+# not parse as a Hew expression, so match a wildcard with a metavariable
+# (e.g. `Some($X)`, not `Some(_)`).
 customLanguages:
   hew:
     libraryPath: .ast-grep/hew-lang.so

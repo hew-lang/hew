@@ -136,7 +136,7 @@ to confirm the reset.
 
 ### JSON run contract (`--json`)
 
-`hew eval --json` emits a single JSON object on stdout (and always exits 0)
+`hew eval --json` emits a single JSON object on stdout (exit 0 for `ok`, non-zero otherwise)
 suitable for downstream tooling, playground workers, and CI scripts that need
 to inspect the outcome programmatically.
 
@@ -166,8 +166,8 @@ The JSON object always contains these fields:
 ```
 
 Key properties:
-- The process **always exits 0** when `--json` is active; callers must
-  inspect `status`, not the exit code.
+- The process exits 0 only when `status == "ok"`; compile errors and runtime
+  failures still emit the full JSON object before exiting non-zero.
 - `stdout` is preserved even on `runtime_failure` (matches the non-JSON
   behaviour that surfaces pre-failure output).
 - `stderr` is captured into the JSON contract on `runtime_failure` and is not

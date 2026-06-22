@@ -132,7 +132,7 @@ fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
 
     assert_eq!(
         output.status.code(),
-        Some(125),
+        Some(1),
         "supervisor should fail in compile phase\nstdout:\n{stdout}\nstderr:\n{stderr}",
     );
     assert!(

@@ -502,6 +502,9 @@ pub struct TestArgs {
     /// Run ignored tests too.
     #[arg(long)]
     pub include_ignored: bool,
+    /// Exit 0 when no test files or functions are discovered.
+    #[arg(long)]
+    pub allow_empty: bool,
 }
 
 // ---------------------------------------------------------------------------

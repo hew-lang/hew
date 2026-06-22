@@ -301,7 +301,7 @@ fn eval_std_observe_reads_runtime_metric() {
         .arg("eval")
         .arg("-f")
         .arg(&path)
-        .current_dir(dir.path())
+        .current_dir(repo_root())
         .output()
         .unwrap();
 
@@ -353,7 +353,7 @@ run_counter();
     command
         .args(["eval", "--timeout", "30", "-f"])
         .arg(&path)
-        .current_dir(dir.path())
+        .current_dir(repo_root())
         .env("HEW_OBSERVE", "hot");
 
     // `run_bounded_command` contains the compiled-Hew process tree with a
@@ -830,7 +830,7 @@ fn eval_large_stderr_completes_before_timeout() {
         .arg("300")
         .arg("-f")
         .arg(&path)
-        .current_dir(dir.path())
+        .current_dir(repo_root())
         .output()
         .unwrap();
 
@@ -2030,12 +2030,12 @@ fn eval_wasm_file_runtime_failure_preserves_pre_failure_stdout() {
 
 // ── JSON run contract ─────────────────────────────────────────────────────────
 //
-// `hew eval --json` must emit a single JSON object on stdout (exit 0) whose
+// `hew eval --json` must emit a single JSON object on stdout whose
 // `status` field is one of "ok", "compile_error", or "runtime_failure".
 //
 // Contract invariants (all three outcomes):
 //   - Exactly one JSON object on stdout; nothing else on stdout.
-//   - Process exits 0 regardless of outcome.
+//   - Process exits 0 only for `status == "ok"` and non-zero otherwise.
 //   - `status`      distinguishes the three outcome categories.
 //   - `stdout`      contains program output (may be empty).
 //   - `stderr`      contains captured runtime stderr (empty otherwise).
@@ -2070,6 +2070,24 @@ fn eval_json_ok_inline_expression() {
 }
 
 #[test]
+fn eval_json_ok_exits_zero() {
+    require_codegen();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "--json", "1 + 2"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"status\":\"ok\""),
+        "JSON ok status missing from stdout: {stdout}"
+    );
+}
+
+#[test]
 fn eval_json_runtime_failure() {
     require_codegen();
 
@@ -2079,12 +2097,7 @@ fn eval_json_runtime_failure() {
         .output()
         .unwrap();
 
-    // --json must exit 0 even on runtime failure.
-    assert!(
-        output.status.success(),
-        "expected exit 0 with --json, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(1));
     let parent_stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !parent_stderr.contains("deliberate"),
@@ -2129,7 +2142,7 @@ fn eval_json_runtime_failure_preserves_stdout() {
         .output()
         .unwrap();
 
-    assert!(output.status.success(), "expected exit 0 with --json");
+    assert_eq!(output.status.code(), Some(1));
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let v: serde_json::Value = serde_json::from_str(&stdout)
@@ -2161,7 +2174,7 @@ fn eval_wasm_json_ok_inline_expression() {
 
     assert!(
         output.status.success(),
-        "expected exit 0 with --json, stderr: {}",
+        "expected exit 0 with --json on success, stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
@@ -2196,9 +2209,8 @@ fn eval_wasm_json_runtime_failure_captures_stderr_without_leaking() {
         .unwrap();
 
     assert!(
-        output.status.success(),
-        "expected exit 0 with --json, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "expected non-zero exit with --json runtime failure"
     );
     let parent_stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -2231,12 +2243,7 @@ fn eval_json_compile_error() {
         .output()
         .unwrap();
 
-    // --json must exit 0 even on compile error.
-    assert!(
-        output.status.success(),
-        "expected exit 0 with --json on compile error, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(1));
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let v: serde_json::Value = serde_json::from_str(&stdout)
@@ -2255,6 +2262,33 @@ fn eval_json_compile_error() {
     assert!(
         !v["diagnostics"].as_str().unwrap_or("").is_empty(),
         "diagnostics must be non-empty on compile_error: {v}"
+    );
+}
+
+#[test]
+fn eval_json_compile_error_exits_nonzero() {
+    let dir = support::tempdir();
+    let path = dir.path().join("compile_err.hew");
+    std::fs::write(
+        &path,
+        "fn main() {\n    let _ = undefined_symbol_xyz();\n}\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["eval", "-f"])
+        .arg(&path)
+        .arg("--json")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert_ne!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"status\":\"compile_error\""),
+        "JSON compile_error status missing from stdout: {stdout}"
     );
 }
 
@@ -2306,11 +2340,7 @@ fn eval_json_manifest_message_diagnostic_stays_in_json() {
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "expected exit 0 with --json on manifest diagnostic, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(1));
 
     let parent_stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -2485,7 +2515,11 @@ fn eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
         .unwrap();
 
     let ctx = cross_chunk_failure_ctx(&output, &path);
-    assert!(output.status.success(), "expected exit 0 with --json{ctx}");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected runtime failure exit 1 with --json{ctx}"
+    );
 
     let raw = String::from_utf8_lossy(&output.stdout);
     let v: serde_json::Value = serde_json::from_str(&raw)
@@ -3265,11 +3299,7 @@ fn eval_divide_by_zero_json_surfaces_cause() {
         .current_dir(repo_root())
         .output()
         .unwrap();
-    assert!(
-        output.status.success(),
-        "--json must exit 0; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&output.stdout);
     let v: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));

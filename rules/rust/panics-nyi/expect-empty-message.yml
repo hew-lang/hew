@@ -1,0 +1,26 @@
+id: expect-empty-message
+language: rust
+severity: warning
+message: '`.expect("")` has an empty panic message — state why the value must be present.'
+note: |
+  An empty `.expect("")` produces a panic with no diagnostic context, defeating the
+  purpose of `expect` over `unwrap`. Provide a short reason describing the invariant
+  that guarantees the value is present (e.g. `.expect("ABI table populated in lower")`).
+  Matches empty and whitespace-only string-literal messages only.
+ignores:
+  - '**/tests/**'
+  - '**/*test*.rs'
+  - '**/benches/**'
+rule:
+  all:
+    - pattern: $RECV.expect($MSG)
+    - not:
+        inside:
+          kind: mod_item
+          stopBy: end
+          follows:
+            kind: attribute_item
+            regex: 'cfg\(.*\btest\b'
+constraints:
+  MSG:
+    regex: '^"\s*"$'

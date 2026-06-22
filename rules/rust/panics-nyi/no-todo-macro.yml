@@ -1,0 +1,23 @@
+id: no-todo-macro
+language: rust
+severity: warning
+message: '`todo!()` marks unfinished work — finish it or track it as an issue before merge.'
+note: |
+  The repository gates against introducing new not-yet-implemented (NYI) markers.
+  A `todo!()` panics at runtime if reached, so it is unfinished work, not a
+  fail-closed boundary. Implement the path, or replace it with an explicit typed
+  error / `unreachable!("why")` if the arm is genuinely impossible. Matches both
+  `todo!()` and `todo!("msg")`.
+ignores:
+  - '**/tests/**'
+  - '**/*test*.rs'
+  - '**/benches/**'
+rule:
+  pattern: todo!($$$)
+  not:
+    inside:
+      kind: mod_item
+      stopBy: end
+      follows:
+        kind: attribute_item
+        regex: 'cfg\(.*\btest\b'

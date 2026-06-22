@@ -16,3 +16,7 @@ customLanguages:
     libraryPath: .ast-grep/hew-lang.so
     extensions: [hew]
     expandoChar: _
+
+# Lint rules for `ast-grep scan` (see rules/README.md). Run: scripts/ast-grep-lint.sh
+ruleDirs:
+  - rules

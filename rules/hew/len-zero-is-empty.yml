@@ -1,0 +1,20 @@
+# `x.len() == 0` is the long-hand emptiness test. The idiom is `x.is_empty()`,
+# which std provides for string, bytes, Vec, Deque and the regex match types
+# (and every collection used in the corpus is one of those).
+#
+# The pattern requires a `.len()` *call*, so a pre-computed length variable
+# (`slen == 0`) is not flagged. Only the `== 0` orientation is matched; the
+# `> 0` / `!= 0` "non-empty" forms map to `!x.is_empty()` and are left out to
+# keep the message unambiguous.
+#
+# No `fix:` — `.is_empty()` availability is type-dependent and ast-grep cannot
+# see types, so an automatic rewrite could produce code that does not compile.
+id: len-zero-is-empty
+language: hew
+severity: hint
+message: Prefer `.is_empty()` over `.len() == 0`.
+note: Applies when the receiver's type provides `is_empty` (string, Vec, bytes, Deque, ...).
+rule:
+  pattern:
+    context: 'fn _p() { let _x = $X.len() == 0; }'
+    selector: binary_expression

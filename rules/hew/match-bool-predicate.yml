@@ -1,0 +1,42 @@
+# Redundant `match` that maps each variant of Option/Result to a boolean
+# literal. This is exactly the body of the built-in predicates, so the match
+# can be replaced by a method call:
+#
+#   match o { Some(_) => true,  None    => false } -> o.is_some()
+#   match o { Some(_) => false, None    => true  } -> o.is_none()
+#   match r { Ok(_)   => true,  Err(_)  => false } -> r.is_ok()
+#   match r { Ok(_)   => false, Err(_)  => true  } -> r.is_err()
+#
+# No `fix:` is offered on purpose: every place that currently matches this
+# shape *is itself* a predicate definition (the std impls, or a teaching
+# example that re-implements `is_ok`), where rewriting to `x.is_ok()` would be
+# self-recursive. The value of the rule is as a guard against the same
+# redundancy appearing in application code.
+id: match-bool-predicate
+language: hew
+severity: warning
+message: >-
+  Redundant match: mapping each Option/Result variant to a boolean literal
+  duplicates a built-in predicate. Use .is_some()/.is_none() (Option) or
+  .is_ok()/.is_err() (Result) instead.
+note: >-
+  Detected the four canonical shapes (Some/None and Ok/Err arms in the usual
+  order). The std definitions in option.hew/result.hew are intentionally
+  excluded.
+ignores:
+  - "**/option.hew"
+  - "**/result.hew"
+rule:
+  any:
+    - pattern:
+        context: 'fn _p() { match $O { Some(_) => true, None => false } }'
+        selector: match_expression
+    - pattern:
+        context: 'fn _p() { match $O { Some(_) => false, None => true } }'
+        selector: match_expression
+    - pattern:
+        context: 'fn _p() { match $R { Ok(_) => true, Err(_) => false } }'
+        selector: match_expression
+    - pattern:
+        context: 'fn _p() { match $R { Ok(_) => false, Err(_) => true } }'
+        selector: match_expression

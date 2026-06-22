@@ -3375,8 +3375,19 @@ mod tests {
     /// Initialise a real, worker-backed scheduler for a node test (delegates to
     /// the scheduler-side helper, which sees the module-private `stealers` and
     /// safely retires a `runtime_test_guard()` placeholder before init).
-    fn init_real_scheduler() {
+    #[must_use]
+    fn init_real_scheduler() -> RealSchedulerGuard {
         crate::scheduler::init_real_scheduler_for_test();
+        RealSchedulerGuard
+    }
+
+    struct RealSchedulerGuard;
+
+    impl Drop for RealSchedulerGuard {
+        fn drop(&mut self) {
+            crate::scheduler::hew_sched_shutdown();
+            crate::scheduler::hew_runtime_cleanup();
+        }
     }
 
     #[test]
@@ -3833,7 +3844,7 @@ mod tests {
         // Install the runtime before touching the name registry: in this helper
         // subprocess no `runtime_test_guard` is held, so the registry's
         // `rt_current()` resolver has nothing to read until init runs.
-        init_real_scheduler();
+        let _real_sched = init_real_scheduler();
         crate::registry::hew_registry_clear();
 
         let (node, port) = start_tcp_test_listener_node(TWO_PROCESS_REGISTRY_SERVER_NODE);
@@ -3874,7 +3885,7 @@ mod tests {
     fn run_registry_gossip_client_helper() {
         // Install the runtime before touching the name registry (helper
         // subprocess holds no `runtime_test_guard`).
-        init_real_scheduler();
+        let _real_sched = init_real_scheduler();
         crate::registry::hew_registry_clear();
 
         let server_port = std::env::var(TWO_PROCESS_SERVER_PORT_ENV)
@@ -3950,7 +3961,7 @@ mod tests {
         reset_two_process_ask_observed();
         // Install the runtime before touching the name registry (helper
         // subprocess holds no `runtime_test_guard`).
-        init_real_scheduler();
+        let _real_sched = init_real_scheduler();
         crate::registry::hew_registry_clear();
 
         let (node, port) = start_tcp_test_listener_node(node_id);
@@ -3984,12 +3995,20 @@ mod tests {
         crate::registry::hew_registry_clear();
     }
 
+    struct TwoProcessAskClient {
+        node: TestNode,
+        remote_pid: u64,
+        _real_sched: RealSchedulerGuard,
+    }
+
     fn run_two_process_ask_echo_client_helper() {
-        let (node, remote_pid) = run_two_process_ask_client_setup(
+        let client = run_two_process_ask_client_setup(
             TWO_PROCESS_REGISTRY_CLIENT_NODE,
             TWO_PROCESS_REGISTRY_SERVER_NODE,
             TWO_PROCESS_ASK_ECHO_NAME,
         );
+        let node = &client.node;
+        let remote_pid = client.remote_pid;
         let send_value: u32 = 21;
         // SAFETY: remote_pid was resolved from a separate helper process over TCP.
         let reply_ptr = unsafe {
@@ -4027,11 +4046,13 @@ mod tests {
     }
 
     fn run_two_process_ask_timeout_client_helper() {
-        let (node, remote_pid) = run_two_process_ask_client_setup(
+        let client = run_two_process_ask_client_setup(
             TWO_PROCESS_REGISTRY_CLIENT_NODE,
             TWO_PROCESS_REGISTRY_SERVER_NODE,
             TWO_PROCESS_ASK_TIMEOUT_NAME,
         );
+        let node = &client.node;
+        let remote_pid = client.remote_pid;
         let send_value: u32 = 21;
         // SAFETY: remote_pid was resolved from a separate helper process over TCP.
         let reply_ptr = unsafe {
@@ -4067,13 +4088,13 @@ mod tests {
         client_node_id: u16,
         server_node_id: u16,
         registry_name: &str,
-    ) -> (TestNode, u64) {
+    ) -> TwoProcessAskClient {
         // The cross-node send/ask path requires a registered codec for the
         // payload's msg_type (fail-closed). Register the test u32 codec.
         register_test_u32_codec(test_dispatch(), TWO_PROCESS_REGISTRY_MSG_TYPE);
         // Install the runtime before touching the name registry (helper
         // subprocess holds no `runtime_test_guard`).
-        init_real_scheduler();
+        let real_sched = init_real_scheduler();
         crate::registry::hew_registry_clear();
 
         let server_port = std::env::var(TWO_PROCESS_SERVER_PORT_ENV)
@@ -4112,7 +4133,11 @@ mod tests {
             client_node_id,
             "ask test must not resolve to a local pid"
         );
-        (node, remote_pid)
+        TwoProcessAskClient {
+            node,
+            remote_pid,
+            _real_sched: real_sched,
+        }
     }
 
     #[test]
@@ -5504,6 +5529,7 @@ mod tests {
     #[test]
     fn two_node_remote_send_delivery() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
 
         // Node 1 (initiator) starts first → CURRENT_NODE = node1, LOCAL_NODE_ID = 301.
@@ -5523,7 +5549,7 @@ mod tests {
         let (node2, node2_port) = start_tcp_test_listener_node(302); // CURRENT_NODE stays node1
 
         // Ensure the scheduler is running so actor dispatches work.
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         // Temporarily set LOCAL_NODE_ID = 302 to assign a node-2 PID to the actor.
         // This makes the actor look remote from node1's routing perspective.
@@ -5648,6 +5674,7 @@ mod tests {
     #[test]
     fn two_node_remote_send_delivery_quic_mesh() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
 
         // Build mutually-pinned TLS for the two in-process nodes.
@@ -5661,7 +5688,7 @@ mod tests {
         let (node2, node2_port) = start_quic_mesh_test_listener_node(402, tls_b);
 
         // Ensure the scheduler is running so actor dispatches work.
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         // Temporarily set LOCAL_NODE_ID = 402 to assign a node-2 PID to the actor.
         // This makes the actor look remote from node1's routing perspective.
@@ -5891,6 +5918,7 @@ mod tests {
     #[test]
     fn two_node_remote_void_ask_returns_sentinel() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
@@ -5906,7 +5934,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(314);
 
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(314);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -5956,6 +5984,7 @@ mod tests {
     #[test]
     fn two_node_remote_ask_reply() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
         // Remote ask requires a registered codec for the payload msg_type.
         register_test_u32_codec(test_dispatch(), 1);
@@ -5976,7 +6005,7 @@ mod tests {
         let (node2, node2_port) = start_tcp_test_listener_node(312); // CURRENT_NODE stays node1
 
         // Ensure the scheduler is running so actor dispatches work.
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         // Temporarily set LOCAL_NODE_ID = 312 to assign a node-2 PID to the actor.
         crate::pid::hew_pid_set_local_node(312);
@@ -6053,6 +6082,7 @@ mod tests {
         // condvar; the reply is delivered by the connection reader thread and
         // routed at the parked caller through `enqueue_resume`.
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
         register_test_u32_codec(test_dispatch(), 1);
 
@@ -6067,7 +6097,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(322);
 
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(322);
         // SAFETY: null state / size-0 is valid; dispatch fn is a valid fn ptr.
@@ -6168,6 +6198,7 @@ mod tests {
     #[test]
     fn two_node_inbound_orphaned_ask_reports_orphaned() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
@@ -6182,7 +6213,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(316);
 
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(316);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
@@ -6237,6 +6268,7 @@ mod tests {
     #[test]
     fn two_node_inbound_actor_stopped_reports_actor_stopped() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
@@ -6251,7 +6283,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(318);
 
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(318);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
@@ -6308,6 +6340,7 @@ mod tests {
     #[test]
     fn two_node_inbound_mailbox_full_reports_mailbox_full() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
@@ -6322,7 +6355,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(327);
 
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(327);
         let opts = crate::actor::HewActorOpts {
@@ -6397,6 +6430,7 @@ mod tests {
     #[test]
     fn two_node_worker_limit_still_reports_worker_at_capacity() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
@@ -6411,7 +6445,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(320);
 
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(320);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
@@ -6467,6 +6501,7 @@ mod tests {
     #[test]
     fn two_node_pre_rejection_peer_gets_timeout_not_wrong_error() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
@@ -6481,7 +6516,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(331);
 
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(331);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
@@ -6567,6 +6602,7 @@ mod tests {
     #[test]
     fn two_node_remote_nonvoid_empty_reply_returns_null() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
@@ -6582,7 +6618,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(318);
 
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(318);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -6635,6 +6671,7 @@ mod tests {
     #[test]
     fn two_node_remote_ask_timeout_reports_timeout() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
@@ -6650,7 +6687,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(329);
 
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(329);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -6708,6 +6745,7 @@ mod tests {
     #[test]
     fn node_stop_wakes_pending_remote_ask() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
@@ -6723,7 +6761,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(316);
 
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(316);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -6806,6 +6844,7 @@ mod tests {
     #[test]
     fn connection_drop_wakes_pending_remote_ask() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
@@ -6821,7 +6860,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(321);
 
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(321);
         // SAFETY: null state and size-0 are valid; the dispatch function pointer is valid.
@@ -7139,6 +7178,7 @@ mod tests {
     #[test]
     fn inbound_ask_active_counter_returns_to_baseline_after_round_trip() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
         register_test_u32_codec(test_dispatch(), 1);
 
@@ -7155,7 +7195,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(321);
 
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         // Spawn a u32-echo actor on node2.
         crate::pid::hew_pid_set_local_node(321);
@@ -7243,6 +7283,7 @@ mod tests {
     #[test]
     fn over_limit_void_ask_fails_closed_with_worker_at_capacity() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
 
         let node1_bind = CString::new("127.0.0.1:0").unwrap();
@@ -7257,7 +7298,7 @@ mod tests {
         }
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(323);
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         // Spawn a void-reply actor on node2.
         crate::pid::hew_pid_set_local_node(323);
@@ -7326,6 +7367,7 @@ mod tests {
     #[test]
     fn over_limit_nonvoid_ask_fails_closed_with_worker_at_capacity() {
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         crate::registry::hew_registry_clear();
         register_test_u32_codec(test_dispatch(), 1);
 
@@ -7341,7 +7383,7 @@ mod tests {
         }
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(325);
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         // Spawn a u32-echo actor on node2.
         crate::pid::hew_pid_set_local_node(325);
@@ -7549,6 +7591,7 @@ mod tests {
         }
 
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         let _hook_reset = HookResetGuard;
         crate::registry::hew_registry_clear();
 
@@ -7567,7 +7610,7 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         let (node2, node2_port) = start_tcp_test_listener_node(354);
 
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         crate::pid::hew_pid_set_local_node(354);
         // SAFETY: null state / size-0 are valid; dispatch fn is a valid fn ptr.
@@ -7816,6 +7859,7 @@ mod tests {
         }
 
         let _guard = crate::runtime_test_guard();
+        let _real_sched;
         let _hook_reset = HookResetGuard;
         crate::registry::hew_registry_clear();
 
@@ -7836,7 +7880,7 @@ mod tests {
         // node2 is the SECONDARY node; starting it does NOT change CURRENT_NODE.
         let (node2, node2_port) = start_tcp_test_listener_node(364);
 
-        init_real_scheduler();
+        _real_sched = init_real_scheduler();
 
         // Spawn (and immediately stop) a node2-PID actor so the inbound ask hits
         // the actor-error path — exercising the full post-capture handler on a

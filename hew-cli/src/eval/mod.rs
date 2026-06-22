@@ -190,11 +190,7 @@ fn emit_json_eval(
         EvalRequest::Repl => unreachable!("validated before JSON evaluation"),
     };
 
-    let process_exit_code = if result.status == EvalStatus::Ok {
-        0
-    } else {
-        1
-    };
+    let process_exit_code = i32::from(result.status != EvalStatus::Ok);
     println!(
         "{}",
         serde_json::to_string(&result).expect("JSON serialization is infallible")

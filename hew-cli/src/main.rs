@@ -1096,16 +1096,15 @@ fn compile_temp_wasi_module(
         })
     })();
 
-    match result {
-        Ok(()) => Ok(artifact),
-        Err(()) => {
-            drop(artifact);
-            if diagnostic_json::json_output_active() {
-                diagnostic_json::flush_json_diagnostics();
-            }
-            Err(())
+    if let Err(()) = result {
+        drop(artifact);
+        if diagnostic_json::json_output_active() {
+            diagnostic_json::flush_json_diagnostics();
         }
+        return Err(());
     }
+
+    Ok(artifact)
 }
 
 fn tmp_dir_of_path(path: &Path) -> &Path {

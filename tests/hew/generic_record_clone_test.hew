@@ -1,0 +1,70 @@
+//! Behavioural tests for generic record (`type R<T> { … }`) `clone`.
+//!
+//! `clone` on a *monomorphic* record already synthesises a structural
+//! `__hew_record_clone_inplace_<R>` thunk and deep-copies every owned field.
+//! For a *generic* record the clone thunk must be synthesised **per concrete
+//! instantiation** (`Pair$$i64$i64`, `Pair$$string$string`, …), mirroring the
+//! `make$$i64` monomorphisation key — otherwise the clone call resolves a
+//! declared-but-undefined external thunk and the module fails LLVM verify.
+//!
+//! Each test asserts EXACT cloned values (a behavioural-green `exit 0` is
+//! non-evidence — `admission-gate-is-not-runnability`). The scalar test also
+//! mutates the original after cloning and asserts the clone is unaffected,
+//! proving value-semantics (the clone is a copy, not an alias).
+
+import std::testing;
+
+type Pair<A, B> { a: A; b: B; }
+
+// V1 — generic record clone over scalar leaves; mutate the original and assert
+// the clone is independent (deep copy, not alias).
+#[test]
+fn test_generic_record_clone_scalar_independence() {
+    var p = Pair { a: 10, b: 20 };
+    let q = clone p;
+    // Mutate the original after cloning.
+    p.a = 99;
+    p.b = 88;
+    // The clone keeps its own values.
+    testing.assert_eq(q.a, 10);
+    testing.assert_eq(q.b, 20);
+    // The original reflects the mutation.
+    testing.assert_eq(p.a, 99);
+    testing.assert_eq(p.b, 88);
+}
+
+// V2a — generic record clone with an owned `string` leaf; the clone must
+// deep-copy the managed string handle, not alias it.
+#[test]
+fn test_generic_record_clone_string_field() {
+    let p = Pair { a: 7, b: "hello" };
+    let q = clone p;
+    testing.assert_eq(q.a, 7);
+    testing.assert_eq_str(q.b, "hello");
+}
+
+// V2b — nested generic record clone (`Pair<Pair<i64, i64>, string>`); assert
+// the inner record fields and the string leaf are all deep-copied.
+#[test]
+fn test_generic_record_clone_nested() {
+    let inner = Pair { a: 1, b: 2 };
+    let outer = Pair { a: inner, b: "tag" };
+    let c = clone outer;
+    testing.assert_eq(c.a.a, 1);
+    testing.assert_eq(c.a.b, 2);
+    testing.assert_eq_str(c.b, "tag");
+}
+
+// V5 — two distinct instantiations of the same generic record in one program
+// (`Pair<i64, i64>` and `Pair<string, string>`) must synthesise distinct mono
+// thunks with no symbol collision, both producing correct clones.
+#[test]
+fn test_generic_record_clone_multi_instantiation() {
+    let pi = Pair { a: 1, b: 2 };
+    let ps = Pair { a: "x", b: "y" };
+    let ci = clone pi;
+    let cs = clone ps;
+    testing.assert_eq(ci.a + ci.b, 3);
+    testing.assert_eq_str(cs.a, "x");
+    testing.assert_eq_str(cs.b, "y");
+}

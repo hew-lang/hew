@@ -1,11 +1,6 @@
-// EXPECT: pair=true pair-ne=false record=true record-ne=false bag=true bag-ne=false
 type Pair<A, B> {
     first: A;
     second: B;
-}
-
-type Bag<T> {
-    items: Vec<T>;
 }
 
 type Identity {
@@ -15,6 +10,10 @@ type Identity {
 
 type Slot<T> {
     value: T;
+}
+
+type Bag<T> {
+    items: Vec<T>;
 }
 
 fn pair_same<A, B>(a: Pair<A, B>, b: Pair<A, B>) -> bool {

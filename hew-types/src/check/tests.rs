@@ -598,7 +598,11 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
     );
     assert_eq!(
         ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::String]), &checker.type_defs),
-        EqEligibility::IneligibleManaged(Ty::String)
+        EqEligibility::Eligible
+    );
+    assert_eq!(
+        ty_is_eq_eligible(&Ty::Tuple(vec![Ty::I32, Ty::Bytes]), &checker.type_defs),
+        EqEligibility::IneligibleManaged(Ty::Bytes)
     );
     assert_eq!(
         ty_is_eq_eligible(&handle, &checker.type_defs),
@@ -666,22 +670,20 @@ fn vec_contains_float_record_rejected_with_eq_eligibility_diagnostic() {
 #[test]
 fn vec_contains_layout_managed_record_rejected_with_eq_eligibility_diagnostic() {
     let output = check_source(
-        r#"
-        type Person { name: string }
+        r"
+        type Packet { data: bytes }
 
-        fn main() {
-            var people: Vec<Person> = [];
-            let needle = Person { name: "ada" };
-            let _ = people.contains(needle);
+        fn has_packet(values: Vec<Packet>, needle: Packet) -> bool {
+            values.contains(needle)
         }
-        "#,
+        ",
     );
 
     assert!(
         output.errors.iter().any(|error| {
             error.message.contains("`Vec::contains`")
                 && error.message.contains("layout-managed/non-Copy")
-                && error.message.contains("string")
+                && error.message.contains("bytes")
         }),
         "layout-managed Vec::contains should cite managed ineligibility: {:#?}",
         output.errors
@@ -3301,25 +3303,23 @@ fn builtin_payload_enum_comparison_typechecks_when_structurally_eligible() {
 }
 
 #[test]
-fn record_with_string_field_eq_rejects_with_named_diagnostic() {
+fn record_with_bytes_field_eq_rejects_with_named_diagnostic() {
     let output = check_source(
-        r#"
-        type Person { name: string }
+        r"
+        type Packet { data: bytes }
 
-        fn main() {
-            let a = Person { name: "ada" };
-            let b = Person { name: "ada" };
-            let _ = a == b;
+        fn same(a: Packet, b: Packet) -> bool {
+            a == b
         }
-        "#,
+        ",
     );
     assert!(
         output.errors.iter().any(|e| {
             e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`==` on record type `Person`")
+                && e.message.contains("`==` on record type `Packet`")
                 && e.message.contains("field or payload")
                 && e.message.contains("layout-managed/non-Copy")
-                && e.message.contains("string")
+                && e.message.contains("bytes")
                 && !e.message.contains("IntCmp")
         }),
         "managed record eq should fail closed with a named checker diagnostic: {:#?}",
@@ -3328,24 +3328,40 @@ fn record_with_string_field_eq_rejects_with_named_diagnostic() {
 }
 
 #[test]
+fn record_with_string_field_eq_is_accepted() {
+    let output = check_source(
+        r"
+        type Person { name: string }
+
+        fn same(a: Person, b: Person) -> bool {
+            a == b
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "string-backed record equality should be admitted for structural codegen: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn managed_payload_enum_eq_rejects_with_named_diagnostic() {
     let output = check_source(
-        r#"
-        fn main() {
-            let a: Option<string> = Some("ada");
-            let b: Option<string> = Some("ada");
-            let _ = a == b;
+        r"
+        fn same(a: Option<bytes>, b: Option<bytes>) -> bool {
+            a == b
         }
-        "#,
+        ",
     );
     assert!(
         output.errors.iter().any(|e| {
             e.kind == TypeErrorKind::InvalidOperation
                 && e.message
-                    .contains("`==` on enum `Option<string>` with payload variants")
+                    .contains("`==` on enum `Option<bytes>` with payload variants")
                 && e.message.contains("field or payload")
                 && e.message.contains("layout-managed/non-Copy")
-                && e.message.contains("string")
+                && e.message.contains("bytes")
                 && !e.message.contains("IntCmp")
         }),
         "managed payload enum eq should fail closed with a named checker diagnostic: {:#?}",

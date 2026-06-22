@@ -691,6 +691,7 @@ stable = [
   "hew_vec_contains_layout",
   "hew_vec_contains_str",
   "hew_vec_contains_thunk",
+  "hew_vec_equals_thunk",
   "hew_vec_free",
   "hew_vec_free_closure_pairs",
   "hew_vec_free_managed",

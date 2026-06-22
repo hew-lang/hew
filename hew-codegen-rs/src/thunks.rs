@@ -24,7 +24,7 @@ use inkwell::{AddressSpace, IntPredicate};
 use hew_hir::mangle_dotted_name;
 use hew_mir::{ActorLayout, IoHandleKind, LambdaEnvFieldDrop, Place, StateFieldCloneKind};
 use hew_runtime::internal::types::HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH;
-use hew_types::ResolvedTy;
+use hew_types::{BuiltinType, ResolvedTy};
 
 #[allow(unused_imports)]
 use crate::llvm::*;
@@ -962,13 +962,111 @@ pub(crate) fn eq_thunk_struct_key(ty: BasicTypeEnum<'_>) -> String {
     out
 }
 
+fn eq_thunk_resolved_key(resolved_ty: Option<&ResolvedTy>) -> String {
+    let Some(resolved_ty) = resolved_ty else {
+        return "untyped".to_string();
+    };
+    let raw = format!("{resolved_ty:?}");
+    let mut out = String::with_capacity(raw.len());
+    let mut last_under = false;
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_under = false;
+        } else if !last_under {
+            out.push('_');
+            last_under = true;
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    if out.is_empty() {
+        "resolved".to_string()
+    } else {
+        out
+    }
+}
+
+fn eq_struct_field_resolved_tys<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    st: StructType<'ctx>,
+    resolved_ty: Option<&ResolvedTy>,
+) -> Option<Vec<ResolvedTy>> {
+    if let Some(ResolvedTy::Tuple(fields)) = resolved_ty {
+        return Some(fields.clone());
+    }
+    if let Some(ResolvedTy::Named { name, args, .. }) = resolved_ty {
+        let short = short_name(name);
+        let key = if args.is_empty() {
+            name.clone()
+        } else {
+            mangle_with_shortened_args(short, args)
+        };
+        if let Some(fields) = fn_ctx.record_field_resolved_tys.get(key.as_str()) {
+            return Some(fields.clone());
+        }
+        if let Some(fields) = fn_ctx.record_field_resolved_tys.get(name.as_str()) {
+            return Some(fields.clone());
+        }
+        if let Some(fields) = fn_ctx.record_field_resolved_tys.get(short) {
+            return Some(fields.clone());
+        }
+    }
+    st.get_name()
+        .and_then(|cstr| cstr.to_str().ok())
+        .and_then(|name| fn_ctx.record_field_resolved_tys.get(name))
+        .cloned()
+}
+
+fn resolved_vec_elem_ty(resolved_ty: Option<&ResolvedTy>) -> CodegenResult<&ResolvedTy> {
+    match resolved_ty {
+        Some(ResolvedTy::Named {
+            builtin: Some(BuiltinType::Vec),
+            args,
+            ..
+        }) if args.len() == 1 => Ok(&args[0]),
+        Some(other) => Err(CodegenError::FailClosed(format!(
+            "eq_thunk: pointer field `{other:?}` has no structural equality path"
+        ))),
+        None => Err(CodegenError::FailClosed(
+            "eq_thunk: pointer field reached equality thunk without resolved Hew type".into(),
+        )),
+    }
+}
+
+fn emit_eq_i32_result_branch<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    raw: IntValue<'ctx>,
+    success_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    fail_bb: inkwell::basic_block::BasicBlock<'ctx>,
+    name: &str,
+) -> CodegenResult<()> {
+    let nz = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::NE,
+            raw,
+            raw.get_type().const_zero(),
+            &format!("{name}_nz"),
+        )
+        .llvm_ctx("eq_thunk runtime ne")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(nz, success_bb, fail_bb)
+        .llvm_ctx("eq_thunk runtime br")?;
+    Ok(())
+}
+
 pub(crate) fn get_or_emit_eq_thunk<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     elem_ty: BasicTypeEnum<'ctx>,
+    resolved_ty: Option<&ResolvedTy>,
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
     let key = eq_thunk_struct_key(elem_ty);
-    let name = format!("__hew_eq_thunk_{size}_{align}_{key}");
+    let resolved_key = eq_thunk_resolved_key(resolved_ty);
+    let name = format!("__hew_eq_thunk_{size}_{align}_{key}_{resolved_key}");
     if let Some(existing) = fn_ctx.llvm_mod.get_function(&name) {
         return Ok(existing);
     }
@@ -1004,7 +1102,15 @@ pub(crate) fn get_or_emit_eq_thunk<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("eq_thunk: missing rhs param".into()))?
         .into_pointer_value();
 
-    emit_eq_thunk_body(fn_ctx, elem_ty, lhs, rhs, ret_true_bb, ret_false_bb)?;
+    emit_eq_thunk_body(
+        fn_ctx,
+        elem_ty,
+        resolved_ty,
+        lhs,
+        rhs,
+        ret_true_bb,
+        ret_false_bb,
+    )?;
 
     // Return slots.
     fn_ctx.builder.position_at_end(ret_true_bb);
@@ -1033,6 +1139,7 @@ pub(crate) fn get_or_emit_eq_thunk<'ctx>(
 fn emit_eq_thunk_body<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     elem_ty: BasicTypeEnum<'ctx>,
+    resolved_ty: Option<&ResolvedTy>,
     lhs: PointerValue<'ctx>,
     rhs: PointerValue<'ctx>,
     ret_true_bb: inkwell::basic_block::BasicBlock<'ctx>,
@@ -1079,6 +1186,7 @@ fn emit_eq_thunk_body<'ctx>(
             {
                 return emit_eq_thunk_enum(fn_ctx, layout, lhs, rhs, ret_true_bb, ret_false_bb);
             }
+            let field_resolved_tys = eq_struct_field_resolved_tys(fn_ctx, st, resolved_ty);
             let field_count = st.count_fields();
             if field_count == 0 {
                 // Zero-field aggregates (unit-like records / `()` tuple) are
@@ -1108,6 +1216,9 @@ fn emit_eq_thunk_body<'ctx>(
                     .builder
                     .build_struct_gep(st, rhs, idx, &format!("eq_rhs_f{idx}"))
                     .llvm_ctx("eq_thunk rhs gep")?;
+                let field_resolved_ty = field_resolved_tys
+                    .as_ref()
+                    .and_then(|tys| tys.get(idx as usize));
                 // Continuation block: where control resumes after a successful
                 // field comparison, unless this is the final field, in which
                 // case we branch directly to `ret_true_bb`.
@@ -1121,6 +1232,7 @@ fn emit_eq_thunk_body<'ctx>(
                 emit_eq_thunk_field_check(
                     fn_ctx,
                     field_ty,
+                    field_resolved_ty,
                     lhs_field,
                     rhs_field,
                     next_bb,
@@ -1152,6 +1264,10 @@ fn emit_eq_thunk_body<'ctx>(
                     CodegenError::FailClosed("eq_thunk body: missing enclosing function".into())
                 })?;
             let elem_ty = arr_ty.get_element_type();
+            let elem_resolved_ty = match resolved_ty {
+                Some(ResolvedTy::Array(elem, _)) => Some(elem.as_ref()),
+                _ => None,
+            };
             for idx in 0..len {
                 let zero = fn_ctx.ctx.i32_type().const_zero();
                 let idx_v = fn_ctx.ctx.i32_type().const_int(u64::from(idx), false);
@@ -1177,6 +1293,7 @@ fn emit_eq_thunk_body<'ctx>(
                 emit_eq_thunk_field_check(
                     fn_ctx,
                     elem_ty,
+                    elem_resolved_ty,
                     lhs_elem,
                     rhs_elem,
                     next_bb,
@@ -1198,12 +1315,21 @@ fn emit_eq_thunk_body<'ctx>(
                 "eq_thunk: float field reached codegen — checker gate bypassed".into(),
             ))
         }
-        BasicTypeEnum::PointerType(_)
-        | BasicTypeEnum::VectorType(_)
-        | BasicTypeEnum::ScalableVectorType(_) => Err(CodegenError::FailClosed(format!(
-            "eq_thunk: unsupported LLVM field shape {elem_ty:?} — \
+        BasicTypeEnum::PointerType(_) => emit_eq_thunk_field_check(
+            fn_ctx,
+            elem_ty,
+            resolved_ty,
+            lhs,
+            rhs,
+            ret_true_bb,
+            ret_false_bb,
+        ),
+        BasicTypeEnum::VectorType(_) | BasicTypeEnum::ScalableVectorType(_) => {
+            Err(CodegenError::FailClosed(format!(
+                "eq_thunk: unsupported LLVM field shape {elem_ty:?} — \
              checker eligibility gate should have rejected this element type"
-        ))),
+            )))
+        }
     }
 }
 
@@ -1215,6 +1341,7 @@ fn emit_eq_thunk_body<'ctx>(
 fn emit_eq_thunk_field_check<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     field_ty: BasicTypeEnum<'ctx>,
+    resolved_ty: Option<&ResolvedTy>,
     lhs_field: PointerValue<'ctx>,
     rhs_field: PointerValue<'ctx>,
     success_bb: inkwell::basic_block::BasicBlock<'ctx>,
@@ -1244,7 +1371,7 @@ fn emit_eq_thunk_field_check<'ctx>(
         }
         BasicTypeEnum::StructType(_) | BasicTypeEnum::ArrayType(_) => {
             // Nested aggregate: recurse via a separate thunk function.
-            let nested = get_or_emit_eq_thunk(fn_ctx, field_ty)?;
+            let nested = get_or_emit_eq_thunk(fn_ctx, field_ty, resolved_ty)?;
             let call = fn_ctx
                 .builder
                 .build_call(
@@ -1260,29 +1387,70 @@ fn emit_eq_thunk_field_check<'ctx>(
                     CodegenError::FailClosed("eq_thunk nested call returned void".into())
                 })?
                 .into_int_value();
-            let nz = fn_ctx
-                .builder
-                .build_int_compare(
-                    IntPredicate::NE,
-                    raw,
-                    fn_ctx.ctx.i32_type().const_zero(),
-                    "eq_field_nested_nz",
-                )
-                .llvm_ctx("eq_thunk nested ne")?;
-            fn_ctx
-                .builder
-                .build_conditional_branch(nz, success_bb, fail_bb)
-                .llvm_ctx("eq_thunk nested br")?;
-            Ok(())
+            emit_eq_i32_result_branch(fn_ctx, raw, success_bb, fail_bb, "eq_field_nested")
         }
         BasicTypeEnum::FloatType(_) => Err(CodegenError::FailClosed(
             "eq_thunk: float field reached codegen — checker gate bypassed".into(),
         )),
-        BasicTypeEnum::PointerType(_)
-        | BasicTypeEnum::VectorType(_)
-        | BasicTypeEnum::ScalableVectorType(_) => Err(CodegenError::FailClosed(format!(
-            "eq_thunk: unsupported nested LLVM field shape {field_ty:?}"
-        ))),
+        BasicTypeEnum::PointerType(_) => match resolved_ty {
+            Some(ResolvedTy::String) => {
+                let lhs_v = fn_ctx
+                    .builder
+                    .build_load(field_ty, lhs_field, "eq_string_lhs")
+                    .llvm_ctx("eq_thunk string lhs load")?
+                    .into_pointer_value();
+                let rhs_v = fn_ctx
+                    .builder
+                    .build_load(field_ty, rhs_field, "eq_string_rhs")
+                    .llvm_ctx("eq_thunk string rhs load")?
+                    .into_pointer_value();
+                let eq_i32 = fn_ctx.call_runtime_int(
+                    "hew_string_equals",
+                    &[lhs_v.into(), rhs_v.into()],
+                    "eq_string_equals",
+                    "eq_thunk string equals",
+                )?;
+                emit_eq_i32_result_branch(fn_ctx, eq_i32, success_bb, fail_bb, "eq_string")
+            }
+            Some(ResolvedTy::Named {
+                builtin: Some(BuiltinType::Vec),
+                args,
+                ..
+            }) if args.len() == 1 => {
+                let elem_resolved_ty = resolved_vec_elem_ty(resolved_ty)?;
+                let elem_ty = resolve_ty(fn_ctx.ctx, elem_resolved_ty, fn_ctx.record_layouts)?;
+                let elem_eq = get_or_emit_eq_thunk(fn_ctx, elem_ty, Some(elem_resolved_ty))?;
+                let elem_eq_ptr = elem_eq.as_global_value().as_pointer_value();
+                let lhs_v = fn_ctx
+                    .builder
+                    .build_load(field_ty, lhs_field, "eq_vec_lhs")
+                    .llvm_ctx("eq_thunk vec lhs load")?
+                    .into_pointer_value();
+                let rhs_v = fn_ctx
+                    .builder
+                    .build_load(field_ty, rhs_field, "eq_vec_rhs")
+                    .llvm_ctx("eq_thunk vec rhs load")?
+                    .into_pointer_value();
+                let eq_i32 = fn_ctx.call_runtime_int(
+                    "hew_vec_equals_thunk",
+                    &[lhs_v.into(), rhs_v.into(), elem_eq_ptr.into()],
+                    "eq_vec_equals",
+                    "eq_thunk vec equals",
+                )?;
+                emit_eq_i32_result_branch(fn_ctx, eq_i32, success_bb, fail_bb, "eq_vec")
+            }
+            Some(other) => Err(CodegenError::FailClosed(format!(
+                "eq_thunk: type `{other:?}` has no structural equality path"
+            ))),
+            None => Err(CodegenError::FailClosed(
+                "eq_thunk: pointer field reached equality thunk without resolved Hew type".into(),
+            )),
+        },
+        BasicTypeEnum::VectorType(_) | BasicTypeEnum::ScalableVectorType(_) => {
+            Err(CodegenError::FailClosed(format!(
+                "eq_thunk: unsupported nested LLVM field shape {field_ty:?}"
+            )))
+        }
     }
 }
 
@@ -1413,6 +1581,7 @@ fn emit_eq_thunk_enum<'ctx>(
             .builder
             .build_struct_gep(outer, rhs, 1, &format!("eq_enum_rhs_payload_{idx}"))
             .llvm_ctx("eq_thunk enum rhs payload gep")?;
+        let variant_resolved_tys = layout.variant_field_tys.get(idx);
         for field_idx in 0..field_count {
             let field_ty = variant_struct
                 .get_field_type_at_index(field_idx)
@@ -1421,6 +1590,8 @@ fn emit_eq_thunk_enum<'ctx>(
                         "eq_thunk enum: variant {idx} missing field {field_idx}"
                     ))
                 })?;
+            let field_resolved_ty =
+                variant_resolved_tys.and_then(|tys| tys.get(field_idx as usize));
             let lhs_field = fn_ctx
                 .builder
                 .build_struct_gep(
@@ -1447,6 +1618,7 @@ fn emit_eq_thunk_enum<'ctx>(
             emit_eq_thunk_field_check(
                 fn_ctx,
                 field_ty,
+                field_resolved_ty,
                 lhs_field,
                 rhs_field,
                 next_bb,

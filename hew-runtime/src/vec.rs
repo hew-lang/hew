@@ -2773,6 +2773,66 @@ pub unsafe extern "C" fn hew_vec_contains_thunk(
     }
 }
 
+/// Compare two Vec handles element-by-element using a caller-provided equality
+/// function. Returns 1 when both vectors have the same length and every
+/// corresponding element compares equal, 0 otherwise.
+///
+/// The equality thunk is generated for the concrete element type and returns
+/// non-zero when equal. This runtime entry point deliberately never compares raw
+/// bytes, because padding bytes in aggregate values are not semantic.
+///
+/// # Safety
+///
+/// - `lhs`/`rhs` may be null; null returns 0.
+/// - `eq_fn` must be a valid non-null function pointer matching
+///   [`HewVecEqThunk`]. A null callback aborts with a named diagnostic.
+/// - Both vector headers must describe readable backing buffers for their live
+///   lengths. Mismatched element sizes/kinds return 0; malformed headers abort
+///   through the same fail-closed layout-aware trap used by other generic Vec
+///   operations.
+/// - The backing buffers must not be modified concurrently.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_equals_thunk(
+    lhs: *const HewVec,
+    rhs: *const HewVec,
+    eq_fn: Option<HewVecEqThunk>,
+) -> i32 {
+    cabi_guard!(lhs.is_null() || rhs.is_null(), 0);
+    let Some(eq_fn) = eq_fn else {
+        // SAFETY: abort path is safe at the C ABI boundary.
+        unsafe { abort_null_eq_fn() }
+    };
+    // SAFETY: null pointers were rejected above. Header invariants are checked
+    // before any element address is formed.
+    unsafe {
+        let lhs_len = (*lhs).len;
+        let rhs_len = (*rhs).len;
+        if lhs_len > (*lhs).cap || rhs_len > (*rhs).cap {
+            abort_layout_aware_operation();
+        }
+        if (lhs_len > 0 && (*lhs).data.is_null()) || (rhs_len > 0 && (*rhs).data.is_null()) {
+            abort_layout_aware_operation();
+        }
+        if lhs_len != rhs_len {
+            return 0;
+        }
+        if (*lhs).elem_size != (*rhs).elem_size || (*lhs).elem_kind != (*rhs).elem_kind {
+            return 0;
+        }
+        let elem_size = (*lhs).elem_size;
+        let lhs_data = (*lhs).data;
+        let rhs_data = (*rhs).data;
+        for i in 0..lhs_len {
+            let lhs_elem = lhs_data.add(i * elem_size).cast::<core::ffi::c_void>();
+            let rhs_elem = rhs_data.add(i * elem_size).cast::<core::ffi::c_void>();
+            if eq_fn(lhs_elem, rhs_elem) == 0 {
+                return 0;
+            }
+        }
+        1
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Reverse
 // ---------------------------------------------------------------------------

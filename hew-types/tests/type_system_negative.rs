@@ -2353,16 +2353,14 @@ fn vec_contains_float_record_element_has_eq_eligibility_diagnostic() {
 #[test]
 fn vec_contains_layout_managed_record_element_has_eq_eligibility_diagnostic() {
     let output = typecheck(
-        r#"
-        type Person {
-            name: string;
+        r"
+        type Packet {
+            data: bytes;
         }
-        fn main() {
-            var v: Vec<Person> = [];
-            let needle = Person { name: "ada" };
-            let _ = v.contains(needle);
+        fn has_packet(v: Vec<Packet>, needle: Packet) -> bool {
+            v.contains(needle)
         }
-        "#,
+        ",
     );
     assert!(
         output
@@ -2371,7 +2369,7 @@ fn vec_contains_layout_managed_record_element_has_eq_eligibility_diagnostic() {
             .any(|e| e.kind == TypeErrorKind::InvalidOperation
                 && e.message.contains("`Vec::contains`")
                 && e.message.contains("layout-managed/non-Copy")
-                && e.message.contains("string")),
+                && e.message.contains("bytes")),
         "Expected layout-managed equality eligibility diagnostic, got: {:?}",
         output.errors
     );

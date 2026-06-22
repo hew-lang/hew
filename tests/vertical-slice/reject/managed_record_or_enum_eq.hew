@@ -1,7 +1,9 @@
-type Person { name: string }
+type HoldsMap {
+    values: HashMap<string, i64>;
+}
 
 fn main() {
-    let a = Person { name: "ada" };
-    let b = Person { name: "ada" };
+    let a = HoldsMap { values: HashMap::new() };
+    let b = HoldsMap { values: HashMap::new() };
     let _ = a == b;
 }

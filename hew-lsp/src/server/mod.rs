@@ -1640,6 +1640,40 @@ impl Worker {
     }
 
     #[test]
+    fn goto_def_resolves_record_type_name_to_declaration_span() {
+        let source =
+            "record Point { x: i64, y: i64 }\nfn origin() -> Point { Point { x: 0, y: 0 } }\n";
+        let doc = make_typed_doc(source);
+        let offset = source.find("-> Point").unwrap() + "-> ".len();
+
+        let resolution = hew_analysis::resolver::resolve_symbol_at_raw(
+            &doc.source,
+            &doc.parse_result,
+            doc.type_output.as_ref(),
+            "file:///test.hew",
+            offset,
+        )
+        .expect("resolver should classify record type use");
+        match resolution {
+            hew_analysis::resolver::Resolution::TypeDef { name, def_span, .. } => {
+                assert_eq!(name, "Point");
+                assert_eq!(&source[def_span.start..def_span.end], "Point");
+                assert_eq!(def_span.start, source.find("Point").unwrap());
+                let range =
+                    offset_range_to_lsp(source, &doc.line_offsets, def_span.start, def_span.end);
+                let expected = offset_range_to_lsp(
+                    source,
+                    &doc.line_offsets,
+                    source.find("Point").unwrap(),
+                    source.find("Point").unwrap() + "Point".len(),
+                );
+                assert_eq!(range, expected);
+            }
+            other => panic!("expected record TypeDef, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn goto_def_resolves_param_fallback() {
         let source = "fn add(value: i32) -> i32 {\n    value + 1\n}";
         let doc = make_doc(source);

@@ -4,7 +4,6 @@ use std::collections::HashSet;
 
 use hew_parser::ast::{
     Block, Expr, Item, Pattern, Span, Spanned, Stmt, StringPart, TraitItem, TypeBodyItem,
-    TypeDeclKind,
 };
 use hew_types::check::{FnSig, TypeDefKind};
 use hew_types::{method_resolution, TypeCheckOutput, VariantDef};
@@ -946,24 +945,20 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
 }
 
 fn item_name_and_kind(item: &Item) -> Option<(String, CompletionKind)> {
-    match item {
-        Item::Function(f) => Some((f.name.clone(), CompletionKind::Function)),
-        Item::Actor(a) => Some((a.name.clone(), CompletionKind::Actor)),
-        Item::Supervisor(s) => Some((s.name.clone(), CompletionKind::Actor)),
-        Item::Trait(t) => Some((t.name.clone(), CompletionKind::Type)),
-        Item::Const(c) => Some((c.name.clone(), CompletionKind::Constant)),
-        Item::TypeDecl(td) => {
-            let kind = match td.kind {
-                TypeDeclKind::Struct | TypeDeclKind::Enum => CompletionKind::Type,
-            };
-            Some((td.name.clone(), kind))
-        }
-        Item::Wire(w) => Some((w.name.clone(), CompletionKind::Type)),
-        Item::TypeAlias(ta) => Some((ta.name.clone(), CompletionKind::Type)),
-        Item::Machine(m) => Some((m.name.clone(), CompletionKind::Type)),
-        Item::Record(r) => Some((r.name.clone(), CompletionKind::Type)),
-        Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => None,
-    }
+    let info = crate::ast_visit::top_level_item_info(item)?;
+    let kind = match info.kind {
+        crate::ast_visit::TopLevelItemKind::Function => CompletionKind::Function,
+        crate::ast_visit::TopLevelItemKind::Actor
+        | crate::ast_visit::TopLevelItemKind::Supervisor => CompletionKind::Actor,
+        crate::ast_visit::TopLevelItemKind::Const => CompletionKind::Constant,
+        crate::ast_visit::TopLevelItemKind::Trait
+        | crate::ast_visit::TopLevelItemKind::TypeDecl
+        | crate::ast_visit::TopLevelItemKind::Wire
+        | crate::ast_visit::TopLevelItemKind::TypeAlias
+        | crate::ast_visit::TopLevelItemKind::Machine
+        | crate::ast_visit::TopLevelItemKind::Record => CompletionKind::Type,
+    };
+    Some((info.name.to_string(), kind))
 }
 
 #[cfg(test)]

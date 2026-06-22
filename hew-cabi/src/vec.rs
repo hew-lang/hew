@@ -387,6 +387,11 @@ extern "C" {
         data: *const c_void,
         eq_fn: Option<HewVecEqThunk>,
     ) -> i32;
+    pub fn hew_vec_equals_thunk(
+        lhs: *const HewVec,
+        rhs: *const HewVec,
+        eq_fn: Option<HewVecEqThunk>,
+    ) -> i32;
 
     // Remove
     pub fn hew_vec_remove_i32(v: *mut HewVec, val: i32);

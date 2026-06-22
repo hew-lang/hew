@@ -5,7 +5,7 @@ use super::types::GenericLambdaSig;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
-use crate::eq_eligibility::{ty_is_eq_eligible, EqEligibility};
+use crate::eq_eligibility::{ty_is_eq_eligible_with_type_params, EqEligibility};
 use crate::BuiltinType;
 
 type DangerousRcBinding = (String, String);
@@ -3801,13 +3801,28 @@ impl Checker {
         })
     }
 
+    fn current_type_param_names(&self) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for frame in &self.current_type_param_bounds {
+            names.extend(frame.bounds.keys().cloned());
+        }
+        if let Some(fn_name) = &self.current_function {
+            if let Some(sig) = self.fn_sigs.get(fn_name) {
+                names.extend(sig.type_params.iter().cloned());
+            }
+        }
+        names
+    }
+
     /// Fail-closed gate for aggregate comparisons outside the structural-equality subset.
     ///
     /// Eligible records and payload enums may use `==`/`!=`; ordering remains
-    /// rejected. The gate deliberately uses `ty_is_eq_eligible`, not the broader
-    /// `MarkerTrait::Eq`, because semantic Eq admits managed types such as
-    /// `string` while the current structural thunk would only compare pointer
-    /// bytes for those fields.
+    /// rejected. The gate deliberately uses the structural equality eligibility
+    /// substrate, not the broader `MarkerTrait::Eq`, because semantic Eq can
+    /// admit handles that have no structural compare path. Generic type
+    /// parameters are admitted only inside a generic frame: MIR/codegen must
+    /// resolve the concrete monomorphized leaves and fail closed for any leaf
+    /// that still lacks an equality path.
     #[expect(
         clippy::too_many_lines,
         reason = "aggregate comparison admission keeps record, enum, and diagnostic routing in one checker gate"
@@ -3832,6 +3847,7 @@ impl Checker {
             EnumOrdering(String),
         }
 
+        let current_type_params = self.current_type_param_names();
         let unsupported = [left_resolved, right_resolved].into_iter().find_map(|ty| {
             let Ty::Named { name, builtin, .. } = ty else {
                 return None;
@@ -3839,7 +3855,11 @@ impl Checker {
             let type_name = ty.user_facing().to_string();
             if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
                 if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                    let eligibility = ty_is_eq_eligible(ty, &self.type_defs);
+                    let eligibility = ty_is_eq_eligible_with_type_params(
+                        ty,
+                        &self.type_defs,
+                        &current_type_params,
+                    );
                     return (eligibility != EqEligibility::Eligible).then_some(
                         UnsupportedComparison::PayloadEnum {
                             type_name,
@@ -3853,7 +3873,11 @@ impl Checker {
             match type_def.kind {
                 TypeDefKind::Struct | TypeDefKind::Record => {
                     if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                        let eligibility = ty_is_eq_eligible(ty, &self.type_defs);
+                        let eligibility = ty_is_eq_eligible_with_type_params(
+                            ty,
+                            &self.type_defs,
+                            &current_type_params,
+                        );
                         return (eligibility != EqEligibility::Eligible).then_some(
                             UnsupportedComparison::Record {
                                 type_name,
@@ -3873,7 +3897,11 @@ impl Checker {
                         .any(|variant| !matches!(variant, VariantDef::Unit));
                     if has_payload_variant {
                         if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                            let eligibility = ty_is_eq_eligible(ty, &self.type_defs);
+                            let eligibility = ty_is_eq_eligible_with_type_params(
+                                ty,
+                                &self.type_defs,
+                                &current_type_params,
+                            );
                             (eligibility != EqEligibility::Eligible).then_some(
                                 UnsupportedComparison::PayloadEnum {
                                     type_name,

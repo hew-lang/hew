@@ -75,7 +75,7 @@ use hew_mir::{
     RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout,
     SupervisorLayout, SuspendKind, Terminator, TrapKind,
 };
-use hew_types::{NumericWidth, ResolvedTy, WireCodecDirection};
+use hew_types::{BuiltinType, NumericWidth, ResolvedTy, WireCodecDirection};
 // Single source of truth for the trap discriminants codegen emits. Importing
 // these from the runtime makes a renumber on either side a build error rather
 // than a silently-desynced hand-copied literal (the `codegen-offset-mirror-drift`
@@ -2445,6 +2445,12 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // hew_vec_len(v: *mut HewVec) -> i64
         // (`hew-runtime/src/vec.rs:649`). Returns the element count as i64.
         "hew_vec_len" => i64_ty.fn_type(&[ptr_ty.into()], false),
+        // hew_vec_equals_thunk(lhs: *const HewVec, rhs: *const HewVec, eq_fn) -> i32
+        // (`hew-runtime/src/vec.rs`). Compares element-by-element with a
+        // codegen-emitted equality thunk; never falls back to raw byte compare.
+        "hew_vec_equals_thunk" => {
+            i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false)
+        }
         // hew_bytes_len(triple: *const BytesTriple) -> i64
         // (`hew-runtime/src/bytes.rs`). The canonical `bytes.len()` entry: a
         // `bytes` value is a `BytesTriple`, not a `*mut HewVec`. Passed BY
@@ -12745,7 +12751,8 @@ fn lower_instruction(
                         ))
                     }
                 };
-                let callee = crate::thunks::get_or_emit_eq_thunk(fn_ctx, lhs_ty)?;
+                let callee =
+                    crate::thunks::get_or_emit_eq_thunk(fn_ctx, lhs_ty, Some(lhs_resolved_ty))?;
                 let eq_i32 = fn_ctx
                     .builder
                     .build_call(
@@ -12789,15 +12796,6 @@ fn lower_instruction(
             {
                 let lhs_resolved_ty = place_resolved_ty(fn_ctx, *lhs)?;
                 let rhs_resolved_ty = place_resolved_ty(fn_ctx, *rhs)?;
-                if !matches!(
-                    (lhs_resolved_ty, rhs_resolved_ty),
-                    (ResolvedTy::String, ResolvedTy::String)
-                ) {
-                    return Err(CodegenError::FailClosed(format!(
-                        "IntCmp pointer operands must be string-typed for content equality; \
-                         got lhs={lhs_resolved_ty:?}, rhs={rhs_resolved_ty:?}"
-                    )));
-                }
                 let dest_int = match dest_ty {
                     BasicTypeEnum::IntType(t) => t,
                     _ => {
@@ -12806,6 +12804,75 @@ fn lower_instruction(
                         ))
                     }
                 };
+                if let (
+                    ResolvedTy::Named {
+                        builtin: Some(BuiltinType::Vec),
+                        args: lhs_args,
+                        ..
+                    },
+                    ResolvedTy::Named {
+                        builtin: Some(BuiltinType::Vec),
+                        args: rhs_args,
+                        ..
+                    },
+                ) = (lhs_resolved_ty, rhs_resolved_ty)
+                {
+                    if lhs_args.len() != 1 || rhs_args.len() != 1 || lhs_args[0] != rhs_args[0] {
+                        return Err(CodegenError::FailClosed(format!(
+                            "IntCmp Vec operands must have the same element type; \
+                             got lhs={lhs_resolved_ty:?}, rhs={rhs_resolved_ty:?}"
+                        )));
+                    }
+                    let elem_ty = resolve_ty(fn_ctx.ctx, &lhs_args[0], fn_ctx.record_layouts)?;
+                    let elem_eq =
+                        crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty, Some(&lhs_args[0]))?;
+                    let elem_eq_ptr = elem_eq.as_global_value().as_pointer_value();
+                    let lhs_v = fn_ctx
+                        .builder
+                        .build_load(lhs_ty, lhs_ptr, "vec_cmp_lhs")
+                        .llvm_ctx("vec cmp lhs load")?
+                        .into_pointer_value();
+                    let rhs_v = fn_ctx
+                        .builder
+                        .build_load(lhs_ty, rhs_ptr, "vec_cmp_rhs")
+                        .llvm_ctx("vec cmp rhs load")?
+                        .into_pointer_value();
+                    let eq_i32 = fn_ctx.call_runtime_int(
+                        "hew_vec_equals_thunk",
+                        &[lhs_v.into(), rhs_v.into(), elem_eq_ptr.into()],
+                        "hew_vec_equals_thunk",
+                        "hew_vec_equals_thunk call",
+                    )?;
+                    let zero = eq_i32.get_type().const_zero();
+                    let predicate = if *pred == CmpPred::Eq {
+                        IntPredicate::NE
+                    } else {
+                        IntPredicate::EQ
+                    };
+                    let bit = fn_ctx
+                        .builder
+                        .build_int_compare(predicate, eq_i32, zero, "vec_cmp_bit")
+                        .llvm_ctx("vec cmp icmp")?;
+                    let widened = fn_ctx
+                        .builder
+                        .build_int_z_extend_or_bit_cast(bit, dest_int, "vec_cmp_zext")
+                        .llvm_ctx("vec cmp zext")?;
+                    fn_ctx
+                        .builder
+                        .build_store(dest_ptr, widened)
+                        .llvm_ctx("vec cmp store")?;
+                    let _ = ctx;
+                    return Ok(());
+                }
+                if !matches!(
+                    (lhs_resolved_ty, rhs_resolved_ty),
+                    (ResolvedTy::String, ResolvedTy::String)
+                ) {
+                    return Err(CodegenError::FailClosed(format!(
+                        "IntCmp pointer operands must be string-typed or Vec-typed for content equality; \
+                         got lhs={lhs_resolved_ty:?}, rhs={rhs_resolved_ty:?}"
+                    )));
+                }
                 let lhs_v = fn_ctx
                     .builder
                     .build_load(lhs_ty, lhs_ptr, "string_cmp_lhs")
@@ -16882,7 +16949,7 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
     // Emit/dedup the per-record thunks BEFORE constructing the initializer
     // so the function pointers exist when the global references them.
     let hash_fn = crate::thunks::get_or_emit_hash_thunk(fn_ctx, elem_ty, resolved_ty)?;
-    let eq_fn = crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty)?;
+    let eq_fn = crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty, resolved_ty)?;
 
     let init = layout_ty.const_named_struct(&[
         usize_ty.const_int(size, false).into(),
@@ -18511,7 +18578,9 @@ pub(crate) fn lower_layout_vec_direct_call(
                 )
             })?;
             let (val_ptr, elem_ty) = place_pointer(fn_ctx, args[1])?;
-            let thunk_fn = crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty)?;
+            let val_resolved_ty = place_resolved_ty(fn_ctx, args[1])?;
+            let thunk_fn =
+                crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty, Some(val_resolved_ty))?;
             let thunk_ptr = thunk_fn.as_global_value().as_pointer_value();
             let call = fn_ctx
                 .builder

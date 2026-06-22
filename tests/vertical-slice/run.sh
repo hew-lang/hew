@@ -305,7 +305,7 @@ expect_check_fail_contains \
   "static_trait_dispatch_missing_super_impl"
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/managed_record_or_enum_eq.hew" \
-  "layout-managed/non-Copy" \
+  "owned or heap-backed" \
   "managed_record_or_enum_eq"
 # Declaration-level generic bounds are authority at nominal instantiation sites:
 # valid arguments compile, invalid arguments fail closed at the reference site.
@@ -317,6 +317,7 @@ expect_check_fail_contains \
 run_accept_expect_stdout "payload_enum_equality"
 run_accept_expect_stdout "builtin_payload_enum_equality"
 run_accept_expect_stdout "builtin_payload_enum_inequality_result"
+run_accept_expect_stdout "generic_aggregate_eq"
 if grep -qF 'E_CODEGEN_FRONT' "${reject_output}" || \
     grep -qF 'IntCmp lhs is not an integer' "${reject_output}"; then
   echo "managed_record_or_enum_eq leaked codegen-front diagnostics" >&2

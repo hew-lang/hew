@@ -1184,7 +1184,20 @@ fn is_builtin_display_impl(item: &Item) -> bool {
     trait_name == "Display"
         && matches!(
             name.as_str(),
-            "i32" | "i64" | "u32" | "u64" | "bool" | "char" | "f64" | "string"
+            "i8" | "i16"
+                | "i32"
+                | "i64"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "isize"
+                | "usize"
+                | "bool"
+                | "char"
+                | "f32"
+                | "f64"
+                | "string"
         )
 }
 

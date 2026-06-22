@@ -408,13 +408,13 @@ pub trait Display {
 // source of truth.
 impl Display for i8 {
     fn fmt(val: i8) -> string {
-        to_string(val)
+        to_string(val as i32)
     }
 }
 
 impl Display for i16 {
     fn fmt(val: i16) -> string {
-        to_string(val)
+        to_string(val as i32)
     }
 }
 
@@ -454,6 +454,18 @@ impl Display for u64 {
     }
 }
 
+impl Display for isize {
+    fn fmt(val: isize) -> string {
+        to_string(val as i64)
+    }
+}
+
+impl Display for usize {
+    fn fmt(val: usize) -> string {
+        to_string(val as u64)
+    }
+}
+
 impl Display for bool {
     fn fmt(val: bool) -> string {
         to_string(val)
@@ -469,6 +481,12 @@ impl Display for char {
 impl Display for f64 {
     fn fmt(val: f64) -> string {
         to_string(val)
+    }
+}
+
+impl Display for f32 {
+    fn fmt(val: f32) -> string {
+        to_string(val as f64)
     }
 }
 

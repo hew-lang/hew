@@ -1,0 +1,29 @@
+# `clone` of a literal is always redundant: a literal is already a fresh,
+# owned value, and scalar literals are Copy. `clone 5` / `clone "x"` /
+# `clone true` / `clone 3.14` / `clone 'c'` can drop the `clone`.
+#
+# The match is deliberately narrow — the literal must be the *direct* operand
+# of `clone`, so `clone x` (identifier), `clone foo(5)` (call) and
+# `clone (a + b)` are left untouched. Interpolated f-strings parse as
+# `interpolated_string`, not a literal, and are also skipped.
+#
+# Fix is safe: replacing `clone <literal>` with `<literal>` is value-identical.
+id: redundant-clone-literal
+language: hew
+severity: warning
+message: Redundant `clone` of a literal; the literal is already an owned value.
+note: Scalar literals are Copy and string/char literals are already fresh owned values.
+rule:
+  pattern:
+    context: 'fn _p() { let _x = clone $L; }'
+    selector: clone_expression
+constraints:
+  L:
+    has:
+      any:
+        - kind: integer_literal
+        - kind: float_literal
+        - kind: boolean_literal
+        - kind: string_literal
+        - kind: char_literal
+fix: '$L'

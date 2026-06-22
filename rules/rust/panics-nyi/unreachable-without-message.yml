@@ -1,0 +1,23 @@
+id: unreachable-without-message
+language: rust
+severity: warning
+message: '`unreachable!()` needs a description: `unreachable!("why this is unreachable")`.'
+note: |
+  CLAUDE.md §2 (Fail-Closed Codegen) prefers `unreachable!("description")` over a
+  bare `unreachable!()` so that a violated invariant is self-documenting in the
+  panic message / backtrace. Add a short reason string explaining why the arm is
+  genuinely unreachable. This rule only flags the no-argument form; the documented
+  `unreachable!("...")` form is intentionally not matched.
+ignores:
+  - '**/tests/**'
+  - '**/*test*.rs'
+  - '**/benches/**'
+rule:
+  pattern: unreachable!()
+  not:
+    inside:
+      kind: mod_item
+      stopBy: end
+      follows:
+        kind: attribute_item
+        regex: 'cfg\(.*\btest\b'

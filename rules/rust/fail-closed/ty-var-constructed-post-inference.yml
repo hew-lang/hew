@@ -1,0 +1,33 @@
+id: ty-var-constructed-post-inference
+language: rust
+severity: error
+message: "Constructing `Ty::Var(..)` in a post-inference crate leaks an inference variable past the type checker — codegen must never see an unresolved `Ty::Var` (CLAUDE.md §3 Type Inference Boundary)."
+note: "Inference variables are built and unified in `hew-types` only. After checking, an unresolved `Ty::Var` must be turned into a diagnostic by the post-inference validation pass in `check_program`, never fabricated or forwarded here. If a fresh var is genuinely required (e.g. a checker round-trip), annotate the line with `// JUSTIFIED: <reason>`."
+files:
+  - 'hew-codegen-rs/**'
+  - 'hew-mir/**'
+  - 'hew-hir/**'
+ignores:
+  - '**/tests/**'
+  - '**/test/**'
+  - '**/*_test.rs'
+  - '**/*_tests.rs'
+  - '**/tests.rs'
+rule:
+  pattern: $TY::Var($$$ARGS)
+  kind: call_expression
+  not:
+    any:
+      - follows:
+          kind: line_comment
+          regex: 'JUSTIFIED'
+          stopBy: neighbor
+      - inside:
+          follows:
+            kind: line_comment
+            regex: 'JUSTIFIED'
+            stopBy: neighbor
+          stopBy: end
+constraints:
+  TY:
+    regex: '(^|::)Ty$'

@@ -1,0 +1,31 @@
+id: explicit-leak-review
+language: rust
+severity: hint
+message: >-
+  Explicit escape from RAII (`mem::forget` / `Box::leak`) bypasses the normal
+  drop path. Re-verify the cleanup story for all three contexts (CLAUDE.md §1
+  Drop Safety): sync return, async cancel (future dropped mid-await), and actor
+  shutdown (mailbox drained). If the leak is deliberate, annotate it
+  `// JUSTIFIED: <reason>` or pair it with an explicit reclaim.
+files:
+  - 'hew-runtime/**'
+  - 'hew-codegen-rs/**'
+ignores:
+  - '**/tests/**'
+  - '**/*test*.rs'
+  - '**/*_tests.rs'
+rule:
+  any:
+    - pattern: std::mem::forget($X)
+    - pattern: core::mem::forget($X)
+    - pattern: mem::forget($X)
+    - pattern: Box::leak($X)
+    - pattern: Vec::leak($X)
+    - pattern: String::leak($X)
+  not:
+    inside:
+      kind: mod_item
+      stopBy: end
+      has:
+        field: name
+        regex: '^(tests|.*_tests|test_support)$'

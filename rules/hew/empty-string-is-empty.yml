@@ -1,0 +1,24 @@
+# `s == ""` is the long-hand empty-string test; `s.is_empty()` is the idiom.
+# Comparing to the `""` literal guarantees the operand is a `string`, and
+# `string` always provides `is_empty`, so the rewrite is type-safe.
+#
+# The receiver is constrained to a plain identifier or field access. That
+# covers every occurrence in the corpus and keeps the auto-fix unambiguous:
+# postfix `.is_empty()` binds tighter than `==`, so no parentheses are needed.
+# A complex left operand (`a + b == ""`) is intentionally not matched.
+# Only the `$X == ""` orientation is handled (`"" == $X` is not in the corpus).
+id: empty-string-is-empty
+language: hew
+severity: hint
+message: Prefer `.is_empty()` over `== ""`.
+rule:
+  pattern:
+    context: 'fn _p() { let _x = $X == ""; }'
+    selector: binary_expression
+constraints:
+  X:
+    has:
+      any:
+        - kind: identifier
+        - kind: field_expression
+fix: '$X.is_empty()'

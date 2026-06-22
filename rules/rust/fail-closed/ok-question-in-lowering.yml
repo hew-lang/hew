@@ -1,0 +1,29 @@
+id: ok-question-in-lowering
+language: rust
+severity: error
+message: "`.ok()?` discards the underlying error and silently returns `None` — propagate the error or use `unreachable!(\"...\")` (CLAUDE.md §2 Fail-Closed Codegen)."
+note: "CLAUDE.md §2: \"the pattern `something.ok()?` in codegen is almost always wrong — propagate the error.\" If this `None` is genuinely the intended signal (e.g. a pure string/predicate helper), annotate the source line with `// JUSTIFIED: <reason>` to suppress."
+files:
+  - 'hew-codegen-rs/**'
+  - 'hew-mir/**'
+  - 'hew-hir/**'
+ignores:
+  - '**/tests/**'
+  - '**/test/**'
+  - '**/*_test.rs'
+  - '**/*_tests.rs'
+  - '**/tests.rs'
+rule:
+  pattern: $E.ok()?
+  not:
+    any:
+      - follows:
+          kind: line_comment
+          regex: 'JUSTIFIED'
+          stopBy: neighbor
+      - inside:
+          follows:
+            kind: line_comment
+            regex: 'JUSTIFIED'
+            stopBy: neighbor
+          stopBy: end

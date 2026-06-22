@@ -1,0 +1,26 @@
+id: lock-unwrap
+language: rust
+severity: info
+message: >-
+  Raw `.lock().unwrap()` panics if the mutex is poisoned, which can mask the
+  shutdown race that poisoned it (CLAUDE.md §9 Concurrency Safety). Prefer the
+  codebase poison-safe idioms: `PoisonSafe::access` or
+  `.unwrap_or_else(PoisonError::into_inner)`.
+files:
+  - 'hew-runtime/**'
+  - 'hew-codegen-rs/**'
+ignores:
+  - '**/tests/**'
+  - '**/*test*.rs'
+  - '**/*_tests.rs'
+rule:
+  any:
+    - pattern: $M.lock().unwrap()
+    - pattern: $M.lock().expect($_)
+  not:
+    inside:
+      kind: mod_item
+      stopBy: end
+      has:
+        field: name
+        regex: '^(tests|.*_tests|test_support)$'

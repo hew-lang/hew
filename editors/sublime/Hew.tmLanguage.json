@@ -28,9 +28,6 @@
       "include": "#actors"
     },
     {
-      "include": "#type-forms"
-    },
-    {
       "include": "#keywords"
     },
     {
@@ -38,6 +35,15 @@
     },
     {
       "include": "#types"
+    },
+    {
+      "include": "#turbofish"
+    },
+    {
+      "include": "#closures"
+    },
+    {
+      "include": "#glob-import"
     },
     {
       "include": "#operators"
@@ -83,7 +89,12 @@
     "strings": {
       "patterns": [
         {
-          "comment": "Byte string literal: b\"bytes\"",
+          "comment": "Char literal: 'a', '\\n'",
+          "name": "string.quoted.single.char.hew",
+          "match": "'([^'\\\\]|\\\\.)'"
+        },
+        {
+          "comment": "Byte string literal: b\"data\"",
           "name": "string.quoted.byte.hew",
           "begin": "b\"",
           "end": "\"",
@@ -92,11 +103,6 @@
               "include": "#string-escape"
             }
           ]
-        },
-        {
-          "comment": "Char literal: 'a', '\\n'",
-          "name": "string.quoted.single.char.hew",
-          "match": "'([^'\\\\]|\\\\(n|r|t|\\\\|'|0|x[0-9a-fA-F]{2}))'"
         },
         {
           "comment": "Interpolated string: f\"hello {name}\"",
@@ -194,7 +200,7 @@
       ]
     },
     "attributes": {
-      "comment": "Attribute syntax with optional payload: #[test], #[max_heap(...)], #[on(crash)]",
+      "comment": "Attribute syntax: #[test], #[inline]",
       "name": "meta.attribute.hew",
       "begin": "#\\[",
       "end": "\\]",
@@ -215,32 +221,12 @@
         },
         {
           "include": "#strings"
-        },
-        {
-          "include": "#numbers"
-        },
-        {
-          "include": "#types"
-        },
-        {
-          "include": "#operators"
-        },
-        {
-          "include": "#punctuation"
-        },
-        {
-          "include": "#variables"
         }
       ]
     },
     "wire-annotations": {
       "comment": "Wire field tags (@1, @2) and loop labels (@outer, @inner)",
       "patterns": [
-        {
-          "comment": "Machine self-transition marker",
-          "name": "keyword.control.machine.reenter.hew",
-          "match": "@reenter\\b"
-        },
         {
           "comment": "Wire field tag: @1, @2",
           "name": "constant.numeric.wire-tag.hew",
@@ -256,19 +242,19 @@
     "keywords": {
       "patterns": [
         {
-          "comment": "Control flow (v0.5 additions: is)",
+          "comment": "Control flow",
           "name": "keyword.control.hew",
-          "match": "\\b(after|await|break|continue|cooperate|defer|else|for|from|if|in|is|join|loop|match|return|scope|select|while|yield)\\b"
+          "match": "\\b(after|await|break|continue|cooperate|defer|else|for|from|if|in|join|loop|match|return|scope|select|while|yield)\\b"
         },
         {
           "comment": "Declarations",
           "name": "keyword.declaration.hew",
-          "match": "\\b(as|async|const|enum|extern|fn|gen|impl|import|indirect|let|package|pub|struct|super|trait|type|var|where)\\b"
+          "match": "\\b(as|async|const|enum|extern|fn|gen|impl|import|indirect|let|mut|package|pub|record|struct|super|trait|type|var|where)\\b"
         },
         {
           "comment": "Actor and concurrency",
           "name": "keyword.actor.hew",
-          "match": "\\b(actor|fork|init|link|monitor|move|receive|spawn|this)\\b"
+          "match": "\\b(actor|fork|init|move|receive|spawn|this)\\b"
         },
         {
           "comment": "Supervisor",
@@ -278,7 +264,7 @@
         {
           "comment": "Supervisor strategy and overflow policy values",
           "name": "constant.language.strategy.hew",
-          "match": "\\b(brutal_kill|one_for_all|one_for_one|permanent|rest_for_one|simple_one_for_one|temporary|transient)\\b"
+          "match": "\\b(brutal_kill|one_for_all|one_for_one|permanent|pool|rest_for_one|simple_one_for_one|temporary|transient)\\b"
         },
         {
           "comment": "Wire protocol keywords",
@@ -288,12 +274,12 @@
         {
           "comment": "State machine keywords",
           "name": "keyword.control.machine.hew",
-          "match": "\\b(drives|emit|entry|event|exit|machine|on|state|transitions|when)\\b"
+          "match": "\\b(emit|entry|event|exit|machine|on|state|when)\\b"
         },
         {
           "comment": "Other keywords",
           "name": "keyword.other.hew",
-          "match": "\\b(dyn|unsafe)\\b"
+          "match": "\\b(dyn|is|unsafe)\\b"
         },
         {
           "comment": "Boolean literals",
@@ -306,14 +292,32 @@
           "match": "\\bNone\\b"
         },
         {
+          "comment": "Removed/rejected keywords — parser explicitly rejects these with migration diagnostics. Highlight as invalid so users know these are not valid v0.5 syntax.",
+          "name": "invalid.removed.hew",
+          "match": "\\b(catch|foreign|race|try)\\b"
+        },
+        {
           "comment": "Reserved keywords (not yet used in the language)",
           "name": "keyword.reserved.hew",
-          "match": "\\b(catch|foreign|race|try)\\b"
+          "match": "\\b(catch|cooperate|foreign|race|try)\\b"
         }
       ]
     },
     "types": {
       "patterns": [
+        {
+          "comment": "Raw pointer type prefix *const/*mut — valid only in extern/FFI/unsafe context. *var T is LEGACY and rejected by the parser.",
+          "name": "meta.type.pointer.raw.hew",
+          "match": "(\\*)\\s*(const|mut)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.operator.pointer.hew"
+            },
+            "2": {
+              "name": "storage.modifier.pointer-mutability.hew"
+            }
+          }
+        },
         {
           "comment": "Numeric types",
           "name": "storage.type.numeric.hew",
@@ -327,12 +331,12 @@
         {
           "comment": "Generic / collection types",
           "name": "storage.type.generic.hew",
-          "match": "\\b(Arc|Err|HashMap|HashSet|Map|Ok|Option|Range|Rc|Result|Some|Vec|Weak)\\b"
+          "match": "\\b(Arc|Err|HashMap|HashSet|Ok|Option|Range|Rc|Result|Some|Vec|Weak)\\b"
         },
         {
           "comment": "Concurrency types",
           "name": "storage.type.concurrency.hew",
-          "match": "\\b(ActorRef|AsyncGenerator|Channel|Duplex|Generator|LocalPid|Pid|Scope|Sink|Stream|Task)\\b"
+          "match": "\\b(ActorRef|AsyncGenerator|Generator|Scope|Sink|Stream|Task)\\b"
         },
         {
           "comment": "Built-in trait names",
@@ -348,201 +352,6 @@
           "comment": "PascalCase type name",
           "name": "entity.name.type.hew",
           "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
-        }
-      ]
-    },
-    "type-forms": {
-      "patterns": [
-        {
-          "comment": "Collection / sum generic type forms: Vec<T>, Map<K, V>, Result<T, E>, Option<T>",
-          "name": "meta.type.generic.collection.hew",
-          "begin": "\\b(Arc|HashMap|HashSet|Map|Option|Range|Rc|Result|Vec|Weak)\\s*(<)",
-          "beginCaptures": {
-            "1": {
-              "name": "storage.type.generic.hew"
-            },
-            "2": {
-              "name": "punctuation.definition.generic.begin.hew"
-            }
-          },
-          "end": ">",
-          "endCaptures": {
-            "0": {
-              "name": "punctuation.definition.generic.end.hew"
-            }
-          },
-          "patterns": [
-            {
-              "include": "#type-forms"
-            },
-            {
-              "include": "#types"
-            },
-            {
-              "include": "#operators"
-            },
-            {
-              "include": "#punctuation"
-            },
-            {
-              "include": "#variables"
-            }
-          ]
-        },
-        {
-          "comment": "Concurrency generic type forms: Stream<T>, Sink<T>, Duplex<S, R>, Channel<T>, Pid<T>, Task<T>",
-          "name": "meta.type.generic.concurrency.hew",
-          "begin": "\\b(ActorRef|Channel|Duplex|LocalPid|Pid|Sink|Stream|Task)\\s*(<)",
-          "beginCaptures": {
-            "1": {
-              "name": "storage.type.concurrency.hew"
-            },
-            "2": {
-              "name": "punctuation.definition.generic.begin.hew"
-            }
-          },
-          "end": ">",
-          "endCaptures": {
-            "0": {
-              "name": "punctuation.definition.generic.end.hew"
-            }
-          },
-          "patterns": [
-            {
-              "include": "#type-forms"
-            },
-            {
-              "include": "#types"
-            },
-            {
-              "include": "#operators"
-            },
-            {
-              "include": "#punctuation"
-            },
-            {
-              "include": "#variables"
-            }
-          ]
-        },
-        {
-          "comment": "Associated type projection: Self::Item",
-          "name": "meta.type.associated.hew",
-          "match": "\\b(Self)(::)([A-Z][a-zA-Z0-9_]*)\\b",
-          "captures": {
-            "1": {
-              "name": "storage.type.self.hew"
-            },
-            "2": {
-              "name": "keyword.operator.namespace.hew"
-            },
-            "3": {
-              "name": "entity.name.type.associated.hew"
-            }
-          }
-        },
-        {
-          "comment": "Raw pointer type prefix: *const T, *mut T",
-          "name": "meta.type.pointer.raw.hew",
-          "match": "(\\*)(\\s*)(const|mut)\\b",
-          "captures": {
-            "1": {
-              "name": "keyword.operator.pointer.hew"
-            },
-            "3": {
-              "name": "storage.modifier.pointer.hew"
-            }
-          }
-        },
-        {
-          "comment": "Named record literal: TypeName { field: value }",
-          "name": "meta.record.literal.hew",
-          "begin": "\\b([A-Z][a-zA-Z0-9_]*)\\s*(\\{)",
-          "beginCaptures": {
-            "1": {
-              "name": "entity.name.type.record.hew"
-            },
-            "2": {
-              "name": "punctuation.brackets.curly.hew"
-            }
-          },
-          "end": "\\}",
-          "endCaptures": {
-            "0": {
-              "name": "punctuation.brackets.curly.hew"
-            }
-          },
-          "patterns": [
-            {
-              "include": "#comments"
-            },
-            {
-              "include": "#strings"
-            },
-            {
-              "include": "#numbers"
-            },
-            {
-              "include": "#attributes"
-            },
-            {
-              "include": "#type-forms"
-            },
-            {
-              "include": "#keywords"
-            },
-            {
-              "include": "#function-calls"
-            },
-            {
-              "include": "#types"
-            },
-            {
-              "include": "#operators"
-            },
-            {
-              "include": "#punctuation"
-            },
-            {
-              "include": "#variables"
-            }
-          ]
-        },
-        {
-          "comment": "Tuple type annotation: name: (A, B, C)",
-          "name": "meta.type.tuple.hew",
-          "begin": "(:)\\s*(\\()(?=[^\\n)]*,)",
-          "beginCaptures": {
-            "1": {
-              "name": "punctuation.separator.colon.hew"
-            },
-            "2": {
-              "name": "punctuation.brackets.round.hew"
-            }
-          },
-          "end": "\\)",
-          "endCaptures": {
-            "0": {
-              "name": "punctuation.brackets.round.hew"
-            }
-          },
-          "patterns": [
-            {
-              "include": "#type-forms"
-            },
-            {
-              "include": "#types"
-            },
-            {
-              "include": "#operators"
-            },
-            {
-              "include": "#punctuation"
-            },
-            {
-              "include": "#variables"
-            }
-          ]
         }
       ]
     },
@@ -692,18 +501,6 @@
           }
         },
         {
-          "comment": "Type declaration",
-          "match": "\\b(type)\\s+([A-Z][a-zA-Z0-9_]*)",
-          "captures": {
-            "1": {
-              "name": "keyword.declaration.hew"
-            },
-            "2": {
-              "name": "entity.name.type.hew"
-            }
-          }
-        },
-        {
           "comment": "Impl Trait for Type",
           "match": "\\b(impl)\\s+([A-Z][a-zA-Z0-9_]*)\\s+(for)\\s+([A-Z][a-zA-Z0-9_]*)",
           "captures": {
@@ -717,18 +514,6 @@
               "name": "keyword.declaration.hew"
             },
             "4": {
-              "name": "entity.name.type.hew"
-            }
-          }
-        },
-        {
-          "comment": "Inherent impl block: impl Type { — must precede #type-forms so 'Type {' is not mis-scoped as a record literal",
-          "match": "\\b(impl)\\s+([A-Z][a-zA-Z0-9_]*)",
-          "captures": {
-            "1": {
-              "name": "keyword.declaration.hew"
-            },
-            "2": {
               "name": "entity.name.type.hew"
             }
           }
@@ -777,6 +562,89 @@
         }
       ]
     },
+    "turbofish": {
+      "patterns": [
+        {
+          "comment": "Turbofish type arguments in expression position: Ident::<T>(...), Vec::<i64>::new() (grammar.ebnf:249). Scoped before #operators so the angle brackets are not mistaken for comparison operators.",
+          "begin": "(::)(<)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.operator.namespace.hew"
+            },
+            "2": {
+              "name": "punctuation.definition.typeparameters.begin.hew"
+            }
+          },
+          "end": "(>)",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.typeparameters.end.hew"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#types"
+            },
+            {
+              "name": "punctuation.separator.comma.hew",
+              "match": ","
+            }
+          ]
+        }
+      ]
+    },
+    "closures": {
+      "patterns": [
+        {
+          "comment": "Closure parameters: |x|, |x, y|, |x: T|, move |x|, actor |x| (grammar.ebnf:289-295). Anchored to closure-introducing contexts (after = ( , [ => move actor) so bitwise-or `a | b | c`, or-patterns `A | B`, and logical-or `a || b` keep their operator scopes. Empty `||` closures intentionally stay logical-or to avoid mis-scoping `a || b`.",
+          "begin": "(?<=[=(,\\[]\\s*|=>\\s*|\\bmove\\s+|\\bactor\\s+)(\\|)(?!\\|)(?=[^|]*\\|)",
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.parameters.begin.hew"
+            }
+          },
+          "end": "(\\|)",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.parameters.end.hew"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#types"
+            },
+            {
+              "name": "variable.parameter.hew",
+              "match": "\\b[a-z_][a-zA-Z0-9_]*\\b"
+            },
+            {
+              "name": "punctuation.separator.colon.hew",
+              "match": ":"
+            },
+            {
+              "name": "punctuation.separator.comma.hew",
+              "match": ","
+            }
+          ]
+        }
+      ]
+    },
+    "glob-import": {
+      "patterns": [
+        {
+          "comment": "Glob import wildcard: import a::b::* (grammar.ebnf:66). Matched before #operators so the trailing * is a wildcard, not arithmetic multiply. The `::*` sequence only occurs in glob imports — Hew dereference is prefix *expr, never path::*.",
+          "match": "(::)(\\*)",
+          "captures": {
+            "1": {
+              "name": "keyword.operator.namespace.hew"
+            },
+            "2": {
+              "name": "keyword.operator.wildcard.hew"
+            }
+          }
+        }
+      ]
+    },
     "operators": {
       "patterns": [
         {
@@ -785,14 +653,14 @@
           "match": "->|=>"
         },
         {
-          "comment": "Send operator",
-          "name": "keyword.operator.send.hew",
-          "match": "<-"
-        },
-        {
           "comment": "Range operators",
           "name": "keyword.operator.range.hew",
           "match": "\\.\\.=|\\.\\.(?!\\.)"
+        },
+        {
+          "comment": "Regex match operators",
+          "name": "keyword.operator.regex.hew",
+          "match": "=~|!~"
         },
         {
           "comment": "Logical operators",
@@ -803,11 +671,6 @@
           "comment": "Comparison operators",
           "name": "keyword.operator.comparison.hew",
           "match": "==|!=|<=|>=|<|>"
-        },
-        {
-          "comment": "Pattern / type test operator",
-          "name": "keyword.operator.is.hew",
-          "match": "\\bis\\b"
         },
         {
           "comment": "Bitwise shift compound assignment",
@@ -921,12 +784,7 @@
         {
           "comment": "Contextual identifiers (special meaning in specific contexts)",
           "name": "variable.language.contextual.hew",
-          "match": "\\b(block|coalesce|drop_new|drop_old|export|fail|fallback|infinity|intensity|json|mailbox|mut|overflow|repeated|shutdown|wired_to|within|yaml)\\b"
-        },
-        {
-          "comment": "Field label in records, type fields, and named arguments",
-          "name": "variable.other.field.hew",
-          "match": "\\b[a-z_][a-zA-Z0-9_]*\\b(?=\\s*:)"
+          "match": "\\b(block|coalesce|drop_new|drop_old|emits|events|export|fail|fallback|infinity|initial|intensity|json|mailbox|overflow|reenter|repeated|shutdown|wired_to|within|yaml)\\b"
         },
         {
           "comment": "Identifier (catch-all for variables, parameters, fields)",

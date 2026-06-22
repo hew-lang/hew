@@ -150,14 +150,18 @@ blank();
 
 // Actor & concurrency
 emit('# Actor & concurrency');
-const actorWords = ['actor', 'fork', 'init', 'move', 'receive', 'spawn', 'terminate', 'this'];
-emit(`color brightgreen ${nanoKeywordRegex(actorWords)}`);
+const actorChunks = chunkArray([...kw.actors], 10);
+for (const chunk of actorChunks) {
+  emit(`color brightgreen ${nanoKeywordRegex(chunk)}`);
+}
 blank();
 
-// Supervisor
-emit('# Supervisor');
-const supervisorWords = ['supervisor', 'child', 'restart', 'budget', 'strategy'];
-emit(`color brightgreen ${nanoKeywordRegex(supervisorWords)}`);
+// Supervisor configuration (config words + restart strategy / overflow constants)
+emit('# Supervisor configuration');
+const supervisorChunks = chunkArray([...kw.supervisor_config], 10);
+for (const chunk of supervisorChunks) {
+  emit(`color brightgreen ${nanoKeywordRegex(chunk)}`);
+}
 blank();
 
 // Wire protocol
@@ -173,14 +177,6 @@ blank();
 // Other keywords
 emit('# Other keywords');
 emit(`color green ${nanoKeywordRegex(kw.other)}`);
-blank();
-
-// Strategy & policy constants
-emit('# Strategy & policy constants');
-const strategies = ['one_for_one', 'one_for_all', 'rest_for_one'];
-const permanence = ['permanent', 'transient', 'temporary'];
-emit(`color brightmagenta ${nanoKeywordRegex(strategies)}`);
-emit(`color brightmagenta ${nanoKeywordRegex(permanence)}`);
 blank();
 
 // Reserved keywords
@@ -259,6 +255,21 @@ blank();
 // TODO/FIXME in comments
 emit('# TODO/FIXME in comments');
 emit('color brightyellow,cyan "\\<(TODO|FIXME|XXX|NOTE|HACK)\\>"');
+
+// -- Verify keyword coverage -----------------------------------------------
+// Guard against drift: every keyword the lexer recognises (all_keywords, kept
+// in sync with the lexer by a hew-lexer unit test) must fall into a highlighted
+// group. A miss means a new keyword needs a home in one of the groups above.
+
+const coveredKeywords = new Set([
+  ...kw.control_flow, ...kw.declarations, ...kw.actors, ...kw.supervisor_config,
+  ...kw.wire, ...kw.machine, ...kw.other, ...kw.reserved_unused, ...kw.logical,
+]);
+const missingKeywords = syntaxData.all_keywords.filter(k => !coveredKeywords.has(k));
+if (missingKeywords.length > 0) {
+  console.log('\u26a0 Keywords in all_keywords not highlighted in the nano grammar:');
+  console.log(`   ${missingKeywords.join(', ')}\n`);
+}
 
 // -- Write output ----------------------------------------------------------
 

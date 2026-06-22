@@ -35,35 +35,34 @@ color brightmagenta "\<[0-9][0-9_]*\>"
 # Boolean & None
 color brightmagenta "\<(true|false|None)\>"
 
-# Control flow keywords (v0.5 additions: is)
+# Control flow keywords
 color brightwhite "\<(if|else|match|loop|for|while|break|continue|return|in)\>"
-color brightwhite "\<(yield|defer|select|join|cooperate|after|from|await|scope|is)\>"
+color brightwhite "\<(yield|defer|select|join|cooperate|after|from|await|scope)\>"
 
 # Declaration keywords
-color green "\<(let|var|const|fn|gen|async|pub|import|package|super)\>"
-color green "\<(extern|where|type|indirect|enum|trait|impl|as|struct|record)\>"
+color green "\<(let|var|const|mut|fn|gen|async|pub|import|package)\>"
+color green "\<(super|extern|where|record|type|indirect|enum|trait|impl|as)\>"
+color green "\<(struct)\>"
 
-# Actor & concurrency (v0.5 additions: link, monitor)
-color brightgreen "\<(actor|fork|init|link|monitor|move|receive|spawn|this)\>"
+# Actor & concurrency
+color brightgreen "\<(actor|supervisor|spawn|receive|init|scope|fork|move|select|join)\>"
+color brightgreen "\<(after|from|await|this)\>"
 
-# Supervisor
-color brightgreen "\<(supervisor|child|restart|budget|strategy)\>"
+# Supervisor configuration
+color brightgreen "\<(child|restart|budget|strategy|permanent|transient|temporary|brutal_kill|one_for_one|one_for_all)\>"
+color brightgreen "\<(rest_for_one|simple_one_for_one|pool)\>"
 
 # Wire protocol
 color green "\<(wire|reserved|optional|deprecated|default)\>"
 
-# Machine keywords (v0.5 additions: drives, emit, entry, exit, transitions)
-color green "\<(drives|emit|entry|event|exit|machine|on|state|transitions|when)\>"
+# Machine keywords
+color green "\<(machine|state|event|on|when|entry|exit|emit)\>"
 
 # Other keywords
-color green "\<(dyn|unsafe)\>"
-
-# Strategy & policy constants
-color brightmagenta "\<(one_for_one|one_for_all|rest_for_one)\>"
-color brightmagenta "\<(permanent|transient|temporary)\>"
+color green "\<(dyn|unsafe|is)\>"
 
 # Reserved keywords
-color green "\<(try|catch|race|foreign)\>"
+color green "\<(try|catch|race|foreign|cooperate)\>"
 
 # Types — primitives
 color brightblue "\<(i8|i16|i32|i64|u8|u16|u32|u64|isize|usize|f32|f64)\>"
@@ -96,8 +95,7 @@ color white "::"
 # Attributes
 color magenta "#\[[^\]]*\]"
 
-# Labels and decorators
-color red "@reenter"
+# Labels
 color red "@[a-zA-Z_][a-zA-Z0-9_]*"
 
 # TODO/FIXME in comments

@@ -19339,6 +19339,34 @@ impl LowerCtx {
                         );
                     }
                 }
+                if Self::is_option_result_marker_method_name(method) {
+                    let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                    if matches!(
+                        lowered_receiver.ty,
+                        ResolvedTy::Named {
+                            builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                            ..
+                        }
+                    ) {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::NotYetImplemented {
+                                construct: format!(
+                                    "builtin Option/Result method `.{method}` without checker marker"
+                                ),
+                                owning_pass: "generic-enum-method-dispatch".to_string(),
+                            },
+                            span,
+                            "builtin Option/Result method dispatch must be covered by the \
+                             checker-produced generic-enum method marker",
+                        ));
+                        return (
+                            HirExprKind::Unsupported(format!(
+                                "builtin Option/Result method `.{method}` missing checker marker"
+                            )),
+                            ResolvedTy::Unit,
+                        );
+                    }
+                }
                 // No rewrite entry — fail closed.  Do not re-infer from the receiver type.
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::MethodCallNoRewrite {
@@ -19568,6 +19596,13 @@ impl LowerCtx {
             | OptionResultMethod::ResultIsErr
             | OptionResultMethod::ResultUnwrap => 0,
         }
+    }
+
+    fn is_option_result_marker_method_name(method: &str) -> bool {
+        matches!(
+            method,
+            "is_some" | "is_none" | "is_ok" | "is_err" | "unwrap" | "unwrap_or"
+        )
     }
 
     #[allow(

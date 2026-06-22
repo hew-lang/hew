@@ -1,0 +1,35 @@
+fn option_unwrap<T>(opt: Option<T>) -> T {
+    opt.unwrap()
+}
+
+fn option_unwrap_or<T>(opt: Option<T>, fallback: T) -> T {
+    opt.unwrap_or(fallback)
+}
+
+fn result_unwrap<T, E>(res: Result<T, E>) -> T {
+    res.unwrap()
+}
+
+fn result_unwrap_or<T, E>(res: Result<T, E>, fallback: T) -> T {
+    res.unwrap_or(fallback)
+}
+
+fn main() {
+    let concrete = Some(5).unwrap();
+    let generic_unwrap = option_unwrap(Some(7));
+    let abstract_opt = option_unwrap_or(None, 9);
+    let option_through_closure = |value: Option<i64>| value.unwrap_or(0);
+    let closure_opt = option_through_closure(Some(11));
+    let none: Option<i64> = None;
+    let predicate_opt = Some(1).is_some() && none.is_none();
+    let ok: Result<i64, string> = Ok(13);
+    let abstract_res = result_unwrap(ok);
+    let err: Result<i64, string> = Err("fallback");
+    let fallback_res = result_unwrap_or(err, 17);
+    let closure_err: Result<i64, string> = Err("closure");
+    let result_through_closure = |value: Result<i64, string>| value.unwrap_or(19);
+    let closure_res = result_through_closure(closure_err);
+    let pred_ok: Result<i64, string> = Ok(1);
+    let pred_err: Result<i64, string> = Err("no");
+    println(f"{concrete} / {generic_unwrap} / {abstract_opt} / {closure_opt} / {predicate_opt} / {abstract_res} / {fallback_res} / {closure_res} / {pred_ok.is_ok()} / {pred_err.is_err()}");
+}

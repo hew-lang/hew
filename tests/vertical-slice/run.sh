@@ -2000,6 +2000,11 @@ run_accept_expect_stdout "option_string_unwrap_or"
 run_accept_expect_stdout "result_record_is_ok_unwrap"
 run_accept_expect_stdout "result_unwrap_or_f64"
 run_accept_expect_stdout "option_result_scalar_regression"
+run_check_run_expect_stdout "p0c_all_methods_paths"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/p0c_method_value_failclosed.hew" \
+  "undefined variable \`Option\`" \
+  "Option/Result method values are not a callable fallback around the checker intercept"
 run_accept_expect_trap "option_unwrap_none_aborts"
 
 # WASM parity (W4.042): the bare-`None` builtin Option<i64> path must also lower

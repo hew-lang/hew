@@ -1,0 +1,15 @@
+import p0c_helpers;
+
+fn main() {
+    let concrete = Some(21).unwrap();
+    let option_through_closure = |value: Option<i64>| value.unwrap_or(22);
+    let abstract_opt = option_through_closure(None);
+    let imported_opt = p0c_helpers.imported_option(Some(23));
+    let method_path_opt = Some(24).unwrap_or(0);
+    let res: Result<i64, string> = Ok(25);
+    let result_through_closure = |value: Result<i64, string>| value.unwrap_or(0);
+    let abstract_res = result_through_closure(res);
+    let imported_res: Result<i64, string> = Err("missing");
+    let imported_fallback = p0c_helpers.imported_result(imported_res, 26);
+    println(f"{concrete} / {abstract_opt} / {imported_opt} / {method_path_opt} / {abstract_res} / {imported_fallback}");
+}

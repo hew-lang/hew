@@ -10,7 +10,7 @@
 //!   hew machine diagram <file.hew> --no-check           Skip HIR static checks
 //!   hew machine list <file.hew>                         List all machines with states/events
 
-use hew_hir::{lower_program, HirDiagnosticKind, HirItem, HirMachineDecl, ResolutionCtx};
+use hew_hir::{lower_program, HirItem, HirMachineDecl, ResolutionCtx};
 use hew_parser::ast::{Item, MachineDecl};
 use hew_types::TypeCheckOutput;
 
@@ -46,6 +46,7 @@ fn parse_machines(path: &str, source: &str) -> Vec<MachineDecl> {
         for err in &result.errors {
             eprintln!("{path}: parse error: {err:?}");
         }
+        std::process::exit(1);
     }
 
     result
@@ -81,23 +82,8 @@ fn check_and_lower(path: &str, source: &str) -> Vec<HirMachineDecl> {
         hew_hir::TargetArch::host(),
     );
 
-    // Filter out NotYetImplemented diagnostics from non-machine items —
-    // Lane A only lowers machines; functions are also lowered if present.
-    let machine_errors: Vec<_> = lowered
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            !matches!(
-                &d.kind,
-                HirDiagnosticKind::NotYetImplemented { .. }
-                    | HirDiagnosticKind::UnresolvedSymbol { .. }
-                    | HirDiagnosticKind::ImportMissing { .. }
-            )
-        })
-        .collect();
-
-    if !machine_errors.is_empty() {
-        for diag in &machine_errors {
+    if !lowered.diagnostics.is_empty() {
+        for diag in &lowered.diagnostics {
             eprintln!("{path}: error: {}", diag.note);
         }
         std::process::exit(1);
@@ -119,11 +105,12 @@ fn check_and_lower(path: &str, source: &str) -> Vec<HirMachineDecl> {
 
 fn cmd_list(path: &str) {
     let source = read_source(path);
+    let hir_machines = check_and_lower(path, &source);
     let machines = parse_machines(path, &source);
 
-    if machines.is_empty() {
-        println!("No machines found in {path}");
-        return;
+    if hir_machines.is_empty() {
+        eprintln!("No machines found in {path}");
+        std::process::exit(1);
     }
 
     for md in &machines {

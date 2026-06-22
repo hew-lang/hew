@@ -8,6 +8,21 @@ fn machine_fixture() -> &'static str {
     "machine Light {\n    events {\n        Toggle;\n    }\n    state Off;\n    state On;\n    on Toggle: Off => On { On }\n    on Toggle: On => Off { Off }\n}\n"
 }
 
+fn missing_import_fixture() -> &'static str {
+    "machine TrafficLight {\n\
+     \x20   events { Tick; }\n\
+     \x20   state Red;\n\
+     \x20   state Green;\n\
+     \x20   state Yellow;\n\
+     \x20   on Tick: Red => Green { Green }\n\
+     \x20   on Tick: Green => Yellow { Yellow }\n\
+     \x20   on Tick: Yellow => Red { Red }\n\
+     }\n\
+     fn main() {\n\
+     \x20   let _ = fs.read(\"test.txt\");\n\
+     }\n"
+}
+
 #[test]
 fn machine_diagram_emits_mermaid_on_stdout() {
     let dir = support::tempdir();
@@ -211,6 +226,113 @@ fn machine_diagram_no_machines_exits_non_zero() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("No machines found in"), "stderr: {stderr}");
     assert!(stderr.contains("no_machine.hew"), "stderr: {stderr}");
+}
+
+#[test]
+fn machine_diagram_fails_closed_on_missing_import() {
+    let dir = support::tempdir();
+    let input = dir.path().join("missing_import.hew");
+    std::fs::write(&input, missing_import_fixture()).unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("machine")
+        .arg("diagram")
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("stateDiagram-v2"),
+        "must not emit a fabricated diagram; stdout: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("add 'import std::fs;'"),
+        "stderr must surface the missing-import diagnostic; stderr: {stderr}"
+    );
+}
+
+#[test]
+fn machine_list_fails_closed_on_missing_import() {
+    let dir = support::tempdir();
+    let input = dir.path().join("missing_import.hew");
+    std::fs::write(&input, missing_import_fixture()).unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("machine")
+        .arg("list")
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("machine TrafficLight"),
+        "must not emit a fabricated inventory; stdout: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("add 'import std::fs;'"),
+        "stderr must surface the missing-import diagnostic; stderr: {stderr}"
+    );
+}
+
+#[test]
+fn machine_list_fails_closed_on_parse_error() {
+    let dir = support::tempdir();
+    let input = dir.path().join("parse_err.hew");
+    std::fs::write(&input, "machine Broken {\n  state A\n  on A + => \n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("machine")
+        .arg("list")
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("parse error"), "stderr: {stderr}");
+}
+
+#[test]
+fn machine_diagram_no_check_still_renders() {
+    let dir = support::tempdir();
+    let input = dir.path().join("missing_import.hew");
+    std::fs::write(&input, missing_import_fixture()).unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("machine")
+        .arg("diagram")
+        .arg(&input)
+        .arg("--no-check")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("stateDiagram-v2"), "stdout: {stdout}");
+}
+
+#[test]
+fn machine_list_fails_closed_on_zero_machines() {
+    let dir = support::tempdir();
+    let input = dir.path().join("no_machine.hew");
+    std::fs::write(&input, "fn main() -> i64 {\n    0\n}\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("machine")
+        .arg("list")
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("No machines found in"), "stderr: {stderr}");
 }
 
 // ── Fixtures for new gap-filling tests ───────────────────────────────────────

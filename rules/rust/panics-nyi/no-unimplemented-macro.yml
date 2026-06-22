@@ -1,0 +1,23 @@
+id: no-unimplemented-macro
+language: rust
+severity: warning
+message: '`unimplemented!()` marks a not-yet-implemented path — implement it or return a typed error before merge.'
+note: |
+  The repository gates against introducing new not-yet-implemented (NYI) markers.
+  `unimplemented!()` panics at runtime if reached, so it is a deferred feature, not
+  a fail-closed boundary. Implement the path, return an explicit typed error, or use
+  `unreachable!("why")` if the arm is genuinely impossible. Matches both
+  `unimplemented!()` and `unimplemented!("msg")`.
+ignores:
+  - '**/tests/**'
+  - '**/*test*.rs'
+  - '**/benches/**'
+rule:
+  pattern: unimplemented!($$$)
+  not:
+    inside:
+      kind: mod_item
+      stopBy: end
+      follows:
+        kind: attribute_item
+        regex: 'cfg\(.*\btest\b'

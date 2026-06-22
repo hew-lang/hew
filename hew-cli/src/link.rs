@@ -438,6 +438,23 @@ fn select_native_compiler(target: &TargetSpec) -> Result<NativeCompiler, String>
     select_native_compiler_with(target, has_tool)
 }
 
+#[cfg_attr(
+    not(target_os = "windows"),
+    allow(
+        dead_code,
+        reason = "the Windows linker diagnostic is unit-tested cross-platform but only used on Windows builds"
+    )
+)]
+fn windows_missing_clang_error() -> String {
+    "Error: clang.exe not found on PATH. Install the LLVM 22.1.6 Windows MSVC \
+     toolchain from https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.6/clang+llvm-22.1.6-x86_64-pc-windows-msvc.tar.xz, \
+     add its bin directory to PATH, and ensure lld-link.exe is available from \
+     the same LLVM bin directory. Do not rely on vcvars64.bat for Hew builds; \
+     lld-link auto-detects the MSVC/Windows SDK libraries and vcvars64.bat can \
+     interfere with llvm-sys detection."
+        .to_string()
+}
+
 /// Decide whether to link the LLVM profiler runtime into the final binary for
 /// coverage capture. Gated on BOTH `HEW_COVERAGE` being set to the exact value
 /// `"1"` AND the selected driver being clang — `-fprofile-instr-generate` is a
@@ -469,7 +486,7 @@ where
     #[cfg(target_os = "windows")]
     {
         let _ = target;
-        return Err("Error: clang not found. Install LLVM to link Hew programs.".into());
+        return Err(windows_missing_clang_error());
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -1706,6 +1723,18 @@ mod tests {
                 accepts_target_flag: true
             }
         );
+    }
+
+    #[test]
+    fn windows_missing_clang_message_names_required_tools_and_provisioning() {
+        let error = windows_missing_clang_error();
+
+        assert!(error.contains("clang.exe"));
+        assert!(error.contains("lld-link.exe"));
+        assert!(error.contains("LLVM 22.1.6"));
+        assert!(error.contains("llvm-project/releases/download/llvmorg-22.1.6"));
+        assert!(error.contains("PATH"));
+        assert!(error.contains("vcvars64.bat"));
     }
 
     #[cfg(all(

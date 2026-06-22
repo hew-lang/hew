@@ -1,3 +1,10 @@
+# Windows uses the LLVM linker from the same provisioned LLVM 22 toolchain that
+# supplies clang.exe for `hew build` and llvm-config for llvm-sys.  Keep this
+# pinned to lld-link rather than relying on a Developer Command Prompt: the
+# provisioned LLVM 22.1.6 release includes lld-link.exe, lld-link auto-detects
+# the MSVC/Windows SDK libraries, and building under vcvars64.bat has broken
+# llvm-sys detection on the Windows validation host.  A clean Windows checkout
+# should have the LLVM bin directory on PATH instead of requiring vcvars.
 [target.x86_64-pc-windows-msvc]
 linker = "lld-link"
 

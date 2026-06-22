@@ -1,0 +1,18 @@
+# ast-grep project config — registers Hew as a custom language.
+#
+# .hew is not built into ast-grep; it is parsed by the tree-sitter-hew grammar
+# compiled to .ast-grep/hew-lang.so (build with: scripts/build-ast-grep-lang.sh).
+#
+# Usage:
+#   ast-grep run --lang hew --pattern '|$P| $BODY' examples/
+#   ast-grep run --lang hew --pattern 'fn $NAME($$$) -> $RET { $$$ }' std/
+#
+# Metavariables use the usual `$NAME` (single) / `$$$` (variadic) syntax. The
+# `expandoChar` below is the internal placeholder ast-grep substitutes for `$`
+# so patterns parse as valid Hew; `_` is identifier-valid and leaves literal
+# `_` wildcards in patterns (e.g. `Some(_)`) untouched.
+customLanguages:
+  hew:
+    libraryPath: .ast-grep/hew-lang.so
+    extensions: [hew]
+    expandoChar: _

@@ -35688,20 +35688,21 @@ mod tests {
             "wasm32 key descriptor must use 4-byte usize fields:\n{wasm_key}\n\nfull IR:\n{wasm}"
         );
 
-        let native_value = descriptor_line(&native, "@__hew_map_value_layout_8_8_plain");
+        let native_value =
+            descriptor_line(&native, "@__hew_map_value_layout_rec_PtrPayload_8_8_owned");
         assert!(
             native_value.contains("{ i64, i64, i8, ptr, ptr }")
-                && native_value.contains("{ i64 8, i64 8, i8 0,"),
-            "native pointer-field value descriptor must use host pointer ABI and 8-byte usize fields:\n{native_value}\n\nfull IR:\n{native}"
+                && native_value.contains("{ i64 8, i64 8, i8 2,"),
+            "native owned pointer-field value descriptor must use host pointer ABI and 8-byte usize fields:\n{native_value}\n\nfull IR:\n{native}"
         );
-        let wasm_value = descriptor_line(&wasm, "@__hew_map_value_layout_4_4_plain");
+        let wasm_value = descriptor_line(&wasm, "@__hew_map_value_layout_rec_PtrPayload_4_4_owned");
         assert!(
             wasm_value.contains("{ i32, i32, i8, ptr, ptr }")
-                && wasm_value.contains("{ i32 4, i32 4, i8 0,"),
-            "wasm32 pointer-field value descriptor must use wasm pointer ABI and 4-byte usize fields:\n{wasm_value}\n\nfull IR:\n{wasm}"
+                && wasm_value.contains("{ i32 4, i32 4, i8 2,"),
+            "wasm32 owned pointer-field value descriptor must use wasm pointer ABI and 4-byte usize fields:\n{wasm_value}\n\nfull IR:\n{wasm}"
         );
         assert!(
-            !wasm.contains("@__hew_map_value_layout_8_8_plain"),
+            !wasm.contains("@__hew_map_value_layout_rec_PtrPayload_8_8_owned"),
             "wasm32 descriptor synthesis must not reuse the native 8-byte pointer layout:\n{wasm}"
         );
     }
@@ -39899,7 +39900,7 @@ mod tests {
     }
 
     #[test]
-    fn hashmap_layout_ops_get_emits_option_branches_and_size_copy() {
+    fn hashmap_layout_ops_get_emits_clone_call_and_option_branches() {
         let ctx = Context::create();
         let m = ctx.create_module("hashmap_get_option_test");
         let harness = build_harness(
@@ -39960,18 +39961,18 @@ mod tests {
         );
         let ir = m.print_to_string().to_string();
         assert!(
-            ir.contains("hew_hashmap_get_layout_call")
+            ir.contains("hew_hashmap_get_clone_layout_call")
                 && ir.contains("hashmap_get_none")
                 && ir.contains("hashmap_get_some"),
-            "expected get call and two branches; got IR:\n{ir}"
+            "expected clone-on-get call and two branches; got IR:\n{ir}"
         );
         assert!(
             ir.contains("store i8 0") && ir.contains("store i8 1"),
             "expected Option::Some/None tags via emit_enum_variant_literal; got IR:\n{ir}"
         );
         assert!(
-            ir.contains("llvm.memcpy") && ir.contains("i64 8"),
-            "expected value-layout-sized copy of i64 payload, not a fixed ad-hoc load; got IR:\n{ir}"
+            !ir.contains("llvm.memcpy"),
+            "HashMap::get must not memcpy a borrowed slot into owned Option<V>; got IR:\n{ir}"
         );
     }
 

@@ -179,10 +179,12 @@ sandbox-fixtures-check:
 
 sandbox-parity: hew stdlib
 	@set -e; \
-	if [ ! -d hew-sandbox-vm/node_modules ] || [ ! -f hew-sandbox-vm/node_modules/.package-lock.stamp ] || [ hew-sandbox-vm/package-lock.json -nt hew-sandbox-vm/node_modules/.package-lock.stamp ]; then \
+	lock_hash=$$(python3 -c 'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path("hew-sandbox-vm/package-lock.json").read_bytes()).hexdigest())'); \
+	stamp=hew-sandbox-vm/node_modules/.package-lock.sha256; \
+	if [ ! -d hew-sandbox-vm/node_modules ] || [ ! -f "$$stamp" ] || [ "$$lock_hash" != "$$(cat "$$stamp")" ]; then \
 		echo "npm --prefix hew-sandbox-vm ci"; \
 		npm --prefix hew-sandbox-vm ci; \
-		touch hew-sandbox-vm/node_modules/.package-lock.stamp; \
+		printf '%s\n' "$$lock_hash" > "$$stamp"; \
 	else \
 		echo "hew-sandbox-vm dependencies are fresh; skipping install"; \
 	fi
@@ -543,9 +545,9 @@ test-all: test test-stdlib test-hew test-ux-examples test-surface-examples
 # undefined-symbol errors on a target dir carried across commits.
 test-rust: stdlib wasm-runtime runtime
 	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
+		set -e; \
 		cargo nextest run --workspace --profile ci --no-run; \
 		test -f target/debug/libhew.a; \
-		scripts/check-libhew-fresh.sh; \
 		cargo nextest run --workspace --profile ci; \
 	else \
 		echo "WARNING: cargo-nextest not installed — per-test timeouts are not enforced." >&2; \

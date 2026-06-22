@@ -18,9 +18,12 @@ Both Rust binaries build with `cargo build --release` once LLVM 22
 libraries and headers are available; set `LLVM_PREFIX` (or
 `LLVM_SYS_221_PREFIX`) to point at the install.
 
-Use `make` / `make release` from the repository root rather than invoking
-`cargo` directly — the Makefile wires up symlinks and per-target lib
-layouts correctly.
+Use the Makefile from the repository root rather than invoking `cargo build
+-p hew-cli` directly.  The compiler driver is not enough for `hew build`: the
+native `hew-lib` staticlib must be built in the same Cargo profile so the link
+step can find `target/debug/libhew.a` (Unix) or `target/debug/hew.lib`
+(Windows).  For a narrow local build, use `make hew-native`; for the full
+artifact set, use `make` / `make release`.
 
 ## Linux x86_64
 
@@ -163,19 +166,42 @@ LLVM_SYS_221_PREFIX=/usr/local/llvm22 make release
 ## Windows
 
 **Status:** Supported for release builds when LLVM 22 is installed locally
-and `LLVM_PREFIX` is set. The runtime's low-level memory paths have Windows
-implementations (`VirtualAlloc` / `VirtualFree`). Windows is fail-soft /
-Tier 2 in `release.yml` today: the tag-release Windows job remains
-`continue-on-error: true` until this validation path has proven itself
+and discoverable by both `llvm-sys` and PATH. The runtime's low-level memory
+paths have Windows implementations (`VirtualAlloc` / `VirtualFree`). Windows
+is fail-soft / Tier 2 in `release.yml` today: the tag-release Windows job
+remains `continue-on-error: true` until this validation path has proven itself
 through a full release cycle.
 
 ### Prerequisites
 
-The release workflow provisions LLVM 22 into `C:\llvm-22` and builds with
-MSVC's `cl`. The local Windows validator in `scripts/pre-release-validate.sh`
-expects the same layout by default.
+Install the prebuilt LLVM 22.1.6 Windows MSVC toolchain and put its `bin`
+directory on `PATH`. Hew uses:
 
-One-time bootstrap on the Windows host:
+- `llvm-config.exe` / LLVM libraries for `llvm-sys`
+- `clang.exe` as the `hew build` link driver
+- `lld-link.exe` as the Cargo linker for `x86_64-pc-windows-msvc`
+
+The provisioned validation host uses the upstream release archive:
+
+```powershell
+https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.6/clang+llvm-22.1.6-x86_64-pc-windows-msvc.tar.xz
+```
+
+Set `LLVM_PREFIX` or `LLVM_SYS_221_PREFIX` to the extracted LLVM root and make
+sure `where clang` and `where lld-link` both resolve before building. NASM is
+also required by `hew-lib` through `aws-lc-sys`:
+
+```powershell
+winget install --id NASM.NASM
+```
+
+Do not run Hew Cargo builds from a `vcvars64.bat` / Developer Command Prompt
+environment unless you are debugging that path specifically. The provisioned
+LLVM `lld-link.exe` auto-detects the MSVC and Windows SDK libraries without
+vcvars, while vcvars has interfered with `llvm-sys` version detection on the
+Windows validation host.
+
+If you need to build LLVM locally instead of using the release archive:
 
 ```powershell
 choco install ninja cmake -y
@@ -222,19 +248,25 @@ If the host cannot use MSVC, override the validator/compiler environment with
 
 ### Build
 
-Use a Developer PowerShell (or equivalent environment where your chosen
-compiler is on `PATH`):
+Use a normal PowerShell or cmd.exe session with LLVM and NASM on `PATH`:
 
 ```powershell
-$env:LLVM_PREFIX = 'C:\llvm-22'
-$env:Path = 'C:\llvm-22\bin;' + $env:Path
+$env:LLVM_SYS_221_PREFIX = 'P:\llvm22'
+$env:Path = 'P:\llvm22\bin;' + $env:Path
 
-cargo build -p hew-cli -p adze-cli -p hew-lsp --release
-cargo build -p hew-lib --release
+make hew-native    # debug: target\debug\hew.exe + target\debug\hew.lib
+make release       # release: target\release\hew.exe + target\release\hew.lib
 ```
 
-`LLVM_PREFIX` (or `LLVM_SYS_221_PREFIX`) must point at an LLVM 22 install
-so `llvm-sys` can locate `llvm-config` and the static libraries.
+`cargo build -p hew-cli` by itself is intentionally not the build recipe for a
+working source checkout: it does not build `hew-lib`, and `hew build` needs the
+fresh `hew.lib` next to `hew.exe`. If `make` is unavailable, use the equivalent
+single Cargo invocation:
+
+```powershell
+cargo build -p hew-cli -p hew-lib
+cargo build --release -p hew-cli -p hew-lib
+```
 
 ### Smoke test
 

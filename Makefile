@@ -20,6 +20,7 @@
 #   make pre-release  — release + validate on all platforms before tagging
 #   make publish-docs — build stdlib docs + print wrangler deploy command (operator runs wrangler)
 #   make hew          — just the compiler driver
+#   make hew-native   — compiler driver + native libhew archive for `hew build`
 #   make adze         — just the package manager
 #   make observe      — just the TUI observer (hew-observe)
 #   make runtime      — just libhew_runtime.a
@@ -62,7 +63,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew adze observe runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
+.PHONY: all build bootstrap install-hooks hew hew-native adze observe runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
 .PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-o2-differential test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
@@ -123,6 +124,15 @@ build: all
 # Build the hew compiler driver (debug).
 hew:
 	cargo build -p hew-cli
+
+# Build the native artifacts required for `hew build` from a source checkout.
+# `cargo build -p hew-cli` only produces the driver; the link step also needs
+# hew-lib's staticlib next to the driver (`target/debug/libhew.a` on Unix,
+# `target/debug/hew.lib` on Windows).  Keep this target cross-platform so fresh
+# Windows hosts use the same build graph as Linux/macOS rather than a bespoke
+# manual `cargo build -p hew-lib` follow-up.
+hew-native:
+	cargo build -p hew-cli -p hew-lib
 
 # Build the adze package manager (debug)
 adze:

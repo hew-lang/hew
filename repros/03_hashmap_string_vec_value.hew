@@ -1,0 +1,17 @@
+fn main() {
+    let m: HashMap<string, Vec<i64>> = HashMap::new();
+    let xs: Vec<i64> = Vec::new();
+    xs.push(1);
+    xs.push(2);
+    m.insert("a", clone xs);
+    xs.push(99);
+
+    match m.get("a") {
+        Some(v) => println(f"got={v.len()}:{v.get(0)}:{v.get(1)}"),
+        None => println("got=missing"),
+    }
+    let has = m.contains_key("a");
+    let removed = m.remove("a");
+    let len = m.len();
+    println(f"has={has} removed={removed} len={len} src={xs.len()}");
+}

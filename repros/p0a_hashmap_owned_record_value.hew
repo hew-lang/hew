@@ -1,0 +1,20 @@
+type Payload {
+    label: string;
+    count: i64;
+}
+
+fn main() {
+    let m: HashMap<string, Payload> = HashMap::new();
+    let n: i64 = 77;
+    let payload = Payload {
+        label: f"record-value-{n}-heap-owned",
+        count: n,
+    };
+    m.insert("record", payload);
+    let got: Option<Payload> = m.get("record");
+    m.remove("record");
+    match got {
+        Some(p) => println(f"{p.label}:{p.count}"),
+        None => println("missing"),
+    }
+}

@@ -11,4 +11,5 @@
 #
 # Format: <test_function_name>  # <root_cause>; converging lane: <lane>
 #
-# Total: 0 unique failing test function names.
+# Total: 1 unique failing test function name.
+test_hashmap_get_string_value_survives_remove  # HashMap::get aliases owned V; converging lane: G1

@@ -1,0 +1,12 @@
+fn main() {
+    let m: HashMap<string, string> = HashMap::new();
+    let n: i64 = 123456;
+    let heap: string = f"prefix-{n}-suffix-padding-to-force-heap-alloc-zzzzzzzzzzzz";
+    m.insert("k", heap);
+    let got: Option<string> = m.get("k");
+    m.remove("k");
+    match got {
+        Some(s) => println(s),
+        None => println("none"),
+    }
+}

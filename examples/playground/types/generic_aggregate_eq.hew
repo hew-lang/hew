@@ -1,0 +1,51 @@
+//! @name Generic Aggregate Equality
+//! @description Structural == on generic records and generic aggregates containing Vec<T>
+
+type Pair<A, B> {
+    first: A;
+    second: B;
+}
+
+type Slot<T> {
+    value: T;
+}
+
+type Bag<T> {
+    items: Vec<T>;
+}
+
+fn pair_same<A, B>(a: Pair<A, B>, b: Pair<A, B>) -> bool {
+    a == b
+}
+
+fn slot_same<T>(a: Slot<T>, b: Slot<T>) -> bool {
+    a == b
+}
+
+fn bag_same<T>(a: Bag<T>, b: Bag<T>) -> bool {
+    a == b
+}
+
+fn make_bag_1_2() -> Bag<i64> {
+    let v: Vec<i64> = Vec::new();
+    v.push(1);
+    v.push(2);
+    Bag { items: v }
+}
+
+fn make_bag_1_3() -> Bag<i64> {
+    let v: Vec<i64> = Vec::new();
+    v.push(1);
+    v.push(3);
+    Bag { items: v }
+}
+
+fn main() {
+    let pair_eq = pair_same(Pair { first: 7, second: "hew" }, Pair { first: 7, second: "hew" });
+    let pair_ne = pair_same(Pair { first: 7, second: "hew" }, Pair { first: 8, second: "hew" });
+    let slot_eq = slot_same(Slot { value: 42 }, Slot { value: 42 });
+    let slot_ne = slot_same(Slot { value: 42 }, Slot { value: 43 });
+    let bag_eq = bag_same(make_bag_1_2(), make_bag_1_2());
+    let bag_ne = bag_same(make_bag_1_2(), make_bag_1_3());
+    println(f"pair={pair_eq} pair-ne={pair_ne} slot={slot_eq} slot-ne={slot_ne} bag={bag_eq} bag-ne={bag_ne}");
+}

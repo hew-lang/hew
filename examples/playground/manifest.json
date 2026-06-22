@@ -182,6 +182,19 @@
     }
   },
   {
+    "id": "basics/display_scalars",
+    "category": "basics",
+    "name": "Display for Scalar Types",
+    "description": "f-string interpolation for all canonical integer and char primitives",
+    "source_path": "basics/display_scalars.hew",
+    "expected_path": "basics/display_scalars.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
     "id": "concurrency/actor_pipeline",
     "category": "concurrency",
     "name": "Actor Pipeline",
@@ -448,6 +461,32 @@
     "description": "Tuple construction and positional destructure via let-binding",
     "source_path": "types/tuple_values.hew",
     "expected_path": "types/tuple_values.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "types/generic_aggregate_eq",
+    "category": "types",
+    "name": "Generic Aggregate Equality",
+    "description": "Structural == on generic records and generic aggregates containing Vec<T>",
+    "source_path": "types/generic_aggregate_eq.hew",
+    "expected_path": "types/generic_aggregate_eq.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "types/option_result_methods",
+    "category": "types",
+    "name": "Option and Result Methods",
+    "description": "is_some, is_none, is_ok, is_err, unwrap, unwrap_or on Option and Result",
+    "source_path": "types/option_result_methods.hew",
+    "expected_path": "types/option_result_methods.expected",
     "capabilities": {
       "browser": "analysis-only",
       "sandbox": "runnable",

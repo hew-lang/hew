@@ -1,0 +1,31 @@
+//! @name Option and Result Methods
+//! @description is_some, is_none, is_ok, is_err, unwrap, unwrap_or on Option and Result
+
+fn main() {
+    let some_val = Some(42);
+    let none_val: Option<i64> = None;
+    println(some_val.is_some());
+    println(some_val.is_none());
+    println(none_val.is_some());
+    println(none_val.is_none());
+    let some_for_unwrap = Some(77);
+    let unwrap_result = some_for_unwrap.unwrap();
+    println(unwrap_result);
+    let some_for_unwrap_or = Some(55);
+    println(some_for_unwrap_or.unwrap_or(99));
+    let none_for_unwrap_or: Option<i64> = None;
+    println(none_for_unwrap_or.unwrap_or(99));
+    let ok_val: Result<i64, string> = Ok(7);
+    let err_val: Result<i64, string> = Err("oops");
+    println(ok_val.is_ok());
+    println(ok_val.is_err());
+    println(err_val.is_ok());
+    println(err_val.is_err());
+    let ok_for_unwrap: Result<i64, string> = Ok(13);
+    let unwrap_ok = ok_for_unwrap.unwrap();
+    println(unwrap_ok);
+    let ok_for_unwrap_or: Result<i64, string> = Ok(5);
+    println(ok_for_unwrap_or.unwrap_or(0));
+    let err_for_unwrap_or: Result<i64, string> = Err("fallback");
+    println(err_for_unwrap_or.unwrap_or(0));
+}

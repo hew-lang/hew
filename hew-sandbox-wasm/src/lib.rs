@@ -77,6 +77,16 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // Tuple construction and positional let-destructure lowered as anonymous
     // records with fields _0, _1, … using record.new / record.get.
     "tuple_values",
+    // `==` on generic records and aggregates containing Vec<T>: the checker
+    // resolves eq eligibility after generic substitution; the emitter routes
+    // through cmp.eq; the VM's canonicalComparable handles records recursively.
+    "generic_aggregate_eq",
+    // Option/Result marker methods: is_some/is_none/is_ok/is_err/unwrap/unwrap_or.
+    // The emitter now lowers these via enum.tag/enum.payload sequences.
+    "option_result_methods",
+    // f-string interpolation for all canonical integer and char primitives that
+    // gained Display impls: i8/i16/i32, u8/u16/u32, u64, isize, usize, char.
+    "display_scalars",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";
@@ -863,6 +873,33 @@ fn main() {
 }
 "#,
             "unsafe_rejected",
+        );
+    }
+
+    #[test]
+    fn crypto_random_bytes_is_rejected_with_platform_limitation() {
+        // crypto.random_bytes depends on a native-only entropy source absent
+        // from the wasm32 link set. The sandbox compiler now calls
+        // enable_wasm_target() so the checker emits a PlatformLimitation
+        // diagnostic — a security-focused, actionable rejection rather than a
+        // generic "unknown import" from the profile level.
+        set_test_hewpath();
+        let source = "import std::crypto::crypto;\nfn main() { let _ = crypto.random_bytes(32); }";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.bytecode.is_none(),
+            "crypto.random_bytes must not produce bytecode in the sandbox; got {:#?}",
+            output.bytecode
+        );
+        assert!(
+            output.diagnostics.iter().any(|d| {
+                d.severity == "error"
+                    && d.kind == "PlatformLimitation"
+                    && d.message.contains("random_bytes")
+            }),
+            "expected PlatformLimitation error for crypto.random_bytes, got {:#?}",
+            output.diagnostics
         );
     }
 

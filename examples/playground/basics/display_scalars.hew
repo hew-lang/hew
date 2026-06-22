@@ -1,0 +1,19 @@
+//! @name Display for Scalar Types
+//! @description f-string interpolation for all canonical integer and char primitives
+
+fn main() {
+    let a: i8 = 42;
+    let b: i16 = 1000;
+    let c: i32 = 100000;
+    let d: u8 = 200;
+    let e: u16 = 60000;
+    let f_val: u32 = 3000000000;
+    let g: u64 = 9000000000000000000;
+    let h: isize = -99;
+    let i: usize = 77;
+    let k: char = 'Z';
+    println(f"i8={a} i16={b} i32={c}");
+    println(f"u8={d} u16={e} u32={f_val}");
+    println(f"u64={g} isize={h} usize={i}");
+    println(f"char={k}");
+}

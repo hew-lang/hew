@@ -463,10 +463,7 @@ const CONSTRUCTS: &[Construct] = &[
     Construct {
         id: "Option Some/None construction",
         probe: "fn main() {\n    let o = Some(5);\n    println(match o { Some(x) => x, None => 0 });\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "Some/None are not pre-registered in enum_variant_tags; the constructor call hits the catch-all -> emit_unsupported -> trap",
-        },
+        coverage: Coverage::Parity("option_result_methods"),
     },
     Construct {
         id: "struct pattern in match arm",
@@ -642,6 +639,43 @@ const CONSTRUCTS: &[Construct] = &[
         probe: "fn work() -> i64 { 1 }\nfn main() {\n    scope {\n        fork work();\n    }\n    println(\"x\");\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
+        },
+    },
+    Construct {
+        id: "generic record `==` (Pair<A,B>)",
+        probe: "type Pair<A, B> { first: A; second: B; }\nfn same<A, B>(a: Pair<A, B>, b: Pair<A, B>) -> bool { a == b }\nfn main() {\n    println(same(Pair { first: 1, second: \"x\" }, Pair { first: 1, second: \"x\" }));\n    println(same(Pair { first: 1, second: \"x\" }, Pair { first: 2, second: \"x\" }));\n}\n",
+        coverage: Coverage::Parity("generic_aggregate_eq"),
+    },
+    Construct {
+        id: "Option.is_some / is_none",
+        probe: "fn main() {\n    let s = Some(1);\n    let n: Option<i64> = None;\n    println(s.is_some());\n    println(n.is_none());\n}\n",
+        coverage: Coverage::Parity("option_result_methods"),
+    },
+    Construct {
+        id: "Option.unwrap / unwrap_or",
+        probe: "fn main() {\n    let s = Some(5);\n    println(s.unwrap());\n    let n: Option<i64> = None;\n    println(n.unwrap_or(9));\n}\n",
+        coverage: Coverage::Parity("option_result_methods"),
+    },
+    Construct {
+        id: "Result.is_ok / is_err",
+        probe: "fn main() {\n    let ok: Result<i64, string> = Ok(1);\n    let err: Result<i64, string> = Err(\"e\");\n    println(ok.is_ok());\n    println(err.is_err());\n}\n",
+        coverage: Coverage::Parity("option_result_methods"),
+    },
+    Construct {
+        id: "Result.unwrap / unwrap_or",
+        probe: "fn main() {\n    let ok: Result<i64, string> = Ok(7);\n    println(ok.unwrap());\n    let err: Result<i64, string> = Err(\"e\");\n    println(err.unwrap_or(0));\n}\n",
+        coverage: Coverage::Parity("option_result_methods"),
+    },
+    Construct {
+        id: "f-string interpolation of i8 / u8 / char",
+        probe: "fn main() {\n    let a: i8 = 42;\n    let b: u8 = 200;\n    let c: char = 'Z';\n    println(f\"{a} {b} {c}\");\n}\n",
+        coverage: Coverage::Parity("display_scalars"),
+    },
+    Construct {
+        id: "crypto.random_bytes rejected with PlatformLimitation",
+        probe: "import std::crypto::crypto;\nfn main() { let _ = crypto.random_bytes(32); }\n",
+        coverage: Coverage::RejectedByProfile {
+            diagnostic_kind: "PlatformLimitation",
         },
     },
 ];

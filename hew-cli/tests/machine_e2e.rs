@@ -8,6 +8,21 @@ fn machine_fixture() -> &'static str {
     "machine Light {\n    events {\n        Toggle;\n    }\n    state Off;\n    state On;\n    on Toggle: Off => On { On }\n    on Toggle: On => Off { Off }\n}\n"
 }
 
+fn missing_import_fixture() -> &'static str {
+    "machine TrafficLight {\n\
+     \x20   events { Tick; }\n\
+     \x20   state Red;\n\
+     \x20   state Green;\n\
+     \x20   state Yellow;\n\
+     \x20   on Tick: Red => Green { Green }\n\
+     \x20   on Tick: Green => Yellow { Yellow }\n\
+     \x20   on Tick: Yellow => Red { Red }\n\
+     }\n\
+     fn main() {\n\
+     \x20   let _ = fs.read(\"test.txt\");\n\
+     }\n"
+}
+
 #[test]
 fn machine_diagram_emits_mermaid_on_stdout() {
     let dir = support::tempdir();
@@ -213,6 +228,113 @@ fn machine_diagram_no_machines_exits_non_zero() {
     assert!(stderr.contains("no_machine.hew"), "stderr: {stderr}");
 }
 
+#[test]
+fn machine_diagram_fails_closed_on_missing_import() {
+    let dir = support::tempdir();
+    let input = dir.path().join("missing_import.hew");
+    std::fs::write(&input, missing_import_fixture()).unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("machine")
+        .arg("diagram")
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("stateDiagram-v2"),
+        "must not emit a fabricated diagram; stdout: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("add 'import std::fs;'"),
+        "stderr must surface the missing-import diagnostic; stderr: {stderr}"
+    );
+}
+
+#[test]
+fn machine_list_fails_closed_on_missing_import() {
+    let dir = support::tempdir();
+    let input = dir.path().join("missing_import.hew");
+    std::fs::write(&input, missing_import_fixture()).unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("machine")
+        .arg("list")
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("machine TrafficLight"),
+        "must not emit a fabricated inventory; stdout: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("add 'import std::fs;'"),
+        "stderr must surface the missing-import diagnostic; stderr: {stderr}"
+    );
+}
+
+#[test]
+fn machine_list_fails_closed_on_parse_error() {
+    let dir = support::tempdir();
+    let input = dir.path().join("parse_err.hew");
+    std::fs::write(&input, "machine Broken {\n  state A\n  on A + => \n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("machine")
+        .arg("list")
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("parse error"), "stderr: {stderr}");
+}
+
+#[test]
+fn machine_diagram_no_check_still_renders() {
+    let dir = support::tempdir();
+    let input = dir.path().join("missing_import.hew");
+    std::fs::write(&input, missing_import_fixture()).unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("machine")
+        .arg("diagram")
+        .arg(&input)
+        .arg("--no-check")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("stateDiagram-v2"), "stdout: {stdout}");
+}
+
+#[test]
+fn machine_list_fails_closed_on_zero_machines() {
+    let dir = support::tempdir();
+    let input = dir.path().join("no_machine.hew");
+    std::fs::write(&input, "fn main() -> i64 {\n    0\n}\n").unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("machine")
+        .arg("list")
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("No machines found in"), "stderr: {stderr}");
+}
+
 // ── Fixtures for new gap-filling tests ───────────────────────────────────────
 
 /// Machine with `default { state }` — unhandled events stay in current state.
@@ -264,7 +386,7 @@ fn emits_fixture() -> &'static str {
      }\n"
 }
 
-/// Generic machine — HIR path must not crash; falls back to AST with advisory.
+/// Generic machine — HIR path must not crash; falls back to AST with a warning.
 fn generic_fixture() -> &'static str {
     "machine Box<T> {\n\
      \x20   events {\n\
@@ -528,12 +650,12 @@ fn machine_list_shows_emits_section() {
 // ── fix 4: generic machines fall back to AST (no crash) ──────────────────────
 
 #[test]
-fn machine_diagram_generic_fallback_exits_zero_with_advisory() {
+fn machine_diagram_generic_fallback_exits_zero_with_warning() {
     let dir = support::tempdir();
     let input = dir.path().join("box.hew");
     std::fs::write(&input, generic_fixture()).unwrap();
 
-    // Default (check) path — must not crash; must emit advisory on stderr.
+    // Default (check) path — must not crash; must emit warning on stderr.
     let output = Command::new(hew_binary())
         .args(["machine", "diagram"])
         .arg(&input)
@@ -547,13 +669,52 @@ fn machine_diagram_generic_fallback_exits_zero_with_advisory() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("advisory"),
-        "must emit advisory for generic machine; stderr:\n{stderr}"
+        stderr.contains(
+            "warning: generic machine(s) skipping HIR checks — use --no-check to suppress"
+        ),
+        "must emit warning with suppression hint for generic machine; stderr:\n{stderr}"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("stateDiagram-v2"),
         "must still produce diagram output; stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn machine_list_generic_lists_with_warning() {
+    let dir = support::tempdir();
+    let input = dir.path().join("box.hew");
+    std::fs::write(&input, generic_fixture()).unwrap();
+
+    let output = Command::new(hew_binary())
+        .args(["machine", "list"])
+        .arg(&input)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "generic machine list must not fail; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("machine Box {"), "stdout:\n{stdout}");
+    assert!(stdout.contains("  States:"), "stdout:\n{stdout}");
+    assert!(stdout.contains("    Empty"), "stdout:\n{stdout}");
+    assert!(stdout.contains("    Full { value }"), "stdout:\n{stdout}");
+    assert!(stdout.contains("  Events:"), "stdout:\n{stdout}");
+    assert!(stdout.contains("    Put { value }"), "stdout:\n{stdout}");
+    assert!(stdout.contains("  Transitions: 2"), "stdout:\n{stdout}");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("warning: generic machine(s) skipping HIR checks"),
+        "stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("--no-check"),
+        "list warning must not mention unsupported --no-check flag; stderr:\n{stderr}"
     );
 }
 

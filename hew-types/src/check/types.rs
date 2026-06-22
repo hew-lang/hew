@@ -1643,6 +1643,7 @@ pub(super) struct DeferredHashMapAdmission {
     pub(super) key_ty: Ty,
     pub(super) val_ty: Ty,
     pub(super) source_module: Option<String>,
+    pub(super) is_abstract_key_param: bool,
 }
 
 /// A `HashSet` element admission check deferred until after all inference has

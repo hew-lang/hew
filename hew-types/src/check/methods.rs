@@ -2574,35 +2574,49 @@ impl Checker {
         // avoid importing hew-mir (wrong dependency direction). The authoritative
         // MIR-side `ty_contains_unclonable_opaque` is mirrored here at the checker
         // boundary; the two must agree but are structurally independent.
-        if let Some(opaque_name) =
-            self.record_field_contains_opaque(name, &mut std::collections::HashSet::new())
-        {
+        if let Some(opaque_name) = self.record_field_contains_opaque(
+            name,
+            type_args,
+            &mut std::collections::HashSet::new(),
+        ) {
             return RecordCloneAdmissibility::OpaqueField { opaque_name };
         }
         RecordCloneAdmissibility::Admissible
     }
 
-    /// Transitive walk of a record's fields looking for an opaque handle type.
-    /// Returns the first opaque field-type name found, or `None` if clean.
-    /// Uses `canonical_owned_handle_type_name` as the single opaque-detection
-    /// authority (mirrors `ty_contains_owned_handle` in `registration.rs`).
+    /// Transitive, substitution-aware walk of a (possibly generic) record's
+    /// fields looking for an opaque handle leaf. `type_args` are the concrete
+    /// arguments at the clone site; each field is instantiated with them before
+    /// recursing, so a concrete instantiation like `Box<Handle>` resolves its
+    /// `item: T` field to `item: Handle` and the opaque leaf is detected. A
+    /// monomorphic record passes `type_args = []`, so the substitution is a
+    /// no-op and behaviour is unchanged. Returns the first opaque field-type
+    /// name found, or `None` if clean. Uses `canonical_owned_handle_type_name`
+    /// as the single opaque-detection authority (mirrors `ty_contains_owned_handle`
+    /// in `registration.rs`); the substitution mirrors
+    /// `vec_element_contains_structural_array` (admissibility.rs).
     fn record_field_contains_opaque(
         &self,
         name: &str,
+        type_args: &[Ty],
         visiting: &mut std::collections::HashSet<String>,
     ) -> Option<String> {
         if !visiting.insert(name.to_string()) {
             return None; // cycle protection
         }
-        let type_def = self.type_defs.get(name)?;
-        for field_ty in type_def.fields.values() {
-            if let Some(opaque) = self.ty_field_contains_opaque(field_ty, visiting) {
-                visiting.remove(name);
-                return Some(opaque);
+        let mut found = None;
+        if let Some(type_def) = self.type_defs.get(name) {
+            for field_ty in type_def.fields.values() {
+                let field_ty =
+                    Self::instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
+                if let Some(opaque) = self.ty_field_contains_opaque(&field_ty, visiting) {
+                    found = Some(opaque);
+                    break;
+                }
             }
         }
         visiting.remove(name);
-        None
+        found
     }
 
     fn ty_field_contains_opaque(
@@ -2610,7 +2624,11 @@ impl Checker {
         ty: &Ty,
         visiting: &mut std::collections::HashSet<String>,
     ) -> Option<String> {
-        match ty {
+        // Resolve inference vars so a field whose type is still a `Ty::Var`
+        // bound in the substitution environment is walked at its concrete type
+        // (mirrors `vec_element_contains_structural_array`).
+        let resolved = self.subst.resolve(ty);
+        match &resolved {
             Ty::Named { name, args, .. } => {
                 // Direct opaque handle (imported via module registry OR user-declared #[opaque])?
                 if self.canonical_owned_handle_type_name(name).is_some()
@@ -2618,14 +2636,15 @@ impl Checker {
                 {
                     return Some(name.clone());
                 }
-                // Recurse into type args.
+                // Recurse into type args (e.g. `Vec<Handle>`, `Option<Handle>`).
                 for arg in args {
                     if let Some(n) = self.ty_field_contains_opaque(arg, visiting) {
                         return Some(n);
                     }
                 }
-                // Recurse into the type def's fields.
-                if let Some(n) = self.record_field_contains_opaque(name, visiting) {
+                // Recurse into the type def's fields, substituting the def's
+                // params with the concrete `args` at this use site.
+                if let Some(n) = self.record_field_contains_opaque(name, args, visiting) {
                     return Some(n);
                 }
                 None

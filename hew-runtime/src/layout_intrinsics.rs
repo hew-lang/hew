@@ -20,8 +20,8 @@
 //! Two families, one per (K | V) role per type:
 //!
 //! - `hew_layout_key_<type>` — `HewMapKeyLayout` (carries hash + eq + drop).
-//! - `hew_layout_val_<type>` — `HewMapValueLayout` (carries drop + optional
-//!   clone; never hashes, per the kernel's get-borrows contract).
+//! - `hew_layout_val_<type>` — `HewMapValueLayout` (carries drop + clone for
+//!   non-Plain values; never hashes, per the kernel's get-borrows contract).
 //!
 //! Scope per plan §4 Stage C0b:
 //!
@@ -270,6 +270,34 @@ extern "C" fn hew_layout_string_drop(blob: *mut c_void) {
     }
 }
 
+unsafe extern "C" fn hew_layout_string_clone(src: *const c_void, dst: *mut c_void) -> i32 {
+    // SAFETY: src/dst point at pointer-sized string slots. The runtime already
+    // copied dst <- src; overwrite dst with an independent header-aware clone.
+    let src_ptr: *const c_char = unsafe { core::ptr::read(src.cast::<*const c_char>()) };
+    // SAFETY: `src_ptr` is null or a valid Hew string per the descriptor's
+    // String ownership contract.
+    let cloned = unsafe { crate::string::hew_string_clone(src_ptr) };
+    if !src_ptr.is_null() && cloned.is_null() {
+        return 1;
+    }
+    // SAFETY: `dst` is writable pointer-sized string storage.
+    unsafe { core::ptr::write(dst.cast::<*mut c_char>(), cloned) };
+    0
+}
+
+unsafe extern "C" fn hew_layout_bytes_clone(src: *const c_void, dst: *mut c_void) -> i32 {
+    // SAFETY: src/dst point at BytesTriple slots. Refcount the backing buffer,
+    // then copy the by-value view into dst.
+    let triple: BytesTripleRepr = unsafe { core::ptr::read(src.cast::<BytesTripleRepr>()) };
+    if !triple.ptr.is_null() {
+        // SAFETY: non-null buffer pointer comes from a valid BytesTriple.
+        unsafe { crate::bytes::hew_bytes_clone_ref(triple.ptr) };
+    }
+    // SAFETY: `dst` is writable BytesTriple storage.
+    unsafe { core::ptr::write(dst.cast::<BytesTripleRepr>(), triple) };
+    0
+}
+
 extern "C" fn hew_layout_bytes_drop(blob: *mut c_void) {
     // SAFETY: blob is non-null and points to a `BytesTriple` slot owned by
     // the kernel. Reload + drop the inner buffer via the bytes runtime.
@@ -405,9 +433,9 @@ pub static hew_layout_key_bytes: HewMapKeyLayout = HewMapKeyLayout {
 //
 // Value descriptors carry no hash / eq (the kernel never hashes V — see
 // the get-borrows contract in hew-cabi/src/map.rs). They carry drop (always)
-// and an optional clone (consulted only by the opt-in cloning-get variant,
-// per C0a). C0b ships clone_fn = None for every value descriptor; Stage C
-// or later may wire concrete clone thunks when an owned-V return path lands.
+// and a clone thunk for non-Plain values. Plain descriptors keep clone_fn =
+// None; string/bytes descriptors publish semantic clone thunks so
+// HashMap::get can return an owned Option<V> without aliasing the slot.
 
 macro_rules! val_layout_plain {
     ($name:ident, $ty:ty) => {
@@ -453,7 +481,7 @@ pub static hew_layout_val_string: HewMapValueLayout = HewMapValueLayout {
     align: core::mem::align_of::<*const c_char>(),
     ownership_kind: HewTypeOwnershipKind::String,
     drop_fn: Some(hew_layout_string_drop),
-    clone_fn: None,
+    clone_fn: Some(hew_layout_string_clone),
 };
 
 #[no_mangle]
@@ -462,7 +490,7 @@ pub static hew_layout_val_bytes: HewMapValueLayout = HewMapValueLayout {
     align: core::mem::align_of::<BytesTripleRepr>(),
     ownership_kind: HewTypeOwnershipKind::LayoutManaged,
     drop_fn: Some(hew_layout_bytes_drop),
-    clone_fn: None,
+    clone_fn: Some(hew_layout_bytes_clone),
 };
 
 // unit V (ZST): the HashSet-as-HashMap<T,()> pattern. The kernel admits

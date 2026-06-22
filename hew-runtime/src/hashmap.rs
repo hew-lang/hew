@@ -820,7 +820,12 @@ unsafe fn clone_layout_key_blob(
     }
 }
 
-unsafe fn clone_layout_value_blob(layout: HewMapValueLayout, src: *const u8, dst: *mut u8) {
+unsafe fn clone_layout_value_blob(
+    layout: HewMapValueLayout,
+    src: *const u8,
+    dst: *mut u8,
+    label: &str,
+) {
     match layout.ownership_kind {
         HewTypeOwnershipKind::Plain => {
             if layout.size > 0 {
@@ -829,21 +834,29 @@ unsafe fn clone_layout_value_blob(layout: HewMapValueLayout, src: *const u8, dst
                 unsafe { ptr::copy_nonoverlapping(src, dst, layout.size) };
             }
         }
-        HewTypeOwnershipKind::String => {
-            // SAFETY: forwarded blob contract.
-            unsafe { clone_layout_string_blob(src, dst, "hew_hashmap_clone_layout value") };
-        }
-        HewTypeOwnershipKind::LayoutManaged => {
+        HewTypeOwnershipKind::String | HewTypeOwnershipKind::LayoutManaged => {
             let Some(clone_fn) = layout.clone_fn else {
-                abort_layout_clone(
-                    "hew_hashmap_clone_layout: value layout-managed clone thunk is unavailable",
-                );
+                abort_layout_clone(format!("{label}: value clone thunk is unavailable"));
             };
-            clone_fn(src.cast::<c_void>(), dst.cast::<c_void>());
+            if layout.size > 0 {
+                // The map-value clone thunk ABI matches the existing aggregate
+                // clone helpers: caller first seeds dst with an exact byte copy
+                // so tags/BitCopy fields are present, then the thunk overwrites
+                // owned leaves with semantic clones.
+                // SAFETY: caller guarantees both blobs are valid for
+                // `layout.size` bytes and non-overlapping.
+                unsafe { ptr::copy_nonoverlapping(src, dst, layout.size) };
+            }
+            // SAFETY: descriptor validator/checker ensures `clone_fn` matches
+            // the value blob ABI; dst was seeded per thunk contract above.
+            let rc = unsafe { clone_fn(src.cast::<c_void>(), dst.cast::<c_void>()) };
+            if rc != 0 {
+                abort_layout_clone(format!("{label}: value clone thunk returned {rc}"));
+            }
         }
-        HewTypeOwnershipKind::Bytes => abort_layout_clone(
-            "hew_hashmap_clone_layout: value ownership_kind=Bytes is not valid for maps",
-        ),
+        HewTypeOwnershipKind::Bytes => abort_layout_clone(format!(
+            "{label}: value ownership_kind=Bytes is not valid for maps"
+        )),
     }
 }
 
@@ -879,12 +892,10 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
     }
     if matches!(
         src.val_layout.ownership_kind,
-        HewTypeOwnershipKind::LayoutManaged
+        HewTypeOwnershipKind::String | HewTypeOwnershipKind::LayoutManaged
     ) && src.val_layout.clone_fn.is_none()
     {
-        abort_layout_clone(
-            "hew_hashmap_clone_layout: value layout-managed clone thunk is unavailable",
-        );
+        abort_layout_clone("hew_hashmap_clone_layout: value clone thunk is unavailable");
     }
 
     // SAFETY: source map was validated at construction time.
@@ -944,7 +955,14 @@ pub unsafe extern "C" fn hew_hashmap_clone_layout(
             // SAFETY: destination slot is in-bounds in the cloned allocation.
             let dst_val = unsafe { slot_val(cloned_entries, idx, src.stride, src.val_offset) };
             // SAFETY: forwarded blob contracts.
-            unsafe { clone_layout_value_blob(src.val_layout, src_val, dst_val) };
+            unsafe {
+                clone_layout_value_blob(
+                    src.val_layout,
+                    src_val,
+                    dst_val,
+                    "hew_hashmap_clone_layout value",
+                );
+            }
         }
     }
 
@@ -1204,6 +1222,74 @@ pub unsafe extern "C" fn hew_hashmap_get_layout(
     // SAFETY: idx < cap; val_offset valid.
     let val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
     val_ptr.cast::<c_void>().cast_const()
+}
+
+/// Look up a key and semantic-clone the stored value into caller-provided
+/// storage. Returns `true` when the key was found, `false` when absent.
+///
+/// This is the owned-return counterpart to [`hew_hashmap_get_layout`]. The
+/// borrowed getter remains available for predicates and internal probes; Hew
+/// `HashMap::get()` uses this entry so `Option<V>` owns an independent `V`.
+///
+/// # Safety
+///
+/// `m` must be a valid `HewLayoutHashMap`. `key` must point to a valid key
+/// blob. When the map's value size is non-zero, `out` must point to writable
+/// storage for exactly `val_layout.size` bytes at `val_layout.align`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashmap_get_clone_layout(
+    m: *const HewLayoutHashMap,
+    key: *const c_void,
+    out: *mut c_void,
+) -> bool {
+    // SAFETY: shared fail-closed gate; no value pointer participates in lookup.
+    unsafe { validate_op_inputs(m, key, None) };
+    // SAFETY: m non-null per gate.
+    let map = unsafe { &*m };
+    if map.val_layout.size > 0 && out.is_null() {
+        crate::set_last_error("hew_hashmap_get_clone_layout: out is null for non-zero value");
+        std::process::abort();
+    }
+    if map.cap == 0 || map.len == 0 {
+        return false;
+    }
+    let kl = &map.key_layout;
+    let (Some(hash_fn), Some(eq_fn)) = (kl.hash_fn, kl.eq_fn) else {
+        crate::set_last_error(
+            "hew_hashmap_get_clone_layout: hash_fn/eq_fn None (constructor guard violated)",
+        );
+        std::process::abort();
+    };
+    // SAFETY: layout fields valid.
+    let (idx, found) = unsafe {
+        layout_probe(
+            map.entries,
+            map.cap,
+            map.stride,
+            map.key_offset,
+            key,
+            hash_fn,
+            eq_fn,
+        )
+    };
+    if !found {
+        return false;
+    }
+    if map.val_layout.size > 0 {
+        // SAFETY: idx < cap; val_offset valid.
+        let val_ptr = unsafe { slot_val(map.entries, idx, map.stride, map.val_offset) };
+        // SAFETY: val_ptr points at the occupied slot value and `out` was
+        // validated for this value layout above.
+        unsafe {
+            clone_layout_value_blob(
+                map.val_layout,
+                val_ptr,
+                out.cast::<u8>(),
+                "hew_hashmap_get_clone_layout value",
+            );
+        }
+    }
+    true
 }
 
 /// Predicate form of `hew_hashmap_get_layout`.

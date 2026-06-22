@@ -9186,16 +9186,18 @@ fn collect_wire_codec_value_types(pipeline: &IrPipeline) -> Vec<ResolvedTy> {
 }
 
 /// Walk every raw-MIR function's local/param/return types and collect the
-/// record / enum layout keys of every owned-element `Vec<T>` (W5.016).
+/// record / enum layout keys of every owned-element `Vec<T>` (W5.016) and every
+/// heap-owning `HashMap<K, V>` value descriptor (G1 clone-on-get).
 ///
-/// An owned-Vec element type's `__hew_record/enum_{clone,drop}_inplace_<key>`
-/// helper body is NOT reachable from any actor/record state field nor from a
-/// `DropKind::EnumInPlace` seed — it is referenced only by the owned Vec
-/// descriptor (`owned_elem_layout_descriptor_ptr`). Without seeding the body,
-/// the descriptor's thunk pointers would dangle at link time (fail-closed at
-/// link, but blocks the feature). Returns `(record_seeds, enum_seeds)` keyed
-/// the same way `collect_reachable_clone_targets` / `collect_enum_inplace_
-/// drop_seeds` expect.
+/// An owned-Vec element or owned HashMap value type's
+/// `__hew_record/enum_{clone,drop}_inplace_<key>` helper body is NOT reachable
+/// from any actor/record state field nor from a `DropKind::EnumInPlace` seed —
+/// it is referenced only by the descriptor
+/// (`owned_elem_layout_descriptor_ptr` / `hashmap_owned_value_layout_descriptor_ptr`).
+/// Without seeding the body, the descriptor's thunk pointers would dangle at
+/// link time (fail-closed at link, but blocks the feature). Returns
+/// `(record_seeds, enum_seeds)` keyed the same way `collect_reachable_clone_targets`
+/// / `collect_enum_inplace_drop_seeds` expect.
 ///
 /// Element-shape resolution mirrors `owned_elem_thunk_key`: a `Named` element
 /// resolving to a registered enum seeds the enum list; one resolving to a
@@ -9256,8 +9258,9 @@ fn collect_vec_owned_element_seeds(
             }
         };
 
-    // Recursively scan a type for `Vec<elem>` occurrences (so a
-    // `Vec<Vec<owned>>` or an owned-Vec nested in a tuple/option arg is seeded).
+    // Recursively scan a type for `Vec<elem>` and `HashMap<K, V>` occurrences
+    // (so a `Vec<Vec<owned>>`, an owned-Vec nested in a tuple/option arg, or a
+    // map whose heap-owning V is not otherwise dropped is seeded).
     fn scan_ty(
         ty: &ResolvedTy,
         visited: &mut std::collections::HashSet<String>,
@@ -9279,6 +9282,10 @@ fn collect_vec_owned_element_seeds(
                 if name == "Vec" || matches!(short_name(name), "Sender" | "Receiver" | "Stream") {
                     if let Some(elem) = args.first() {
                         on_vec_elem(elem);
+                    }
+                } else if name == "HashMap" || short_name(name) == "HashMap" {
+                    if let Some(value) = args.get(1) {
+                        on_vec_elem(value);
                     }
                 }
                 // Guard against unbounded recursion through self-referential
@@ -16712,7 +16719,10 @@ fn lower_owned_vec_direct_call(
 //     `HewMapKeyLayout`-shaped private constant whose field layout matches
 //     `hew_cabi::map::HewMapKeyLayout` byte-for-byte.
 //   - `@__hew_map_value_layout_<size>_<align>_plain` — a `HewMapValueLayout`
-//     private constant.
+//     private constant for POD values.
+//   - `@__hew_map_value_layout_<kind>_<key>_<size>_<align>_owned` — a
+//     `HewMapValueLayout` private constant for heap-owning values, carrying the
+//     same per-type clone/drop in-place thunks used by the owned Vec substrate.
 //
 // **Equality thunk reuse.**  The hash thunk does NOT carry an equality
 // twin.  The `eq_fn` field of the key-layout global re-uses the existing
@@ -16899,7 +16909,8 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
 /// clone_fn: *const fn }`. For Plain ownership both function-pointer fields
 /// are null (Option::None). Dedup by `(size, align)` alone — two Plain scalar
 /// values with identical ABI shape may share a global since their thunk
-/// fields are both null.
+/// fields are both null. Heap-owning values use the owned descriptor variant
+/// below, keyed by the same per-type thunk authority as owned Vec elements.
 ///
 /// HashSet zero-size value layout is **not emitted** by this helper: per
 /// C-1c, the runtime's `hew_hashset_new_with_layout` injects a hard-coded
@@ -16919,6 +16930,9 @@ fn hashmap_value_layout_descriptor_ptr<'ctx>(
     if let Some(rty) = resolved_ty {
         if let Some(name) = primitive_value_layout_extern_name(rty) {
             return Ok(declare_extern_layout_global(fn_ctx, name));
+        }
+        if resolved_ty_contains_heap_leaf(fn_ctx, rty, &mut HashSet::new()) {
+            return hashmap_owned_value_layout_descriptor_ptr(fn_ctx, rty, val_ty);
         }
     }
     let (size, align) = abi_size_align(val_ty, Some(fn_ctx.target_data))?;
@@ -16949,6 +16963,101 @@ fn hashmap_value_layout_descriptor_ptr<'ctx>(
         i8_ty.const_zero().into(),
         ptr_ty.const_null().into(),
         ptr_ty.const_null().into(),
+    ]);
+    let g = fn_ctx.llvm_mod.add_global(layout_ty, None, &global_name);
+    g.set_constant(true);
+    g.set_linkage(Linkage::Private);
+    g.set_initializer(&init);
+    Ok(g.as_pointer_value())
+}
+
+fn hashmap_owned_value_layout_descriptor_ptr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    val_resolved_ty: &ResolvedTy,
+    val_llvm_ty: BasicTypeEnum<'ctx>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let Some((kind, key)) = crate::thunks::owned_elem_thunk_key(fn_ctx, val_resolved_ty) else {
+        return Err(CodegenError::FailClosed(format!(
+            "owned HashMap value `{val_resolved_ty:?}` has no resolvable clone/drop \
+             thunk path; checker admission must reject non-POD values without a \
+             map value clone_fn"
+        )));
+    };
+    let (size, align) = abi_size_align(val_llvm_ty, Some(fn_ctx.target_data))?;
+    let kind_tag = match kind {
+        OwnedElemThunkKind::Record => "rec",
+        OwnedElemThunkKind::Enum => "enum",
+        OwnedElemThunkKind::Tuple => "tup",
+        OwnedElemThunkKind::Collection => "coll",
+    };
+    let global_name = format!("__hew_map_value_layout_{kind_tag}_{key}_{size}_{align}_owned");
+    if let Some(g) = fn_ctx.llvm_mod.get_global(&global_name) {
+        return Ok(g.as_pointer_value());
+    }
+
+    let (clone_fn, drop_fn) = match kind {
+        OwnedElemThunkKind::Record => (
+            get_or_declare_record_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
+            get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
+        ),
+        OwnedElemThunkKind::Enum => (
+            get_or_declare_enum_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
+            get_or_declare_enum_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
+        ),
+        OwnedElemThunkKind::Tuple => {
+            let elems = match val_resolved_ty {
+                ResolvedTy::Tuple(elems) => elems,
+                _ => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "owned HashMap tuple value `{val_resolved_ty:?}` resolved to Tuple \
+                         thunk kind but is not a tuple"
+                    )));
+                }
+            };
+            crate::thunks::emit_tuple_inplace_thunk_bodies(fn_ctx, &key, elems, val_llvm_ty)?;
+            (
+                get_or_declare_tuple_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
+                get_or_declare_tuple_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
+            )
+        }
+        OwnedElemThunkKind::Collection => {
+            let (clone_sym, drop_sym) = collection_elem_clone_drop_syms(fn_ctx, val_resolved_ty)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "owned HashMap collection value `{val_resolved_ty:?}` has no canonical \
+                         clone/free primitive"
+                    ))
+                })?;
+            crate::thunks::emit_collection_handle_thunk_bodies(fn_ctx, &key, clone_sym, drop_sym)?;
+            (
+                get_or_declare_collection_clone_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
+                get_or_declare_collection_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &key),
+            )
+        }
+    };
+
+    let ctx = fn_ctx.ctx;
+    let usize_ty = ctx.ptr_sized_int_type(fn_ctx.target_data, None);
+    let i8_ty = ctx.i8_type();
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let layout_ty = ctx.struct_type(
+        &[
+            usize_ty.into(),
+            usize_ty.into(),
+            i8_ty.into(),
+            ptr_ty.into(),
+            ptr_ty.into(),
+        ],
+        false,
+    );
+    // HewMapValueLayout field order is { size, align, ownership_kind, drop_fn,
+    // clone_fn }. Do not reuse HewVecElemLayout's clone/drop order.
+    let init = layout_ty.const_named_struct(&[
+        usize_ty.const_int(size, false).into(),
+        usize_ty.const_int(u64::from(align), false).into(),
+        i8_ty.const_int(2, false).into(),
+        drop_fn.as_global_value().as_pointer_value().into(),
+        clone_fn.as_global_value().as_pointer_value().into(),
     ]);
     let g = fn_ctx.llvm_mod.add_global(layout_ty, None, &global_name);
     g.set_constant(true);
@@ -17425,6 +17534,10 @@ fn layout_hashmap_fn_type<'ctx>(
         }
         // `*const c_void hew_hashmap_get_layout(map, key_ptr)`
         "hew_hashmap_get_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
+        // `bool hew_hashmap_get_clone_layout(map, key_ptr, out_ptr)`
+        "hew_hashmap_get_clone_layout" => {
+            Ok(i1_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false))
+        }
         // `bool hew_hashmap_remove_layout(map, key_ptr)`
         "hew_hashmap_remove_layout" => Ok(i1_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
         // `i64 hew_hashmap_len_layout(map)`
@@ -18968,26 +19081,8 @@ fn lower_hashmap_get_layout_call(
     }
 
     let val_llvm_ty = resolve_ty(fn_ctx.ctx, &val_resolved, fn_ctx.record_layouts)?;
-    let (val_size, val_align) = abi_size_align(val_llvm_ty, None)?;
     let map_ptr = load_duplex_handle(fn_ctx, args[0], "hew_hashmap_get_layout arg0")?;
     let (key_ptr, _key_ty) = place_pointer(fn_ctx, args[1])?;
-    let fv = get_or_declare_layout_hashmap_runtime(
-        fn_ctx.ctx,
-        fn_ctx.llvm_mod,
-        "hew_hashmap_get_layout",
-    )?;
-    let raw_ptr = fn_ctx
-        .builder
-        .build_call(
-            fv,
-            &[map_ptr.into(), key_ptr.into()],
-            "hew_hashmap_get_layout_call",
-        )
-        .llvm_ctx("hew_hashmap_get_layout call")?
-        .try_as_basic_value()
-        .basic()
-        .ok_or_else(|| CodegenError::FailClosed("hew_hashmap_get_layout returned void".into()))?
-        .into_pointer_value();
 
     let parent = fn_ctx
         .builder
@@ -19002,32 +19097,10 @@ fn lower_hashmap_get_layout_call(
         .blocks
         .get(&next)
         .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
-    let is_some = fn_ctx
-        .builder
-        .build_int_compare(
-            IntPredicate::NE,
-            raw_ptr,
-            fn_ctx.ctx.ptr_type(AddressSpace::default()).const_null(),
-            "hashmap_get_is_some",
-        )
-        .llvm_ctx("hew_hashmap_get_layout null compare")?;
-    fn_ctx
-        .builder
-        .build_conditional_branch(is_some, some_bb, none_bb)
-        .llvm_ctx("hew_hashmap_get_layout condbr")?;
-
-    // None = variant 1 for Hew's builtin `Option<T>` layout.
-    fn_ctx.builder.position_at_end(none_bb);
-    emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
-    fn_ctx
-        .builder
-        .build_unconditional_branch(next_bb)
-        .llvm_ctx("hew_hashmap_get_layout none br")?;
-
-    // Some = variant 0.  Tag via the enum-literal primitive, then copy exactly
-    // the registered value-layout byte size into the Some payload field.
-    fn_ctx.builder.position_at_end(some_bb);
-    emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
+    // `HashMap::get` returns an owned `Option<V>`. Compute the Some payload
+    // address up front, then let the runtime clone the stored slot value into
+    // it through the descriptor's semantic clone_fn. This replaces the old
+    // borrowed-slot memcpy, which aliased owned V into the Option payload.
     let dest_local = composite_dest_local(*dest_place, "hew_hashmap_get_layout")?;
     let (payload_ptr, payload_ty) = place_pointer(
         fn_ctx,
@@ -19043,16 +19116,41 @@ fn lower_hashmap_get_layout_call(
              does not match HashMap value type {val_llvm_ty:?}"
         )));
     }
+    let fv = get_or_declare_layout_hashmap_runtime(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        "hew_hashmap_get_clone_layout",
+    )?;
+    let is_some = fn_ctx
+        .builder
+        .build_call(
+            fv,
+            &[map_ptr.into(), key_ptr.into(), payload_ptr.into()],
+            "hew_hashmap_get_clone_layout_call",
+        )
+        .llvm_ctx("hew_hashmap_get_clone_layout call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed("hew_hashmap_get_clone_layout returned void".into())
+        })?
+        .into_int_value();
     fn_ctx
         .builder
-        .build_memcpy(
-            payload_ptr,
-            val_align,
-            raw_ptr,
-            val_align,
-            fn_ctx.ctx.i64_type().const_int(val_size, false),
-        )
-        .llvm_ctx("hew_hashmap_get_layout value copy")?;
+        .build_conditional_branch(is_some, some_bb, none_bb)
+        .llvm_ctx("hew_hashmap_get_clone_layout condbr")?;
+
+    // None = variant 1 for Hew's builtin `Option<T>` layout.
+    fn_ctx.builder.position_at_end(none_bb);
+    emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_hashmap_get_layout none br")?;
+
+    // Some = variant 0. The runtime already cloned into the payload slot.
+    fn_ctx.builder.position_at_end(some_bb);
+    emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
     fn_ctx
         .builder
         .build_unconditional_branch(next_bb)
@@ -35590,20 +35688,21 @@ mod tests {
             "wasm32 key descriptor must use 4-byte usize fields:\n{wasm_key}\n\nfull IR:\n{wasm}"
         );
 
-        let native_value = descriptor_line(&native, "@__hew_map_value_layout_8_8_plain");
+        let native_value =
+            descriptor_line(&native, "@__hew_map_value_layout_rec_PtrPayload_8_8_owned");
         assert!(
             native_value.contains("{ i64, i64, i8, ptr, ptr }")
-                && native_value.contains("{ i64 8, i64 8, i8 0,"),
-            "native pointer-field value descriptor must use host pointer ABI and 8-byte usize fields:\n{native_value}\n\nfull IR:\n{native}"
+                && native_value.contains("{ i64 8, i64 8, i8 2,"),
+            "native owned pointer-field value descriptor must use host pointer ABI and 8-byte usize fields:\n{native_value}\n\nfull IR:\n{native}"
         );
-        let wasm_value = descriptor_line(&wasm, "@__hew_map_value_layout_4_4_plain");
+        let wasm_value = descriptor_line(&wasm, "@__hew_map_value_layout_rec_PtrPayload_4_4_owned");
         assert!(
             wasm_value.contains("{ i32, i32, i8, ptr, ptr }")
-                && wasm_value.contains("{ i32 4, i32 4, i8 0,"),
-            "wasm32 pointer-field value descriptor must use wasm pointer ABI and 4-byte usize fields:\n{wasm_value}\n\nfull IR:\n{wasm}"
+                && wasm_value.contains("{ i32 4, i32 4, i8 2,"),
+            "wasm32 owned pointer-field value descriptor must use wasm pointer ABI and 4-byte usize fields:\n{wasm_value}\n\nfull IR:\n{wasm}"
         );
         assert!(
-            !wasm.contains("@__hew_map_value_layout_8_8_plain"),
+            !wasm.contains("@__hew_map_value_layout_rec_PtrPayload_8_8_owned"),
             "wasm32 descriptor synthesis must not reuse the native 8-byte pointer layout:\n{wasm}"
         );
     }
@@ -39801,7 +39900,7 @@ mod tests {
     }
 
     #[test]
-    fn hashmap_layout_ops_get_emits_option_branches_and_size_copy() {
+    fn hashmap_layout_ops_get_emits_clone_call_and_option_branches() {
         let ctx = Context::create();
         let m = ctx.create_module("hashmap_get_option_test");
         let harness = build_harness(
@@ -39862,18 +39961,18 @@ mod tests {
         );
         let ir = m.print_to_string().to_string();
         assert!(
-            ir.contains("hew_hashmap_get_layout_call")
+            ir.contains("hew_hashmap_get_clone_layout_call")
                 && ir.contains("hashmap_get_none")
                 && ir.contains("hashmap_get_some"),
-            "expected get call and two branches; got IR:\n{ir}"
+            "expected clone-on-get call and two branches; got IR:\n{ir}"
         );
         assert!(
             ir.contains("store i8 0") && ir.contains("store i8 1"),
             "expected Option::Some/None tags via emit_enum_variant_literal; got IR:\n{ir}"
         );
         assert!(
-            ir.contains("llvm.memcpy") && ir.contains("i64 8"),
-            "expected value-layout-sized copy of i64 payload, not a fixed ad-hoc load; got IR:\n{ir}"
+            !ir.contains("llvm.memcpy"),
+            "HashMap::get must not memcpy a borrowed slot into owned Option<V>; got IR:\n{ir}"
         );
     }
 

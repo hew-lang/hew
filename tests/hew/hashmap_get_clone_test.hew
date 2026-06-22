@@ -1,0 +1,75 @@
+//! Regression tests for HashMap::get ownership.
+//!
+//! `HashMap<K, V>.get()` returns `Option<V>`, so `Some(v)` must own an
+//! independent semantic clone of the stored value. Removing the key after get
+//! must not invalidate the returned value.
+
+import std::testing;
+
+type Payload {
+    label: string;
+    count: i64;
+}
+
+#[test]
+fn test_hashmap_get_string_value_survives_remove() {
+    let m: HashMap<string, string> = HashMap::new();
+    let n: i64 = 123456;
+    let heap: string = f"prefix-{n}-suffix-padding-to-force-heap-alloc-zzzzzzzzzzzz";
+    m.insert("k", heap);
+
+    let got: Option<string> = m.get("k");
+    m.remove("k");
+
+    match got {
+        Some(s) => testing.assert_eq_str(s, "prefix-123456-suffix-padding-to-force-heap-alloc-zzzzzzzzzzzz"),
+        None => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_hashmap_get_owned_record_value_survives_remove() {
+    let m: HashMap<string, Payload> = HashMap::new();
+    let n: i64 = 77;
+    let payload = Payload {
+        label: f"record-value-{n}-heap-owned",
+        count: n,
+    };
+    m.insert("record", payload);
+
+    let got: Option<Payload> = m.get("record");
+    m.remove("record");
+
+    match got {
+        Some(p) => {
+            testing.assert_eq_str(p.label, "record-value-77-heap-owned");
+            testing.assert_eq(p.count, 77);
+        },
+        None => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_hashmap_get_nested_vec_value_survives_remove() {
+    let m: HashMap<string, Vec<i64>> = HashMap::new();
+    let xs: Vec<i64> = Vec::new();
+    xs.push(1);
+    xs.push(2);
+    xs.push(3);
+    m.insert("vec", clone xs);
+    xs.push(99);
+
+    let got: Option<Vec<i64>> = m.get("vec");
+    m.remove("vec");
+
+    match got {
+        Some(v) => {
+            testing.assert_eq(v.len(), 3);
+            testing.assert_eq(v.get(0), 1);
+            testing.assert_eq(v.get(1), 2);
+            testing.assert_eq(v.get(2), 3);
+        },
+        None => testing.assert_true(false),
+    }
+    testing.assert_eq(xs.len(), 4);
+}

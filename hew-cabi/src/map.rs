@@ -21,6 +21,7 @@
 //! | `hew_hashmap_insert_layout` (vacant slot) | **owned** (transferred) | **owned** (transferred) | Raw-copy K and V bytes into the slot; possession transfers to the map. No clone, no drop.                                                          |
 //! | `hew_hashmap_insert_layout` (occupied)    | **owned** (eq to stored K — caller drops/recycles the duplicate `K_in`) | **owned** (transferred) | Drop the **old V** via `val_layout.drop_fn`; raw-copy new V into the slot. The slot K stays in place; the kernel **never** drops the stored K here. |
 //! | `hew_hashmap_get_layout`                  | **borrowed**            | n/a                     | Returns `*const c_void` pointing into the slot; lifetime valid until the next mutation. Caller must not free.                                       |
+//! | `hew_hashmap_get_clone_layout`            | **borrowed**            | n/a                     | Clones the stored V into caller-provided out storage via `val_layout.clone_fn` when V is non-Plain; caller owns the out value.                       |
 //! | `hew_hashmap_remove_layout`               | **borrowed**            | n/a                     | Invoke `key_layout.drop_fn` on the slot K and `val_layout.drop_fn` on the slot V before tombstoning. Caller's lookup K is untouched.                |
 //! | `hew_hashmap_free_layout`                 | n/a                     | n/a                     | Iterate occupied slots, invoke key + value `drop_fn` on each, then deallocate the entries buffer. Tombstoned slots already had their blobs dropped at remove-time. |
 //!
@@ -28,7 +29,8 @@
 //!
 //! 1. Insert transfers ownership of K and V into the map (vacant) or of V
 //!    only (occupied — the slot K is reused).
-//! 2. Get borrows; no `clone_fn` is invoked on the standard `_get_layout`.
+//! 2. Standard `_get_layout` borrows; `_get_clone_layout` produces an owned V
+//!    by invoking the descriptor's semantic clone authority.
 //! 3. Remove drops stored K + V via the descriptor thunks; the lookup K
 //!    is borrowed and never dropped by the kernel.
 //! 4. Free drops every occupied K + V exactly once; tombstoned slots are
@@ -103,12 +105,14 @@ pub type HewMapValueDropThunk = extern "C" fn(blob: *mut c_void);
 
 /// Thunk that clones an owned value blob from `src` to `dst`.
 ///
-/// Optional — never invoked by the standard `hew_hashmap_get_layout` path
-/// (which borrows). Consulted only by an opt-in cloning-get variant when the
-/// HIR consumer requires owned-V return.
+/// Invoked by the cloning-get path and layout-map clone when the value
+/// descriptor declares non-Plain ownership. The runtime has already raw-copied
+/// `dst <- src` before invoking this thunk so `BitCopy` fields, enum tags, and
+/// inactive bytes are in place; the thunk deep-clones owned leaves in place.
+/// Returns 0 on success, non-zero after rolling back any partial clone.
 ///
-/// `extern "C" fn(*const u8, *mut u8)` (Q281=A discipline).
-pub type HewMapValueCloneThunk = extern "C" fn(src: *const c_void, dst: *mut c_void);
+/// `extern "C" fn(*const u8, *mut u8) -> i32` (Q281=A discipline).
+pub type HewMapValueCloneThunk = unsafe extern "C" fn(src: *const c_void, dst: *mut c_void) -> i32;
 
 // ---------------------------------------------------------------------------
 // Niche-optimization compile-time assertions
@@ -201,7 +205,7 @@ pub struct HewMapKeyLayout {
 ///     HewTypeOwnershipKind   ownership_kind;
 ///     /* padding to pointer alignment */
 ///     HewMapValueDropThunk   drop_fn;   /* may be NULL when ownership_kind == Plain */
-///     HewMapValueCloneThunk  clone_fn;  /* may be NULL — never required by _get_layout */
+///     HewMapValueCloneThunk  clone_fn;  /* may be NULL only for Plain values */
 /// } HewMapValueLayout;
 /// ```
 #[repr(C)]
@@ -222,8 +226,9 @@ pub struct HewMapValueLayout {
     /// `LayoutManaged` require `Some(_)` (fail-closed constructor check).
     /// W4.001 Stage C0a.
     pub drop_fn: Option<HewMapValueDropThunk>,
-    /// Optional clone thunk consulted only by the opt-in cloning-get
-    /// variant; the standard `hew_hashmap_get_layout` ignores it.
+    /// Optional clone thunk consulted by the cloning-get and map-clone paths.
+    /// `None` is valid only for Plain values; owned `Option<V>` producers must
+    /// fail closed before constructing a non-Plain value layout without it.
     /// W4.001 Stage C0a.
     pub clone_fn: Option<HewMapValueCloneThunk>,
 }

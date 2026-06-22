@@ -2378,6 +2378,14 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/opaque_handle_non_empty_b
 fi
 grep -q 'E_OPAQUE_TYPE_SHAPE' "${reject_output}"
 
+# G1: HashMap::get returns an owned Option<V>, so heap values must clone out of
+# the slot and V with no clone_fn must fail closed at check time.
+run_accept_expect_status "hashmap_get_clone_string_value" 0
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/hashmap_get_unclonable_opaque_value.hew" \
+  "no map value clone_fn" \
+  "hashmap_get_unclonable_opaque_value"
+
 # ---------------------------------------------------------------------------
 # NEW-6b — `await … | after d` deadlines on suspendable actor asks
 # ---------------------------------------------------------------------------

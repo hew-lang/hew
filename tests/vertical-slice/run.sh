@@ -1769,6 +1769,7 @@ run_accept_expect_status "vec_range_slice_inclusive" 3
 # and run with exact values; managed aggregate projections fail closed at check.
 run_accept_expect_stdout "hashmap_values_scalar"
 run_accept_expect_stdout "hashmap_values_string"
+run_accept_expect_status "hashmap_generic_ops" 0
 run_accept_expect_stdout "vec_scalar_range_slice"
 run_accept_expect_stdout "vec_string_range_slice"
 run_accept_expect_stdout "vec_element_widths"
@@ -1806,6 +1807,12 @@ expect_check_fail_error_count \
   "${ROOT}/tests/vertical-slice/reject/hashmap_keys_bytes.hew" \
   1 \
   "hashmap_keys_bytes"
+
+# shellcheck disable=SC2016  # backtick-containing diagnostic string; not shell expansion.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/hashmap_generic_key_missing_bounds.hew" \
+  'does not satisfy the required bounds for `Map::contains_key`' \
+  "hashmap_generic_key_missing_bounds"
 
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/vec_record_range_slice.hew" \

@@ -1,0 +1,38 @@
+//! Generic HashMap operations must honor declared key bounds.
+
+import std::testing;
+
+fn fill<K: Hash + Eq, V>(m: HashMap<K, V>, k: K, v: V) {
+    m.insert(k, v);
+}
+
+fn has_key<K: Hash + Eq, V>(m: HashMap<K, V>, k: K) -> bool {
+    m.contains_key(k)
+}
+
+fn drop_key<K: Hash + Eq, V>(m: HashMap<K, V>, k: K) -> bool {
+    m.remove(k)
+}
+
+fn read_or<K: Hash + Eq, V>(m: HashMap<K, V>, k: K, fallback: V) -> V {
+    match m.get(k) {
+        Some(v) => v,
+        None => fallback,
+    }
+}
+
+fn count<K: Hash + Eq, V>(m: HashMap<K, V>) -> i64 {
+    m.len()
+}
+
+#[test]
+fn test_generic_hashmap_methods_honor_key_bounds() {
+    let m: HashMap<string, i64> = HashMap::new();
+
+    fill(m, "hello", 42);
+    testing.assert_true(has_key(m, "hello"));
+    testing.assert_eq(read_or(m, "hello", 0), 42);
+    testing.assert_eq(count(m), 1);
+    testing.assert_true(drop_key(m, "hello"));
+    testing.assert_eq(count(m), 0);
+}

@@ -1,0 +1,10 @@
+// Reject fixture: abstract HashMap keys still require declared Hash + Eq bounds.
+
+fn has_key<K, V>(m: HashMap<K, V>, k: K) -> bool {
+    m.contains_key(k)
+}
+
+fn main() {
+    let m: HashMap<string, i64> = HashMap::new();
+    let _ = has_key(m, "hello");
+}

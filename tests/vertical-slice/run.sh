@@ -1773,6 +1773,8 @@ run_accept_expect_stdout "hashmap_values_string"
 run_accept_expect_status "hashmap_generic_ops" 0
 run_accept_expect_stdout "vec_scalar_range_slice"
 run_accept_expect_stdout "vec_string_range_slice"
+run_accept_expect_stdout "vec_record_range_slice"
+run_accept_expect_stdout "vec_enum_range_slice"
 run_accept_expect_stdout "vec_element_widths"
 run_accept_expect_trap "vec_element_width_oob_traps"
 run_accept_expect_status "vec_index_assign_round_trip" 24
@@ -1815,24 +1817,6 @@ expect_check_fail_contains \
   'does not satisfy the required bounds for `Map::contains_key`' \
   "hashmap_generic_key_missing_bounds"
 
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/vec_record_range_slice.hew" \
-  'Vec<Point> range-slice (xs[a..b]) is not yet supported' \
-  "vec_record_range_slice"
-expect_check_fail_error_count \
-  "${ROOT}/tests/vertical-slice/reject/vec_record_range_slice.hew" \
-  1 \
-  "vec_record_range_slice"
-
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/vec_enum_range_slice.hew" \
-  'Vec<Colour> range-slice (xs[a..b]) is not yet supported' \
-  "vec_enum_range_slice"
-expect_check_fail_error_count \
-  "${ROOT}/tests/vertical-slice/reject/vec_enum_range_slice.hew" \
-  1 \
-  "vec_enum_range_slice"
-
 # ---------------------------------------------------------------------------
 # vec-generic-index — scalar `xs[i]` on Vec<T> for any supported element type
 # ---------------------------------------------------------------------------
@@ -1870,14 +1854,8 @@ run_accept_expect_status "vec_string_index_use_loop" 14
 # bounds-checked lower_vec_index path, dispatching to hew_vec_get_i64. Exit 22
 # = xs[1] + xs[2] - xs[0] (20 + 12 - 10).
 run_accept_expect_status "vec_i64_index" 22
+run_accept_expect_status "vec_index_isize" 11
 run_accept_expect_status "for_wildcard_range" 3
-
-# Reject: scalar index on Vec<isize> is fail-closed until platform-sized
-# element widths have target-width-aware MIR dispatch.
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/vec_index_unsupported_elem.hew" \
-  "Vec<isize> scalar index (xs[i]) is not yet supported" \
-  "vec_index_unsupported_elem"
 
 # Reject: Vec<[T; N]> is fail-closed at the type checker — codegen cannot lower
 # array/composite Vec elements (Cluster 2 deferred).  A copy-layout array must

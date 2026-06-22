@@ -2548,6 +2548,12 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         | "hew_vec_slice_range_str" => {
             ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false)
         }
+        "hew_vec_slice_range_owned" => {
+            ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false)
+        }
+        "hew_vec_slice_range_layout" => {
+            ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into(), ptr_ty.into()], false)
+        }
         // W3 collections-sugar S2 — fail-closed codepoint indexing / slicing.
         //
         // hew_string_index(s: *const c_char, index: i64) -> i32 (codepoint).
@@ -16558,6 +16564,8 @@ fn is_owned_vec_runtime_symbol(symbol: &str) -> bool {
             | "hew_vec_set_owned"
             | "hew_vec_pop_owned"
             | "hew_vec_clone_owned"
+            | "hew_vec_contains_owned"
+            | "hew_vec_slice_range_owned"
     )
 }
 
@@ -16587,6 +16595,14 @@ fn owned_vec_fn_type<'ctx>(
         "hew_vec_pop_owned" => Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
         // ptr hew_vec_clone_owned(ptr vec)
         "hew_vec_clone_owned" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
+        // i32 hew_vec_contains_owned(ptr vec, ptr data, ptr eq_fn)
+        "hew_vec_contains_owned" => {
+            Ok(i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into(), ptr_ty.into()], false))
+        }
+        // ptr hew_vec_slice_range_owned(ptr vec, i64 start, i64 end)
+        "hew_vec_slice_range_owned" => {
+            Ok(ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), i64_ty.into()], false))
+        }
         _ => Err(CodegenError::FailClosed(format!(
             "not an owned Vec runtime symbol: {symbol}"
         ))),
@@ -16623,8 +16639,12 @@ fn lower_owned_vec_direct_call(
     next: u32,
 ) -> CodegenResult<()> {
     let expected_arity = match callee {
-        "hew_vec_push_owned" | "hew_vec_push_owned_move" | "hew_vec_get_owned" => 2,
+        "hew_vec_push_owned"
+        | "hew_vec_push_owned_move"
+        | "hew_vec_get_owned"
+        | "hew_vec_contains_owned" => 2,
         "hew_vec_set_owned" => 3,
+        "hew_vec_slice_range_owned" => 3,
         "hew_vec_pop_owned" | "hew_vec_clone_owned" => 1,
         _ => {
             return Err(CodegenError::FailClosed(format!(
@@ -16757,6 +16777,88 @@ fn lower_owned_vec_direct_call(
                 .builder
                 .build_store(dest_ptr, new_vec_ptr)
                 .llvm_ctx("hew_vec_clone_owned store")?;
+        }
+        "hew_vec_contains_owned" => {
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_contains_owned returns bool; producer must supply a dest".into(),
+                )
+            })?;
+            let (val_ptr, elem_ty) = place_pointer(fn_ctx, args[1])?;
+            let elem_resolved_ty = place_resolved_ty(fn_ctx, args[1])?;
+            let thunk_fn =
+                crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty, Some(elem_resolved_ty))?;
+            let thunk_ptr = thunk_fn.as_global_value().as_pointer_value();
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), val_ptr.into(), thunk_ptr.into()],
+                    "hew_vec_contains_owned_call",
+                )
+                .llvm_ctx("hew_vec_contains_owned call")?;
+            let raw_i32 = call
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("hew_vec_contains_owned returned void".into())
+                })?
+                .into_int_value();
+            let (dest_ptr, dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            if !matches!(dest_ty, BasicTypeEnum::IntType(_)) {
+                return Err(CodegenError::FailClosed(format!(
+                    "hew_vec_contains_owned dest must be an integer bool slot, got {dest_ty:?}"
+                )));
+            }
+            let nz = fn_ctx
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    raw_i32,
+                    fn_ctx.ctx.i32_type().const_zero(),
+                    "contains_owned_nz",
+                )
+                .llvm_ctx("contains_owned compare")?;
+            let widened = zext_bool_i1_to_dest(fn_ctx, nz, dest_ty, "contains_owned")?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, widened)
+                .llvm_ctx("contains_owned store")?;
+        }
+        "hew_vec_slice_range_owned" => {
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_slice_range_owned returns a Vec; producer must supply a dest".into(),
+                )
+            })?;
+            let start = load_int_arg(
+                fn_ctx,
+                args[1],
+                fn_ctx.ctx.i64_type(),
+                "hew_vec_slice_range_owned_arg1",
+            )?;
+            let end = load_int_arg(
+                fn_ctx,
+                args[2],
+                fn_ctx.ctx.i64_type(),
+                "hew_vec_slice_range_owned_arg2",
+            )?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), start.into(), end.into()],
+                    "hew_vec_slice_range_owned_call",
+                )
+                .llvm_ctx("hew_vec_slice_range_owned call")?;
+            let new_vec_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_vec_slice_range_owned returned void".into())
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, new_vec_ptr)
+                .llvm_ctx("hew_vec_slice_range_owned store")?;
         }
         _ => unreachable!("arity gate above restricts callee to the owned Vec family"),
     }
@@ -18109,7 +18211,7 @@ fn lower_bool_vec_direct_call(
     Ok(())
 }
 
-fn layout_vec_element_needs_descriptor<'ctx>(
+pub(crate) fn layout_vec_element_needs_descriptor<'ctx>(
     fn_ctx: &FnCtx<'_, 'ctx>,
     elem_ty: &ResolvedTy,
 ) -> CodegenResult<Option<BasicTypeEnum<'ctx>>> {
@@ -18286,7 +18388,9 @@ fn lower_vec_constructor_call(
         ResolvedTy::I16 => VecCtor::Plain("hew_vec_new_i16"),
         ResolvedTy::U16 => VecCtor::Plain("hew_vec_new_u16"),
         ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => VecCtor::Plain("hew_vec_new"),
-        ResolvedTy::I64 | ResolvedTy::U64 => VecCtor::Plain("hew_vec_new_i64"),
+        ResolvedTy::I64 | ResolvedTy::U64 | ResolvedTy::Isize | ResolvedTy::Usize => {
+            VecCtor::Plain("hew_vec_new_i64")
+        }
         ResolvedTy::F32 => VecCtor::Plain("hew_vec_new_f32"),
         ResolvedTy::F64 => VecCtor::Plain("hew_vec_new_f64"),
         ResolvedTy::String => VecCtor::Plain("hew_vec_new_str"),
@@ -18414,6 +18518,11 @@ pub(crate) fn lower_layout_vec_direct_call(
         // The hidden `layout` operand is synthesized by codegen from the
         // Vec element type.
         "hew_vec_clone_layout" => 1,
+        // Range-slice for BitCopy layout-backed elements.
+        // Source-level args: receiver Vec handle + start + end.
+        // The hidden `layout` operand is synthesized by codegen from the
+        // Vec element type.
+        "hew_vec_slice_range_layout" => 3,
         _ => {
             return Err(CodegenError::FailClosed(format!(
                 "lower_layout_vec_direct_call called with non-layout Vec symbol `{callee}`"
@@ -18722,6 +18831,66 @@ pub(crate) fn lower_layout_vec_direct_call(
                 .builder
                 .build_store(dest_ptr, new_vec_ptr)
                 .llvm_ctx("hew_vec_clone_layout store")?;
+        }
+        "hew_vec_slice_range_layout" => {
+            // BitCopy range-slice for layout-backed Vec elements.
+            // Runtime ABI: `*mut HewVec hew_vec_slice_range_layout(
+            //   const HewVec* v, i64 start, i64 end, const HewTypeLayout* layout)`.
+            // The returned vec preserves the same thunk-less layout descriptor.
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_vec_slice_range_layout returns a Vec; producer must supply a dest".into(),
+                )
+            })?;
+            let start = load_int_arg(
+                fn_ctx,
+                args[1],
+                fn_ctx.ctx.i64_type(),
+                "hew_vec_slice_range_layout_arg1",
+            )?;
+            let end = load_int_arg(
+                fn_ctx,
+                args[2],
+                fn_ctx.ctx.i64_type(),
+                "hew_vec_slice_range_layout_arg2",
+            )?;
+            let vec_resolved_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
+            let elem_hew_ty = match &vec_resolved_ty {
+                ResolvedTy::Named {
+                    name,
+                    args: vec_args,
+                    ..
+                } if name == "Vec" && vec_args.len() == 1 => vec_args[0].clone(),
+                other => {
+                    return Err(CodegenError::FailClosed(format!(
+                        "hew_vec_slice_range_layout: arg0 must be Vec<T>, got {other:?}"
+                    )));
+                }
+            };
+            let layout_elem_ty = layout_vec_element_needs_descriptor(fn_ctx, &elem_hew_ty)?
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "hew_vec_slice_range_layout: element type {elem_hew_ty:?} \
+                         is not a layout-descriptor-backed record/tuple"
+                    ))
+                })?;
+            let layout_ptr = crate::layout::layout_descriptor_ptr(fn_ctx, layout_elem_ty, "slice")?;
+            let call = fn_ctx
+                .builder
+                .build_call(
+                    fv,
+                    &[vec_ptr.into(), start.into(), end.into(), layout_ptr.into()],
+                    "hew_vec_slice_range_layout_call",
+                )
+                .llvm_ctx("hew_vec_slice_range_layout call")?;
+            let new_vec_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_vec_slice_range_layout returned void".into())
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, new_vec_ptr)
+                .llvm_ctx("hew_vec_slice_range_layout store")?;
         }
         _ => unreachable!("matched above"),
     }

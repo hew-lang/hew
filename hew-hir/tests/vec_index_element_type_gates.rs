@@ -7,18 +7,16 @@
 //! lowering.
 //!
 //! Scalar-index allowlist: bool, char, i8/u8/i16/u16, i32/u32, i64/u64,
-//! f32/f64, `String`
+//! isize/usize, f32/f64, `string`
 //! (retained/header-aware owner via `hew_vec_get_str`, balanced by the
 //! caller's scope-exit `hew_string_drop` — the same substrate the Vec
 //! for-in path uses), tuples, and `Named { .. }` (user-defined types
 //! dispatched via `hew_vec_get_ptr` for heap handles or
-//! `hew_vec_get_layout` for `BitCopy` value records). Platform-sized scalars
-//! (isize/usize) remain fail-closed pending target-width threading.
+//! `hew_vec_get_layout`/`hew_vec_get_owned` for value records).
 //! Range-slice allowlist: bool, char, i8/u8/i16/u16, i32/u32, i64/u64,
-//! f32/f64, and `String`
-//! (`hew_vec_slice_range_str` copies header-aware elements into the fresh vec).
-//! Named elements stay fail-closed because `hew_vec_slice_range_ptr` shallow-copies
-//! element pointers into a layout-less owned Vec.
+//! isize/usize, f32/f64, `string`, tuples, type parameters, and user-defined
+//! named elements. Strings retain header-aware elements into the fresh vec;
+//! owned records/tuples route through the descriptor-backed owned slice ABI.
 
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx, TargetArch};
 use hew_types::{module_registry::ModuleRegistry, Checker};
@@ -73,12 +71,12 @@ fn slice_diagnostics(out: &hew_hir::LowerOutput) -> Vec<String> {
 
 #[test]
 fn vec_index_unsupported_element_types_rejected() {
-    // Scalar index on Vec<isize> must emit a VecIndexElementTypeUnsupported
-    // diagnostic because platform-sized element widths are still target-dependent
-    // at this layer. Narrow fixed-width scalars are accepted below.
+    // Scalar index on Vec<duration> must emit a
+    // VecIndexElementTypeUnsupported diagnostic. Platform-sized integers are
+    // accepted below; duration still has no Vec element ABI.
     let out = lower(
         r"
-        fn pick_isize(xs: Vec<isize>, i: i64) -> isize { xs[i] }
+        fn pick_duration(xs: Vec<duration>, i: i64) -> duration { xs[i] }
         ",
     );
 
@@ -90,12 +88,12 @@ fn vec_index_unsupported_element_types_rejected() {
         out.diagnostics
     );
     assert!(
-        diags.contains(&"isize".to_string()),
-        "missing isize: {diags:?}"
+        diags.contains(&"duration".to_string()),
+        "missing duration: {diags:?}"
     );
 
     // The diagnostic note should enumerate the supported element-type
-    // allowlist — including String, which is now a supported scalar index
+    // allowlist — including string, which is a supported scalar index
     // element — so users know what works.
     for d in &out.diagnostics {
         if matches!(
@@ -106,9 +104,11 @@ fn vec_index_unsupported_element_types_rejected() {
                 d.note.contains("i32")
                     && d.note.contains("i64")
                     && d.note.contains("f64")
-                    && d.note.contains("String"),
+                    && d.note.contains("string")
+                    && d.note.contains("isize")
+                    && d.note.contains("usize"),
                 "diagnostic note must enumerate supported element types \
-                 (including String): {:?}",
+                 (including string/isize/usize): {:?}",
                 d.note
             );
         }
@@ -122,36 +122,31 @@ fn vec_index_unsupported_element_types_rejected() {
 
 #[test]
 fn vec_slice_unsupported_element_types_rejected() {
-    // Range-slice on Vec<record>, Vec<enum>, and Vec<isize> each emit a
-    // VecSliceElementTypeUnsupported diagnostic.
+    // Range-slice on element ABIs with no slice substrate still emits a
+    // VecSliceElementTypeUnsupported diagnostic. Named records/enums and
+    // platform-sized integers are accepted by the G5 slice substrate below.
     let out = lower(
         r"
-        record UserRecord { x: i32 }
-        enum Colour { Red; Green; }
-        fn pick_named(xs: Vec<UserRecord>) -> Vec<UserRecord> { xs[0..1] }
-        fn pick_enum(xs: Vec<Colour>) -> Vec<Colour> { xs[0..1] }
-        fn pick_isize(xs: Vec<isize>) -> Vec<isize> { xs[0..1] }
+        fn double(x: i64) -> i64 { x * 2 }
+        fn pick_duration(xs: Vec<duration>) -> Vec<duration> { xs[0..1] }
+        fn pick_fn(xs: Vec<fn(i64) -> i64>) -> Vec<fn(i64) -> i64> { xs[0..1] }
         ",
     );
 
     let diags = slice_diagnostics(&out);
     assert_eq!(
         diags.len(),
-        3,
-        "expected exactly 3 VecSliceElementTypeUnsupported diagnostics, got: {:#?}",
+        2,
+        "expected exactly 2 VecSliceElementTypeUnsupported diagnostics, got: {:#?}",
         out.diagnostics
     );
     assert!(
-        diags.contains(&"UserRecord".to_string()),
-        "missing UserRecord: {diags:?}"
+        diags.contains(&"duration".to_string()),
+        "missing duration: {diags:?}"
     );
     assert!(
-        diags.contains(&"Colour".to_string()),
-        "missing Colour: {diags:?}"
-    );
-    assert!(
-        diags.contains(&"isize".to_string()),
-        "missing isize: {diags:?}"
+        diags.contains(&"fn(i64) -> i64".to_string()),
+        "missing function element: {diags:?}"
     );
 
     for d in &out.diagnostics {
@@ -160,9 +155,12 @@ fn vec_slice_unsupported_element_types_rejected() {
             HirDiagnosticKind::VecSliceElementTypeUnsupported { .. }
         ) {
             assert!(
-                d.note.contains("String") && d.note.contains("i32"),
+                d.note.contains("string")
+                    && d.note.contains("i32")
+                    && d.note.contains("isize")
+                    && d.note.contains("user-defined types"),
                 "range-slice diagnostic note must enumerate supported \
-                 element types (including String): {:?}",
+                 element types (including string/isize/named): {:?}",
                 d.note
             );
         }
@@ -178,8 +176,8 @@ fn vec_slice_unsupported_element_types_rejected() {
 
 #[test]
 fn vec_index_supported_element_types_accepted() {
-    // Scalar index on bool / char / narrow ints / i32 / i64 / f32 / f64 / String / tuple /
-    // user-defined Named type must NOT fire. Bool dispatches to
+    // Scalar index on bool / char / narrow ints / i32 / i64 / isize / usize /
+    // f32 / f64 / string / tuple / user-defined Named type must NOT fire. Bool dispatches to
     // hew_vec_get_bool; char reuses hew_vec_get_i32; String routes to the
     // retained hew_vec_get_str owner (balanced by scope-exit hew_string_drop);
     // tuples route through hew_vec_get_layout.
@@ -194,6 +192,8 @@ fn vec_index_supported_element_types_accepted() {
         fn pick_u16(xs: Vec<u16>, i: i64) -> u16 { xs[i] }
         fn pick_i32(xs: Vec<i32>, i: i64) -> i32 { xs[i] }
         fn pick_i64(xs: Vec<i64>, i: i64) -> i64 { xs[i] }
+        fn pick_isize(xs: Vec<isize>, i: i64) -> isize { xs[i] }
+        fn pick_usize(xs: Vec<usize>, i: i64) -> usize { xs[i] }
         fn pick_f32(xs: Vec<f32>, i: i64) -> f32 { xs[i] }
         fn pick_f64(xs: Vec<f64>, i: i64) -> f64 { xs[i] }
         fn pick_string(xs: Vec<string>, i: i64) -> string { xs[i] }
@@ -218,17 +218,25 @@ fn vec_index_supported_element_types_accepted() {
 
 #[test]
 fn vec_slice_supported_element_types_accepted() {
-    // Range-slice on bool / char / narrow widths / i32 / f64 / String must NOT fire.
+    // Range-slice on scalar widths, string, tuples, and named records/enums must NOT fire.
     let out = lower(
         r"
+        record UserRecord { x: i32 }
+        enum Colour { Red; Green; }
         fn slice_bool(xs: Vec<bool>) -> Vec<bool> { xs[0..2] }
         fn slice_char(xs: Vec<char>) -> Vec<char> { xs[0..2] }
         fn slice_i8(xs: Vec<i8>) -> Vec<i8> { xs[0..2] }
         fn slice_u16(xs: Vec<u16>) -> Vec<u16> { xs[0..2] }
         fn slice_i32(xs: Vec<i32>) -> Vec<i32> { xs[0..2] }
+        fn slice_i64(xs: Vec<i64>) -> Vec<i64> { xs[0..2] }
+        fn slice_isize(xs: Vec<isize>) -> Vec<isize> { xs[0..2] }
+        fn slice_usize(xs: Vec<usize>) -> Vec<usize> { xs[0..2] }
         fn slice_f32(xs: Vec<f32>) -> Vec<f32> { xs[1..3] }
         fn slice_f64(xs: Vec<f64>) -> Vec<f64> { xs[1..3] }
         fn slice_string(xs: Vec<string>) -> Vec<string> { xs[2..4] }
+        fn slice_tuple(xs: Vec<(i64, i64)>) -> Vec<(i64, i64)> { xs[0..1] }
+        fn slice_named(xs: Vec<UserRecord>) -> Vec<UserRecord> { xs[0..1] }
+        fn slice_enum(xs: Vec<Colour>) -> Vec<Colour> { xs[0..1] }
         ",
     );
 
@@ -269,13 +277,13 @@ fn vec_index_diag_for_elem(out: &hew_hir::LowerOutput, elem: &str) -> bool {
 
 #[test]
 fn vec_index_in_machine_transition_body_rejected() {
-    // Vec<isize> scalar-indexed inside a transition body must trip the gate.
+    // Vec<duration> scalar-indexed inside a transition body must trip the gate.
     // Transition bodies are type-checked (registration.rs ~ check_against),
     // so `tc.expr_types` carries the container type at the indexing site.
-    // isize is still unsupported until target-width threading reaches MIR.
+    // duration still has no Vec element ABI.
     let out = lower(
         r"
-        fn make_isizes() -> Vec<isize> { [] }
+        fn make_durations() -> Vec<duration> { [] }
 
         machine M {
             events {
@@ -286,8 +294,8 @@ fn vec_index_in_machine_transition_body_rejected() {
             state Idle;
             state Done;
             on Go: Idle => Done {
-                let xs: Vec<isize> = make_isizes();
-                let _: isize = xs[0];
+                let xs: Vec<duration> = make_durations();
+                let _: duration = xs[0];
                 Done
             }
             on Go: Done => Done;
@@ -298,8 +306,8 @@ fn vec_index_in_machine_transition_body_rejected() {
     );
 
     assert!(
-        vec_index_diag_for_elem(&out, "isize"),
-        "expected VecIndexElementTypeUnsupported(isize) inside transition body; got diagnostics: {:#?}",
+        vec_index_diag_for_elem(&out, "duration"),
+        "expected VecIndexElementTypeUnsupported(duration) inside transition body; got diagnostics: {:#?}",
         out.diagnostics
     );
     assert!(
@@ -310,13 +318,13 @@ fn vec_index_in_machine_transition_body_rejected() {
 
 #[test]
 fn vec_index_in_machine_transition_guard_rejected() {
-    // Vec<isize> scalar-indexed inside a transition `when` guard must trip
+    // Vec<duration> scalar-indexed inside a transition `when` guard must trip
     // the gate. Guards are type-checked against `Ty::Bool`
     // (registration.rs:2663 check_against), so `tc.expr_types` carries
-    // the container type at the indexing site. isize remains fail-closed.
+    // the container type at the indexing site. duration remains fail-closed.
     let out = lower(
         r"
-        fn make_isizes() -> Vec<isize> { [] }
+        fn make_durations() -> Vec<duration> { [] }
 
         machine M {
             events {
@@ -326,7 +334,7 @@ fn vec_index_in_machine_transition_guard_rejected() {
 
             state Idle;
             state Done;
-            on Go: Idle => Done when make_isizes()[0] == 0 { Done }
+            on Go: Idle => Done when make_durations()[0].is_zero() { Done }
             on Go: Done => Done;
             on Reset: Done => Idle;
             on Reset: Idle => Idle;
@@ -335,8 +343,8 @@ fn vec_index_in_machine_transition_guard_rejected() {
     );
 
     assert!(
-        vec_index_diag_for_elem(&out, "isize"),
-        "expected VecIndexElementTypeUnsupported(isize) inside transition guard; got diagnostics: {:#?}",
+        vec_index_diag_for_elem(&out, "duration"),
+        "expected VecIndexElementTypeUnsupported(duration) inside transition guard; got diagnostics: {:#?}",
         out.diagnostics
     );
     assert!(

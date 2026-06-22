@@ -11,9 +11,5 @@
 #
 # Format: <test_function_name>  # <root_cause>; converging lane: <lane>
 #
-# Total: 5 unique failing test function names.
-test_generic_vec_contains_i64_string_owned_record  # G5 generic Vec<T>::contains re-resolution
-test_generic_vec_isize_push_get_pop  # G5 Vec<isize> element ABI
+# Total: 1 unique failing test function name.
 test_generic_vec_iter_i64  # G5 split follow-on: Hew-level Vec<T>::iter substrate
-test_generic_vec_slice_i64_string_owned_record  # G5 generic Vec<T> range-slice ABI
-test_generic_vec_usize_push_get_pop  # G5 Vec<usize> element ABI

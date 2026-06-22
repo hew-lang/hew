@@ -92,7 +92,7 @@ pub fn vec_element_runtime_suffix<S: std::hash::BuildHasher>(
         crate::Ty::I16 => Some("i16"),
         crate::Ty::U16 => Some("u16"),
         crate::Ty::Char | crate::Ty::I32 | crate::Ty::U32 => Some("i32"),
-        crate::Ty::I64 | crate::Ty::U64 => Some("i64"),
+        crate::Ty::I64 | crate::Ty::U64 | crate::Ty::Isize | crate::Ty::Usize => Some("i64"),
         crate::Ty::F32 => Some("f32"),
         crate::Ty::F64 => Some("f64"),
         crate::Ty::String => Some("string"),
@@ -188,7 +188,8 @@ pub enum VecElementToken {
     U16,
     /// `char`/`i32`/`u32` — 32-bit integer convention (`hew_vec_*_i32`).
     I32,
-    /// `i64`/`u64` — 64-bit integers (`hew_vec_*_i64`).
+    /// `i64`/`u64` plus platform-sized `isize`/`usize` on native targets
+    /// — 64-bit integers (`hew_vec_*_i64`).
     I64,
     /// `f32` — 32-bit float (`hew_vec_*_f32`).
     F32,
@@ -290,7 +291,9 @@ pub fn vec_element_op_symbol(method: &str, token: VecElementToken) -> Option<&'s
         ("set", Ptr) => "hew_vec_set_ptr",
         ("set", Layout) => "hew_vec_set_layout",
         // `contains` has no pointer-shaped or bool overload in the runtime.
-        // Layout (value-record/tuple) elements route to the thunk variant.
+        // Plain layout (value-record/tuple) elements route to the thunk variant;
+        // owned layout elements are upgraded by the owned-element authority to
+        // `hew_vec_contains_owned` before this token table is consulted.
         // Narrow-integer types (i8/u8/i16/u16) have no `contains` overload —
         // fail closed (return None).
         ("contains", I32) => "hew_vec_contains_i32",

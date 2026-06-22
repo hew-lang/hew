@@ -494,6 +494,8 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     "hew_vec_slice_range_f64",
     "hew_vec_slice_range_i32",
     "hew_vec_slice_range_i64",
+    "hew_vec_slice_range_layout",
+    "hew_vec_slice_range_owned",
     "hew_vec_slice_range_ptr",
     "hew_vec_slice_range_str",
     // --- Trait-object dispatch diagnostics (TO-1) ---------------

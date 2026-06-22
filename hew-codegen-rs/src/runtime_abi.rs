@@ -1570,6 +1570,33 @@ pub(crate) fn lower_call_runtime_abi(
             let vec_ptr = load_duplex_handle(fn_ctx, args[0], &format!("{symbol} arg0"))?;
             let start_val = load_int_arg(fn_ctx, args[1], i64_ty, &format!("{symbol} arg1"))?;
             let end_val = load_int_arg(fn_ctx, args[2], i64_ty, &format!("{symbol} arg2"))?;
+            let mut llvm_args: Vec<BasicMetadataValueEnum> =
+                vec![vec_ptr.into(), start_val.into(), end_val.into()];
+            if symbol == "hew_vec_slice_range_layout" {
+                let vec_resolved_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
+                let elem_hew_ty = match &vec_resolved_ty {
+                    ResolvedTy::Named {
+                        name,
+                        args: vec_args,
+                        ..
+                    } if name == "Vec" && vec_args.len() == 1 => vec_args[0].clone(),
+                    other => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "hew_vec_slice_range_layout: arg0 must be Vec<T>, got {other:?}"
+                        )));
+                    }
+                };
+                let layout_elem_ty = layout_vec_element_needs_descriptor(fn_ctx, &elem_hew_ty)?
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "hew_vec_slice_range_layout: element type {elem_hew_ty:?} \
+                             is not a layout-descriptor-backed record/tuple"
+                        ))
+                    })?;
+                let layout_ptr =
+                    crate::layout::layout_descriptor_ptr(fn_ctx, layout_elem_ty, "slice")?;
+                llvm_args.push(layout_ptr.into());
+            }
             let fv = intern_runtime_decl(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
@@ -1580,7 +1607,7 @@ pub(crate) fn lower_call_runtime_abi(
                 .builder
                 .build_call(
                     fv,
-                    &[vec_ptr.into(), start_val.into(), end_val.into()],
+                    &llvm_args,
                     &format!("{symbol}_call"),
                 )
                 .llvm_ctx_with(|| format!("{symbol} call"))?;

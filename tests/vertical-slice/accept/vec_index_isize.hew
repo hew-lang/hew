@@ -1,0 +1,12 @@
+// vec-generic-index: scalar `xs[i]` on `Vec<isize>` routes through the
+// platform-sized element ABI, sharing the i64 runtime lane on native targets.
+fn pick(xs: Vec<isize>, i: i64) -> isize {
+    xs[i]
+}
+
+fn main() -> i64 {
+    let xs: Vec<isize> = Vec::new();
+    xs.push(-7);
+    xs.push(11);
+    pick(xs, 1) as i64
+}

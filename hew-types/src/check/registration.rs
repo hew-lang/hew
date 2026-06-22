@@ -1542,6 +1542,8 @@ impl Checker {
         let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });
+        let type_param_bounds =
+            self.collect_type_param_bounds(td.type_params.as_ref(), td.where_clause.as_ref());
 
         // Reject duplicate type parameter names — same check as `register_type_decl`.
         {
@@ -1594,6 +1596,7 @@ impl Checker {
                                 variant.name.clone(),
                                 FnSig {
                                     type_params: type_param_names.clone(),
+                                    type_param_bounds: type_param_bounds.clone(),
                                     return_type,
                                     ..FnSig::default()
                                 },
@@ -1614,6 +1617,7 @@ impl Checker {
                                 variant.name.clone(),
                                 FnSig {
                                     type_params: type_param_names.clone(),
+                                    type_param_bounds: type_param_bounds.clone(),
                                     params: variant_tys,
                                     return_type,
                                     ..FnSig::default()
@@ -1646,6 +1650,7 @@ impl Checker {
             kind,
             name: td.name.clone(),
             type_params: type_param_names,
+            bounds: type_param_bounds,
             fields,
             field_order,
             variants,
@@ -1909,6 +1914,7 @@ impl Checker {
             kind,
             name: td.name.clone(),
             type_params: type_param_names.clone(),
+            bounds: type_param_bounds,
             fields,
             field_order,
             variants,
@@ -2053,6 +2059,7 @@ impl Checker {
             kind: TypeDefKind::Record,
             name: rd.name.clone(),
             type_params: type_param_names.clone(),
+            bounds: type_param_bounds,
             fields,
             field_order,
             variants: HashMap::new(),
@@ -2561,6 +2568,7 @@ impl Checker {
             kind: TypeDefKind::Machine,
             name: md.name.clone(),
             type_params: type_param_names.clone(),
+            bounds: type_param_bounds.clone(),
             fields: HashMap::new(),
             field_order: vec![],
             variants,
@@ -2608,6 +2616,7 @@ impl Checker {
             kind: TypeDefKind::Enum,
             name: event_type_name.clone(),
             type_params: type_param_names.clone(),
+            bounds: type_param_bounds.clone(),
             fields: HashMap::new(),
             field_order: vec![],
             variants: event_variants,
@@ -3510,11 +3519,13 @@ impl Checker {
         // registration path; actors without type params get an empty vec.
         let type_param_names: Vec<String> =
             ad.type_params.iter().map(|tp| tp.name.clone()).collect();
+        let type_param_bounds = self.collect_type_param_bounds(Some(&ad.type_params), None);
 
         let type_def = TypeDef {
             kind: TypeDefKind::Actor,
             name: identity.to_string(),
             type_params: type_param_names,
+            bounds: type_param_bounds.clone(),
             fields,
             field_order,
             variants: HashMap::new(),
@@ -3527,7 +3538,6 @@ impl Checker {
         // The bounds table is keyed by actor name and consulted at spawn sites
         // by `enforce_actor_instantiation_bounds`. Non-generic actors produce
         // an empty map; the helper short-circuits on empty `type_args` anyway.
-        let type_param_bounds = self.collect_type_param_bounds(Some(&ad.type_params), None);
         if !type_param_bounds.is_empty() {
             self.actor_type_param_bounds
                 .insert(identity.to_string(), type_param_bounds);
@@ -3635,6 +3645,7 @@ impl Checker {
             },
             name: wd.name.clone(),
             type_params: vec![],
+            bounds: HashMap::new(),
             fields,
             field_order,
             variants,

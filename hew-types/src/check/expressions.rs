@@ -2842,14 +2842,13 @@ impl Checker {
                             })
                             .collect();
                         self.record_concrete_record_init_type_args(span, &resolved_args);
-                        // Machine bound enforcement on coercion-arm ctor:
-                        // when the expected type pins a machine instantiation
-                        // (e.g. `var m: Holder<File> = Active { … }`), the
-                        // arg vector built from the coercion is the
-                        // substitution the user is committing to. Route
-                        // through the canonical helper; non-machine names
-                        // short-circuit at the table lookup.
-                        self.enforce_machine_instantiation_bounds(name, &resolved_args, span);
+                        // Declaration-bound enforcement on coercion-arm ctor:
+                        // when the expected type pins a nominal instantiation
+                        // (e.g. `let b: Box<Plain> = Box { … }`), the arg
+                        // vector built from the coercion is the substitution
+                        // the user is committing to. Route through the
+                        // canonical helper; bound-free names short-circuit.
+                        self.enforce_type_def_instantiation_bounds(name, &resolved_args, span);
                         self.record_type(span, expected);
                         return expected.clone();
                     }
@@ -2996,7 +2995,7 @@ impl Checker {
                                 // enum name carrier IS the machine name when
                                 // the expected type is a machine instantiation
                                 // (`var m: Holder<File> = Holder::Active { … }`).
-                                self.enforce_machine_instantiation_bounds(
+                                self.enforce_type_def_instantiation_bounds(
                                     expected_enum_name,
                                     &resolved_args,
                                     span,
@@ -3081,6 +3080,7 @@ impl Checker {
                 Expr::Identifier(name),
                 Ty::Named {
                     name: expected_type_name,
+                    args: expected_args,
                     ..
                 },
             ) => {
@@ -3089,6 +3089,11 @@ impl Checker {
                     .and_then(|td| td.variants.get(name.as_str()).cloned())
                     .is_some_and(|v| matches!(v, VariantDef::Unit));
                 if is_unit_variant {
+                    self.enforce_type_def_instantiation_bounds(
+                        expected_type_name,
+                        expected_args,
+                        span,
+                    );
                     self.record_type(span, expected);
                     expected.clone()
                 } else {
@@ -5188,7 +5193,7 @@ impl Checker {
                             // inherits enforcement at the canonical seam
                             // rather than re-litigating bound checking at a
                             // sibling site.
-                            self.enforce_machine_instantiation_bounds(&child_type, &[], span);
+                            self.enforce_type_def_instantiation_bounds(&child_type, &[], span);
                             return Ty::local_pid(Ty::Named {
                                 builtin: None,
                                 name: child_type,
@@ -6154,14 +6159,11 @@ impl Checker {
             // is enforced at the output boundary by
             // `validate_record_init_type_args_output_contract` in `admissibility.rs`.
             self.record_concrete_record_init_type_args(span, &type_args);
-            // Defense-in-depth bound enforcement on the plain
-            // struct-init path. Machines never lower to this branch
-            // (their ctors are enum-variant initialisations handled
-            // below), but the helper short-circuits cleanly for
-            // non-machine names and forwards-compats any future
-            // language change that admits direct machine-name
-            // initialisation.
-            self.enforce_machine_instantiation_bounds(name, &type_args, span);
+            // Declaration-bound enforcement on the plain struct-init path.
+            // The helper short-circuits cleanly for bound-free names and
+            // enforces the TypeDef-owned bound map for every generic nominal
+            // whose arguments were inferred from the fields above.
+            self.enforce_type_def_instantiation_bounds(name, &type_args, span);
             Ty::Named {
                 builtin: None,
                 name: name.to_string(),
@@ -6282,14 +6284,11 @@ impl Checker {
             // Emit unconditionally; see the struct-init branch above for the
             // boundary-prune rationale and validator location.
             self.record_concrete_record_init_type_args(span, &type_args);
-            // Enforce trait bounds declared on the machine's generic
-            // type parameters via the canonical helper. Non-machine
-            // carriers (enum / struct / record) are absent from
-            // `machine_type_param_bounds`, so the helper short-circuits
-            // for them; this keeps brace-init the single bound-check
-            // entry point for machine-state initialisation rather than
-            // forking the table lookup at each call site.
-            self.enforce_machine_instantiation_bounds(&enum_name, &type_args, span);
+            // Enforce trait bounds declared on the enum's generic type
+            // parameters via the canonical nominal helper. This keeps
+            // struct-variant brace init on the same TypeDef-bound authority as
+            // annotations, tuple variants, and plain struct/record init.
+            self.enforce_type_def_instantiation_bounds(&enum_name, &type_args, span);
             Ty::Named {
                 builtin: None,
                 name: enum_name,

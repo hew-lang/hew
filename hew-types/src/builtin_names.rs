@@ -605,6 +605,7 @@ pub fn builtin_type_def(kind: BuiltinNamedType) -> &'static TypeDef {
                         } else {
                             vec!["T".to_string()]
                         },
+                        bounds: HashMap::new(),
                         fields: HashMap::new(),
                         variants: HashMap::new(),
                         methods: builtin_method_sigs(info.kind).clone(),

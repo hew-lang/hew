@@ -1431,6 +1431,7 @@ mod tests {
             kind: TypeDefKind::Struct,
             name: "Point".to_string(),
             type_params: vec![],
+            bounds: HashMap::new(),
             fields,
             field_order: vec![],
             variants: HashMap::new(),
@@ -1455,6 +1456,7 @@ mod tests {
             kind: TypeDefKind::Enum,
             name: "Colour".to_string(),
             type_params: vec![],
+            bounds: HashMap::new(),
             fields: HashMap::new(),
             field_order: vec![],
             variants,
@@ -1473,6 +1475,7 @@ mod tests {
             kind: TypeDefKind::Struct,
             name: "Pair".to_string(),
             type_params: vec!["A".to_string(), "B".to_string()],
+            bounds: HashMap::new(),
             fields: HashMap::new(),
             field_order: vec![],
             variants: HashMap::new(),
@@ -1593,6 +1596,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: "Point".to_string(),
                 type_params: vec![],
+                bounds: HashMap::new(),
                 fields: {
                     let mut f = HashMap::new();
                     f.insert("x".to_string(), Ty::F64);

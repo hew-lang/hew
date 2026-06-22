@@ -307,6 +307,13 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/managed_record_or_enum_eq.hew" \
   "layout-managed/non-Copy" \
   "managed_record_or_enum_eq"
+# Declaration-level generic bounds are authority at nominal instantiation sites:
+# valid arguments compile, invalid arguments fail closed at the reference site.
+compile_accept "generic_decl_bound_satisfied"
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/p0b_typedecl_bound_dropped.hew" \
+  "type \`NoDisplay\` does not implement trait \`Display\` required by \`T\`" \
+  "p0b_typedecl_bound_dropped"
 run_accept_expect_stdout "payload_enum_equality"
 run_accept_expect_stdout "builtin_payload_enum_equality"
 run_accept_expect_stdout "builtin_payload_enum_inequality_result"

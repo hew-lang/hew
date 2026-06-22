@@ -1,0 +1,6 @@
+// Declaration-level generic bounds are satisfied by the instantiated argument.
+type Box<T: Display> { value: T; }
+
+fn main() {
+    let _ = Box { value: 42 };
+}

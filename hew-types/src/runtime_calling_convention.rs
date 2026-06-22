@@ -505,6 +505,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: name.to_string(),
                 type_params: vec![],
+                bounds: std::collections::HashMap::new(),
                 fields: std::collections::HashMap::new(),
                 field_order: vec![],
                 variants: std::collections::HashMap::new(),

@@ -668,6 +668,7 @@ mod tests {
                 kind: TypeDefKind::Actor,
                 name: name.to_string(),
                 type_params: vec![],
+                bounds: HashMap::new(),
                 fields,
                 variants: HashMap::new(),
                 methods: HashMap::new(),
@@ -685,6 +686,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: name.to_string(),
                 type_params: vec![],
+                bounds: HashMap::new(),
                 fields,
                 variants: HashMap::new(),
                 methods: HashMap::new(),
@@ -714,6 +716,7 @@ mod tests {
                 kind: TypeDefKind::Enum,
                 name: name.to_string(),
                 type_params: vec![],
+                bounds: HashMap::new(),
                 fields: HashMap::new(),
                 variants,
                 methods: HashMap::new(),
@@ -735,6 +738,7 @@ mod tests {
                 kind: TypeDefKind::Record,
                 name: name.to_string(),
                 type_params,
+                bounds: HashMap::new(),
                 fields,
                 variants: HashMap::new(),
                 methods: HashMap::new(),
@@ -1103,6 +1107,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: "Wrapper".to_string(),
                 type_params: vec!["T".to_string()],
+                bounds: HashMap::new(),
                 fields: HashMap::from([(
                     "target".to_string(),
                     Ty::actor_ref(Ty::Named {
@@ -1164,6 +1169,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: "Wrapper".to_string(),
                 type_params: vec!["T".to_string()],
+                bounds: HashMap::new(),
                 fields: HashMap::from([(
                     "target".to_string(),
                     Ty::actor_ref(Ty::Named {

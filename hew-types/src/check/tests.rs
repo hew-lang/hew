@@ -523,6 +523,7 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
             kind: TypeDefKind::Struct,
             name: "Point".to_string(),
             type_params: vec![],
+            bounds: HashMap::new(),
             fields: HashMap::from([("x".to_string(), Ty::I64), ("y".to_string(), Ty::I64)]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -537,6 +538,7 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
             kind: TypeDefKind::Struct,
             name: "WithFloat".to_string(),
             type_params: vec![],
+            bounds: HashMap::new(),
             fields: HashMap::from([("x".to_string(), Ty::F32)]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -551,6 +553,7 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
             kind: TypeDefKind::Struct,
             name: "Handle".to_string(),
             type_params: vec![],
+            bounds: HashMap::new(),
             fields: HashMap::new(),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -1375,6 +1378,7 @@ fn centralized_hashset_admissibility_rejects_nested_rc_elements() {
             kind: TypeDefKind::Struct,
             name: "Holder".to_string(),
             type_params: vec![],
+            bounds: HashMap::new(),
             fields: HashMap::from([("value".to_string(), Ty::rc(Ty::I64))]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -1416,6 +1420,7 @@ fn centralized_hashset_admissibility_rejects_named_enum_with_rc_payload() {
             kind: TypeDefKind::Enum,
             name: "MaybeHolder".to_string(),
             type_params: vec![],
+            bounds: HashMap::new(),
             fields: HashMap::new(),
             variants: HashMap::from([(
                 "Some".to_string(),
@@ -2216,6 +2221,7 @@ fn checker_output_contract_retains_valid_method_call_metadata() {
             kind: TypeDefKind::Struct,
             name: "Foo".to_string(),
             type_params: vec![],
+            bounds: HashMap::new(),
             fields: HashMap::new(),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -2357,6 +2363,7 @@ fn checker_output_contract_prunes_method_call_metadata_for_leaked_inference_var_
             kind: TypeDefKind::Struct,
             name: "Good".to_string(),
             type_params: vec![],
+            bounds: HashMap::new(),
             fields: HashMap::new(),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -11890,6 +11897,7 @@ fn bind_pattern_struct_fields_substitute_generic_type_args() {
             kind: TypeDefKind::Struct,
             name: "Pair".to_string(),
             type_params: vec!["T".to_string(), "U".to_string()],
+            bounds: HashMap::new(),
             fields: HashMap::from([
                 (
                     "first".to_string(),
@@ -12034,6 +12042,7 @@ fn register_generic_wrapper(checker: &mut Checker) {
             kind: TypeDefKind::Struct,
             name: "Wrapper".to_string(),
             type_params: vec!["T".to_string()],
+            bounds: HashMap::new(),
             fields,
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -12306,6 +12315,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_in_check_against_errors() {
             kind: TypeDefKind::Enum,
             name: "Keeper".to_string(),
             type_params: vec!["T".to_string()],
+            bounds: HashMap::new(),
             fields: HashMap::new(),
             variants: variant_fields,
             methods: HashMap::new(),
@@ -12367,6 +12377,7 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
             kind: TypeDefKind::Enum,
             name: "Keeper".to_string(),
             type_params: vec!["T".to_string()],
+            bounds: HashMap::new(),
             fields: HashMap::new(),
             variants: variant_fields_map,
             methods: HashMap::new(),
@@ -12649,6 +12660,177 @@ fn record_init_type_args_unknown_field_does_not_emit_entry() {
         tco.record_init_type_args.is_empty(),
         "unknown-field init should not leak a side-table entry: {:?}",
         tco.record_init_type_args
+    );
+}
+
+fn assert_decl_bound_rejects_no_display(source: &str) {
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::BoundsNotSatisfied
+                && error.message.contains("NoDisplay")
+                && error.message.contains("Display")
+        }),
+        "expected declaration-level Display bound to reject NoDisplay; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_decl_bounds_are_stored_on_type_defs() {
+    let output = check_source(
+        r"
+        type Box<T: Display> { value: T }
+        fn main() {
+            let _box = Box { value: 42 };
+        }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "valid Display instantiation should type-check: {:#?}",
+        output.errors
+    );
+    let bounds = output
+        .type_defs
+        .get("Box")
+        .and_then(|type_def| type_def.bounds.get("T"))
+        .expect("Box<T: Display> should retain the T bound on TypeDef");
+    assert_eq!(bounds, &vec!["Display".to_string()]);
+}
+
+#[test]
+fn generic_decl_bound_rejects_struct_init_reference_site() {
+    assert_decl_bound_rejects_no_display(
+        r"
+        type NoDisplay { n: i64 }
+        type Box<T: Display> { value: T }
+        fn main() {
+            let _box = Box { value: NoDisplay { n: 1 } };
+        }
+        ",
+    );
+}
+
+#[test]
+fn generic_decl_bound_rejects_type_annotation_site() {
+    assert_decl_bound_rejects_no_display(
+        r"
+        type NoDisplay { n: i64 }
+        type Box<T: Display> { value: T }
+        fn main() {
+            let _box: Box<NoDisplay> = Box { value: NoDisplay { n: 1 } };
+        }
+        ",
+    );
+}
+
+#[test]
+fn generic_decl_bound_rejects_return_type_site() {
+    assert_decl_bound_rejects_no_display(
+        r"
+        type NoDisplay { n: i64 }
+        type Box<T: Display> { value: T }
+        fn make() -> Box<NoDisplay> {
+            Box { value: NoDisplay { n: 1 } }
+        }
+        ",
+    );
+}
+
+#[test]
+fn generic_decl_bound_rejects_imported_type_annotation_site() {
+    let mut root = hew_parser::parse(
+        r"
+        import hew::boxes::{ Box };
+        type NoDisplay { n: i64 }
+        fn take(boxed: Box<NoDisplay>) -> i64 {
+            0
+        }
+        ",
+    );
+    assert!(
+        root.errors.is_empty(),
+        "root import fixture should parse cleanly: {:?}",
+        root.errors
+    );
+    let module = hew_parser::parse(
+        r"
+        pub type Box<T: Display> { value: T }
+        ",
+    );
+    assert!(
+        module.errors.is_empty(),
+        "module fixture should parse cleanly: {:?}",
+        module.errors
+    );
+    let import_decl = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("root import should exist");
+    import_decl.resolved_items = Some(module.program.items.clone());
+
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&root.program);
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::BoundsNotSatisfied
+                && error.message.contains("NoDisplay")
+                && error.message.contains("Display")
+        }),
+        "expected imported Box<T: Display> annotation to reject NoDisplay; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_decl_bound_rejects_tuple_record_constructor_site() {
+    assert_decl_bound_rejects_no_display(
+        r"
+        type NoDisplay { n: i64 }
+        record Wrap<T: Display>(T);
+        fn main() {
+            let _wrap = Wrap(NoDisplay { n: 1 });
+        }
+        ",
+    );
+}
+
+#[test]
+fn generic_decl_bound_rejects_enum_tuple_variant_constructor_site() {
+    assert_decl_bound_rejects_no_display(
+        r"
+        type NoDisplay { n: i64 }
+        enum Maybe<T: Display> {
+            Some(T);
+            None;
+        }
+        fn main() {
+            let _maybe = Maybe::Some(NoDisplay { n: 1 });
+        }
+        ",
+    );
+}
+
+#[test]
+fn generic_decl_bound_rejects_enum_struct_variant_constructor_site() {
+    assert_decl_bound_rejects_no_display(
+        r"
+        type NoDisplay { n: i64 }
+        enum Maybe<T: Display> {
+            Some { value: T };
+            None;
+        }
+        fn main() {
+            let _maybe = Maybe::Some { value: NoDisplay { n: 1 } };
+        }
+        ",
     );
 }
 
@@ -13138,6 +13320,7 @@ fn make_test_type_def(
         kind: TypeDefKind::Struct,
         name: name.to_string(),
         type_params,
+        bounds: HashMap::new(),
         fields: HashMap::new(),
         variants: HashMap::new(),
         methods,
@@ -14697,6 +14880,7 @@ fn structural_hardening_qualified_trait_name_matches() {
         kind: TypeDefKind::Struct,
         name: "Speaker".to_string(),
         type_params: vec![],
+        bounds: HashMap::new(),
         fields: HashMap::new(),
         variants: HashMap::new(),
         methods: {
@@ -14732,6 +14916,7 @@ fn structural_hardening_qualified_type_name_matches() {
         kind: TypeDefKind::Struct,
         name: "Speaker".to_string(),
         type_params: vec![],
+        bounds: HashMap::new(),
         fields: HashMap::new(),
         variants: HashMap::new(),
         methods: {
@@ -14767,6 +14952,7 @@ fn structural_hardening_unknown_module_qualifier_is_rejected() {
         kind: TypeDefKind::Struct,
         name: "Speaker".to_string(),
         type_params: vec![],
+        bounds: HashMap::new(),
         fields: HashMap::new(),
         variants: HashMap::new(),
         methods: {

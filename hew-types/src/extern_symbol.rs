@@ -584,6 +584,7 @@ mod tests {
                 kind: TypeDefKind::Struct,
                 name: "Vec".to_string(),
                 type_params: vec!["T".to_string()],
+                bounds: HashMap::new(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
                 methods: HashMap::new(),

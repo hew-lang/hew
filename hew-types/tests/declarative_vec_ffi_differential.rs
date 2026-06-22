@@ -87,6 +87,7 @@ fn vec_handle_type_defs() -> HashMap<String, TypeDef> {
             kind: TypeDefKind::Struct,
             name: "Vec".to_string(),
             type_params: vec!["T".to_string()],
+            bounds: HashMap::new(),
             fields: HashMap::new(),
             field_order: vec![],
             variants: HashMap::new(),

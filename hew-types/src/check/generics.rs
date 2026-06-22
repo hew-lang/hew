@@ -285,6 +285,51 @@ impl Checker {
         instantiated
     }
 
+    /// Canonical declaration-bound enforcement for nominal generic types.
+    ///
+    /// `TypeDef.bounds` is the checker authority for bounds declared on
+    /// nominal declarations (`type` / `record` / `enum` / actor / machine).
+    /// Every checker path that builds a `Ty::Named` from a user-authored
+    /// nominal with substituted type arguments routes here: annotations,
+    /// returns, imports, struct init, tuple-record constructors, and enum
+    /// variant constructors. Names without a registered `TypeDef`, monomorphic
+    /// names, and declarations without bounds are no-ops.
+    pub(super) fn enforce_type_def_instantiation_bounds(
+        &mut self,
+        type_name: &str,
+        type_args: &[Ty],
+        span: &Span,
+    ) {
+        if type_args.is_empty() {
+            return;
+        }
+        let Some(type_def) = self.lookup_type_def(type_name) else {
+            return;
+        };
+        if type_def.bounds.is_empty() {
+            self.enforce_machine_instantiation_bounds(type_name, type_args, span);
+            return;
+        }
+        let resolved_args: Vec<Ty> = type_args
+            .iter()
+            .map(|arg| self.subst.resolve(arg))
+            .collect();
+        let dedup_key = (
+            type_def.name.clone(),
+            resolved_args,
+            SpanKey::in_module(span, self.current_module_idx),
+        );
+        if !self.reported_type_def_bound_violations.insert(dedup_key) {
+            return;
+        }
+        self.enforce_named_type_param_bounds(
+            &type_def.type_params,
+            &type_def.bounds,
+            type_args,
+            span,
+        );
+    }
+
     /// Canonical machine-instantiation bound-enforcement entry point.
     /// Every checker path that builds a `Ty::Named` whose `name` is a
     /// registered machine and whose `args` carry substituted concrete

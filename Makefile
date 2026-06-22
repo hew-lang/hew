@@ -536,6 +536,9 @@ test-all: test test-stdlib test-hew test-ux-examples test-surface-examples
 # undefined-symbol errors on a target dir carried across commits.
 test-rust: stdlib wasm-runtime runtime
 	@if command -v cargo-nextest >/dev/null 2>&1 || cargo nextest --version >/dev/null 2>&1; then \
+		cargo nextest run --workspace --profile ci --no-run; \
+		test -f target/debug/libhew.a; \
+		scripts/check-libhew-fresh.sh; \
 		cargo nextest run --workspace --profile ci; \
 	else \
 		echo "WARNING: cargo-nextest not installed — per-test timeouts are not enforced." >&2; \

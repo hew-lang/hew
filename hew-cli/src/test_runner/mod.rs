@@ -86,12 +86,12 @@ pub fn cmd_test(args: &crate::args::TestArgs) {
 
     if discovered_files == 0 {
         eprintln!("No test files found.");
-        std::process::exit(0);
+        std::process::exit(if args.allow_empty { 0 } else { 1 });
     }
 
     if all_tests.is_empty() {
         eprintln!("No test functions found.");
-        std::process::exit(0);
+        std::process::exit(if args.allow_empty { 0 } else { 1 });
     }
 
     // Detect and build FFI staticlib if this is an ecosystem package with

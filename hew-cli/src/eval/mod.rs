@@ -50,7 +50,7 @@ pub struct EvalJsonOutput {
 }
 
 /// Outcome category for [`EvalJsonOutput`].
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvalStatus {
     Ok,
@@ -190,12 +190,16 @@ fn emit_json_eval(
         EvalRequest::Repl => unreachable!("validated before JSON evaluation"),
     };
 
-    // Always exit 0 when --json is active: the structured `status` field
-    // carries the outcome; callers must not rely on the process exit code.
+    let process_exit_code = if result.status == EvalStatus::Ok {
+        0
+    } else {
+        1
+    };
     println!(
         "{}",
         serde_json::to_string(&result).expect("JSON serialization is infallible")
     );
+    std::process::exit(process_exit_code);
 }
 
 fn capture_json_eval<F>(run: F) -> EvalJsonOutput

@@ -193,9 +193,94 @@ fn run_timeout_exit_code_is_non_zero() {
         .current_dir(dir.path());
     let output = support::run_bounded_command(command, format!("hew run {}", path.display()));
 
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(124));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Error: program timed out after 1s"));
+}
+
+#[test]
+fn run_native_compile_error_exits_one() {
+    let dir = support::tempdir();
+    let path = dir.path().join("compile_err.hew");
+    std::fs::write(
+        &path,
+        "fn main() {\n    let _ = undefined_symbol_xyz();\n}\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("run")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "hew run compile error should exit 1, not an internal sentinel; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn run_compile_error_exit_matches_check() {
+    let dir = support::tempdir();
+    let path = dir.path().join("compile_err.hew");
+    std::fs::write(
+        &path,
+        "fn main() {\n    let _ = undefined_symbol_xyz();\n}\n",
+    )
+    .unwrap();
+
+    let run = Command::new(hew_binary())
+        .arg("run")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let check = Command::new(hew_binary())
+        .arg("check")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert_eq!(check.status.code(), Some(1));
+    assert_eq!(
+        run.status.code(),
+        check.status.code(),
+        "hew run and hew check should use the same compile-error exit code; run stderr: {}\ncheck stderr: {}",
+        String::from_utf8_lossy(&run.stderr),
+        String::from_utf8_lossy(&check.stderr),
+    );
+}
+
+#[test]
+fn debug_compile_error_exits_one() {
+    let dir = support::tempdir();
+    let path = dir.path().join("compile_err.hew");
+    std::fs::write(
+        &path,
+        "fn main() {\n    let _ = undefined_symbol_xyz();\n}\n",
+    )
+    .unwrap();
+
+    let output = Command::new(hew_binary())
+        .arg("debug")
+        .arg(&path)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "hew debug compile error should exit before debugger resolution with code 1; stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
 }
 
 /// On macOS, `hew run` must not emit ld64.lld "newer than target minimum"
@@ -284,7 +369,7 @@ fn main() {{
     )
     .expect("write TCP loopback fixture");
 
-    let output = run_bounded_hew_run(&path, dir.path());
+    let output = run_bounded_hew_run(&path, repo_root());
 
     assert!(
         output.status.success(),
@@ -3348,7 +3433,7 @@ fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
     let hew_src = dir.path().join("oracle.hew");
     std::fs::write(&hew_src, source).unwrap();
     let out = support::run_hew_in(
-        dir.path(),
+        repo_root(),
         &["compile", "--dump-mir", "elab", hew_src.to_str().unwrap()],
     );
     assert!(
@@ -3392,7 +3477,7 @@ fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
     let hew_src = dir.path().join("oracle.hew");
     std::fs::write(&hew_src, source).unwrap();
     let out = support::run_hew_in(
-        dir.path(),
+        repo_root(),
         &["compile", "--dump-mir", "elab", hew_src.to_str().unwrap()],
     );
     assert!(

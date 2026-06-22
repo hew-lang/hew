@@ -185,7 +185,7 @@ fn should_panic_test_fails_when_it_does_not_panic() {
 }
 
 #[test]
-fn no_test_files_in_directory_exits_zero() {
+fn no_test_files_in_directory_exits_non_zero() {
     let dir = support::tempdir();
     write_file(dir.path(), "notes/readme.txt", "not a Hew test\n");
 
@@ -197,8 +197,7 @@ fn no_test_files_in_directory_exits_zero() {
         .output()
         .unwrap();
 
-    assert!(output.status.success());
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(1));
     assert!(
         output.stdout.is_empty(),
         "stdout: {}",
@@ -210,13 +209,33 @@ fn no_test_files_in_directory_exits_zero() {
 }
 
 #[test]
-fn no_test_functions_found_exits_zero() {
+fn test_zero_functions_exits_nonzero() {
     let output = run_suite(
         &[("helpers_test.hew", "fn helper() -> i64 {\n    42\n}\n")],
         &["--no-color"],
     );
 
-    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        output.stdout.is_empty(),
+        "stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("No test functions found."),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn test_zero_functions_allow_empty_exits_zero() {
+    let output = run_suite(
+        &[("helpers_test.hew", "fn helper() -> i64 {\n    42\n}\n")],
+        &["--no-color", "--allow-empty"],
+    );
+
     assert_eq!(output.status.code(), Some(0));
     assert!(
         output.stdout.is_empty(),
@@ -354,9 +373,23 @@ fn missing_path_exits_non_zero() {
         .output()
         .unwrap();
 
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("path not found"));
+}
+
+#[test]
+fn test_nonexistent_path_still_exits_one() {
+    let output = Command::new(hew_binary())
+        .arg("test")
+        .arg("/no/such/path")
+        .arg("--no-color")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("path not found"), "stderr: {stderr}");
 }
 
 #[test]

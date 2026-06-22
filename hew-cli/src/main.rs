@@ -1011,7 +1011,7 @@ fn compile_temp_debug_artifact(
     input: &str,
     options: &compile::CompileOptions,
     target: &target::ExecutionTarget,
-) -> CompiledTempExecutable {
+) -> Result<CompiledTempExecutable, ()> {
     // `hew debug` launches a native debugger on the artifact, so it must carry
     // DWARF debug info — emit it even though the shared `hew run` path does not.
     compile_temp_artifact(input, create_debug_temp_artifact(target), options, true)
@@ -1021,7 +1021,7 @@ fn compile_temp_run_artifact(
     input: &str,
     options: &compile::CompileOptions,
     target: &target::ExecutionTarget,
-) -> CompiledTempExecutable {
+) -> Result<CompiledTempExecutable, ()> {
     // `hew run` is the fast-exec path; no debug info.
     compile_temp_artifact(input, create_run_temp_artifact(target), options, false)
 }
@@ -1033,12 +1033,11 @@ fn compile_temp_run_artifact(
 ///   2. Codegen emits a wasm object only (no freestanding link)
 ///   3. `link::link_executable` links against `libhew_runtime.a` for wasip1
 ///
-/// Exits 125 on compile failure (same sentinel as the native run path).
 fn compile_temp_wasi_module(
     input: &str,
     options: &compile::CompileOptions,
     target: &target::ExecutionTarget,
-) -> CompiledTempExecutable {
+) -> Result<CompiledTempExecutable, ()> {
     // Compute the target spec before allocating temp files so that an early
     // `process::exit` does not leak a temp directory.
     let target_spec =
@@ -1097,14 +1096,15 @@ fn compile_temp_wasi_module(
         })
     })();
 
-    if result.is_ok() {
-        artifact
-    } else {
-        drop(artifact);
-        if diagnostic_json::json_output_active() {
-            diagnostic_json::flush_json_diagnostics();
+    match result {
+        Ok(()) => Ok(artifact),
+        Err(()) => {
+            drop(artifact);
+            if diagnostic_json::json_output_active() {
+                diagnostic_json::flush_json_diagnostics();
+            }
+            Err(())
         }
-        std::process::exit(125);
     }
 }
 
@@ -1117,7 +1117,7 @@ fn compile_temp_artifact(
     artifact: CompiledTempExecutable,
     options: &compile::CompileOptions,
     debug: bool,
-) -> CompiledTempExecutable {
+) -> Result<CompiledTempExecutable, ()> {
     // Route through the same path as `hew build` so `hew run` honours
     // `--pkg-path` (resolving `hew::<pkg>` imports) and auto-links the native
     // (FFI) staticlibs declared by imported packages.
@@ -1142,17 +1142,15 @@ fn compile_temp_artifact(
     )
     .is_ok()
     {
-        artifact
+        Ok(artifact)
     } else {
         drop(artifact);
-        // Flush any collected JSON diagnostics before the sentinel exit. A
-        // no-op when JSON output is not active (e.g. `hew debug`).
+        // Flush any collected JSON diagnostics before the caller exits.
+        // No-op when JSON output is not active (e.g. `hew debug`).
         if diagnostic_json::json_output_active() {
             diagnostic_json::flush_json_diagnostics();
         }
-        // Exit 125 = compile failure (sentinel used by the playground to
-        // distinguish compile errors from program exit codes).
-        std::process::exit(125);
+        Err(())
     }
 }
 
@@ -1237,7 +1235,8 @@ fn cmd_run_wasi(
     target: &target::ExecutionTarget,
     timeout: Option<std::time::Duration>,
 ) -> ! {
-    let artifact = compile_temp_wasi_module(input, options, target);
+    let artifact =
+        compile_temp_wasi_module(input, options, target).unwrap_or_else(|()| std::process::exit(1));
 
     match wasi_runner::run_module(artifact.path(), &a.program_args, timeout) {
         Ok(wasi_runner::WasiRunOutcome::Exited(status)) => {
@@ -1266,7 +1265,8 @@ fn cmd_run_native(
     target: &target::ExecutionTarget,
     timeout: Option<std::time::Duration>,
 ) -> ! {
-    let artifact = compile_temp_run_artifact(input, options, target);
+    let artifact = compile_temp_run_artifact(input, options, target)
+        .unwrap_or_else(|()| std::process::exit(1));
 
     let mut command = std::process::Command::new(artifact.path());
     command.args(&a.program_args);
@@ -1404,7 +1404,8 @@ fn cmd_debug(a: &args::DebugArgs) {
     let input = a.input.display().to_string();
     let options = a.to_compile_options();
     let target = resolve_debug_target(options.target.as_deref());
-    let artifact = compile_temp_debug_artifact(&input, &options, &target);
+    let artifact = compile_temp_debug_artifact(&input, &options, &target)
+        .unwrap_or_else(|()| std::process::exit(1));
     let (debugger, debugger_args) =
         match resolve_debugger_invocation(artifact.path(), &a.program_args) {
             Ok(invocation) => invocation,

@@ -3406,6 +3406,28 @@ mod tests {
         unsafe { unregister_actor_names(crate::pid::hew_pid_make(1, 1)) };
     }
 
+    #[test]
+    fn real_scheduler_guard_drop_restores_empty_runtime_slot() {
+        let _lock = crate::scheduler::SchedTestLock::acquire();
+        assert!(
+            crate::runtime::rt_default().is_none(),
+            "test requires the runtime slot to start empty"
+        );
+
+        {
+            let _real_sched = init_real_scheduler();
+            assert!(
+                crate::runtime::rt_default().is_some(),
+                "real scheduler init must install a runtime"
+            );
+        }
+
+        assert!(
+            crate::runtime::rt_default().is_none(),
+            "dropping the real scheduler guard must restore the empty runtime slot"
+        );
+    }
+
     // ── Test-only u32 codec ──────────────────────────────────────────────
     //
     // The two-process remote-send/ask tests transmit a controlled `u32` rather

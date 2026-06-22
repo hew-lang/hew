@@ -192,15 +192,27 @@ pub fn unwrap_or_f64(r: Result<f64, string>, fallback: f64) -> f64 {
 
 impl<T, E> Result<T, E> {
     fn is_ok(r: Result<T, E>) -> bool {
-        panic("Result.is_ok: builtin generic enum lowering was not applied")
+        match r {
+            Ok(_) => true,
+            Err(_) => false,
+        }
     }
     fn is_err(r: Result<T, E>) -> bool {
-        panic("Result.is_err: builtin generic enum lowering was not applied")
+        match r {
+            Ok(_) => false,
+            Err(_) => true,
+        }
     }
     fn unwrap(r: Result<T, E>) -> T {
-        panic("Result.unwrap: builtin generic enum lowering was not applied")
+        match r {
+            Ok(v) => v,
+            Err(_) => panic("result: unwrap called on Err"),
+        }
     }
     fn unwrap_or(r: Result<T, E>, fallback: T) -> T {
-        panic("Result.unwrap_or: builtin generic enum lowering was not applied")
+        match r {
+            Ok(v) => v,
+            Err(_) => fallback,
+        }
     }
 }

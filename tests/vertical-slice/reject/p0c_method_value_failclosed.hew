@@ -1,0 +1,8 @@
+fn apply(f: fn(Option<i64>) -> i64, opt: Option<i64>) -> i64 {
+    f(opt)
+}
+
+fn main() {
+    let f: fn(Option<i64>) -> i64 = Option.unwrap;
+    println(apply(f, Some(5)));
+}

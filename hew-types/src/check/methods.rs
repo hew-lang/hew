@@ -1509,6 +1509,14 @@ impl Checker {
         true
     }
 
+    fn is_builtin_option_result_marker_method(receiver_type_name: &str, method: &str) -> bool {
+        matches!(
+            (receiver_type_name, method),
+            ("Option", "is_some" | "is_none" | "unwrap" | "unwrap_or")
+                | ("Result", "is_ok" | "is_err" | "unwrap" | "unwrap_or")
+        )
+    }
+
     fn dispatch_monomorphic_extern_symbol_method(
         &mut self,
         receiver_type_name: &str,
@@ -7079,6 +7087,9 @@ impl Checker {
                         self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
                     }
                     self.record_handle_method_call_rewrite_if_any(&resolved, method, span);
+                    let builtin_option_result_marker =
+                        matches!(builtin, Some(BuiltinType::Result | BuiltinType::Option))
+                            && Self::is_builtin_option_result_marker_method(name, method);
                     self.record_builtin_option_result_method_rewrite_if_any(
                         name, type_args, method, span,
                     );
@@ -7103,7 +7114,8 @@ impl Checker {
                     // `step`/`state_name`, actor send/ask, dyn-trait,
                     // resolved-impl call kernel).
                     let span_key = SpanKey::in_module(span, self.current_module_idx);
-                    let already_rewritten = self.method_call_rewrites.contains_key(&span_key)
+                    let already_rewritten = builtin_option_result_marker
+                        || self.method_call_rewrites.contains_key(&span_key)
                         || self.machine_method_dispatch.contains_key(&span_key)
                         || self.actor_method_dispatch.contains_key(&span_key)
                         || self.dyn_trait_method_calls.contains_key(&span_key)

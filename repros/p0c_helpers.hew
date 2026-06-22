@@ -1,0 +1,7 @@
+pub fn imported_option<T>(opt: Option<T>) -> T {
+    opt.unwrap()
+}
+
+pub fn imported_result<T, E>(res: Result<T, E>, fallback: T) -> T {
+    res.unwrap_or(fallback)
+}

@@ -1610,6 +1610,31 @@ impl Checker {
                 _ => None,
             };
         }
+        let stdlib_root_builtin_enum = |name: &str| {
+            self.current_module_short().is_none() && crate::lookup_builtin_type(name).is_some()
+        };
+        if self.current_module_short() == Some("option") || stdlib_root_builtin_enum("Option") {
+            if let Ty::Named { name, args, .. } = enum_ty {
+                if name == "Option" && args.len() == 1 {
+                    return match short_name {
+                        "Some" => Some(vec![args[0].clone()]),
+                        "None" => Some(vec![]),
+                        _ => None,
+                    };
+                }
+            }
+        }
+        if self.current_module_short() == Some("result") || stdlib_root_builtin_enum("Result") {
+            if let Ty::Named { name, args, .. } = enum_ty {
+                if name == "Result" && args.len() == 2 {
+                    return match short_name {
+                        "Ok" => Some(vec![args[0].clone()]),
+                        "Err" => Some(vec![args[1].clone()]),
+                        _ => None,
+                    };
+                }
+            }
+        }
         let type_name_opt = enum_ty.type_name();
         if let Some(type_name) = type_name_opt {
             if let Some(td) = self.lookup_type_def(type_name) {

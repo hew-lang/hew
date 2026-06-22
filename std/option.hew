@@ -188,15 +188,27 @@ pub fn contains_f64(opt: Option<f64>, needle: f64) -> bool {
 
 impl<T> Option<T> {
     fn is_some(opt: Option<T>) -> bool {
-        panic("Option.is_some: builtin generic enum lowering was not applied")
+        match opt {
+            Some(_) => true,
+            None => false,
+        }
     }
     fn is_none(opt: Option<T>) -> bool {
-        panic("Option.is_none: builtin generic enum lowering was not applied")
+        match opt {
+            Some(_) => false,
+            None => true,
+        }
     }
     fn unwrap(opt: Option<T>) -> T {
-        panic("Option.unwrap: builtin generic enum lowering was not applied")
+        match opt {
+            Some(v) => v,
+            None => panic("option: unwrap called on None"),
+        }
     }
     fn unwrap_or(opt: Option<T>, fallback: T) -> T {
-        panic("Option.unwrap_or: builtin generic enum lowering was not applied")
+        match opt {
+            Some(v) => v,
+            None => fallback,
+        }
     }
 }

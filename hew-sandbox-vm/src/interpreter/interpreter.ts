@@ -1195,16 +1195,11 @@ class Interpreter {
         }
         return canonicalComparable(left) === canonicalComparable(right);
       case "cmp.ne":
-        // f64 inequality mirrors native `fcmp ONE` (ordered not-equal): true only
-        // when both operands are non-NaN AND differ. If either is NaN the result
-        // is false — so `nan != nan`, `nan != inf` are both false, unlike JS `!==`
-        // (which is true when a NaN is present). Model ONE explicitly.
+        // f64 inequality mirrors native `fcmp UNE` (unordered not-equal): true
+        // when the operands differ or either operand is NaN. JS `!==` matches
+        // UNE exactly (`NaN!==NaN` and `NaN!==Infinity` are true).
         if (left.kind === "f64" && right.kind === "f64") {
-          return (
-            !Number.isNaN(left.value) &&
-            !Number.isNaN(right.value) &&
-            left.value !== right.value
-          );
+          return left.value !== right.value;
         }
         return canonicalComparable(left) !== canonicalComparable(right);
       case "cmp.lt":

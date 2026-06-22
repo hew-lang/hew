@@ -93,7 +93,10 @@ f64, and string operands. The interpreter dispatches on the runtime value kind
 | `cmp.ge` | bool | lhs, rhs |
 
 Comparison semantics must match canonical Hew for admitted operand types. For
-unsupported types, profile admission or runtime execution must fail closed.
+f64 operands, `cmp.eq` is ordered equal (`NaN == NaN` is false) and `cmp.ne` is
+unordered not-equal (`NaN != NaN` and `NaN != inf` are true), matching native
+LLVM `fcmp oeq`/`fcmp une`. For unsupported types, profile admission or runtime
+execution must fail closed.
 
 ## Calls
 

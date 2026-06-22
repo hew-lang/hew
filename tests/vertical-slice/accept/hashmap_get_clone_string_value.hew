@@ -1,0 +1,23 @@
+// Accept fixture: HashMap::get clones a heap-owned string value into Option<V>.
+//
+// Harness verb: hew compile + run
+// Expected: clean compile + exit 0 after using the returned value post-remove.
+
+fn main() -> i64 {
+    let m: HashMap<string, string> = HashMap::new();
+    let n: i64 = 123456;
+    let heap: string = f"prefix-{n}-suffix-padding-to-force-heap-alloc-zzzzzzzzzzzz";
+    m.insert("k", heap);
+    let got: Option<string> = m.get("k");
+    m.remove("k");
+    match got {
+        Some(s) => {
+            if s == "prefix-123456-suffix-padding-to-force-heap-alloc-zzzzzzzzzzzz" {
+                0
+            } else {
+                1
+            }
+        },
+        None => 2,
+    }
+}

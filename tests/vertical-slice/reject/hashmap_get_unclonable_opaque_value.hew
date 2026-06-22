@@ -1,0 +1,24 @@
+// Reject fixture: HashMap::get must fail closed when V contains no clone_fn.
+//
+// `HashMap::get()` returns an owned `Option<V>`. A value containing an
+// `#[opaque]` runtime handle cannot be semantically cloned, so admitting this
+// map would require a shallow pointer copy into Some(V).
+
+#[opaque]
+type Handle {}
+
+record WrappedHandle {
+    h: Handle,
+}
+
+extern "C" {
+    fn hew_handle_create() -> Handle;
+}
+
+fn main() -> i64 {
+    let m: HashMap<string, WrappedHandle> = HashMap::new();
+    let h = unsafe { hew_handle_create() };
+    m.insert("h", WrappedHandle { h: h });
+    let _ = m.get("h");
+    0
+}

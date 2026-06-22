@@ -844,9 +844,171 @@ impl Checker {
             && self.registry.implements_marker(ty, MarkerTrait::Eq)
     }
 
-    fn is_supported_hashmap_value_type(_ty: &Ty) -> bool {
-        // W4.001 Stage C3: resolver imposes no V bound on
-        // `impl<K, V> Map for HashMap<K, V> where K: Hash + Eq`.
+    fn hashmap_nested_key_clone_blocker(
+        &self,
+        ty: &Ty,
+        _visiting: &mut HashSet<String>,
+    ) -> Option<String> {
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        if primitive_copy_layout(&resolved, &self.type_defs).is_some() {
+            return None;
+        }
+        match &resolved {
+            Ty::String => None,
+            // `hew_hashmap_clone_layout` can deep-clone Plain and string keys.
+            // Bytes/layout-managed keys have no key-side clone thunk field in
+            // `HewMapKeyLayout`, so a HashMap with such a key is not cloneable
+            // when nested inside another owned value.
+            Ty::Bytes => Some("bytes key".to_string()),
+            Ty::Function { .. }
+            | Ty::Closure { .. }
+            | Ty::TraitObject { .. }
+            | Ty::CancellationToken
+            | Ty::Task(_) => Some(resolved.user_facing().to_string()),
+            Ty::Named { name, .. }
+                if self.canonical_owned_handle_type_name(name).is_some()
+                    || self.user_opaque_type_names.contains(name.as_str()) =>
+            {
+                Some(name.clone())
+            }
+            other => Some(format!("non-cloneable map key `{}`", other.user_facing())),
+        }
+    }
+
+    fn hashmap_type_def_clone_blocker(
+        &self,
+        type_def: &TypeDef,
+        args: &[Ty],
+        visiting: &mut HashSet<String>,
+    ) -> Option<String> {
+        let field_blocker = type_def.fields.values().find_map(|field_ty| {
+            let field_ty = Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
+            self.hashmap_value_clone_blocker(&field_ty, visiting)
+        });
+        if field_blocker.is_some() {
+            return field_blocker;
+        }
+
+        type_def
+            .variants
+            .values()
+            .find_map(|variant| match variant {
+                VariantDef::Unit => None,
+                VariantDef::Tuple(tys) => tys.iter().find_map(|field_ty| {
+                    let field_ty =
+                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
+                    self.hashmap_value_clone_blocker(&field_ty, visiting)
+                }),
+                VariantDef::Struct(fields) => fields.iter().find_map(|(_, field_ty)| {
+                    let field_ty =
+                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
+                    self.hashmap_value_clone_blocker(&field_ty, visiting)
+                }),
+            })
+    }
+
+    fn hashmap_named_value_clone_blocker(
+        &self,
+        name: &str,
+        args: &[Ty],
+        builtin: Option<BuiltinType>,
+        resolved: &Ty,
+        visiting: &mut HashSet<String>,
+    ) -> Option<String> {
+        if self.canonical_owned_handle_type_name(name).is_some()
+            || self.user_opaque_type_names.contains(name)
+        {
+            return Some(name.to_string());
+        }
+
+        match builtin {
+            Some(BuiltinType::Vec) => {
+                return args
+                    .first()
+                    .and_then(|elem| self.hashmap_value_clone_blocker(elem, visiting));
+            }
+            Some(BuiltinType::HashMap) if args.len() == 2 => {
+                return self
+                    .hashmap_nested_key_clone_blocker(&args[0], visiting)
+                    .or_else(|| self.hashmap_value_clone_blocker(&args[1], visiting));
+            }
+            Some(BuiltinType::HashSet) => {
+                return args
+                    .first()
+                    .and_then(|elem| self.hashmap_nested_key_clone_blocker(elem, visiting));
+            }
+            Some(BuiltinType::Option | BuiltinType::Result | BuiltinType::Range) => {
+                if let Some(blocker) = args
+                    .iter()
+                    .find_map(|arg| self.hashmap_value_clone_blocker(arg, visiting))
+                {
+                    return Some(blocker);
+                }
+            }
+            _ => {}
+        }
+
+        if let Some(blocker) = args
+            .iter()
+            .find_map(|arg| self.hashmap_value_clone_blocker(arg, visiting))
+        {
+            return Some(blocker);
+        }
+
+        let type_def = self.lookup_type_def(name)?;
+        let visit_key = resolved.user_facing().to_string();
+        if !visiting.insert(visit_key.clone()) {
+            return None;
+        }
+        let blocker = self.hashmap_type_def_clone_blocker(&type_def, args, visiting);
+        visiting.remove(&visit_key);
+        blocker
+    }
+
+    fn hashmap_value_clone_blocker(
+        &self,
+        ty: &Ty,
+        visiting: &mut HashSet<String>,
+    ) -> Option<String> {
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        match &resolved {
+            Ty::Function { .. }
+            | Ty::Closure { .. }
+            | Ty::TraitObject { .. }
+            | Ty::CancellationToken
+            | Ty::Task(_) => Some(resolved.user_facing().to_string()),
+            Ty::Tuple(items) => items
+                .iter()
+                .find_map(|item| self.hashmap_value_clone_blocker(item, visiting)),
+            Ty::Array(elem, _) | Ty::Slice(elem) => {
+                self.hashmap_value_clone_blocker(elem, visiting)
+            }
+            Ty::Named {
+                name,
+                args,
+                builtin,
+            } => self.hashmap_named_value_clone_blocker(name, args, *builtin, &resolved, visiting),
+            _ => None,
+        }
+    }
+
+    fn validate_hashmap_value_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
+        let mut visiting = HashSet::new();
+        if let Some(blocker) = self.hashmap_value_clone_blocker(ty, &mut visiting) {
+            let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`HashMap<_, {}>` is not supported: `HashMap::get()` returns an owned \
+                     `Option<V>`, but value type `{}` contains `{blocker}` which has no \
+                     map value clone_fn; use a cloneable value type",
+                    resolved.user_facing(),
+                    resolved.user_facing(),
+                ),
+            );
+            return false;
+        }
         true
     }
 
@@ -910,6 +1072,10 @@ impl Checker {
             return true; // optimistically admit; finalization will fail closed
         }
 
+        if !self.validate_hashmap_value_clone_type(&resolved_val, span) {
+            return false;
+        }
+
         // Named record key: defer to finalize_hashmap_admission for full hash-eligibility
         // check and HashMapLoweringFact production (C-2c).  Optimistically admit here;
         // finalize will fail closed with a diagnostic if the key is ineligible.
@@ -925,9 +1091,7 @@ impl Checker {
             return true;
         }
 
-        if self.is_supported_hashmap_key_type(&resolved_key)
-            && Self::is_supported_hashmap_value_type(&resolved_val)
-        {
+        if self.is_supported_hashmap_key_type(&resolved_key) {
             return true;
         }
 

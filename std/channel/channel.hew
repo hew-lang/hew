@@ -71,7 +71,8 @@ pub type Receiver {
 trait SenderMethods {
     /// Send a message through the channel.
     ///
-    /// Blocks if the channel is full (backpressure).
+    /// Blocks if the channel is full (backpressure). On wasm32, a full send
+    /// traps because blocking is pending cooperative scheduler yield/resume.
     fn send(self, data: string);
 
     /// Clone this sender for multi-producer use.

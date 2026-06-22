@@ -101,7 +101,7 @@ The **Checker disposition** column documents what the type checker emits when
 | **`std::net::quic.*`, `quic.QUICEndpoint.*`, `quic.QUICConnection.*`, `quic.QUICStream.*`, `quic.QUICEvent.*`** | 🚫 Error (`Quic`) | `quic_transport` is feature-gated and not compiled for wasm32 | WASM-TODO |
 | **`std::net::dns.resolve`, `dns.lookup_host`** | 🚫 Error (`Dns`) | Native OS resolver; not compiled for wasm32 | WASM-TODO |
 | **`std::os.*`** | 🚫 Error (`OsEnv`) | Hew OS/env helpers are native-only today even where WASI may offer host data | WASM-TODO |
-| **`std::crypto::crypto.random_bytes`** | ⚠️ Warn (`CryptoRandom`) | wasm32 falls back to a seeded PRNG without host entropy; not cryptographically secure | WASM-TODO |
+| **`std::crypto::crypto.random_bytes`** | 🚫 Error (`CryptoRandom`) | Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists | WASM-TODO |
 | Generators on WASM | ✅ Pass (basic syntax) | Cooperative scheduler | Note below |
 
 ---
@@ -200,6 +200,13 @@ would otherwise end in a trap or linker failure:
   feature-specific diagnostic rather than a native-symbol failure downstream.
   - WASM-TODO: define a host capability model for subprocess execution.
 
+- **`std::crypto::crypto.random_bytes`**: Secure randomness is backed by
+  `ring::SystemRandom`, which is native-only and absent from the wasm32 link set.
+  The checker rejects `crypto.random_bytes` on wasm32 so key material generation
+  fails closed instead of compiling to a non-cryptographic fallback or host
+  import. WASM-TODO: plumb a secure host entropy capability such as WASI
+  `random_get`.
+
 ### ⚠️ WASM-TODO (documented gap / not yet checker-gated)
 
 Rows whose **Checker disposition** is **WASM-TODO** are intentionally *not*
@@ -247,9 +254,9 @@ reject_wasm_feature   → Severity::Error    → self.errors
 
 **Reject group** is wired in:
 - `hew-types/src/check/expressions.rs :: reject_if_wasm_incompatible_expr` (scope/tasks)
-- `hew-types/src/check/calls.rs :: reject_if_wasm_incompatible_call` (link/monitor/supervisor)
+- `hew-types/src/check/calls.rs :: reject_if_wasm_incompatible_call` (link/monitor/supervisor/`random_bytes`)
 - `hew-types/src/check/registration.rs` (supervisor actor declarations)
-- `hew-types/src/check/methods.rs :: check_method_call` (stream.* / `http_client.*` / `smtp.*` / http.* / net.* / process.* / tls.* / quic.* / dns.* / os.* module calls)
+- `hew-types/src/check/methods.rs :: check_method_call` (stream.* / `http_client.*` / `smtp.*` / http.* / net.* / process.* / tls.* / quic.* / dns.* / os.* / `crypto.random_bytes` module calls)
 - `hew-types/src/check/methods.rs` Receiver match arm (`recv` → `BlockingChannelRecv`)
 - `hew-types/src/check/methods.rs` semaphore handle gate (`acquire` / `acquire_timeout` → `BlockingSemaphoreAcquire`)
 - `hew-types/src/check/methods.rs` Stream / http.Server / http.Request / net.Listener / net.Connection / process.Child / tls.TlsStream / quic.QUIC* handle match arms

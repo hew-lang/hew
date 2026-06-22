@@ -1781,10 +1781,10 @@ pub(super) enum WasmUnsupportedFeature {
     /// POSIX APIs and is not compiled for wasm32. WASM-TODO(#1451): route through a
     /// capability-scoped WASI surface.
     OsEnv,
-    // ── Warning group additions ─────────────────────────────────────────────
-    /// `crypto.random_bytes`: on wasm32 the implementation falls back to a
-    /// seeded PRNG without host-provided entropy, so the resulting stream is
-    /// not cryptographically secure. Warn so callers can gate their use.
+    // ── Crypto reject additions ─────────────────────────────────────────────
+    /// `crypto.random_bytes`: the secure entropy source (`ring::SystemRandom`)
+    /// is native-only and absent from the wasm32 link set. Reject so callers
+    /// cannot accidentally generate key material without cryptographic entropy.
     /// WASM-TODO(#1451): plumb host entropy through WASI `random_get`.
     CryptoRandom,
     /// `encrypt.*` (`std::crypto::encrypt`): AES-256-GCM seal/open helpers are
@@ -1893,9 +1893,10 @@ impl WasmUnsupportedFeature {
                  the os runtime layer is not compiled for wasm32"
             }
             Self::CryptoRandom => {
-                "on wasm32 crypto.random_bytes falls back to a seeded PRNG without host \
-                 entropy and is not cryptographically secure; \
-                 the result is suitable for test data but not for key material"
+                "the std::crypto.random_bytes secure entropy source (ring::SystemRandom) is \
+                 native-only and absent from the wasm32 link set; no cryptographically secure \
+                 wasm32 implementation exists yet; generating key material on wasm32 would \
+                 not be secure"
             }
             Self::CryptoEncrypt => {
                 "the std::crypto::encrypt module is backed by a native-only staticlib \

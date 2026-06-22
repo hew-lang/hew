@@ -565,11 +565,12 @@ impl Checker {
             "sleep_ms" | "sleep" => {
                 self.warn_wasm_limitation(span, WasmUnsupportedFeature::Timers);
             }
-            // crypto.random_bytes falls back to a seeded non-cryptographic PRNG
-            // on wasm32; warn rather than reject so programs can still use it
-            // for test data with the degraded-semantics caveat.
+            // crypto.random_bytes depends on a secure native-only entropy source
+            // that is absent from the wasm32 link set. Reject at check time so
+            // secure randomness fails closed instead of compiling to a non-secure
+            // host import or fallback.
             "random_bytes" => {
-                self.warn_wasm_limitation(span, WasmUnsupportedFeature::CryptoRandom);
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoRandom);
             }
             _ => {}
         }

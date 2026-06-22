@@ -6326,10 +6326,15 @@ impl Builder {
     fn owned_aggregate_record_field_kinds_for_key(
         &self,
         key: &str,
-    ) -> Option<Vec<crate::state_clone::StateFieldCloneKind>> {
-        let fields = self.lookup_record_field_order(key)?;
+    ) -> Result<
+        Option<Vec<crate::state_clone::StateFieldCloneKind>>,
+        crate::state_clone::ClassificationError,
+    > {
+        let Some(fields) = self.lookup_record_field_order(key) else {
+            return Ok(None);
+        };
         if fields.is_empty() {
-            return None;
+            return Ok(None);
         }
         let field_tys: Vec<ResolvedTy> = fields.iter().map(|(_, ty)| ty.clone()).collect();
         let record_layouts = self.record_layouts_for_classification();
@@ -6338,8 +6343,7 @@ impl Builder {
             &record_layouts,
             &self.enum_layouts,
             &self.opaque_handle_names,
-        )
-        .ok()?;
+        )?;
         // Fail closed at the value-class gate, not late at codegen. An admitted
         // owned-aggregate record is seeded for `DropKind::RecordInPlace`, which
         // drives codegen to synthesise BOTH the clone and the drop body. A field
@@ -6356,12 +6360,12 @@ impl Builder {
             .iter()
             .all(crate::state_clone::StateFieldCloneKind::supports_value_class_drop_spine)
         {
-            return None;
+            return Ok(None);
         }
         let has_owned_field = kinds
             .iter()
             .any(|k| !matches!(k, crate::state_clone::StateFieldCloneKind::BitCopy { .. }));
-        has_owned_field.then_some(kinds)
+        Ok(has_owned_field.then_some(kinds))
     }
 
     /// True when `ty` is a user record admitted by the unified
@@ -6392,7 +6396,7 @@ impl Builder {
     fn is_owned_aggregate_record_ty(&self, ty: &ResolvedTy) -> bool {
         user_record_layout_key(ty).is_some_and(|key| {
             self.owned_aggregate_record_field_kinds_for_key(&key)
-                .is_some()
+                .is_ok_and(|kinds| kinds.is_some())
         })
     }
 
@@ -21332,9 +21336,15 @@ impl Builder {
         }
         let init_args =
             self.lower_spawn_actor_init_args(actor_name, &layout, explicit_init, &explicit, expr)?;
-        let state = self
-            .lower_spawn_actor_state(actor_name, &layout, explicit_init, &explicit, expr)
-            .ok()?;
+        let Ok(state) = self.lower_spawn_actor_state_or_diag(
+            actor_name,
+            &layout,
+            explicit_init,
+            &explicit,
+            expr,
+        ) else {
+            return None;
+        };
         let slot = self.alloc_local(expr.ty.clone());
         let Place::Local(local_id) = slot else {
             unreachable!("alloc_local returns Place::Local");
@@ -21349,6 +21359,33 @@ impl Builder {
             cycle_capable: layout.cycle_capable,
         });
         Some(dest)
+    }
+
+    fn lower_spawn_actor_state_or_diag(
+        &mut self,
+        actor_name: &str,
+        layout: &ActorLayout,
+        explicit_init: bool,
+        explicit: &HashMap<&str, &HirExpr>,
+        expr: &HirExpr,
+    ) -> Result<Option<Place>, ()> {
+        let diagnostics_before_state = self.diagnostics.len();
+        let Ok(state) =
+            self.lower_spawn_actor_state(actor_name, layout, explicit_init, explicit, expr)
+        else {
+            if self.diagnostics.len() == diagnostics_before_state {
+                self.diagnostics.push(MirDiagnostic {
+                    kind: MirDiagnosticKind::NotYetImplemented {
+                        construct: format!("spawn `{actor_name}` state lowering failed"),
+                        site: expr.site,
+                    },
+                    note: "actor spawn state lowering failed before a field/value diagnostic was recorded"
+                        .to_string(),
+                });
+            }
+            return Err(());
+        };
+        Ok(state)
     }
 
     fn lower_spawn_actor_init_args(
@@ -23448,22 +23485,27 @@ impl Builder {
             return;
         }
 
-        let reason = fields
-            .iter()
-            .find_map(|(field_name, field_ty)| {
-                let field_class = ValueClass::of_ty(field_ty, &self.type_classes);
-                (field_class != ValueClass::BitCopy).then(|| {
-                    format!(
-                        "field `{field_name}` has value class {field_class:?}; \
-                         user record/type aggregates are BitCopy only when every \
-                         substituted field is BitCopy"
-                    )
+        let reason = match self.owned_aggregate_record_field_kinds_for_key(&key) {
+            Err(err) => {
+                format!("owned-aggregate field classifier failed for `{key}`: {err}")
+            }
+            Ok(_) => fields
+                .iter()
+                .find_map(|(field_name, field_ty)| {
+                    let field_class = ValueClass::of_ty(field_ty, &self.type_classes);
+                    (field_class != ValueClass::BitCopy).then(|| {
+                        format!(
+                            "field `{field_name}` has value class {field_class:?}; \
+                             user record/type aggregates are BitCopy only when every \
+                             substituted field is BitCopy"
+                        )
+                    })
                 })
-            })
-            .unwrap_or_else(|| {
-                "record layout is present but no BitCopy value-class registration was produced"
-                    .to_string()
-            });
+                .unwrap_or_else(|| {
+                    "record layout is present but no BitCopy value-class registration was produced"
+                        .to_string()
+                }),
+        };
 
         self.diagnostics.push(MirDiagnostic {
             kind: MirDiagnosticKind::UnsupportedUserRecordValueClass {
@@ -35442,7 +35484,7 @@ mod generic_record_owned_aggregate_admission {
         assert!(
             builder
                 .owned_aggregate_record_field_kinds_for_key(&key)
-                .is_none(),
+                .is_ok_and(|kinds| kinds.is_none()),
             "the opaque-bearing layout resolves but the clone-support gate must \
              reject it (None), not a key miss"
         );

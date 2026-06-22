@@ -40,7 +40,7 @@ use std::path::Path;
 use std::process::Command;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use support::{hew_binary, repo_root, require_codegen, run_bounded_command};
+use support::{hew_binary, require_codegen, run_bounded_command, tempdir};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const SHADOW_SRC: &str = "\
@@ -60,10 +60,7 @@ fn main() {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn workspace() -> tempfile::TempDir {
-    tempfile::Builder::new()
-        .prefix("dwarf-dbg-hew-")
-        .tempdir_in(repo_root())
-        .expect("temp dir")
+    tempdir()
 }
 
 /// First available batch debugger. `lldb -b -o ...` and `gdb --batch -ex ...`
@@ -78,18 +75,34 @@ fn debugger() -> Option<&'static str> {
     })
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn debugger_quote(path: &str) -> String {
+    let mut quoted = String::with_capacity(path.len() + 2);
+    quoted.push('"');
+    for ch in path.chars() {
+        match ch {
+            '\\' => quoted.push_str("\\\\"),
+            '"' => quoted.push_str("\\\""),
+            _ => quoted.push(ch),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
 /// Run the debugger to a breakpoint on `line` and return its stdout. Reads the
 /// local `first` at that stop.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn read_first_at_line(debugger: &str, binary: &Path, src: &Path, line: u32) -> String {
     let src = src.to_str().expect("src path utf8");
+    let quoted_src = debugger_quote(src);
     let bin = binary.to_str().expect("bin path utf8");
     let cmd = if debugger == "lldb" {
         let mut c = Command::new("lldb");
         c.args([
             "-b",
             "-o",
-            &format!("breakpoint set --file {src} --line {line}"),
+            &format!("breakpoint set --file {quoted_src} --line {line}"),
             "-o",
             "run",
             "-o",
@@ -104,7 +117,7 @@ fn read_first_at_line(debugger: &str, binary: &Path, src: &Path, line: u32) -> S
         c.args([
             "--batch",
             "-ex",
-            &format!("break {src}:{line}"),
+            &format!("break {quoted_src}:{line}"),
             "-ex",
             "run",
             "-ex",
@@ -114,7 +127,12 @@ fn read_first_at_line(debugger: &str, binary: &Path, src: &Path, line: u32) -> S
         c
     };
     let out = run_bounded_command(cmd, format!("{debugger} @ line {line}"));
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    if !out.stderr.is_empty() {
+        text.push_str("\n[stderr]\n");
+        text.push_str(&String::from_utf8_lossy(&out.stderr));
+    }
+    text
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

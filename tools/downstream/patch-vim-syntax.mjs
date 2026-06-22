@@ -12,7 +12,7 @@
  *
  * Supported categories:
  *   control_flow, declarations, actors, supervisor, wire, machine, other,
- *   logical, supervisor_config, reserved_unused, types
+ *   logical, supervisor_config, reserved_unused, contextual, types
  *
  * Usage: node tools/downstream/patch-vim-syntax.mjs [HEW_VIM_PATH]
  *
@@ -59,6 +59,33 @@ const originalSource = readFileSync(syntaxFilePath, 'utf8');
 
 const kw = syntaxData.keywords;
 const types = syntaxData.types;
+const contextual = syntaxData.contextual_identifiers;
+
+// -- Hub-derived supervisor + contextual keyword sets ----------------------
+// supervisor_config entries that name structural fields are highlighted as
+// keywords (hewSupervisor); the rest are restart-strategy / permanence /
+// child-kind value constants (hewStrategy). The `supervisor` keyword itself
+// is sourced from kw.actors (emitted by the actors category), so it is not
+// repeated here.
+const supervisorFieldKeywords = ['child', 'restart', 'budget', 'strategy'];
+const supervisorConfigFields = kw.supervisor_config.filter(
+  w => supervisorFieldKeywords.includes(w));
+const supervisorConstants = kw.supervisor_config.filter(
+  w => !supervisorFieldKeywords.includes(w));
+
+// Mailbox overflow policy values live in contextual_identifiers, flagged by an
+// "overflow" mention in their description. The `overflow` block-header key
+// names the field rather than a value, so it is excluded.
+const overflowKinds = Object.entries(contextual)
+  .filter(([name, desc]) =>
+    name !== 'overflow' && typeof desc === 'string' && /overflow/i.test(desc))
+  .map(([name]) => name);
+
+// Remaining contextual identifiers: soft keywords that are not reserved and
+// not overflow values (within, intensity, initial, repeated, infinity, ...).
+const contextualKeywords = Object.keys(contextual)
+  .filter(name => name !== 'description' && name !== 'self'
+    && !overflowKinds.includes(name));
 
 // -- Category → { group, keywords[] } mapping -----------------------------
 // Each category produces one or more `syn keyword <group> <words...>` lines.
@@ -86,7 +113,7 @@ const categoryMap = {
 
   supervisor: {
     group: 'hewSupervisor',
-    keywords: ['supervisor', 'child', 'restart', 'budget', 'strategy'],
+    keywords: [...supervisorConfigFields],
   },
 
   wire: {
@@ -117,21 +144,22 @@ const categoryMap = {
 
   supervisor_config: {
     group: 'hewStrategy',
-    keywords: () => {
-      const strategies = ['one_for_one', 'one_for_all', 'rest_for_one'];
-      const permanence = ['permanent', 'transient', 'temporary'];
-      const overflow = ['block', 'drop_new', 'drop_old', 'fail', 'coalesce', 'fallback'];
-      return [
-        { words: strategies },
-        { words: permanence },
-        { words: overflow },
-      ];
-    },
+    keywords: () => [
+      { words: supervisorConstants },
+      { words: overflowKinds },
+    ],
   },
 
   reserved_unused: {
     group: 'hewReserved',
     keywords: [...kw.reserved_unused],
+  },
+
+  // Contextual identifiers — special meaning in specific parser contexts but
+  // NOT reserved keywords (usable as ordinary identifiers elsewhere).
+  contextual: {
+    group: 'hewContextual',
+    keywords: [...contextualKeywords],
   },
 
   types: {
@@ -261,6 +289,43 @@ function formatKeywordLine(prefix, words, maxWidth) {
     lines.push(current);
   }
   return lines.join('\n');
+}
+
+// -- Verify keyword coverage -----------------------------------------------
+// Guard against drift: every keyword the lexer recognises (all_keywords, kept
+// in sync with the lexer by a hew-lexer unit test) must be emitted by some
+// category. Contextual identifiers, overflow kinds, and types are
+// intentionally NOT in all_keywords, so they are excluded from this check.
+
+const coveredKeywords = new Set([
+  ...categoryMap.control_flow.keywords,
+  ...categoryMap.declarations.keywords,
+  ...categoryMap.actors.keywords,
+  ...categoryMap.supervisor.keywords,
+  ...categoryMap.wire.keywords,
+  ...categoryMap.machine.keywords,
+  ...categoryMap.other.keywords,
+  ...categoryMap.logical.keywords,
+  ...categoryMap.reserved_unused.keywords,
+  ...supervisorConstants,
+]);
+
+const missingKeywords = syntaxData.all_keywords.filter(k => !coveredKeywords.has(k));
+if (missingKeywords.length > 0) {
+  console.warn('\u26a0 Keywords in all_keywords not emitted by any category:');
+  console.warn(`   ${missingKeywords.join(', ')}`);
+}
+
+const extraKeywords = [...coveredKeywords].filter(
+  k => !syntaxData.all_keywords.includes(k));
+if (extraKeywords.length > 0) {
+  console.warn('\u26a0 Keywords emitted but not in all_keywords:');
+  console.warn(`   ${extraKeywords.join(', ')}`);
+}
+
+if (missingKeywords.length === 0 && extraKeywords.length === 0) {
+  console.log(
+    `Keyword coverage: all ${syntaxData.all_keywords.length} all_keywords emitted.`);
 }
 
 // -- Write output ----------------------------------------------------------

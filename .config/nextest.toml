@@ -228,13 +228,14 @@ slow-timeout = { period = "120s", terminate-after = 6 }
 path = "junit.xml"
 
 [profile.smoke]
-# Smoke profile: fast, deterministic in-process tests only.  Designed to give
-# a pass/fail signal in under 5 minutes before committing to a full build.
+# Smoke profile: curated deterministic in-process oracle only.  Designed to
+# give a pass/fail signal before committing to the full Rust workspace body.
 # Used by the `ci-preflight-smoke` tier in the dispatcher's fallback lane.
 #
-# What it runs: pure in-process unit and integration tests that do not spawn
-# the full `hew` compiler binary or the sandbox Node runner, do not need
-# pre-built libhew.a or wasm32 runtimes, and do not connect to network services.
+# What it runs: a small deterministic oracle complement to fmt/clippy that does
+# not spawn the full `hew` compiler binary or the sandbox Node runner, does not
+# need pre-built libhew.a or wasm32 runtimes, and does not connect to network
+# services.
 # Key oracle: `fmt_roundtrip_corpus::every_hew_file_roundtrips_through_formatter`
 # in hew-parser — a deterministic corpus scan that surfaced the S115/S119
 # formatter-AST regressions before the heavy tier ran.
@@ -251,7 +252,7 @@ path = "junit.xml"
 # Coverage contract: the smoke tier is a FAST FAIL-EARLY gate; the heavy tier
 # (test-rust / make test) still runs on smoke pass and provides full coverage.
 # The smoke tier does NOT replace the ci profile — it precedes it.
-default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - test(live_gate_matches_declared_coverage) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper) - test(remote_ask_two_process_echo_server_helper) - test(two_process_remote_ask_timeout_returns_timeout_under_1500ms) - test(remote_ask_two_process_timeout_client_helper) - test(remote_ask_two_process_timeout_server_helper)"
+default-filter = "test(every_hew_file_roundtrips_through_formatter)"
 test-threads = "num-cpus"
 slow-timeout = { period = "60s", terminate-after = 2 }
 

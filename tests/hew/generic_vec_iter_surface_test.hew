@@ -1,0 +1,20 @@
+//! Generic Vec<T>::iter is tracked as the Hew-level iterator follow-on.
+
+import std::testing;
+
+fn generic_iter_count<T>(xs: Vec<T>) -> i64 {
+    let it = xs.iter();
+    var total = 0;
+    for _ in it {
+        total += 1;
+    }
+    total
+}
+
+#[test]
+fn test_generic_vec_iter_i64() {
+    let values: Vec<i64> = Vec::new();
+    values.push(1);
+    values.push(2);
+    testing.assert_eq(generic_iter_count(values), 2);
+}

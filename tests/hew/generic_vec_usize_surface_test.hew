@@ -1,0 +1,19 @@
+//! Vec<usize> must share the canonical platform-sized integer Vec ABI.
+
+import std::testing;
+
+fn first_usize<T>(xs: Vec<T>) -> T {
+    xs.get(0)
+}
+
+#[test]
+fn test_generic_vec_usize_push_get_pop() {
+    let values: Vec<usize> = Vec::new();
+    let first: usize = 5;
+    let second: usize = 8;
+    values.push(first);
+    values.push(second);
+    testing.assert_eq(first_usize(values) as i64, 5);
+    testing.assert_eq(values.get(1) as i64, 8);
+    testing.assert_eq(values.pop() as i64, 8);
+}

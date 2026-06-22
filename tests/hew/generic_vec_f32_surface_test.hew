@@ -1,0 +1,19 @@
+//! Vec<f32> must remain covered by generic Vec<T> element re-resolution.
+
+import std::testing;
+
+fn first_f32<T>(xs: Vec<T>) -> T {
+    xs.get(0)
+}
+
+#[test]
+fn test_generic_vec_f32_push_get_pop() {
+    let values: Vec<f32> = Vec::new();
+    let first: f32 = 1.5 as f32;
+    let second: f32 = 2.5 as f32;
+    values.push(first);
+    values.push(second);
+    testing.assert_true(first_f32(values) == first);
+    testing.assert_true(values.get(1) == second);
+    testing.assert_true(values.pop() == second);
+}

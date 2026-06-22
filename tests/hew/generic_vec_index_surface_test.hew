@@ -1,0 +1,29 @@
+//! Generic Vec<T> scalar indexing must admit type-parameter elements.
+
+import std::testing;
+
+type VecIndexName {
+    label: string;
+}
+
+fn generic_at<T>(xs: Vec<T>, idx: i64) -> T {
+    xs[idx]
+}
+
+#[test]
+fn test_generic_vec_index_i64_string_owned_record() {
+    let ints: Vec<i64> = Vec::new();
+    ints.push(7);
+    ints.push(11);
+    testing.assert_eq(generic_at(ints, 1), 11);
+
+    let names: Vec<string> = Vec::new();
+    names.push("ada");
+    names.push("grace");
+    testing.assert_eq_str(generic_at(names, 0), "ada");
+
+    let records: Vec<VecIndexName> = Vec::new();
+    records.push(VecIndexName { label: "first" });
+    records.push(VecIndexName { label: "second" });
+    testing.assert_eq_str(generic_at(records, 1).label, "second");
+}

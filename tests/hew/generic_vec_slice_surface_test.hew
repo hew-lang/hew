@@ -1,0 +1,41 @@
+//! Generic Vec<T> range slicing must select the concrete element ABI.
+
+import std::testing;
+
+type VecSliceName {
+    label: string;
+}
+
+fn generic_slice<T>(xs: Vec<T>, start: i64, end: i64) -> Vec<T> {
+    xs[start..end]
+}
+
+#[test]
+fn test_generic_vec_slice_i64_string_owned_record() {
+    let ints: Vec<i64> = Vec::new();
+    ints.push(1);
+    ints.push(2);
+    ints.push(3);
+    let int_slice = generic_slice(ints, 1, 3);
+    testing.assert_eq(int_slice.len(), 2);
+    testing.assert_eq(int_slice.get(0), 2);
+    testing.assert_eq(int_slice.get(1), 3);
+
+    let strings: Vec<string> = Vec::new();
+    strings.push("alpha");
+    strings.push("beta");
+    strings.push("gamma");
+    let string_slice = generic_slice(strings, 0, 2);
+    testing.assert_eq(string_slice.len(), 2);
+    testing.assert_eq_str(string_slice.get(0), "alpha");
+    testing.assert_eq_str(string_slice.get(1), "beta");
+
+    let records: Vec<VecSliceName> = Vec::new();
+    records.push(VecSliceName { label: "zero" });
+    records.push(VecSliceName { label: "one" });
+    records.push(VecSliceName { label: "two" });
+    let record_slice = generic_slice(records, 1, 3);
+    testing.assert_eq(record_slice.len(), 2);
+    testing.assert_eq_str(record_slice.get(0).label, "one");
+    testing.assert_eq_str(record_slice.get(1).label, "two");
+}

@@ -34128,7 +34128,39 @@ fn emit_de_value_cbor<'ctx>(
                 builder
                     .build_store(dst, stored)
                     .llvm_ctx("cbor de bool store")?;
+            } else if matches!(ty, ResolvedTy::Char) {
+                // `char` reads through a dedicated primitive that validates the
+                // decoded scalar is a Unicode scalar value (rejecting surrogates
+                // and values above U+10FFFF) and fails closed otherwise. It
+                // returns the codepoint widened to i64; truncate to the i32
+                // `char` store (lossless — a scalar value is below 2^21).
+                let prim = declare_codec_prim(
+                    ctx,
+                    llvm_mod,
+                    "hew_cbor_de_char",
+                    i64_ty.fn_type(&[ptr_ty.into()], false),
+                );
+                let wide = builder
+                    .build_call(prim, &[reader.into()], "cbor_de_char")
+                    .llvm_ctx("cbor de char")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_char void".into()))?
+                    .into_int_value();
+                let narrow = builder
+                    .build_int_truncate(wide, int_ty, "cbor_de_char_trunc")
+                    .llvm_ctx("cbor de char trunc")?;
+                builder
+                    .build_store(dst, narrow)
+                    .llvm_ctx("cbor de char store")?;
             } else {
+                // Every fixed-width integer reads through the range-checked
+                // primitive: a CBOR integer outside the target type's bounds
+                // (over-max, under-min, or negative for an unsigned target) is
+                // rejected as a decode failure instead of being truncated to a
+                // fabricated value (CLAUDE.md §2). The reader returns the in-range
+                // value's exact low-64 bit pattern, so the narrowing truncation
+                // below is lossless.
                 let unsigned = matches!(
                     ty,
                     ResolvedTy::U8
@@ -34136,33 +34168,29 @@ fn emit_de_value_cbor<'ctx>(
                         | ResolvedTy::U32
                         | ResolvedTy::U64
                         | ResolvedTy::Usize
-                        | ResolvedTy::Char
                 );
-                // `char` reads through a dedicated primitive that validates the
-                // decoded scalar is a Unicode scalar value (rejecting surrogates
-                // and values above U+10FFFF) and fails closed otherwise; the
-                // other integers use the plain width readers.
-                let prim_name = if matches!(ty, ResolvedTy::Char) {
-                    "hew_cbor_de_char"
-                } else if unsigned {
-                    "hew_cbor_de_u64"
-                } else {
-                    "hew_cbor_de_i64"
-                };
+                let i32_ty = ctx.i32_type();
+                let width = int_ty.get_bit_width();
                 let prim = declare_codec_prim(
                     ctx,
                     llvm_mod,
-                    prim_name,
-                    i64_ty.fn_type(&[ptr_ty.into()], false),
+                    "hew_cbor_de_int_checked",
+                    i64_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false),
                 );
+                let bits_arg = i32_ty.const_int(u64::from(width), false);
+                let signed_arg = i32_ty.const_int(u64::from(!unsigned), false);
                 let wide = builder
-                    .build_call(prim, &[reader.into()], "cbor_de_int")
+                    .build_call(
+                        prim,
+                        &[reader.into(), bits_arg.into(), signed_arg.into()],
+                        "cbor_de_int",
+                    )
                     .llvm_ctx("cbor de int")?
                     .try_as_basic_value()
                     .basic()
-                    .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_int void".into()))?
+                    .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_int_checked void".into()))?
                     .into_int_value();
-                let narrow = if int_ty.get_bit_width() == 64 {
+                let narrow = if width == 64 {
                     wide
                 } else {
                     builder

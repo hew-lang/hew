@@ -84,6 +84,7 @@ EXAMPLE_ORDER = {
         "generic_aggregate_eq",
         "option_result_methods",
         "vec_operations",
+        "vec_f64_nonfinite_contains",
     ),
 }
 
@@ -191,6 +192,9 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     # types/vec_operations: Vec<T>::contains and v[start..end] range slice.
     # Both map to new sandbox VM opcodes `vector.contains` / `vector.range_slice`.
     "types/vec_operations": "runnable",
+    # types/vec_f64_nonfinite_contains: Vec<f64>::contains for NaN and +-Infinity
+    # follows native fcmp-OEQ semantics via the shared valuesEqual helper.
+    "types/vec_f64_nonfinite_contains": "runnable",
 }
 
 # Entries omitted from WASI_CAPABILITY default to "runnable".

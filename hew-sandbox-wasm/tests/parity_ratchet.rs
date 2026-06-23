@@ -700,6 +700,15 @@ const CONSTRUCTS: &[Construct] = &[
         probe: "fn main() {\n    let v: Vec<i64> = Vec::new();\n    v.push(1);\n    v.push(2);\n    v.push(3);\n    let s = v[0..2];\n    println(s.len());\n}\n",
         coverage: Coverage::Parity("vec_operations"),
     },
+    Construct {
+        // Vec<f64>::contains with NaN and +-Infinity follows native fcmp-OEQ.
+        // vector.contains previously collapsed NaN/+-Inf to JSON null so all
+        // three compared equal (silent wrong-result).  valuesEqual fixes this
+        // by routing f64 pairs through JS === (OEQ) instead of canonicalComparable.
+        id: "Vec<f64>::contains with NaN / +-Infinity (fcmp-OEQ semantics)",
+        probe: "fn main() {\n    let zero: f64 = 0.0;\n    let nan: f64 = zero / zero;\n    let inf: f64 = 1.0 / zero;\n    let nans: Vec<f64> = Vec::new();\n    nans.push(nan);\n    println(nans.contains(nan));\n    println(nans.contains(inf));\n    let nums: Vec<f64> = Vec::new();\n    nums.push(2.5);\n    println(nums.contains(2.5));\n}\n",
+        coverage: Coverage::Parity("vec_f64_nonfinite_contains"),
+    },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────

@@ -276,6 +276,16 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/playground/types/vec_operations.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        // Vec<f64>::contains with NaN and +-Infinity: the sandbox VM now routes
+        // element equality through valuesEqual (which uses JS === for f64 pairs),
+        // matching native fcmp-OEQ semantics.  Pre-fix the VM collapsed NaN and
+        // +-Infinity to JSON null so [NaN].contains(NaN) returned true instead
+        // of false -- a silent wrong-result divergence.
+        test_name: "vec_f64_nonfinite_contains",
+        source_rel: "examples/playground/types/vec_f64_nonfinite_contains.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

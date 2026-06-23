@@ -96,6 +96,10 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // Both map to new sandbox VM opcodes `vector.contains` / `vector.range_slice`
     // added in this parity sweep.
     "vec_operations",
+    // Vec<f64>::contains with NaN and +-Infinity follows native fcmp-OEQ: NaN is
+    // never found, +Inf != -Inf.  Uses the shared valuesEqual helper introduced
+    // to align vector.contains with cmp.eq (was: collapsed to null via JSON).
+    "vec_f64_nonfinite_contains",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";

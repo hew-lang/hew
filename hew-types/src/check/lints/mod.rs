@@ -78,6 +78,20 @@ pub enum LintId {
     /// A function that is defined but never reached from any entry point.
     /// (Migrated from an ad-hoc whole-program dead-code warning.)
     DeadCode,
+    /// A value assigned to a local is never read on any path before the local
+    /// is overwritten or goes out of scope — the store is dead. Emitted by the
+    /// MIR-stage liveness pass (`hew-mir`), not the HIR checker sweep.
+    DeadStore,
+    /// A loop-carried counter / accumulator that is incremented inside a loop
+    /// but whose value is never read after the loop — pure dead counting.
+    ///
+    /// Registered but NOT yet emitted: separating a dead accumulator from a
+    /// legitimate `for i in 0..n` counter needs faint-variable (strong-liveness)
+    /// analysis, and Hew's increments lower through *checked* arithmetic that can
+    /// trap, so the increment is not provably side-effect-free. Detecting this
+    /// precisely is tracked for a later milestone; the name is reserved here so
+    /// the CLI `--allow`/`--deny` surface and docs stay stable in the meantime.
+    CleanCounter,
 }
 
 impl LintId {
@@ -93,6 +107,8 @@ impl LintId {
         LintId::NeedlessBool,
         LintId::CloneOnCopy,
         LintId::DeadCode,
+        LintId::DeadStore,
+        LintId::CleanCounter,
     ];
 
     /// The stable, lowercase string name for this lint.
@@ -110,6 +126,8 @@ impl LintId {
             LintId::NeedlessBool => "needless_bool",
             LintId::CloneOnCopy => "clone_on_copy",
             LintId::DeadCode => "dead_code",
+            LintId::DeadStore => "dead_store",
+            LintId::CleanCounter => "clean_counter",
         }
     }
 
@@ -133,7 +151,9 @@ impl LintId {
             | LintId::LenZeroComparison
             | LintId::NeedlessBool
             | LintId::CloneOnCopy
-            | LintId::DeadCode => LintLevel::Warn,
+            | LintId::DeadCode
+            | LintId::DeadStore
+            | LintId::CleanCounter => LintLevel::Warn,
         }
     }
 }
@@ -320,10 +340,11 @@ impl LintCtx<'_> {
 /// and, for item-bodied constructs reached through only comments, the
 /// item-level form. `all` matches every lint.
 ///
-/// Exposed to the wider checker (`pub(super)`) so main-pass lints migrated onto
-/// the registry — `clone_on_copy`, `dead_code` — resolve directives through the
-/// same path as the sweep instead of re-implementing it.
-pub(super) fn directive_suppresses(source: &str, span_start: usize, id: LintId) -> bool {
+/// Exposed beyond the checker so MIR-stage lints surfaced through the CLI
+/// (`dead_store`) resolve `// hew:allow(...)` directives through the same path
+/// as the HIR sweep instead of re-implementing it.
+#[must_use]
+pub fn directive_suppresses(source: &str, span_start: usize, id: LintId) -> bool {
     let lines: Vec<&str> = source.lines().collect();
     if lines.is_empty() {
         return false;

@@ -37,18 +37,19 @@ pub use actor_protocol::{
 };
 pub use builtin_type::{builtin_types, lookup_builtin_type, BuiltinType, BuiltinTypeInfo};
 pub use check::{
-    builtin_function_names, ActorMethodKind, ActorSendAliasing, ActorSendCopyReason,
-    ActorStateGuard, ArmResolution, AssignTargetKind, AssignTargetShape, Bound, CallAbiHint,
-    CaptureModeOrigin, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureCaptureMode,
-    ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
-    DynMethodCall, DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig, HashMapMethod,
-    HashSetMethod, ImplDef, ImplId, ImplRegistry, LintId, LintLevel, LintLevels, LintSources,
-    LookupError, MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite,
-    MethodTarget, MethodTargetFamily, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
-    NumericSignedness, NumericWidth, OptionResultMethod, PatternKind, PayloadBinding,
-    PayloadVariantPattern, ResolvedCall, RuntimeAbi, SpanKey, TyPattern, TypeCheckOutput,
-    VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering,
-    WireCodecDirection, WireFieldLayout, WireLayoutEntry, WireLayoutTable,
+    builtin_function_names, directive_suppresses, ActorMethodKind, ActorSendAliasing,
+    ActorSendCopyReason, ActorStateGuard, ArmResolution, AssignTargetKind, AssignTargetShape,
+    Bound, CallAbiHint, CaptureModeOrigin, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
+    ClosureCaptureMode, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding,
+    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig,
+    HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry, LintId, LintLevel, LintLevels,
+    LintSources, LookupError, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
+    MethodCallRewrite, MethodTarget, MethodTargetFamily, NumericMethodFamily,
+    NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth, OptionResultMethod,
+    PatternKind, PayloadBinding, PayloadVariantPattern, ResolvedCall, RuntimeAbi, SpanKey,
+    TyPattern, TypeCheckOutput, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod,
+    WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout, WireLayoutEntry,
+    WireLayoutTable,
 };
 pub use error::TypeError;
 pub use extern_symbol::{

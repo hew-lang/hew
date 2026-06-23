@@ -33,7 +33,7 @@ mod expressions;
 mod generics;
 mod items;
 mod lints;
-pub use self::lints::{LintId, LintLevel, LintLevels, LintSources};
+pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintSources};
 mod methods;
 pub use self::methods::collection_dispatch_registry_for_tests;
 mod patterns;

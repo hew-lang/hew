@@ -1,0 +1,121 @@
+//! Runnable end-to-end check for the terminal `count` and `collect` adapters
+//! driven over a lazy `Map` chain. Unlike `iter_lazy_wrappers.hew` (a
+//! type-check-only surface smoke), this fixture is *compiled and executed* —
+//! it asserts the runtime item count and the materialised `Vec` contents.
+//!
+//! `count`/`collect` here carry a *fixed* `Item = i64` bound rather than the
+//! generic `where I: Iterator<Item = A>` of `std::iter`. The generic signature
+//! type-checks, but a type parameter that appears ONLY inside a where-clause
+//! projection cannot be pinned by the monomorphisation collector, so the
+//! generic `std::iter::count`/`collect` do not yet lower through MIR (a
+//! separate backend lane). Fixing `Item` to `i64` pins every parameter at the
+//! call site and exercises the identical pump-loop body the generic helper
+//! uses.
+//!
+//! Exercises the Q004 fix transitively: the `Map<Countdown, i64, i64>` source
+//! relies on `Map::next` projecting the inner item to `A` (the bound's item),
+//! not the impl's declared `type Item = B`.
+//!
+//! Expected exit code: 15 — item count (3) plus the collected sum
+//! ([6, 4, 2] = 12). Component failures return distinct codes (101 count,
+//! 102 length, 103–105 element values) so a regression is legible.
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    /// Yield `n, n-1, …, 1` then `None`; advance the cursor in place.
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+type Map<I, A, B> {
+    iter: I;
+    f: fn(A) -> B;
+}
+
+impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
+    type Item = B;
+    /// Pump the inner iterator once and lift the item through `f`.
+    fn next(var self) -> Option<B> {
+        var inner = self.iter;
+        let result = match inner.next() {
+            Some(x) => Some((self.f)(x)),
+            None => None,
+        };
+        self.iter = inner;
+        result
+    }
+}
+
+/// Construct a lazy `Map` adapter (mirrors `std::iter::map`).
+fn mk_map<I, A, B>(it: I, f: fn(A) -> B) -> Map<I, A, B> where I: Iterator<Item = A> {
+    Map { iter: it, f: f }
+}
+
+/// Count items in a fixed-`i64` iterator (mirrors `std::iter::count`).
+fn count_i64<I>(it: I) -> i64 where I: Iterator<Item = i64> {
+    var n: i64 = 0;
+    var iter = it;
+    loop {
+        match iter.next() {
+            Some(_) => {
+                n = n + 1;
+            },
+            None => {
+                break;
+            },
+        }
+    }
+    n
+}
+
+/// Collect a fixed-`i64` iterator into a `Vec<i64>` (mirrors `std::iter::collect`).
+fn collect_i64<I>(it: I) -> Vec<i64> where I: Iterator<Item = i64> {
+    let out: Vec<i64> = Vec::new();
+    var iter = it;
+    loop {
+        match iter.next() {
+            Some(x) => {
+                out.push(x);
+            },
+            None => {
+                break;
+            },
+        }
+    }
+    out
+}
+
+fn main() -> i64 {
+    // Lazy map [3, 2, 1] through (* 2) → [6, 4, 2]; count its items → 3.
+    let c = count_i64(mk_map(Countdown { n: 3 }, |x: i64| x * 2));
+    if c != 3 {
+        return 101;
+    }
+    // Same chain, materialised → [6, 4, 2].
+    let v = collect_i64(mk_map(Countdown { n: 3 }, |x: i64| x * 2));
+    if v.len() != 3 {
+        return 102;
+    }
+    if v[0] != 6 {
+        return 103;
+    }
+    if v[1] != 4 {
+        return 104;
+    }
+    if v[2] != 2 {
+        return 105;
+    }
+    // count (3) + collected sum (6 + 4 + 2 = 12) = 15.
+    c + v[0] + v[1] + v[2]
+}

@@ -47,21 +47,30 @@ pub type Map<I, A, B> {
 
 impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
     type Item = B;
-    fn next(it: Map<I, A, B>) -> Option<B> {
+    fn next(var self) -> Option<B> {
 
-        // DEFERRED — fail loud, not silent: returning `None` here would
-        // make Map look like an empty iterator to every caller.
+        // Pump the inner iterator once and lift the item through `f`.
         //
-        // Q004 (separate branch `feat/q004-checker-authority`
-        // commit 4c9667a8): the checker substitutes `Self::Item` from
-        // the where-clause `I: Iterator<Item = A>` projection in place
-        // of the impl's declared `type Item = B`, so the literal
-        // pump-through body (`match it.iter.next() { Some(x) =>
-        // Some((it.f)(x)), None => None }`) is rejected with
-        // "expected A, found B". Once Q004 lands and this branch is
-        // rebased, the body becomes the pump-through above.
-        panic("Map::next is unimplemented pending Q004 checker fix (Self::Item projection through where-clause `Iterator<Item = A>` currently resolves to A instead of the impl's declared `type Item = B`). See std/iter.hew Map<I,A,B> doc-comment and v06-followups.md (iterator-foundation lane, Map deferred body).");
-        None
+        // `self.iter` is moved into a local `var inner` so the inner
+        // iterator's own `next(var self)` write-back lands on a mutable
+        // *binding* receiver: the static-dispatch path for a trait method
+        // on a type parameter requires the receiver to be a `var`
+        // identifier, not a field access (`self.iter.next()` is rejected).
+        // The advanced inner iterator is stored back into `self.iter`, and
+        // `var self`'s own write-back then persists the cursor into the
+        // caller's `Map` across successive `next()` calls — Map keeps no
+        // buffer of its own.
+        //
+        // The inner item type `<I as Iterator>::Item` projects to `A` via
+        // the `I: Iterator<Item = A>` bound, and `f: fn(A) -> B` produces
+        // the declared `type Item = B`.
+        var inner = self.iter;
+        let result = match inner.next() {
+            Some(x) => Some((self.f)(x)),
+            None => None,
+        };
+        self.iter = inner;
+        result
     }
 }
 
@@ -181,34 +190,61 @@ pub fn skip<I, A>(it: I, n: i64) -> Skip<I> where I: Iterator<Item = A> {
 
 // ── terminal helpers ─────────────────────────────────────────────────────
 //
-// DEFERRED — fail loud, not silent. These bodies must not return a
-// trivial default (init / 0 / empty Vec): a silent default would let
-// every consumer's reduction look correct while never advancing the
-// iterator.
-//
-// Q004 (separate branch `feat/q004-checker-authority` commit
-// 4c9667a8): the checker rejects an explicit pump-through body
-// (`match it.next() { Some(x) => f(acc, x), None => break }`) because
-// `<I as Iterator>::Item` is not unified with the bound projection
-// `A`. The signatures and where-bounds below are the locked surface;
-// real bodies land alongside the Q004 fix.
+// Each helper rebinds its iterator argument as `var` so the receiver of
+// `next()` (the `Iterator::next(var self)` shape) writes its advanced state
+// back across loop iterations, then drives the inner iterator to exhaustion.
+// `<I as Iterator>::Item` projects to the bound's `A`, so the loop sees `A`
+// items directly.
 /// Left-fold over `it`: walk every item applying `f(acc, item)` and
 /// return the accumulated value.
 pub fn fold<I, A, B>(it: I, init: B, f: fn(B, A) -> B) -> B where I: Iterator<Item = A> {
-    panic("iter::fold is unimplemented pending Q004 checker fix (cannot unify `<I as Iterator>::Item` with the where-clause projection `A` in a pump-through body). See std/iter.hew terminal-helpers section.");
-    init
+    var acc = init;
+    var iter = it;
+    loop {
+        match iter.next() {
+            Some(x) => {
+                acc = f(acc, x);
+            },
+            None => {
+                break;
+            },
+        }
+    }
+    acc
 }
 
 /// Return the number of items produced by `it`.
 pub fn count<I, A>(it: I) -> i64 where I: Iterator<Item = A> {
-    panic("iter::count is unimplemented pending Q004 checker fix (cannot unify `<I as Iterator>::Item` with the where-clause projection `A` in a pump-through body). See std/iter.hew terminal-helpers section.");
-    0
+    var n: i64 = 0;
+    var iter = it;
+    loop {
+        match iter.next() {
+            Some(_) => {
+                n = n + 1;
+            },
+            None => {
+                break;
+            },
+        }
+    }
+    n
 }
 
 /// Collect every item produced by `it` into a `Vec<A>`.
 pub fn collect<I, A>(it: I) -> Vec<A> where I: Iterator<Item = A> {
-    panic("iter::collect is unimplemented pending Q004 checker fix (cannot unify `<I as Iterator>::Item` with the where-clause projection `A` in a pump-through body). See std/iter.hew terminal-helpers section.");
-    Vec::new()
+    let out: Vec<A> = Vec::new();
+    var iter = it;
+    loop {
+        match iter.next() {
+            Some(x) => {
+                out.push(x);
+            },
+            None => {
+                break;
+            },
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

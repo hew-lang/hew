@@ -273,14 +273,29 @@ compile_accept "machine_fork_args_spawn"
 
 # Stage-2 lazy iterator wrappers: structural smoke. The fixture's wrapper
 # records and `impl Iterator` blocks compile cleanly through the parser and
-# the type checker, but the generic-T impl bodies do not yet have a MIR
-# `ValueClass` lowering (deferred to the follow-on stages that wire
-# `Vec::IntoIterator` and the for-loop desugar). The lock tests under
-# `hew-types::iterator_lazy_wrappers` carry the binding shape — this
-# command is documentary: the fixture is wired in so a future stage
-# wraps it into a real accept run once MIR lowering catches up.
+# the type checker. The generic adapter bodies only lower through MIR once
+# every type parameter pins to a concrete type at a call site (full
+# monomorphisation); the chained generic surface here is asserted at the
+# `hew check` level. The lock tests under
+# `hew-types::iterator_lazy_wrappers` carry the binding shape.
 "${HEW}" check "${ROOT}/tests/vertical-slice/accept/iter_lazy_wrappers.hew" \
     >"${accept_output}" 2>&1
+
+# Q004 follow-through: a *runnable* lazy chain. `Map::next` (lifting the inner
+# item through `f`) plus a terminal `fold`, fully monomorphised over a
+# concrete `Countdown` source, compiles and executes. Exit code 12 is the
+# map-then-fold result ([3,2,1] * 2 = [6,4,2], sum 12); 101/102 flag an
+# internal value mismatch. Locks the Q004 `Self::Item` projection fix at
+# runtime, not just at type-check time.
+run_accept_expect_status "iter_lazy_map_fold_run" 12
+
+# Q004 follow-through, terminal helpers: `count` and `collect` driven over the
+# same lazy `Map` chain. `count`/`collect` carry a fixed `Item = i64` bound
+# (the generic `std::iter` signature type-checks but cannot yet monomorphise —
+# a free `A` appearing only in the where-clause projection is not pinnable by
+# the collector). Exit code 15 is item count (3) plus the collected sum
+# ([6,4,2] = 12); 101–105 flag a count/length/element mismatch.
+run_accept_expect_status "iter_lazy_count_collect_run" 15
 
 # Reject: spawned closures must not capture non-Send values. This fixture uses
 # a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR

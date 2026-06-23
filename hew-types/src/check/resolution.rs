@@ -1238,24 +1238,42 @@ impl Checker {
                     }
                 }
                 if let Some(alias_name) = name.strip_prefix("Self::") {
-                    // No impl scope: in a trait method body (signature), the
+                    // Resolving a trait method's declared signature: the
                     // `Self::Bar` projection must materialise as a deferred
-                    // `Ty::AssocType` so that downstream call sites (where
+                    // `Ty::AssocType` carrier so downstream call sites (where
                     // `Self` substitutes to a concrete type or a type param
-                    // with a bound) can collapse it. Look up the enclosing
-                    // trait via `current_trait_for_self_projection`.
-                    if self.impl_alias_scopes.is_empty() {
-                        if let Some(trait_name) = self.current_trait_for_self_projection.clone() {
-                            return Ty::AssocType {
-                                base: Box::new(Ty::Named {
-                                    builtin: None,
-                                    name: "Self".to_string(),
-                                    args: vec![],
-                                }),
-                                trait_name: trait_name.into_boxed_str(),
-                                assoc_name: alias_name.to_string().into_boxed_str(),
-                            };
-                        }
+                    // with an `Iterator<Item = …>` bound) can collapse it.
+                    //
+                    // `current_trait_for_self_projection` is set ONLY while a
+                    // trait method's signature is being resolved
+                    // (`register_trait_method_sig`, `lookup_trait_method`,
+                    // `lookup_trait_method_with_origin_inner`), where `Self` is
+                    // the trait's abstract Self. Prefer the carrier whenever it
+                    // is set — independent of whether an impl alias scope is
+                    // currently active.
+                    //
+                    // Q004: gating this on `impl_alias_scopes.is_empty()` was
+                    // wrong. An impl body-check (e.g.
+                    // `impl Iterator for Map { type Item = B; fn next … }`)
+                    // pushes the impl's `type Item = B` alias scope and then,
+                    // for an inner `it.next()`, triggers a trait-method lookup
+                    // that re-resolves `Iterator::next`'s `-> Option<Self::Item>`
+                    // from raw AST. With the scope active the carrier path was
+                    // skipped and `Self::Item` collapsed to the impl's concrete
+                    // `B`, mistyping the inner iterator's item and producing a
+                    // spurious "expected A, found B". The impl-alias path below
+                    // still owns the distinct case where an impl body resolves
+                    // its OWN `Self::Item` (projection flag unset).
+                    if let Some(trait_name) = self.current_trait_for_self_projection.clone() {
+                        return Ty::AssocType {
+                            base: Box::new(Ty::Named {
+                                builtin: None,
+                                name: "Self".to_string(),
+                                args: vec![],
+                            }),
+                            trait_name: trait_name.into_boxed_str(),
+                            assoc_name: alias_name.to_string().into_boxed_str(),
+                        };
                     }
                     if let Some(alias_ty) = self.resolve_impl_associated_type(alias_name) {
                         if type_args.as_ref().is_some_and(|args| !args.is_empty()) {

@@ -857,7 +857,7 @@ impl<'a> ProfileChecker<'a> {
             Ty::String => matches!(method, "len" | "slice" | "to_string"),
             Ty::Array(_, _) | Ty::Slice(_) => matches!(method, "len" | "get" | "to_string"),
             Ty::Named { name, .. } if name == "Vec" => {
-                matches!(method, "len" | "push" | "get" | "to_string")
+                matches!(method, "len" | "push" | "get" | "contains" | "to_string")
             }
             Ty::Named { name, .. }
                 if name.eq_ignore_ascii_case("Regex")

@@ -17095,23 +17095,64 @@ impl Builder {
         site: hew_hir::SiteId,
         construct: &str,
     ) -> Option<String> {
-        if self
-            .call_site_type_args
-            .get(&site)
-            .is_some_and(|type_args| !type_args.is_empty())
-        {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: construct.to_string(),
-                    site,
-                },
-                note: "generic free-function task spawning is not yet implemented; \
-                       W4.010 keeps generic spawned free functions fail-closed until \
-                       the task-entry adapter can resolve monomorphised callees"
-                    .to_string(),
-            });
-            return None;
+        // For a generic call site, resolve the monomorphized callee symbol by
+        // mangling the origin name with the per-site concrete type arguments
+        // that HIR recorded. This mirrors the direct-call resolution in the
+        // lower_value Call arm (which dispatches to the mangled symbol for
+        // generic top-level user functions).
+        if let Some(type_args) = self.call_site_type_args.get(&site).cloned() {
+            if !type_args.is_empty() {
+                let HirExprKind::BindingRef { name, .. } = &callee.kind else {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: construct.to_string(),
+                            site,
+                        },
+                        note: "generic task spawn requires a direct function binding \
+                               as callee"
+                            .to_string(),
+                    });
+                    return None;
+                };
+                let substituted: Vec<ResolvedTy> =
+                    type_args.iter().map(|t| self.subst_ty(t)).collect();
+                let mangled = hew_hir::monomorph::mangle(name, &substituted);
+                if !self.module_fn_names.contains(&mangled) {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: construct.to_string(),
+                            site,
+                        },
+                        note: format!(
+                            "generic spawn of `{name}` has no registered \
+                             monomorphization `{mangled}`; HIR must emit this \
+                             instantiation before task spawning can proceed"
+                        ),
+                    });
+                    return None;
+                }
+                // Apply the same no-arg/unit-return gate as the concrete path.
+                if !args.is_empty() || !matches!(ret_ty, ResolvedTy::Unit) {
+                    for arg in args {
+                        let _ = self.lower_value(arg);
+                    }
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: construct.to_string(),
+                            site,
+                        },
+                        note: "cancellation-token task lowering currently supports only \
+                               no-argument functions returning unit; value/result task \
+                               propagation remains fail-closed"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                return Some(mangled);
+            }
         }
+        // Safety guard: a generic function without recorded type arguments
+        // has no resolvable monomorphization and cannot be spawned.
         if matches!(
             &callee.kind,
             HirExprKind::BindingRef { name, .. } if self.module_generic_fn_names.contains(name)
@@ -17121,9 +17162,8 @@ impl Builder {
                     construct: construct.to_string(),
                     site,
                 },
-                note: "generic free-function task spawning is not yet implemented; \
-                       W4.010 keeps generic spawned free functions fail-closed until \
-                       the task-entry adapter can resolve monomorphised callees"
+                note: "generic function spawned without a resolved concrete \
+                       instantiation; provide explicit type arguments"
                     .to_string(),
             });
             return None;
@@ -17415,8 +17455,9 @@ impl Builder {
     /// and the awaiting handler reads it on the resume edge.
     ///
     /// This path does NOT enforce a unit-return restriction (unlike
-    /// `direct_no_arg_unit_callee`). All other gates (generic callee,
-    /// non-module-fn callee, arg-bearing callee) remain fail-closed.
+    /// `direct_no_arg_unit_callee`). All other gates (non-module-fn callee,
+    /// arg-bearing callee) remain fail-closed. Generic callees are resolved to
+    /// their monomorphized symbol via HIR's per-site type arguments.
     fn lower_no_arg_value_callee_task(
         &mut self,
         callee: &HirExpr,
@@ -17425,40 +17466,7 @@ impl Builder {
         scope_place: Place,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        // Generic callees: fail-closed until monomorphisation adapter lands.
-        if self
-            .call_site_type_args
-            .get(&site)
-            .is_some_and(|type_args| !type_args.is_empty())
-        {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "value-task spawn".to_string(),
-                    site,
-                },
-                note: "generic free-function value-task spawning is not yet implemented; \
-                       W4.010 keeps generic spawned free functions fail-closed until \
-                       the task-entry adapter can resolve monomorphised callees"
-                    .to_string(),
-            });
-            return None;
-        }
-        if matches!(
-            &callee.kind,
-            HirExprKind::BindingRef { name, .. } if self.module_generic_fn_names.contains(name)
-        ) {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "value-task spawn".to_string(),
-                    site,
-                },
-                note: "generic free-function value-task spawning is not yet implemented; \
-                       W4.010 keeps generic spawned free functions fail-closed until \
-                       the task-entry adapter can resolve monomorphised callees"
-                    .to_string(),
-            });
-            return None;
-        }
+        // Require a direct BindingRef callee.
         let HirExprKind::BindingRef { name, .. } = &callee.kind else {
             let _ = self.lower_value(callee);
             self.diagnostics.push(MirDiagnostic {
@@ -17470,19 +17478,62 @@ impl Builder {
             });
             return None;
         };
-        if !self.module_fn_names.contains(name) {
+        // For a generic call site, resolve the monomorphized callee symbol by
+        // mangling the origin name with the per-site concrete type arguments.
+        let user_callee_symbol =
+            if let Some(type_args) = self.call_site_type_args.get(&site).cloned() {
+                if type_args.is_empty() {
+                    name.clone()
+                } else {
+                    let substituted: Vec<ResolvedTy> =
+                        type_args.iter().map(|t| self.subst_ty(t)).collect();
+                    let mangled = hew_hir::monomorph::mangle(name, &substituted);
+                    if !self.module_fn_names.contains(&mangled) {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "value-task spawn".to_string(),
+                                site,
+                            },
+                            note: format!(
+                                "generic spawn of `{name}` has no registered \
+                                 monomorphization `{mangled}`; HIR must emit this \
+                                 instantiation before task spawning can proceed"
+                            ),
+                        });
+                        return None;
+                    }
+                    mangled
+                }
+            } else {
+                name.clone()
+            };
+        // Safety guard: a generic function without recorded type arguments
+        // has no resolvable monomorphization and cannot be spawned.
+        if user_callee_symbol == *name && self.module_generic_fn_names.contains(name) {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "value-task spawn".to_string(),
+                    site,
+                },
+                note: "generic function spawned without a resolved concrete \
+                       instantiation; provide explicit type arguments"
+                    .to_string(),
+            });
+            return None;
+        }
+        if !self.module_fn_names.contains(&user_callee_symbol) {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "value-task spawn".to_string(),
                     site,
                 },
                 note: format!(
-                    "value-task spawn callee `{name}` is not a registered module function"
+                    "value-task spawn callee `{user_callee_symbol}` is not a registered \
+                     module function"
                 ),
             });
             return None;
         }
-        let user_callee_symbol = name.clone();
         let callee_symbol = self.ensure_task_entry_adapter(&user_callee_symbol, inner);
         let task_place = self.alloc_local(task_ty.clone());
         self.push_runtime_call("hew_task_new", vec![], Some(task_place));
@@ -17532,24 +17583,6 @@ impl Builder {
         scope_place: Place,
         site: hew_hir::SiteId,
     ) -> Option<Place> {
-        // Generic callees: same fail-closed posture as the no-arg path.
-        if self
-            .call_site_type_args
-            .get(&site)
-            .is_some_and(|type_args| !type_args.is_empty())
-        {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "spawned call".to_string(),
-                    site,
-                },
-                note: "generic free-function task spawning is not yet implemented; \
-                       W4.010 keeps generic spawned free functions fail-closed until \
-                       the task-entry adapter can resolve monomorphised callees"
-                    .to_string(),
-            });
-            return None;
-        }
         let HirExprKind::BindingRef { name, .. } = &callee.kind else {
             let _ = self.lower_value(callee);
             self.diagnostics.push(MirDiagnostic {
@@ -17561,27 +17594,57 @@ impl Builder {
             });
             return None;
         };
-        if self.module_generic_fn_names.contains(name) {
+        // For a generic call site, resolve the monomorphized callee symbol by
+        // mangling the origin name with the per-site concrete type arguments.
+        let callee_sym: String =
+            if let Some(type_args) = self.call_site_type_args.get(&site).cloned() {
+                if type_args.is_empty() {
+                    name.clone()
+                } else {
+                    let substituted: Vec<ResolvedTy> =
+                        type_args.iter().map(|t| self.subst_ty(t)).collect();
+                    let mangled = hew_hir::monomorph::mangle(name, &substituted);
+                    if !self.module_fn_names.contains(&mangled) {
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "spawned call".to_string(),
+                                site,
+                            },
+                            note: format!(
+                                "generic spawn of `{name}` has no registered \
+                                 monomorphization `{mangled}`; HIR must emit this \
+                                 instantiation before task spawning can proceed"
+                            ),
+                        });
+                        return None;
+                    }
+                    mangled
+                }
+            } else {
+                name.clone()
+            };
+        // Safety guard: a generic function without recorded type arguments
+        // has no resolvable monomorphization and cannot be spawned.
+        if callee_sym == *name && self.module_generic_fn_names.contains(name) {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "spawned call".to_string(),
                     site,
                 },
-                note: "generic free-function task spawning is not yet implemented; \
-                       W4.010 keeps generic spawned free functions fail-closed until \
-                       the task-entry adapter can resolve monomorphised callees"
+                note: "generic function spawned without a resolved concrete \
+                       instantiation; provide explicit type arguments"
                     .to_string(),
             });
             return None;
         }
-        if !self.module_fn_names.contains(name) {
+        if !self.module_fn_names.contains(&callee_sym) {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
                     construct: "spawned call".to_string(),
                     site,
                 },
                 note: format!(
-                    "arg-bearing task spawn callee `{name}` is not a registered module function"
+                    "arg-bearing task spawn callee `{callee_sym}` is not a registered module function"
                 ),
             });
             return None;
@@ -17672,7 +17735,7 @@ impl Builder {
             dest: env_place,
         });
 
-        let lowered = self.synthesize_fork_entry_shim(name, &shim_name, &arg_tys, &env_ty);
+        let lowered = self.synthesize_fork_entry_shim(&callee_sym, &shim_name, &arg_tys, &env_ty);
         self.generated_functions.push(lowered);
 
         let task_place = self.alloc_local(task_ty.clone());
@@ -17953,8 +18016,11 @@ impl Builder {
             return None;
         };
         let task_ty = ResolvedTy::Task(Box::new(ResolvedTy::Unit));
-        // Fork-block spawns are unbound — no `fork t =` name, no await.
-        self.lower_spawned_call_task(callee, args, &task_ty, false, site)
+        // Use the inner call's site (expr.site) so that generic call-site type
+        // arguments recorded by HIR for the inner call are visible to the
+        // spawn lowering path. The outer ForkBlock site differs from the inner
+        // Call site, and call_site_type_args is keyed on the inner site.
+        self.lower_spawned_call_task(callee, args, &task_ty, false, expr.site)
     }
 
     fn lower_scope_deadline(

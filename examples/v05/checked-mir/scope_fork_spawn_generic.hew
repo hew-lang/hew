@@ -1,0 +1,42 @@
+// MIR-corpus fixture: generic free-function task spawn.
+//
+// Pins the task ABI lifecycle for a generic callee: the monomorphized
+// callee symbol (fn$$T) is used as the TaskEntry adapter target so
+// each concrete instantiation gets its own adapter.
+//
+// Covers:
+//   - No-arg unit spawn: `fork { worker::<i64>(); }` (ForkBlock form)
+//   - No-arg value spawn: `fork t = compute::<i64>()` (named form)
+fn worker<T>() {}
+
+fn compute<T>() -> i64 {
+    return 42;
+}
+
+actor Driver {
+    receive fn drive() {
+        scope {
+            fork {
+                worker<i64>();
+            };
+            fork {
+                worker<string>();
+            };
+        };
+    }
+    receive fn run_value() -> i64 {
+        var out: i64 = 0;
+        scope {
+            fork t = compute<i64>();
+            let v = await t;
+            out = v;
+        };
+        return out;
+    }
+}
+
+fn main() -> i64 {
+    let d = spawn Driver;
+    d.drive();
+    0
+}

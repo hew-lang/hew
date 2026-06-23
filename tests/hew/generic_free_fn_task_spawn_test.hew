@@ -1,0 +1,106 @@
+//! Generic free-function task spawn: a generic fn lowered through the
+//! monomorphized-callee TaskEntry adapter.
+//!
+//! Exercises three spawn shapes across two distinct concrete type arguments:
+//! - No-arg value-returning spawn (named form) — `fork t = compute_val::<T>()`
+//! - No-arg unit-returning ForkBlock — `fork { unit_work::<T>(); }`
+//! - Arg-bearing unit-returning ForkBlock — `fork { side_work::<T>(a, b); }`
+//!
+//! VALUE ASSERTIONS pin exact results so a mis-routed spawn or wrong
+//! monomorphization is caught by mismatched values, not just exit-code.
+//!
+//! DROP SAFETY: the scope's join-all ensures all forked tasks complete before
+//! the handler resumes; results consumed via `await` are BitCopy scalars
+//! (i64), so scope exit carries no heap ownership to release here.
+
+import std::testing;
+
+// No-arg unit-returning generic callee. The two type args (`i64`, `string`)
+// each generate a separate monomorphized function (`unit_work$$i64`,
+// `unit_work$$string`), each with its own task-entry adapter.
+fn unit_work<T>() {}
+
+// No-arg value-returning generic callee. Returns a hardcoded sentinel
+// so the test can assert the exact value regardless of T.
+fn compute_val<T>() -> i64 {
+    return 42;
+}
+
+// Arg-bearing unit-returning generic callee. Accepts BitCopy scalar args
+// and returns unit — legal through the fork-env shim.
+fn side_work<T>(a: i64, b: i64) {}
+
+actor TaskRunner {
+    var total: i64 = 0;
+
+    // ----------------------------------------------------------------
+    // Spawn + await a no-arg value-returning generic fn at two types.
+    // Each monomorphized instance (compute_val$$i64, compute_val$$string)
+    // gets its own task-entry adapter. Both return 42.
+    // ----------------------------------------------------------------
+    receive fn run_value_tasks() -> i64 {
+        scope {
+            fork t1 = compute_val::<i64>();
+            fork t2 = compute_val::<string>();
+            let v1 = await t1;
+            let v2 = await t2;
+            total = v1 + v2;
+        };
+        return total;
+    }
+
+    // ----------------------------------------------------------------
+    // ForkBlock (no-arg unit) form at two type args — exercises the
+    // `fork { generic_fn::<T>(); }` path via lower_fork_block_task.
+    // ----------------------------------------------------------------
+    receive fn run_unit_fork_block() -> i64 {
+        scope {
+            fork { unit_work::<i64>(); }
+            fork { unit_work::<string>(); }
+        };
+        return 7;
+    }
+
+    // ----------------------------------------------------------------
+    // ForkBlock (arg-bearing unit) form at two type args — exercises
+    // the arg-env shim with a monomorphized callee. Args are BitCopy
+    // scalars (legal through the fork-env transfer).
+    // ----------------------------------------------------------------
+    receive fn run_arg_fork_block() -> i64 {
+        scope {
+            fork { side_work::<i64>(20, 22); }
+            fork { side_work::<string>(10, 32); }
+        };
+        return 55;
+    }
+}
+
+// ---- Tests ----
+
+#[test]
+fn test_generic_free_fn_task_spawn_value() {
+    let r = spawn TaskRunner(total: 0);
+    match await r.run_value_tasks() {
+        Ok(n) => testing.assert_eq(n, 84),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_generic_free_fn_task_spawn_unit_fork_block() {
+    let r = spawn TaskRunner(total: 0);
+    match await r.run_unit_fork_block() {
+        Ok(n) => testing.assert_eq(n, 7),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_generic_free_fn_task_spawn_arg_fork_block() {
+    let r = spawn TaskRunner(total: 0);
+    match await r.run_arg_fork_block() {
+        Ok(n) => testing.assert_eq(n, 55),
+        Err(_) => testing.assert_true(false),
+    }
+}
+

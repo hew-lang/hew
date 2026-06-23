@@ -1369,15 +1369,10 @@ grep -qF "cannot spawn \`worker\` from \`main\`" "${reject_output}"
 grep -qF 'ctx-bearing execution context' "${reject_output}"
 grep -qF 'W4.010-followup-caller-ctx-routing' "${reject_output}"
 
-# Reject: generic free-function task spawn stays fail-closed. The caller is an
-# actor handler so the generic diagnostic is not masked by the caller-context
-# gate.
-if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/free_fn_scope_spawn_generic.hew" >"${reject_output}" 2>&1; then
-  echo "expected free-fn-scope-spawn-generic fixture to fail" >&2
-  exit 1
-fi
-grep -q 'E_NOT_YET_IMPLEMENTED' "${reject_output}"
-grep -qF 'generic free-function task spawning' "${reject_output}"
+# Accept: generic free-function task spawn — actor handler forks a generic
+# callee at two concrete type args (i64 and string); the monomorphized TaskEntry
+# adapters run and the scope join-all waits for both before returning.
+run_accept_expect_stdout "generic_spawn_unit"
 
 # Reject: `fork name = expr` outside any scope{} body.
 # The type checker rejects this before HIR lowering — `fork` child bindings

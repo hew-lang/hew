@@ -860,6 +860,7 @@ codegen-stable = [
   "hew_cbor_de_failed",
   "hew_cbor_de_free",
   "hew_cbor_de_i64",
+  "hew_cbor_de_int_checked",
   "hew_cbor_de_is_null",
   "hew_cbor_de_new",
   "hew_cbor_de_select_key",

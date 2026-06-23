@@ -160,7 +160,14 @@ pub unsafe extern "C" fn hew_cbor_ser_begin_map(buf: *mut c_void) {
     }
 }
 
-/// Close the current CBOR map and attach it to the enclosing context.
+/// Close the current CBOR map and attach it to the enclosing context, emitting
+/// its entries in canonical (ascending key) order.
+///
+/// Map keys are wire field numbers — non-negative integers whose CBOR encodings
+/// sort bytewise in the same order as their numeric value — so an ascending
+/// numeric sort yields the RFC 8949 §4.2.1 canonical key order. Encode is
+/// canonical; the decoder stays liberal (a `BTreeMap` lookup is order-agnostic),
+/// so a non-canonical sender still round-trips.
 ///
 /// # Safety
 /// `buf` must be a live handle from `hew_cbor_ser_new`.
@@ -171,7 +178,16 @@ pub unsafe extern "C" fn hew_cbor_ser_end_map(buf: *mut c_void) {
         return;
     };
     match b.stack.pop() {
-        Some(SerFrame::Map { entries, .. }) => b.emit(Value::Map(entries)),
+        Some(SerFrame::Map { mut entries, .. }) => {
+            // Sort by integer key ascending = canonical order for the
+            // non-negative field-number keys this encoder emits. A stable sort
+            // keeps emission order for any (never-constructed) duplicate keys.
+            entries.sort_by_key(|(key, _)| match key {
+                Value::Integer(i) => i128::from(*i),
+                _ => i128::MIN,
+            });
+            b.emit(Value::Map(entries));
+        }
         _ => b.poisoned = true,
     }
 }
@@ -723,9 +739,16 @@ pub unsafe extern "C" fn hew_cbor_de_enum_begin(reader: *mut c_void) -> u64 {
     }
 }
 
-/// Close a wire enum's payload frame opened by `hew_cbor_de_enum_begin`. Any
-/// unconsumed trailing payload elements (forward-compatible extra fields) are
-/// dropped. Fails closed if the top frame is not the enum's payload array.
+/// Close a wire enum's payload frame opened by `hew_cbor_de_enum_begin`. The
+/// payload array length must EXACTLY equal the active variant's declared field
+/// count: a value staged but never read, or any unconsumed trailing element,
+/// means the sender's arity does not match this variant — a unit tag carrying a
+/// payload (`{tag: [x]}` decoded as a unit variant) or a payload variant with
+/// too many fields. Such a mismatch is rejected as a decode failure rather than
+/// silently dropping the surplus (CLAUDE.md §2: never accept a value the schema
+/// did not describe). A payload variant with too FEW fields already fails closed
+/// at the missing field read (nothing staged). Also fails closed if the top
+/// frame is not the enum's payload array.
 ///
 /// # Safety
 /// `reader` must be a live handle from `hew_cbor_de_new`.
@@ -735,8 +758,18 @@ pub unsafe extern "C" fn hew_cbor_de_enum_end(reader: *mut c_void) {
     let Some(r) = (unsafe { as_de_reader(reader) }) else {
         return;
     };
+    // A value staged but never read means the caller under-read the payload.
+    if r.staged.is_some() {
+        r.failed = true;
+    }
     match r.stack.pop() {
-        Some(DeFrame::Array(_)) => {}
+        Some(DeFrame::Array(items)) => {
+            // Trailing unconsumed elements ⇒ the payload carried more fields than
+            // the variant declares (including a unit tag carrying any payload).
+            if !items.as_slice().is_empty() {
+                r.failed = true;
+            }
+        }
         _ => r.failed = true,
     }
 }
@@ -818,6 +851,58 @@ pub unsafe extern "C" fn hew_cbor_de_u64(reader: *mut c_void) -> u64 {
         return 0;
     };
     v
+}
+
+/// Read the staged value as an integer constrained to a fixed bit width and
+/// signedness, widened to `i64` for the generated walk's narrowing store. A CBOR
+/// integer outside the target type's representable range — over its max, under
+/// its min, or negative for an unsigned target — is rejected as a decode failure
+/// rather than silently truncated to a value the sender never sent (CLAUDE.md
+/// §2: never deliver a fabricated value). This closes the fail-open path where
+/// an `i8` field would accept `300` as `44`, or a `u8` field would accept `-1`.
+///
+/// `bits` is the target width (8/16/32/64); `signed` is nonzero for a signed
+/// target. The returned `i64` carries the in-range value's exact low-64
+/// two's-complement bit pattern, so the caller's truncation to `bits` is
+/// lossless (a `u64` above `i64::MAX` rides as its wrapped negative and the
+/// `u64`-typed store restores it).
+///
+/// # Safety
+/// `reader` must be a live handle from `hew_cbor_de_new`.
+#[no_mangle]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "value range-checked into the target domain; the i128->i64 cast keeps its exact low-64 bit pattern for the caller's fixed-width store"
+)]
+pub unsafe extern "C" fn hew_cbor_de_int_checked(
+    reader: *mut c_void,
+    bits: u32,
+    signed: i32,
+) -> i64 {
+    // SAFETY: reader is a live handle per this fn's contract.
+    let Some(r) = (unsafe { as_de_reader(reader) }) else {
+        return 0;
+    };
+    if bits == 0 || bits > 64 {
+        r.failed = true;
+        return 0;
+    }
+    let Some(Value::Integer(integer)) = r.take_staged() else {
+        r.failed = true;
+        return 0;
+    };
+    let value = i128::from(integer);
+    let (min, max): (i128, i128) = if signed != 0 {
+        let bound = 1i128 << (bits - 1);
+        (-bound, bound - 1)
+    } else {
+        (0, (1i128 << bits) - 1)
+    };
+    if value < min || value > max {
+        r.failed = true;
+        return 0;
+    }
+    value as i64
 }
 
 /// Read the staged value as a Unicode scalar value (`char`), returned widened to
@@ -1560,5 +1645,291 @@ mod tests {
             assert_eq!(hew_cbor_de_failed(r), 1, "de_fail latches the failure");
             hew_cbor_de_free(r);
         }
+    }
+
+    /// A fixed-width integer decode rejects any CBOR integer outside the target
+    /// type's representable range — over its max, under its min, or negative for
+    /// an unsigned target — instead of silently truncating it to a fabricated
+    /// value (CLAUDE.md §2). Without the range check, an `i8` field would accept
+    /// `300` as `44` and a `u8` field would accept `-1` as `255`. In-range
+    /// boundary values still decode intact.
+    #[test]
+    fn narrow_int_range_check_fails_closed() {
+        // (bits, signed_target, value, expect_fail)
+        let cases: &[(u32, bool, i128, bool)] = &[
+            // i8: [-128, 127]
+            (8, true, 127, false),
+            (8, true, -128, false),
+            (8, true, 128, true),  // over max
+            (8, true, 300, true),  // over max (would truncate to 44)
+            (8, true, -129, true), // under min
+            // u8: [0, 255]
+            (8, false, 0, false),
+            (8, false, 255, false),
+            (8, false, 256, true), // over max
+            (8, false, -1, true),  // sign mismatch (would wrap to 255)
+            // i16: [-32768, 32767]
+            (16, true, 32_767, false),
+            (16, true, -32_768, false),
+            (16, true, 32_768, true),
+            (16, true, -32_769, true),
+            // u16: [0, 65535]
+            (16, false, 65_535, false),
+            (16, false, 65_536, true),
+            (16, false, -1, true),
+            // i32: [-2147483648, 2147483647]
+            (32, true, 2_147_483_647, false),
+            (32, true, -2_147_483_648, false),
+            (32, true, 2_147_483_648, true), // a u64 above i32::MAX
+            (32, true, -2_147_483_649, true),
+            // u32: [0, 4294967295]
+            (32, false, 4_294_967_295, false),
+            (32, false, 4_294_967_296, true),
+            (32, false, -1, true),
+        ];
+        // SAFETY: test-controlled handles; each prim wraps ciborium directly.
+        unsafe {
+            for &(bits, signed, value, expect_fail) in cases {
+                let buf = hew_cbor_ser_new();
+                if value < 0 {
+                    hew_cbor_ser_i64(buf, i64::try_from(value).unwrap());
+                } else {
+                    hew_cbor_ser_u64(buf, u64::try_from(value).unwrap());
+                }
+                let mut len = 0usize;
+                let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+                let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+                libc::free(ptr.cast());
+
+                let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+                let got = hew_cbor_de_int_checked(r, bits, i32::from(signed));
+                let failed = hew_cbor_de_failed(r) == 1;
+                assert_eq!(
+                    failed, expect_fail,
+                    "bits={bits} signed={signed} value={value}: fail-closed mismatch"
+                );
+                if !expect_fail {
+                    assert_eq!(
+                        i128::from(got),
+                        value,
+                        "bits={bits} signed={signed} in-range value must decode intact"
+                    );
+                }
+                hew_cbor_de_free(r);
+            }
+        }
+    }
+
+    /// The 64-bit range-checked path preserves the exact low-64 bit pattern the
+    /// generated narrowing store relies on: a `u64` above `i64::MAX` rides back
+    /// as its wrapped negative `i64` (the `u64`-typed store restores the true
+    /// value), `i64::MIN` round-trips on the signed path, and a value that does
+    /// not fit the requested signedness fails closed.
+    #[test]
+    fn wide_int_checked_preserves_bit_pattern() {
+        // SAFETY: test-controlled handles; each prim wraps ciborium directly.
+        unsafe {
+            // u64::MAX decoded as a 64-bit unsigned target: in range, returned as
+            // the all-ones bit pattern (-1 as i64) the u64 store reinterprets.
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_u64(buf, u64::MAX);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            let got = hew_cbor_de_int_checked(r, 64, 0);
+            assert_eq!(hew_cbor_de_failed(r), 0, "u64::MAX is in unsigned-64 range");
+            assert_eq!(
+                u64::from_ne_bytes(got.to_ne_bytes()),
+                u64::MAX,
+                "low-64 bit pattern round-trips for the u64 store"
+            );
+            hew_cbor_de_free(r);
+
+            // i64::MIN decoded as a 64-bit signed target round-trips exactly.
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_i64(buf, i64::MIN);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            let got = hew_cbor_de_int_checked(r, 64, 1);
+            assert_eq!(hew_cbor_de_failed(r), 0, "i64::MIN is in signed-64 range");
+            assert_eq!(got, i64::MIN, "signed-64 extreme round-trips");
+            hew_cbor_de_free(r);
+
+            // A negative integer decoded as a 64-bit UNSIGNED target fails closed.
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_i64(buf, -1);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            let _ = hew_cbor_de_int_checked(r, 64, 0);
+            assert_eq!(
+                hew_cbor_de_failed(r),
+                1,
+                "negative into an unsigned-64 target fails closed"
+            );
+            hew_cbor_de_free(r);
+
+            // u64::MAX decoded as a 64-bit SIGNED target is out of range → fail.
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_u64(buf, u64::MAX);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            let _ = hew_cbor_de_int_checked(r, 64, 1);
+            assert_eq!(
+                hew_cbor_de_failed(r),
+                1,
+                "u64::MAX exceeds signed-64 range → fail closed"
+            );
+            hew_cbor_de_free(r);
+        }
+    }
+
+    /// A wire enum's decoded payload array length must EXACTLY equal the active
+    /// variant's declared field count. A unit tag carrying a payload, or a
+    /// payload variant whose array has a trailing field, is rejected rather than
+    /// silently dropping the surplus (CLAUDE.md §2). A value staged but never
+    /// read (under-read) also fails closed. The exact-arity read still decodes.
+    #[test]
+    fn enum_payload_arity_mismatch_fails_closed() {
+        // Build the payload map `{tag: [items...]}` a sender would emit.
+        let encode_payload = |tag: u64, items: &[i64]| -> Vec<u8> {
+            // SAFETY: test-controlled handle.
+            unsafe {
+                let buf = hew_cbor_ser_new();
+                hew_cbor_ser_begin_map(buf);
+                hew_cbor_ser_key_u64(buf, tag);
+                hew_cbor_ser_begin_array(buf);
+                for &item in items {
+                    hew_cbor_ser_i64(buf, item);
+                }
+                hew_cbor_ser_end_array(buf);
+                hew_cbor_ser_end_map(buf);
+                let mut len = 0usize;
+                let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+                let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+                libc::free(ptr.cast());
+                bytes
+            }
+        };
+
+        // SAFETY: test-controlled readers.
+        unsafe {
+            // Unit tag (reads 0 fields) carrying a payload `{1: [42]}` → reject.
+            let bytes = encode_payload(1, &[42]);
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            assert_eq!(hew_cbor_de_enum_begin(r), 1, "tag read");
+            hew_cbor_de_enum_end(r); // closes without reading the payload field
+            assert_eq!(
+                hew_cbor_de_failed(r),
+                1,
+                "a unit tag carrying a payload must fail closed"
+            );
+            hew_cbor_de_free(r);
+
+            // Payload variant declares one field but `{1: [10, 20]}` carries two:
+            // read the declared field, then the trailing `20` is rejected.
+            let bytes = encode_payload(1, &[10, 20]);
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            assert_eq!(hew_cbor_de_enum_begin(r), 1, "tag read");
+            assert_eq!(hew_cbor_de_array_next(r), 1, "first field present");
+            assert_eq!(hew_cbor_de_i64(r), 10, "declared field value");
+            hew_cbor_de_enum_end(r); // [20] still unread
+            assert_eq!(
+                hew_cbor_de_failed(r),
+                1,
+                "a trailing payload field must fail closed"
+            );
+            hew_cbor_de_free(r);
+
+            // Under-read: a field staged by `array_next` but never consumed by a
+            // `de_*` read is a mismatch (the walk read fewer fields than present).
+            let bytes = encode_payload(1, &[10, 20]);
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            assert_eq!(hew_cbor_de_enum_begin(r), 1, "tag read");
+            assert_eq!(hew_cbor_de_array_next(r), 1, "stage first field");
+            hew_cbor_de_enum_end(r); // staged value never read
+            assert_eq!(
+                hew_cbor_de_failed(r),
+                1,
+                "an unread staged payload field must fail closed"
+            );
+            hew_cbor_de_free(r);
+
+            // Positive control: an exact two-field read decodes clean.
+            let bytes = encode_payload(1, &[10, 20]);
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            assert_eq!(hew_cbor_de_enum_begin(r), 1, "tag read");
+            assert_eq!(hew_cbor_de_array_next(r), 1, "first field present");
+            assert_eq!(hew_cbor_de_i64(r), 10, "first field value");
+            assert_eq!(hew_cbor_de_array_next(r), 1, "second field present");
+            assert_eq!(hew_cbor_de_i64(r), 20, "second field value");
+            hew_cbor_de_enum_end(r);
+            assert_eq!(
+                hew_cbor_de_failed(r),
+                0,
+                "an exact-arity payload decodes clean"
+            );
+            hew_cbor_de_free(r);
+        }
+    }
+
+    /// The encoder emits map keys (wire field numbers) in canonical ascending
+    /// order regardless of emission order: keys staged as `3, 1, 2` serialize as
+    /// the canonical `map(3){ 1: 10, 2: 20, 3: 30 }`. A stock `ciborium` reader
+    /// agrees the bytes are canonical (it reproduces them byte-for-byte from the
+    /// parsed map).
+    #[test]
+    fn encode_emits_canonical_map_keys_ascending() {
+        // SAFETY: test-controlled handle.
+        let bytes = unsafe {
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_begin_map(buf);
+            hew_cbor_ser_key_u64(buf, 3);
+            hew_cbor_ser_i64(buf, 30);
+            hew_cbor_ser_key_u64(buf, 1);
+            hew_cbor_ser_i64(buf, 10);
+            hew_cbor_ser_key_u64(buf, 2);
+            hew_cbor_ser_i64(buf, 20);
+            hew_cbor_ser_end_map(buf);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let v = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+            v
+        };
+        // Canonical CBOR: map(3){ 1: 10, 2: 20, 3: 30 } (30 needs a 1-byte tail).
+        assert_eq!(
+            bytes,
+            vec![0xA3, 0x01, 0x0A, 0x02, 0x14, 0x03, 0x18, 0x1E],
+            "map keys must be emitted in canonical ascending order"
+        );
+        // A stock ciborium reader parses the keys in ascending order and
+        // reproduces the exact bytes (it agrees they are canonical).
+        let value: Value =
+            ciborium::de::from_reader(&mut std::io::Cursor::new(&bytes[..])).expect("valid CBOR");
+        let Value::Map(entries) = value else {
+            panic!("expected a CBOR map");
+        };
+        let keys: Vec<i128> = entries
+            .iter()
+            .map(|(k, _)| i128::from(k.as_integer().unwrap()))
+            .collect();
+        assert_eq!(keys, vec![1, 2, 3], "decoded keys are ascending");
+        let mut reser = Vec::new();
+        ciborium::ser::into_writer(&Value::Map(entries), &mut reser).expect("re-serialize");
+        assert_eq!(
+            reser, bytes,
+            "stock ciborium reproduces the canonical bytes"
+        );
     }
 }

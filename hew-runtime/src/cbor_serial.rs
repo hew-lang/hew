@@ -1052,4 +1052,36 @@ mod tests {
         // SAFETY: s came from malloc_cstring; hew_string_drop is its deallocator.
         unsafe { crate::string::hew_string_drop(s) };
     }
+
+    /// The bytes the encoder emits are canonical CBOR a vanilla `ciborium`
+    /// reader interops with: a wire struct `{ id: 42 @1 }` encodes to the exact
+    /// 4-byte map `A1 01 18 2A` (`map(1){ 1: 42 }`), and re-parsing those bytes
+    /// with `ciborium::de::from_reader` (not our reader) yields `{1: 42}`.
+    #[test]
+    fn encoded_bytes_are_canonical_ciborium() {
+        // SAFETY: test-controlled handle.
+        let bytes = unsafe {
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_begin_map(buf);
+            hew_cbor_ser_key_u64(buf, 1);
+            hew_cbor_ser_i64(buf, 42);
+            hew_cbor_ser_end_map(buf);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let v = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+            v
+        };
+        assert_eq!(bytes, vec![0xA1, 0x01, 0x18, 0x2A], "canonical CBOR map(1)");
+        // Re-decode with a stock ciborium reader to confirm cross-impl interop.
+        let value: Value =
+            ciborium::de::from_reader(&mut std::io::Cursor::new(&bytes[..])).expect("valid CBOR");
+        let Value::Map(entries) = value else {
+            panic!("expected a CBOR map");
+        };
+        assert_eq!(entries.len(), 1);
+        let (key, val) = &entries[0];
+        assert_eq!(i128::from(key.as_integer().unwrap()), 1);
+        assert_eq!(i128::from(val.as_integer().unwrap()), 42);
+    }
 }

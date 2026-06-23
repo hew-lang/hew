@@ -1,0 +1,15 @@
+// Validation: decoding malformed bytes through the CBOR body codec fails closed
+// (the program traps) rather than returning a partial or garbage Packet.
+#[wire]
+struct Packet {
+    id: i64 @1,
+}
+
+fn main() -> i64 {
+    let junk: bytes = bytes::new();
+    junk.push(255);
+    junk.push(255);
+    junk.push(255);
+    let back = Packet.decode(junk);
+    back.id
+}

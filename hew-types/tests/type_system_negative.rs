@@ -631,10 +631,12 @@ fn duplicate_definition_machine_companion_event_trait_before_machine() {
 fn duplicate_definition_same_wire_type() {
     let output = typecheck(
         r"
-        wire type Packet {
+        #[wire]
+        struct Packet {
             id: i32 @1;
         }
-        wire type Packet {
+        #[wire]
+        struct Packet {
             name: string @1;
         }
         fn main() {}

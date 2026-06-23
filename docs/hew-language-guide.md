@@ -1446,7 +1446,7 @@ fn main() {
 }
 ```
 
-> **Note:** Generic constructor functions called *without* turbofish and without a type annotation on the binding emit `E_NOT_YET_IMPLEMENTED: MIR lowering for function call is not implemented yet`. Two workarounds, either of which works:
+> **Note:** Generic constructor functions called *without* turbofish fail — the error depends on context: if `T` is entirely unconstrained (no usage to narrow it), the type-checker reports `cannot infer type for local binding`; once usage constrains `T`, the call emits `E_NOT_YET_IMPLEMENTED: MIR lowering for function call is not implemented yet`. Annotating the binding without turbofish (`let s: Stack<i64> = new_empty()`) does not help — it still emits `E_NOT_YET_IMPLEMENTED`. Two workarounds:
 >
 > ```hew
 > type Stack<T> { items: Vec<T>; }
@@ -1462,13 +1462,13 @@ fn main() {
 > }
 > ```
 >
-> Note: `Stack { items: Vec::new() }` *without* a type annotation (and without the generic ctor function path) also fails with "unknown type `T` at the MIR boundary" — always provide a type annotation when constructing a generic record inline.
+> Note: `Stack { items: Vec::new() }` *without* a type annotation on the binding also fails — with `cannot infer type for local binding` when `T` is unconstrained, or `E_MIR: unknown type 'T' at the MIR boundary` once usage constrains `T`. Always provide a type annotation when constructing a generic record inline.
 
 ### Generics NYI — current limitations
 
 Two patterns type-check but fail at call or check time:
 
-1. **Generic constructor functions without turbofish** (`fn ctor<T>() -> MyType<T>` called as `ctor()` with neither turbofish nor an annotated binding): call sites emit `E_NOT_YET_IMPLEMENTED: MIR lowering for function call is not implemented yet`. Fix: add turbofish (`ctor::<i64>()`) or annotate the binding (`let x: MyType<i64> = ctor()`). See the Turbofish section above for examples.
+1. **Generic constructor functions without turbofish** (`fn ctor<T>() -> MyType<T>` called without turbofish): call sites emit `E_NOT_YET_IMPLEMENTED: MIR lowering for function call is not implemented yet` (or `cannot infer type for local binding` when `T` is unconstrained). Annotating the binding without turbofish (`let x: MyType<i64> = ctor()`) does not resolve it — `E_NOT_YET_IMPLEMENTED` still fires. Fix: add turbofish (`ctor::<i64>()`) or skip the ctor fn and construct inline with an annotated binding (`let x: MyType<i64> = MyType { ... }`). See the Turbofish section above for examples.
 
 2. **`impl Trait for GenericRecord<ConcreteType>`**: trait method body type-checking for multiple concrete instantiations of the same generic record has a known resolution bug where the later-declared impl's type substitution is used for all impls. Until this is fixed, implement trait methods for a concrete (non-generic) record type.
 

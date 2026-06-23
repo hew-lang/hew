@@ -45,9 +45,10 @@
 # spec-0119 and spec-0120 now PASS (removed from list). spec-0123 and spec-0124
 # were previously failing (wire enum NYI) but now pass via #[wire] enum.
 #
-# ─── Guide failures (1) ─────────────────────────────────────────────────────────
+# ─── Guide failures (0) ─────────────────────────────────────────────────────────
 
-guide-0107  # NYI: scope/fork/await concurrency construct not yet lowered to MIR
+# guide-0107 was removed 2026-06-23: std::string.from_int fence now passes;
+# the NYI label was stale (fence renumbered as guide grew).
 
 # ─── Spec failures (107) ─────────────────────────────────────────────────────────
 

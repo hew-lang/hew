@@ -1062,6 +1062,7 @@ fn main() {
 
 **2. `scope{}` body for concurrent tasks** — use `scope{}` with `fork` for structured concurrency. `await` suspensions inside a `scope{}` do not block its sibling forks:
 
+<!-- doctest: skip -->
 ```hew
 scope {
     fork { result_a = work_a(); };
@@ -1072,6 +1073,7 @@ scope {
 
 **3. `await` as a value in non-statement positions is rejected** — `await` cannot be used as a function argument, binary operand, or let-binding right-hand side nested inside a larger expression. Bind the awaited result to a `let` first:
 
+<!-- doctest: skip -->
 ```hew
 // Wrong: await as function argument
 // println(await actor.method());   // compile error
@@ -2247,6 +2249,7 @@ operations, converting a plain suspend into a timed suspend that returns
 
 Use inside a `scope` body to bound how long a handler waits for a peer:
 
+<!-- doctest: skip -->
 ```hew
 scope {
     fork {

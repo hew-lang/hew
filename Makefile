@@ -58,13 +58,14 @@
 #   make miri         — run the curated rust-runtime Miri allowlist locally
 #   make lint         — cargo clippy (workspace + tests, warnings are errors) + hew fmt gate
 #   make hew-fmt-check — check that std/ and examples/ .hew files are formatted (part of lint)
+#   make leak-scan    — scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)
 #   make fuzz-corpus    — regenerate ignored cargo-fuzz corpora from current fixtures/examples
 #   make fuzz-smoke     — build and smoke-run cargo-fuzz targets locally
 #   make clean        — remove build/, target/
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-o2-differential test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-o2-differential test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -318,6 +319,7 @@ install-hooks:
 	mkdir -p "$$pre_commit_dir" "$$pre_push_dir"; \
 	format_link_target="../../../scripts/pre-commit-fmt.sh"; \
 	preflight_link_target="../../../scripts/pre-push-ci-preflight.sh"; \
+	leak_scan_link_target="../../../scripts/pre-push-leak-scan.sh"; \
 	wrote_links=""; \
 	skipped_links=""; \
 	dispatcher_summary=""; \
@@ -332,6 +334,12 @@ install-hooks:
 	else \
 		ln -sfn "$$preflight_link_target" "$$pre_push_dir/ci-preflight"; \
 		wrote_links="$$wrote_links\n  - $$pre_push_dir/ci-preflight -> $$preflight_link_target"; \
+	fi; \
+	if [ -L "$$pre_push_dir/leak-scan" ] && [ "$$(readlink "$$pre_push_dir/leak-scan")" = "$$leak_scan_link_target" ]; then \
+		skipped_links="$$skipped_links\n  - $$pre_push_dir/leak-scan -> $$leak_scan_link_target"; \
+	else \
+		ln -sfn "$$leak_scan_link_target" "$$pre_push_dir/leak-scan"; \
+		wrote_links="$$wrote_links\n  - $$pre_push_dir/leak-scan -> $$leak_scan_link_target"; \
 	fi; \
 	hooks_path="$$(git config --global --get core.hooksPath 2>/dev/null; status=$$?; if [ $$status -eq 0 ]; then :; elif [ $$status -eq 1 ]; then printf ''; else exit $$status; fi)"; \
 	if [ -z "$$hooks_path" ]; then \
@@ -950,8 +958,16 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: runtime-poison-safe-lint lint-wasm-todo verify-ffi hew-fmt-check
+lint: runtime-poison-safe-lint lint-wasm-todo leak-scan verify-ffi hew-fmt-check
 	cargo clippy --workspace --tests -- -D warnings
+
+# Scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)
+# and scan commit-message bodies of commits not yet on origin/main for the same tokens.
+# Runs fast (<2 s each, git-grep and git-log only).
+# See scripts/lint-orchestration-leak.sh and tests/leak-scan/ for the token catalogue.
+leak-scan:
+	bash scripts/lint-orchestration-leak.sh
+	bash scripts/lint-orchestration-leak.sh --scan-commits
 
 # Check that std/ and examples/ .hew sources are formatted.
 # Run `find std examples -name "*.hew" -print0 | xargs -0 hew fmt` to fix.

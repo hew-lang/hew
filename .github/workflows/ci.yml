@@ -119,6 +119,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          # fetch-depth: 0 required so origin/main is available for the
+          # orchestration-token commit-message scan (--scan-commits range
+          # origin/main..HEAD) that runs in the leak-scan step below.
+          fetch-depth: 0
 
       - uses: ./.github/actions/setup-rust-build
         with:
@@ -176,6 +181,13 @@ jobs:
 
       - name: Runtime poison-safe lint
         run: make runtime-poison-safe-lint
+
+      - name: Orchestration-token leak scan
+        # Scan tracked source files and commit-message bodies of all PR commits
+        # for orchestration tokens (lane IDs, Q-tags, .tmp/ paths).  Placed outside
+        # CI-PARITY-STEPS so the preflight↔CI parity assertion is unaffected.
+        # origin/main is available because the checkout above uses fetch-depth: 0.
+        run: make leak-scan
 
       - name: Preflight↔CI parity self-test
         # Assert that the dispatcher's fallback lane mirrors the CI build-and-test

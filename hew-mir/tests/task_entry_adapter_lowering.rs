@@ -166,7 +166,7 @@ fn default_callconv_spawn_rejects_before_spawn_task_direct() {
 
 #[test]
 fn generic_free_fn_spawn_uses_monomorphized_task_entry_adapters() {
-    // After the G8 fix: a generic callee spawned with a concrete type arg
+    // After this change: a generic callee spawned with a concrete type arg
     // resolves to the monomorphized symbol (worker$$i64) and gets its own
     // task-entry adapter (__hew_task_entry_worker__i64). No NYI diagnostic.
     let pipeline = lower_source(

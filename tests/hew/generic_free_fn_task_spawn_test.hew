@@ -9,9 +9,9 @@
 //! VALUE ASSERTIONS pin exact results so a mis-routed spawn or wrong
 //! monomorphization is caught by mismatched values, not just exit-code.
 //!
-//! DROP SAFETY: the spawned tasks' owned results (i64s) are fully consumed
-//! via `await` inside the scope; the scope's join-all ensures both tasks
-//! complete before the handler resumes.
+//! DROP SAFETY: the scope's join-all ensures all forked tasks complete before
+//! the handler resumes; results consumed via `await` are BitCopy scalars
+//! (i64), so scope exit carries no heap ownership to release here.
 
 import std::testing;
 

@@ -1451,7 +1451,7 @@ pub enum MethodCallRewrite {
     /// The CBOR round-trip is implemented by the `__hew_cbor_serialize_<key>` /
     /// `__hew_cbor_deserialize_<key>` C-ABI thunk pair codegen emits
     /// (`hew-codegen-rs/src/llvm.rs`). A struct rides a tag-keyed CBOR map; an
-    /// enum rides the q185 Qa "map-of-one" shape. These thunks have a non-Hew
+    /// enum rides the "map-of-one" shape. These thunks have a non-Hew
     /// ABI (an out-length / out-struct-size pointer parameter and a malloc'd
     /// result the caller adopts), so the call cannot lower through the generic
     /// `RewriteToFunction` path — it gets a dedicated HIR node that codegen
@@ -2266,7 +2266,7 @@ pub struct Checker {
     /// structs.
     pub(super) wire_struct_types: HashSet<String>,
     /// `#[wire]` enum type names that carry the binary CBOR codec methods
-    /// (`encode`/`decode`). The enum body uses the q185 Qa "map-of-one"
+    /// (`encode`/`decode`). The enum body uses the "map-of-one"
     /// shape (`{tag: [payload]}`, unit variants = the bare tag). Parallel to
     /// `wire_struct_types` so the method-dispatch arms recognise the codec call
     /// for an enum receiver as well as a struct.

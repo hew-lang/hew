@@ -1,5 +1,5 @@
 // Validation: a `#[wire]` enum with payload variants round-trips through the
-// CBOR body codec. Under the q185 Qa shape a payload variant encodes as a
+// CBOR body codec. Under the map-of-one shape a payload variant encodes as a
 // single-entry map `{tag: [field0, field1, ...]}`, while a unit variant stays a
 // bare tag. This fixture constructs `Rect(40, 2)`; the recovered fields sum to
 // 42, so a mis-tagged or mis-ordered payload changes the exit code.

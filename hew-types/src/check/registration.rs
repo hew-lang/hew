@@ -2130,7 +2130,7 @@ impl Checker {
         // recognise the binary `encode`/`decode` codec calls (which lower to the
         // `__hew_cbor_serialize_*` / `__hew_cbor_deserialize_*` thunks) without
         // re-deriving wire-ness. Both ride the CBOR body codec: structs as a
-        // tag-keyed map, enums as the q185 Qa "map-of-one" shape.
+        // tag-keyed map, enums as the "map-of-one" shape.
         if is_wire_struct {
             self.wire_struct_types.insert(type_name.to_string());
         }
@@ -2142,8 +2142,8 @@ impl Checker {
 
         // Wire structs and wire enums carry the same method surface: the binary
         // CBOR codec (`encode`/`decode`) plus the text-format helpers. The body
-        // shapes differ at codegen (struct = tag-keyed map, enum = q185 Qa
-        // map-of-one), but the registered signatures are identical.
+        // shapes differ at codegen (struct = tag-keyed map, enum =
+        // "map-of-one"), but the registered signatures are identical.
         let instance_methods = if is_wire_struct || is_serial_wire_enum {
             vec![
                 ("encode", vec![], bytes_ty.clone()),

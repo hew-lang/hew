@@ -33952,7 +33952,7 @@ fn emit_ser_value_cbor<'ctx>(
 
 /// Emit the CBOR encode walk for a `Named` type. A registered record encodes as
 /// a CBOR map keyed by each field's wire tag; a registered enum encodes under
-/// the q185 Qa map-of-one shape (`emit_ser_enum_cbor`).
+/// the map-of-one shape (`emit_ser_enum_cbor`).
 #[allow(clippy::too_many_arguments)]
 fn emit_ser_named_cbor<'ctx>(
     ctx: &'ctx Context,
@@ -33970,7 +33970,7 @@ fn emit_ser_named_cbor<'ctx>(
     enum_layouts: &[EnumLayout],
 ) -> CodegenResult<()> {
     let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
-    // Enum: encode under the q185 Qa map-of-one shape.
+    // Enum: encode under the map-of-one shape.
     if let (Some(layout), Some(el)) = (
         machine_layouts.get(&key),
         enum_layouts.iter().find(|e| e.name == key),
@@ -34329,7 +34329,7 @@ fn emit_de_value_cbor<'ctx>(
 
 /// Emit the CBOR decode walk for a `Named` type into `dst`. A registered record
 /// enters a CBOR map, selects each field by its wire tag, decodes it, then exits
-/// the map (tolerating extra keys); a registered enum decodes the q185 Qa
+/// the map (tolerating extra keys); a registered enum decodes the
 /// map-of-one shape (`emit_de_enum_cbor`).
 #[allow(clippy::too_many_arguments)]
 fn emit_de_named_cbor<'ctx>(
@@ -34348,7 +34348,7 @@ fn emit_de_named_cbor<'ctx>(
     enum_layouts: &[EnumLayout],
 ) -> CodegenResult<()> {
     let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
-    // Enum: decode the q185 Qa map-of-one shape.
+    // Enum: decode the map-of-one shape.
     if let (Some(layout), Some(el)) = (
         machine_layouts.get(&key),
         enum_layouts.iter().find(|e| e.name == key),
@@ -34442,7 +34442,7 @@ fn emit_de_named_cbor<'ctx>(
 /// layout (matched by variant name), falling back to the positional index when
 /// no explicit layout entry exists. Mirrors `cbor_field_key` for record fields:
 /// the wire tag — not the in-memory discriminant — is the cross-version
-/// compatibility authority, so the Qa map key / unit integer is driven from it.
+/// compatibility authority, so the map key / unit integer is driven from it.
 fn cbor_variant_tag(
     wire_layouts: &WireLayoutTable,
     enum_key: &str,
@@ -34919,7 +34919,7 @@ fn emit_de_vec_cbor<'ctx>(
     Ok(())
 }
 
-/// Encode an `Option<T>` field under the q185 null encoding: `None` emits CBOR
+/// Encode an `Option<T>` field under the null encoding: `None` emits CBOR
 /// null; `Some(v)` emits the bare value `v`. Nested `Option<Option<_>>` is
 /// ambiguous under this encoding (a `Some(None)` and an outer `None` both reduce
 /// to null), so it fails closed.
@@ -34967,7 +34967,7 @@ fn emit_ser_option_cbor<'ctx>(
     ) {
         return Err(CodegenError::FailClosed(
             "wire CBOR serialize: Option<Option<_>> is ambiguous under the null \
-             encoding (q185 §F) — not supported"
+             encoding — not supported"
                 .into(),
         ));
     }
@@ -35047,7 +35047,7 @@ fn emit_ser_option_cbor<'ctx>(
     Ok(())
 }
 
-/// Decode an `Option<T>` field under the q185 null encoding: CBOR null
+/// Decode an `Option<T>` field under the null encoding: CBOR null
 /// reconstructs `None`; any other value reconstructs `Some(decode(value))`.
 /// Nested `Option<Option<_>>` fails closed (ambiguous under null).
 #[allow(clippy::too_many_arguments)]
@@ -35103,7 +35103,7 @@ fn emit_de_option_cbor<'ctx>(
     ) {
         return Err(CodegenError::FailClosed(
             "wire CBOR deserialize: Option<Option<_>> is ambiguous under the null \
-             encoding (q185 §F) — not supported"
+             encoding — not supported"
                 .into(),
         ));
     }
@@ -35231,7 +35231,7 @@ fn emit_de_option_cbor<'ctx>(
     Ok(())
 }
 
-/// Encode a wire enum under the q185 Qa "map-of-one" shape: a unit variant emits
+/// Encode a wire enum under the "map-of-one" shape: a unit variant emits
 /// its bare integer tag; a payload variant emits a single-entry map
 /// `{tag: [field0, field1, ...]}`. The tag is the schema-stable wire tag
 /// (`cbor_variant_tag`). An out-of-range in-memory discriminant traps
@@ -35406,7 +35406,7 @@ fn emit_ser_enum_cbor<'ctx>(
     Ok(())
 }
 
-/// Decode a wire enum under the q185 Qa shape. `hew_cbor_de_enum_begin` returns
+/// Decode a wire enum under the "map-of-one" shape. `hew_cbor_de_enum_begin` returns
 /// the wire tag and stages the payload array (empty for a unit variant); a
 /// switch on the wire tag selects the variant, stores the in-memory
 /// discriminant, and drains the payload array into the variant's fields.

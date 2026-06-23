@@ -2989,7 +2989,7 @@ run_check_run_expect_stdout wrapping_saturating_as_cast
 # bool/char/string scalars (incl. the empty string), bytes, Option (Some and
 # None under the null encoding), Vec (int and string elements, plus the empty
 # collection boundary), a nested #[wire] struct, and a #[wire] enum (unit and
-# payload variants under the q185 Qa map-of-one shape). The decode-malformed
+# payload variants under the map-of-one shape). The decode-malformed
 # fixture proves the codec fails closed (traps) on garbage rather than
 # fabricating a partial value.
 run_accept_expect_status "wire_cbor_roundtrip_packet" 42

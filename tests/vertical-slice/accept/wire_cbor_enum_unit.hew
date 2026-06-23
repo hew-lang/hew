@@ -1,5 +1,5 @@
 // Validation: a `#[wire]` enum with only unit variants round-trips through the
-// CBOR body codec. Under the q185 Qa shape a unit variant encodes as its bare
+// CBOR body codec. Under the map-of-one shape a unit variant encodes as its bare
 // integer wire tag. The recovered variant selects the exit code (42 for the
 // constructed `Pending`).
 #[wire]

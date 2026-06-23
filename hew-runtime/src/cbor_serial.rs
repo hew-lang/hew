@@ -635,7 +635,7 @@ pub unsafe extern "C" fn hew_cbor_de_exit_array(reader: *mut c_void) {
 /// Begin decoding a wire enum, returning the active variant's integer tag and
 /// staging its payload for the field reads that follow.
 ///
-/// The wire shape of an enum (the "map-of-one" form, q185 Qa) is one of:
+/// The wire shape of an enum (the "map-of-one" form) is one of:
 /// - a bare unsigned integer `N` — a *unit* variant with tag `N`; or
 /// - a single-entry map `{N: [field0, field1, ...]}` — a *payload* variant with
 ///   tag `N` whose value is the positional payload array.
@@ -1174,11 +1174,11 @@ mod tests {
         assert_eq!(i128::from(val.as_integer().unwrap()), 42);
     }
 
-    /// The q185 Qa payload-variant shape `{tag: [payload...]}` is canonical CBOR
+    /// The payload-variant map-of-one shape `{tag: [payload...]}` is canonical CBOR
     /// a stock `ciborium` reader interops with: `Circle(42)` (variant tag 1)
     /// encodes to `A1 01 81 18 2A` (`map(1){ 1: array(1)[42] }`).
     #[test]
-    fn enum_payload_qa_shape_is_canonical_ciborium() {
+    fn enum_payload_map_of_one_shape_is_canonical_ciborium() {
         // SAFETY: test-controlled handle.
         let bytes = unsafe {
             let buf = hew_cbor_ser_new();
@@ -1204,7 +1204,7 @@ mod tests {
         let Value::Map(entries) = value else {
             panic!("expected a CBOR map");
         };
-        assert_eq!(entries.len(), 1, "Qa map-of-one");
+        assert_eq!(entries.len(), 1, "map-of-one");
         let (key, val) = &entries[0];
         assert_eq!(i128::from(key.as_integer().unwrap()), 1, "variant tag");
         let Value::Array(items) = val else {

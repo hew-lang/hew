@@ -2920,7 +2920,13 @@ impl<'a> Formatter<'a> {
                 args,
                 ..
             } => {
-                let needs_callee_parens = matches!(function.0, Expr::Lambda { .. });
+                // Add parens around a FieldAccess callee so that `(rec.f)(args)` — a
+                // function call through a fn-typed field — formats as `(rec.f)(args)` and
+                // re-parses as `Call { FieldAccess }`, not as a `MethodCall`. The two forms
+                // are syntactically distinct (different AST nodes, different checker paths);
+                // normalising them would break the round-trip property.
+                let needs_callee_parens =
+                    matches!(function.0, Expr::Lambda { .. } | Expr::FieldAccess { .. });
                 if needs_callee_parens {
                     self.write("(");
                 }

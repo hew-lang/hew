@@ -3,7 +3,6 @@
 // is not callable; `check_call_with_type` emits "cannot call value of type `i64`"
 // (not "undefined function") — the guard fires correctly for values that
 // are not function-typed.
-
 type Counter {
     count: i64;
 }

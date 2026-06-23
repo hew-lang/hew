@@ -5504,7 +5504,10 @@ impl Checker {
                 // with the correct ABI. The text-format `from_json`/`from_yaml`
                 // static methods are deliberately excluded — no text-format thunk
                 // exists, so they stay fail-closed.
-                if method == "decode" && self.wire_struct_types.contains(name) {
+                if method == "decode"
+                    && (self.wire_struct_types.contains(name)
+                        || self.wire_enum_types.contains(name))
+                {
                     if let Ok(value_ty) = ResolvedTy::from_ty(&self.subst.resolve(&sig.return_type))
                     {
                         self.record_method_call_rewrite(
@@ -7272,7 +7275,10 @@ impl Checker {
                         // text-format instance methods (`to_json`/`to_yaml`) are
                         // deliberately excluded — no text-format thunk exists, so
                         // they stay fail-closed.
-                        if method == "encode" && self.wire_struct_types.contains(name) {
+                        if method == "encode"
+                            && (self.wire_struct_types.contains(name)
+                                || self.wire_enum_types.contains(name))
+                        {
                             if let Ok(value_ty) =
                                 ResolvedTy::from_ty(&self.subst.resolve(&resolved))
                             {

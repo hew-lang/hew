@@ -1,0 +1,33 @@
+// Validation: decoding a CBOR integer that does not fit the target field's
+// fixed width fails closed (the program traps) rather than truncating to a
+// fabricated value the sender never sent. The bytes are well-formed CBOR — a
+// single-entry map `{1: 300}` — so the failure is at the value layer, not the
+// CBOR-parse layer.
+//
+// `Wide` encodes its field as the integer 300; `Narrow` declares the same field
+// as an `i8`, whose range is [-128, 127]. Without the range check the decoder
+// would truncate 300 to 44 and deliver it; the range-checked reader instead
+// latches decode failure, so the thunk frees the reader + partial shell, returns
+// null, and the `.decode()` call site traps — the same free-before-trap
+// discipline every other malformed shape follows.
+#[wire]
+struct Wide {
+    v: i64 @1,
+}
+
+#[wire]
+struct Narrow {
+    v: i8 @1,
+}
+
+fn main() -> i64 {
+    let w = Wide { v: 300 };
+    let raw = w.encode();
+    let back = Narrow.decode(raw);
+    // Unreachable: a correct decoder traps above. If the old truncating
+    // behaviour returned, `back.v` would be the fabricated 44.
+    if back.v == 44 {
+        return 44;
+    }
+    0
+}

@@ -1,0 +1,20 @@
+// Reject: `Option<Option<T>>` is not a supported wire-body field shape. Under
+// the CBOR null encoding both `None` and `Some(None)` would serialize to CBOR
+// null, so the two are indistinguishable on decode. The codec fails closed at
+// codegen-front validation rather than silently collapsing them.
+#[wire]
+struct Nested {
+    x: Option<Option<i64>> @1,
+}
+
+fn main() -> i64 {
+    let h = Nested { x: Some(Some(1)) };
+    let back = Nested.decode(h.encode());
+    match back.x {
+        Some(inner) => match inner {
+            Some(v) => v,
+            None => 2,
+        },
+        None => 3,
+    }
+}

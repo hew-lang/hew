@@ -1,0 +1,24 @@
+// Validation: the non-integer scalar shapes round-trip through the CBOR body
+// codec — f32, f64, bool, char, a non-empty string, and an empty string (the
+// empty-string boundary). A mismatch returns the field's 1-based index.
+#[wire]
+struct Scalars {
+    a: f32 @1,
+    b: f64 @2,
+    c: bool @3,
+    d: char @4,
+    e: string @5,
+    f: string @6,
+}
+
+fn main() -> i64 {
+    let v = Scalars { a: 1.5, b: 2.25, c: true, d: 'Z', e: "hello", f: "" };
+    let back = Scalars.decode(v.encode());
+    if back.a != 1.5 { return 1; }
+    if back.b != 2.25 { return 2; }
+    if back.c != true { return 3; }
+    if back.d != 'Z' { return 4; }
+    if back.e != "hello" { return 5; }
+    if back.f != "" { return 6; }
+    0
+}

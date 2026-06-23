@@ -1,0 +1,17 @@
+// Validation: an `Option<i64>` field round-trips both inhabitants through the
+// CBOR body codec under the null encoding — `Some(v)` is the bare value,
+// `None` is CBOR null. This fixture exercises `Some`; the recovered payload
+// (42) is the exit code, so a garbled round-trip changes it.
+#[wire]
+struct Holder {
+    maybe: Option<i64> @1,
+}
+
+fn main() -> i64 {
+    let h = Holder { maybe: Some(42) };
+    let back = Holder.decode(h.encode());
+    match back.maybe {
+        Some(v) => v,
+        None => -1,
+    }
+}

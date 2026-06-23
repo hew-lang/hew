@@ -1444,22 +1444,24 @@ pub enum MethodCallRewrite {
     RecordFnFieldCall {
         field_ty: crate::resolved_ty::ResolvedTy,
     },
-    /// Binary wire codec call on a `#[wire]` struct: `value.encode() -> bytes`
-    /// (instance) or `Type.decode(bytes) -> Type` (static).
+    /// Binary wire codec call on a `#[wire]` struct or enum:
+    /// `value.encode() -> bytes` (instance) or `Type.decode(bytes) -> Type`
+    /// (static).
     ///
-    /// The msgpack round-trip is implemented by the `__hew_serialize_<key>` /
-    /// `__hew_deserialize_<key>` C-ABI thunk pair codegen already emits for the
-    /// actor message path (`hew-codegen-rs/src/llvm.rs`). These thunks have a
-    /// non-Hew ABI (an out-length / out-struct-size pointer parameter and a
-    /// malloc'd result the caller adopts), so the call cannot lower through the
-    /// generic `RewriteToFunction` path — it gets a dedicated HIR node that
-    /// codegen wires to the thunk with the correct ABI.
+    /// The CBOR round-trip is implemented by the `__hew_cbor_serialize_<key>` /
+    /// `__hew_cbor_deserialize_<key>` C-ABI thunk pair codegen emits
+    /// (`hew-codegen-rs/src/llvm.rs`). A struct rides a tag-keyed CBOR map; an
+    /// enum rides the "map-of-one" shape. These thunks have a non-Hew
+    /// ABI (an out-length / out-struct-size pointer parameter and a malloc'd
+    /// result the caller adopts), so the call cannot lower through the generic
+    /// `RewriteToFunction` path — it gets a dedicated HIR node that codegen
+    /// wires to the thunk with the correct ABI.
     ///
-    /// `value_ty` is the checker-resolved wire-struct type (the receiver type
-    /// for `encode`, the produced type for `decode`); codegen derives the thunk
-    /// key from it via the same `mangle_resolved_ty` encoder the actor path
-    /// uses, so a direct `.encode()` and an actor send of the same type share
-    /// one thunk.
+    /// `value_ty` is the checker-resolved wire type (the receiver type for
+    /// `encode`, the produced type for `decode`); codegen derives the thunk key
+    /// from it via the same `mangle_resolved_ty` encoder the actor cross-node
+    /// path uses, so every site referencing one wire type shares a single CBOR
+    /// thunk pair.
     ///
     /// The text-format wire methods (`to_json`/`to_yaml`/`from_json`/
     /// `from_yaml`/`to_toml`/`from_toml`) are intentionally NOT covered here:
@@ -1516,9 +1518,9 @@ pub enum MathGenericOp {
 /// Direction of a [`MethodCallRewrite::WireCodec`] call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireCodecDirection {
-    /// `value.encode() -> bytes`: serialize the receiver to msgpack bytes.
+    /// `value.encode() -> bytes`: serialize the receiver to CBOR bytes.
     Encode,
-    /// `Type.decode(bytes) -> Type`: deserialize msgpack bytes back to the type.
+    /// `Type.decode(bytes) -> Type`: deserialize CBOR bytes back to the type.
     Decode,
 }
 
@@ -2256,13 +2258,19 @@ pub struct Checker {
     /// record types the user attempts to clone — these are ALWAYS non-cloneable
     /// because a shallow copy aliases the runtime handle.
     pub(super) user_opaque_type_names: HashSet<String>,
-    /// `#[wire]` struct type names that carry the binary msgpack codec methods
+    /// `#[wire]` struct type names that carry the binary CBOR codec methods
     /// (`encode`/`decode`). Distinguishes the wire-codec `encode`/`decode` calls
-    /// — which lower to the `__hew_serialize_*` / `__hew_deserialize_*` thunks —
-    /// from a same-named user method, without re-deriving wire-ness in the
-    /// method-dispatch arms. Populated by `register_wire_methods` for wire
-    /// structs only (wire enums carry no binary codec methods).
+    /// — which lower to the `__hew_cbor_serialize_*` / `__hew_cbor_deserialize_*`
+    /// thunks — from a same-named user method, without re-deriving wire-ness in
+    /// the method-dispatch arms. Populated by `register_wire_methods` for wire
+    /// structs.
     pub(super) wire_struct_types: HashSet<String>,
+    /// `#[wire]` enum type names that carry the binary CBOR codec methods
+    /// (`encode`/`decode`). The enum body uses the "map-of-one"
+    /// shape (`{tag: [payload]}`, unit variants = the bare tag). Parallel to
+    /// `wire_struct_types` so the method-dispatch arms recognise the codec call
+    /// for an enum receiver as well as a struct.
+    pub(super) wire_enum_types: HashSet<String>,
     /// Set on every type registration; cleared once `ensure_handle_bearing_fresh`
     /// runs the fixpoint refresh. Converts O(N²) per-registration rescans to a
     /// single pass before the first lookup — see `ensure_handle_bearing_fresh`.
@@ -2874,6 +2882,7 @@ impl Checker {
             handle_bearing_structs: HashSet::new(),
             user_opaque_type_names: HashSet::new(),
             wire_struct_types: HashSet::new(),
+            wire_enum_types: HashSet::new(),
             handle_bearing_dirty: false,
             refresh_call_count: 0,
             receive_generator_methods: HashSet::new(),

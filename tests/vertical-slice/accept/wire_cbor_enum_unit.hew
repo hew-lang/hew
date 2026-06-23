@@ -1,0 +1,20 @@
+// Validation: a `#[wire]` enum with only unit variants round-trips through the
+// CBOR body codec. Under the map-of-one shape a unit variant encodes as its bare
+// integer wire tag. The recovered variant selects the exit code (42 for the
+// constructed `Pending`).
+#[wire]
+enum Status {
+    Active;
+    Inactive;
+    Pending;
+}
+
+fn main() -> i64 {
+    let s = Status::Pending;
+    let back = Status.decode(s.encode());
+    match back {
+        Status::Active => 1,
+        Status::Inactive => 2,
+        Status::Pending => 42,
+    }
+}

@@ -2126,25 +2126,27 @@ impl Checker {
         else {
             return;
         };
-        // Track wire structs so the method-dispatch arms can recognise the
-        // binary `encode`/`decode` codec calls (which lower to the
-        // `__hew_serialize_*` / `__hew_deserialize_*` thunks) without
-        // re-deriving wire-ness. Only wire structs carry the binary codec; wire
-        // enums get JSON/YAML helpers only.
+        // Track wire structs and wire enums so the method-dispatch arms can
+        // recognise the binary `encode`/`decode` codec calls (which lower to the
+        // `__hew_cbor_serialize_*` / `__hew_cbor_deserialize_*` thunks) without
+        // re-deriving wire-ness. Both ride the CBOR body codec: structs as a
+        // tag-keyed map, enums as the "map-of-one" shape.
         if is_wire_struct {
             self.wire_struct_types.insert(type_name.to_string());
+        }
+        if is_serial_wire_enum {
+            self.wire_enum_types.insert(type_name.to_string());
         }
         self.wire_layouts
             .insert(type_name.to_string(), layout_entry);
 
-        let instance_methods = if is_wire_struct {
+        // Wire structs and wire enums carry the same method surface: the binary
+        // CBOR codec (`encode`/`decode`) plus the text-format helpers. The body
+        // shapes differ at codegen (struct = tag-keyed map, enum =
+        // "map-of-one"), but the registered signatures are identical.
+        let instance_methods = if is_wire_struct || is_serial_wire_enum {
             vec![
                 ("encode", vec![], bytes_ty.clone()),
-                ("to_json", vec![], Ty::String),
-                ("to_yaml", vec![], Ty::String),
-            ]
-        } else if is_serial_wire_enum {
-            vec![
                 ("to_json", vec![], Ty::String),
                 ("to_yaml", vec![], Ty::String),
             ]
@@ -2165,14 +2167,9 @@ impl Checker {
             }
         }
 
-        let static_methods = if is_wire_struct {
+        let static_methods = if is_wire_struct || is_serial_wire_enum {
             vec![
                 ("decode", vec![bytes_ty], self_ty.clone()),
-                ("from_json", vec![Ty::String], self_ty.clone()),
-                ("from_yaml", vec![Ty::String], self_ty),
-            ]
-        } else if is_serial_wire_enum {
-            vec![
                 ("from_json", vec![Ty::String], self_ty.clone()),
                 ("from_yaml", vec![Ty::String], self_ty),
             ]

@@ -175,6 +175,12 @@ pub mod envelope;
 /// survive a process hop without shipping in-memory heap pointers.
 pub mod xnode_serial;
 
+/// CBOR wire-body codec: the runtime primitives the compiler's
+/// `__hew_cbor_*` thunks drive to turn a `#[wire]` value into CBOR bytes and back.
+/// Reuses the envelope's `ciborium` dependency; the bytes ride the envelope's
+/// CBOR `bstr` payload slot unchanged.
+pub mod cbor_serial;
+
 /// Test-only RAII guard that serializes runtime-touching tests AND installs a
 /// default `RuntimeInner` so the de-globalized authority resolvers
 /// (`crate::runtime::rt_current`) have a runtime to read.

@@ -2995,6 +2995,8 @@ run_check_run_expect_stdout wrapping_saturating_as_cast
 run_accept_expect_status "wire_cbor_roundtrip_packet" 42
 run_accept_expect_trap "wire_cbor_decode_malformed_traps"
 run_accept_expect_trap "wire_cbor_enum_oob_tag_traps"
+run_accept_expect_trap "wire_cbor_narrow_int_over_range_traps"
+run_accept_expect_trap "wire_cbor_enum_arity_mismatch_traps"
 run_accept_expect_status "wire_cbor_int_widths" 0
 run_accept_expect_status "wire_cbor_scalars" 0
 run_accept_expect_status "wire_cbor_bytes" 0

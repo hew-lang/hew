@@ -1,0 +1,33 @@
+// Validation: decoding a CBOR enum body whose payload array carries more fields
+// than the target variant declares fails closed (the program traps) rather than
+// silently dropping the surplus. The bytes are well-formed CBOR — a single-entry
+// map `{1: [10, 20]}` — so the failure is at the variant-arity layer, not the
+// CBOR-parse layer.
+//
+// `Wide::Pair` carries two payload fields; `Narrow::Pair` (same tag 1) declares
+// only one. Decoding walks the single declared field (10), then closing the
+// payload frame finds the trailing `20`: the arity does not match, so the reader
+// latches decode failure, the thunk frees the reader + partial shell, returns
+// null, and the `.decode()` call site traps — the same free-before-trap
+// discipline every other malformed shape follows.
+#[wire]
+enum Wide {
+    Ping;
+    Pair(i64, i64);
+}
+
+#[wire]
+enum Narrow {
+    Ping;
+    Pair(i64);
+}
+
+fn main() -> i64 {
+    let w = Wide::Pair(10, 20);
+    let raw = w.encode();
+    let back = Narrow.decode(raw);
+    match back {
+        Narrow::Ping => 0,
+        Narrow::Pair(n) => n,
+    }
+}

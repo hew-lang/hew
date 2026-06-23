@@ -53,9 +53,11 @@ const LOW_ITERS: usize = 20;
 
 /// High count for the slope check. A slope of 1.0 node/iter (one string
 /// buffer leaked per iteration, both paths) produces a delta of
-/// `HIGH - LOW = 480` vs the tolerance of 16 — both paths must sit at
-/// exactly the same node-count delta for the parity assertion to hold.
-const HIGH_ITERS: usize = 500;
+/// `HIGH - LOW = 80` vs the tolerance of 16 (5× SNR) — both paths must sit
+/// at exactly the same node-count delta for the parity assertion to hold.
+/// Kept at 100 (down from 500) so the four compile+leaks measurements finish
+/// well inside the 300 s nextest slow-timeout on the slowest CI runner.
+const HIGH_ITERS: usize = 100;
 
 /// Maximum permitted leak-node delta *between the fork and direct paths* at
 /// the same iteration count. A single runtime/scheduler allocation difference

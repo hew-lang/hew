@@ -11,23 +11,7 @@ use hew_types::check::{FnSig, SpanKey, TypeDef, TypeDefKind};
 use hew_types::method_resolution;
 use hew_types::{BuiltinType, ResolvedTy, Ty, TypeCheckOutput, VariantDef};
 
-use crate::db::SourceDatabase;
 use crate::{HoverResult, OffsetSpan};
-
-/// Compute hover information by reading inputs through a [`SourceDatabase`].
-///
-/// This is the routing path feature handlers should use: it is the single
-/// place that joins source text, parse result, and type-check output from
-/// the database before delegating to [`hover`] for the actual computation.
-///
-/// Returns `None` if the URI is unknown or produces no hover at `offset`.
-#[must_use]
-pub fn hover_via_db(db: &dyn SourceDatabase, uri: &str, offset: usize) -> Option<HoverResult> {
-    let source = db.source(uri)?;
-    let parse_result = db.parse(uri)?;
-    let type_check = db.type_check(uri);
-    hover(&source, &parse_result, type_check.as_deref(), offset)
-}
 
 /// Compute hover information at the given byte offset.
 ///
@@ -2177,39 +2161,33 @@ mod tests {
     }
 
     #[test]
-    fn hover_via_db_matches_direct_hover() {
-        use crate::db::{InMemorySourceDatabase, SourceDatabase};
-
+    fn hover_with_owned_checker_outputs_function_name() {
         // A source with a function definition so hover has something to
         // look up through fn_sigs.
         let source = "fn greet(name: string) -> string { name }\n";
-        let uri = "file:///greet.hew";
-        let db = InMemorySourceDatabase::new();
-        db.set_source(uri.to_string(), source.to_string(), 1);
+        let parse_result = hew_parser::parse(source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+        let registry = hew_types::module_registry::ModuleRegistry::new(
+            hew_types::module_registry::build_module_search_paths(),
+        );
+        let mut checker = hew_types::Checker::new(registry);
+        let type_check = checker.check_program(&parse_result.program);
 
         // Find the offset of `greet` at the declaration site.
         let greet_offset = source.find("greet").unwrap();
 
-        let via_db = super::hover_via_db(&db, uri, greet_offset)
-            .expect("hover_via_db must produce a result for a known function name");
-
-        // The direct path must produce the same rendering when given the
-        // same inputs the database produced — proves the DB-backed route is
-        // semantically identical to the legacy path.
-        let parse_result = db.parse(uri).unwrap();
-        let type_check = db.type_check(uri);
-        let direct = super::hover(source, &parse_result, type_check.as_deref(), greet_offset)
-            .expect("direct hover must agree with hover_via_db for this offset");
-
-        assert_eq!(via_db.contents, direct.contents);
-        assert_eq!(via_db.span, direct.span);
+        let direct = super::hover(source, &parse_result, Some(&type_check), greet_offset)
+            .expect("direct hover must produce a result for a known function name");
         // The function signature for `greet` must appear in the rendered
-        // hover, so the test is not trivially satisfied by two empty
-        // strings.
+        // hover, so the test is not trivially satisfied by an empty string.
         assert!(
-            via_db.contents.contains("greet"),
+            direct.contents.contains("greet"),
             "expected function signature to mention the function name; got {}",
-            via_db.contents
+            direct.contents
         );
     }
 

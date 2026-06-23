@@ -91,19 +91,7 @@ pub fn find_all_name_occurrences(
 pub fn is_top_level_name(parse_result: &ParseResult, name: &str) -> bool {
     parse_result.program.items.iter().any(|(item, _)| {
         // Check item-level names (functions, actors, types, etc.)
-        let item_name = match item {
-            Item::Function(f) => Some(f.name.as_str()),
-            Item::Actor(a) => Some(a.name.as_str()),
-            Item::Supervisor(s) => Some(s.name.as_str()),
-            Item::Trait(t) => Some(t.name.as_str()),
-            Item::Const(c) => Some(c.name.as_str()),
-            Item::TypeDecl(td) => Some(td.name.as_str()),
-            Item::Wire(w) => Some(w.name.as_str()),
-            Item::TypeAlias(ta) => Some(ta.name.as_str()),
-            Item::Machine(m) => Some(m.name.as_str()),
-            Item::Record(r) => Some(r.name.as_str()),
-            Item::Import(_) | Item::ExternBlock(_) | Item::Impl(_) => None,
-        };
+        let item_name = crate::ast_visit::top_level_item_name(item);
         if item_name == Some(name) {
             return true;
         }

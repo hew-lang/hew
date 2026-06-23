@@ -16,18 +16,7 @@ use crate::OffsetSpan;
 pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> Option<OffsetSpan> {
     for (item, span) in &parse_result.program.items {
         // Top-level name matching.
-        let name = match item {
-            Item::Function(f) => Some(&f.name),
-            Item::Actor(a) => Some(&a.name),
-            Item::Supervisor(s) => Some(&s.name),
-            Item::Trait(t) => Some(&t.name),
-            Item::Const(c) => Some(&c.name),
-            Item::TypeDecl(td) => Some(&td.name),
-            Item::Wire(w) => Some(&w.name),
-            Item::TypeAlias(ta) => Some(&ta.name),
-            Item::Machine(m) => Some(&m.name),
-            _ => None,
-        };
+        let name = ast_visit::top_level_item_name(item);
         if name.is_some_and(|n| n == word) {
             return Some(crate::util::find_name_span(source, span.start, word));
         }

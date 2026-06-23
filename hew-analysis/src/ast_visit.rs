@@ -38,6 +38,83 @@ pub(crate) struct BindingInfo<'ast> {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TopLevelItemKind {
+    Function,
+    Actor,
+    Supervisor,
+    Trait,
+    Const,
+    TypeDecl,
+    Wire,
+    TypeAlias,
+    Machine,
+    Record,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TopLevelItemInfo<'ast> {
+    pub name: &'ast str,
+    pub kind: TopLevelItemKind,
+}
+
+/// Return the user-visible name for a module-scope item.
+///
+/// The match is intentionally exhaustive: adding a new `Item` variant must
+/// update this shared authority instead of silently falling through in one
+/// navigation feature.
+#[must_use]
+pub(crate) fn top_level_item_info(item: &Item) -> Option<TopLevelItemInfo<'_>> {
+    match item {
+        Item::Function(f) => Some(TopLevelItemInfo {
+            name: &f.name,
+            kind: TopLevelItemKind::Function,
+        }),
+        Item::Actor(a) => Some(TopLevelItemInfo {
+            name: &a.name,
+            kind: TopLevelItemKind::Actor,
+        }),
+        Item::Supervisor(s) => Some(TopLevelItemInfo {
+            name: &s.name,
+            kind: TopLevelItemKind::Supervisor,
+        }),
+        Item::Trait(t) => Some(TopLevelItemInfo {
+            name: &t.name,
+            kind: TopLevelItemKind::Trait,
+        }),
+        Item::Const(c) => Some(TopLevelItemInfo {
+            name: &c.name,
+            kind: TopLevelItemKind::Const,
+        }),
+        Item::TypeDecl(td) => Some(TopLevelItemInfo {
+            name: &td.name,
+            kind: TopLevelItemKind::TypeDecl,
+        }),
+        Item::Wire(w) => Some(TopLevelItemInfo {
+            name: &w.name,
+            kind: TopLevelItemKind::Wire,
+        }),
+        Item::TypeAlias(ta) => Some(TopLevelItemInfo {
+            name: &ta.name,
+            kind: TopLevelItemKind::TypeAlias,
+        }),
+        Item::Machine(m) => Some(TopLevelItemInfo {
+            name: &m.name,
+            kind: TopLevelItemKind::Machine,
+        }),
+        Item::Record(r) => Some(TopLevelItemInfo {
+            name: &r.name,
+            kind: TopLevelItemKind::Record,
+        }),
+        Item::Import(_) | Item::Impl(_) | Item::ExternBlock(_) => None,
+    }
+}
+
+#[must_use]
+pub(crate) fn top_level_item_name(item: &Item) -> Option<&str> {
+    top_level_item_info(item).map(|info| info.name)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct VisitContext<'ast> {
     #[allow(

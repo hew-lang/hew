@@ -1,17 +1,15 @@
-//! Shared symbol resolver.
+//! Shared goto-definition resolver.
 //!
-//! `resolve_symbol_at(db, uri, offset)` is the single query that every
-//! navigation-shaped feature (goto, references, rename, completion context)
-//! will read. Each feature pattern-matches on the [`Resolution`] variant and
-//! builds its output from the carried `def_span` and metadata.
+//! `resolve_symbol_at_raw(source, parse_result, type_check, uri, offset)`
+//! classifies the symbol under a cursor for goto-definition. Each caller
+//! pattern-matches on the [`Resolution`] variant and builds its output from
+//! the carried `def_span` and metadata.
 //!
-//! This initial landing covers intra-file navigation — the same ground the
-//! per-feature walkers in `definition.rs` cover today. Cross-file and
-//! cross-module resolution land in later stages.
+//! This path covers intra-file navigation. Cross-file and cross-module
+//! resolution remain caller-owned while navigation consolidation continues.
 
 use hew_parser::ast::{Item, TypeBodyItem};
 
-use crate::db::SourceDatabase;
 use crate::OffsetSpan;
 
 /// Classification of what the cursor at `(uri, offset)` refers to.
@@ -116,13 +114,8 @@ impl Resolution {
     }
 }
 
-/// Classify the symbol at `(uri, offset)` using the database's cached parse
-/// and type-check outputs.
-///
-/// Returns `None` when:
-/// - `uri` is unknown to the database,
-/// - the cursor is not on an identifier, or
-/// - the parse failed badly enough that no AST is available.
+/// Classify the symbol at `(uri, offset)` from the caller's current source,
+/// parse output, and optional type-check output.
 ///
 /// Intra-file definitions produce fully-resolved variants. Identifiers that
 /// only resolve via an import statement produce [`Resolution::ImportedItem`]
@@ -130,19 +123,6 @@ impl Resolution {
 /// across files. Unresolved identifiers return [`Resolution::Unknown`]
 /// carrying the identifier text, so the caller can still attempt any
 /// fallbacks it owns.
-#[must_use]
-pub fn resolve_symbol_at(db: &dyn SourceDatabase, uri: &str, offset: usize) -> Option<Resolution> {
-    let source = db.source(uri)?;
-    let parse_result = db.parse(uri)?;
-    let type_check = db.type_check(uri);
-    resolve_symbol_at_raw(&source, &parse_result, type_check.as_deref(), uri, offset)
-}
-
-/// Raw variant of [`resolve_symbol_at`] that does not go through a
-/// [`SourceDatabase`]. Callers that already hold owned parse/type-check
-/// outputs (the current LSP server, WASM tooling) use this path until they
-/// migrate their state to the database; feature modules in this crate
-/// should prefer the database-backed variant.
 #[must_use]
 pub fn resolve_symbol_at_raw(
     source: &str,
@@ -270,17 +250,25 @@ fn classify_item(item: &Item, word: &str, def_span: OffsetSpan, uri: &str) -> Op
         name: word.to_string(),
     };
 
+    if let Some(info) = crate::ast_visit::top_level_item_info(item).filter(|info| info.name == word)
+    {
+        return match info.kind {
+            crate::ast_visit::TopLevelItemKind::Function
+            | crate::ast_visit::TopLevelItemKind::Const
+            | crate::ast_visit::TopLevelItemKind::Wire => Some(make_function()),
+            crate::ast_visit::TopLevelItemKind::Actor
+            | crate::ast_visit::TopLevelItemKind::Supervisor
+            | crate::ast_visit::TopLevelItemKind::Trait
+            | crate::ast_visit::TopLevelItemKind::TypeDecl
+            | crate::ast_visit::TopLevelItemKind::TypeAlias
+            | crate::ast_visit::TopLevelItemKind::Machine
+            | crate::ast_visit::TopLevelItemKind::Record => Some(make_type()),
+        };
+    }
+
     match item {
-        Item::Function(f) if f.name == word => Some(make_function()),
-        Item::Const(c) if c.name == word => Some(make_function()),
-        Item::Wire(w) if w.name == word => Some(make_function()),
-        Item::Supervisor(s) if s.name == word => Some(make_type()),
-        Item::TypeAlias(ta) if ta.name == word => Some(make_type()),
-        Item::Machine(m) if m.name == word => Some(make_type()),
         Item::Actor(a) => {
-            if a.name == word {
-                Some(make_type())
-            } else if a.receive_fns.iter().any(|r| r.name == word)
+            if a.receive_fns.iter().any(|r| r.name == word)
                 || a.methods.iter().any(|m| m.name == word)
             {
                 Some(make_method())
@@ -289,10 +277,7 @@ fn classify_item(item: &Item, word: &str, def_span: OffsetSpan, uri: &str) -> Op
             }
         }
         Item::Trait(t) => {
-            if t.name == word {
-                Some(make_type())
-            } else if t
-                .items
+            if t.items
                 .iter()
                 .any(|ti| matches!(ti, hew_parser::ast::TraitItem::Method(m) if m.name == word))
             {
@@ -306,7 +291,16 @@ fn classify_item(item: &Item, word: &str, def_span: OffsetSpan, uri: &str) -> Op
         Item::ExternBlock(eb) if eb.functions.iter().any(|f| f.name == word) => {
             Some(make_function())
         }
-        _ => None,
+        Item::Function(_)
+        | Item::Const(_)
+        | Item::Wire(_)
+        | Item::Supervisor(_)
+        | Item::TypeAlias(_)
+        | Item::Machine(_)
+        | Item::Record(_)
+        | Item::Import(_)
+        | Item::Impl(_)
+        | Item::ExternBlock(_) => None,
     }
 }
 
@@ -408,23 +402,39 @@ fn offset_is_on_tail(source: &str, offset: usize, word: &str, separator: &str) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::InMemorySourceDatabase;
 
     const URI: &str = "file:///a.hew";
 
-    fn db_with(source: &str) -> InMemorySourceDatabase {
-        let db = InMemorySourceDatabase::new();
-        db.set_source(URI.to_string(), source.to_string(), 1);
-        db
+    fn parse_and_type_check(
+        source: &str,
+    ) -> (hew_parser::ParseResult, Option<hew_types::TypeCheckOutput>) {
+        let parse_result = hew_parser::parse(source);
+        if parse_result
+            .errors
+            .iter()
+            .any(|error| error.severity == hew_parser::Severity::Error)
+        {
+            return (parse_result, None);
+        }
+        let registry = hew_types::module_registry::ModuleRegistry::new(
+            hew_types::module_registry::build_module_search_paths(),
+        );
+        let mut checker = hew_types::Checker::new(registry);
+        let type_check = checker.check_program(&parse_result.program);
+        (parse_result, Some(type_check))
+    }
+
+    fn resolve(source: &str, offset: usize) -> Option<Resolution> {
+        let (parse_result, type_check) = parse_and_type_check(source);
+        resolve_symbol_at_raw(source, &parse_result, type_check.as_ref(), URI, offset)
     }
 
     #[test]
     fn resolves_function_definition() {
         let source = "fn greet(name: string) -> string { name }\nfn main() { greet(\"x\") }\n";
-        let db = db_with(source);
         // Cursor on the call site `greet` in `greet("x")`.
         let offset = source.find("greet(\"x\")").unwrap();
-        let resolution = resolve_symbol_at(&db, URI, offset).unwrap();
+        let resolution = resolve(source, offset).unwrap();
         match resolution {
             Resolution::FunctionDef { name, def_span, .. } => {
                 assert_eq!(name, "greet");
@@ -439,10 +449,9 @@ mod tests {
     #[test]
     fn resolves_local_binding() {
         let source = "fn main() { let count = 1; count + 2 }\n";
-        let db = db_with(source);
         // Cursor on the second `count`.
         let offset = source.rfind("count").unwrap();
-        let resolution = resolve_symbol_at(&db, URI, offset).unwrap();
+        let resolution = resolve(source, offset).unwrap();
         match resolution {
             Resolution::LocalBinding { name, def_span, .. } => {
                 assert_eq!(name, "count");
@@ -456,10 +465,9 @@ mod tests {
     #[test]
     fn resolves_param() {
         let source = "fn greet(name: string) -> string { name }\n";
-        let db = db_with(source);
         // Cursor on the use of `name` in the body.
         let offset = source.rfind("name").unwrap();
-        let resolution = resolve_symbol_at(&db, URI, offset).unwrap();
+        let resolution = resolve(source, offset).unwrap();
         match resolution {
             Resolution::Param { name, .. } => assert_eq!(name, "name"),
             other => panic!("expected Param, got {other:?}"),
@@ -470,10 +478,9 @@ mod tests {
     fn resolves_type_def() {
         let source =
             "type Point { x: i64, y: i64 }\nfn origin() -> Point { Point { x: 0, y: 0 } }\n";
-        let db = db_with(source);
         // Cursor on the use of `Point` in the return type.
         let offset = source.find("-> Point").unwrap() + 3;
-        let resolution = resolve_symbol_at(&db, URI, offset).unwrap();
+        let resolution = resolve(source, offset).unwrap();
         match resolution {
             Resolution::TypeDef { name, .. } => assert_eq!(name, "Point"),
             other => panic!("expected TypeDef, got {other:?}"),
@@ -481,11 +488,34 @@ mod tests {
     }
 
     #[test]
+    fn resolves_record_type_def_to_record_declaration_span() {
+        let source =
+            "record Point { x: i64, y: i64 }\nfn origin() -> Point { Point { x: 0, y: 0 } }\n";
+        let (parse_result, type_check) = parse_and_type_check(source);
+        assert!(
+            parse_result.errors.is_empty(),
+            "unexpected parse errors: {:?}",
+            parse_result.errors
+        );
+        let offset = source.find("-> Point").unwrap() + "-> ".len();
+        let resolution =
+            resolve_symbol_at_raw(source, &parse_result, type_check.as_ref(), URI, offset).unwrap();
+        match resolution {
+            Resolution::TypeDef { name, def_span, .. } => {
+                assert_eq!(name, "Point");
+                assert_eq!(&source[def_span.start..def_span.end], "Point");
+                assert_eq!(def_span.start, source.find("Point").unwrap());
+                assert!(def_span.start < offset);
+            }
+            other => panic!("expected TypeDef for record, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn unknown_identifier_surfaces_as_unknown() {
         let source = "fn main() { nonexistent }\n";
-        let db = db_with(source);
         let offset = source.find("nonexistent").unwrap();
-        match resolve_symbol_at(&db, URI, offset).unwrap() {
+        match resolve(source, offset).unwrap() {
             Resolution::Unknown { text, .. } => assert_eq!(text, "nonexistent"),
             other => panic!("expected Unknown, got {other:?}"),
         }
@@ -495,10 +525,9 @@ mod tests {
     fn cursor_outside_identifier_returns_none_or_unknown() {
         // Cursor inside whitespace should not produce a definition.
         let source = "fn main() {   }\n";
-        let db = db_with(source);
         let offset = source.find("   ").unwrap() + 1;
         // Either None (no word at offset) is acceptable here.
-        let resolution = resolve_symbol_at(&db, URI, offset);
+        let resolution = resolve(source, offset);
         match resolution {
             None | Some(Resolution::Unknown { .. }) => {}
             other => panic!("expected None or Unknown for whitespace offset, got {other:?}"),
@@ -511,11 +540,10 @@ mod tests {
         // the last character of `greet`. `word_at_offset` falls back to
         // `offset - 1` so the resolver must still classify it.
         let source = "fn greet() {}\nfn main() { greet() }\n";
-        let db = db_with(source);
         // End of `greet` at the call site — offset just after the `t`.
         let call_start = source.rfind("greet").unwrap();
         let offset = call_start + "greet".len();
-        let resolution = resolve_symbol_at(&db, URI, offset).unwrap();
+        let resolution = resolve(source, offset).unwrap();
         match resolution {
             Resolution::FunctionDef { name, .. } => assert_eq!(name, "greet"),
             other => panic!("expected FunctionDef at identifier end, got {other:?}"),
@@ -528,9 +556,8 @@ mod tests {
         // find a local definition for the whole word, so it surfaces
         // ModuleQualified with both halves.
         let source = "fn main() { Counter::new() }\n";
-        let db = db_with(source);
         let offset = source.find("Counter::new").unwrap() + "Counter::".len();
-        let resolution = resolve_symbol_at(&db, URI, offset).unwrap();
+        let resolution = resolve(source, offset).unwrap();
         match resolution {
             Resolution::ModuleQualified {
                 prefix,
@@ -556,10 +583,9 @@ mod tests {
                           fn new() -> Counter { Counter { count: 0 } }\n\
                       }\n\
                       fn main() { new() }\n";
-        let db = db_with(source);
         // Cursor on the `new` declaration inside impl.
         let offset = source.find("fn new()").unwrap() + "fn ".len();
-        let resolution = resolve_symbol_at(&db, URI, offset).unwrap();
+        let resolution = resolve(source, offset).unwrap();
         match resolution {
             Resolution::MethodDef { name, .. } => assert_eq!(name, "new"),
             Resolution::FunctionDef { name, .. } => {

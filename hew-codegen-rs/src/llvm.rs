@@ -35092,21 +35092,62 @@ fn emit_ser_value_cbor<'ctx>(
                 .llvm_ctx("cbor ser bytes")?;
             Ok(())
         }
-        ResolvedTy::Named { name, args, .. } => emit_ser_named_cbor(
-            ctx,
-            llvm_mod,
-            builder,
-            func,
+        ResolvedTy::Named {
             name,
             args,
-            value_ptr,
-            buf,
-            wire_layouts,
-            record_layouts,
-            machine_layouts,
-            pipeline_records,
-            enum_layouts,
-        ),
+            builtin,
+            ..
+        } => match builtin {
+            Some(BuiltinType::Vec) => {
+                let elem = args.first().ok_or_else(|| {
+                    CodegenError::FailClosed("wire CBOR serialize: Vec<T> missing element".into())
+                })?;
+                emit_ser_vec_cbor(
+                    ctx,
+                    llvm_mod,
+                    builder,
+                    func,
+                    elem,
+                    value_ptr,
+                    buf,
+                    wire_layouts,
+                    record_layouts,
+                    machine_layouts,
+                    pipeline_records,
+                    enum_layouts,
+                )
+            }
+            Some(BuiltinType::Option) => emit_ser_option_cbor(
+                ctx,
+                llvm_mod,
+                builder,
+                func,
+                name,
+                args,
+                value_ptr,
+                buf,
+                wire_layouts,
+                record_layouts,
+                machine_layouts,
+                pipeline_records,
+                enum_layouts,
+            ),
+            _ => emit_ser_named_cbor(
+                ctx,
+                llvm_mod,
+                builder,
+                func,
+                name,
+                args,
+                value_ptr,
+                buf,
+                wire_layouts,
+                record_layouts,
+                machine_layouts,
+                pipeline_records,
+                enum_layouts,
+            ),
+        },
         other => Err(CodegenError::FailClosed(format!(
             "wire CBOR serialize: unsupported value type {other:?} \
              (outside the supported wire-body floor)"
@@ -35115,8 +35156,8 @@ fn emit_ser_value_cbor<'ctx>(
 }
 
 /// Emit the CBOR encode walk for a `Named` type. A registered record encodes as
-/// a CBOR map keyed by each field's wire tag. Enums fail closed (the wire-enum
-/// codec is later work).
+/// a CBOR map keyed by each field's wire tag; a registered enum encodes under
+/// the q185 Qa map-of-one shape (`emit_ser_enum_cbor`).
 #[allow(clippy::too_many_arguments)]
 fn emit_ser_named_cbor<'ctx>(
     ctx: &'ctx Context,
@@ -35134,11 +35175,27 @@ fn emit_ser_named_cbor<'ctx>(
     enum_layouts: &[EnumLayout],
 ) -> CodegenResult<()> {
     let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
-    if enum_layouts.iter().any(|e| e.name == key) {
-        return Err(CodegenError::FailClosed(format!(
-            "wire CBOR serialize: enum `{name}` (key `{key}`) has no binary wire \
-             codec yet (wire-enum support is later work)"
-        )));
+    // Enum: encode under the q185 Qa map-of-one shape.
+    if let (Some(layout), Some(el)) = (
+        machine_layouts.get(&key),
+        enum_layouts.iter().find(|e| e.name == key),
+    ) {
+        return emit_ser_enum_cbor(
+            ctx,
+            llvm_mod,
+            builder,
+            func,
+            &key,
+            layout,
+            el,
+            value_ptr,
+            buf,
+            wire_layouts,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        );
     }
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let void_ty = ctx.void_type();
@@ -35412,21 +35469,62 @@ fn emit_de_value_cbor<'ctx>(
                 .llvm_ctx("cbor de bytes free raw")?;
             Ok(())
         }
-        ResolvedTy::Named { name, args, .. } => emit_de_named_cbor(
-            ctx,
-            llvm_mod,
-            builder,
-            func,
+        ResolvedTy::Named {
             name,
             args,
-            dst,
-            reader,
-            wire_layouts,
-            record_layouts,
-            machine_layouts,
-            pipeline_records,
-            enum_layouts,
-        ),
+            builtin,
+            ..
+        } => match builtin {
+            Some(BuiltinType::Vec) => {
+                let elem = args.first().ok_or_else(|| {
+                    CodegenError::FailClosed("wire CBOR deserialize: Vec<T> missing element".into())
+                })?;
+                emit_de_vec_cbor(
+                    ctx,
+                    llvm_mod,
+                    builder,
+                    func,
+                    elem,
+                    dst,
+                    reader,
+                    wire_layouts,
+                    record_layouts,
+                    machine_layouts,
+                    pipeline_records,
+                    enum_layouts,
+                )
+            }
+            Some(BuiltinType::Option) => emit_de_option_cbor(
+                ctx,
+                llvm_mod,
+                builder,
+                func,
+                name,
+                args,
+                dst,
+                reader,
+                wire_layouts,
+                record_layouts,
+                machine_layouts,
+                pipeline_records,
+                enum_layouts,
+            ),
+            _ => emit_de_named_cbor(
+                ctx,
+                llvm_mod,
+                builder,
+                func,
+                name,
+                args,
+                dst,
+                reader,
+                wire_layouts,
+                record_layouts,
+                machine_layouts,
+                pipeline_records,
+                enum_layouts,
+            ),
+        },
         other => Err(CodegenError::FailClosed(format!(
             "wire CBOR deserialize: unsupported value type {other:?} \
              (outside the supported wire-body floor)"
@@ -35436,7 +35534,8 @@ fn emit_de_value_cbor<'ctx>(
 
 /// Emit the CBOR decode walk for a `Named` type into `dst`. A registered record
 /// enters a CBOR map, selects each field by its wire tag, decodes it, then exits
-/// the map (tolerating extra keys). Enums fail closed (later work).
+/// the map (tolerating extra keys); a registered enum decodes the q185 Qa
+/// map-of-one shape (`emit_de_enum_cbor`).
 #[allow(clippy::too_many_arguments)]
 fn emit_de_named_cbor<'ctx>(
     ctx: &'ctx Context,
@@ -35454,11 +35553,27 @@ fn emit_de_named_cbor<'ctx>(
     enum_layouts: &[EnumLayout],
 ) -> CodegenResult<()> {
     let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
-    if enum_layouts.iter().any(|e| e.name == key) {
-        return Err(CodegenError::FailClosed(format!(
-            "wire CBOR deserialize: enum `{name}` (key `{key}`) has no binary wire \
-             codec yet (wire-enum support is later work)"
-        )));
+    // Enum: decode the q185 Qa map-of-one shape.
+    if let (Some(layout), Some(el)) = (
+        machine_layouts.get(&key),
+        enum_layouts.iter().find(|e| e.name == key),
+    ) {
+        return emit_de_enum_cbor(
+            ctx,
+            llvm_mod,
+            builder,
+            func,
+            &key,
+            layout,
+            el,
+            dst,
+            reader,
+            wire_layouts,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        );
     }
     let ptr_ty = ctx.ptr_type(AddressSpace::default());
     let void_ty = ctx.void_type();
@@ -35526,6 +35641,1143 @@ fn emit_de_named_cbor<'ctx>(
         "wire CBOR deserialize: named type `{name}` (key `{key}`) is not a \
          registered record layout"
     )))
+}
+
+/// Wire tag for an enum variant: the schema-stable tag from the enum's wire
+/// layout (matched by variant name), falling back to the positional index when
+/// no explicit layout entry exists. Mirrors `cbor_field_key` for record fields:
+/// the wire tag — not the in-memory discriminant — is the cross-version
+/// compatibility authority, so the Qa map key / unit integer is driven from it.
+fn cbor_variant_tag(
+    wire_layouts: &WireLayoutTable,
+    enum_key: &str,
+    variant_name: &str,
+    variant_idx: usize,
+) -> u64 {
+    let probe = |name: &str| -> Option<u64> {
+        wire_layouts
+            .get(name)
+            .and_then(|entry| entry.variants.iter().find(|(n, _)| n == variant_name))
+            .map(|(_, tag)| u64::from(*tag))
+    };
+    if let Some(tag) = probe(enum_key) {
+        return tag;
+    }
+    let short = enum_key.rsplit_once('.').map_or(enum_key, |(_, s)| s);
+    if short != enum_key {
+        if let Some(tag) = probe(short) {
+            return tag;
+        }
+    }
+    variant_idx as u64
+}
+
+/// Standalone heap-ownership probe for a CBOR Vec element type, using only the
+/// pipeline record/enum layouts the thunk emitter has on hand (no `FnCtx`).
+/// Returns true when `ty` is — or transitively contains — a heap-owning leaf
+/// (string / bytes / collection / boxed handle): a value a plain BitCopy Vec
+/// slot could not own without leaking. A `visiting` set breaks layout cycles
+/// (recursive records/enums) by treating a back-edge as non-owning — the
+/// cycle's owning leaves, if any, are already seen on the first visit.
+fn cbor_ty_owns_heap(
+    ty: &ResolvedTy,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+    visiting: &mut std::collections::HashSet<String>,
+) -> bool {
+    match ty {
+        ResolvedTy::String | ResolvedTy::Bytes => true,
+        ResolvedTy::Named {
+            builtin: Some(b),
+            args,
+            ..
+        } => match b {
+            // An `Option` is inline (tag + payload); it owns heap iff its
+            // payload does.
+            BuiltinType::Option => args
+                .first()
+                .is_some_and(|a| cbor_ty_owns_heap(a, pipeline_records, enum_layouts, visiting)),
+            // Every other builtin admitted as a field is a heap handle.
+            _ => true,
+        },
+        ResolvedTy::Named { name, args, .. } => {
+            let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+            if !visiting.insert(key.clone()) {
+                return false;
+            }
+            if let Some(rl) = pipeline_records.iter().find(|r| r.name == key) {
+                return rl
+                    .field_tys
+                    .iter()
+                    .any(|f| cbor_ty_owns_heap(f, pipeline_records, enum_layouts, visiting));
+            }
+            if let Some(el) = enum_layouts.iter().find(|e| e.name == key) {
+                return el.variants.iter().any(|v| {
+                    v.field_tys
+                        .iter()
+                        .any(|f| cbor_ty_owns_heap(f, pipeline_records, enum_layouts, visiting))
+                });
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Backing-store kind a decoded CBOR array needs for its element type.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CborVecElemKind {
+    /// BitCopy element (scalar / heap-free record / heap-free enum): a plain
+    /// `hew_vec_new_with_elem_size` buffer filled by byte-copy
+    /// `hew_vec_push_generic`. `hew_vec_free` frees the buffer; no per-element
+    /// heap to release.
+    Plain,
+    /// `string` element: a `hew_vec_new_str` vec filled by copy-in
+    /// `hew_vec_push_str`. `hew_vec_free` releases every element string.
+    Str,
+    /// Owned-compound element (bytes / heap-owning record / nested collection):
+    /// the standalone emitter cannot synthesise the owned clone/drop descriptor
+    /// the backing vec would need, so the codec fails closed (a failable
+    /// sub-shape, not a silent partial).
+    Defer,
+}
+
+/// Classify a CBOR Vec element type into the backing-store kind its decode
+/// needs. Encode is uniform across `Plain`/`Str` (both read through
+/// `hew_vec_get_generic`); only decode branches on the kind.
+fn cbor_vec_elem_kind(
+    elem: &ResolvedTy,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CborVecElemKind {
+    match elem {
+        ResolvedTy::Bool
+        | ResolvedTy::I8
+        | ResolvedTy::U8
+        | ResolvedTy::I16
+        | ResolvedTy::U16
+        | ResolvedTy::I32
+        | ResolvedTy::U32
+        | ResolvedTy::I64
+        | ResolvedTy::U64
+        | ResolvedTy::Isize
+        | ResolvedTy::Usize
+        | ResolvedTy::Char
+        | ResolvedTy::Duration
+        | ResolvedTy::F32
+        | ResolvedTy::F64 => CborVecElemKind::Plain,
+        ResolvedTy::String => CborVecElemKind::Str,
+        ResolvedTy::Named { .. } => {
+            let mut visiting = std::collections::HashSet::new();
+            if cbor_ty_owns_heap(elem, pipeline_records, enum_layouts, &mut visiting) {
+                CborVecElemKind::Defer
+            } else {
+                CborVecElemKind::Plain
+            }
+        }
+        _ => CborVecElemKind::Defer,
+    }
+}
+
+/// Encode a `Vec<T>` field as a CBOR array. Encode is uniform across element
+/// kinds: `hew_vec_get_generic` returns the element slot for both BitCopy and
+/// `string` vecs (neither is layout-aware), and `emit_ser_value_cbor` loads it
+/// (the `String` arm dereferences the slot). Owned-compound elements fail
+/// closed, symmetric with `emit_de_vec_cbor` (which cannot reconstruct them).
+#[allow(clippy::too_many_arguments)]
+fn emit_ser_vec_cbor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    elem_ty: &ResolvedTy,
+    value_ptr: PointerValue<'ctx>,
+    buf: PointerValue<'ctx>,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    if cbor_vec_elem_kind(elem_ty, pipeline_records, enum_layouts) == CborVecElemKind::Defer {
+        return Err(CodegenError::FailClosed(format!(
+            "wire CBOR serialize: Vec<{elem_ty:?}> has an owned-compound element \
+             (bytes / heap-owning record / nested collection) outside the \
+             supported wire-body floor"
+        )));
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    let i64_ty = ctx.i64_type();
+
+    let vec_ptr = builder
+        .build_load(ptr_ty, value_ptr, "cbor_ser_vec_ptr")
+        .llvm_ctx("cbor ser vec load")?
+        .into_pointer_value();
+    let len_fn = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_vec_len",
+        i64_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    let len = builder
+        .build_call(len_fn, &[vec_ptr.into()], "cbor_ser_vec_len")
+        .llvm_ctx("cbor ser vec len")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_vec_len void".into()))?
+        .into_int_value();
+
+    let begin = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_ser_begin_array",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(begin, &[buf.into()], "cbor_ser_vec_begin")
+        .llvm_ctx("cbor ser vec begin")?;
+
+    // for (i = 0; i < len; i += 1) { encode element i }
+    let idx_slot = builder
+        .build_alloca(i64_ty, "cbor_ser_vec_i")
+        .llvm_ctx("cbor ser vec i alloca")?;
+    builder
+        .build_store(idx_slot, i64_ty.const_zero())
+        .llvm_ctx("cbor ser vec i init")?;
+    let head_bb = ctx.append_basic_block(func, "cbor_ser_vec_head");
+    let body_bb = ctx.append_basic_block(func, "cbor_ser_vec_body");
+    let done_bb = ctx.append_basic_block(func, "cbor_ser_vec_done");
+    builder
+        .build_unconditional_branch(head_bb)
+        .llvm_ctx("cbor ser vec entry br")?;
+
+    builder.position_at_end(head_bb);
+    let i_cur = builder
+        .build_load(i64_ty, idx_slot, "cbor_ser_vec_i_cur")
+        .llvm_ctx("cbor ser vec i load")?
+        .into_int_value();
+    let in_range = builder
+        .build_int_compare(IntPredicate::SLT, i_cur, len, "cbor_ser_vec_cmp")
+        .llvm_ctx("cbor ser vec cmp")?;
+    builder
+        .build_conditional_branch(in_range, body_bb, done_bb)
+        .llvm_ctx("cbor ser vec head br")?;
+
+    builder.position_at_end(body_bb);
+    let get_gen = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_vec_get_generic",
+        ptr_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+    );
+    let elem_ptr = builder
+        .build_call(get_gen, &[vec_ptr.into(), i_cur.into()], "cbor_ser_vec_get")
+        .llvm_ctx("cbor ser vec get_generic")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_vec_get_generic void".into()))?
+        .into_pointer_value();
+    emit_ser_value_cbor(
+        ctx,
+        llvm_mod,
+        builder,
+        func,
+        elem_ty,
+        elem_ptr,
+        buf,
+        wire_layouts,
+        record_layouts,
+        machine_layouts,
+        pipeline_records,
+        enum_layouts,
+    )?;
+    let i_next = builder
+        .build_int_add(i_cur, i64_ty.const_int(1, false), "cbor_ser_vec_inc")
+        .llvm_ctx("cbor ser vec inc")?;
+    builder
+        .build_store(idx_slot, i_next)
+        .llvm_ctx("cbor ser vec i store")?;
+    builder
+        .build_unconditional_branch(head_bb)
+        .llvm_ctx("cbor ser vec body br")?;
+
+    builder.position_at_end(done_bb);
+    let end = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_ser_end_array",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(end, &[buf.into()], "cbor_ser_vec_end")
+        .llvm_ctx("cbor ser vec end")?;
+    Ok(())
+}
+
+/// Decode a CBOR array into a `Vec<T>`. Constructs the backing vec matching the
+/// element's ownership kind (so `hew_vec_free` releases element heap correctly),
+/// then drains the array, decoding each element. Owned-compound elements fail
+/// closed. On a malformed tail the partially built vec is owned by `dst` and
+/// released by the enclosing type's drop helper (`hew_vec_free` is null-safe and
+/// frees a string-kind vec's element strings).
+#[allow(clippy::too_many_arguments)]
+fn emit_de_vec_cbor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    elem_ty: &ResolvedTy,
+    dst: PointerValue<'ctx>,
+    reader: PointerValue<'ctx>,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let kind = cbor_vec_elem_kind(elem_ty, pipeline_records, enum_layouts);
+    if kind == CborVecElemKind::Defer {
+        return Err(CodegenError::FailClosed(format!(
+            "wire CBOR deserialize: Vec<{elem_ty:?}> has an owned-compound element \
+             (bytes / heap-owning record / nested collection) outside the \
+             supported wire-body floor"
+        )));
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    let i64_ty = ctx.i64_type();
+    let i32_ty = ctx.i32_type();
+
+    // Construct the backing vec matching the element ownership kind.
+    let vec_ptr = match kind {
+        CborVecElemKind::Str => {
+            let new_str =
+                declare_codec_prim(ctx, llvm_mod, "hew_vec_new_str", ptr_ty.fn_type(&[], false));
+            builder
+                .build_call(new_str, &[], "cbor_de_vec_new_str")
+                .llvm_ctx("cbor de vec new_str")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_vec_new_str void".into()))?
+                .into_pointer_value()
+        }
+        CborVecElemKind::Plain => {
+            let elem_llvm = resolve_ty(ctx, elem_ty, record_layouts)?;
+            let elem_size = elem_llvm
+                .size_of()
+                .ok_or_else(|| CodegenError::FailClosed("Vec element has no size".into()))?;
+            let new_gen = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_vec_new_with_elem_size",
+                ptr_ty.fn_type(&[i64_ty.into()], false),
+            );
+            builder
+                .build_call(new_gen, &[elem_size.into()], "cbor_de_vec_new")
+                .llvm_ctx("cbor de vec new_with_elem_size")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_vec_new_with_elem_size void".into()))?
+                .into_pointer_value()
+        }
+        CborVecElemKind::Defer => unreachable!("Defer handled above"),
+    };
+    builder
+        .build_store(dst, vec_ptr)
+        .llvm_ctx("cbor de vec store handle")?;
+
+    let enter = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_enter_array",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(enter, &[reader.into()], "cbor_de_vec_enter")
+        .llvm_ctx("cbor de vec enter")?;
+
+    // while (array_next) { decode element; push }
+    let head_bb = ctx.append_basic_block(func, "cbor_de_vec_head");
+    let body_bb = ctx.append_basic_block(func, "cbor_de_vec_body");
+    let done_bb = ctx.append_basic_block(func, "cbor_de_vec_done");
+    builder
+        .build_unconditional_branch(head_bb)
+        .llvm_ctx("cbor de vec entry br")?;
+
+    builder.position_at_end(head_bb);
+    let next_fn = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_array_next",
+        i32_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    let has = builder
+        .build_call(next_fn, &[reader.into()], "cbor_de_vec_next")
+        .llvm_ctx("cbor de vec next")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_array_next void".into()))?
+        .into_int_value();
+    let cont = builder
+        .build_int_compare(
+            IntPredicate::NE,
+            has,
+            i32_ty.const_zero(),
+            "cbor_de_vec_has",
+        )
+        .llvm_ctx("cbor de vec has cmp")?;
+    builder
+        .build_conditional_branch(cont, body_bb, done_bb)
+        .llvm_ctx("cbor de vec head br")?;
+
+    builder.position_at_end(body_bb);
+    match kind {
+        CborVecElemKind::Str => {
+            let de_string = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_cbor_de_string",
+                ptr_ty.fn_type(&[ptr_ty.into()], false),
+            );
+            let s = builder
+                .build_call(de_string, &[reader.into()], "cbor_de_vec_string")
+                .llvm_ctx("cbor de vec string")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_string void".into()))?
+                .into_pointer_value();
+            let push_str = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_vec_push_str",
+                void_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+            );
+            builder
+                .build_call(
+                    push_str,
+                    &[vec_ptr.into(), s.into()],
+                    "cbor_de_vec_push_str",
+                )
+                .llvm_ctx("cbor de vec push_str")?;
+            // push_str copies the string in; release our decode temp.
+            let drop_str = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_string_drop",
+                void_ty.fn_type(&[ptr_ty.into()], false),
+            );
+            builder
+                .build_call(drop_str, &[s.into()], "cbor_de_vec_drop_str")
+                .llvm_ctx("cbor de vec drop_str")?;
+        }
+        CborVecElemKind::Plain => {
+            let elem_llvm = resolve_ty(ctx, elem_ty, record_layouts)?;
+            let temp = builder
+                .build_alloca(elem_llvm, "cbor_de_vec_elem")
+                .llvm_ctx("cbor de vec elem alloca")?;
+            // Zero the slot so a fail-closed partial element is a defined,
+            // heap-free BitCopy value (a Plain element owns no heap to leak).
+            builder
+                .build_store(temp, elem_llvm.const_zero())
+                .llvm_ctx("cbor de vec elem zero")?;
+            emit_de_value_cbor(
+                ctx,
+                llvm_mod,
+                builder,
+                func,
+                elem_ty,
+                temp,
+                reader,
+                wire_layouts,
+                record_layouts,
+                machine_layouts,
+                pipeline_records,
+                enum_layouts,
+            )?;
+            let push_gen = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_vec_push_generic",
+                void_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+            );
+            builder
+                .build_call(push_gen, &[vec_ptr.into(), temp.into()], "cbor_de_vec_push")
+                .llvm_ctx("cbor de vec push_generic")?;
+        }
+        CborVecElemKind::Defer => unreachable!("Defer handled above"),
+    }
+    builder
+        .build_unconditional_branch(head_bb)
+        .llvm_ctx("cbor de vec body br")?;
+
+    builder.position_at_end(done_bb);
+    let exit = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_exit_array",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(exit, &[reader.into()], "cbor_de_vec_exit")
+        .llvm_ctx("cbor de vec exit")?;
+    Ok(())
+}
+
+/// Encode an `Option<T>` field under the q185 null encoding: `None` emits CBOR
+/// null; `Some(v)` emits the bare value `v`. Nested `Option<Option<_>>` is
+/// ambiguous under this encoding (a `Some(None)` and an outer `None` both reduce
+/// to null), so it fails closed.
+#[allow(clippy::too_many_arguments)]
+fn emit_ser_option_cbor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    name: &str,
+    args: &[ResolvedTy],
+    value_ptr: PointerValue<'ctx>,
+    buf: PointerValue<'ctx>,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+    let (Some(layout), Some(el)) = (
+        machine_layouts.get(&key),
+        enum_layouts.iter().find(|e| e.name == key),
+    ) else {
+        return Err(CodegenError::FailClosed(format!(
+            "wire CBOR serialize: Option `{name}` (key `{key}`) has no enum layout"
+        )));
+    };
+    let some_idx = el
+        .variants
+        .iter()
+        .position(|v| !v.field_tys.is_empty())
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!("wire CBOR serialize: Option `{key}` has no Some"))
+        })?;
+    let payload_ty = &el.variants[some_idx].field_tys[0];
+    if matches!(
+        payload_ty,
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Option),
+            ..
+        }
+    ) {
+        return Err(CodegenError::FailClosed(
+            "wire CBOR serialize: Option<Option<_>> is ambiguous under the null \
+             encoding (q185 §F) — not supported"
+                .into(),
+        ));
+    }
+
+    let base = if el.is_indirect {
+        builder
+            .build_load(ptr_ty, value_ptr, "cbor_ser_opt_indirect")
+            .llvm_ctx("cbor ser option indirect load")?
+            .into_pointer_value()
+    } else {
+        value_ptr
+    };
+    let tag_ptr = builder
+        .build_struct_gep(layout.outer_struct, base, 0, "cbor_ser_opt_tag_ptr")
+        .llvm_ctx("cbor ser option tag gep")?;
+    let tag = builder
+        .build_load(layout.tag_int_ty, tag_ptr, "cbor_ser_opt_tag")
+        .llvm_ctx("cbor ser option tag load")?
+        .into_int_value();
+    let some_const = layout.tag_int_ty.const_int(some_idx as u64, false);
+    let is_some = builder
+        .build_int_compare(IntPredicate::EQ, tag, some_const, "cbor_ser_opt_is_some")
+        .llvm_ctx("cbor ser option is_some")?;
+
+    let some_bb = ctx.append_basic_block(func, "cbor_ser_opt_some");
+    let none_bb = ctx.append_basic_block(func, "cbor_ser_opt_none");
+    let cont_bb = ctx.append_basic_block(func, "cbor_ser_opt_cont");
+    builder
+        .build_conditional_branch(is_some, some_bb, none_bb)
+        .llvm_ctx("cbor ser option branch")?;
+
+    builder.position_at_end(some_bb);
+    let payload_ptr = builder
+        .build_struct_gep(layout.outer_struct, base, 1, "cbor_ser_opt_payload")
+        .llvm_ctx("cbor ser option payload gep")?;
+    let field0_ptr = builder
+        .build_struct_gep(
+            layout.variant_struct_tys[some_idx],
+            payload_ptr,
+            0,
+            "cbor_ser_opt_field0",
+        )
+        .llvm_ctx("cbor ser option field gep")?;
+    emit_ser_value_cbor(
+        ctx,
+        llvm_mod,
+        builder,
+        func,
+        payload_ty,
+        field0_ptr,
+        buf,
+        wire_layouts,
+        record_layouts,
+        machine_layouts,
+        pipeline_records,
+        enum_layouts,
+    )?;
+    builder
+        .build_unconditional_branch(cont_bb)
+        .llvm_ctx("cbor ser option some br")?;
+
+    builder.position_at_end(none_bb);
+    let null_prim = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_ser_null",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(null_prim, &[buf.into()], "cbor_ser_opt_null")
+        .llvm_ctx("cbor ser option null")?;
+    builder
+        .build_unconditional_branch(cont_bb)
+        .llvm_ctx("cbor ser option none br")?;
+
+    builder.position_at_end(cont_bb);
+    Ok(())
+}
+
+/// Decode an `Option<T>` field under the q185 null encoding: CBOR null
+/// reconstructs `None`; any other value reconstructs `Some(decode(value))`.
+/// Nested `Option<Option<_>>` fails closed (ambiguous under null).
+#[allow(clippy::too_many_arguments)]
+fn emit_de_option_cbor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    name: &str,
+    args: &[ResolvedTy],
+    dst: PointerValue<'ctx>,
+    reader: PointerValue<'ctx>,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+    let (Some(layout), Some(el)) = (
+        machine_layouts.get(&key),
+        enum_layouts.iter().find(|e| e.name == key),
+    ) else {
+        return Err(CodegenError::FailClosed(format!(
+            "wire CBOR deserialize: Option `{name}` (key `{key}`) has no enum layout"
+        )));
+    };
+    let some_idx = el
+        .variants
+        .iter()
+        .position(|v| !v.field_tys.is_empty())
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!("wire CBOR deserialize: Option `{key}` has no Some"))
+        })?;
+    let none_idx = el
+        .variants
+        .iter()
+        .position(|v| v.field_tys.is_empty())
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!("wire CBOR deserialize: Option `{key}` has no None"))
+        })?;
+    let payload_ty = &el.variants[some_idx].field_tys[0];
+    if matches!(
+        payload_ty,
+        ResolvedTy::Named {
+            builtin: Some(BuiltinType::Option),
+            ..
+        }
+    ) {
+        return Err(CodegenError::FailClosed(
+            "wire CBOR deserialize: Option<Option<_>> is ambiguous under the null \
+             encoding (q185 §F) — not supported"
+                .into(),
+        ));
+    }
+
+    // For an indirect Option, allocate the heap tagged-union and store the ptr.
+    let base = if el.is_indirect {
+        let size = layout
+            .outer_struct
+            .size_of()
+            .ok_or_else(|| CodegenError::FailClosed("indirect Option has no size".into()))?;
+        let align = i64_ty.const_int(8, false);
+        let alloc_prim = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_alloc",
+            ptr_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
+        );
+        let heap = builder
+            .build_call(
+                alloc_prim,
+                &[size.into(), align.into()],
+                "cbor_de_opt_alloc",
+            )
+            .llvm_ctx("cbor de option alloc")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_alloc void".into()))?
+            .into_pointer_value();
+        builder
+            .build_store(dst, heap)
+            .llvm_ctx("cbor de option indirect store")?;
+        heap
+    } else {
+        dst
+    };
+
+    let is_null_fn = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_is_null",
+        i32_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    let is_null = builder
+        .build_call(is_null_fn, &[reader.into()], "cbor_de_opt_is_null")
+        .llvm_ctx("cbor de option is_null")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_is_null void".into()))?
+        .into_int_value();
+    let is_null_b = builder
+        .build_int_compare(
+            IntPredicate::NE,
+            is_null,
+            i32_ty.const_zero(),
+            "cbor_de_opt_nullc",
+        )
+        .llvm_ctx("cbor de option null cmp")?;
+
+    let none_bb = ctx.append_basic_block(func, "cbor_de_opt_none");
+    let some_bb = ctx.append_basic_block(func, "cbor_de_opt_some");
+    let cont_bb = ctx.append_basic_block(func, "cbor_de_opt_cont");
+    builder
+        .build_conditional_branch(is_null_b, none_bb, some_bb)
+        .llvm_ctx("cbor de option branch")?;
+
+    builder.position_at_end(none_bb);
+    let skip_fn = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_skip",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(skip_fn, &[reader.into()], "cbor_de_opt_skip")
+        .llvm_ctx("cbor de option skip")?;
+    let none_tag = layout.tag_int_ty.const_int(none_idx as u64, false);
+    let tag_ptr_none = builder
+        .build_struct_gep(layout.outer_struct, base, 0, "cbor_de_opt_none_tag")
+        .llvm_ctx("cbor de option none tag gep")?;
+    builder
+        .build_store(tag_ptr_none, none_tag)
+        .llvm_ctx("cbor de option none tag store")?;
+    builder
+        .build_unconditional_branch(cont_bb)
+        .llvm_ctx("cbor de option none br")?;
+
+    builder.position_at_end(some_bb);
+    let some_tag = layout.tag_int_ty.const_int(some_idx as u64, false);
+    let tag_ptr_some = builder
+        .build_struct_gep(layout.outer_struct, base, 0, "cbor_de_opt_some_tag")
+        .llvm_ctx("cbor de option some tag gep")?;
+    builder
+        .build_store(tag_ptr_some, some_tag)
+        .llvm_ctx("cbor de option some tag store")?;
+    let payload_ptr = builder
+        .build_struct_gep(layout.outer_struct, base, 1, "cbor_de_opt_payload")
+        .llvm_ctx("cbor de option payload gep")?;
+    let field0_ptr = builder
+        .build_struct_gep(
+            layout.variant_struct_tys[some_idx],
+            payload_ptr,
+            0,
+            "cbor_de_opt_field0",
+        )
+        .llvm_ctx("cbor de option field gep")?;
+    emit_de_value_cbor(
+        ctx,
+        llvm_mod,
+        builder,
+        func,
+        payload_ty,
+        field0_ptr,
+        reader,
+        wire_layouts,
+        record_layouts,
+        machine_layouts,
+        pipeline_records,
+        enum_layouts,
+    )?;
+    builder
+        .build_unconditional_branch(cont_bb)
+        .llvm_ctx("cbor de option some br")?;
+
+    builder.position_at_end(cont_bb);
+    Ok(())
+}
+
+/// Encode a wire enum under the q185 Qa "map-of-one" shape: a unit variant emits
+/// its bare integer tag; a payload variant emits a single-entry map
+/// `{tag: [field0, field1, ...]}`. The tag is the schema-stable wire tag
+/// (`cbor_variant_tag`). An out-of-range in-memory discriminant traps
+/// (exhaustiveness fallthrough), matching the bespoke codec.
+#[allow(clippy::too_many_arguments)]
+fn emit_ser_enum_cbor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    key: &str,
+    layout: &MachineCodegenLayout<'ctx>,
+    el: &EnumLayout,
+    value_ptr: PointerValue<'ctx>,
+    buf: PointerValue<'ctx>,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    let i64_ty = ctx.i64_type();
+
+    let base = if el.is_indirect {
+        builder
+            .build_load(ptr_ty, value_ptr, "cbor_ser_enum_indirect")
+            .llvm_ctx("cbor ser enum indirect load")?
+            .into_pointer_value()
+    } else {
+        value_ptr
+    };
+    let tag_ptr = builder
+        .build_struct_gep(layout.outer_struct, base, 0, "cbor_ser_enum_tag_ptr")
+        .llvm_ctx("cbor ser enum tag gep")?;
+    let tag = builder
+        .build_load(layout.tag_int_ty, tag_ptr, "cbor_ser_enum_tag")
+        .llvm_ctx("cbor ser enum tag load")?
+        .into_int_value();
+
+    let cont_bb = ctx.append_basic_block(func, "cbor_ser_enum_cont");
+    let trap_bb = ctx.append_basic_block(func, "cbor_ser_enum_oob");
+    let mut cases = Vec::with_capacity(layout.variant_struct_tys.len());
+    let mut variant_bbs = Vec::with_capacity(layout.variant_struct_tys.len());
+    for idx in 0..layout.variant_struct_tys.len() {
+        let bb = ctx.append_basic_block(func, &format!("cbor_ser_enum_v{idx}"));
+        cases.push((layout.tag_int_ty.const_int(idx as u64, false), bb));
+        variant_bbs.push(bb);
+    }
+    builder
+        .build_switch(tag, trap_bb, &cases)
+        .llvm_ctx("cbor ser enum switch")?;
+
+    builder.position_at_end(trap_bb);
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "cbor_ser_enum_oob",
+    )?;
+
+    let ser_u64 = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_ser_u64",
+        void_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+    );
+    let begin_map = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_ser_begin_map",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    let key_u64 = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_ser_key_u64",
+        void_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+    );
+    let begin_arr = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_ser_begin_array",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    let end_arr = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_ser_end_array",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    let end_map = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_ser_end_map",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+
+    for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
+        builder.position_at_end(variant_bbs[idx]);
+        let variant = &el.variants[idx];
+        let wire_tag = cbor_variant_tag(wire_layouts, key, &variant.name, idx);
+        let tag_const = i64_ty.const_int(wire_tag, false);
+        if variant.field_tys.is_empty() {
+            builder
+                .build_call(
+                    ser_u64,
+                    &[buf.into(), tag_const.into()],
+                    "cbor_ser_enum_unit",
+                )
+                .llvm_ctx("cbor ser enum unit tag")?;
+        } else {
+            builder
+                .build_call(begin_map, &[buf.into()], "cbor_ser_enum_begin_map")
+                .llvm_ctx("cbor ser enum begin_map")?;
+            builder
+                .build_call(
+                    key_u64,
+                    &[buf.into(), tag_const.into()],
+                    "cbor_ser_enum_key",
+                )
+                .llvm_ctx("cbor ser enum key")?;
+            builder
+                .build_call(begin_arr, &[buf.into()], "cbor_ser_enum_begin_arr")
+                .llvm_ctx("cbor ser enum begin_array")?;
+            let payload_ptr = builder
+                .build_struct_gep(
+                    layout.outer_struct,
+                    base,
+                    1,
+                    &format!("cbor_ser_enum_payload_{idx}"),
+                )
+                .llvm_ctx("cbor ser enum payload gep")?;
+            for (fidx, fty) in variant.field_tys.iter().enumerate() {
+                let field_ptr = builder
+                    .build_struct_gep(
+                        *variant_struct,
+                        payload_ptr,
+                        fidx as u32,
+                        &format!("cbor_ser_enum_v{idx}_f{fidx}"),
+                    )
+                    .llvm_ctx("cbor ser enum field gep")?;
+                emit_ser_value_cbor(
+                    ctx,
+                    llvm_mod,
+                    builder,
+                    func,
+                    fty,
+                    field_ptr,
+                    buf,
+                    wire_layouts,
+                    record_layouts,
+                    machine_layouts,
+                    pipeline_records,
+                    enum_layouts,
+                )?;
+            }
+            builder
+                .build_call(end_arr, &[buf.into()], "cbor_ser_enum_end_arr")
+                .llvm_ctx("cbor ser enum end_array")?;
+            builder
+                .build_call(end_map, &[buf.into()], "cbor_ser_enum_end_map")
+                .llvm_ctx("cbor ser enum end_map")?;
+        }
+        builder
+            .build_unconditional_branch(cont_bb)
+            .llvm_ctx("cbor ser enum variant br")?;
+    }
+    builder.position_at_end(cont_bb);
+    Ok(())
+}
+
+/// Decode a wire enum under the q185 Qa shape. `hew_cbor_de_enum_begin` returns
+/// the wire tag and stages the payload array (empty for a unit variant); a
+/// switch on the wire tag selects the variant, stores the in-memory
+/// discriminant, and drains the payload array into the variant's fields.
+/// `hew_cbor_de_enum_end` closes the frame on every non-trap path. An unknown
+/// wire tag traps (exhaustiveness fallthrough), matching the bespoke codec.
+#[allow(clippy::too_many_arguments)]
+fn emit_de_enum_cbor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    key: &str,
+    layout: &MachineCodegenLayout<'ctx>,
+    el: &EnumLayout,
+    dst: PointerValue<'ctx>,
+    reader: PointerValue<'ctx>,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    let i64_ty = ctx.i64_type();
+    let i32_ty = ctx.i32_type();
+
+    let base = if el.is_indirect {
+        let size = layout
+            .outer_struct
+            .size_of()
+            .ok_or_else(|| CodegenError::FailClosed("indirect enum has no size".into()))?;
+        let align = i64_ty.const_int(8, false);
+        let alloc_prim = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_alloc",
+            ptr_ty.fn_type(&[i64_ty.into(), i64_ty.into()], false),
+        );
+        let heap = builder
+            .build_call(
+                alloc_prim,
+                &[size.into(), align.into()],
+                "cbor_de_enum_alloc",
+            )
+            .llvm_ctx("cbor de enum alloc")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_alloc void".into()))?
+            .into_pointer_value();
+        builder
+            .build_store(dst, heap)
+            .llvm_ctx("cbor de enum indirect store")?;
+        heap
+    } else {
+        dst
+    };
+
+    let enum_begin = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_enum_begin",
+        i64_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    let wire_tag = builder
+        .build_call(enum_begin, &[reader.into()], "cbor_de_enum_begin")
+        .llvm_ctx("cbor de enum begin")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_enum_begin void".into()))?
+        .into_int_value();
+
+    let cont_bb = ctx.append_basic_block(func, "cbor_de_enum_cont");
+    let trap_bb = ctx.append_basic_block(func, "cbor_de_enum_oob");
+    let mut cases = Vec::with_capacity(layout.variant_struct_tys.len());
+    let mut variant_bbs = Vec::with_capacity(layout.variant_struct_tys.len());
+    for idx in 0..layout.variant_struct_tys.len() {
+        let bb = ctx.append_basic_block(func, &format!("cbor_de_enum_v{idx}"));
+        let wt = cbor_variant_tag(wire_layouts, key, &el.variants[idx].name, idx);
+        cases.push((i64_ty.const_int(wt, false), bb));
+        variant_bbs.push(bb);
+    }
+    builder
+        .build_switch(wire_tag, trap_bb, &cases)
+        .llvm_ctx("cbor de enum switch")?;
+
+    builder.position_at_end(trap_bb);
+    emit_trap_with_code_raw(
+        ctx,
+        llvm_mod,
+        builder,
+        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
+        "cbor_de_enum_oob",
+    )?;
+
+    let array_next = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_array_next",
+        i32_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    for (idx, variant_struct) in layout.variant_struct_tys.iter().enumerate() {
+        builder.position_at_end(variant_bbs[idx]);
+        // Store the in-memory discriminant = variant index.
+        let tag_mem = layout.tag_int_ty.const_int(idx as u64, false);
+        let tag_ptr = builder
+            .build_struct_gep(layout.outer_struct, base, 0, "cbor_de_enum_tag_ptr")
+            .llvm_ctx("cbor de enum tag gep")?;
+        builder
+            .build_store(tag_ptr, tag_mem)
+            .llvm_ctx("cbor de enum tag store")?;
+        let variant = &el.variants[idx];
+        if !variant.field_tys.is_empty() {
+            let payload_ptr = builder
+                .build_struct_gep(
+                    layout.outer_struct,
+                    base,
+                    1,
+                    &format!("cbor_de_enum_payload_{idx}"),
+                )
+                .llvm_ctx("cbor de enum payload gep")?;
+            for (fidx, fty) in variant.field_tys.iter().enumerate() {
+                // Stage the next payload element; a missing field leaves nothing
+                // staged and the field read fails closed.
+                builder
+                    .build_call(array_next, &[reader.into()], "cbor_de_enum_next")
+                    .llvm_ctx("cbor de enum array_next")?;
+                let field_ptr = builder
+                    .build_struct_gep(
+                        *variant_struct,
+                        payload_ptr,
+                        fidx as u32,
+                        &format!("cbor_de_enum_v{idx}_f{fidx}"),
+                    )
+                    .llvm_ctx("cbor de enum field gep")?;
+                emit_de_value_cbor(
+                    ctx,
+                    llvm_mod,
+                    builder,
+                    func,
+                    fty,
+                    field_ptr,
+                    reader,
+                    wire_layouts,
+                    record_layouts,
+                    machine_layouts,
+                    pipeline_records,
+                    enum_layouts,
+                )?;
+            }
+        }
+        builder
+            .build_unconditional_branch(cont_bb)
+            .llvm_ctx("cbor de enum variant br")?;
+    }
+    builder.position_at_end(cont_bb);
+    let enum_end = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_enum_end",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(enum_end, &[reader.into()], "cbor_de_enum_end")
+        .llvm_ctx("cbor de enum end")?;
+    Ok(())
 }
 
 /// Emit the full CBOR serialize + deserialize thunk bodies for `ty` (idempotent:

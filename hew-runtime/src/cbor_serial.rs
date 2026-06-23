@@ -632,6 +632,95 @@ pub unsafe extern "C" fn hew_cbor_de_exit_array(reader: *mut c_void) {
     }
 }
 
+/// Begin decoding a wire enum, returning the active variant's integer tag and
+/// staging its payload for the field reads that follow.
+///
+/// The wire shape of an enum (the "map-of-one" form, q185 Qa) is one of:
+/// - a bare unsigned integer `N` — a *unit* variant with tag `N`; or
+/// - a single-entry map `{N: [field0, field1, ...]}` — a *payload* variant with
+///   tag `N` whose value is the positional payload array.
+///
+/// Either way this pushes an array frame so the caller reads payload fields with
+/// `hew_cbor_de_array_next` and closes with `hew_cbor_de_enum_end` — symmetric
+/// for both forms (a unit variant pushes an empty payload array, so the
+/// caller's `enum_end` always pops exactly one array frame). Fails closed (and
+/// still pushes a balancing empty frame) on anything else: nothing staged, a
+/// negative tag, a multi-entry map, or a single entry whose value is not an
+/// array.
+///
+/// # Safety
+/// `reader` must be a live handle from `hew_cbor_de_new`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cbor_de_enum_begin(reader: *mut c_void) -> u64 {
+    // SAFETY: reader is a live handle per this fn's contract.
+    let Some(r) = (unsafe { as_de_reader(reader) }) else {
+        return 0;
+    };
+    let Some(value) = r.take_staged() else {
+        r.failed = true;
+        r.stack.push(DeFrame::Array(Vec::new().into_iter()));
+        return 0;
+    };
+    match value {
+        // Unit variant: a bare non-negative integer tag, empty payload.
+        Value::Integer(tag) => {
+            let raw = i128::from(tag);
+            let Ok(tag_u64) = u64::try_from(raw) else {
+                r.failed = true;
+                r.stack.push(DeFrame::Array(Vec::new().into_iter()));
+                return 0;
+            };
+            r.stack.push(DeFrame::Array(Vec::new().into_iter()));
+            tag_u64
+        }
+        // Payload variant: exactly one `{tag: [payload...]}` entry.
+        Value::Map(pairs) => {
+            let mut entries = pairs.into_iter();
+            let (Some((key, body)), None) = (entries.next(), entries.next()) else {
+                // Zero or more-than-one entries: not a well-formed payload variant.
+                r.failed = true;
+                r.stack.push(DeFrame::Array(Vec::new().into_iter()));
+                return 0;
+            };
+            let (Value::Integer(tag), Value::Array(items)) = (key, body) else {
+                r.failed = true;
+                r.stack.push(DeFrame::Array(Vec::new().into_iter()));
+                return 0;
+            };
+            let Ok(tag_u64) = u64::try_from(i128::from(tag)) else {
+                r.failed = true;
+                r.stack.push(DeFrame::Array(Vec::new().into_iter()));
+                return 0;
+            };
+            r.stack.push(DeFrame::Array(items.into_iter()));
+            tag_u64
+        }
+        _ => {
+            r.failed = true;
+            r.stack.push(DeFrame::Array(Vec::new().into_iter()));
+            0
+        }
+    }
+}
+
+/// Close a wire enum's payload frame opened by `hew_cbor_de_enum_begin`. Any
+/// unconsumed trailing payload elements (forward-compatible extra fields) are
+/// dropped. Fails closed if the top frame is not the enum's payload array.
+///
+/// # Safety
+/// `reader` must be a live handle from `hew_cbor_de_new`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cbor_de_enum_end(reader: *mut c_void) {
+    // SAFETY: reader is a live handle per this fn's contract.
+    let Some(r) = (unsafe { as_de_reader(reader) }) else {
+        return;
+    };
+    match r.stack.pop() {
+        Some(DeFrame::Array(_)) => {}
+        _ => r.failed = true,
+    }
+}
+
 /// Returns 1 if the staged value is CBOR null (an optional field's `None`), else
 /// 0. Non-consuming: the thunk reads the underlying value afterwards for a
 /// `Some`. Latches failure (and returns 1) if nothing is staged.
@@ -1083,5 +1172,145 @@ mod tests {
         let (key, val) = &entries[0];
         assert_eq!(i128::from(key.as_integer().unwrap()), 1);
         assert_eq!(i128::from(val.as_integer().unwrap()), 42);
+    }
+
+    /// The q185 Qa payload-variant shape `{tag: [payload...]}` is canonical CBOR
+    /// a stock `ciborium` reader interops with: `Circle(42)` (variant tag 1)
+    /// encodes to `A1 01 81 18 2A` (`map(1){ 1: array(1)[42] }`).
+    #[test]
+    fn enum_payload_qa_shape_is_canonical_ciborium() {
+        // SAFETY: test-controlled handle.
+        let bytes = unsafe {
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_begin_map(buf);
+            hew_cbor_ser_key_u64(buf, 1);
+            hew_cbor_ser_begin_array(buf);
+            hew_cbor_ser_i64(buf, 42);
+            hew_cbor_ser_end_array(buf);
+            hew_cbor_ser_end_map(buf);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let v = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+            v
+        };
+        assert_eq!(
+            bytes,
+            vec![0xA1, 0x01, 0x81, 0x18, 0x2A],
+            "canonical CBOR map(1){{ 1: [42] }}"
+        );
+        let value: Value =
+            ciborium::de::from_reader(&mut std::io::Cursor::new(&bytes[..])).expect("valid CBOR");
+        let Value::Map(entries) = value else {
+            panic!("expected a CBOR map");
+        };
+        assert_eq!(entries.len(), 1, "Qa map-of-one");
+        let (key, val) = &entries[0];
+        assert_eq!(i128::from(key.as_integer().unwrap()), 1, "variant tag");
+        let Value::Array(items) = val else {
+            panic!("expected a payload array");
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(i128::from(items[0].as_integer().unwrap()), 42);
+    }
+
+    /// A unit variant rides as its bare integer tag and decodes via
+    /// `hew_cbor_de_enum_begin` (which pushes a balancing empty payload frame so
+    /// `hew_cbor_de_enum_end` is symmetric for unit and payload variants).
+    #[test]
+    fn enum_unit_decodes_via_enum_begin() {
+        // SAFETY: test-controlled handles.
+        unsafe {
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_u64(buf, 2);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+            assert_eq!(bytes, vec![0x02], "bare unit tag");
+
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            assert_eq!(hew_cbor_de_enum_begin(r), 2, "unit tag");
+            hew_cbor_de_enum_end(r);
+            assert_eq!(hew_cbor_de_failed(r), 0, "unit variant decodes clean");
+            hew_cbor_de_free(r);
+        }
+    }
+
+    /// A payload variant `{1: [42]}` decodes via `enum_begin` (tag) +
+    /// `array_next`/`de_i64` (payload) + `enum_end`.
+    #[test]
+    fn enum_payload_decodes_via_enum_begin() {
+        // SAFETY: test-controlled handles.
+        unsafe {
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_begin_map(buf);
+            hew_cbor_ser_key_u64(buf, 1);
+            hew_cbor_ser_begin_array(buf);
+            hew_cbor_ser_i64(buf, 42);
+            hew_cbor_ser_end_array(buf);
+            hew_cbor_ser_end_map(buf);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            assert_eq!(hew_cbor_de_enum_begin(r), 1, "payload tag");
+            assert_eq!(hew_cbor_de_array_next(r), 1, "payload field present");
+            assert_eq!(hew_cbor_de_i64(r), 42, "payload field value");
+            hew_cbor_de_enum_end(r);
+            assert_eq!(hew_cbor_de_failed(r), 0, "payload variant decodes clean");
+            hew_cbor_de_free(r);
+        }
+    }
+
+    /// `enum_begin` fails closed on a value that is neither a non-negative
+    /// integer nor a single-entry `{int: array}` map (here: a bare text string),
+    /// and still pushes a balancing frame so `enum_end` stays symmetric.
+    #[test]
+    fn enum_begin_fails_closed_on_malformed() {
+        let text = std::ffi::CString::new("nope").unwrap();
+        // SAFETY: test-controlled handles.
+        unsafe {
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_string(buf, text.as_ptr());
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            assert_eq!(hew_cbor_de_enum_begin(r), 0, "malformed → 0");
+            hew_cbor_de_enum_end(r);
+            assert_eq!(hew_cbor_de_failed(r), 1, "malformed enum must fail closed");
+            hew_cbor_de_free(r);
+        }
+    }
+
+    /// `enum_begin` round-trips the full `u64` tag range, including tags above
+    /// `i64::MAX` that a Hew integer literal cannot construct in a `.hew`
+    /// fixture. Guards the `u64::try_from` decode path against silent wrap.
+    #[test]
+    fn enum_begin_high_bit_tag_round_trips() {
+        // SAFETY: test-controlled handles.
+        unsafe {
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_u64(buf, u64::MAX);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            assert_eq!(
+                hew_cbor_de_enum_begin(r),
+                u64::MAX,
+                "high-bit tag preserved"
+            );
+            hew_cbor_de_enum_end(r);
+            assert_eq!(hew_cbor_de_failed(r), 0);
+            hew_cbor_de_free(r);
+        }
     }
 }

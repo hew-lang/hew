@@ -850,6 +850,8 @@ codegen-stable = [
   "hew_cbor_de_bytes",
   "hew_cbor_de_enter_array",
   "hew_cbor_de_enter_map",
+  "hew_cbor_de_enum_begin",
+  "hew_cbor_de_enum_end",
   "hew_cbor_de_exit_array",
   "hew_cbor_de_exit_map",
   "hew_cbor_de_f64",

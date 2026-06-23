@@ -149,6 +149,91 @@ pub enum DiagnosticFormat {
 }
 
 // ---------------------------------------------------------------------------
+// Lint level flags
+// ---------------------------------------------------------------------------
+
+/// One `--allow` / `--warn` / `--deny` value: a specific lint name or the
+/// `all` wildcard. Parsed and validated by [`parse_lint_selector`] so an
+/// unknown lint fails closed at the CLI boundary rather than being ignored.
+#[derive(Debug, Clone)]
+pub enum LintSelector {
+    /// Every known lint (`all`).
+    All,
+    /// A single named lint.
+    One(hew_types::LintId),
+}
+
+impl LintSelector {
+    fn is_all(&self) -> bool {
+        matches!(self, LintSelector::All)
+    }
+}
+
+/// Parse a `--allow`/`--warn`/`--deny` value into a [`LintSelector`].
+///
+/// Accepts any known [`hew_types::LintId`] name or `all`; an unknown name is a
+/// hard CLI error listing the known lints (fail closed — a misspelled lint must
+/// never be silently dropped).
+fn parse_lint_selector(value: &str) -> Result<LintSelector, String> {
+    if value == "all" {
+        return Ok(LintSelector::All);
+    }
+    hew_types::LintId::from_name(value)
+        .map(LintSelector::One)
+        .ok_or_else(|| {
+            let known = hew_types::LintId::ALL
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("unknown lint `{value}` (known lints: {known}, all)")
+        })
+}
+
+/// Resolve the CLI lint-level flags into a [`hew_types::LintLevels`].
+///
+/// Starts from every lint's default level, then applies the flags. clap
+/// collects the three flags into independent lists, so their interleaved argv
+/// order is not recoverable through the derive API; conflicts are therefore
+/// resolved deterministically by *specificity then severity* rather than by
+/// position: a specific lint name always overrides an `all` wildcard, and
+/// within the same specificity a stronger level wins (`deny` > `warn` >
+/// `allow`). Thus `--deny all --allow needless_range_loop` denies everything
+/// except that one lint, and `--allow all --deny needless_range_loop` does the
+/// reverse.
+fn resolve_lint_levels(
+    allow: &[LintSelector],
+    warn: &[LintSelector],
+    deny: &[LintSelector],
+) -> hew_types::LintLevels {
+    use hew_types::{LintId, LintLevel, LintLevels};
+    let mut levels = LintLevels::from_defaults();
+    // Ascending severity so deny overwrites warn overwrites allow when two
+    // flags name the same target.
+    let by_severity = [
+        (LintLevel::Allow, allow),
+        (LintLevel::Warn, warn),
+        (LintLevel::Deny, deny),
+    ];
+    // Pass 1: `all` wildcards (broad); pass 2: specific names (narrow) win.
+    for want_all in [true, false] {
+        for (level, selectors) in &by_severity {
+            for selector in selectors.iter().filter(|s| s.is_all() == want_all) {
+                match selector {
+                    LintSelector::All => {
+                        for id in LintId::ALL.iter().copied() {
+                            levels.set(id, *level);
+                        }
+                    }
+                    LintSelector::One(id) => levels.set(*id, *level),
+                }
+            }
+        }
+    }
+    levels
+}
+
+// ---------------------------------------------------------------------------
 // Shared build options
 // ---------------------------------------------------------------------------
 
@@ -166,6 +251,17 @@ pub struct CommonBuildArgs {
     /// Override project directory for manifest and package resolution.
     #[arg(long, value_name = "DIR")]
     pub project_dir: Option<PathBuf>,
+    /// Downgrade a lint to `allow` (suppress it). Repeatable; accepts a lint
+    /// name (e.g. `needless_range_loop`) or `all`.
+    #[arg(long = "allow", short = 'A', value_name = "LINT", value_parser = parse_lint_selector)]
+    pub allow: Vec<LintSelector>,
+    /// Set a lint to `warn`. Repeatable; accepts a lint name or `all`.
+    #[arg(long = "warn", short = 'W', value_name = "LINT", value_parser = parse_lint_selector)]
+    pub warn: Vec<LintSelector>,
+    /// Promote a lint to `deny` (a hard error). Repeatable; accepts a lint
+    /// name or `all`.
+    #[arg(long = "deny", short = 'D', value_name = "LINT", value_parser = parse_lint_selector)]
+    pub deny: Vec<LintSelector>,
 }
 
 impl CommonBuildArgs {
@@ -183,6 +279,7 @@ impl CommonBuildArgs {
             werror: self.werror,
             pkg_path: self.pkg_path.clone(),
             project_dir: self.project_dir.clone(),
+            lint_levels: resolve_lint_levels(&self.allow, &self.warn, &self.deny),
             ..Default::default()
         }
     }

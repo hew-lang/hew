@@ -7,6 +7,9 @@ fn main() {
     println(f"xs[0]: {xs[0]}");
     println(f"xs[3]: {xs[3]}");
     var total = 0;
+    // Sum by index: the sandbox VM iterates ranges but not collection values
+    // directly, so indexing is intentional here.
+    // hew:allow(needless_range_loop)
     for i in 0 .. xs.len() {
         total = total + xs[i];
     }

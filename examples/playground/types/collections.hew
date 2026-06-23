@@ -11,9 +11,10 @@ fn main() {
     println(f"length: {v.len()}");
     println(f"first:  {v.get(0)}");
     println(f"third:  {v.get(2)}");
-
-    // Iterate over all elements by index
     var total = 0;
+    // Sum by index: the sandbox VM iterates ranges but not collection values
+    // directly, so indexing is intentional here.
+    // hew:allow(needless_range_loop)
     for i in 0 .. v.len() {
         total = total + v.get(i);
     }

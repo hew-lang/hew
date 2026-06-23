@@ -42,13 +42,13 @@ pub use check::{
     CaptureModeOrigin, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureCaptureMode,
     ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion,
     DynMethodCall, DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig, HashMapMethod,
-    HashSetMethod, ImplDef, ImplId, ImplRegistry, LookupError, MachineMethodKind, MathGenericOp,
-    MethodCallReceiverKind, MethodCallRewrite, MethodTarget, MethodTargetFamily,
-    NumericMethodFamily, NumericMethodLowering, NumericMethodOp, NumericSignedness, NumericWidth,
-    OptionResultMethod, PatternKind, PayloadBinding, PayloadVariantPattern, ResolvedCall,
-    RuntimeAbi, SpanKey, TyPattern, TypeCheckOutput, VariantDef, VariantMatch, VecHigherOrderOp,
-    VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
-    WireLayoutEntry, WireLayoutTable,
+    HashSetMethod, ImplDef, ImplId, ImplRegistry, LintId, LintLevel, LintLevels, LintSources,
+    LookupError, MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite,
+    MethodTarget, MethodTargetFamily, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
+    NumericSignedness, NumericWidth, OptionResultMethod, PatternKind, PayloadBinding,
+    PayloadVariantPattern, ResolvedCall, RuntimeAbi, SpanKey, TyPattern, TypeCheckOutput,
+    VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering,
+    WireCodecDirection, WireFieldLayout, WireLayoutEntry, WireLayoutTable,
 };
 pub use error::TypeError;
 pub use extern_symbol::{

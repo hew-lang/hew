@@ -41,6 +41,11 @@ pub struct FrontendOptions {
     /// and `UnusedMut` lints are skipped. Eval-only: `hew check`/`hew build`
     /// leave it `false` and keep emitting them.
     pub repl_fragment: bool,
+    /// Per-lint reporting levels for the semantic lint sweep, built from the
+    /// CLI `--allow` / `--warn` / `--deny` flags. Installed on the checker via
+    /// [`hew_types::Checker::set_lint_levels`] before `check_program`. Defaults
+    /// to every lint's built-in level ([`hew_types::LintLevels::from_defaults`]).
+    pub lint_levels: hew_types::LintLevels,
 }
 
 #[derive(Debug, Clone)]
@@ -494,8 +499,19 @@ fn typecheck_program_with_diagnostics(
     if options.repl_fragment {
         checker.set_repl_fragment();
     }
-    let tco = checker.check_program(program);
+    checker.set_lint_levels(options.lint_levels.clone());
+    // Install source text so the lint sweep can resolve in-source
+    // `// hew:allow(...)` directives. The root source owns the entry file's
+    // spans; each non-root module owns its own (built from the same source map
+    // the diagnostic renderer uses below).
     let module_source_map = build_module_source_map(program);
+    let mut lint_sources = hew_types::LintSources::new();
+    lint_sources.set_root(source.to_string());
+    for (module, (module_source, _filename)) in &module_source_map {
+        lint_sources.set_module(module.clone(), module_source.clone());
+    }
+    checker.set_lint_sources(lint_sources);
+    let tco = checker.check_program(program);
     let mut diagnostics = tco
         .errors
         .iter()

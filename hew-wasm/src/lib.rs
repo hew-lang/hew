@@ -528,6 +528,13 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
         let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
             hew_types::module_registry::build_module_search_paths(),
         ));
+        // Install the editor buffer as the root lint source so in-source
+        // `// hew:allow(...)` directives suppress lints in the playground just
+        // as they do on the CLI. The wasm path is single-source, so there are
+        // no non-root modules to register.
+        let mut lint_sources = hew_types::LintSources::new();
+        lint_sources.set_root(source.to_string());
+        checker.set_lint_sources(lint_sources);
         let tco = checker.check_program(&parse_result.program);
         // Run HIR lowering after type-checking so that checker-boundary
         // violations (e.g. closure captures without materialized metadata)
@@ -988,6 +995,40 @@ mod tests {
         let result = ok(analyze("fn {"));
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(!parsed["diagnostics"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn analyze_reports_needless_range_loop_lint() {
+        let source = "fn main() {\n\
+             let xs: Vec<i64> = Vec::new();\n\
+             for i in 0..xs.len() {\n\
+             let _ = xs[i];\n\
+             }\n\
+             }\n";
+        let parsed: serde_json::Value = serde_json::from_str(&ok(analyze(source))).unwrap();
+        let diagnostics = parsed["diagnostics"].as_array().unwrap();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["kind"] == "needless_range_loop"),
+            "expected a needless_range_loop diagnostic: {parsed}"
+        );
+    }
+
+    #[test]
+    fn analyze_honours_in_source_allow_directive() {
+        let source = "fn main() {\n\
+             let xs: Vec<i64> = Vec::new();\n\
+             // hew:allow(needless_range_loop)\n\
+             for i in 0..xs.len() {\n\
+             let _ = xs[i];\n\
+             }\n\
+             }\n";
+        let parsed: serde_json::Value = serde_json::from_str(&ok(analyze(source))).unwrap();
+        assert!(
+            parsed["diagnostics"].as_array().unwrap().is_empty(),
+            "in-source hew:allow directive must suppress the lint in the playground: {parsed}"
+        );
     }
 
     #[test]

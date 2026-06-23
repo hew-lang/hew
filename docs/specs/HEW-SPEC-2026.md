@@ -3886,10 +3886,11 @@ Hew wire types map to MessagePack formats as follows:
 A wire struct is encoded as a MessagePack **map**. Field numbers are used as map keys (as MessagePack integers), and values are encoded according to the table above.
 
 ```hew
-wire struct User {
+#[wire]
+struct User {
     id: u64 @1;
     name: string @2;
-    email: string @3?;
+    email: string @3 optional;
 }
 
 // User { id: 42, name: "alice", email: Some("alice@example.com") } encodes as:
@@ -3916,7 +3917,8 @@ Wire enums are encoded as MessagePack **integers** representing the 0-based vari
 
 <!-- doctest: skip -->
 ```hew
-wire enum Status { Pending; Active; Completed; }
+#[wire]
+enum Status { Pending; Active; Completed; }
 
 // Status::Pending  -> MessagePack: 0 (i64)
 // Status::Active   -> MessagePack: 1 (i64)
@@ -3928,9 +3930,10 @@ wire enum Status { Pending; Active; Completed; }
 Optional fields are represented using MessagePack **nil** for `None`:
 
 ```hew
-wire struct Config {
+#[wire]
+struct Config {
     timeout_ms: u64 @1;
-    proxy_url: string @2?;
+    proxy_url: string @2 optional;
 }
 
 // Config { timeout_ms: 5000, proxy_url: None } encodes as:
@@ -3945,7 +3948,8 @@ wire struct Config {
 Lists are encoded as MessagePack **arrays**. Each element is encoded according to the element type:
 
 ```hew
-wire struct Data {
+#[wire]
+struct Data {
     values: [i64] @1;
     tags: [string] @2;
 }
@@ -3962,8 +3966,10 @@ wire struct Data {
 Nested wire structs are encoded recursively as MessagePack maps:
 
 ```hew
-wire struct Inner { x: i32 @1; }
-wire struct Outer { inner: Inner @1; nested_list: [Inner] @2; }
+#[wire]
+struct Inner { x: i32 @1; }
+#[wire]
+struct Outer { inner: Inner @1; nested_list: [Inner] @2; }
 
 // Outer { inner: Inner { x: 150 }, nested_list: [Inner { x: 200 }] } encodes as:
 // MessagePack map: {
@@ -4025,7 +4031,8 @@ Per-field override always wins over the struct-level convention.
 
 ```hew
 #[json(camelCase)]
-wire struct User {
+#[wire]
+struct User {
     user_name: string @1;                       // JSON: "userName"
     email_address: string @2;                   // JSON: "emailAddress"
     internal_id: string @3 json("id");          // JSON: "id"  (override wins)
@@ -4045,7 +4052,8 @@ JSON representation:
 Without the struct-level attribute, names are preserved exactly:
 
 ```hew
-wire struct User {
+#[wire]
+struct User {
     user_name: string @1;
     email_address: string @2;
 }
@@ -4063,7 +4071,8 @@ wire struct User {
 Wire enums encode as the string name of the variant:
 
 ```hew
-wire enum Status { Pending; Active; Completed; }
+#[wire]
+enum Status { Pending; Active; Completed; }
 ```
 
 ```json
@@ -4086,7 +4095,8 @@ Enum variant names are used as-is by default. Apply `#[json(camelCase)]` (or ano
 
 ```hew
 #[json(camelCase)]
-wire enum Status { PendingReview; ActiveNow; Completed; }
+#[wire]
+enum Status { PendingReview; ActiveNow; Completed; }
 ```
 
 ```json

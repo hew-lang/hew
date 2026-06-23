@@ -57,7 +57,8 @@ struct UserMessage {
     email: string @3 deprecated,
 }
 
-wire enum Command {
+#[wire]
+enum Command {
     Start;
     Stop;
     Pause;

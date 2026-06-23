@@ -337,7 +337,7 @@ form consumed by browser/playground tooling and the WASI e2e test suite.
 | `concurrency/counter_actor` | `unsupported` | Actor runtime ABI unavailable on WASI (#1821) |
 | `concurrency/supervisor` | `unsupported` | Uses `supervisor`/`supervisor_child` → Reject disposition |
 | `types/collections`, `types/pattern_matching`, `types/structural_bounds` | `runnable` | No WASM-limited features |
-| `types/wire_types` | `unsupported` | Wire enum lowering is not implemented on WASI (#1822) |
+| `types/wire_types` | `unsupported` | Wire enum codec not yet lowered on WASI (#1822) |
 
 The `WASI_CAPABILITY` table in `scripts/gen-playground-manifest.py` is the
 single source of truth for these per-entry values.  Entries absent from that

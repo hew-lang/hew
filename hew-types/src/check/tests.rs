@@ -6501,6 +6501,149 @@ fn lint_warnings_have_warning_severity() {
     }
 }
 
+// ---- needless_range_loop lint (M1 core) ----
+
+/// Count `needless_range_loop` findings in one diagnostic channel.
+fn count_needless_range_loop(diags: &[TypeError]) -> usize {
+    diags
+        .iter()
+        .filter(|d| d.kind == TypeErrorKind::Lint(LintId::NeedlessRangeLoop))
+        .count()
+}
+
+#[test]
+fn needless_range_loop_flags_index_access() {
+    let (errors, warnings) =
+        parse_and_check("fn scan(xs: Vec<i64>) { for i in 0..xs.len() { let _ = xs[i]; } }");
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check, got: {errors:?}"
+    );
+    let hit = warnings
+        .iter()
+        .find(|w| w.kind == TypeErrorKind::Lint(LintId::NeedlessRangeLoop))
+        .expect("expected a needless_range_loop warning");
+    assert_eq!(hit.severity, crate::error::Severity::Warning);
+    assert_eq!(hit.kind.as_kind_str(), "needless_range_loop");
+    assert!(
+        hit.message.contains("only used to index"),
+        "message: {}",
+        hit.message
+    );
+    assert!(
+        hit.suggestions
+            .iter()
+            .any(|s| s.contains("iterate the collection directly")),
+        "suggestions: {:?}",
+        hit.suggestions
+    );
+}
+
+#[test]
+fn needless_range_loop_flags_get_access() {
+    let (errors, warnings) =
+        parse_and_check("fn scan(xs: Vec<i64>) { for i in 0..xs.len() { let _ = xs.get(i); } }");
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check, got: {errors:?}"
+    );
+    assert_eq!(
+        count_needless_range_loop(&warnings),
+        1,
+        "warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_range_loop_not_flagged_when_index_used_beyond_indexing() {
+    let (errors, warnings) = parse_and_check(
+        "fn scan(xs: Vec<i64>) { for i in 0..xs.len() { let _ = xs[i]; let _ = i + 1; } }",
+    );
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check, got: {errors:?}"
+    );
+    assert_eq!(
+        count_needless_range_loop(&warnings),
+        0,
+        "a bare use of the index must suppress the lint, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_range_loop_not_flagged_when_collection_mutated() {
+    let (_, warnings) = parse_and_check(
+        "fn scan(xs: Vec<i64>) { for i in 0..xs.len() { xs.push(i); let _ = xs[i]; } }",
+    );
+    assert_eq!(
+        count_needless_range_loop(&warnings),
+        0,
+        "mutating the collection must suppress the lint, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_range_loop_not_flagged_when_index_reassigned() {
+    let (_, warnings) =
+        parse_and_check("fn scan(xs: Vec<i64>) { for i in 0..xs.len() { i = 0; let _ = xs[i]; } }");
+    assert_eq!(
+        count_needless_range_loop(&warnings),
+        0,
+        "reassigning the index must suppress the lint, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_range_loop_not_flagged_for_nested_loop_reusing_index() {
+    // The inner loop rebinds `i`, shadowing the outer index, so the outer loop
+    // body no longer provably indexes `xs` with the outer `i`.
+    let (_, warnings) = parse_and_check(
+        "fn scan(xs: Vec<i64>, ys: Vec<i64>) { \
+         for i in 0..xs.len() { for i in 0..ys.len() { let _ = xs[i]; } } }",
+    );
+    assert_eq!(
+        count_needless_range_loop(&warnings),
+        0,
+        "a shadowing nested loop must suppress the lint, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_range_loop_deny_level_routes_to_errors() {
+    const SOURCE: &str = "fn scan(xs: Vec<i64>) { for i in 0..xs.len() { let _ = xs[i]; } }";
+    let parsed = hew_parser::parse(SOURCE);
+    assert!(parsed.errors.is_empty(), "fixture should parse cleanly");
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut levels = LintLevels::from_defaults();
+    levels.set(LintId::NeedlessRangeLoop, LintLevel::Deny);
+    checker.set_lint_levels(levels);
+    let out = checker.check_program(&parsed.program);
+    let hit = out
+        .errors
+        .iter()
+        .find(|e| e.kind == TypeErrorKind::Lint(LintId::NeedlessRangeLoop))
+        .expect("Deny should route the lint into errors");
+    assert_eq!(hit.severity, crate::error::Severity::Error);
+    // Severity partition: a Deny lint must NOT also leak into the warning
+    // channel (which the `lint_warnings_have_warning_severity` invariant
+    // requires to stay warning-only).
+    assert_eq!(count_needless_range_loop(&out.warnings), 0);
+}
+
+#[test]
+fn needless_range_loop_allow_level_suppresses() {
+    const SOURCE: &str = "fn scan(xs: Vec<i64>) { for i in 0..xs.len() { let _ = xs[i]; } }";
+    let parsed = hew_parser::parse(SOURCE);
+    assert!(parsed.errors.is_empty(), "fixture should parse cleanly");
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut levels = LintLevels::from_defaults();
+    levels.set(LintId::NeedlessRangeLoop, LintLevel::Allow);
+    checker.set_lint_levels(levels);
+    let out = checker.check_program(&parsed.program);
+    assert_eq!(count_needless_range_loop(&out.warnings), 0);
+    assert_eq!(count_needless_range_loop(&out.errors), 0);
+}
+
 #[test]
 fn unused_variable_has_correct_kind() {
     let (_, warnings) = parse_and_check("fn main() { let unused = 42; }");

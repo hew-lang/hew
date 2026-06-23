@@ -1,0 +1,39 @@
+// Validation: every integer width round-trips through the CBOR body codec.
+// Each width carries a reachable boundary value (the true type extremes
+// i64::MIN/u64::MAX are covered in the runtime unit tests, since a Hew literal
+// cannot construct them). A mismatch returns the field's 1-based index so a
+// regression points at the exact width.
+#[wire]
+struct Ints {
+    a: i8 @1,
+    b: i16 @2,
+    c: i32 @3,
+    d: i64 @4,
+    e: u8 @5,
+    f: u16 @6,
+    g: u32 @7,
+    h: u64 @8,
+}
+
+fn main() -> i64 {
+    let v = Ints {
+        a: -127,
+        b: -32767,
+        c: -2147483647,
+        d: 9223372036854775807,
+        e: 255,
+        f: 65535,
+        g: 4294967295,
+        h: 4294967296,
+    };
+    let back = Ints.decode(v.encode());
+    if back.a != -127 { return 1; }
+    if back.b != -32767 { return 2; }
+    if back.c != -2147483647 { return 3; }
+    if back.d != 9223372036854775807 { return 4; }
+    if back.e != 255 { return 5; }
+    if back.f != 65535 { return 6; }
+    if back.g != 4294967295 { return 7; }
+    if back.h != 4294967296 { return 8; }
+    0
+}

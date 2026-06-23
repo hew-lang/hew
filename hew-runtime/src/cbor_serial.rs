@@ -1313,4 +1313,45 @@ mod tests {
             hew_cbor_de_free(r);
         }
     }
+
+    /// The scalar integer prims round-trip the true type extremes that a Hew
+    /// literal cannot construct in a `.hew` fixture: `i64::MIN`/`i64::MAX` for
+    /// the signed path (i8..i64 narrow to this in codegen) and `u64::MAX` for
+    /// the unsigned path (u8..u64). The reachable mid-range values are covered
+    /// by the compiled round-trip fixtures; these guard the codec at the
+    /// boundaries those fixtures cannot express.
+    #[test]
+    fn scalar_int_extremes_round_trip() {
+        // SAFETY: test-controlled handles; each prim wraps ciborium directly.
+        unsafe {
+            for signed in [i64::MIN, -1, 0, 1, i64::MAX] {
+                let buf = hew_cbor_ser_new();
+                hew_cbor_ser_i64(buf, signed);
+                let mut len = 0usize;
+                let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+                let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+                libc::free(ptr.cast());
+
+                let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+                let got = hew_cbor_de_i64(r);
+                assert_eq!(hew_cbor_de_failed(r), 0, "signed {signed} decode clean");
+                assert_eq!(got, signed, "signed extreme {signed} round-trips");
+                hew_cbor_de_free(r);
+            }
+            for unsigned in [0u64, 1, u64::from(u32::MAX), u64::MAX] {
+                let buf = hew_cbor_ser_new();
+                hew_cbor_ser_u64(buf, unsigned);
+                let mut len = 0usize;
+                let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+                let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+                libc::free(ptr.cast());
+
+                let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+                let got = hew_cbor_de_u64(r);
+                assert_eq!(hew_cbor_de_failed(r), 0, "unsigned {unsigned} decode clean");
+                assert_eq!(got, unsigned, "unsigned extreme {unsigned} round-trips");
+                hew_cbor_de_free(r);
+            }
+        }
+    }
 }

@@ -2981,3 +2981,40 @@ expect_check_fail_contains \
 # Tests exact values: wrapping narrowing/widening/sign-change and
 # saturating clamp to [W::MIN, W::MAX].
 run_check_run_expect_stdout wrapping_saturating_as_cast
+
+# CBOR wire body codec round-trips. Each #[wire] type is built, encoded to CBOR
+# bytes, decoded back, and value-asserted; the exit code carries the recovered
+# value (0 with a per-field failure code, or 42) so a garbled round-trip is a
+# test failure. Covers every wire field shape: all integer widths, the float/
+# bool/char/string scalars (incl. the empty string), bytes, Option (Some and
+# None under the null encoding), Vec (int and string elements, plus the empty
+# collection boundary), a nested #[wire] struct, and a #[wire] enum (unit and
+# payload variants under the q185 Qa map-of-one shape). The decode-malformed
+# fixture proves the codec fails closed (traps) on garbage rather than
+# fabricating a partial value.
+run_accept_expect_status "wire_cbor_roundtrip_packet" 42
+run_accept_expect_trap "wire_cbor_decode_malformed_traps"
+run_accept_expect_status "wire_cbor_int_widths" 0
+run_accept_expect_status "wire_cbor_scalars" 0
+run_accept_expect_status "wire_cbor_bytes" 0
+run_accept_expect_status "wire_cbor_option_some" 42
+run_accept_expect_status "wire_cbor_option_none" 42
+run_accept_expect_status "wire_cbor_vec_int" 42
+run_accept_expect_status "wire_cbor_vec_string" 42
+run_accept_expect_status "wire_cbor_empty_collections" 42
+run_accept_expect_status "wire_cbor_nested_struct" 42
+run_accept_expect_status "wire_cbor_enum_unit" 42
+run_accept_expect_status "wire_cbor_enum_payload" 42
+
+# Deferred wire-body sub-shapes fail closed at codegen-front validation. These
+# are intentionally outside the supported wire-body floor; the codec rejects
+# them with an explicit diagnostic rather than emitting an ambiguous or
+# leak-prone codec. Registered here so the boundary is enforced, not forgotten.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/wire_cbor_option_option_rejected.hew" \
+    "ambiguous under the null encoding" \
+    "wire_cbor_option_option_rejected"
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_owned_compound_rejected.hew" \
+    "owned-compound element" \
+    "wire_cbor_vec_owned_compound_rejected"

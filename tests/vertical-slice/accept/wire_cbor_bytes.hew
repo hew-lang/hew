@@ -1,0 +1,22 @@
+// Validation: a `bytes` field round-trips through the CBOR body codec as a CBOR
+// byte string, preserving length and every element (including the high byte
+// 255). A mismatch returns a distinct code per assertion.
+#[wire]
+struct Blob {
+    data: bytes @1,
+}
+
+fn main() -> i64 {
+    let b = bytes::new();
+    b.push(1);
+    b.push(2);
+    b.push(255);
+    let v = Blob { data: b };
+    let back = Blob.decode(v.encode());
+    let d = back.data;
+    if d.len() != 3 { return 1; }
+    if d[0] != 1 { return 2; }
+    if d[1] != 2 { return 3; }
+    if d[2] != 255 { return 4; }
+    0
+}

@@ -1,0 +1,21 @@
+// Reject: a `Vec` whose element owns heap (here a nested `#[wire]` struct with a
+// `string` field) is outside the supported wire-body floor. The CBOR codec
+// fails closed at codegen-front validation rather than emitting an element
+// codec that could leak or mis-free the owned element heap on a malformed
+// decode. Scalar and heap-free-record `Vec` elements are supported.
+#[wire]
+struct Inner {
+    name: string @1,
+}
+
+#[wire]
+struct Holder {
+    xs: Vec<Inner> @1,
+}
+
+fn main() -> i64 {
+    let xs: Vec<Inner> = Vec::new();
+    let h = Holder { xs: xs };
+    let back = Holder.decode(h.encode());
+    back.xs.len()
+}

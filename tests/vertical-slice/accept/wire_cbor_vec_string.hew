@@ -1,0 +1,22 @@
+// Validation: a `Vec<string>` field round-trips through the CBOR body codec as
+// a CBOR array of text strings. The decode path builds a string-kind vec so the
+// element strings are owned and freed on drop. A mismatch returns a distinct
+// code; full success returns 42.
+#[wire]
+struct Names {
+    items: Vec<string> @1,
+}
+
+fn main() -> i64 {
+    let xs: Vec<string> = Vec::new();
+    xs.push("Hello");
+    xs.push("World");
+    let h = Names { items: xs };
+    let back = Names.decode(h.encode());
+    if back.items.len() != 2 { return 1; }
+    let a = back.items.get(0);
+    let b = back.items.get(1);
+    if a != "Hello" { return 2; }
+    if b != "World" { return 3; }
+    42
+}

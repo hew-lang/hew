@@ -1,0 +1,57 @@
+// F-01 regression: owned-element Vec moved into a spawned actor's initial state
+// must NOT also get a scope-exit `hew_vec_free_owned` in the spawning function.
+//
+// The bug (100% deterministic UAF -> SIGSEGV, exit 139):
+//   `let t = Vec::new(); let q = spawn TaskQueue(tasks: t);` lowers to
+//   `RecordInit -> SpawnActor`, which marks `t` as `AliasedIntoAggregate` (NOT
+//   `Consumed`). The owned-Vec drop allow-set was derived dataflow-only, so the
+//   `Consumed`/`MaybeConsumed` filter left `t` admitted and emitted a scope-exit
+//   `hew_vec_free_owned(P)`. The actor's handler reassigns `self.tasks`, freeing
+//   the same handle P first; the spawning function's scope-exit drop then
+//   double-frees the already-freed handle -> use-after-free -> SIGSEGV.
+//
+// The fix derives `owned_vec_drop_allowed` from the shared escape-scan
+// (`derive_local_collection_drop_allowed`) the sibling HashMap/HashSet/plain-Vec
+// allow-sets use: it removes the spawn-moved handle from the LIFO before the
+// per-exit Live filter runs, so the actor's `state_drop_fn` is the sole owner.
+//
+// Exit 0 proves the program runs through scope exit (the `println("done")` past
+// the drop site) without the double-free. Requires all three triggers: named
+// binding, owned-element Vec (heap field), and a handler that reassigns the
+// field.
+
+type WorkItem {
+    name: string;
+    priority: i64;
+}
+
+actor TaskQueue {
+    var tasks: Vec<WorkItem>;
+
+    receive fn enqueue(item: WorkItem) {
+        tasks.push(item);
+    }
+
+    receive fn remove_front() -> i64 {
+        let new_tasks: Vec<WorkItem> = Vec::new();
+        var i = 1;
+        while i < tasks.len() {
+            new_tasks.push(tasks.get(i));
+            i = i + 1;
+        }
+        tasks = new_tasks;
+        1
+    }
+}
+
+fn main() {
+    let t: Vec<WorkItem> = Vec::new();
+    let q = spawn TaskQueue(tasks: t);
+    q.enqueue(WorkItem { name: "only", priority: 1 });
+    let r = await q.remove_front();
+    match r {
+        Ok(n) => println(f"r={n}"),
+        Err(_) => println("err"),
+    }
+    println("done");
+}

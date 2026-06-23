@@ -46,14 +46,15 @@ fn decode_server_capabilities(caps_json: Value) -> std::result::Result<ServerCap
 fn build_initialize_result(capabilities: &ServerCapabilities) -> Result<InitializeResult> {
     use tower_lsp::jsonrpc::{Error, ErrorCode};
 
-    let mut caps_json = serde_json::to_value(capabilities).map_err(|error| Error {
+    // Serialise to Value so that the test helper `build_initialize_result_from_caps_json`
+    // can share the decode path.  The `experimental.typeHierarchyProvider` field set in
+    // `build_server_capabilities()` is a standard `ServerCapabilities` field in lsp-types
+    // 0.94.1 and therefore survives this round-trip intact.
+    let caps_json = serde_json::to_value(capabilities).map_err(|error| Error {
         code: ErrorCode::InternalError,
         message: format!("failed to encode LSP server capabilities: {error}").into(),
         data: None,
     })?;
-    if let serde_json::Value::Object(ref mut map) = caps_json {
-        map.insert("typeHierarchyProvider".to_string(), serde_json::json!(true));
-    }
     build_initialize_result_from_caps_json(caps_json)
 }
 

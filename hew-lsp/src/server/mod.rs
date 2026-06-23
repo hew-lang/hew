@@ -240,6 +240,14 @@ fn build_server_capabilities() -> ServerCapabilities {
             tower_lsp::lsp_types::FoldingRangeProviderCapability::Simple(true),
         ),
         document_formatting_provider: Some(OneOf::Left(true)),
+        // lsp-types 0.94.1 (pinned by tower-lsp 0.20's ^0.94.1 constraint) does not have a
+        // `type_hierarchy_provider` field on `ServerCapabilities`.  The field was added in
+        // lsp-types 0.95.0, which requires also bumping tower-lsp.  Until that migration lands
+        // (tracked in GitHub issue #2167), we advertise via the `experimental` slot so that
+        // the three implemented type-hierarchy handlers become reachable by clients that inspect
+        // `experimental.typeHierarchyProvider`.  The field survives the encode-decode round-trip
+        // in `build_initialize_result` because `experimental` is a valid 0.94.1 field.
+        experimental: Some(json!({"typeHierarchyProvider": true})),
         ..Default::default()
     }
 }
@@ -2014,6 +2022,22 @@ impl Worker {
             supers.len()
         );
         assert_eq!(supers[0].name, "Drawable");
+    }
+
+    #[test]
+    fn capabilities_advertise_type_hierarchy() {
+        let caps = build_server_capabilities();
+        let experimental = caps
+            .experimental
+            .expect("type-hierarchy capability must be present in experimental");
+        let advertised = experimental
+            .get("typeHierarchyProvider")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        assert!(
+            advertised,
+            "expected experimental.typeHierarchyProvider = true, got: {experimental}"
+        );
     }
 
     // ── Call hierarchy tests ────────────────────────────────────────

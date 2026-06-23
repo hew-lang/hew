@@ -40,6 +40,11 @@ pub struct CompileOptions {
     /// [`hew_compile::FrontendOptions::repl_fragment`]. Only the eval paths
     /// set this; `hew check`/`hew build` leave it `false`.
     pub repl_fragment: bool,
+    /// Per-lint reporting levels resolved from the CLI `--allow` / `--warn` /
+    /// `--deny` flags (see [`crate::args::CommonBuildArgs`]). Threaded into
+    /// [`hew_compile::FrontendOptions::lint_levels`]. Defaults to every lint's
+    /// built-in level.
+    pub lint_levels: hew_types::LintLevels,
 }
 
 pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOptions {
@@ -50,6 +55,7 @@ pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) ->
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
         repl_fragment: options.repl_fragment,
+        lint_levels: options.lint_levels.clone(),
     }
 }
 
@@ -67,6 +73,7 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
         repl_fragment: options.repl_fragment,
+        lint_levels: options.lint_levels.clone(),
     }
 }
 

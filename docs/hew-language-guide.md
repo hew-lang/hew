@@ -154,7 +154,7 @@ Compound-assign operators (`+=`, `-=`, `*=`, `/=`) are available for `var` bindi
 ```hew
 fn main() {
     var total: i64 = 0;
-    var items: Vec<string> = Vec::new();
+    let items: Vec<string> = Vec::new();
     items.push("a");
     items.push("b");
     for s in items { total += s.len() as i64; }
@@ -162,7 +162,7 @@ fn main() {
 }
 ```
 
-Annotate a `var` binding the same way as `let`. The annotation is required when the type cannot be inferred from the initial value (e.g. an empty `Vec::new()`).
+Annotate a `var` (or `let`) binding when the type cannot be inferred from the initial value (e.g. an empty `Vec::new()`). Use `var` only when the name itself will be rebound; `let` is correct for a collection you only mutate via methods — the compiler warns if you `var`-declare a binding that is never rebound.
 
 ## Control flow
 
@@ -792,21 +792,21 @@ Compose records by nesting; access depth-chains directly. Every field must be su
 >
 > | Context | Separator |
 > |---------|-----------|
-> | `type` field definitions | `;` (semicolon) |
-> | `enum` variant separators | `;` (semicolon) |
-> | Record construction literals | `,` (comma) |
+> | `type` field definitions | `;` (semicolon) — idiomatic; `,` also accepted |
+> | `enum` variant separators | `;` (semicolon) — required; `,` is an error |
+> | Record construction literals | `,` (comma) — required; `;` is an error |
 >
 > ```hew
-> // Definition — semicolons throughout
+> // Definition — semicolons throughout (idiomatic)
 > type Point { x: i64; y: i64; }
 > enum Color { Red; Green; Blue; }
 >
-> // Construction — commas
+> // Construction — commas (required)
 > let p = Point { x: 1, y: 2 };
 > let c = Red;
 > ```
 >
-> The compiler error for mixing these is usually "expected `:` found `,`" (in a type definition) or "expected `}` found `;`" (in a construction literal). When you see either, check which context you are in.
+> The compiler error for a semicolon in a construction literal is "expected `}`, found `;`". Enum variants reject commas with "use `;` instead of `,` to separate variants". Type field definitions accept both separators, but `;` is the idiomatic style.
 
 ### Enum with unit, tuple, and struct variants
 
@@ -1444,20 +1444,29 @@ fn main() {
 }
 ```
 
-> **Note:** Generic constructor functions (`fn new<T>() -> MyType<T>`) that take no arguments and return a freshly-constructed generic record are currently NYI in MIR lowering — they define and type-check cleanly, but the call site fails at compile time. The workaround is to construct the record inline at each call site:
+> **Note:** Generic constructor functions called *without* turbofish and without a type annotation on the binding emit `E_NOT_YET_IMPLEMENTED: MIR lowering for function call is not implemented yet`. Two workarounds, either of which works:
 >
 > ```hew
-> // Instead of: let s: Stack<i64> = Stack::new();
-> // Construct directly:
 > type Stack<T> { items: Vec<T>; }
-> let s = Stack { items: Vec::new() };
+>
+> fn new_empty<T>() -> Stack<T> { Stack { items: Vec::new() } }
+>
+> fn main() {
+>     // Option A — turbofish on the call (preferred when using a ctor fn)
+>     let s = new_empty::<i64>();
+>
+>     // Option B — construct inline with a type annotation on the binding
+>     let s2: Stack<i64> = Stack { items: Vec::new() };
+> }
 > ```
+>
+> Note: `Stack { items: Vec::new() }` *without* a type annotation (and without the generic ctor function path) also fails with "unknown type `T` at the MIR boundary" — always provide a type annotation when constructing a generic record inline.
 
 ### Generics NYI — current limitations
 
 Two patterns type-check but fail at call or check time:
 
-1. **Generic constructor functions** (`fn new<T>() -> MyType<T>` with no value arguments): call sites emit `E_NOT_YET_IMPLEMENTED: MIR lowering for function call is not implemented yet`. Construct the record inline instead.
+1. **Generic constructor functions without turbofish** (`fn ctor<T>() -> MyType<T>` called as `ctor()` with neither turbofish nor an annotated binding): call sites emit `E_NOT_YET_IMPLEMENTED: MIR lowering for function call is not implemented yet`. Fix: add turbofish (`ctor::<i64>()`) or annotate the binding (`let x: MyType<i64> = ctor()`). See the Turbofish section above for examples.
 
 2. **`impl Trait for GenericRecord<ConcreteType>`**: trait method body type-checking for multiple concrete instantiations of the same generic record has a known resolution bug where the later-declared impl's type substitution is used for all impls. Until this is fixed, implement trait methods for a concrete (non-generic) record type.
 

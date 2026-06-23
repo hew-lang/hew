@@ -598,6 +598,20 @@ run_accept_expect_status "actor_multi_on_stop" 0
 # value is returned and the loser channel is cancelled without leaking.
 run_accept_expect_status "actor_ask_race" 42
 
+# F-01 regression (P0 UAF): an owned-element `Vec<WorkItem>` moved into a spawned
+# actor's initial state (`let t = Vec::new(); spawn TaskQueue(tasks: t)`) lowers
+# the source `t` to `AliasedIntoAggregate` (NOT `Consumed`). Pre-fix the owned-Vec
+# drop allow-set was dataflow-only, so the `Consumed`/`MaybeConsumed` filter left
+# `t` admitted and emitted a scope-exit `hew_vec_free_owned` against the handle the
+# actor's `state_drop_fn` already owns — a double-free (SIGSEGV(139) on older
+# trunks; `abort_owned_descriptor_missing` on the runtime's fail-closed guard
+# now). The fix derives the allow-set from the shared escape-scan
+# (`derive_local_collection_drop_allowed`) that removes the spawn-moved handle.
+# Exit 0 proves the program runs past the scope-exit drop site (`println("done")`)
+# with no double-free. Requires all three triggers: named binding, owned-element
+# Vec, handler reassigns the field.
+run_accept_expect_status "f01_actor_spawn_owned_vec_drop_segv" 0
+
 # select{} with OWNED-string ask arms (#1739/#1735): FastWorker returns an owned
 # `string` and wins; SlowWorker sleeps 50 ms and loses, its owned reply released
 # on the loser teardown leg by the channel's registered destructor (no leak, no

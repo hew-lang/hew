@@ -24375,19 +24375,37 @@ fn elaborate(
     );
 
     // W5.016 — owned-element `Vec<T>` scope-exit drop allow-set. An owned Vec
-    // is admitted for the `hew_vec_free_owned` release UNLESS it is consumed or
-    // maybe-consumed at any exit (for-in `into_iter` moves it, a return moves it
-    // to the ReturnSlot, a rebind moves it). The per-exit `Live` filter in
-    // `enumerate_exits` is the final authority on which exits actually fire the
-    // drop; this allow-set is the conservative gate that removes any binding the
-    // dataflow proves leaves this scope's ownership, so the drop never
-    // double-frees a moved-out Vec (`raii-null-after-move`, `cleanup-all-exits`).
-    let mut owned_vec_drop_allowed: HashSet<BindingId> = builder
-        .owned_locals
-        .iter()
-        .filter(|(_, _, ty)| builder.binding_ty_is_owned_element_vec(ty))
-        .map(|(binding, _, _)| *binding)
-        .collect();
+    // earns its `hew_vec_free_owned` release UNLESS the fail-closed escape-scan
+    // proves it leaves this scope's sole ownership — most importantly a handle
+    // moved into an actor's initial state (`spawn A(tasks: t)`, which lowers to
+    // `RecordInit` → `SpawnActor`). That ingress sets the source's dataflow
+    // state to `AliasedIntoAggregate`, NOT `Consumed`, so the `Consumed` /
+    // `MaybeConsumed` filter alone left it Live at the exit and fired a second
+    // `hew_vec_free_owned` against the handle the actor's `state_drop_fn` now
+    // owns — the F-01 use-after-free → SIGSEGV. The escape-scan — the SAME
+    // `derive_local_collection_drop_allowed` authority the HashMap/HashSet,
+    // closure-pair Vec, and bytes arms use — is the primary gate: it removes the
+    // spawn-moved / returned / aggregate-stored handle from the LIFO before the
+    // per-exit `Live` filter in `enumerate_exits` ever sees it, while its
+    // receiver-borrow classifier (`is_vec_receiver_borrow_symbol` /
+    // `is_vec_copy_in_element_store_symbol`) keeps a normal owned Vec whose only
+    // reads are `push` / `get` / `len` admitted (those borrow arg[0] / deep-clone
+    // the element, they do not escape the handle). The dataflow `Consumed` /
+    // `MaybeConsumed` removal below is the same belt-and-suspenders net the
+    // sibling arms keep for a handle moved out by a by-value consume; the
+    // interior-alias retain and `dedup_whole_value_handoff` further down close
+    // the `vec.get(i)` ingress-borrow and array-literal-desugar handoff cases.
+    // Every direction only ever over-EXCLUDES (leak), never re-admits — a handle
+    // the prover did not clear is never double-freed
+    // (`drop-allowset-from-value-flow`, `boundary-fail-closed`,
+    // `raii-null-after-move`, `cleanup-all-exits`).
+    let mut owned_vec_drop_allowed = derive_local_collection_drop_allowed(
+        &checked.blocks,
+        &builder.suspend_kinds,
+        &builder.owned_locals,
+        &builder.binding_locals,
+        |ty| builder.binding_ty_is_owned_element_vec(ty),
+    );
     for states in dataflow_result.exit_states.values() {
         for (binding, state) in states {
             if matches!(
@@ -31839,7 +31857,12 @@ fn ty_is_local_collection_handle(ty: &ResolvedTy) -> bool {
 ///   - `append` / `append_layout` — extends arg[0] with copies of arg[1]'s
 ///     elements; borrows BOTH vecs (arg[1] is scanned by the arg-tail rule
 ///     and over-excludes — a leak, never a double free).
-///   - `clone` / `clone_layout` — deep copy; the result is a fresh handle.
+///   - `clone` / `clone_layout` / `clone_owned` — deep copy; the receiver is
+///     read element-by-element and the result is a fresh, independently owned
+///     handle (`clone_owned` deep-clones each owned element via the descriptor
+///     `clone_fn`). The receiver keeps its own buffer and MUST retain its
+///     scope-exit drop — omitting `clone_owned` here over-excludes the original
+///     owned-element Vec and leaks it (`drop-allowset-from-value-flow`).
 ///
 /// The typed scalar variants (`*_bool` / `*_i32` / `*_i64` / `*_f64`) are the
 /// MIR-level symbols the checker / HIR array-literal desugar resolve for
@@ -31925,6 +31948,7 @@ fn is_vec_receiver_borrow_symbol(callee: &str) -> bool {
             | "hew_vec_append_layout"
             | "hew_vec_clone"
             | "hew_vec_clone_layout"
+            | "hew_vec_clone_owned"
             | "hew_vec_join_str"
     )
 }

@@ -6,14 +6,12 @@ fn main() {
     let nan: f64 = zero / zero;
     let inf: f64 = 1.0 / zero;
     let neg_inf: f64 = -1.0 / zero;
-
     let nans: Vec<f64> = Vec::new();
     nans.push(nan);
     // NaN never compares equal to anything (fcmp OEQ returns false for any NaN
     // operand) — matches native hew_vec_contains_f64 exact-equality scan.
     println(f"[nan].contains(nan)   {nans.contains(nan)}");
     println(f"[nan].contains(inf)   {nans.contains(inf)}");
-
     let infs: Vec<f64> = Vec::new();
     infs.push(inf);
     // +Infinity and -Infinity are distinct values under OEQ.

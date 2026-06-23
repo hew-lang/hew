@@ -7,15 +7,12 @@ fn main() {
     words.push("beta");
     words.push("gamma");
     words.push("delta");
-
     println(f"contains beta:  {words.contains("beta")}");
     println(f"contains zeta:  {words.contains("zeta")}");
-
     let slice = words[1..3];
     println(f"slice length:   {slice.len()}");
     println(f"slice[0]:       {slice.get(0)}");
     println(f"slice[1]:       {slice.get(1)}");
-
     let nums: Vec<i64> = Vec::new();
     nums.push(10);
     nums.push(20);

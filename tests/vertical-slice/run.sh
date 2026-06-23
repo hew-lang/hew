@@ -1114,12 +1114,12 @@ run_accept_expect_stdout "actor_multi_arg_ask"
 run_accept_expect_stdout "actor_nested_handle_tuple_transfer"
 
 # Accept + run: user records named `Sender` and `Receiver` are not builtin
-# channel handles. They must keep ordinary actor-send treatment and emit xnode
+# channel handles. They must keep ordinary actor-send treatment and emit CBOR
 # codecs instead of being skipped by bare short name.
 run_accept_expect_stdout "actor_channel_shadow_sender_codec"
-grep -q '__hew_serialize_Sender' \
+grep -q '__hew_cbor_serialize_Sender' \
   "${ROOT}/.tmp/compile-out/actor_channel_shadow_sender_codec.ll"
-grep -q '__hew_serialize_Receiver' \
+grep -q '__hew_cbor_serialize_Receiver' \
   "${ROOT}/.tmp/compile-out/actor_channel_shadow_sender_codec.ll"
 
 # Accept + run: a single-argument actor receive handler whose ONLY parameter is
@@ -2154,7 +2154,7 @@ fi
 grep -q 'Serializable' "${reject_output}"
 expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/accept/local_fn_msg_actor_method_allowed.hew" \
-  "cross-node serialize: unsupported value type Function" \
+  "wire CBOR serialize: unsupported value type Function" \
   "local_fn_msg_actor_method_allowed"
 
 # ---------------------------------------------------------------------------

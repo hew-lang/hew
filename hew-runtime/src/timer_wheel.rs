@@ -18,7 +18,30 @@ use std::ffi::{c_int, c_void};
 use std::ptr;
 use std::sync::{Mutex, OnceLock};
 
-use crate::io_time::hew_now_ms;
+// ---------------------------------------------------------------------------
+// Platform clock
+//
+// On native targets `hew_now_ms` lives in `crate::io_time` (respects the
+// deterministic simulation clock).  On wasm32 (and in native tests of the
+// cooperative scheduler) the symbol is provided by the host as `extern "C"`
+// — on wasm32 this resolves to `wasm_stubs::hew_now_ms`, in native builds to
+// `io_time::hew_now_ms` which is already `#[no_mangle]`.
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_arch = "wasm32"))]
+fn now_ms_for_wheel() -> u64 {
+    // SAFETY: hew_now_ms has no preconditions on native targets.
+    unsafe { crate::io_time::hew_now_ms() }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn now_ms_for_wheel() -> u64 {
+    extern "C" {
+        fn hew_now_ms() -> u64;
+    }
+    // SAFETY: symbol is always present on wasm32 (wasm_stubs::hew_now_ms).
+    unsafe { hew_now_ms() }
+}
 
 /// Timer callback signature matching the C `hew_timer_cb` typedef.
 pub type HewTimerCb = unsafe extern "C" fn(*mut c_void);
@@ -114,7 +137,7 @@ pub struct HewTimerHandle {
 }
 
 impl HewTimerHandle {
-    const fn null() -> Self {
+    pub(crate) const fn null() -> Self {
         Self {
             entry: ptr::null_mut(),
             generation: 0,
@@ -387,8 +410,7 @@ fn remove_entry(w: &mut WheelInner, entry: *mut HewTimerEntry, generation: u64) 
 /// No preconditions.  The caller must eventually call [`hew_timer_wheel_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_timer_wheel_new() -> *mut HewTimerWheel {
-    // SAFETY: hew_now_ms has no preconditions.
-    let now = unsafe { hew_now_ms() };
+    let now = now_ms_for_wheel();
     let tw = Box::new(HewTimerWheel {
         inner: Mutex::new(WheelInner {
             l0: [ptr::null_mut(); L0_SIZE],
@@ -557,7 +579,7 @@ pub unsafe extern "C" fn hew_timer_wheel_remove(
     remove_entry(&mut w, entry, generation)
 }
 
-unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_int {
+pub(crate) unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_int {
     cabi_guard!(tw.is_null(), 0);
     // SAFETY: caller guarantees `tw` is valid.
     let wheel = unsafe { &*tw };
@@ -645,8 +667,7 @@ unsafe fn timer_wheel_tick_to(tw: *mut HewTimerWheel, now: u64) -> c_int {
 /// callback/data pairs must still be valid.
 #[no_mangle]
 pub unsafe extern "C" fn hew_timer_wheel_tick(tw: *mut HewTimerWheel) -> c_int {
-    // SAFETY: hew_now_ms has no preconditions; caller guarantees `tw` is valid.
-    let now = unsafe { hew_now_ms() };
+    let now = now_ms_for_wheel();
     // SAFETY: upheld by this function's caller.
     unsafe { timer_wheel_tick_to(tw, now) }
 }

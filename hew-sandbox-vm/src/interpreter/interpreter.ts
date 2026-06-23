@@ -632,6 +632,29 @@ class Interpreter {
       case "vector.len":
         this.writeDst(frame, instruction, this.i64(BigInt(this.vectorArg(frame, instruction.args[0], instruction.span).items.length)));
         return;
+      case "vector.contains": {
+        const vec = this.vectorArg(frame, instruction.args[0], instruction.span);
+        const needle = this.resolve(frame, instruction.args[1], instruction.span);
+        const found = vec.items.some(
+          (item) => canonicalComparable(item) === canonicalComparable(needle),
+        );
+        this.writeDst(frame, instruction, { kind: "bool", value: found });
+        return;
+      }
+      case "vector.range_slice": {
+        const vec = this.vectorArg(frame, instruction.args[0], instruction.span);
+        const start = this.indexArg(frame, instruction.args[1], instruction.span);
+        const end = this.indexArg(frame, instruction.args[2], instruction.span);
+        if (start < 0 || end < start || end > vec.items.length) {
+          this.trap("vector_bounds", "vector slice out of bounds", instruction.span);
+        }
+        this.writeDst(frame, instruction, {
+          kind: "vector",
+          elementType: vec.elementType,
+          items: vec.items.slice(start, end).map(cloneValue),
+        });
+        return;
+      }
       case "string.concat":
         this.writeDst(frame, instruction, {
           kind: "string",

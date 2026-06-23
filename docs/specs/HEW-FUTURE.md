@@ -101,20 +101,16 @@ APIs — are deferred.
 
 ### 1.6 Generators (`gen fn`, `async gen fn`, `receive gen fn`, `Lazy<T>`, `#[prefetch(N)]`)
 
-**[Partially live in v0.5.0 / parameterized forms gated on Cluster 1]**
+**[Scalar-parameter + fn-typed-parameter forms live in v0.5 / remaining forms deferred]**
 
-Zero-parameter `gen fn` functions compile and run at the current tip; the
-LLVM coroutine machinery, `yield`, `.next()`, and `for x in generator()` path
-are live for that shape. Parameterized generators are still blocked by the
-Cluster 1 spine: function parameters and captured bindings do not yet have
-backend slots in every generator lowering path. The four spike-fixture
-failures from PR #1772 remain the bug class exposed by parameterized and
-capturing generator forms, so those forms stay deferred until the Cluster 1
-parameter/capture lowering is complete.
+Zero-parameter `gen fn` functions compile and run. The LLVM coroutine machinery,
+`yield`, `.next()`, and `for x in generator()` are all live. Parameterized `gen fn`
+with scalar parameters (e.g. `n: i64`) and fn-typed parameters are also live — the
+Cluster 1 parameter/capture lowering that unblocked these shipped and the
+`gen_fn_param_capture` and `gen_fn_fn_typed_param` vertical-slice fixtures pass.
 
-Surface inventory:
+Remaining deferred:
 
-- `gen fn` returning `Generator<Y>` with `.next()` / `Iterator`.
 - `async gen fn` returning `AsyncGenerator<Y>` with `for await`.
 - `receive gen fn` on actors returning `Stream<Y>` backed by mailbox
   protocol (cross-actor streaming with natural backpressure).
@@ -177,7 +173,10 @@ Edition 2026 ships a deliberately small trait surface:
 
 Out of scope for edition 2026:
 
-- `dyn Trait` object types and the object-safety rules.
+- Single-trait `dyn Trait` dispatch works (vtable registry is live; see
+  `examples/types_and_traits.hew`). Remaining partial: object-safety
+  enforcement, associated-type bounds in `dyn` position, and higher-ranked
+  trait bounds.
 - Associated-type bounds in where-clauses (`where T::Item: Display`).
 - Trait coherence (orphan rule) across crates — the current single-crate
   coherence rule stays; multi-crate coherence depends on the package

@@ -1491,7 +1491,7 @@ fn main() {
 }
 ```
 
-Implement Display via the `fmt` method (the spec's `display` name is aspirational) and interpolate with f-strings. To print a user type, wrap it: `println(f"{value}")` — `println(value)` on a bare user Display type does not dispatch.
+Implement `Display` via the `fmt` method and interpolate with f-strings. To print a user type, wrap it: `println(f"{value}")` — `println(value)` on a bare user Display type does not dispatch.
 
 ### Calling a Display fmt method directly
 

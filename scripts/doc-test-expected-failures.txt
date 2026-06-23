@@ -37,8 +37,10 @@
 #             pool reserved-word clash, or a checker-boundary HIR error.
 #             Fix: compiler follow-on; annotate fence for now.
 #
-# Baseline: 132 pass, 108 fail, 1 skip (NYI-annotated) out of 241 total fences.
-# Recorded against docs/ @ HEAD on 2026-06-19.
+# Baseline: 135 pass, 94 fail, 12 skip (NYI/skip-annotated) out of 241 total fences.
+# Updated 2026-06-22: fixed spec-0033/0038/0073 (now PASS) and annotated
+# spec-0048/0049/0051/0052/0066/0067/0069/0070/0097/0099/0113 (now SKIP).
+# Recorded against docs/ @ f16718d2 on 2026-06-22.
 #
 # ─── Guide failures (1) ─────────────────────────────────────────────────────────
 
@@ -70,20 +72,14 @@ spec-0026   # SNIPPET: bare code after import statement — illustration of impo
 spec-0027   # FRAGMENT: imports `greeting` — multi-file example, module not found
 spec-0030   # SNIPPET: bare code outside declarations — trait method dispatch illustration
 spec-0031   # SNIPPET: bare `let` + trait call — trait dispatch illustration
-spec-0033   # SPEC-BUG: `impl Display` uses `display` method name; impl requires `fmt`
 spec-0034   # IMPL-GAP: field-access result type failed checker-boundary conversion (E_HIR)
 spec-0035   # SNIPPET: bare `let` — type inference illustration
 spec-0037   # SPEC-BUG: calls `clone()` on unconstrained `T` — planned trait bound
-spec-0038   # SPEC-BUG: calls `File::open` — not in stdlib
 spec-0039   # SNIPPET: bare `receive fn` outside actor — actor message illustration
 spec-0044   # SNIPPET: bare `let f = |...| ...` — lambda illustration
 spec-0045   # SPEC-BUG: references variant `Lit` not defined in the fence
 spec-0046   # SNIPPET: bare `let` — fn-type variable illustration
-spec-0048   # SPEC-BUG: calls `File::open` — not in stdlib
-spec-0049   # SPEC-BUG: calls `File::open` — not in stdlib
 spec-0050   # SPEC-BUG: struct `impl` using wrong syntax form (stray `;` before `fn`)
-spec-0051   # SPEC-BUG: calls `begin_transaction()` — aspirational API
-spec-0052   # SPEC-BUG: calls `begin_transaction()` — aspirational API
 spec-0053   # SNIPPET: bare identifier `max` after trait definition — illustration
 spec-0054   # SPEC-BUG: calls `clone()` on unconstrained `T` — planned trait bound
 spec-0055   # SPEC-BUG: type mismatch in aspirational HashMap construction
@@ -94,13 +90,8 @@ spec-0061   # SNIPPET: bare `let f: fn(i64) -> i64 = ...` — fn-type illustrati
 spec-0062   # SNIPPET: bare code — trait implementation illustration
 spec-0063   # SNIPPET: bare `let` — generic function call illustration
 spec-0065   # SNIPPET: bare `let` — generic function illustration
-spec-0066   # SPEC-BUG: uses `..` rest pattern in struct destructure — not yet supported
-spec-0067   # SPEC-BUG: `#[repr(C)]` attribute on struct — not yet recognised
 spec-0068   # SPEC-BUG: struct `impl` using incorrect syntax (stray `;` before `fn`)
-spec-0069   # SPEC-BUG: calls `malloc` — no `malloc` builtin in Hew
-spec-0070   # SPEC-BUG: raw pointer type without `const`/`mut` qualifier — aspirational
 spec-0072   # SPEC-BUG: enum variants separated by `,` not `;` — illustrates wrong syntax
-spec-0073   # SPEC-BUG: uses `..` rest pattern in struct literal — not yet supported
 spec-0074   # SPEC-BUG: malformed struct `impl` syntax — aspirational
 spec-0075   # SNIPPET: bare `var` — machine state body illustration
 spec-0076   # SNIPPET: bare `let`/`var` — machine state illustration
@@ -124,9 +115,7 @@ spec-0093   # SNIPPET: bare `receive fn` — actor + scope illustration
 spec-0094   # NYI: bare `scope { ... }` — structured concurrency not yet lowered
 spec-0095   # NYI: bare `scope { ... }` — structured concurrency not yet lowered
 spec-0096   # NYI: bare `scope { ... }` — structured concurrency not yet lowered
-spec-0097   # SPEC-BUG: calls `fs::open` — not in stdlib
 spec-0098   # SNIPPET: bare `let` — async I/O illustration
-spec-0099   # SPEC-BUG: uses `&value` expression — Hew has no reference/borrow expression
 spec-0100   # FRAGMENT: calls `process()` — undefined function from prior context
 spec-0101   # NYI: bare `select { ... }` — select statement not yet implemented
 spec-0102   # SNIPPET: bare `let` — select illustration
@@ -138,7 +127,6 @@ spec-0107   # IMPL-GAP: `pool` as pattern — reserved word clash in supervisor 
 spec-0109   # FRAGMENT: references `prices` from prior fence context — context-dependent
 spec-0110   # SNIPPET: bare `let` — wire schema illustration
 spec-0111   # SNIPPET: bare `match` — wire format pattern illustration
-spec-0113   # IMPL-GAP: E_NOT_YET_IMPLEMENTED — top-level-item not yet supported
 spec-0119   # IMPL-GAP: E_NOT_YET_IMPLEMENTED — top-level-item not yet supported
 spec-0120   # IMPL-GAP: E_NOT_YET_IMPLEMENTED — top-level-item not yet supported
 spec-0121   # SNIPPET: bare `let` — distribution illustration

@@ -976,7 +976,7 @@ Traits define shared behaviour that types can implement. Hew has built-in marker
 
 ```hew
 trait Display {
-    fn display(val: Self) -> string;
+    fn fmt(val: Self) -> string;
 }
 
 trait Iterator {
@@ -995,7 +995,7 @@ trait Clone {
 type Point { x: f64; y: f64 }
 
 impl Display for Point {
-    fn display(p: Point) -> string {
+    fn fmt(p: Point) -> string {
         f"({p.x}, {p.y})"
     }
 }
@@ -1027,11 +1027,11 @@ Hew uses **named receivers** instead of a `self` keyword. In trait declarations 
 
 ```hew
 trait Display {
-    fn display(val: Self) -> string;       // val is the receiver (type Self)
+    fn fmt(val: Self) -> string;       // val is the receiver (type Self)
 }
 
 impl Display for Point {
-    fn display(p: Point) -> string {       // p is the receiver (type Point)
+    fn fmt(p: Point) -> string {       // p is the receiver (type Point)
         f"({p.x}, {p.y})"
     }
 }
@@ -1043,7 +1043,7 @@ The compiler identifies the receiver by matching the parameter type against the 
 
 ```hew
 let p = Point { x: 1.0, y: 2.0 };
-p.display();    // desugars to Point::display(p) — p is consumed (by-value)
+p.fmt();    // desugars to Point::fmt(p) — p is consumed (by-value)
 // p is no longer valid here
 ```
 
@@ -1051,7 +1051,7 @@ p.display();    // desugars to Point::display(p) — p is consumed (by-value)
 
 The receiver is passed by value — the receiver is consumed (ownership transfer):
 
-- `fn display(p: Point)` takes `p` by value in an `impl` for `Point`
+- `fn fmt(p: Point)` takes `p` by value in an `impl` for `Point`
 - The caller gives up ownership of the value
 - After calling a consuming method, the original binding is no longer usable
 
@@ -1072,13 +1072,12 @@ There is no `&self` or `&mut self` syntax — Hew does not have references in it
 
 **The `this` keyword (actor self-reference):**
 
-> **Not yet implemented.** `this` as a value passed to another actor (e.g. `mgr.add_worker(this)`) is parsed but lowering is not yet wired (`E_NOT_YET_IMPLEMENTED`). See HEW-FUTURE for the intended design.
-
-Inside an actor body, the `this` keyword is intended to provide a read-only handle to the actor itself. The design:
+Inside an actor body, the `this` keyword provides a read-only handle to the actor itself:
 
 - Available only inside actor bodies (`receive fn` and `fn` methods)
-- Read-only — you cannot assign to `this`
-- Of type `LocalPid<Self>` — a sendable handle to the enclosing actor
+- Type `LocalPid<Self>` — a sendable handle to the enclosing actor
+- Can be passed as a message argument or stored in a field
+- Read-only — assignment to `this` is rejected at compile time
 - Not valid in struct `impl` blocks or free functions
 
 **Variable shadowing:**
@@ -1153,18 +1152,27 @@ Hew uses **per-actor ownership** with RAII-style deterministic destruction. Ther
 **Principle 1: Actors own their heaps.**
 Each actor has a private heap. No memory is shared between actors. When an actor terminates, its entire heap is freed in one operation.
 
-**Principle 2: RAII within actors.**
-Within an actor, values follow Rust-style ownership semantics:
+**Principle 2: Ownership within actors.**
+Within an actor, values follow Hew ownership semantics:
 
 - Each value has exactly one owner
-- When the owner goes out of scope, the value is dropped
-- Destructors (`Drop` trait) run deterministically at scope exit
+- When the owner goes out of scope, heap memory is freed automatically
+- User-defined `impl Drop` is **not supported** — external-resource cleanup
+  uses `#[resource]` + `close()` (see §3.7.3 and §3.7.8)
 
 ```hew
-fn example() {
-    let file = File::open("data.txt");  // file owns the handle
-    process(file);
-}  // file.drop() runs here, closing the handle
+#[resource]
+type Connection { fd: i64; }
+
+impl Connection {
+    fn open(host: string) -> Connection { Connection { fd: 0 } }
+    fn close(c: Connection) {}
+}
+
+fn example(host: string) {
+    let conn = Connection::open(host);
+    // ... use conn ...
+}  // conn.close() runs here automatically (implicit #[resource] drop)
 ```
 
 **Principle 3: No garbage collection.**
@@ -1427,8 +1435,10 @@ Semantics:
    consuming receiver all consume the value; the move-checker tracks the
    single live binding.
 
-Typical example — file I/O with implicit cleanup:
+Typical example — file I/O with implicit cleanup (illustrative; no `File` type
+exists in stdlib — for file reading use `fs::try_read`):
 
+<!-- doctest: skip -->
 ```hew
 fn read_config(path: string) -> Result<Config, IoError> {
     let f = File::open(path)?;
@@ -1438,8 +1448,9 @@ fn read_config(path: string) -> Result<Config, IoError> {
 }
 ```
 
-Early close, surfacing the I/O error to the caller:
+Early close, surfacing the I/O error to the caller (illustrative):
 
+<!-- doctest: skip -->
 ```hew
 fn read_and_process(path: string) -> Result<Summary, AppError> {
     let f = File::open(path)?;
@@ -1479,8 +1490,10 @@ Semantics:
    tracks the single live binding and rejects any use after the consuming
    method call.
 
-A correct use:
+A correct use (illustrative — `Database` and `Transaction` are hypothetical types
+showing the `#[linear]` pattern; `&Database` uses reference syntax not in Hew):
 
+<!-- doctest: skip -->
 ```hew
 fn transfer(db: &Database, from: AccountId, to: AccountId, amount: Money)
     -> Result<(), DbError>
@@ -1492,8 +1505,9 @@ fn transfer(db: &Database, from: AccountId, to: AccountId, amount: Money)
 }
 ```
 
-The compile error for forgetting to consume:
+The compile error for forgetting to consume (illustrative):
 
+<!-- doctest: skip -->
 ```hew
 fn forgot_to_commit(db: &Database) -> Result<(), DbError> {
     let tx = db.begin_transaction()?;
@@ -1928,6 +1942,7 @@ Hew provides FFI capabilities for interoperating with C libraries and system cal
 
 External C functions are declared in `extern` blocks:
 
+<!-- doctest: skip -->
 ```hew
 extern "C" {
     fn malloc(size: usize) -> *mut u8;
@@ -1953,6 +1968,7 @@ extern "C" {
 
 Use `#[repr(C)]` to ensure C-compatible memory layout:
 
+<!-- doctest: skip -->
 ```hew
 #[repr(C)]
 type Point {
@@ -2024,6 +2040,7 @@ extern "C" fn my_callback(value: i32) -> i32 {
 
 **All FFI calls are `unsafe`:**
 
+<!-- doctest: skip -->
 ```hew
 fn allocate_buffer(size: usize) -> *mut u8 {
     unsafe {
@@ -2051,6 +2068,7 @@ fn safe_read(fd: i32, buf: *mut u8, count: usize) -> Result<usize, string> {
 
 **Safe wrapper pattern:**
 
+<!-- doctest: skip -->
 ```hew
 // Raw FFI (internal, unsafe)
 extern "C" {
@@ -2126,7 +2144,7 @@ The following traits are representative of the current trait style:
 
 ```hew
 trait Display {
-    fn display(val: Self) -> string;
+    fn fmt(val: Self) -> string;
 }
 
 trait Drop {
@@ -2161,7 +2179,9 @@ pub enum IoError {
     Other(i64);
 }
 
-pub fn io_error_from_message(message: string) -> IoError { ... }
+pub fn io_error_from_message(message: string) -> IoError {
+    IoError::Other(0)
+}
 ```
 
 This pattern is used across every `try_*` function in the `std::fs` module and pairs with the `?` operator for ergonomic error propagation. Each stdlib module defines its own error type following this shape; there is no single cross-module error enum. Future stdlib modules (under #1247) will adopt the same per-module structured error approach.
@@ -3122,12 +3142,14 @@ scope {
 
 ### 4.7 IO and Effects
 
-All IO operations in Hew are explicit and return `Result` types:
+All IO operations in Hew are explicit and return `Result` types. Use
+`fs::try_read` (not `fs::open`) for file reading; the stdlib has no `File`
+handle type — reads and writes are free functions:
 
+<!-- doctest: skip -->
 ```hew
 fn read_config(path: string) -> Result<Config, string> {
-    let file = fs::open(path)?;
-    let content = file.read_to_string()?;
+    let content = fs::try_read(path)?;
     json::parse(content)
 }
 ```
@@ -3173,6 +3195,7 @@ reachable from inside a child body.
 > (c) actor-mailbox accumulation via an anonymous `fork _ = …;`.
 > The example below uses an indicative placeholder pending ratification.
 
+<!-- doctest: skip -->
 ```hew
 actor DataProcessor {
     var cache: HashMap<string, Data> = HashMap::new();
@@ -3469,9 +3492,9 @@ a callable cancel handle that `select` can hold as a source.
 
 ### 4.12 Generators
 
-> See HEW-FUTURE.md §1.5 for generators (`gen fn`, `async gen fn`,
-> `receive gen fn`, `Lazy<T>`, `#[prefetch(N)]`) — targeted for v0.6,
-> gated on Cluster 4 (closures + generators lowering).
+> See HEW-FUTURE.md §1.6 for the remaining deferred generator forms (`async gen fn`,
+> `receive gen fn`, `Lazy<T>`, `#[prefetch(N)]`). Scalar-parameter and fn-typed-parameter
+> `gen fn` forms are live as of v0.5 (see §1.6 for detail).
 
 ---
 
@@ -3888,6 +3911,10 @@ wire struct User {
 
 Wire enums are encoded as MessagePack **integers** representing the 0-based variant index:
 
+> **Not yet implemented.** `wire enum` lowering is parsed but not yet wired
+> in v0.5 (`E_NOT_YET_IMPLEMENTED`). The intended encoding is described below.
+
+<!-- doctest: skip -->
 ```hew
 wire enum Status { Pending; Active; Completed; }
 
@@ -4298,7 +4325,9 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 
 The actor state machine governs the lifecycle of an actor instance within the runtime scheduler. This is distinct from the **task state machine** (§4.1), which governs individual tasks spawned within an actor.
 
-**Actor states:** `Idle(0)`, `Runnable(1)`, `Running(2)`, `Stopping(3)`, `Stopped(4)`, `Crashed(5)`
+**Actor states** (discriminants match `HewActorState` in `hew-runtime/src/internal/types.rs`):
+
+`Idle(0)`, `Runnable(1)`, `Running(2)`, `Suspended(3)`, `Stopping(4)`, `Crashed(5)`, `Stopped(6)`, `Sleeping(7)`, `Crashing(8)`
 
 **Transitions:**
 
@@ -4307,22 +4336,29 @@ The actor state machine governs the lifecycle of an actor instance within the ru
 Idle ──────► Runnable       message arrives in mailbox or timer fires
 Runnable ──► Running        scheduler picks actor for execution on a worker thread
 Running ───► Idle           message budget exhausted or no more messages; yields to scheduler
+Running ───► Suspended      dispatch suspends at a non-final coro.suspend (slice-4 executor)
+Suspended ─► Running        readiness source fires; executor resumes the continuation
 Running ───► Stopping       supervisor requests shutdown, or actor calls stop()
+Running ───► Sleeping       actor parks in the cooperative WASM sleep queue
+Sleeping ──► Runnable       sleep timer fires
 Stopping ──► Stopped        cleanup finished, normal exit
-Running/Idle/Stopping ──► Crashed   unrecoverable trap occurs
+Running/Idle/Stopping ──► Crashing   unrecoverable trap caught; per-activation cleanup pending
+Crashing ──► Crashed        cleanup complete; terminal state published via hew_actor_trap
 Crashed ───► Stopped        crash finalized, supervisor notified
 ```
 
-Actors start `Idle` after spawn. There is no separate `Blocked` state — actors waiting for messages are simply `Idle` and become `Runnable` when a message arrives.
+Actors start `Idle` after spawn. There is no separate `Blocked` state — actors waiting
+for messages are `Idle` (or `Suspended` during a cooperative suspension) and become
+`Runnable` when a message arrives.
 
 **Key distinctions from task states (§4.1):**
 
-| Aspect          | Actor State Machine                            | Task State Machine (§4.1)                     |
-| --------------- | ---------------------------------------------- | --------------------------------------------- |
-| **Entity**      | Entire actor instance                          | Individual task within an actor               |
-| **Managed by**  | Runtime scheduler (Level 1)                    | Actor-local coroutine executor (Level 2)      |
-| **States**      | Idle/Runnable/Running/Stopping/Stopped/Crashed | Pending/Running/Completed/Cancelled/Trapped   |
-| **Granularity** | One per actor                                  | Many per actor (one per `fork` child)         |
+| Aspect          | Actor State Machine                                                        | Task State Machine (§4.1)                     |
+| --------------- | -------------------------------------------------------------------------- | --------------------------------------------- |
+| **Entity**      | Entire actor instance                                                      | Individual task within an actor               |
+| **Managed by**  | Runtime scheduler (Level 1)                                                | Actor-local coroutine executor (Level 2)      |
+| **States**      | Idle/Runnable/Running/Suspended/Stopping/Crashing/Crashed/Stopped/Sleeping | Pending/Running/Completed/Cancelled/Trapped   |
+| **Granularity** | One per actor                                                              | Many per actor (one per `fork` child)         |
 
 Supervisor observes actor terminal states `Stopped` or `Crashed`.
 

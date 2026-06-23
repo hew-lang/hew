@@ -6757,6 +6757,60 @@ fn needless_range_loop_directive_above_code_does_not_suppress() {
 }
 
 #[test]
+fn needless_range_loop_not_flagged_for_offset_indexing() {
+    // `xs[i+1]` uses the index in an arithmetic expression rather than as a
+    // bare subscript, so the element-iteration rewrite is semantically unsafe.
+    // The lint must NOT fire — flagging this would silently change behaviour
+    // (the rewrite would lose the +1 offset).
+    let (errors, warnings) =
+        parse_and_check("fn f(xs: Vec<i64>) { for i in 0..xs.len() { let _ = xs[i+1]; } }");
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check, got: {errors:?}"
+    );
+    assert_eq!(
+        count_needless_range_loop(&warnings),
+        0,
+        "offset index xs[i+1] must suppress the lint, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_range_loop_not_flagged_for_nonzero_range_start() {
+    // The range starts at 1, not 0, so `for x in xs` would miss the first
+    // element — the rewrite is not valid and the lint must NOT fire.
+    let (errors, warnings) =
+        parse_and_check("fn f(xs: Vec<i64>) { for i in 1..xs.len() { let _ = xs[i]; } }");
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check, got: {errors:?}"
+    );
+    assert_eq!(
+        count_needless_range_loop(&warnings),
+        0,
+        "non-zero range start must suppress the lint, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_range_loop_not_flagged_for_non_vec_collection() {
+    // `is_lintable_collection` only admits `Vec<_>`; a `HashMap<i64, i64>` in
+    // an otherwise canonical 0..xs.len() / xs[i] shape must NOT be flagged
+    // because `for x in xs` does not exist for maps.
+    let (errors, warnings) =
+        parse_and_check("fn f(xs: HashMap<i64, i64>) { for i in 0..xs.len() { let _ = xs[i]; } }");
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check, got: {errors:?}"
+    );
+    assert_eq!(
+        count_needless_range_loop(&warnings),
+        0,
+        "a HashMap collection must not be flagged, warnings: {warnings:?}"
+    );
+}
+
+#[test]
 fn unused_variable_has_correct_kind() {
     let (_, warnings) = parse_and_check("fn main() { let unused = 42; }");
     let w = warnings

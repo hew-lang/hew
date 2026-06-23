@@ -877,6 +877,51 @@ impl Checker {
         }
     }
 
+    /// Emit a finding from a *main-pass* lint — one that runs inline during body
+    /// checking rather than in the post-inference [`run_lints`] sweep — through
+    /// the same level/suppression machinery the sweep uses.
+    ///
+    /// `module` is the module owning `span`; it locates the source text for
+    /// `// hew:allow(...)` resolution and tags the diagnostic. An in-source
+    /// directive is honoured first (it wins even over `Deny`), then the finding
+    /// is routed by the configured [`LintLevel`]: `Allow` drops it, `Warn`
+    /// pushes a warning, `Deny` pushes an error. This keeps migrated warnings
+    /// (`clone_on_copy`, `dead_code`) configurable and suppressible without
+    /// changing their default-`Warn` behaviour.
+    fn emit_main_pass_lint(
+        &mut self,
+        id: LintId,
+        span: &Span,
+        module: Option<&str>,
+        message: String,
+        suggestion: String,
+    ) {
+        if let Some(source) = self.lint_sources.source_for(module) {
+            if lints::directive_suppresses(source, span.start, id) {
+                return;
+            }
+        }
+        let severity = match self.lint_levels.level(id) {
+            LintLevel::Allow => return,
+            LintLevel::Warn => crate::error::Severity::Warning,
+            LintLevel::Deny => crate::error::Severity::Error,
+        };
+        let diag = TypeError {
+            severity,
+            kind: TypeErrorKind::Lint(id),
+            span: span.clone(),
+            message,
+            notes: Vec::new(),
+            suggestions: vec![suggestion],
+            source_module: module.map(str::to_string),
+        };
+        if severity == crate::error::Severity::Error {
+            self.errors.push(diag);
+        } else {
+            self.warnings.push(diag);
+        }
+    }
+
     fn classify_escapes_in_item(&mut self, item: &Item) {
         match item {
             Item::Function(fn_decl) => {

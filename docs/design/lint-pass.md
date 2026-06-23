@@ -1,13 +1,16 @@
 # Design: a compiler lint pass for Hew (semantic / dataflow idiom lints)
 
-Status: M1 implemented (this change) · M2–M3 planned · Audience: Hew compiler
+Status: M1–M2 implemented · M3 planned · Audience: Hew compiler
 maintainers · Companion to the ast-grep rule set
 
-M1 has landed: the lint infrastructure (`LintId` / `LintLevel` / `LintLevels`),
-the checker `run_lints` sweep, the first lint (`needless_range_loop`), the CLI
-`--allow` / `--warn` / `--deny` flags, and in-source `// hew:allow(...)`
-suppression. M2 (more checker lints) and M3 (MIR liveness + dataflow lints)
-remain future work; see §10.
+M1 + M2 have landed: the lint infrastructure (`LintId` / `LintLevel` /
+`LintLevels`), the checker `run_lints` sweep, the CLI `--allow` / `--warn` /
+`--deny` flags, and in-source `// hew:allow(...)` suppression — plus six
+checker lints (`needless_range_loop`, `redundant_else_after_return`,
+`needless_match_to_if_let`, `len_zero_comparison`, `needless_bool`) and the two
+ad-hoc warnings (`clone_on_copy`, `dead_code`) migrated onto the registry so
+they are now re-levelable and suppressible. M3 (MIR liveness + dataflow lints)
+remains future work; see §10.
 
 ## 1. Goal
 
@@ -76,15 +79,22 @@ AST/HIR — another reason `needless_range_loop` belongs in the checker, not MIR
 ## 6. Architecture
 
 ### 6.1 Lint infrastructure (`hew-types/src/check/lints/`)
-- `LintId` enum (M1: `NeedlessRangeLoop`; future: `RedundantElseAfterReturn`, `LenGtZero`, …).
-  Each lint has a stable `as_str()` name, a `from_name()` parser, and a `default_level()`
-  (`Warn`).
+- `LintId` enum (`NeedlessRangeLoop`, `RedundantElseAfterReturn`,
+  `NeedlessMatchToIfLet`, `LenZeroComparison`, `NeedlessBool`, plus the migrated
+  `CloneOnCopy` and `DeadCode`). Each lint has a stable `as_str()` name, a
+  `from_name()` parser, and a `default_level()` (`Warn`).
 - `LintLevel { Allow, Warn, Deny }` + a `LintLevels` map, built from (a) defaults, (b) the CLI flag
   (§7), (c) in-source suppression (§7). Resolve level at emit time; `Allow` drops the diagnostic,
   `Deny` routes to `output.errors`, `Warn` to `output.warnings`.
 - The lint id is carried on the diagnostic: `TypeErrorKind::Lint(LintId)` so suppression,
-  `--Werror`, and docs can key off it. This also lets the existing ad-hoc warnings (clone-on-Copy,
-  dead-code) migrate onto the registry over time.
+  `--Werror`, and docs can key off it. The two ad-hoc warnings (clone-on-Copy,
+  dead-code) now route through `Checker::emit_main_pass_lint`, which applies the
+  same level/`// hew:allow` resolution to warnings emitted inline during body
+  checking (outside the post-inference sweep).
+- Checker lints that share a body walk implement the read-only `NodeVisitor`
+  trait (`visit_block` / `visit_stmt` / `visit_expr`) driven by the exhaustive
+  `walk_body` helper, so a new AST node forces every visitor to make a decision
+  rather than silently dropping out.
 
 ### 6.2 Checker lint sweep (M1)
 - A `check::lints` module with `Checker::run_lints(&self, program, levels, out)`, invoked in
@@ -93,6 +103,11 @@ AST/HIR — another reason `needless_range_loop` belongs in the checker, not MIR
   builds a `LintCtx` carrying the checker's resolved type facts, and runs each enabled lint. Lints
   are pure read-only visitors over the typed AST (so `.len()`/`.get()` receivers are known to be
   collections).
+- The sweep runs only over **user-authored** bodies. Builtin/standard-library modules (`std::`,
+  `hew::`, `ecosystem::` — the `is_builtin_module` set) ship with the compiler, so a finding inside
+  them is noise the user cannot act on; `run_lints` advances its module index over those modules (to
+  keep span tagging aligned with the checker's module walk) but skips emitting on their items. The
+  inline main-pass lints follow the same rule (e.g. `dead_code` already skips `std.`-prefixed names).
 
 ### 6.3 MIR liveness + MIR lints (M3)
 - Add a generic-enough **liveness** (backward) and/or **reaching-defs** (forward) analysis in
@@ -162,9 +177,39 @@ the precise subset that is actually convertible.
 - **M1 — infra + first lint. (Implemented in this change.)** `LintId`/`LintLevels`, the
   `--warn/--allow/--deny` flags, in-source `// hew:allow(...)`, the checker `run_lints` sweep, and
   `needless_range_loop`. Self-contained, high value, free surfacing. (No MIR work.)
-- **M2 — more checker lints.** `redundant-else-after-return` (reuse the checker's existing
-  `UnreachableCode` reachability to know the `then` diverges), `match-empty → if let`, `len()>0 →
-  !is_empty()`, `if c {true} else {false} → c`. Migrate the existing ad-hoc warnings onto the registry.
+- **M2 — more checker lints. (Implemented in this change.)** Four new checker-stage lints plus the
+  migration of two ad-hoc warnings onto the registry. Each lint stays silent unless its rewrite is
+  provably meaning-preserving (precision over recall):
+  - **`redundant_else_after_return`** — an `if` whose then-branch diverges on *every* path (ends in
+    `return` / `break` / `continue`, or a `!`-typed call such as `panic`) yet still carries an
+    `else`; the `else` body can be de-indented. *Reuses* the checker's recorded `Ty::Never` for the
+    divergence decision (terminator statements are matched structurally). *Guards:* fires only in
+    statement / block-tail position (never a value-position `if` feeding a `let`/arg); skips
+    `if let` / `while let` and `else if` chains (not a clean de-indent).
+  - **`needless_match_to_if_let`** — a two-arm `match` on an `Option` where one arm is
+    `Some(binding)` and the other is a trivial `None => {}` / `None => ()`. Suggests
+    `if let Some(binding) = … { … }`. *Guards:* `Option` only (scrutinee type confirmed via
+    `resolved_type_at`; `Result` is out of scope); no guards; the `None` body must be empty/unit;
+    the `Some` sub-pattern must be a plain identifier or `_`; statement / block-tail position only
+    (a value-position match is never rewritten). Note a bare `None` parses as an *identifier*
+    pattern, so both spellings are accepted.
+  - **`len_zero_comparison`** — a comparison of `<recv>.len()` against `0` / `1` that is really an
+    emptiness test: `len() == 0` / `len() <= 0` / `len() < 1` → `is_empty()`; `len() != 0` /
+    `len() > 0` / `len() >= 1` → `!is_empty()` (either operand order). *Guards:* one side must be
+    literally a no-arg `.len()` method call (a `len` *field* never qualifies) and the other the
+    integer literal; the receiver's resolved type must expose `is_empty()` (`Vec`, `HashMap`,
+    `HashSet`, `string`). The precise, type-checked, suppressible companion to the syntactic
+    `rules/hew/len-zero-is-empty.yml` ast-grep rule.
+  - **`needless_bool`** — `if c { true } else { false }` → `c`; `if c { false } else { true }` →
+    `!c`. *Guards:* each branch must be exactly one boolean literal (no other statements); the two
+    branches must be opposite polarities (a matching pair is a constant, not this lint); `else if`
+    chains never collapse the outer `if`. Position-agnostic (the rewrite is valid anywhere).
+  - **Migrations.** `clone_on_copy` (clone on a Copy/BitCopy type; `hew-types/src/check/methods.rs`)
+    and `dead_code` (unreachable functions; `hew-types/src/check/diagnostics.rs`) now emit through
+    `Checker::emit_main_pass_lint`, giving them a `LintId` with `default_level() = Warn`. Default
+    behaviour is unchanged (they still warn), but they are now re-levelable (`-A/-W/-D`) and
+    suppressible (`// hew:allow`). The LSP keeps tagging migrated `dead_code` as
+    `DiagnosticTag::UNNECESSARY`. Unused-import / unreachable-code were left un-migrated this pass.
 - **M3 — MIR liveness + dataflow lints.** Add liveness/reaching-defs to `hew-mir`; implement
   `dead-store` and `clean-counter` (counter not read after the loop); wire MIR lints into LSP/wasm.
 

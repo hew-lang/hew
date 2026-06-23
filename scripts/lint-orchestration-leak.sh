@@ -48,10 +48,12 @@
 # exclusion to the T4 git grep call below — same ':!pattern' syntax used for
 # ':!LESSONS.md' and ':!tests/leak-scan/'.
 #
-# Commit-message opt-out: a commit may include 'Leak-scan-allow: <reason>'
-# anywhere in its message body to suppress ALL pattern checks for that commit.
-# Use this only for legitimate overlaps (e.g. "feat(net): add L7 OSI routing").
-# The opt-out is explicit and greppable:
+# Commit-message opt-out: to allow a specific pattern in one commit, add
+# 'Leak-scan-allow: T<N> <reason>' (one line per pattern suppressed).
+# Example: 'Leak-scan-allow: T4 L7 is OSI layer-7, not a lane ID'
+# Only the named T-number is suppressed; all other patterns still fire.
+# A line without a valid T<N> prefix or without a non-empty reason is
+# ignored — the default is fail-closed.  Opt-outs are greppable:
 #   git log --all --grep='Leak-scan-allow:'
 
 set -Eeuo pipefail
@@ -161,6 +163,22 @@ if [[ "${1-}" == "--self-test" ]]; then
         'let p = ".tmp/plans/lane.md";'
     assert_detects "T7 .tmp/worktrees in string"     "src/lib.rs" \
         'let p = ".tmp/worktrees/foo";'
+    # T7 path variants (backslash + escaped-slash forms)
+    assert_detects "T7 .tmp backslash in string"     "src/lib.rs" \
+        'let p = ".tmp\orchestration\state.db";'
+    assert_detects "T7 .tmp escaped-slash in string" "src/lib.rs" \
+        'let p = ".tmp\/plans\/lane.md";'
+
+    # File-type coverage — tokens in non-.rs files must be caught
+    assert_detects "T1 PCA-8 in YAML file"    ".github/workflows/x.yml" '# PCA-8 internal note'
+    assert_detects "T2 wire-fleet in shell"    "scripts/x.sh"            'echo wire-fleet dispatch'
+    assert_detects "T5 q185 in YAML step"      ".github/workflows/x.yml" 'run: echo q185 path'
+    assert_detects "T6 Qa in TOML value"       "Cargo.toml.extra"        'shortcut = "Qa token"'
+
+    # Spelling variants — T1 case/separator tolerance, T3 camelCase
+    assert_detects "T1 PCA_12 underscore sep"  "src/lib.rs"  '// PCA_12 note'
+    assert_detects "T1 pca-12 lowercase"       "src/lib.rs"  '// pca-12 fix'
+    assert_detects "T3 wireL2 no-hyphen camel" "src/lib.rs"  '// from wireL2'
 
     # ── Negative controls (must NOT fire) ────────────────────────────────────
 
@@ -194,13 +212,13 @@ if [[ "${1-}" == "--self-test" ]]; then
         '/// `.tmp/orchestration/dispatch-invariants.md`'
 
     # ── Commit-message scan (--scan-commits) ──────────────────────────────────
-    # Helpers: make an empty commit with a given message, run --scan-commits,
-    # then roll it back so each test starts from the same single-commit state.
+    # Helpers: make an empty commit with a given message, run --scan-commits with
+    # an explicit HEAD~1..HEAD range (no origin/main in temp repo), then roll back.
     assert_commit_detects() {
         local desc="$1"
         local msg="$2"
         git -C "$_tmpdir" commit --allow-empty -m "$msg" 2>/dev/null
-        if (cd "$_tmpdir" && bash "$_SELF" --scan-commits 2>/dev/null); then
+        if (cd "$_tmpdir" && bash "$_SELF" --scan-commits "HEAD~1..HEAD" 2>/dev/null); then
             echo "FAIL: $desc — expected non-zero exit but got zero"
             _fail=$((_fail + 1))
         else
@@ -214,7 +232,7 @@ if [[ "${1-}" == "--self-test" ]]; then
         local desc="$1"
         local msg="$2"
         git -C "$_tmpdir" commit --allow-empty -m "$msg" 2>/dev/null
-        if (cd "$_tmpdir" && bash "$_SELF" --scan-commits 2>/dev/null); then
+        if (cd "$_tmpdir" && bash "$_SELF" --scan-commits "HEAD~1..HEAD" 2>/dev/null); then
             echo "PASS: $desc"
             _pass=$((_pass + 1))
         else
@@ -230,9 +248,25 @@ if [[ "${1-}" == "--self-test" ]]; then
     assert_commit_detects "CMSG T4 L8 lane ID in subject"   "chore: fix L8 regression in dispatcher"
     # Clean commit message — must not fire
     assert_commit_clean   "CMSG clean commit (no tokens)"    "feat: add robust error propagation"
-    # Opt-out trailer: Leak-scan-allow suppresses the entire commit from scanning
-    assert_commit_clean   "CMSG opt-out trailer skips scan"  "feat: add networking layer routing
-Leak-scan-allow: OSI layer term, not a lane ID"
+    # Scoped opt-out: T4 with reason suppresses only T4 — clean
+    assert_commit_clean   "CMSG scoped opt-out T4 clean"    "feat: add networking routing
+Leak-scan-allow: T4 L7 is OSI layer-7 networking, not a lane ID"
+    # Scoped opt-out: T4 allowed but unrelated T5 in same commit still fires
+    assert_commit_detects "CMSG scoped opt-out T4 doesnt suppress T5" \
+        "feat: add L7 routing with q185 path
+Leak-scan-allow: T4 L7 is OSI layer-7 networking"
+    # Scoped opt-out without reason is invalid — T4 still fires
+    assert_commit_detects "CMSG scoped opt-out no-reason invalid" \
+        "chore: fix L8 regression
+Leak-scan-allow: T4"
+    # Fail-closed: no origin/main + no explicit range → non-zero exit
+    if (cd "$_tmpdir" && bash "$_SELF" --scan-commits 2>/dev/null); then
+        echo "FAIL: CMSG no-range fail-closed — expected non-zero but got zero"
+        _fail=$((_fail + 1))
+    else
+        echo "PASS: CMSG no-range fail-closed"
+        _pass=$((_pass + 1))
+    fi
 
     echo ""
     echo "lint-orchestration-leak self-test: ${_pass} passed, ${_fail} failed"
@@ -263,24 +297,38 @@ fi
 # patterns.  Pre-push is the right point: commit messages are finalised there.
 # Exits 1 with "sha: pattern: line" diagnostics on any hit; exits 0 when clean.
 #
-# Range: origin/main..HEAD (normal push path); falls back to HEAD~1..HEAD when
-# origin/main is unknown (shallow clone / first push), or to HEAD alone for a
-# single-commit repo.
+# Range: explicit arg if supplied, else origin/main..HEAD when origin/main is
+# reachable.  If neither is available, exits 2 (fail-closed) — guessing a
+# partial range is worse than surfacing the configuration gap.
+# The pre-push hook passes an explicit range derived from git's stdin push info.
 if [[ "${1-}" == "--scan-commits" ]]; then
+    _explicit_range="${2-}"
     _commit_range=""
-    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+    if [[ -n "$_explicit_range" ]]; then
+        _commit_range="$_explicit_range"
+    elif git rev-parse --verify origin/main >/dev/null 2>&1; then
         _commit_range="origin/main..HEAD"
-    elif git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
-        _commit_range="HEAD~1..HEAD"
     else
-        _commit_range="HEAD"
+        echo "lint-orchestration-leak: fatal — commit range unknown." >&2
+        echo "  Run with an explicit range: --scan-commits <range>" >&2
+        echo "  Or ensure origin/main is reachable (git fetch origin main)." >&2
+        exit 2
     fi
 
     _commit_hits=0
     _commit_fail=""
 
     _check_commit_msg() {
-        local _sha="$1" _label="$2" _pat="$3" _msg="$4"
+        local _sha="$1" _label="$2" _pat="$3" _msg="$4" _allows="$5"
+        # Per-pattern opt-out: 'Leak-scan-allow: T<N> <reason>' suppresses only T<N>.
+        # Extract T-number from label (e.g. "T4" from "T4 L[7-9] lane ID").
+        # grep -E is portable; no PCRE needed for the T-number check.
+        local _tnum
+        _tnum=$(printf '%s' "$_label" | sed 's/[[:space:]].*//')
+        if [[ -n "$_allows" ]] && \
+           printf '%s\n' "$_allows" | grep -qE "^${_tnum}[[:space:]]+[^[:space:]]"; then
+            return 0  # this pattern is explicitly allowed in this commit
+        fi
         local _m
         # Use perl -ne for PCRE on commit-message text: macOS system grep lacks -P,
         # but perl (always available) supports the same PCRE patterns as git grep -P.
@@ -298,18 +346,17 @@ ${_m}
     while IFS= read -r _sha; do
         [[ -z "$_sha" ]] && continue
         _full_msg=$(git log -1 --format='%B' "$_sha")
-        # Honour 'Leak-scan-allow: <reason>' opt-out trailer: a commit that
-        # explicitly documents an intentional overlap is skipped entirely.
-        if printf '%s\n' "$_full_msg" | grep -qi '^Leak-scan-allow:'; then
-            continue
-        fi
-        _check_commit_msg "$_sha" "T1 PCA-<digits>"       'PCA-[0-9]+'         "$_full_msg"
-        _check_commit_msg "$_sha" "T2 wire-fleet"          '\bwire-fleet\b'      "$_full_msg"
-        _check_commit_msg "$_sha" "T3 wire-l<N>"           '\bwire-l[0-9]+\b'    "$_full_msg"
-        _check_commit_msg "$_sha" "T4 L[7-9] lane ID"      '\bL[7-9]\b'          "$_full_msg"
-        _check_commit_msg "$_sha" "T5 q<NNN> Q-tag"        '\bq[0-9]{3,}\b'      "$_full_msg"
-        _check_commit_msg "$_sha" "T6 Q<a-z> short Q-tag"  '\bQ[a-z]\b'          "$_full_msg"
-        _check_commit_msg "$_sha" "T7 .tmp/orch path"      '\.tmp/(orchestration|plans|worktrees)' "$_full_msg"
+        # Parse 'Leak-scan-allow: T<N> <reason>' lines; strip the trailer prefix.
+        # Only lines with a valid T<N> + non-empty reason suppress a specific pattern.
+        _allows=$(printf '%s\n' "$_full_msg" | \
+            perl -ne 'if (/^Leak-scan-allow:\s*(.*)/i) { print "$1\n" }')
+        _check_commit_msg "$_sha" "T1 PCA-<digits>"       '(?i)PCA[-_]?[0-9]+'                       "$_full_msg" "$_allows"
+        _check_commit_msg "$_sha" "T2 wire-fleet"          '\bwire-fleet\b'                            "$_full_msg" "$_allows"
+        _check_commit_msg "$_sha" "T3 wire-l<N>"           '(?i)\bwire-?l[0-9]+\b'                    "$_full_msg" "$_allows"
+        _check_commit_msg "$_sha" "T4 L[7-9] lane ID"      '\bL[7-9]\b'                               "$_full_msg" "$_allows"
+        _check_commit_msg "$_sha" "T5 q<NNN> Q-tag"        '\bq[0-9]{3,}\b'                           "$_full_msg" "$_allows"
+        _check_commit_msg "$_sha" "T6 Q<a-z> short Q-tag"  '\bQ[a-z]\b'                               "$_full_msg" "$_allows"
+        _check_commit_msg "$_sha" "T7 .tmp/orch path"      '\.tmp[/\\]+(orchestration|plans|worktrees)' "$_full_msg" "$_allows"
     done < <(git log --format='%H' "$_commit_range" 2>/dev/null)
 
     if (( _commit_hits > 0 )); then
@@ -341,51 +388,47 @@ ${match}
     fi
 }
 
-# T1 — PCA-<digits> anywhere in .rs / .hew / .md tracked source
+# T1 — PCA-<digits> in all tracked text files (case/separator tolerant)
 record_hit "T1 PCA-<digits>" "$(
-    git grep -nP 'PCA-[0-9]+' -- \
-        '*.rs' '*.hew' '*.md' \
+    git grep -InP '(?i)PCA[-_]?[0-9]+' -- \
         ':!scripts/lint-orchestration-leak.sh' \
         ':!LESSONS.md' \
         ':!tests/leak-scan/' \
         2>/dev/null || true
 )"
 
-# T2 — wire-fleet anywhere in .rs / .hew / .md
+# T2 — wire-fleet in all tracked text files
 record_hit "T2 wire-fleet" "$(
-    git grep -nP '\bwire-fleet\b' -- \
-        '*.rs' '*.hew' '*.md' \
+    git grep -InP '\bwire-fleet\b' -- \
         ':!scripts/lint-orchestration-leak.sh' \
         ':!LESSONS.md' \
         ':!tests/leak-scan/' \
         2>/dev/null || true
 )"
 
-# T3 — wire-l<digit> lane names in .rs / .hew / .md
+# T3 — wire-l<digit> lane names in all tracked text files (case/hyphen tolerant)
 record_hit "T3 wire-l<N>" "$(
-    git grep -nP '\bwire-l[0-9]+\b' -- \
-        '*.rs' '*.hew' '*.md' \
+    git grep -InP '(?i)\bwire-?l[0-9]+\b' -- \
         ':!scripts/lint-orchestration-leak.sh' \
         ':!LESSONS.md' \
         ':!tests/leak-scan/' \
         2>/dev/null || true
 )"
 
-# T4 — L7 / L8 / L9 in .rs / .hew / .md  (L1–L6 excluded: layer labels + cache refs)
+# T4 — L7 / L8 / L9 in all tracked text files (L1–L6 excluded: layer labels + cache refs)
 record_hit "T4 L[7-9] lane ID" "$(
-    git grep -nP '\bL[7-9]\b' -- \
-        '*.rs' '*.hew' '*.md' \
+    git grep -InP '\bL[7-9]\b' -- \
         ':!scripts/lint-orchestration-leak.sh' \
         ':!LESSONS.md' \
         ':!tests/leak-scan/' \
         2>/dev/null || true
 )"
 
-# T5 — lowercase q-tags (3+ digits) in .rs and .md only
+# T5 — lowercase q-tags (3+ digits) in all tracked text files except .hew
 # (.hew excluded: feature-naming convention q175, q004 etc.)
 record_hit "T5 q<NNN> Q-tag" "$(
-    git grep -nP '\bq[0-9]{3,}\b' -- \
-        '*.rs' '*.md' \
+    git grep -InP '\bq[0-9]{3,}\b' -- \
+        ':!*.hew' \
         ':!scripts/lint-orchestration-leak.sh' \
         ':!LESSONS.md' \
         ':!tests/leak-scan/' \
@@ -393,25 +436,24 @@ record_hit "T5 q<NNN> Q-tag" "$(
 )"
 
 # T6 — short Q-tags (uppercase Q + single lowercase letter: Qa, Qb, …)
-# in .rs files only (short identifiers are uncommon; verified 0 in clean tree)
+# in all tracked text files (broadened from .rs-only; FP risk low, opt-out available)
 record_hit "T6 Q<a-z> short Q-tag" "$(
-    git grep -nP '\bQ[a-z]\b' -- \
-        '*.rs' \
+    git grep -InP '\bQ[a-z]\b' -- \
         ':!scripts/lint-orchestration-leak.sh' \
         ':!LESSONS.md' \
         ':!tests/leak-scan/' \
         2>/dev/null || true
 )"
 
-# T7 — .tmp/(orchestration|plans|worktrees) INSIDE STRING LITERALS in .rs / .hew
-# (comment-based plan citations — /// `.tmp/plans/…` — are accepted; string literals
-# are not, because they compile into binary or user-facing output)
-# examples/hew-orch/ is excluded for T7 only (not T1–T6): an orchestration-helper
-# tool may legitimately hardcode a stable .tmp/orchestration/ path, but must never
-# hardcode an ephemeral lane ID or Q-tag.  This asymmetry is intentional.
+# T7 — .tmp/(orchestration|plans|worktrees) INSIDE STRING LITERALS in all tracked
+# text files.  Accepts forward-slash, backslash, and escaped-slash forms.
+# Comment-based plan citations (// `.tmp/plans/…`) are not caught by this pattern.
+# Split/constructed literals (concat!(".tmp/", "plans/…")) are out of scope.
+# examples/hew-orch/ is excluded for T7 only: an orchestration-helper tool may
+# legitimately hardcode a stable .tmp/orchestration/ path, but must never hardcode
+# an ephemeral lane ID or Q-tag.  This asymmetry is intentional.
 record_hit "T7 .tmp/orch path in string literal" "$(
-    git grep -nP '"[^"]*\.tmp/(orchestration|plans|worktrees)' -- \
-        '*.rs' '*.hew' \
+    git grep -InP '"[^"]*\.tmp[/\\]+(orchestration|plans|worktrees)' -- \
         ':!scripts/lint-orchestration-leak.sh' \
         ':!examples/hew-orch/' \
         ':!tests/leak-scan/' \

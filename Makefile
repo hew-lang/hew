@@ -954,11 +954,13 @@ miri:
 lint: runtime-poison-safe-lint lint-wasm-todo leak-scan verify-ffi hew-fmt-check
 	cargo clippy --workspace --tests -- -D warnings
 
-# Scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths).
-# Catches identifiers that belong only in orchestration context before they reach review.
+# Scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)
+# and scan commit-message bodies of commits not yet on origin/main for the same tokens.
+# Runs fast (<2 s each, git-grep and git-log only).
 # See scripts/lint-orchestration-leak.sh and tests/leak-scan/ for the token catalogue.
 leak-scan:
 	bash scripts/lint-orchestration-leak.sh
+	bash scripts/lint-orchestration-leak.sh --scan-commits
 
 # Check that std/ and examples/ .hew sources are formatted.
 # Run `find std examples -name "*.hew" -print0 | xargs -0 hew fmt` to fix.

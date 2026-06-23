@@ -39,8 +39,14 @@
 #   .tmp/<path> in // comments   — plan citations (doc links, not leaks)
 #
 # Usage:
-#   scripts/lint-orchestration-leak.sh          # normal scan
-#   scripts/lint-orchestration-leak.sh --self-test   # verify every pattern fires
+#   scripts/lint-orchestration-leak.sh               # scan tracked source files
+#   scripts/lint-orchestration-leak.sh --scan-commits # scan commit-message bodies
+#   scripts/lint-orchestration-leak.sh --self-test    # verify every pattern fires
+#
+# Exclusion how-to: to permit a legitimate future L7/L8/L9 symbol (T4 sits one
+# digit above the live L1–L6 layer-label convention), add a ':!path/to/file'
+# exclusion to the T4 git grep call below — same ':!pattern' syntax used for
+# ':!LESSONS.md' and ':!tests/leak-scan/'.
 
 set -Eeuo pipefail
 
@@ -181,12 +187,127 @@ if [[ "${1-}" == "--self-test" ]]; then
     assert_clean "NEG .tmp/orchestration in doc" "src/lib.rs" \
         '/// `.tmp/orchestration/dispatch-invariants.md`'
 
+    # ── Commit-message scan (--scan-commits) ──────────────────────────────────
+    # Helpers: make an empty commit with a given message, run --scan-commits,
+    # then roll it back so each test starts from the same single-commit state.
+    assert_commit_detects() {
+        local desc="$1"
+        local msg="$2"
+        git -C "$_tmpdir" commit --allow-empty -m "$msg" 2>/dev/null
+        if (cd "$_tmpdir" && bash "$_SELF" --scan-commits 2>/dev/null); then
+            echo "FAIL: $desc — expected non-zero exit but got zero"
+            _fail=$((_fail + 1))
+        else
+            echo "PASS: $desc"
+            _pass=$((_pass + 1))
+        fi
+        git -C "$_tmpdir" reset --hard HEAD~1 >/dev/null 2>&1
+    }
+
+    assert_commit_clean() {
+        local desc="$1"
+        local msg="$2"
+        git -C "$_tmpdir" commit --allow-empty -m "$msg" 2>/dev/null
+        if (cd "$_tmpdir" && bash "$_SELF" --scan-commits 2>/dev/null); then
+            echo "PASS: $desc"
+            _pass=$((_pass + 1))
+        else
+            echo "FAIL: $desc — expected zero exit (clean) but got non-zero"
+            _fail=$((_fail + 1))
+        fi
+        git -C "$_tmpdir" reset --hard HEAD~1 >/dev/null 2>&1
+    }
+
+    # T5 token in commit subject line
+    assert_commit_detects "CMSG T5 q185 in commit subject"  "feat: add q185 errors-as-values path"
+    # T4 token in commit subject line
+    assert_commit_detects "CMSG T4 L8 lane ID in subject"   "chore: fix L8 regression in dispatcher"
+    # Clean commit message — must not fire
+    assert_commit_clean   "CMSG clean commit (no tokens)"    "feat: add robust error propagation"
+
     echo ""
     echo "lint-orchestration-leak self-test: ${_pass} passed, ${_fail} failed"
     [[ "$_fail" -eq 0 ]]
     exit $?
 fi
 # ── End self-test ─────────────────────────────────────────────────────────────
+
+# ── Fail-closed PCRE probe ────────────────────────────────────────────────────
+# git grep -P exits 1 on no match (normal) but exits 128 when git was built
+# without PCRE support.  Under '|| true' those two outcomes are indistinguishable
+# — the scan silently passes on a broken environment.  Probe once here (after
+# self-test, before any pattern run) so both --scan-commits and the main scan
+# fail closed rather than silently passing when PCRE is absent.
+# Searches all indexed files (or nothing in an empty repo); the nonce pattern
+# never matches, so exit 1 = PCRE ok, anything else = PCRE unavailable.
+_probe_rc=0
+git grep -qP '__PCRE_PROBE_NONCE__' 2>/dev/null || _probe_rc=$?
+if [[ $_probe_rc -ne 0 && $_probe_rc -ne 1 ]]; then
+    echo "lint-orchestration-leak: fatal — git grep -P (PCRE) is unavailable (exit ${_probe_rc})." >&2
+    echo "  Install git with PCRE support: brew install git (macOS) or apt install git (Linux)." >&2
+    exit 2
+fi
+
+# ── Commit-message scan ───────────────────────────────────────────────────────
+# Scans the message bodies of commits in the push range for the same 7 token
+# patterns.  Pre-push is the right point: commit messages are finalised there.
+# Exits 1 with "sha: pattern: line" diagnostics on any hit; exits 0 when clean.
+#
+# Range: origin/main..HEAD (normal push path); falls back to HEAD~1..HEAD when
+# origin/main is unknown (shallow clone / first push), or to HEAD alone for a
+# single-commit repo.
+if [[ "${1-}" == "--scan-commits" ]]; then
+    _commit_range=""
+    if git rev-parse --verify origin/main >/dev/null 2>&1; then
+        _commit_range="origin/main..HEAD"
+    elif git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+        _commit_range="HEAD~1..HEAD"
+    else
+        _commit_range="HEAD"
+    fi
+
+    _commit_hits=0
+    _commit_fail=""
+
+    _check_commit_msg() {
+        local _sha="$1" _label="$2" _pat="$3"
+        local _m
+        # Use perl -ne for PCRE on commit-message text: macOS system grep lacks -P,
+        # but perl (always available) supports the same PCRE patterns as git grep -P.
+        # Use m!...! delimiter to avoid conflicts with '/' in T7 path patterns and
+        # '{' in T5 quantifiers.
+        _m=$(git log -1 --format='%B' "$_sha" | perl -ne "print \$. . ':' . \$_ if m!${_pat}!")
+        if [[ -n "$_m" ]]; then
+            _commit_hits=$((_commit_hits + 1))
+            _commit_fail="${_commit_fail}${_sha}: ${_label}
+${_m}
+"
+        fi
+    }
+
+    while IFS= read -r _sha; do
+        [[ -z "$_sha" ]] && continue
+        _check_commit_msg "$_sha" "T1 PCA-<digits>"       'PCA-[0-9]+'
+        _check_commit_msg "$_sha" "T2 wire-fleet"          '\bwire-fleet\b'
+        _check_commit_msg "$_sha" "T3 wire-l<N>"           '\bwire-l[0-9]+\b'
+        _check_commit_msg "$_sha" "T4 L[7-9] lane ID"      '\bL[7-9]\b'
+        _check_commit_msg "$_sha" "T5 q<NNN> Q-tag"        '\bq[0-9]{3,}\b'
+        _check_commit_msg "$_sha" "T6 Q<a-z> short Q-tag"  '\bQ[a-z]\b'
+        _check_commit_msg "$_sha" "T7 .tmp/orch path"      '\.tmp/(orchestration|plans|worktrees)'
+    done < <(git log --format='%H' "$_commit_range" 2>/dev/null)
+
+    if (( _commit_hits > 0 )); then
+        echo "lint-orchestration-leak (commit messages): ${_commit_hits} pattern group(s) flagged" >&2
+        echo "" >&2
+        echo "$_commit_fail" >&2
+        echo "Orchestration tokens must not appear in commit-message bodies." >&2
+        echo "Amend with: git commit --amend  (or interactive rebase for older commits)." >&2
+        exit 1
+    fi
+    echo "lint-orchestration-leak (commit messages): ok" >&2
+    exit 0
+fi
+# ── End commit-message scan ───────────────────────────────────────────────────
 
 # ── Main scan ─────────────────────────────────────────────────────────────────
 hits=0
@@ -269,7 +390,9 @@ record_hit "T6 Q<a-z> short Q-tag" "$(
 # T7 — .tmp/(orchestration|plans|worktrees) INSIDE STRING LITERALS in .rs / .hew
 # (comment-based plan citations — /// `.tmp/plans/…` — are accepted; string literals
 # are not, because they compile into binary or user-facing output)
-# Excludes examples/hew-orch/ which is an orchestration-helper tool.
+# examples/hew-orch/ is excluded for T7 only (not T1–T6): an orchestration-helper
+# tool may legitimately hardcode a stable .tmp/orchestration/ path, but must never
+# hardcode an ephemeral lane ID or Q-tag.  This asymmetry is intentional.
 record_hit "T7 .tmp/orch path in string literal" "$(
     git grep -nP '"[^"]*\.tmp/(orchestration|plans|worktrees)' -- \
         '*.rs' '*.hew' \

@@ -2443,6 +2443,22 @@ pub struct Checker {
     /// Outer key: (`canonical_primitive_or_builtin_name`, `trait_name`).
     /// Inner: method name → resolved `FnSig` (receiver already filtered).
     pub(super) primitive_trait_impls: HashMap<(String, String), HashMap<String, FnSig>>,
+    /// The impl's `Self` type arguments for each `impl <Trait> for
+    /// <PrimitiveOrBuiltinGeneric>`, captured at registration so dispatch can
+    /// bind the impl's type parameters from a concrete receiver's type
+    /// arguments before applying the signature.
+    ///
+    /// For `impl<E> Index for Vec<E>` the entry is `[Ty::Named { name: "E" }]`;
+    /// at a `v: Vec<i64>` call site, structurally unifying these stored args
+    /// against the receiver's `[i64]` yields the substitution `E → i64`, so the
+    /// method's `Option<E>` / `Self::Output` return projects to a concrete type
+    /// instead of leaking an unresolved inference var past the checker output
+    /// boundary. Non-generic primitive impls (`impl Display for i64`) store an
+    /// empty vec and are a no-op on dispatch.
+    ///
+    /// Key: (`canonical_primitive_or_builtin_name`, `trait_name`) — same as
+    /// [`Self::primitive_trait_impls`].
+    pub(super) primitive_trait_impl_self_args: HashMap<(String, String), Vec<Ty>>,
     /// Maps supervisor name to its partitioned child lists.
     ///
     /// Static children (declared with `child name: Type`) are in `statics`,
@@ -2936,6 +2952,7 @@ impl Checker {
             trait_impls_set: HashSet::new(),
             trait_impl_method_names: HashMap::new(),
             primitive_trait_impls: HashMap::new(),
+            primitive_trait_impl_self_args: HashMap::new(),
             supervisor_children: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),

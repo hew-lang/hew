@@ -247,6 +247,22 @@ impl CollectionTyCx {
             resolved,
         }
     }
+
+    /// Reconstruct the concrete receiver `Ty` (carrying type arguments) for the
+    /// given collection kind, so user-trait dispatch on a builtin receiver can
+    /// bind the impl's type parameters from the element/key/value types.
+    /// `HashMap<K, V>` → `[K, V]`, `HashSet<E>` / `Vec<E>` → `[E]`.
+    fn receiver_with_args(&self, kind: CollectionKind) -> Ty {
+        let args = match kind {
+            CollectionKind::HashMap => vec![self.key.clone(), self.val.clone()],
+            CollectionKind::HashSet | CollectionKind::Vec => vec![self.elem.clone()],
+        };
+        Ty::Named {
+            builtin: Some(kind.builtin()),
+            name: kind.name().to_string(),
+            args,
+        }
+    }
 }
 
 impl Checker {
@@ -4028,15 +4044,16 @@ impl Checker {
     fn collection_method_fallback(
         &mut self,
         kind: CollectionKind,
+        cx: &CollectionTyCx,
         method: &str,
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        let receiver = Ty::Named {
-            builtin: Some(kind.builtin()),
-            name: kind.name().to_string(),
-            args: vec![],
-        };
+        // Reconstruct the receiver carrying its concrete type arguments so a
+        // user `impl<T> Trait for HashMap<K, V>` / `Vec<E>` dispatched here can
+        // bind the impl's type parameters from the element/key/value types and
+        // project its `Output`/return — the builtin-vs-user asymmetry fix.
+        let receiver = cx.receiver_with_args(kind);
         if let Some(ret_ty) =
             self.try_dispatch_primitive_trait_method(&receiver, method, args, span)
         {
@@ -4073,7 +4090,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let Some(desc) = collection_method_desc(kind, method) else {
-            return self.collection_method_fallback(kind, method, args, span);
+            return self.collection_method_fallback(kind, cx, method, args, span);
         };
         if let Some(arity) = desc.arity {
             self.check_arity(args, arity, &format!("`{}::{method}`", kind.name()), span);
@@ -5066,7 +5083,7 @@ impl Checker {
                 let receiver = Ty::Named {
                     builtin: Some(BuiltinType::Vec),
                     name: "Vec".to_string(),
-                    args: vec![],
+                    args: vec![self.subst.resolve(&elem_ty)],
                 };
                 if let Some(ret_ty) =
                     self.try_dispatch_primitive_trait_method(&receiver, method, args, span)
@@ -5136,6 +5153,19 @@ impl Checker {
         let defaulted_receiver = resolved_receiver.materialize_literal_defaults();
         let canonical = Checker::canonical_primitive_or_builtin_key(&defaulted_receiver)?;
         let (trait_name, sig) = self.lookup_primitive_trait_method(&defaulted_receiver, method)?;
+        // Bind the impl's type parameters from the concrete receiver's type
+        // arguments BEFORE applying the signature. Without this a generic
+        // builtin impl (`impl<E> Index for Vec<E>`) dispatched on `Vec<i64>`
+        // leaves `E` (hence an `Option<E>` / `Self::Output` return) as an
+        // unresolved inference var that escapes past the checker output
+        // boundary — the builtin-vs-user asymmetry this fix closes. User
+        // `Ty::Named` receivers already do this via `lookup_named_method_sig`.
+        let sig = self.instantiate_primitive_trait_method_sig(
+            sig,
+            &canonical,
+            &trait_name,
+            &defaulted_receiver,
+        );
         let applied_sig = self.apply_instantiated_call_signature(
             &sig,
             None,
@@ -5170,7 +5200,101 @@ impl Checker {
                 },
             );
         }
-        Some(applied_sig.return_type)
+        // Project any `Self::Output`-style associated-type carrier in the
+        // return now that the impl's type params are bound to the concrete
+        // receiver — `project_assoc_types` keys the concrete builtin base
+        // (`<Vec<i64> as Index>::Output`) through `impl_assoc_type_bindings`.
+        Some(self.project_assoc_types(&applied_sig.return_type))
+    }
+
+    /// Instantiate a primitive/builtin-generic trait-impl method signature
+    /// against a concrete receiver.
+    ///
+    /// Binds the impl's type parameters by structurally unifying the impl's
+    /// recorded `Self` type arguments
+    /// ([`Checker::primitive_trait_impl_self_args`]) against the receiver's
+    /// concrete type arguments, then substitutes both `Self` (→ the receiver)
+    /// and the bound parameters through the signature's params and return type.
+    /// Substituted parameters are dropped from `type_params` so
+    /// `apply_instantiated_call_signature` does not re-instantiate them as
+    /// fresh inference vars. Mirrors `instantiate_named_method_sig` (the user
+    /// `Ty::Named` path) for builtin receivers, which have no `type_defs` entry.
+    ///
+    /// Non-generic primitive impls (`impl Display for i64`) have empty stored
+    /// `Self` args and only the `Self` → receiver substitution applies, leaving
+    /// existing dispatch behaviour unchanged.
+    fn instantiate_primitive_trait_method_sig(
+        &self,
+        mut sig: FnSig,
+        canonical: &str,
+        trait_name: &str,
+        receiver_ty: &Ty,
+    ) -> FnSig {
+        let mut subst: HashMap<String, Ty> = HashMap::new();
+        if let Some(self_args) = self
+            .primitive_trait_impl_self_args
+            .get(&(canonical.to_string(), trait_name.to_string()))
+        {
+            let receiver_args = match receiver_ty {
+                Ty::Named { args, .. } => args.as_slice(),
+                _ => &[],
+            };
+            let impl_params: HashSet<&str> = sig.type_params.iter().map(String::as_str).collect();
+            for (self_arg, receiver_arg) in self_args.iter().zip(receiver_args.iter()) {
+                Self::bind_self_arg_param(self_arg, receiver_arg, &impl_params, &mut subst);
+            }
+        }
+        for param_ty in &mut sig.params {
+            *param_ty = param_ty
+                .substitute_named_param("Self", receiver_ty)
+                .substitute_named_params_parallel(&subst);
+        }
+        sig.return_type = sig
+            .return_type
+            .substitute_named_param("Self", receiver_ty)
+            .substitute_named_params_parallel(&subst);
+        sig.type_params.retain(|tp| !subst.contains_key(tp));
+        sig.type_param_bounds
+            .retain(|tp, _| !subst.contains_key(tp));
+        sig
+    }
+
+    /// Structurally bind a single impl `Self`-position type argument against the
+    /// receiver's corresponding concrete argument, recording any impl
+    /// type-parameter bindings into `subst`.
+    ///
+    /// A bare `Ty::Named { name, args: [] }` whose `name` is one of the impl's
+    /// type parameters (`impl<E> … for Vec<E>` → `E`) binds directly to the
+    /// receiver argument. A constructed type (`Box<E>`) recurses positionally so
+    /// nested parameters still bind. Concrete `Self`-position types (`Vec<i64>`)
+    /// contribute nothing, leaving no spurious bindings.
+    fn bind_self_arg_param(
+        self_arg: &Ty,
+        receiver_arg: &Ty,
+        impl_params: &HashSet<&str>,
+        subst: &mut HashMap<String, Ty>,
+    ) {
+        match self_arg {
+            Ty::Named { name, args, .. } if args.is_empty() => {
+                if impl_params.contains(name.as_str()) {
+                    subst.insert(name.clone(), receiver_arg.clone());
+                }
+            }
+            Ty::Named {
+                args: self_args, ..
+            } => {
+                if let Ty::Named {
+                    args: receiver_args,
+                    ..
+                } = receiver_arg
+                {
+                    for (s, r) in self_args.iter().zip(receiver_args.iter()) {
+                        Self::bind_self_arg_param(s, r, impl_params, subst);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Stage A3: UFCS form of [`Self::try_dispatch_primitive_trait_method`].
@@ -5238,6 +5362,16 @@ impl Checker {
             .get(&(canonical.clone(), trait_name.to_string()))
             .and_then(|methods| methods.get(method_name))
             .cloned()?;
+        // Bind the impl's type params from the concrete receiver before
+        // applying the signature, mirroring the method-form path so a UFCS
+        // call (`Index::get(v, i)`) on a generic builtin receiver projects its
+        // `Output`/return instead of leaking an unresolved inference var.
+        let sig = self.instantiate_primitive_trait_method_sig(
+            sig,
+            &canonical,
+            trait_name,
+            &resolved_receiver,
+        );
         // Do not add an outer check_arity here.  apply_instantiated_call_signature
         // already calls check_arity on trailing_args via PositionalOnly, matching
         // the receiver-form path at try_dispatch_primitive_trait_method.  An
@@ -5264,7 +5398,7 @@ impl Checker {
                 canonical_receiver: canonical,
             },
         );
-        Some(applied.return_type)
+        Some(self.project_assoc_types(&applied.return_type))
     }
 
     #[expect(

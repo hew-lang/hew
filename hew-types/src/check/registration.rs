@@ -4253,6 +4253,11 @@ impl Checker {
                         if let (Some(canonical), Some(tb)) =
                             (primitive_key.clone(), id.trait_bound.as_ref())
                         {
+                            self.record_primitive_trait_impl_self_args(
+                                canonical.clone(),
+                                tb.name.clone(),
+                                self_type_args.clone(),
+                            );
                             self.record_primitive_trait_impl_method(
                                 canonical,
                                 tb.name.clone(),
@@ -6353,6 +6358,25 @@ impl Checker {
             .insert(method_name, sig);
     }
 
+    /// Record the impl's `Self` type arguments for an `impl <Trait> for
+    /// <PrimitiveOrBuiltinGeneric>` so a later dispatch on a concrete receiver
+    /// can bind the impl's type parameters (see
+    /// [`Checker::primitive_trait_impl_self_args`]). Idempotent: the first
+    /// recorded entry per `(canonical, trait)` wins (all methods of one impl
+    /// share the same `Self` args). `canonical_key` must come from
+    /// [`Self::canonical_primitive_or_builtin_key_from_name`] so registration
+    /// and dispatch agree.
+    pub(super) fn record_primitive_trait_impl_self_args(
+        &mut self,
+        canonical_key: String,
+        trait_name: String,
+        self_args: Vec<Ty>,
+    ) {
+        self.primitive_trait_impl_self_args
+            .entry((canonical_key, trait_name))
+            .or_insert(self_args);
+    }
+
     /// Look up a method on the primitive/builtin-generic impl table.
     ///
     /// Walks every trait registered for the receiver's canonical kind and
@@ -7205,7 +7229,7 @@ impl Checker {
                 {
                     // Set current_self_type for resolving `Self` in method parameters
                     let prev_self_type = self.current_self_type.take();
-                    let self_type_args = type_args
+                    let self_type_args: Vec<Ty> = type_args
                         .as_ref()
                         .map(|args| {
                             args.iter()
@@ -7213,7 +7237,7 @@ impl Checker {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    self.current_self_type = Some((type_name.clone(), self_type_args));
+                    self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
                     let scope_pushed =
                         self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
@@ -7250,6 +7274,11 @@ impl Checker {
                         if let (Some(canonical), Some(tb)) =
                             (primitive_key.clone(), id.trait_bound.as_ref())
                         {
+                            self.record_primitive_trait_impl_self_args(
+                                canonical.clone(),
+                                tb.name.clone(),
+                                self_type_args.clone(),
+                            );
                             self.record_primitive_trait_impl_method(
                                 canonical,
                                 tb.name.clone(),
@@ -7421,7 +7450,9 @@ impl Checker {
                 }
                 Item::Impl(id) => {
                     if let TypeExpr::Named {
-                        name: type_name, ..
+                        name: type_name,
+                        type_args: target_type_args,
+                        ..
                     } = &id.target_type.0
                     {
                         if skipped_type_names.contains(type_name) {
@@ -7434,6 +7465,22 @@ impl Checker {
                             id.where_clause.as_ref(),
                             span,
                         );
+                        // The impl's `Self` type arguments (e.g. `[E]` for
+                        // `impl<E> Index for Vec<E>`), resolved so a later
+                        // dispatch on a concrete receiver can bind the impl's
+                        // type parameters. This path bypasses `enter_impl_scope`
+                        // so `E` resolves to a bare `Ty::Named { name: "E" }`,
+                        // which is exactly the placeholder the dispatch-time
+                        // binding zips against the receiver's concrete args.
+                        let self_type_args: Vec<Ty> = target_type_args
+                            .as_ref()
+                            .map(|type_args| {
+                                type_args
+                                    .iter()
+                                    .map(|type_arg| self.resolve_type_expr(type_arg))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                         let primitive_key = id.trait_bound.as_ref().and_then(|_| {
                             Self::canonical_primitive_or_builtin_key_from_name(type_name)
                         });
@@ -7450,6 +7497,11 @@ impl Checker {
                             if let (Some(canonical), Some(tb)) =
                                 (primitive_key.clone(), id.trait_bound.as_ref())
                             {
+                                self.record_primitive_trait_impl_self_args(
+                                    canonical.clone(),
+                                    tb.name.clone(),
+                                    self_type_args.clone(),
+                                );
                                 self.record_primitive_trait_impl_method(
                                     canonical,
                                     tb.name.clone(),
@@ -7938,7 +7990,7 @@ impl Checker {
                     {
                         // Set current_self_type for resolving `Self` in method parameters
                         let prev_self_type = self.current_self_type.take();
-                        let self_type_args = type_args
+                        let self_type_args: Vec<Ty> = type_args
                             .as_ref()
                             .map(|args| {
                                 args.iter()
@@ -7946,7 +7998,7 @@ impl Checker {
                                     .collect()
                             })
                             .unwrap_or_default();
-                        self.current_self_type = Some((type_name.clone(), self_type_args));
+                        self.current_self_type = Some((type_name.clone(), self_type_args.clone()));
                         let scope_pushed =
                             self.enter_impl_scope(id, span, Some(type_name.as_str()), false);
 
@@ -7966,6 +8018,11 @@ impl Checker {
                             if let (Some(canonical), Some(tb)) =
                                 (primitive_key.clone(), id.trait_bound.as_ref())
                             {
+                                self.record_primitive_trait_impl_self_args(
+                                    canonical.clone(),
+                                    tb.name.clone(),
+                                    self_type_args.clone(),
+                                );
                                 self.record_primitive_trait_impl_method(
                                     canonical,
                                     tb.name.clone(),

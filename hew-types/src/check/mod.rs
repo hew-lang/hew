@@ -32,6 +32,8 @@ pub use self::dispatch::{
 mod expressions;
 mod generics;
 mod items;
+mod lints;
+pub use self::lints::{LintId, LintLevel, LintLevels};
 mod methods;
 pub use self::methods::collection_dispatch_registry_for_tests;
 mod patterns;
@@ -345,6 +347,21 @@ impl Checker {
         // specific and unresolved holes remain authoritative.
         self.drain_deferred_bound_checks();
 
+        // Semantic lint sweep. Runs after inference + defaulting have settled
+        // so each lint can trust fully-resolved expression types. Findings are
+        // routed by their configured level: `Deny` lints become hard errors,
+        // everything else a warning. Keeping `Deny` out of `self.warnings`
+        // preserves the `lint_warnings_have_warning_severity` invariant (the
+        // warnings channel is warning-only).
+        let mut lint_out: Vec<TypeError> = Vec::new();
+        self.run_lints(program, &self.lint_levels, &mut lint_out);
+        for diag in lint_out {
+            if diag.severity == crate::error::Severity::Error {
+                self.errors.push(diag);
+            } else {
+                self.warnings.push(diag);
+            }
+        }
         let resolved_builtin_result_output_type_args: HashMap<SpanKey, (Ty, Ty)> =
             std::mem::take(&mut self.builtin_result_output_type_args)
                 .into_iter()
@@ -758,6 +775,91 @@ impl Checker {
         }
         if program.module_graph.is_some() {
             self.current_module_idx = 0;
+        }
+    }
+
+    /// Run the semantic lint sweep over every function/method body in the
+    /// program and collect findings into `out`.
+    ///
+    /// Read-only over checker state (`&self`): it walks each item's bodies,
+    /// builds a [`lints::LintCtx`] carrying the resolved-type facts, and tags
+    /// each body with the right `module_idx` / `source_module`. The module
+    /// walk mirrors `classify_closure_escapes` and the body-check loop in
+    /// [`Checker::check_program`] (root items at index 0, then each non-root
+    /// module in topo order at a 1-based index, with the same dotted module
+    /// name `record_type` stamped onto its spans) so [`SpanKey`] lookups hit
+    /// and diagnostics route to the correct source file. Severity routing
+    /// (`Deny` → error, otherwise warning) is left to the caller.
+    pub fn run_lints(&self, program: &Program, levels: &LintLevels, out: &mut Vec<TypeError>) {
+        for (item, _) in &program.items {
+            self.lint_item(item, 0, None, levels, out);
+        }
+        let module_order: Vec<_> = match &program.module_graph {
+            Some(mg) => mg
+                .topo_order
+                .iter()
+                .filter(|mod_id| **mod_id != mg.root)
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        };
+        let mut module_idx = 0u32;
+        for mod_id in &module_order {
+            if let Some(module) = program
+                .module_graph
+                .as_ref()
+                .and_then(|mg| mg.modules.get(mod_id))
+            {
+                module_idx += 1;
+                let module_name = mod_id.path.join(".");
+                for (item, _) in &module.items {
+                    self.lint_item(item, module_idx, Some(&module_name), levels, out);
+                }
+            }
+        }
+    }
+
+    /// Lint every body carried by a single top-level item (mirrors
+    /// `classify_escapes_in_item`).
+    fn lint_item(
+        &self,
+        item: &Item,
+        module_idx: u32,
+        source_module: Option<&str>,
+        levels: &LintLevels,
+        out: &mut Vec<TypeError>,
+    ) {
+        let ctx = lints::LintCtx {
+            subst: &self.subst,
+            expr_types: &self.expr_types,
+            module_idx,
+            source_module,
+        };
+        match item {
+            Item::Function(fn_decl) => lints::lint_block(&ctx, levels, &fn_decl.body, out),
+            Item::Impl(impl_decl) => {
+                for method in &impl_decl.methods {
+                    lints::lint_block(&ctx, levels, &method.body, out);
+                }
+            }
+            Item::Actor(actor) => {
+                for method in &actor.methods {
+                    lints::lint_block(&ctx, levels, &method.body, out);
+                }
+                for rec in &actor.receive_fns {
+                    lints::lint_block(&ctx, levels, &rec.body, out);
+                }
+            }
+            Item::Trait(trait_decl) => {
+                for trait_item in &trait_decl.items {
+                    if let TraitItem::Method(trait_method) = trait_item {
+                        if let Some(body) = &trait_method.body {
+                            lints::lint_block(&ctx, levels, body, out);
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 

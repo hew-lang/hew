@@ -3,6 +3,7 @@
 //! This module defines the error types produced by the type checker,
 //! including source locations, suggestions, and secondary notes.
 
+use crate::check::LintId;
 use crate::ty::Ty;
 use hew_parser::ast::Span;
 use std::fmt;
@@ -1142,6 +1143,14 @@ pub enum TypeErrorKind {
         /// The dotted module path from which the illegal access was made.
         acc_module: String,
     },
+    /// A finding from the semantic lint pass ([`crate::check::Checker::run_lints`]).
+    ///
+    /// Carries the originating [`LintId`] so suppression, `--Werror`, and the
+    /// docs site can key off the specific lint. The reporting severity is
+    /// decided by the configured [`crate::check::LintLevel`] (`Warn` →
+    /// [`Severity::Warning`], `Deny` → [`Severity::Error`]); `Allow` lints are
+    /// never emitted.
+    Lint(LintId),
 }
 
 impl TypeErrorKind {
@@ -1232,6 +1241,7 @@ impl TypeErrorKind {
             Self::OpaqueDirectConstruct { .. } => "OpaqueDirectConstruct",
             Self::VisibilityViolationPrivate { .. } => "VisibilityViolationPrivate",
             Self::VisibilityViolationPackage { .. } => "VisibilityViolationPackage",
+            Self::Lint(id) => id.as_str(),
         }
     }
 }

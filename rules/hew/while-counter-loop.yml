@@ -1,0 +1,55 @@
+id: while-counter-loop
+language: hew
+severity: hint
+message: "Counter `while` loop over `$I` — consider `for $I in $START..$BOUND { ... }`."
+note: >-
+  Advisory: confirm `$I` is only incremented by 1 (not also reassigned, or read
+  after the loop) and that `$BOUND` is loop-invariant before converting to a
+  range `for`. ast-grep cannot verify those data-flow conditions.
+rule:
+  kind: while_statement
+  all:
+    # The whole condition is exactly `i < bound` (a nested has avoids the
+    # `expression` wrapper; `stopBy: neighbor` rejects compound `i < n && ...`).
+    - has:
+        field: condition
+        has: { pattern: "$I < $BOUND", stopBy: neighbor }
+    # The same counter is incremented by one somewhere in the body.
+    - has:
+        stopBy: end
+        any:
+          - pattern: { selector: assignment_statement, context: "fn f() { $I = $I + 1; }" }
+          - pattern: { selector: assignment_statement, context: "fn f() { $I += 1; }" }
+    # ...and is initialised by a `var` declaration immediately before the loop.
+    - follows:
+        stopBy: neighbor
+        pattern: { selector: var_statement, context: "fn f() { var $I = $START; }" }
+    # Exclude scanner/cursor loops: body contains a non-unit step for $I on some
+    # branch (e.g. `i = i + 3` for a %XX byte, `pos = pos + 2` for CRLF).
+    # Uses all+not to avoid a global `constraints:` on $K (which causes the
+    # constraint to propagate across clauses and break the TP match).
+    - not:
+        has:
+          stopBy: end
+          any:
+            - all:
+                - pattern: { selector: assignment_statement, context: "fn f() { $I = $I + $K; }" }
+                - not:
+                    pattern: { selector: assignment_statement, context: "fn f() { $I = $I + 1; }" }
+            - all:
+                - pattern: { selector: assignment_statement, context: "fn f() { $I += $K; }" }
+                - not:
+                    pattern: { selector: assignment_statement, context: "fn f() { $I += 1; }" }
+    # Exclude multi-path loops where the unit increment appears inside a conditional
+    # (if_expression in Hew's AST). Such loops can advance $I by more than 1 per
+    # outer iteration — e.g. two consecutive `i = i + 1` on a `--`-arg branch
+    # before `continue` — making a range-for conversion wrong.
+    - not:
+        has:
+          stopBy: end
+          kind: if_expression
+          has:
+            stopBy: end
+            any:
+              - pattern: { selector: assignment_statement, context: "fn f() { $I = $I + 1; }" }
+              - pattern: { selector: assignment_statement, context: "fn f() { $I += 1; }" }

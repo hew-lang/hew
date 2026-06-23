@@ -69,6 +69,7 @@ Counts are findings on the tree when written; `0` rules are regression guards.
 | `match-bool-predicate` | 2 | — | `match o { Some(_) => true, None => false }` → `.is_some()`. |
 | `empty-string-is-empty` | 3 | ✅ | `s == ""` → `s.is_empty()`. |
 | `redundant-clone-literal` | 0 | ✅ | `clone <literal>` — the clone is a no-op. |
+| `while-counter-loop` | 99 | — | `var i = 0; while i < n { … i = i + 1 }` → `for i in 0..n { … }` (advisory). |
 
 ## Suppressing a finding
 

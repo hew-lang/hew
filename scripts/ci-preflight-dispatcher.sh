@@ -17,6 +17,40 @@ PREFLIGHT_TIMEOUT_DOCS="${PREFLIGHT_TIMEOUT_DOCS:-30}"
 PREFLIGHT_TIMEOUT_NARROW="${PREFLIGHT_TIMEOUT_NARROW:-180}"
 PREFLIGHT_TIMEOUT_FALLBACK="${PREFLIGHT_TIMEOUT_FALLBACK:-600}"
 
+# Per-command stuck ceilings from the local preflight timing audit.  These are
+# measurement-only hang budgets, not coverage skips or bypasses.  The effective
+# timeout is max(command floor, lane tier), so narrow lanes get enough time for
+# known-long suites while the fallback's 600s ceiling remains unchanged.
+command_timeout_floor() {
+    local cmd="$1"
+    case "$cmd" in
+        "make ci-preflight-smoke") echo 420 ;;
+        "make lint") echo 90 ;;
+        "make playground-check") echo 150 ;;
+        "make test") echo 360 ;;
+        "make test-vertical-slice") echo 240 ;;
+        "make test-pkg-import") echo 60 ;;
+        "make fuzz-oracle") echo 210 ;;
+        "make test-hew-ratchet") echo 600 ;;
+        "make test-stdlib-ratchet") echo 45 ;;
+        "make test-doc-examples") echo 45 ;;
+        "make sandbox-parity") echo 150 ;;
+        "make checked-mir-verify") echo 45 ;;
+        *) echo 0 ;;
+    esac
+}
+
+command_timeout() {
+    local cmd="$1"
+    local floor
+    floor="$(command_timeout_floor "$cmd")"
+    if (( floor > CMD_TIMEOUT )); then
+        echo "$floor"
+    else
+        echo "$CMD_TIMEOUT"
+    fi
+}
+
 DRY_RUN=0
 FAIL_FAST=0
 BASE_REF=""
@@ -887,7 +921,7 @@ fi
 echo "Commands:"
 for cmd in "${COMMANDS[@]}"; do
     if (( DRY_RUN == 1 )); then
-        echo "  - $cmd  (budget: ${CMD_TIMEOUT}s)"
+        echo "  - $cmd  (budget: $(command_timeout "$cmd")s)"
     else
         echo "  - $cmd"
     fi
@@ -919,13 +953,15 @@ _elapsed_s=0
 
 run_timed_command() {
     local cmd="$1"
+    local cmd_timeout
     local start=$SECONDS
     local status=0
+    cmd_timeout="$(command_timeout "$cmd")"
 
     echo ""
     echo "==> $cmd"
 
-    run_in_pgroup_with_timeout "$CMD_TIMEOUT" "$cmd" || status=$?
+    run_in_pgroup_with_timeout "$cmd_timeout" "$cmd" || status=$?
 
     _elapsed_s=$(( SECONDS - start ))
 
@@ -933,7 +969,7 @@ run_timed_command() {
     #   143 = SIGTERM (128+15): watchdog's initial soft kill reached the child
     #   137 = SIGKILL (128+9): watchdog's hard-kill fallback fired
     if [[ "$status" -eq 137 || "$status" -eq 143 ]]; then
-        echo "==> TIMEOUT: '$cmd' exceeded ${CMD_TIMEOUT}s budget and was killed."
+        echo "==> TIMEOUT: '$cmd' exceeded ${cmd_timeout}s budget and was killed."
     fi
 
     if [[ "$status" -ne 0 ]]; then

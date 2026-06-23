@@ -1,0 +1,20 @@
+//! FAILABLE (tracked NYI): cloning a generic record whose field is `Vec<T>` is
+//! blocked by an ORTHOGONAL, pre-existing gap — the element type `T` has no
+//! known ValueClass at the MIR boundary (`E_MIR: unknown type T`). This is
+//! independent of the per-mono clone/drop synthesis G6 delivers (a generic
+//! record with scalar / string / nested-record fields clones correctly); it is
+//! the generic-record `Vec<T>`-field surface, tracked as a follow-on. Registered
+//! in scripts/hew-suite-expected-failures.txt; the ratchet flips to an
+//! unexpected-pass the instant the MIR-boundary gap is closed.
+
+import std::testing;
+
+type Bag<T> { items: Vec<T>; }
+
+#[test]
+fn test_generic_record_of_vec_clone() {
+    let b = Bag { items: Vec::new() };
+    b.items.push(7);
+    let c = clone b;
+    testing.assert_eq(c.items.len(), 1);
+}

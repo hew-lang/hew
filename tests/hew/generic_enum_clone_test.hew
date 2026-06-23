@@ -1,0 +1,22 @@
+//! FAILABLE (tracked NYI): cloning a generic enum (`clone Maybe<T>`) is a
+//! SEPARATE synthesis path from record/aggregate clone — `clone` is not even a
+//! method on enums today (`no method clone on Maybe<i64>`). Explicitly OUT of
+//! scope for G6 (generic record/aggregate clone); registered here so the gap
+//! stays visible. Registered in scripts/hew-suite-expected-failures.txt; the
+//! ratchet flips to an unexpected-pass the instant generic enum clone lands,
+//! forcing this test's promotion to a positive regression guard.
+
+import std::testing;
+
+enum Maybe<T> { Some(T); None }
+
+#[test]
+fn test_generic_enum_clone() {
+    let m = Maybe::Some(42);
+    let n = clone m;
+    let v = match n {
+        Maybe::Some(x) => x,
+        Maybe::None => 0,
+    };
+    testing.assert_eq(v, 42);
+}

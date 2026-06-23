@@ -31857,7 +31857,12 @@ fn ty_is_local_collection_handle(ty: &ResolvedTy) -> bool {
 ///   - `append` / `append_layout` — extends arg[0] with copies of arg[1]'s
 ///     elements; borrows BOTH vecs (arg[1] is scanned by the arg-tail rule
 ///     and over-excludes — a leak, never a double free).
-///   - `clone` / `clone_layout` — deep copy; the result is a fresh handle.
+///   - `clone` / `clone_layout` / `clone_owned` — deep copy; the receiver is
+///     read element-by-element and the result is a fresh, independently owned
+///     handle (`clone_owned` deep-clones each owned element via the descriptor
+///     `clone_fn`). The receiver keeps its own buffer and MUST retain its
+///     scope-exit drop — omitting `clone_owned` here over-excludes the original
+///     owned-element Vec and leaks it (`drop-allowset-from-value-flow`).
 ///
 /// The typed scalar variants (`*_bool` / `*_i32` / `*_i64` / `*_f64`) are the
 /// MIR-level symbols the checker / HIR array-literal desugar resolve for
@@ -31943,6 +31948,7 @@ fn is_vec_receiver_borrow_symbol(callee: &str) -> bool {
             | "hew_vec_append_layout"
             | "hew_vec_clone"
             | "hew_vec_clone_layout"
+            | "hew_vec_clone_owned"
             | "hew_vec_join_str"
     )
 }

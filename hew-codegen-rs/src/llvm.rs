@@ -15059,7 +15059,8 @@ fn lower_actor_state_field_store(
 }
 
 /// Lower an `Instr::WireCodec` (`value.encode()` / `Type.decode(bytes)`) to a
-/// call into the `__hew_serialize_<key>` / `__hew_deserialize_<key>` thunk pair.
+/// call into the `__hew_cbor_serialize_<key>` / `__hew_cbor_deserialize_<key>`
+/// thunk pair.
 ///
 /// The thunk bodies are emitted module-wide by `emit_wire_codec_call_thunks`
 /// (and shared with the actor-message codec path), so this only declares the
@@ -33426,10 +33427,10 @@ fn emit_dyn_trait_vtable_definitions<'ctx>(
 // ===========================================================================
 //
 // For every actor-message type that can cross a process boundary, codegen emits
-// a `__hew_serialize_<key>` / `__hew_deserialize_<key>` C-ABI thunk pair. The
-// thunk WALKS the value's layout in IR (the single source of truth for field
-// order and offsets) and calls the runtime codec primitives
-// (`hew-runtime/src/xnode_serial.rs`) to build / read the wire bytes. The
+// a `__hew_cbor_serialize_<key>` / `__hew_cbor_deserialize_<key>` C-ABI thunk
+// pair. The thunk WALKS the value's layout in IR (the single source of truth for
+// field order and offsets) and calls the runtime codec primitives
+// (`hew-runtime/src/cbor_serial.rs`) to build / read the wire bytes. The
 // byte-format authority lives in the runtime; the layout-walk authority lives
 // here. A module-init constructor registers each pair by its `msg_type`
 // discriminant so the receive path can find the decoder.
@@ -33439,8 +33440,8 @@ fn emit_dyn_trait_vtable_definitions<'ctx>(
 // active variant's positional fields). Any other shape fails closed at codegen.
 
 /// Stable, symbol-safe key for a serializable message type, used as the
-/// `__hew_serialize_<key>` / `__hew_deserialize_<key>` suffix. Reuses the
-/// canonical structural `ResolvedTy` encoder so two distinct shapes never
+/// `__hew_cbor_serialize_<key>` / `__hew_cbor_deserialize_<key>` suffix. Reuses
+/// the canonical structural `ResolvedTy` encoder so two distinct shapes never
 /// collide on one thunk.
 fn xnode_codec_key(ty: &ResolvedTy) -> String {
     hew_hir::mangle_resolved_ty(ty)
@@ -34137,7 +34138,13 @@ fn emit_de_value_cbor<'ctx>(
                         | ResolvedTy::Usize
                         | ResolvedTy::Char
                 );
-                let prim_name = if unsigned {
+                // `char` reads through a dedicated primitive that validates the
+                // decoded scalar is a Unicode scalar value (rejecting surrogates
+                // and values above U+10FFFF) and fails closed otherwise; the
+                // other integers use the plain width readers.
+                let prim_name = if matches!(ty, ResolvedTy::Char) {
+                    "hew_cbor_de_char"
+                } else if unsigned {
                     "hew_cbor_de_u64"
                 } else {
                     "hew_cbor_de_i64"
@@ -35494,13 +35501,66 @@ fn emit_de_enum_cbor<'ctx>(
         .llvm_ctx("cbor de enum switch")?;
 
     builder.position_at_end(trap_bb);
-    emit_trap_with_code_raw(
+    // Unknown wire tag — no declared variant matches. Fail closed WITHOUT an
+    // inline native trap: an inline trap here would unwind (via the actor
+    // crash-recovery `siglongjmp` seam) PAST the deserialize thunk's
+    // `hew_cbor_de_free(reader)` + `free(dst)` cleanup, leaking the parsed CBOR
+    // tree and the partial value shell per malformed message. Instead latch the
+    // reader failure and rejoin the normal control flow (the `cont_bb`
+    // `enum_end` balances the payload frame `enum_begin` pushed). The thunk's
+    // post-walk `failed` check then drops the partial value, frees the shell +
+    // reader, and returns null — the call site traps — exactly the
+    // free-before-trap discipline every other malformed shape already follows.
+    //
+    // Zero `base` first so the fail path's in-place drop sees a well-defined
+    // variant-0 value with null payload. A direct enum's `base` is the thunk's
+    // already-zeroed `dst`, but an indirect (recursive) enum's `base` is a fresh
+    // `hew_alloc` block whose tag/payload are otherwise uninitialised — dropping
+    // a garbage tag/payload would be undefined behaviour.
+    let oob_size = layout
+        .outer_struct
+        .size_of()
+        .ok_or_else(|| CodegenError::FailClosed("cbor de enum oob: value has no size".into()))?;
+    let oob_memset_size_ty = runtime_size_ty(ctx, llvm_mod);
+    let oob_memset = declare_codec_prim(
         ctx,
         llvm_mod,
-        builder,
-        HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH as u64,
-        "cbor_de_enum_oob",
-    )?;
+        "memset",
+        ptr_ty.fn_type(
+            &[ptr_ty.into(), i32_ty.into(), oob_memset_size_ty.into()],
+            false,
+        ),
+    );
+    let oob_memset_size = if oob_memset_size_ty == i64_ty {
+        oob_size
+    } else {
+        builder
+            .build_int_truncate(oob_size, oob_memset_size_ty, "cbor_de_enum_oob_size_trunc")
+            .llvm_ctx("cbor de enum oob size trunc")?
+    };
+    builder
+        .build_call(
+            oob_memset,
+            &[
+                base.into(),
+                i32_ty.const_zero().into(),
+                oob_memset_size.into(),
+            ],
+            "cbor_de_enum_oob_zero",
+        )
+        .llvm_ctx("cbor de enum oob zero")?;
+    let de_fail = declare_codec_prim(
+        ctx,
+        llvm_mod,
+        "hew_cbor_de_fail",
+        void_ty.fn_type(&[ptr_ty.into()], false),
+    );
+    builder
+        .build_call(de_fail, &[reader.into()], "cbor_de_enum_oob_fail")
+        .llvm_ctx("cbor de enum oob fail")?;
+    builder
+        .build_unconditional_branch(cont_bb)
+        .llvm_ctx("cbor de enum oob br")?;
 
     let array_next = declare_codec_prim(
         ctx,

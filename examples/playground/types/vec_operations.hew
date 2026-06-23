@@ -1,0 +1,28 @@
+//! @name Vec Operations
+//! @description Vec<T> element search and range slicing
+
+fn main() {
+    let words: Vec<string> = Vec::new();
+    words.push("alpha");
+    words.push("beta");
+    words.push("gamma");
+    words.push("delta");
+
+    println(f"contains beta:  {words.contains("beta")}");
+    println(f"contains zeta:  {words.contains("zeta")}");
+
+    let slice = words[1..3];
+    println(f"slice length:   {slice.len()}");
+    println(f"slice[0]:       {slice.get(0)}");
+    println(f"slice[1]:       {slice.get(1)}");
+
+    let nums: Vec<i64> = Vec::new();
+    nums.push(10);
+    nums.push(20);
+    nums.push(30);
+    println(f"contains 20:    {nums.contains(20)}");
+    println(f"contains 99:    {nums.contains(99)}");
+    let ns = nums[0..2];
+    println(f"num slice len:  {ns.len()}");
+    println(f"num slice[0]:   {ns.get(0)}");
+}

@@ -678,6 +678,28 @@ const CONSTRUCTS: &[Construct] = &[
             diagnostic_kind: "PlatformLimitation",
         },
     },
+    Construct {
+        // `#[wire]` is now the sole canonical declaration surface for wire types
+        // (bare `wire`/`wire type`/`wire enum` removed in 60c50dae). A `#[wire]`
+        // struct is a TypeDecl in the AST; the profile and emitter treat it as a
+        // plain record and do not reject the `#[wire]` attribute.
+        id: "#[wire] struct declaration",
+        probe: "#[wire]\nstruct Msg {\n    text: string @1,\n}\nfn main() {\n    println(\"ok\");\n}\n",
+        coverage: Coverage::Parity("wire_types_declaration"),
+    },
+    Construct {
+        // Vec<T>::contains: linear equality scan via canonical comparison.
+        // Emits `vector.contains` opcode (added in this parity sweep).
+        id: "Vec<T>::contains",
+        probe: "fn main() {\n    let v: Vec<i64> = Vec::new();\n    v.push(10);\n    println(v.contains(10));\n}\n",
+        coverage: Coverage::Parity("vec_operations"),
+    },
+    Construct {
+        // v[start..end] exclusive range slice: emits `vector.range_slice` opcode.
+        id: "Vec<T> range slice v[start..end]",
+        probe: "fn main() {\n    let v: Vec<i64> = Vec::new();\n    v.push(1);\n    v.push(2);\n    v.push(3);\n    let s = v[0..2];\n    println(s.len());\n}\n",
+        coverage: Coverage::Parity("vec_operations"),
+    },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────

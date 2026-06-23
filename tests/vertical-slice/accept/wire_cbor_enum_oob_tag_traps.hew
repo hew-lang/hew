@@ -1,0 +1,34 @@
+// Validation: decoding a CBOR body whose enum variant tag is out of range for
+// the target enum fails closed (the program traps) rather than constructing a
+// fabricated or partially-initialised value. The bytes are well-formed CBOR
+// (unlike wire_cbor_decode_malformed_traps, which feeds 0xFF garbage that fails
+// at the CBOR-parse layer) — they decode to a single-entry map whose key is an
+// unknown variant tag, so the failure is at the variant-dispatch layer.
+//
+// `Wide::C` encodes wire tag 2; `Narrow` declares only tags 0 and 1, so
+// `Narrow.decode` walks to the unknown-tag path. That path frees the reader +
+// partial shell and latches decode failure, so the thunk returns null and the
+// `.decode()` call site traps — the same free-before-trap discipline every
+// other malformed shape follows.
+#[wire]
+enum Wide {
+    A;
+    B(i64);
+    C(string);
+}
+
+#[wire]
+enum Narrow {
+    A;
+    B(i64);
+}
+
+fn main() -> i64 {
+    let w = Wide::C("out-of-range-payload");
+    let raw = w.encode();
+    let back = Narrow.decode(raw);
+    match back {
+        Narrow::A => 0,
+        Narrow::B(n) => n,
+    }
+}

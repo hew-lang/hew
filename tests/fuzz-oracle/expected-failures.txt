@@ -21,7 +21,7 @@
 # map_literal_empty_annotated.hew, array_repeat_int_sum.hew, and
 # array_repeat_runtime_count.hew are intentionally absent: they must pass.
 #
-# Total: 10 known-failing entries (10 intentional-trap/abort fixtures).
+# Total: 11 known-failing entries (11 intentional-trap/abort fixtures).
 #
 # Intentional aborts/traps: fixtures in tests/vertical-slice/accept/ that are
 # designed to trap or abort at runtime as their correctness proof.  Listed here
@@ -40,3 +40,4 @@ vec_element_width_oob_traps.hew  # intentional trap: Vec<i8> index at len → In
 vec_index_assign_oob_traps.hew   # intentional trap: Vec<i64> OOB write v[1] on 1-element vec → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64)
 crash_main_context_diagnostic.hew  # intentional trap: OOB Vec index in main context → IndexOutOfBounds signal (SIGILL x86_64 / SIGTRAP aarch64) + "hew: trap in main context" stderr diagnostic (F1.3)
 wire_cbor_decode_malformed_traps.hew  # intentional trap: decoding malformed CBOR (0xFF filler bytes) through the wire body codec fails closed → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
+wire_cbor_enum_oob_tag_traps.hew  # intentional trap: decoding an out-of-range enum variant tag (well-formed CBOR, unknown tag) through the wire body codec fails closed → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)

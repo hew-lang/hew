@@ -2397,7 +2397,15 @@ impl Checker {
                             },
                         );
                         // Seed for codegen's `emit_state_clone_drop_synthesis`.
-                        if !self.user_clone_record_seeds.contains(name) {
+                        // Bare-seed MONOMORPHIC records only: a generic
+                        // instantiation (`type_args` present) is keyed by its
+                        // monomorphised layout (`Pair$$i64$i64`) in MIR and
+                        // seeded from the `RecordCloneInplace` walk in codegen
+                        // (`collect_record_clone_inplace_seeds`). The bare name
+                        // names no monomorphic layout, so seeding it here would
+                        // register a dead key. This mirrors the MIR keying
+                        // (`monomorphic_user_record_key`, `args.is_empty()`).
+                        if type_args.is_empty() && !self.user_clone_record_seeds.contains(name) {
                             self.user_clone_record_seeds.push(name.clone());
                         }
                         return record_ty;
@@ -7508,7 +7516,13 @@ impl Checker {
                                         record_name: name.clone(),
                                     },
                                 );
-                                if !self.user_clone_record_seeds.contains(name) {
+                                // Bare-seed monomorphic records only; a generic
+                                // instantiation is MIR-keyed by its mono layout
+                                // and seeded from the `RecordCloneInplace` walk
+                                // in codegen (see the sibling clone intercept).
+                                if type_args.is_empty()
+                                    && !self.user_clone_record_seeds.contains(name)
+                                {
                                     self.user_clone_record_seeds.push(name.clone());
                                 }
                                 return resolved;

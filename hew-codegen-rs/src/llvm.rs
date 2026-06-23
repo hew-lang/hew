@@ -36564,6 +36564,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         }
     }
 
@@ -37011,6 +37012,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
 
         let ctx = Context::create();
@@ -37102,6 +37104,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         }
     }
 
@@ -37231,6 +37234,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         }
     }
 
@@ -37344,6 +37348,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         }
     }
 
@@ -37477,6 +37482,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         }
     }
 
@@ -37610,6 +37616,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "handler_ctx_test")
@@ -37695,6 +37702,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "ctx_field_test")
@@ -37774,6 +37782,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
         let ctx = Context::create();
         let m =
@@ -38056,6 +38065,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         }
     }
 
@@ -38270,6 +38280,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         }
     }
 
@@ -39059,6 +39070,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
 
         let ctx = Context::create();
@@ -39153,6 +39165,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "gen_yield_codegen_test")
@@ -39313,6 +39326,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "make_generator_codegen_test")
@@ -39400,6 +39414,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
         let ctx = Context::create();
         let m = build_module(&ctx, &pipeline, "cancel_token_is_cancelled_codegen_test")
@@ -39673,6 +39688,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
         let syms = empty_fn_symbols();
         let err = verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -39743,6 +39759,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
         let syms = empty_fn_symbols();
         verify_drop_dispatch_resolves(&pipeline, &syms)
@@ -39799,6 +39816,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
         let found = uses_wasm_excluded_symbol(&pipeline)
             .expect("Duplex::close ElabDrop must be flagged as WASM-excluded");
@@ -39833,6 +39851,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         }
     }
 
@@ -40448,6 +40467,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
         assert!(
             uses_wasm_excluded_symbol(&pipeline).is_none(),
@@ -42558,6 +42578,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-dyn-coerce-ok-")
@@ -42708,6 +42729,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-dyn-coerce-miss-")
@@ -43096,6 +43118,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
         let tmp = tempfile::Builder::new()
             .prefix("hew-frame-owned-drop-fail-")
@@ -43380,6 +43403,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         }
     }
 
@@ -43608,6 +43632,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         }
     }
 
@@ -43803,6 +43828,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         }
     }
 
@@ -43995,6 +44021,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         };
 
         let ctx = Context::create();
@@ -44202,6 +44229,7 @@ mod tests {
             actor_send_aliasing: std::collections::HashMap::new(),
             polymorphic_mir: Vec::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
         }
     }
 

@@ -151,6 +151,7 @@ fn pipeline_with_extern(
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: vec![],
         user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
     }
 }
 

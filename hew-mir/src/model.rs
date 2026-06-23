@@ -304,6 +304,36 @@ pub struct IrPipeline {
     /// `TypeCheckOutput` directly. WHEN-OBSOLETE: if user-facing `Clone`
     /// becomes a first-class trait with a dedicated codegen path.
     pub user_clone_record_seeds: Vec<String>,
+    /// Warning-severity findings from the MIR-stage lint pass (`liveness.rs`):
+    /// `dead_store` today. Kept on a channel separate from [`Self::diagnostics`]
+    /// because every `MirDiagnostic` renders as a hard `E_MIR_*` error, whereas
+    /// these are level-configurable lints (`--allow`/`--warn`/`--deny`). The MIR
+    /// stage records the raw findings here; the CLI applies the user's
+    /// [`hew_types::LintLevels`] and `// hew:allow(...)` policy at render time.
+    ///
+    /// Surfaced through the CLI front end only; the LSP / wasm front ends stop
+    /// at HIR and never lower to MIR, so they never populate or read this.
+    /// Editor/web surfacing is tracked in issue #2176.
+    pub lint_warnings: Vec<MirLint>,
+}
+
+/// A single warning-severity finding from the MIR-stage lint pass.
+///
+/// Level-agnostic: `hew-mir` records the finding (which lint fired, where, and
+/// the human message); the CLI maps it through [`hew_types::LintLevels`] to a
+/// rendered warning, a build-failing error (`--deny`), or nothing (`--allow` /
+/// `// hew:allow(...)`). The `span` is a `(start, end)` byte range into the
+/// originating module source so the CLI can point at the offending line and run
+/// the same suppression-directive check used for HIR-stage lints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MirLint {
+    /// Which registry lint produced this finding.
+    pub lint: hew_types::LintId,
+    /// `(start, end)` byte offsets of the offending construct in module source.
+    pub span: (u32, u32),
+    /// The rendered human-readable message (no severity prefix; the CLI adds
+    /// `warning:` / `error:`).
+    pub message: String,
 }
 
 impl IrPipeline {

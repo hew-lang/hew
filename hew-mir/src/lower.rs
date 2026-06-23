@@ -2322,6 +2322,12 @@ pub fn lower_hir_module_with_facts(
     // `dyn Trait` usage.
     let dyn_vtable_registry = crate::dyn_vtable_registry::build_dyn_vtable_registry(&raw_mir);
 
+    // MIR-stage lint pass (liveness-driven `dead_store`). Records raw,
+    // level-agnostic findings; the CLI applies the user's `LintLevels` and
+    // `// hew:allow(...)` policy at render time. CLI front end only — the LSP /
+    // wasm front ends stop at HIR and never reach MIR (issue #2176).
+    let lint_warnings = crate::liveness::run_mir_lints(&raw_mir);
+
     IrPipeline {
         thir,
         raw_mir,
@@ -2374,6 +2380,7 @@ pub fn lower_hir_module_with_facts(
         // Populated by `attach_lowering_facts` from `TypeCheckOutput`; empty
         // here so the lowerer does not depend on `TypeCheckOutput` directly.
         user_clone_record_seeds: Vec::new(),
+        lint_warnings,
     }
 }
 

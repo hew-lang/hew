@@ -1728,6 +1728,7 @@ mod tests {
             hashset_lowering_facts: vec![],
             actor_send_aliasing: std::collections::HashMap::new(),
             user_clone_record_seeds: vec![],
+            lint_warnings: vec![],
             wire_layouts: std::sync::Arc::new(std::collections::HashMap::new()),
         }
     }

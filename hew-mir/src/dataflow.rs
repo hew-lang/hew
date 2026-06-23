@@ -389,7 +389,7 @@ fn meet_predecessors(
     entry
 }
 
-fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
+pub(crate) fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
     let mut preds: HashMap<u32, Vec<u32>> = HashMap::new();
     for block in blocks {
         let mut emit_edge = |target: u32| preds.entry(target).or_default().push(block.id);
@@ -471,7 +471,7 @@ fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
     preds
 }
 
-fn successors(block: &BasicBlock) -> Vec<u32> {
+pub(crate) fn successors(block: &BasicBlock) -> Vec<u32> {
     match &block.terminator {
         Terminator::Return | Terminator::Trap { .. } => Vec::new(),
         Terminator::Goto { target } => vec![*target],
@@ -543,7 +543,7 @@ fn successors(block: &BasicBlock) -> Vec<u32> {
 /// Block IDs reachable from the entry block (id 0) along terminator edges.
 /// Used to exclude unreachable (dangling) predecessors from the dataflow meet —
 /// they never execute and must not contribute state.
-fn reachable_from_entry(blocks: &[BasicBlock]) -> HashSet<u32> {
+pub(crate) fn reachable_from_entry(blocks: &[BasicBlock]) -> HashSet<u32> {
     let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
     let mut visited: HashSet<u32> = HashSet::new();
     let mut stack: Vec<u32> = Vec::new();
@@ -563,7 +563,7 @@ fn reachable_from_entry(blocks: &[BasicBlock]) -> HashSet<u32> {
     visited
 }
 
-fn compute_rpo(blocks: &[BasicBlock]) -> Vec<u32> {
+pub(crate) fn compute_rpo(blocks: &[BasicBlock]) -> Vec<u32> {
     let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
     let mut visited: HashSet<u32> = HashSet::new();
     let mut post_order: Vec<u32> = Vec::with_capacity(blocks.len());

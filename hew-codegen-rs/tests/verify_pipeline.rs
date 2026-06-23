@@ -78,6 +78,7 @@ fn pipeline_const_42() -> IrPipeline {
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
     }
 }
 
@@ -133,6 +134,7 @@ fn pipeline_unsupported_array_return() -> IrPipeline {
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
     }
 }
 

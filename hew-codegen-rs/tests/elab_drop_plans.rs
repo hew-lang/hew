@@ -132,6 +132,7 @@ fn pipeline_with_elab_drop_plan() -> IrPipeline {
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
     }
 }
 
@@ -311,6 +312,7 @@ fn elab_drop_plan_unknown_drop_fn_fails_closed() {
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
     };
     let dir = out_dir("elab-drop-unknown-fail-closed");
     let options = EmitOptions {

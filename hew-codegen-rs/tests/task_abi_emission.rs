@@ -113,6 +113,7 @@ fn pipeline_with_task_abi_call(
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
     }
 }
 
@@ -227,6 +228,7 @@ fn pipeline_with_spawn_task_direct() -> IrPipeline {
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
     }
 }
 
@@ -332,6 +334,7 @@ fn pipeline_with_spawn_task_direct_target_without_context() -> IrPipeline {
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
     }
 }
 
@@ -461,6 +464,7 @@ fn pipeline_with_spawn_task_closure() -> IrPipeline {
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
     }
 }
 
@@ -675,6 +679,7 @@ fn task_abi_emission_task_scope_spawn_paired_with_task_new() {
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
     };
 
     let tmp = std::env::temp_dir().join("hew-task-abi-task-scope-spawn-paired");

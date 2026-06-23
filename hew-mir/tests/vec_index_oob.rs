@@ -376,6 +376,7 @@ fn vec_index_mir_wraps_in_pipeline_without_errors() {
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
     };
     // No diagnostics from the hand-built MIR (it is already valid).
     assert!(

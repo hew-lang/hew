@@ -1348,6 +1348,34 @@ fn actor_ref_send_method_requires_send_payload() {
     );
 }
 
+/// Regression test for F-02: `receive fn -> Option<i64>` must typecheck without
+/// `E_DUPLEX_NON_SEND`. Before the fix, `Option` fell through the marker-derivation
+/// arms to `type_fields.get("Option") → None → false`, so every ask-shaped receive fn
+/// returning `Option<T>` was incorrectly rejected.
+#[test]
+fn actor_receive_fn_option_reply_accepted() {
+    let output = typecheck_inline(
+        r"
+        actor Queue {
+            let items: Vec<i64>;
+            receive fn dequeue() -> Option<i64> {
+                None
+            }
+        }
+
+        fn main() {
+            let q = spawn Queue(items: Vec::new());
+            let _item = await q.dequeue();
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "actor receive fn returning Option<i64> must typecheck cleanly (F-02 regression), got: {:#?}",
+        output.errors
+    );
+}
+
 /// The `<-` send operator was removed in v0.5.  Both the lexer token and the
 /// parser infix rule are gone; any source using `<-` now fails to parse.
 /// This is the `E_OPERATOR_REMOVED` reject path (§3.3 of the migration guide).

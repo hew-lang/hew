@@ -906,6 +906,27 @@ impl TraitRegistry {
                             .all(|a| self.implements_marker_guarded(a, marker, visiting)),
                     };
                 }
+                // Option<T> and Result<T,E>: pure value-type generic builtins.
+                // All markers derive structurally from type arguments — same rule as
+                // `implements_serializable_inner` at line ~473 which already had this arm.
+                // Resource uses ANY (not all): if any type argument is a built-in resource
+                // handle (Duplex, LambdaPid, CancellationToken), the wrapper MAY hold one and
+                // must be treated as a resource too. Note: user `#[resource]` types (e.g.
+                // `#[resource] type Conn { fd: i64 }`) return Resource=false from their own
+                // structural field derivation (fields like i64 are not Resource), so
+                // Option<user_resource> is correctly Resource=false here. Variant-aware close
+                // for user-resource payloads inside Option/Result requires separate work in
+                // MIR/codegen and is tracked as a follow-on lane.
+                if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
+                    return match marker {
+                        MarkerTrait::Resource => args
+                            .iter()
+                            .any(|a| self.implements_marker_guarded(a, marker, visiting)),
+                        _ => args
+                            .iter()
+                            .all(|a| self.implements_marker_guarded(a, marker, visiting)),
+                    };
+                }
                 // Rc<T>: reference-counted, single-threaded — explicitly NOT Send or Sync.
                 // Supports Clone (inc ref-count) and Drop (dec ref-count); NOT Copy or Frozen.
                 if *builtin == Some(BuiltinType::Rc) {
@@ -1126,8 +1147,12 @@ mod tests {
 
     #[test]
     fn test_option_derives_from_inner() {
-        let mut registry = TraitRegistry::new();
-        registry.register_type("Option".to_string(), vec![Ty::I32]);
+        // Previously this test registered "Option" manually, which masked the bug:
+        // `type_fields.get("Option")` would return Some and happen to pass.
+        // The production path NEVER registers Option via register_type — builtins are
+        // handled by the `matches!(builtin, Some(BuiltinType::Option | ...))` arm.
+        // Use a plain TraitRegistry::new() so the test exercises the real production path.
+        let registry = TraitRegistry::new();
         let option_i32 = Ty::option(Ty::I32);
         assert!(registry.is_send(&option_i32));
         assert!(registry.implements_marker(&option_i32, MarkerTrait::Copy));

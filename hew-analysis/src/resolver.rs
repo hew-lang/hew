@@ -254,8 +254,7 @@ fn classify_item(item: &Item, word: &str, def_span: OffsetSpan, uri: &str) -> Op
     {
         return match info.kind {
             crate::ast_visit::TopLevelItemKind::Function
-            | crate::ast_visit::TopLevelItemKind::Const
-            | crate::ast_visit::TopLevelItemKind::Wire => Some(make_function()),
+            | crate::ast_visit::TopLevelItemKind::Const => Some(make_function()),
             crate::ast_visit::TopLevelItemKind::Actor
             | crate::ast_visit::TopLevelItemKind::Supervisor
             | crate::ast_visit::TopLevelItemKind::Trait
@@ -293,7 +292,6 @@ fn classify_item(item: &Item, word: &str, def_span: OffsetSpan, uri: &str) -> Op
         }
         Item::Function(_)
         | Item::Const(_)
-        | Item::Wire(_)
         | Item::Supervisor(_)
         | Item::TypeAlias(_)
         | Item::Machine(_)

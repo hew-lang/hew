@@ -107,7 +107,6 @@ fn collect_item_folding(
         | Item::TypeDecl(_)
         | Item::Trait(_)
         | Item::Impl(_)
-        | Item::Wire(_)
         | Item::ExternBlock(_)
         | Item::Supervisor(_)
         | Item::Machine(_)

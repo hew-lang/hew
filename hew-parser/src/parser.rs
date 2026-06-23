@@ -11,7 +11,7 @@ use crate::ast::{
     StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
     TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
     TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
-    WireDecl, WireDeclKind, WireFieldDecl, WireFieldMeta, WireMetadata,
+    WireFieldMeta, WireMetadata,
 };
 use hew_lexer::Token;
 use serde::Serialize;
@@ -590,14 +590,12 @@ struct WireFieldModifiers {
 #[derive(Debug)]
 struct ParsedWireField {
     explicit_number: Option<u32>,
-    field_number: Option<u32>,
     modifiers: WireFieldModifiers,
 }
 
 #[derive(Debug, Clone, Copy)]
 enum WireFieldParseMode {
     Struct,
-    Decl { next_auto_number: u32 },
 }
 
 #[derive(Debug, Default)]
@@ -1208,7 +1206,6 @@ impl<'src> Parser<'src> {
             Token::OneForOne => Some("one_for_one"),
             Token::OneForAll => Some("one_for_all"),
             Token::RestForOne => Some("rest_for_one"),
-            Token::Wire => Some("wire"),
             Token::Optional => Some("optional"),
             Token::Deprecated => Some("deprecated"),
             Token::Reserved => Some("reserved"),
@@ -1444,7 +1441,6 @@ impl<'src> Parser<'src> {
                 | Token::Machine
                 | Token::Supervisor
                 | Token::Const
-                | Token::Wire
                 | Token::Indirect
                 | Token::Async
                 | Token::Gen
@@ -1604,9 +1600,6 @@ impl<'src> Parser<'src> {
                 WireFieldParseMode::Struct => {
                     self.error("expected field number after '@'".to_string());
                 }
-                WireFieldParseMode::Decl { .. } => {
-                    self.error("expected integer for wire field number".to_string());
-                }
             }
             return Err(());
         };
@@ -1621,41 +1614,28 @@ impl<'src> Parser<'src> {
                 WireFieldParseMode::Struct => {
                     self.error("invalid field number after '@'".to_string());
                 }
-                WireFieldParseMode::Decl { .. } => {
-                    self.error(format!("invalid wire field number: {raw}"));
-                }
             })
     }
 
     fn parse_wire_field_number_and_modifiers(
         &mut self,
         mode: WireFieldParseMode,
-    ) -> Option<ParsedWireField> {
-        let (explicit_number, field_number) = match mode {
+    ) -> ParsedWireField {
+        let explicit_number = match mode {
             WireFieldParseMode::Struct => {
                 if self.eat(&Token::At) {
-                    let explicit_number = self.parse_wire_field_number_after_marker(mode).ok();
-                    (explicit_number, explicit_number)
+                    self.parse_wire_field_number_after_marker(mode).ok()
                 } else {
-                    (None, None)
-                }
-            }
-            WireFieldParseMode::Decl { next_auto_number } => {
-                if self.eat(&Token::Equal) || self.eat(&Token::At) {
-                    let field_number = self.parse_wire_field_number_after_marker(mode).ok()?;
-                    (Some(field_number), Some(field_number))
-                } else {
-                    (None, Some(next_auto_number))
+                    None
                 }
             }
         };
 
         let modifiers = self.parse_wire_field_modifiers();
-        Some(ParsedWireField {
+        ParsedWireField {
             explicit_number,
-            field_number,
             modifiers,
-        })
+        }
     }
 
     fn extract_wire_naming_cases(attrs: &[Attribute]) -> WireNamingCases {
@@ -2027,22 +2007,13 @@ impl<'src> Parser<'src> {
                         self.advance();
                         Item::Machine(self.parse_machine_decl(vis)?)
                     }
-                    Some(Token::Wire) => {
-                        self.advance();
-                        let wd = self.parse_wire_decl(&attrs, vis)?;
-                        if wd.kind == WireDeclKind::Struct {
-                            Item::TypeDecl(wd.into_type_decl())
-                        } else {
-                            Item::Wire(wd)
-                        }
-                    }
                     Some(Token::Const) => {
                         self.advance();
                         Item::Const(self.parse_const_decl(vis, doc_comment)?)
                     }
                     _ => {
                         self.error(
-                            "invalid item after visibility modifier (expected fn, type, trait, actor, machine, supervisor, wire, record, enum, indirect, or const)".to_string(),
+                            "invalid item after visibility modifier (expected fn, type, trait, actor, machine, supervisor, record, enum, indirect, or const)".to_string(),
                         );
                         return None;
                     }
@@ -2098,15 +2069,6 @@ impl<'src> Parser<'src> {
             Some(Token::Impl) => {
                 self.advance();
                 Item::Impl(self.parse_impl_decl()?)
-            }
-            Some(Token::Wire) => {
-                self.advance();
-                let wd = self.parse_wire_decl(&attrs, Visibility::Private)?;
-                if wd.kind == WireDeclKind::Struct {
-                    Item::TypeDecl(wd.into_type_decl())
-                } else {
-                    Item::Wire(wd)
-                }
             }
             Some(Token::Actor) => {
                 self.advance();
@@ -2166,6 +2128,13 @@ impl<'src> Parser<'src> {
                             self.error_with_hint(
                                 format!("unexpected '{id}'"),
                                 "Hew uses 'trait' to declare interfaces: trait Name { ... }",
+                            );
+                            return None;
+                        }
+                        "wire" => {
+                            self.error_with_hint(
+                                "unexpected 'wire'".to_string(),
+                                "use the #[wire] attribute instead: `#[wire] struct Name { ... }` or `#[wire] enum Name { ... }`",
                             );
                             return None;
                         }
@@ -4567,7 +4536,7 @@ impl<'src> Parser<'src> {
             self.expect(&Token::Colon)?;
             let ty = self.parse_type()?;
             let parsed_field =
-                self.parse_wire_field_number_and_modifiers(WireFieldParseMode::Struct)?;
+                self.parse_wire_field_number_and_modifiers(WireFieldParseMode::Struct);
             if let Some(explicit_num) = parsed_field.explicit_number {
                 if reserved_numbers.contains(&explicit_num) {
                     self.error(format!("wire field number @{explicit_num} is reserved"));
@@ -4759,143 +4728,6 @@ impl<'src> Parser<'src> {
             min_version,
         });
         Some(td)
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "wire decl parsing has many fields and variants"
-    )]
-    fn parse_wire_decl(&mut self, attrs: &[Attribute], visibility: Visibility) -> Option<WireDecl> {
-        let kind = match self.peek() {
-            Some(Token::Type) => {
-                self.advance();
-                WireDeclKind::Struct
-            }
-            Some(Token::Enum) => {
-                self.advance();
-                WireDeclKind::Enum
-            }
-            _ => return None,
-        };
-
-        let name = self.expect_ident()?;
-
-        self.expect(&Token::LeftBrace)?;
-
-        let mut fields = Vec::new();
-        let mut variants = Vec::new();
-
-        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-            match kind {
-                WireDeclKind::Struct => {
-                    // Handle reserved(...) directive
-                    if self.peek() == Some(&Token::Reserved) {
-                        self.advance();
-                        if self.eat(&Token::LeftParen) {
-                            while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                                self.advance();
-                                self.eat(&Token::Comma);
-                            }
-                            self.expect(&Token::RightParen)?;
-                        }
-                        if !self.eat(&Token::Semicolon) {
-                            self.eat(&Token::Comma);
-                        }
-                        continue;
-                    }
-
-                    // Parse wire field
-                    let field_name = self.expect_ident()?;
-                    self.expect(&Token::Colon)?;
-                    let ty = self.expect_ident()?;
-
-                    #[expect(
-                        clippy::cast_possible_truncation,
-                        reason = "wire field numbers won't exceed u32::MAX"
-                    )]
-                    let next_auto_number = fields.len() as u32 + 1;
-                    let parsed_field =
-                        self.parse_wire_field_number_and_modifiers(WireFieldParseMode::Decl {
-                            next_auto_number,
-                        })?;
-                    let field_number = parsed_field.field_number?;
-
-                    fields.push(WireFieldDecl {
-                        name: field_name,
-                        ty,
-                        field_number,
-                        is_optional: parsed_field.modifiers.is_optional,
-                        is_repeated: parsed_field.modifiers.is_repeated,
-                        is_reserved: false,
-                        is_deprecated: parsed_field.modifiers.is_deprecated,
-                        json_name: parsed_field.modifiers.json_name,
-                        yaml_name: parsed_field.modifiers.yaml_name,
-                        since: parsed_field.modifiers.since,
-                    });
-
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
-                }
-                WireDeclKind::Enum => {
-                    // Parse enum variant
-                    let variant_name = self.expect_ident()?;
-                    let kind = if self.eat(&Token::LeftParen) {
-                        let mut variant_fields = Vec::new();
-                        while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                            variant_fields.push(self.parse_type()?);
-                            if !self.eat(&Token::Comma) {
-                                break;
-                            }
-                        }
-                        self.expect(&Token::RightParen)?;
-                        VariantKind::Tuple(variant_fields)
-                    } else if self.eat(&Token::LeftBrace) {
-                        let mut variant_fields = Vec::new();
-                        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                            let field_name = self.expect_ident()?;
-                            self.expect(&Token::Colon)?;
-                            let ty = self.parse_type()?;
-                            variant_fields.push((field_name, ty));
-                            if !(self.eat(&Token::Comma) || self.eat(&Token::Semicolon)) {
-                                break;
-                            }
-                        }
-                        self.expect(&Token::RightBrace)?;
-                        VariantKind::Struct(variant_fields)
-                    } else {
-                        VariantKind::Unit
-                    };
-
-                    if !self.eat(&Token::Comma) {
-                        self.eat(&Token::Semicolon);
-                    }
-                    variants.push(VariantDecl {
-                        name: variant_name,
-                        kind,
-                        doc_comment: None,
-                        span: 0..0,
-                    });
-                }
-            }
-        }
-
-        self.expect(&Token::RightBrace)?;
-
-        let WireNamingCases {
-            json_case,
-            yaml_case,
-        } = Self::extract_wire_naming_cases(attrs);
-
-        Some(WireDecl {
-            visibility,
-            kind,
-            name,
-            fields,
-            variants,
-            json_case,
-            yaml_case,
-        })
     }
 
     fn parse_import(&mut self) -> Option<ImportDecl> {

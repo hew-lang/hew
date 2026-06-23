@@ -420,10 +420,6 @@ fn try_spawn_completions(
 }
 
 /// Collect local variable names from function/actor bodies that are in scope at `offset`.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one arm per Item variant; not meaningfully splittable"
-)]
 fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> Vec<CompletionItem> {
     let mut locals = Vec::new();
 
@@ -523,11 +519,7 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                 }
             }
             // Record fields carry no expressions; no locals to collect.
-            Item::Record(_)
-            | Item::Import(_)
-            | Item::ExternBlock(_)
-            | Item::Wire(_)
-            | Item::TypeAlias(_) => {}
+            Item::Record(_) | Item::Import(_) | Item::ExternBlock(_) | Item::TypeAlias(_) => {}
         }
     }
 
@@ -953,7 +945,6 @@ fn item_name_and_kind(item: &Item) -> Option<(String, CompletionKind)> {
         crate::ast_visit::TopLevelItemKind::Const => CompletionKind::Constant,
         crate::ast_visit::TopLevelItemKind::Trait
         | crate::ast_visit::TopLevelItemKind::TypeDecl
-        | crate::ast_visit::TopLevelItemKind::Wire
         | crate::ast_visit::TopLevelItemKind::TypeAlias
         | crate::ast_visit::TopLevelItemKind::Machine
         | crate::ast_visit::TopLevelItemKind::Record => CompletionKind::Type,

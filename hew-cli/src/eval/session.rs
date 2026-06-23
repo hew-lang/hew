@@ -7,7 +7,7 @@
 use std::fmt::Write;
 use std::ops::Range;
 
-use hew_parser::ast::{Item, TypeDeclKind, WireDeclKind};
+use hew_parser::ast::{Item, TypeDeclKind};
 
 use super::classify::{self, InputKind};
 
@@ -312,14 +312,6 @@ fn summarize_item(item: &Item) -> String {
                 "impl block".to_string()
             }
         }
-        Item::Wire(decl) => format!(
-            "wire {} {}",
-            match decl.kind {
-                WireDeclKind::Struct => "struct",
-                WireDeclKind::Enum => "enum",
-            },
-            decl.name
-        ),
         Item::Function(decl) => summarize_function(decl),
         Item::ExternBlock(block) => format!("extern \"{}\" block", block.abi),
         Item::Actor(decl) => format!("actor {}", decl.name),

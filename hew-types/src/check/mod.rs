@@ -13,7 +13,7 @@ use hew_parser::ast::{
     LambdaParam, Literal, MachineDecl, MatchArm, Param, Pattern, Program, ReceiveFnDecl,
     RecordDecl, RecordKind, RestartPolicy, Span, Spanned, Stmt, StringPart, SupervisorDecl,
     SupervisorStrategy, TraitBound, TraitDecl, TraitItem, TypeBodyItem, TypeDecl, TypeDeclKind,
-    TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause, WireDecl, WireDeclKind,
+    TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause,
 };
 use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::sync::OnceLock;

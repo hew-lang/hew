@@ -1534,7 +1534,6 @@ pub fn lower_program_with_mono_cap(
             | Item::TypeDecl(_)
             | Item::TypeAlias(_)
             | Item::Trait(_)
-            | Item::Wire(_)
             | Item::Machine(_)
             | Item::Record(_)
             | Item::Actor(_)
@@ -1702,7 +1701,6 @@ pub fn lower_program_with_mono_cap(
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
                         | Item::Trait(_)
-                        | Item::Wire(_)
                         | Item::Machine(_)
                         | Item::Record(_)
                         | Item::Actor(_)
@@ -1777,7 +1775,6 @@ pub fn lower_program_with_mono_cap(
             | Item::TypeAlias(_)
             | Item::Trait(_)
             | Item::Impl(_)
-            | Item::Wire(_)
             | Item::Function(_)
             | Item::ExternBlock(_)
             | Item::Machine(_)
@@ -1854,7 +1851,6 @@ pub fn lower_program_with_mono_cap(
                 | Item::TypeAlias(_)
                 | Item::Trait(_)
                 | Item::Impl(_)
-                | Item::Wire(_)
                 | Item::Function(_)
                 | Item::ExternBlock(_)
                 | Item::Actor(_)
@@ -1908,7 +1904,6 @@ pub fn lower_program_with_mono_cap(
                             | Item::TypeAlias(_)
                             | Item::Trait(_)
                             | Item::Impl(_)
-                            | Item::Wire(_)
                             | Item::Function(_)
                             | Item::ExternBlock(_)
                             | Item::Machine(_)
@@ -1977,7 +1972,6 @@ pub fn lower_program_with_mono_cap(
                 | Item::TypeAlias(_)
                 | Item::Trait(_)
                 | Item::Impl(_)
-                | Item::Wire(_)
                 | Item::Function(_)
                 | Item::ExternBlock(_)
                 | Item::Actor(_)
@@ -2071,7 +2065,6 @@ pub fn lower_program_with_mono_cap(
                             | Item::TypeAlias(_)
                             | Item::Trait(_)
                             | Item::Impl(_)
-                            | Item::Wire(_)
                             | Item::Function(_)
                             | Item::ExternBlock(_)
                             | Item::Machine(_)
@@ -2336,7 +2329,6 @@ pub fn lower_program_with_mono_cap(
                         | Item::TypeAlias(_)
                         | Item::Trait(_)
                         | Item::Impl(_)
-                        | Item::Wire(_)
                         | Item::Function(_)
                         | Item::ExternBlock(_)
                         | Item::Machine(_)
@@ -2540,7 +2532,6 @@ pub fn lower_program_with_mono_cap(
                         | Item::TypeAlias(_)
                         | Item::Trait(_)
                         | Item::Impl(_)
-                        | Item::Wire(_)
                         | Item::Function(_)
                         | Item::ExternBlock(_)
                         | Item::Machine(_)
@@ -2765,7 +2756,7 @@ pub fn lower_program_with_mono_cap(
             Item::Const(const_decl) => {
                 items.push(HirItem::Const(ctx.lower_const(const_decl, span.clone())));
             }
-            Item::TypeAlias(_) | Item::Wire(_) => {
+            Item::TypeAlias(_) => {
                 ctx.unsupported(span.clone(), "top-level-item", "slice-2");
             }
             Item::ExternBlock(block) => {
@@ -3305,7 +3296,6 @@ pub fn lower_program_with_mono_cap(
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
                         | Item::Trait(_)
-                        | Item::Wire(_)
                         | Item::Machine(_)
                         | Item::Record(_)
                         | Item::Actor(_)
@@ -25336,7 +25326,6 @@ fn check_binary_operator_gates(ctx: &mut LowerCtx, program: &Program) {
             | Item::TypeDecl(_)
             | Item::TypeAlias(_)
             | Item::Trait(_)
-            | Item::Wire(_)
             | Item::ExternBlock(_)
             | Item::Supervisor(_)
             | Item::Record(_)

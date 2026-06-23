@@ -4,7 +4,7 @@
 )]
 use super::*;
 use crate::BuiltinType;
-use hew_parser::ast::{WireFieldMeta, WireMetadata};
+use hew_parser::ast::WireMetadata;
 
 /// Whether a stdlib Hew-source registration publishes its types' bare names
 /// into the importer's scope, passed to `register_stdlib_hew_items`.
@@ -1408,13 +1408,6 @@ impl Checker {
                     }
                     self.register_actor_decl(ad);
                     self.source_type_defs.insert(ad.name.clone());
-                }
-                Item::Wire(wd) => {
-                    if !self.register_type_namespace_name(None, &wd.name, span) {
-                        continue;
-                    }
-                    self.register_wire_decl(wd);
-                    self.source_type_defs.insert(wd.name.clone());
                 }
                 Item::TypeAlias(ta) => {
                     if !self.register_type_namespace_name(None, &ta.name, span) {
@@ -3595,101 +3588,6 @@ impl Checker {
         self.record_type_def_inference_holes(identity, hole_vars);
     }
 
-    pub(super) fn register_wire_decl(&mut self, wd: &WireDecl) {
-        // Wire types are similar to regular types but use string field types
-        let mut fields = HashMap::new();
-        let mut field_order: Vec<String> = Vec::new();
-        for field in &wd.fields {
-            let ty = Ty::from_name(&field.ty).unwrap_or_else(|| Ty::Named {
-                builtin: None,
-                name: field.ty.clone(),
-                args: vec![],
-            });
-            field_order.push(field.name.clone());
-            fields.insert(field.name.clone(), ty);
-        }
-
-        let mut variants = HashMap::new();
-        let mut hole_vars = Vec::new();
-        for variant in &wd.variants {
-            match &variant.kind {
-                VariantKind::Unit => {
-                    variants.insert(variant.name.clone(), VariantDef::Unit);
-                }
-                VariantKind::Tuple(fields) => {
-                    let variant_tys = fields
-                        .iter()
-                        .map(|field| self.resolve_registered_annotation_ty(field, &mut hole_vars))
-                        .collect();
-                    variants.insert(variant.name.clone(), VariantDef::Tuple(variant_tys));
-                }
-                VariantKind::Struct(fields) => {
-                    let variant_fields: Vec<(String, Ty)> = fields
-                        .iter()
-                        .map(|(name, field)| {
-                            (
-                                name.clone(),
-                                self.resolve_registered_annotation_ty(field, &mut hole_vars),
-                            )
-                        })
-                        .collect();
-                    variants.insert(variant.name.clone(), VariantDef::Struct(variant_fields));
-                }
-            }
-        }
-
-        let type_def = TypeDef {
-            kind: match wd.kind {
-                WireDeclKind::Struct => TypeDefKind::Struct,
-                WireDeclKind::Enum => TypeDefKind::Enum,
-            },
-            name: wd.name.clone(),
-            type_params: vec![],
-            bounds: HashMap::new(),
-            fields,
-            field_order,
-            variants,
-            methods: HashMap::new(),
-            doc_comment: None,
-            is_indirect: false,
-        };
-
-        let field_types: Vec<_> = type_def.fields.values().cloned().collect();
-        self.registry.register_type(wd.name.clone(), field_types);
-        self.register_serializable_members_for_type(&wd.name, &type_def);
-        self.register_rcfree_members_for_type(&wd.name, &type_def);
-
-        self.type_defs.insert(wd.name.clone(), type_def);
-        self.record_type_def_inference_holes(&wd.name, hole_vars);
-        let wire = WireMetadata {
-            field_meta: wd
-                .fields
-                .iter()
-                .map(|field| WireFieldMeta {
-                    field_name: field.name.clone(),
-                    field_number: field.field_number,
-                    is_optional: field.is_optional,
-                    is_deprecated: field.is_deprecated,
-                    is_repeated: field.is_repeated,
-                    json_name: field.json_name.clone(),
-                    yaml_name: field.yaml_name.clone(),
-                    since: field.since,
-                })
-                .collect(),
-            reserved_numbers: vec![],
-            json_case: wd.json_case,
-            yaml_case: wd.yaml_case,
-            version: None,
-            min_version: None,
-        };
-        let variant_order: Vec<String> = wd
-            .variants
-            .iter()
-            .map(|variant| variant.name.clone())
-            .collect();
-        self.register_wire_methods(&wd.name, &wire, &variant_order);
-    }
-
     pub(super) fn trait_info_from_decl(tr: &TraitDecl) -> TraitInfo {
         Self::trait_info_from_decl_with_diagnostics(tr, &mut Vec::new())
     }
@@ -4542,7 +4440,6 @@ impl Checker {
             }
             Item::Const(_)
             | Item::TypeAlias(_)
-            | Item::Wire(_)
             | Item::Supervisor(_)
             | Item::Machine(_)
             | Item::Record(_) => {

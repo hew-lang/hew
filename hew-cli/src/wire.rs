@@ -3,13 +3,66 @@
 use std::collections::BTreeMap;
 
 use hew_parser::ast::{
-    Item, TypeBodyItem, TypeDeclKind, TypeExpr, VariantDecl, VariantKind, WireDecl, WireDeclKind,
-    WireFieldDecl,
+    Item, NamingCase, TypeBodyItem, TypeDeclKind, TypeExpr, VariantDecl, VariantKind,
 };
 
-/// A wire declaration with optional version metadata.
-struct VersionedWireDecl {
-    decl: WireDecl,
+// Private schema types — mirror the information extracted from `Item::TypeDecl` with `#[wire]`.
+// These exist so the compatibility logic does not depend on parser AST types directly.
+
+#[derive(Debug, PartialEq)]
+enum WireSchemaKind {
+    Struct,
+    Enum,
+}
+
+#[derive(Debug)]
+struct WireSchemaField {
+    name: String,
+    ty: String,
+    field_number: u32,
+    is_optional: bool,
+    is_repeated: bool,
+    is_deprecated: bool,
+    // Preserved for future L7 cross-schema encoding compatibility checks.
+    #[allow(
+        dead_code,
+        reason = "reserved for future L7 encoding compatibility checks"
+    )]
+    json_name: Option<String>,
+    #[allow(
+        dead_code,
+        reason = "reserved for future L7 encoding compatibility checks"
+    )]
+    yaml_name: Option<String>,
+    #[allow(
+        dead_code,
+        reason = "reserved for future L7 encoding compatibility checks"
+    )]
+    since: Option<u32>,
+}
+
+#[derive(Debug)]
+struct WireSchema {
+    name: String,
+    kind: WireSchemaKind,
+    fields: Vec<WireSchemaField>,
+    variants: Vec<VariantDecl>,
+    // Preserved for future L7 cross-schema encoding compatibility checks.
+    #[allow(
+        dead_code,
+        reason = "reserved for future L7 encoding compatibility checks"
+    )]
+    json_case: Option<NamingCase>,
+    #[allow(
+        dead_code,
+        reason = "reserved for future L7 encoding compatibility checks"
+    )]
+    yaml_case: Option<NamingCase>,
+}
+
+/// A wire schema with optional version metadata.
+struct VersionedWireSchema {
+    schema: WireSchema,
     version: Option<u32>,
     min_version: Option<u32>,
     /// Per-field `since` version, keyed by field number.
@@ -68,7 +121,7 @@ fn run_wire_check(current_path: &str, baseline_path: &str) -> Result<Compatibili
     Ok(compare_wire_schemas(&current_wires, &baseline_wires))
 }
 
-fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireDecl>, String> {
+fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireSchema>, String> {
     let source =
         std::fs::read_to_string(path).map_err(|e| format!("Error: cannot read {path}: {e}"))?;
     let parsed = hew_parser::parse(&source);
@@ -88,17 +141,11 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireDecl>, String> {
         .items
         .into_iter()
         .filter_map(|(item, _)| match item {
-            Item::Wire(decl) => Some(VersionedWireDecl {
-                decl,
-                version: None,
-                min_version: None,
-                field_since: BTreeMap::new(),
-            }),
             Item::TypeDecl(td) if td.wire.is_some() => {
                 let wire = td.wire.unwrap();
                 let kind = match td.kind {
-                    TypeDeclKind::Struct => WireDeclKind::Struct,
-                    TypeDeclKind::Enum => WireDeclKind::Enum,
+                    TypeDeclKind::Struct => WireSchemaKind::Struct,
+                    TypeDeclKind::Enum => WireSchemaKind::Enum,
                 };
                 // Build a map of field name → type string from the body
                 let field_types: std::collections::HashMap<String, String> = td
@@ -126,31 +173,29 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireDecl>, String> {
                     .collect();
                 let version = wire.version;
                 let min_version = wire.min_version;
-                Some(VersionedWireDecl {
-                    decl: WireDecl {
-                        visibility: td.visibility,
-                        kind,
+                let fields = wire
+                    .field_meta
+                    .into_iter()
+                    .map(|fm| {
+                        let ty = field_types.get(&fm.field_name).cloned().unwrap_or_default();
+                        WireSchemaField {
+                            name: fm.field_name,
+                            ty,
+                            field_number: fm.field_number,
+                            is_optional: fm.is_optional,
+                            is_repeated: fm.is_repeated,
+                            is_deprecated: fm.is_deprecated,
+                            json_name: fm.json_name,
+                            yaml_name: fm.yaml_name,
+                            since: fm.since,
+                        }
+                    })
+                    .collect();
+                Some(VersionedWireSchema {
+                    schema: WireSchema {
                         name: td.name,
-                        fields: wire
-                            .field_meta
-                            .into_iter()
-                            .map(|fm| {
-                                let ty =
-                                    field_types.get(&fm.field_name).cloned().unwrap_or_default();
-                                WireFieldDecl {
-                                    name: fm.field_name,
-                                    ty,
-                                    field_number: fm.field_number,
-                                    is_optional: fm.is_optional,
-                                    is_repeated: fm.is_repeated,
-                                    is_reserved: false,
-                                    is_deprecated: fm.is_deprecated,
-                                    json_name: fm.json_name,
-                                    yaml_name: fm.yaml_name,
-                                    since: fm.since,
-                                }
-                            })
-                            .collect(),
+                        kind,
+                        fields,
                         variants,
                         json_case: wire.json_case,
                         yaml_case: wire.yaml_case,
@@ -166,19 +211,19 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireDecl>, String> {
 }
 
 fn compare_wire_schemas(
-    current: &[VersionedWireDecl],
-    baseline: &[VersionedWireDecl],
+    current: &[VersionedWireSchema],
+    baseline: &[VersionedWireSchema],
 ) -> CompatibilityReport {
     let mut report = CompatibilityReport::default();
 
     let current_by_name = build_wire_map(current, "current schema", &mut report);
     let baseline_by_name = build_wire_map(baseline, "baseline schema", &mut report);
 
-    for (name, current_vwd) in &current_by_name {
+    for (name, current_vws) in &current_by_name {
         // Report version progression
-        if let Some(v) = current_vwd.version {
-            if let Some(baseline_vwd) = baseline_by_name.get(name) {
-                if let Some(bv) = baseline_vwd.version {
+        if let Some(v) = current_vws.version {
+            if let Some(baseline_vws) = baseline_by_name.get(name) {
+                if let Some(bv) = baseline_vws.version {
                     if v > bv {
                         report
                             .warnings
@@ -189,10 +234,10 @@ fn compare_wire_schemas(
         }
 
         // Check min_version vs baseline version
-        if let (Some(min_v), Some(baseline_vwd)) =
-            (current_vwd.min_version, baseline_by_name.get(name))
+        if let (Some(min_v), Some(baseline_vws)) =
+            (current_vws.min_version, baseline_by_name.get(name))
         {
-            if let Some(bv) = baseline_vwd.version {
+            if let Some(bv) = baseline_vws.version {
                 if min_v > bv {
                     report.errors.push(format!(
                         "wire `{name}`: min_version {min_v} is higher than baseline version \
@@ -202,41 +247,41 @@ fn compare_wire_schemas(
             }
         }
 
-        if let Some(baseline_vwd) = baseline_by_name.get(name) {
-            if baseline_vwd.decl.kind != current_vwd.decl.kind {
+        if let Some(baseline_vws) = baseline_by_name.get(name) {
+            if baseline_vws.schema.kind != current_vws.schema.kind {
                 report.errors.push(format!(
                     "wire `{name}` changed declaration kind from {:?} to {:?}",
-                    baseline_vwd.decl.kind, current_vwd.decl.kind
+                    baseline_vws.schema.kind, current_vws.schema.kind
                 ));
                 continue;
             }
-            match current_vwd.decl.kind {
-                WireDeclKind::Struct => {
-                    compare_wire_struct(name, current_vwd, baseline_vwd, &mut report);
+            match current_vws.schema.kind {
+                WireSchemaKind::Struct => {
+                    compare_wire_struct(name, current_vws, baseline_vws, &mut report);
                 }
-                WireDeclKind::Enum => {
-                    compare_wire_enum(name, current_vwd, baseline_vwd, &mut report);
+                WireSchemaKind::Enum => {
+                    compare_wire_enum(name, current_vws, baseline_vws, &mut report);
                 }
             }
-        } else if current_vwd.decl.kind == WireDeclKind::Struct {
-            warn_new_required_and_deprecated_fields(name, &current_vwd.decl, &mut report);
+        } else if current_vws.schema.kind == WireSchemaKind::Struct {
+            warn_new_required_and_deprecated_fields(name, &current_vws.schema, &mut report);
         }
     }
 
-    for (name, baseline_vwd) in &baseline_by_name {
+    for (name, baseline_vws) in &baseline_by_name {
         if current_by_name.contains_key(name) {
             continue;
         }
-        match baseline_vwd.decl.kind {
-            WireDeclKind::Struct => {
-                for field in baseline_vwd.decl.fields.iter().filter(|f| !f.is_optional) {
+        match baseline_vws.schema.kind {
+            WireSchemaKind::Struct => {
+                for field in baseline_vws.schema.fields.iter().filter(|f| !f.is_optional) {
                     report.errors.push(format!(
                         "removed required field `{name}.{} @{}` (wire type removed)",
                         field.name, field.field_number
                     ));
                 }
             }
-            WireDeclKind::Enum => {
+            WireSchemaKind::Enum => {
                 report
                     .errors
                     .push(format!("removed wire enum `{name}` (wire type removed)"));
@@ -248,16 +293,16 @@ fn compare_wire_schemas(
 }
 
 fn build_wire_map<'a>(
-    decls: &'a [VersionedWireDecl],
+    decls: &'a [VersionedWireSchema],
     schema_name: &str,
     report: &mut CompatibilityReport,
-) -> BTreeMap<String, &'a VersionedWireDecl> {
-    let mut by_name: BTreeMap<String, &'a VersionedWireDecl> = BTreeMap::new();
-    for vwd in decls {
-        if by_name.insert(vwd.decl.name.clone(), vwd).is_some() {
+) -> BTreeMap<String, &'a VersionedWireSchema> {
+    let mut by_name: BTreeMap<String, &'a VersionedWireSchema> = BTreeMap::new();
+    for vws in decls {
+        if by_name.insert(vws.schema.name.clone(), vws).is_some() {
             report.errors.push(format!(
                 "{schema_name}: duplicate wire declaration `{}`",
-                vwd.decl.name
+                vws.schema.name
             ));
         }
     }
@@ -266,12 +311,12 @@ fn build_wire_map<'a>(
 
 fn compare_wire_struct(
     wire_name: &str,
-    current: &VersionedWireDecl,
-    baseline: &VersionedWireDecl,
+    current: &VersionedWireSchema,
+    baseline: &VersionedWireSchema,
     report: &mut CompatibilityReport,
 ) {
-    let current_fields = build_field_map(wire_name, &current.decl, "current schema", report);
-    let baseline_fields = build_field_map(wire_name, &baseline.decl, "baseline schema", report);
+    let current_fields = build_field_map(wire_name, &current.schema, "current schema", report);
+    let baseline_fields = build_field_map(wire_name, &baseline.schema, "baseline schema", report);
 
     for (number, current_field) in &current_fields {
         if let Some(baseline_field) = baseline_fields.get(number) {
@@ -330,15 +375,15 @@ fn compare_wire_struct(
 
 fn compare_wire_enum(
     wire_name: &str,
-    current: &VersionedWireDecl,
-    baseline: &VersionedWireDecl,
+    current: &VersionedWireSchema,
+    baseline: &VersionedWireSchema,
     report: &mut CompatibilityReport,
 ) {
     for (index, (current_variant, baseline_variant)) in current
-        .decl
+        .schema
         .variants
         .iter()
-        .zip(&baseline.decl.variants)
+        .zip(&baseline.schema.variants)
         .enumerate()
     {
         let position = index + 1;
@@ -352,14 +397,14 @@ fn compare_wire_enum(
         compare_wire_enum_variant_payload(wire_name, current_variant, baseline_variant, report);
     }
 
-    if current.decl.variants.len() > baseline.decl.variants.len() {
-        for variant in &current.decl.variants[baseline.decl.variants.len()..] {
+    if current.schema.variants.len() > baseline.schema.variants.len() {
+        for variant in &current.schema.variants[baseline.schema.variants.len()..] {
             report
                 .errors
                 .push(format!("added variant `{wire_name}::{}`", variant.name));
         }
-    } else if baseline.decl.variants.len() > current.decl.variants.len() {
-        for variant in &baseline.decl.variants[current.decl.variants.len()..] {
+    } else if baseline.schema.variants.len() > current.schema.variants.len() {
+        for variant in &baseline.schema.variants[current.schema.variants.len()..] {
             report
                 .errors
                 .push(format!("removed variant `{wire_name}::{}`", variant.name));
@@ -431,12 +476,12 @@ fn compare_wire_enum_variant_payload(
 
 fn build_field_map<'a>(
     wire_name: &str,
-    decl: &'a WireDecl,
+    schema: &'a WireSchema,
     schema_name: &str,
     report: &mut CompatibilityReport,
-) -> BTreeMap<u32, &'a WireFieldDecl> {
-    let mut by_number: BTreeMap<u32, &'a WireFieldDecl> = BTreeMap::new();
-    for field in &decl.fields {
+) -> BTreeMap<u32, &'a WireSchemaField> {
+    let mut by_number: BTreeMap<u32, &'a WireSchemaField> = BTreeMap::new();
+    for field in &schema.fields {
         if let Some(existing) = by_number.get(&field.field_number) {
             report.errors.push(format!(
                 "{schema_name}: wire `{wire_name}` reuses field number @{} for `{}` and `{}`",
@@ -449,11 +494,11 @@ fn build_field_map<'a>(
     by_number
 }
 
-fn field_type_changed(current: &WireFieldDecl, baseline: &WireFieldDecl) -> bool {
+fn field_type_changed(current: &WireSchemaField, baseline: &WireSchemaField) -> bool {
     current.ty != baseline.ty || current.is_repeated != baseline.is_repeated
 }
 
-fn describe_field_type(field: &WireFieldDecl) -> String {
+fn describe_field_type(field: &WireSchemaField) -> String {
     if field.is_repeated {
         format!("repeated {}", field.ty)
     } else {
@@ -494,10 +539,10 @@ fn compare_wire_enum_payload_types(
 
 fn warn_new_required_and_deprecated_fields(
     wire_name: &str,
-    decl: &WireDecl,
+    schema: &WireSchema,
     report: &mut CompatibilityReport,
 ) {
-    for field in &decl.fields {
+    for field in &schema.fields {
         if !field.is_optional {
             report.warnings.push(format!(
                 "new required field `{wire_name}.{} @{}` has no default",

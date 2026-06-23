@@ -639,16 +639,6 @@ impl Checker {
                         }
                     }
                 }
-                Item::Wire(wd) => {
-                    if lookup_scoped_item(&self.type_def_inference_holes, module_name, &wd.name)
-                        .is_some_and(|hole_vars| self.inference_holes_still_unresolved(hole_vars))
-                    {
-                        self.errors.push(TypeError::inference_failed(
-                            span.clone(),
-                            &format!("wire type `{}`", wd.name),
-                        ));
-                    }
-                }
                 Item::Machine(md) => {
                     let event_type_name = format!("{}Event", md.name);
                     if lookup_scoped_item(&self.type_def_inference_holes, module_name, &md.name)

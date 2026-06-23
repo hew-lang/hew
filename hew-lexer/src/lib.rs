@@ -212,8 +212,6 @@ pub enum Token<'src> {
     Trait,
     #[token("impl")]
     Impl,
-    #[token("wire")]
-    Wire,
     #[token("actor")]
     Actor,
     #[token("supervisor")]
@@ -671,7 +669,6 @@ define_keywords! {
     Enum       => "enum",
     Trait      => "trait",
     Impl       => "impl",
-    Wire       => "wire",
     Actor      => "actor",
     Supervisor => "supervisor",
     Child      => "child",
@@ -795,7 +792,6 @@ impl Token<'_> {
                 | Token::Enum
                 | Token::Trait
                 | Token::Supervisor
-                | Token::Wire
                 | Token::Type
                 | Token::Machine
         )
@@ -812,7 +808,6 @@ impl Token<'_> {
                 | Token::Enum
                 | Token::Trait
                 | Token::Supervisor
-                | Token::Wire
                 | Token::Type
                 | Token::Machine
         )
@@ -847,7 +842,7 @@ mod tests {
     #[test]
     fn all_keywords() {
         let src = "let var const mut fn if else match loop for while break continue return \
-                   import pub package super struct enum trait impl wire actor \
+                   import pub package super struct enum trait impl actor \
                    supervisor child restart budget strategy permanent transient temporary \
                    one_for_one one_for_all rest_for_one simple_one_for_one pool \
                    scope fork spawn async await receive \
@@ -855,7 +850,7 @@ mod tests {
                    default unsafe extern foreign in select race join from after gen yield \
                    where cooperate catch defer is";
         let toks = tokens(src);
-        assert_eq!(toks.len(), 71);
+        assert_eq!(toks.len(), 70);
         // Spot-check first and last
         assert_eq!(toks[0], Token::Let);
         assert_eq!(toks[3], Token::Mut);
@@ -1293,7 +1288,6 @@ mod tests {
         assert!(Token::Enum.is_decl_keyword());
         assert!(Token::Trait.is_decl_keyword());
         assert!(Token::Supervisor.is_decl_keyword());
-        assert!(Token::Wire.is_decl_keyword());
         assert!(Token::Type.is_decl_keyword());
         // `machine` introduces a named state-machine type — must be included.
         assert!(Token::Machine.is_decl_keyword());
@@ -1310,7 +1304,6 @@ mod tests {
         assert!(Token::Enum.is_type_decl_keyword());
         assert!(Token::Trait.is_type_decl_keyword());
         assert!(Token::Supervisor.is_type_decl_keyword());
-        assert!(Token::Wire.is_type_decl_keyword());
         assert!(Token::Type.is_type_decl_keyword());
         // `machine` declares a named type — must be included.
         assert!(Token::Machine.is_type_decl_keyword());

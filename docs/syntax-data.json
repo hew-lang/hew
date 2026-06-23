@@ -56,7 +56,6 @@
       "this"
     ],
     "wire": [
-      "wire",
       "reserved",
       "optional",
       "deprecated",
@@ -128,7 +127,6 @@
     "enum",
     "trait",
     "impl",
-    "wire",
     "actor",
     "supervisor",
     "child",

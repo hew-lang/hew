@@ -2,6 +2,29 @@
 
 A reference for writing correct idiomatic Hew. Every example below was executed against `target/debug/hew` and ran clean.
 
+## Toolchain quick-start
+
+```
+# Run a program
+hew run hello.hew
+
+# Pass arguments to your program (the -- separator is required)
+hew run hello.hew -- Alice 42
+
+# Scaffold a new project (creates main.hew; see examples/ for patterns)
+hew init myproject
+
+# Build a standalone binary
+hew build hello.hew
+
+# Check for errors without running
+hew check hello.hew
+```
+
+The `--` separator is mandatory when passing program arguments — everything before `--` is parsed as `hew run` options, and everything after is forwarded to your program as `os.args()`. Without `--`, unrecognised flags produce a usage error.
+
+**Working inside the Hew source checkout?** The stdlib resolver will find both the checkout's `std/` and the compiler's own stdlib and reject the ambiguity. Move your project to a directory outside the checkout, or use a standalone `hew init` directory.
+
 ## Core idioms
 
 - Primitive types are lowercase: `i64`, `string`, `f64`, `bool`, `char` — never `Int`, `String`, `Float`.
@@ -9,12 +32,14 @@ A reference for writing correct idiomatic Hew. Every example below was executed 
 - Interpolate strings with the `f` prefix: `f"x={x}"`. A plain `"{x}"` prints literal braces.
 - Convert numbers with `as`: `x as i64`, `pi as i32`. It is the only conversion mechanism.
 - Never mix integer widths in one expression; cast the narrower operand up first: `x as i64 + 1`.
+- **`var` for mutable bindings, `let` for immutable.** Hew does not have `let mut` — use `var` whenever you need to reassign a name or mutate a scalar field. `let` bindings are immutable (but `let` collections have interior mutability).
 - Dispatch with `match`, not if/else chains — `match` on a closed enum enforces exhaustiveness.
 - Iterate counts with `for i in 0..n` (exclusive) or `0..=n` (inclusive); the binding must be a named identifier.
 - Read collection elements with `.get(i)` — universal across element types. `v[i]` works for scalars, strings, records, and tuples.
 - `Vec<string>` supports `v[i]` (returns a fresh owned `string`; the Vec stays usable), `.get(i)`, range-slices, and for-in. For `Vec<enum>`, prefer `.get(i)`.
 - Build maps/sets with `::new()` + `.insert()`; bind with `let` (interior mutability, not reassignment).
 - Look up `HashMap`/`Option`/`Result` with `match`, not subscript or `.unwrap()`.
+- **Enum variants use `;` separators; record fields also use `;` in type definitions but `,` in construction literals.** These are different — `type T { a: i64; b: i64; }` defines, `T { a: 1, b: 2 }` constructs.
 - Declare records with `type Name { field: T; }` (semicolons); enum variants are `;`-separated.
 - Access actor state by bare field name inside handlers — no `self.` or `this.`.
 - Fire-and-forget actor sends have no return type and no `await`: `ref.method(arg);`.
@@ -96,6 +121,48 @@ fn main() {
 ```
 
 Never mix widths in one expression. Cast the narrower operand with `as` before combining; integer literals adopt the surrounding type.
+
+## Bindings — var and let
+
+### var for mutable, let for immutable
+
+```hew
+fn main() {
+    var count = 0;
+    count = count + 1;
+    count += 1;
+    println(count);          // 2
+
+    var greeting = "hello";
+    greeting = greeting + " world";
+    println(greeting);       // hello world
+
+    let frozen = 42;
+    // frozen = 43;           // compile error: cannot assign to immutable binding
+    println(frozen);         // 42
+}
+```
+
+> **Coming from Rust?** Hew does not have `let mut`. Use `var` for any binding you will reassign; use `let` for everything else. Writing `let mut x = 0` is a compile error — the parser rejects `mut` as unexpected.
+
+Use `var` when the name will be reassigned or when a scalar field on a `var`-bound record will be mutated. `let` collections (`Vec`, `HashMap`, `HashSet`) have interior mutability — `.push()`/`.insert()` work on a `let` binding because you are not reassigning the binding itself. Use `var` only when you need to rebind the name to a new value.
+
+Compound-assign operators (`+=`, `-=`, `*=`, `/=`) are available for `var` bindings.
+
+### var binding with a type annotation
+
+```hew
+fn main() {
+    var total: i64 = 0;
+    var items: Vec<string> = Vec::new();
+    items.push("a");
+    items.push("b");
+    for s in items { total += s.len() as i64; }
+    println(total);   // 2
+}
+```
+
+Annotate a `var` binding the same way as `let`. The annotation is required when the type cannot be inferred from the initial value (e.g. an empty `Vec::new()`).
 
 ## Control flow
 
@@ -367,6 +434,21 @@ fn main() {
 
 `.get(i)`, `v[i]`, and `.pop()` all return `T` directly (no `Option`) and trap on a bad index or empty vec; guard with `i < v.len()` (and check `.len()` before `.pop()`) for safe access.
 
+### .set(i, v) — write by index
+
+```hew
+fn main() {
+    let v: Vec<i64> = Vec::new();
+    v.push(10); v.push(20); v.push(30);
+    v.set(1, 99);
+    println(v.get(0));   // 10
+    println(v.get(1));   // 99
+    println(v.get(2));   // 30
+}
+```
+
+`v.set(i, value)` overwrites the element at index `i` in place. It complements `v[i]` (read) — reading uses the subscript, writing uses `.set()`. Out-of-bounds traps at runtime; guard with `i < v.len()`.
+
 ## Collections — HashMap and HashSet
 
 ### Create and insert into a HashMap
@@ -425,6 +507,31 @@ fn main() {
 
 Keys are `string`; verified value types are `i64`, `string`, `bool`, `f64`.
 
+### Mutating a HashMap value (copy-rebuild-reinsert)
+
+`HashMap` has no `.get_mut()`. The idiom for updating an existing value is to read it, compute the new value, and reinsert:
+
+```hew
+fn main() {
+    let scores: HashMap<string, i64> = HashMap::new();
+    scores.insert("alice", 10);
+    scores.insert("bob", 20);
+
+    // Increment alice's score
+    match scores.get("alice") {
+        Some(v) => scores.insert("alice", v + 5),
+        None => {},
+    }
+
+    match scores.get("alice") {
+        Some(v) => println(f"alice={v}"),   // alice=15
+        None => println("missing"),
+    }
+}
+```
+
+`.get(k)` returns an owned copy of the value (not a reference). Modify the copy and reinsert with `.insert(k, new_value)`. This is the only mutation path — there is no `.get_mut()` or entry API.
+
 ### Create and use a HashSet
 
 ```hew
@@ -465,6 +572,48 @@ fn main() { maybe_print(-1); maybe_print(42); }   // prints only 42
 ```
 
 Omit the arrow for unit-returning fns (not `-> ()`). Use bare `return;` for early exit.
+
+### Exit codes — main() -> i32 and exit()
+
+The return value of `main() -> i32` (or `main() -> i64`) becomes the process exit code. A unit `main()` always exits 0 — even if it prints an error message. Use `exit(code)` to exit with a specific code from inside a unit `main()`.
+
+```hew
+// Pattern 1: return the code directly
+fn main() -> i32 {
+    println("all good");
+    0
+}
+```
+
+```hew
+import std::os;
+
+// Pattern 2: check args, exit non-zero on error
+fn main() -> i32 {
+    if os.args_count() < 2 {
+        println("usage: prog <arg>");
+        return 1;
+    }
+    println(f"arg: {os.args(1)}");
+    0
+}
+```
+
+```hew
+// Pattern 3: exit() builtin from a unit main
+fn main() {
+    println("something failed");
+    exit(1);            // exits with code 1 immediately
+}
+```
+
+| Declaration | How to exit non-zero |
+|-------------|----------------------|
+| `fn main() -> i32` | return the code as the last expression or with `return N;` |
+| `fn main() -> i64` | same — return the code value |
+| `fn main()` (unit) | call `exit(N)` explicitly; the function itself can only exit 0 |
+
+Shell pipelines and `&&` chains read the exit code — write `main() -> i32` for any program that signals failure to the caller. `assert(false)`, `panic(...)`, and traps (div-by-zero) all exit non-zero via the runtime trap handler and do not need an explicit return.
 
 ### Mutation through a parameter persists
 
@@ -637,6 +786,28 @@ fn main() {
 
 Compose records by nesting; access depth-chains directly. Every field must be supplied — there is no partial/default fill.
 
+### Separator syntax: `;` in definitions, `,` in construction
+
+> **Syntax callout — this trips up almost everyone:**
+>
+> | Context | Separator |
+> |---------|-----------|
+> | `type` field definitions | `;` (semicolon) |
+> | `enum` variant separators | `;` (semicolon) |
+> | Record construction literals | `,` (comma) |
+>
+> ```hew
+> // Definition — semicolons throughout
+> type Point { x: i64; y: i64; }
+> enum Color { Red; Green; Blue; }
+>
+> // Construction — commas
+> let p = Point { x: 1, y: 2 };
+> let c = Red;
+> ```
+>
+> The compiler error for mixing these is usually "expected `:` found `,`" (in a type definition) or "expected `}` found `;`" (in a construction literal). When you see either, check which context you are in.
+
 ### Enum with unit, tuple, and struct variants
 
 ```hew
@@ -658,7 +829,7 @@ fn main() {
 }
 ```
 
-Mix unit, tuple, and struct variants in one enum. Struct-variant fields use `;` separators; the variant pattern uses `{ w, h }` shorthand. Construct variants by bare name.
+Mix unit, tuple, and struct variants in one enum. Enum variants are separated by `;`. Struct-variant fields use `;` separators; the variant pattern uses `{ w, h }` shorthand. Construct variants by bare name.
 
 ### Pattern destructuring in match
 
@@ -864,6 +1035,53 @@ fn main() {
 ```
 
 Write request-reply as `await ref.method(args)` and match `Ok`/`Err`. The reply value is the trailing expression of the `receive fn`. Ask always yields `Result<R, AskError>`, never bare `R`.
+
+### await position rules
+
+`await` can appear in three contexts:
+
+**1. Statement position in any fn or receive fn** — the most common case, and it always works:
+
+```hew
+actor Src { receive fn val() -> i64 { 42 } }
+actor Consumer {
+    var src: LocalPid<Src>;
+    receive fn run(unused: i64) -> i64 {
+        // await as a statement, inside a receive fn — always valid
+        let r = await src.val();
+        match r { Ok(v) => v, Err(_) => -1 }
+    }
+}
+fn main() {
+    let s = spawn Src();
+    let c = spawn Consumer(src: s);
+    let r = await c.run(0);
+    match r { Ok(v) => println(f"v={v}"), Err(_) => println("err") }
+}
+```
+
+**2. `scope{}` body for concurrent tasks** — use `scope{}` with `fork` for structured concurrency. `await` suspensions inside a `scope{}` do not block its sibling forks:
+
+```hew
+scope {
+    fork { result_a = work_a(); };
+    fork { result_b = work_b(); };
+}
+// Both forks have joined here
+```
+
+**3. `await` as a value in non-statement positions is rejected** — `await` cannot be used as a function argument, binary operand, or let-binding right-hand side nested inside a larger expression. Bind the awaited result to a `let` first:
+
+```hew
+// Wrong: await as function argument
+// println(await actor.method());   // compile error
+
+// Right: bind first
+let r = await actor.method();
+match r { Ok(v) => println(v), Err(_) => println("err") }
+```
+
+Note that `.send()` is a reserved method name in the actor system — name your actor's message-passing methods something other than `send` (e.g. `deliver`, `push`, `enqueue`).
 
 ### Ask try-sugar in a Result-returning fn
 
@@ -1209,6 +1427,39 @@ fn main() {
 ```
 
 Store concrete records in a Vec and bind the element with `let got = v.get(i)` before reading fields.
+
+### Turbofish — explicit type argument on a call
+
+When a generic function takes no arguments from which the type can be inferred, use the turbofish syntax `func::<T>()` to supply the type argument explicitly:
+
+```hew
+fn make_vec<T>() -> Vec<T> {
+    Vec::new()
+}
+fn main() {
+    let v = make_vec::<i64>();
+    v.push(10);
+    v.push(20);
+    println(v.len());   // 2
+}
+```
+
+> **Note:** Generic constructor functions (`fn new<T>() -> MyType<T>`) that take no arguments and return a freshly-constructed generic record are currently NYI in MIR lowering — they define and type-check cleanly, but the call site fails at compile time. The workaround is to construct the record inline at each call site:
+>
+> ```hew
+> // Instead of: let s: Stack<i64> = Stack::new();
+> // Construct directly:
+> type Stack<T> { items: Vec<T>; }
+> let s = Stack { items: Vec::new() };
+> ```
+
+### Generics NYI — current limitations
+
+Two patterns type-check but fail at call or check time:
+
+1. **Generic constructor functions** (`fn new<T>() -> MyType<T>` with no value arguments): call sites emit `E_NOT_YET_IMPLEMENTED: MIR lowering for function call is not implemented yet`. Construct the record inline instead.
+
+2. **`impl Trait for GenericRecord<ConcreteType>`**: trait method body type-checking for multiple concrete instantiations of the same generic record has a known resolution bug where the later-declared impl's type substitution is used for all impls. Until this is fixed, implement trait methods for a concrete (non-generic) record type.
 
 ## Errors — Result and Option
 
@@ -1646,6 +1897,85 @@ fn main() {
 ```
 
 `std::string`, `std::math`, `std::iter` import together cleanly — the safe stdlib trio to lean on. An unused import warns but still compiles.
+
+### std::encoding::json — parsing and building JSON
+
+```hew
+import std::encoding::json;
+
+fn main() {
+    // Parse a JSON string
+    let val = json.parse("{\"name\": \"Hew\", \"version\": 2}");
+
+    // Read fields
+    let name_v = val.get_field("name");
+    println(name_v.get_string());       // Hew
+    name_v.free();
+
+    let ver_v = val.get_field("version");
+    println(ver_v.get_int());           // 2
+    ver_v.free();
+    val.free();
+}
+```
+
+```hew
+import std::encoding::json;
+
+fn main() {
+    // Build a JSON object
+    let obj = json.object()
+        .with_string("host", "localhost")
+        .with_int("port", 8080)
+        .with_bool("debug", true);
+    println(obj.stringify());   // {"debug":true,"host":"localhost","port":8080} (key order may vary)
+    obj.free();
+}
+```
+
+**`type_of()` constants** — `type_of()` returns an `i32` tag:
+
+| Value | Type |
+|-------|------|
+| 0 | null |
+| 1 | bool |
+| 2 | i64 (integer) |
+| 3 | f64 (float) |
+| 4 | string |
+| 5 | array |
+| 6 | object |
+
+```hew
+import std::encoding::json;
+
+fn main() {
+    let s = json.from_string("hello");
+    println(s.type_of());   // 4
+    s.free();
+}
+```
+
+**Fallible parsing with `try_parse`** returns `Result<Value, ParseError>`. Match `Err(_)` for the error case — the module-qualified `ParseError::Invalid(msg)` pattern in match arms is currently unsupported at parse time:
+
+```hew
+import std::encoding::json;
+
+fn main() {
+    match json.try_parse("{\"ok\": true}") {
+        Ok(v) => {
+            println("parsed ok");
+            v.free();
+        },
+        Err(_) => println("parse failed"),
+    }
+    match json.try_parse("not valid json {") {
+        Ok(v) => { v.free(); },
+        Err(_) => println("bad json rejected"),
+    }
+}
+```
+
+**Memory management:** every `Value` (from `parse`, `get_field`, `array_get`, `from_*`, `object()`, `array()`) must be freed with `.free()` before it goes out of scope. Omitting `.free()` is a resource leak. Values returned by `get_field` and `array_get` are heap-allocated clones — free them independently of the parent.
 
 ## v0.5 surfaces
 

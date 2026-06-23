@@ -75,7 +75,7 @@ use hew_mir::{
     RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout,
     SupervisorLayout, SuspendKind, Terminator, TrapKind,
 };
-use hew_types::{BuiltinType, NumericWidth, ResolvedTy, WireCodecDirection};
+use hew_types::{BuiltinType, NumericWidth, ResolvedTy, WireCodecDirection, WireLayoutTable};
 // Single source of truth for the trap discriminants codegen emits. Importing
 // these from the runtime makes a renumber on either side a build error rather
 // than a silently-desynced hand-copied literal (the `codegen-offset-mirror-drift`
@@ -15115,7 +15115,7 @@ fn lower_wire_codec_instr<'ctx>(
                 out_len,
                 "wire_encode_out_len_lt_start",
             )?;
-            let ser_fn = get_or_declare_serialize_thunk(ctx, fn_ctx.llvm_mod, &key);
+            let ser_fn = get_or_declare_cbor_serialize_thunk(ctx, fn_ctx.llvm_mod, &key);
             let raw = builder
                 .build_call(
                     ser_fn,
@@ -15234,7 +15234,7 @@ fn lower_wire_codec_instr<'ctx>(
                 out_size,
                 "wire_decode_out_size_lt_start",
             )?;
-            let de_fn = get_or_declare_deserialize_thunk(ctx, fn_ctx.llvm_mod, &key);
+            let de_fn = get_or_declare_cbor_deserialize_thunk(ctx, fn_ctx.llvm_mod, &key);
             let value_ptr = builder
                 .build_call(
                     de_fn,
@@ -34825,7 +34825,1014 @@ fn emit_xnode_codec_thunks<'ctx>(
     Ok((ser_sym, de_sym))
 }
 
-/// Emit the `@llvm.global_ctors` global once, from the collected list of
+// ── CBOR wire-body codec ─────────────────────────────────────────────────────
+//
+// The wire `.encode()` / `.decode()` path lowers to a `__hew_cbor_serialize_*`
+// / `__hew_cbor_deserialize_*` thunk pair whose bodies are emitted here. The
+// ABI is identical to the bespoke serialize/deserialize thunks above, so the
+// existing `lower_wire_codec_instr` call shape is reused verbatim; only the
+// runtime primitives differ. A wire struct encodes as a CBOR map keyed by each
+// field's `@N` wire tag (the compatibility authority); the decoder selects
+// fields by the same key, tolerates absent/extra keys per forward-compat, and
+// fails closed on any type mismatch or truncation. The map framing is the one
+// structural difference from the flat positional walk above.
+
+/// The CBOR map key for field `field_name` (declaration index `field_idx`) of
+/// record `record_key`. A `#[wire]` struct keys by its `@N` tag (the
+/// compatibility authority recorded in the wire layout table); a record with no
+/// wire layout (e.g. a hand-built fixture) falls back to a 1-based positional
+/// key. The encoder and decoder both call this with the same inputs, so the two
+/// directions always agree regardless of which branch is taken.
+fn cbor_field_key(
+    wire_layouts: &WireLayoutTable,
+    record_key: &str,
+    field_name: &str,
+    field_idx: usize,
+) -> u64 {
+    let probe = |name: &str| -> Option<u64> {
+        wire_layouts
+            .get(name)
+            .and_then(|entry| entry.fields.iter().find(|f| f.name == field_name))
+            .map(|f| u64::from(f.tag))
+    };
+    if let Some(tag) = probe(record_key) {
+        return tag;
+    }
+    // Records are usually keyed by the short name; try it if the key was qualified.
+    let short = record_key.rsplit_once('.').map_or(record_key, |(_, s)| s);
+    if short != record_key {
+        if let Some(tag) = probe(short) {
+            return tag;
+        }
+    }
+    field_idx as u64 + 1
+}
+
+/// Declare-or-fetch the CBOR serialize thunk:
+/// `ptr __hew_cbor_serialize_<key>(ptr value, ptr out_len)`. Same ABI as the
+/// bespoke serialize thunk so `lower_wire_codec_instr` calls it identically.
+fn get_or_declare_cbor_serialize_thunk<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    key: &str,
+) -> FunctionValue<'ctx> {
+    let sym = format!("__hew_cbor_serialize_{key}");
+    if let Some(fv) = llvm_mod.get_function(&sym) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    llvm_mod.add_function(
+        &sym,
+        ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        Some(Linkage::Internal),
+    )
+}
+
+/// Declare-or-fetch the CBOR deserialize thunk:
+/// `ptr __hew_cbor_deserialize_<key>(ptr data, usize len, ptr out_struct_size)`.
+/// Returns a `libc::malloc`'d reconstructed value (or null on decode failure),
+/// matching the bespoke deserialize thunk ABI.
+fn get_or_declare_cbor_deserialize_thunk<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    key: &str,
+) -> FunctionValue<'ctx> {
+    let sym = format!("__hew_cbor_deserialize_{key}");
+    if let Some(fv) = llvm_mod.get_function(&sym) {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let size_ty = runtime_size_ty(ctx, llvm_mod);
+    llvm_mod.add_function(
+        &sym,
+        ptr_ty.fn_type(&[ptr_ty.into(), size_ty.into(), ptr_ty.into()], false),
+        Some(Linkage::Internal),
+    )
+}
+
+/// Emit the per-field ENCODE walk for a value of type `ty` rooted at
+/// `value_ptr`, emitting CBOR items onto the runtime `CborSerBuf` handle `buf`.
+/// The caller has already emitted the map key for this value (if it sits inside
+/// a struct map); this routine emits exactly one CBOR item. Recurses into nested
+/// records as nested maps. Fails closed on any shape outside the supported
+/// wire-body floor.
+#[allow(clippy::too_many_arguments)]
+fn emit_ser_value_cbor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    ty: &ResolvedTy,
+    value_ptr: PointerValue<'ctx>,
+    buf: PointerValue<'ctx>,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    let i64_ty = ctx.i64_type();
+    match ty {
+        ResolvedTy::Bool
+        | ResolvedTy::I8
+        | ResolvedTy::U8
+        | ResolvedTy::I16
+        | ResolvedTy::U16
+        | ResolvedTy::I32
+        | ResolvedTy::U32
+        | ResolvedTy::Char
+        | ResolvedTy::I64
+        | ResolvedTy::U64
+        | ResolvedTy::Isize
+        | ResolvedTy::Usize
+        | ResolvedTy::Duration => {
+            let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
+            let int_ty = llvm_ty.into_int_type();
+            let raw = builder
+                .build_load(int_ty, value_ptr, "cbor_ser_scalar")
+                .llvm_ctx("cbor ser scalar load")?
+                .into_int_value();
+            if matches!(ty, ResolvedTy::Bool) {
+                let i8_ty = ctx.i8_type();
+                let as_i8 = if int_ty.get_bit_width() == 8 {
+                    raw
+                } else {
+                    builder
+                        .build_int_truncate(raw, i8_ty, "cbor_ser_bool_trunc")
+                        .llvm_ctx("cbor ser bool trunc")?
+                };
+                let prim = declare_codec_prim(
+                    ctx,
+                    llvm_mod,
+                    "hew_cbor_ser_bool",
+                    void_ty.fn_type(&[ptr_ty.into(), i8_ty.into()], false),
+                );
+                builder
+                    .build_call(prim, &[buf.into(), as_i8.into()], "cbor_ser_bool")
+                    .llvm_ctx("cbor ser bool")?;
+            } else {
+                let unsigned = matches!(
+                    ty,
+                    ResolvedTy::U8
+                        | ResolvedTy::U16
+                        | ResolvedTy::U32
+                        | ResolvedTy::U64
+                        | ResolvedTy::Usize
+                        | ResolvedTy::Char
+                );
+                let widened = if int_ty.get_bit_width() == 64 {
+                    raw
+                } else if unsigned {
+                    builder
+                        .build_int_z_extend(raw, i64_ty, "cbor_ser_zext")
+                        .llvm_ctx("cbor ser zext")?
+                } else {
+                    builder
+                        .build_int_s_extend(raw, i64_ty, "cbor_ser_sext")
+                        .llvm_ctx("cbor ser sext")?
+                };
+                let prim_name = if unsigned {
+                    "hew_cbor_ser_u64"
+                } else {
+                    "hew_cbor_ser_i64"
+                };
+                let prim = declare_codec_prim(
+                    ctx,
+                    llvm_mod,
+                    prim_name,
+                    void_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+                );
+                builder
+                    .build_call(prim, &[buf.into(), widened.into()], "cbor_ser_int")
+                    .llvm_ctx("cbor ser int")?;
+            }
+            Ok(())
+        }
+        ResolvedTy::F32 | ResolvedTy::F64 => {
+            let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
+            let f = builder
+                .build_load(llvm_ty, value_ptr, "cbor_ser_float")
+                .llvm_ctx("cbor ser float load")?
+                .into_float_value();
+            let f64v = if matches!(ty, ResolvedTy::F64) {
+                f
+            } else {
+                builder
+                    .build_float_ext(f, ctx.f64_type(), "cbor_ser_fext")
+                    .llvm_ctx("cbor ser fext")?
+            };
+            let prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_cbor_ser_f64",
+                void_ty.fn_type(&[ptr_ty.into(), ctx.f64_type().into()], false),
+            );
+            builder
+                .build_call(prim, &[buf.into(), f64v.into()], "cbor_ser_f64")
+                .llvm_ctx("cbor ser f64")?;
+            Ok(())
+        }
+        ResolvedTy::String => {
+            let s = builder
+                .build_load(ptr_ty, value_ptr, "cbor_ser_string_ptr")
+                .llvm_ctx("cbor ser string load")?
+                .into_pointer_value();
+            let prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_cbor_ser_string",
+                void_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+            );
+            builder
+                .build_call(prim, &[buf.into(), s.into()], "cbor_ser_string")
+                .llvm_ctx("cbor ser string")?;
+            Ok(())
+        }
+        ResolvedTy::Bytes => {
+            let i32_ty = ctx.i32_type();
+            let triple_ty = ctx.struct_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false);
+            let data_ptr = builder
+                .build_struct_gep(triple_ty, value_ptr, 0, "cbor_ser_bytes_ptr")
+                .llvm_ctx("cbor ser bytes ptr gep")?;
+            let data = builder
+                .build_load(ptr_ty, data_ptr, "cbor_ser_bytes_data")
+                .llvm_ctx("cbor ser bytes data load")?
+                .into_pointer_value();
+            let off_ptr = builder
+                .build_struct_gep(triple_ty, value_ptr, 1, "cbor_ser_bytes_off")
+                .llvm_ctx("cbor ser bytes off gep")?;
+            let off = builder
+                .build_load(i32_ty, off_ptr, "cbor_ser_bytes_offv")
+                .llvm_ctx("cbor ser bytes off load")?
+                .into_int_value();
+            let len_ptr = builder
+                .build_struct_gep(triple_ty, value_ptr, 2, "cbor_ser_bytes_len")
+                .llvm_ctx("cbor ser bytes len gep")?;
+            let len = builder
+                .build_load(i32_ty, len_ptr, "cbor_ser_bytes_lenv")
+                .llvm_ctx("cbor ser bytes len load")?
+                .into_int_value();
+            let prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_cbor_ser_bytes",
+                void_ty.fn_type(
+                    &[ptr_ty.into(), ptr_ty.into(), i32_ty.into(), i32_ty.into()],
+                    false,
+                ),
+            );
+            builder
+                .build_call(
+                    prim,
+                    &[buf.into(), data.into(), off.into(), len.into()],
+                    "cbor_ser_bytes",
+                )
+                .llvm_ctx("cbor ser bytes")?;
+            Ok(())
+        }
+        ResolvedTy::Named { name, args, .. } => emit_ser_named_cbor(
+            ctx,
+            llvm_mod,
+            builder,
+            func,
+            name,
+            args,
+            value_ptr,
+            buf,
+            wire_layouts,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        ),
+        other => Err(CodegenError::FailClosed(format!(
+            "wire CBOR serialize: unsupported value type {other:?} \
+             (outside the supported wire-body floor)"
+        ))),
+    }
+}
+
+/// Emit the CBOR encode walk for a `Named` type. A registered record encodes as
+/// a CBOR map keyed by each field's wire tag. Enums fail closed (the wire-enum
+/// codec is later work).
+#[allow(clippy::too_many_arguments)]
+fn emit_ser_named_cbor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    name: &str,
+    args: &[ResolvedTy],
+    value_ptr: PointerValue<'ctx>,
+    buf: PointerValue<'ctx>,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+    if enum_layouts.iter().any(|e| e.name == key) {
+        return Err(CodegenError::FailClosed(format!(
+            "wire CBOR serialize: enum `{name}` (key `{key}`) has no binary wire \
+             codec yet (wire-enum support is later work)"
+        )));
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    let i64_ty = ctx.i64_type();
+    if let (Some(struct_ty), Some(rl)) = (
+        record_layouts.get(&key).copied(),
+        pipeline_records.iter().find(|r| r.name == key),
+    ) {
+        let begin = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_cbor_ser_begin_map",
+            void_ty.fn_type(&[ptr_ty.into()], false),
+        );
+        builder
+            .build_call(begin, &[buf.into()], "cbor_ser_begin_map")
+            .llvm_ctx("cbor ser begin_map")?;
+        let key_prim = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_cbor_ser_key_u64",
+            void_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        );
+        for (idx, fty) in rl.field_tys.iter().enumerate() {
+            let field_name = rl.field_names.get(idx).map_or("", String::as_str);
+            let tag = cbor_field_key(wire_layouts, &key, field_name, idx);
+            let tag_const = i64_ty.const_int(tag, false);
+            builder
+                .build_call(
+                    key_prim,
+                    &[buf.into(), tag_const.into()],
+                    &format!("cbor_ser_key_{idx}"),
+                )
+                .llvm_ctx("cbor ser key")?;
+            let field_ptr = builder
+                .build_struct_gep(
+                    struct_ty,
+                    value_ptr,
+                    idx as u32,
+                    &format!("cbor_ser_field_{idx}"),
+                )
+                .llvm_ctx("cbor ser field gep")?;
+            emit_ser_value_cbor(
+                ctx,
+                llvm_mod,
+                builder,
+                func,
+                fty,
+                field_ptr,
+                buf,
+                wire_layouts,
+                record_layouts,
+                machine_layouts,
+                pipeline_records,
+                enum_layouts,
+            )?;
+        }
+        let end = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_cbor_ser_end_map",
+            void_ty.fn_type(&[ptr_ty.into()], false),
+        );
+        builder
+            .build_call(end, &[buf.into()], "cbor_ser_end_map")
+            .llvm_ctx("cbor ser end_map")?;
+        return Ok(());
+    }
+    Err(CodegenError::FailClosed(format!(
+        "wire CBOR serialize: named type `{name}` (key `{key}`) is not a \
+         registered record layout"
+    )))
+}
+
+/// Emit the CBOR DECODE walk for a value of type `ty`, reading from the runtime
+/// `CborDeReader` handle `reader` and storing the reconstructed value into
+/// `dst`. The caller has already selected this value's map key (if any). Fails
+/// closed on any shape outside the supported wire-body floor.
+#[allow(clippy::too_many_arguments)]
+fn emit_de_value_cbor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    ty: &ResolvedTy,
+    dst: PointerValue<'ctx>,
+    reader: PointerValue<'ctx>,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    match ty {
+        ResolvedTy::Bool
+        | ResolvedTy::I8
+        | ResolvedTy::U8
+        | ResolvedTy::I16
+        | ResolvedTy::U16
+        | ResolvedTy::I32
+        | ResolvedTy::U32
+        | ResolvedTy::Char
+        | ResolvedTy::I64
+        | ResolvedTy::U64
+        | ResolvedTy::Isize
+        | ResolvedTy::Usize
+        | ResolvedTy::Duration => {
+            let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
+            let int_ty = llvm_ty.into_int_type();
+            if matches!(ty, ResolvedTy::Bool) {
+                let i8_ty = ctx.i8_type();
+                let prim = declare_codec_prim(
+                    ctx,
+                    llvm_mod,
+                    "hew_cbor_de_bool",
+                    i8_ty.fn_type(&[ptr_ty.into()], false),
+                );
+                let v = builder
+                    .build_call(prim, &[reader.into()], "cbor_de_bool")
+                    .llvm_ctx("cbor de bool")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_bool void".into()))?
+                    .into_int_value();
+                let stored = if int_ty.get_bit_width() == 8 {
+                    v
+                } else {
+                    builder
+                        .build_int_z_extend(v, int_ty, "cbor_de_bool_zext")
+                        .llvm_ctx("cbor de bool zext")?
+                };
+                builder
+                    .build_store(dst, stored)
+                    .llvm_ctx("cbor de bool store")?;
+            } else {
+                let unsigned = matches!(
+                    ty,
+                    ResolvedTy::U8
+                        | ResolvedTy::U16
+                        | ResolvedTy::U32
+                        | ResolvedTy::U64
+                        | ResolvedTy::Usize
+                        | ResolvedTy::Char
+                );
+                let prim_name = if unsigned {
+                    "hew_cbor_de_u64"
+                } else {
+                    "hew_cbor_de_i64"
+                };
+                let prim = declare_codec_prim(
+                    ctx,
+                    llvm_mod,
+                    prim_name,
+                    i64_ty.fn_type(&[ptr_ty.into()], false),
+                );
+                let wide = builder
+                    .build_call(prim, &[reader.into()], "cbor_de_int")
+                    .llvm_ctx("cbor de int")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_int void".into()))?
+                    .into_int_value();
+                let narrow = if int_ty.get_bit_width() == 64 {
+                    wide
+                } else {
+                    builder
+                        .build_int_truncate(wide, int_ty, "cbor_de_int_trunc")
+                        .llvm_ctx("cbor de int trunc")?
+                };
+                builder
+                    .build_store(dst, narrow)
+                    .llvm_ctx("cbor de int store")?;
+            }
+            Ok(())
+        }
+        ResolvedTy::F32 | ResolvedTy::F64 => {
+            let prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_cbor_de_f64",
+                ctx.f64_type().fn_type(&[ptr_ty.into()], false),
+            );
+            let f = builder
+                .build_call(prim, &[reader.into()], "cbor_de_f64")
+                .llvm_ctx("cbor de f64")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_f64 void".into()))?
+                .into_float_value();
+            let stored = if matches!(ty, ResolvedTy::F64) {
+                f
+            } else {
+                builder
+                    .build_float_trunc(f, ctx.f32_type(), "cbor_de_ftrunc")
+                    .llvm_ctx("cbor de ftrunc")?
+            };
+            builder
+                .build_store(dst, stored)
+                .llvm_ctx("cbor de float store")?;
+            Ok(())
+        }
+        ResolvedTy::String => {
+            let prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_cbor_de_string",
+                ptr_ty.fn_type(&[ptr_ty.into()], false),
+            );
+            let s = builder
+                .build_call(prim, &[reader.into()], "cbor_de_string")
+                .llvm_ctx("cbor de string")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_string void".into()))?
+                .into_pointer_value();
+            builder
+                .build_store(dst, s)
+                .llvm_ctx("cbor de string store")?;
+            Ok(())
+        }
+        ResolvedTy::Bytes => {
+            let i32_ty = ctx.i32_type();
+            let len_slot = builder
+                .build_alloca(i32_ty, "cbor_de_bytes_len")
+                .llvm_ctx("cbor de bytes len alloca")?;
+            let read_prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_cbor_de_bytes",
+                ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+            );
+            let raw = builder
+                .build_call(
+                    read_prim,
+                    &[reader.into(), len_slot.into()],
+                    "cbor_de_bytes",
+                )
+                .llvm_ctx("cbor de bytes")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_bytes void".into()))?
+                .into_pointer_value();
+            let len = builder
+                .build_load(i32_ty, len_slot, "cbor_de_bytes_lenv")
+                .llvm_ctx("cbor de bytes len load")?
+                .into_int_value();
+            let new_prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_bytes_from_static_raw",
+                ctx.void_type()
+                    .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
+            );
+            builder
+                .build_call(
+                    new_prim,
+                    &[raw.into(), len.into(), dst.into()],
+                    "cbor_de_bytes_new_raw",
+                )
+                .llvm_ctx("cbor de bytes_from_static_raw")?;
+            let free_prim = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_ser_free_bytes",
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            );
+            builder
+                .build_call(free_prim, &[raw.into()], "cbor_de_bytes_free_raw")
+                .llvm_ctx("cbor de bytes free raw")?;
+            Ok(())
+        }
+        ResolvedTy::Named { name, args, .. } => emit_de_named_cbor(
+            ctx,
+            llvm_mod,
+            builder,
+            func,
+            name,
+            args,
+            dst,
+            reader,
+            wire_layouts,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        ),
+        other => Err(CodegenError::FailClosed(format!(
+            "wire CBOR deserialize: unsupported value type {other:?} \
+             (outside the supported wire-body floor)"
+        ))),
+    }
+}
+
+/// Emit the CBOR decode walk for a `Named` type into `dst`. A registered record
+/// enters a CBOR map, selects each field by its wire tag, decodes it, then exits
+/// the map (tolerating extra keys). Enums fail closed (later work).
+#[allow(clippy::too_many_arguments)]
+fn emit_de_named_cbor<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &inkwell::builder::Builder<'ctx>,
+    func: FunctionValue<'ctx>,
+    name: &str,
+    args: &[ResolvedTy],
+    dst: PointerValue<'ctx>,
+    reader: PointerValue<'ctx>,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<()> {
+    let key = xnode_registry_key(name, args, pipeline_records, enum_layouts);
+    if enum_layouts.iter().any(|e| e.name == key) {
+        return Err(CodegenError::FailClosed(format!(
+            "wire CBOR deserialize: enum `{name}` (key `{key}`) has no binary wire \
+             codec yet (wire-enum support is later work)"
+        )));
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let void_ty = ctx.void_type();
+    let i64_ty = ctx.i64_type();
+    if let (Some(struct_ty), Some(rl)) = (
+        record_layouts.get(&key).copied(),
+        pipeline_records.iter().find(|r| r.name == key),
+    ) {
+        let enter = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_cbor_de_enter_map",
+            void_ty.fn_type(&[ptr_ty.into()], false),
+        );
+        builder
+            .build_call(enter, &[reader.into()], "cbor_de_enter_map")
+            .llvm_ctx("cbor de enter_map")?;
+        let select = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_cbor_de_select_key",
+            void_ty.fn_type(&[ptr_ty.into(), i64_ty.into()], false),
+        );
+        for (idx, fty) in rl.field_tys.iter().enumerate() {
+            let field_name = rl.field_names.get(idx).map_or("", String::as_str);
+            let tag = cbor_field_key(wire_layouts, &key, field_name, idx);
+            let tag_const = i64_ty.const_int(tag, false);
+            builder
+                .build_call(
+                    select,
+                    &[reader.into(), tag_const.into()],
+                    &format!("cbor_de_select_{idx}"),
+                )
+                .llvm_ctx("cbor de select_key")?;
+            let field_ptr = builder
+                .build_struct_gep(struct_ty, dst, idx as u32, &format!("cbor_de_field_{idx}"))
+                .llvm_ctx("cbor de field gep")?;
+            emit_de_value_cbor(
+                ctx,
+                llvm_mod,
+                builder,
+                func,
+                fty,
+                field_ptr,
+                reader,
+                wire_layouts,
+                record_layouts,
+                machine_layouts,
+                pipeline_records,
+                enum_layouts,
+            )?;
+        }
+        let exit = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_cbor_de_exit_map",
+            void_ty.fn_type(&[ptr_ty.into()], false),
+        );
+        builder
+            .build_call(exit, &[reader.into()], "cbor_de_exit_map")
+            .llvm_ctx("cbor de exit_map")?;
+        return Ok(());
+    }
+    Err(CodegenError::FailClosed(format!(
+        "wire CBOR deserialize: named type `{name}` (key `{key}`) is not a \
+         registered record layout"
+    )))
+}
+
+/// Emit the full CBOR serialize + deserialize thunk bodies for `ty` (idempotent:
+/// a second call for the same key no-ops). Mirrors `emit_xnode_codec_thunks`'
+/// structure — same OOM / zero-init / fail-closed-drop discipline — but routes
+/// through the `hew_cbor_*` runtime primitives.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn emit_cbor_codec_thunks<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    ty: &ResolvedTy,
+    wire_layouts: &WireLayoutTable,
+    record_layouts: &RecordLayoutMap<'ctx>,
+    machine_layouts: &MachineLayoutMap<'ctx>,
+    pipeline_records: &[RecordLayout],
+    enum_layouts: &[EnumLayout],
+) -> CodegenResult<(String, String)> {
+    let key = xnode_codec_key(ty);
+    let ser_sym = format!("__hew_cbor_serialize_{key}");
+    let de_sym = format!("__hew_cbor_deserialize_{key}");
+    let ser_fn = get_or_declare_cbor_serialize_thunk(ctx, llvm_mod, &key);
+    let de_fn = get_or_declare_cbor_deserialize_thunk(ctx, llvm_mod, &key);
+    if ser_fn.count_basic_blocks() > 0 {
+        return Ok((ser_sym, de_sym)); // already emitted
+    }
+
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+
+    // ── serialize(value, out_len) -> bytes: build a CborSerBuf, walk, finish. ──
+    {
+        let builder = ctx.create_builder();
+        let entry = ctx.append_basic_block(ser_fn, "entry");
+        builder.position_at_end(entry);
+        let value_ptr = ser_fn
+            .get_nth_param(0)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("cbor serialize thunk missing value param".into())
+            })?
+            .into_pointer_value();
+        let out_len = ser_fn
+            .get_nth_param(1)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("cbor serialize thunk missing out_len param".into())
+            })?
+            .into_pointer_value();
+        let buf_new = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_cbor_ser_new",
+            ptr_ty.fn_type(&[], false),
+        );
+        let buf = builder
+            .build_call(buf_new, &[], "cbor_ser_buf")
+            .llvm_ctx("cbor_ser_new")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_cbor_ser_new void".into()))?
+            .into_pointer_value();
+        emit_ser_value_cbor(
+            ctx,
+            llvm_mod,
+            &builder,
+            ser_fn,
+            ty,
+            value_ptr,
+            buf,
+            wire_layouts,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        )?;
+        let finish = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_cbor_ser_finish",
+            ptr_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        );
+        let bytes = builder
+            .build_call(finish, &[buf.into(), out_len.into()], "cbor_ser_finish")
+            .llvm_ctx("cbor_ser_finish")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_cbor_ser_finish void".into()))?
+            .into_pointer_value();
+        builder
+            .build_return(Some(&bytes))
+            .llvm_ctx("cbor ser return")?;
+    }
+
+    // ── deserialize: make a reader, alloc the value, walk, free reader. ──
+    {
+        let builder = ctx.create_builder();
+        let entry = ctx.append_basic_block(de_fn, "entry");
+        builder.position_at_end(entry);
+        let data = de_fn
+            .get_nth_param(0)
+            .ok_or_else(|| CodegenError::FailClosed("cbor deserialize thunk missing data".into()))?
+            .into_pointer_value();
+        let len = de_fn
+            .get_nth_param(1)
+            .ok_or_else(|| CodegenError::FailClosed("cbor deserialize thunk missing len".into()))?
+            .into_int_value();
+        let out_struct_size = de_fn
+            .get_nth_param(2)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("cbor deserialize thunk missing out_struct_size".into())
+            })?
+            .into_pointer_value();
+        let de_reader_size_ty = runtime_size_ty(ctx, llvm_mod);
+        let reader_new = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_cbor_de_new",
+            ptr_ty.fn_type(&[ptr_ty.into(), de_reader_size_ty.into()], false),
+        );
+        let reader = builder
+            .build_call(reader_new, &[data.into(), len.into()], "cbor_de_reader")
+            .llvm_ctx("cbor_de_new")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_new void".into()))?
+            .into_pointer_value();
+
+        let llvm_ty = resolve_ty(ctx, ty, record_layouts)?;
+        let size = llvm_ty.size_of().ok_or_else(|| {
+            CodegenError::FailClosed("cbor deserialize: value has no static size".into())
+        })?;
+        builder
+            .build_store(out_struct_size, size)
+            .llvm_ctx("cbor de store struct size")?;
+        let malloc_fn = get_or_declare_libc_malloc(ctx, llvm_mod);
+        let malloc_size_ty = runtime_size_ty(ctx, llvm_mod);
+        let malloc_size = if malloc_size_ty == i64_ty {
+            size
+        } else {
+            builder
+                .build_int_truncate(size, malloc_size_ty, "cbor_de_size_trunc")
+                .llvm_ctx("cbor de malloc size trunc")?
+        };
+        let dst = builder
+            .build_call(malloc_fn, &[malloc_size.into()], "cbor_de_value")
+            .llvm_ctx("cbor de value malloc")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("malloc void".into()))?
+            .into_pointer_value();
+
+        // Fail closed on OOM — a null malloc must not reach memset / the walk.
+        {
+            let oom_bb = ctx.append_basic_block(de_fn, "cbor_de_oom");
+            let alloc_ok_bb = ctx.append_basic_block(de_fn, "cbor_de_alloc_ok");
+            let null_ptr = ptr_ty.const_null();
+            let is_null = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    builder
+                        .build_ptr_to_int(dst, ctx.i64_type(), "cbor_dst_as_int")
+                        .llvm_ctx("cbor dst ptr_to_int")?,
+                    builder
+                        .build_ptr_to_int(null_ptr, ctx.i64_type(), "cbor_null_as_int")
+                        .llvm_ctx("cbor null ptr_to_int")?,
+                    "cbor_dst_is_null",
+                )
+                .llvm_ctx("cbor de null check")?;
+            builder
+                .build_conditional_branch(is_null, oom_bb, alloc_ok_bb)
+                .llvm_ctx("cbor de oom branch")?;
+            builder.position_at_end(oom_bb);
+            let reader_free_oom = declare_codec_prim(
+                ctx,
+                llvm_mod,
+                "hew_cbor_de_free",
+                ctx.void_type().fn_type(&[ptr_ty.into()], false),
+            );
+            builder
+                .build_call(reader_free_oom, &[reader.into()], "cbor_de_reader_free_oom")
+                .llvm_ctx("cbor de reader free oom")?;
+            builder
+                .build_return(Some(&ptr_ty.const_null()))
+                .llvm_ctx("cbor de oom return")?;
+            builder.position_at_end(alloc_ok_bb);
+        }
+
+        // Zero-init so partially-decoded values have well-defined slots.
+        let memset_size_ty = runtime_size_ty(ctx, llvm_mod);
+        let memset = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "memset",
+            ptr_ty.fn_type(
+                &[ptr_ty.into(), ctx.i32_type().into(), memset_size_ty.into()],
+                false,
+            ),
+        );
+        let memset_size = if memset_size_ty == i64_ty {
+            size
+        } else {
+            builder
+                .build_int_truncate(size, memset_size_ty, "cbor_de_memset_size_trunc")
+                .llvm_ctx("cbor de memset size trunc")?
+        };
+        builder
+            .build_call(
+                memset,
+                &[
+                    dst.into(),
+                    ctx.i32_type().const_zero().into(),
+                    memset_size.into(),
+                ],
+                "cbor_de_zero",
+            )
+            .llvm_ctx("cbor de zero-init")?;
+
+        emit_de_value_cbor(
+            ctx,
+            llvm_mod,
+            &builder,
+            de_fn,
+            ty,
+            dst,
+            reader,
+            wire_layouts,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        )?;
+
+        // Fail closed: if the reader latched an error, drop the partial value's
+        // owned fields, free the shell + the reader, and return null.
+        let failed_prim = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_cbor_de_failed",
+            ctx.i32_type().fn_type(&[ptr_ty.into()], false),
+        );
+        let failed = builder
+            .build_call(failed_prim, &[reader.into()], "cbor_de_failed")
+            .llvm_ctx("cbor de failed")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("hew_cbor_de_failed void".into()))?
+            .into_int_value();
+        let reader_free = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "hew_cbor_de_free",
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        );
+        builder
+            .build_call(reader_free, &[reader.into()], "cbor_de_reader_free")
+            .llvm_ctx("cbor de reader free")?;
+
+        let ok_bb = ctx.append_basic_block(de_fn, "cbor_de_ok");
+        let fail_bb = ctx.append_basic_block(de_fn, "cbor_de_fail");
+        let is_failed = builder
+            .build_int_compare(
+                IntPredicate::NE,
+                failed,
+                ctx.i32_type().const_zero(),
+                "cbor_de_is_failed",
+            )
+            .llvm_ctx("cbor de is_failed cmp")?;
+        builder
+            .build_conditional_branch(is_failed, fail_bb, ok_bb)
+            .llvm_ctx("cbor de fail branch")?;
+
+        builder.position_at_end(fail_bb);
+        // Drop any heap-owning fields already written before the failure; the
+        // struct was zero-initialised, so unwritten fields are null and the
+        // null-safe drop helpers short-circuit. Drop BEFORE free(dst) — the drop
+        // helpers operate in-place — so free runs exactly once, no double-free.
+        emit_de_drop_owned(
+            ctx,
+            llvm_mod,
+            &builder,
+            ty,
+            dst,
+            record_layouts,
+            machine_layouts,
+            pipeline_records,
+            enum_layouts,
+        )?;
+        let free_fn = declare_codec_prim(
+            ctx,
+            llvm_mod,
+            "free",
+            ctx.void_type().fn_type(&[ptr_ty.into()], false),
+        );
+        builder
+            .build_call(free_fn, &[dst.into()], "cbor_de_free_partial")
+            .llvm_ctx("cbor de free partial")?;
+        builder
+            .build_return(Some(&ptr_ty.const_null()))
+            .llvm_ctx("cbor de fail return")?;
+
+        builder.position_at_end(ok_bb);
+        builder
+            .build_return(Some(&dst))
+            .llvm_ctx("cbor de return")?;
+    }
+
+    Ok((ser_sym, de_sym))
+}
+
 /// module-init constructor functions (priority 65535 each, run before `main`).
 ///
 /// LLVM permits only one `@llvm.global_ctors` symbol per module, so all module
@@ -34867,13 +35874,12 @@ fn emit_global_ctors<'ctx>(
 /// Emit the serialize/deserialize thunk bodies for every wire type that a
 /// direct `.encode()` / `.decode()` call references in the MIR.
 ///
-/// Unlike [`emit_xnode_codec_module_init`] (which seeds + registers codecs for
-/// actor message types so cross-node payloads survive a process hop), this pass
-/// only needs the thunk BODIES to exist so the per-`Instr::WireCodec` call site
-/// can link to them — no runtime registry entry is required for a direct codec
-/// call. `emit_xnode_codec_thunks` is idempotent (it no-ops once a thunk body is
-/// present), so a wire type used both in an actor message and a direct
-/// `.encode()` shares the one thunk pair, regardless of emission order.
+/// The wire `.encode()` / `.decode()` path uses the CBOR body codec
+/// (`emit_cbor_codec_thunks`), distinct from the actor cross-node payload codec
+/// (`emit_xnode_codec_module_init`), which still seeds + registers the bespoke
+/// thunks for actor message types. `emit_cbor_codec_thunks` is idempotent (it
+/// no-ops once a thunk body is present), so a wire type referenced by several
+/// `.encode()` / `.decode()` sites shares the one CBOR thunk pair.
 fn emit_wire_codec_call_thunks<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -34892,10 +35898,11 @@ fn emit_wire_codec_call_thunks<'ctx>(
                         continue;
                     }
                     seen.push(value_ty.clone());
-                    emit_xnode_codec_thunks(
+                    emit_cbor_codec_thunks(
                         ctx,
                         llvm_mod,
                         value_ty,
+                        &pipeline.wire_layouts,
                         record_layouts,
                         machine_layouts,
                         pipeline_records,

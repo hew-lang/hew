@@ -151,6 +151,8 @@ Enum layouts live in `layouts.enums`.
 | `vector.get` | element value | vector, index | `vector_bounds` on invalid index. |
 | `vector.set` | none or vector | vector, index, value | `vector_bounds` on invalid index. |
 | `vector.len` | integer | vector | Deterministic length. |
+| `vector.contains` | bool | vector, element | Linear equality scan via canonical comparison. |
+| `vector.range_slice` | vector | vector, start, end | Returns a new vector with elements `[start..end)`. `vector_bounds` on invalid range. |
 
 The registry names vector operations, not allocation strategy.
 

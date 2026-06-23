@@ -258,6 +258,34 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/playground/basics/display_scalars.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        // `#[wire]` is now the sole canonical declaration surface for wire types
+        // (bare `wire`/`wire type`/`wire enum` keyword forms removed in 60c50dae).
+        // Verifies the sandbox profile and emitter treat a `#[wire] struct` with
+        // tagged fields as a plain record without rejecting the attribute or the
+        // optional-field tag annotation.
+        test_name: "wire_types_declaration",
+        source_rel: "examples/playground/types/wire_types.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Vec<T>::contains (linear equality scan via canonical comparison) and
+        // v[start..end] (exclusive range slice) map to new sandbox VM opcodes
+        // `vector.contains` / `vector.range_slice` added in this parity sweep.
+        test_name: "vec_operations",
+        source_rel: "examples/playground/types/vec_operations.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // Vec<f64>::contains with NaN and +-Infinity: the sandbox VM now routes
+        // element equality through valuesEqual (which uses JS === for f64 pairs),
+        // matching native fcmp-OEQ semantics.  Pre-fix the VM collapsed NaN and
+        // +-Infinity to JSON null so [NaN].contains(NaN) returned true instead
+        // of false -- a silent wrong-result divergence.
+        test_name: "vec_f64_nonfinite_contains",
+        source_rel: "examples/playground/types/vec_f64_nonfinite_contains.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

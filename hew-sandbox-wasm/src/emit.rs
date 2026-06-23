@@ -1985,6 +1985,44 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 .lower_block(block)?
                 .unwrap_or_else(|| self.emit_const_unit(Some(span.clone())))),
             Expr::Index { object, index } => {
+                // `v[start..end]` — exclusive range slice. In the AST, `start..end` inside
+                // brackets is an `Expr::Range { inclusive: false }`, not `Expr::Binary`.
+                if let Expr::Range {
+                    start: Some(start),
+                    end: Some(end),
+                    inclusive: false,
+                } = &index.0
+                {
+                    let object_local = self.lower_expr(object)?;
+                    let start_local = self.lower_expr(start)?;
+                    let end_local = self.lower_expr(end)?;
+                    let ty = self.ty_for_expr(expr);
+                    let dst = self.temp_local(&ty, Some(span.clone()));
+                    self.emit_instruction(
+                        "vector.range_slice",
+                        Some(dst.clone()),
+                        vec![
+                            Operand::local(object_local),
+                            Operand::local(start_local),
+                            Operand::local(end_local),
+                        ],
+                        Some(span.clone()),
+                        None,
+                    );
+                    return Ok(dst);
+                }
+                // WASM-TODO: inclusive range slice `v[start..=end]` — deferred
+                // until `vector.range_slice_inclusive` is added to the VM.
+                if matches!(
+                    &index.0,
+                    Expr::Range {
+                        inclusive: true,
+                        ..
+                    }
+                ) {
+                    self.emit_unsupported(Some(span.clone()));
+                    return Ok(self.emit_const_unit(Some(span.clone())));
+                }
                 let object_local = self.lower_expr(object)?;
                 let index_local = self.lower_expr(index)?;
                 let ty = self.ty_for_expr(expr);
@@ -2437,6 +2475,12 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                         return Ok(self.lower_vector_new(span));
                     }
                 }
+                // WASM-TODO: fn-field call `(rec.f)(args)` — the type-checker
+                // (ac0bc0ed) now admits calling a function-typed record field when
+                // the callee object is a value binding. The sandbox VM has
+                // `call.indirect` in its schema but marks it M4_DEFERRED; emit
+                // `unsupported` so the playground fails closed rather than silently
+                // producing wrong results.
                 self.emit_unsupported(Some(span.clone()));
                 Ok(self.emit_const_unit(Some(span)))
             }
@@ -2789,6 +2833,24 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                         Operand::local(start),
                         Operand::local(end),
                     ],
+                    Some(span),
+                    None,
+                );
+                Ok(dst)
+            }
+            // `vec.contains(elem)` — linear scan using canonical equality,
+            // the same structural equality as `cmp.eq`. Emits `vector.contains`.
+            "contains" => {
+                let Some(elem_arg) = args.first() else {
+                    self.emit_unsupported(Some(span.clone()));
+                    return Ok(self.emit_const_unit(Some(span)));
+                };
+                let elem_local = self.lower_expr(elem_arg.expr())?;
+                let dst = self.temp_local(&Ty::Bool, Some(span.clone()));
+                self.emit_instruction(
+                    "vector.contains",
+                    Some(dst.clone()),
+                    vec![Operand::local(receiver_local), Operand::local(elem_local)],
                     Some(span),
                     None,
                 );

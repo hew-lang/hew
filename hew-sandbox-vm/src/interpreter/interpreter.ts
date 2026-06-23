@@ -632,6 +632,29 @@ class Interpreter {
       case "vector.len":
         this.writeDst(frame, instruction, this.i64(BigInt(this.vectorArg(frame, instruction.args[0], instruction.span).items.length)));
         return;
+      case "vector.contains": {
+        const vec = this.vectorArg(frame, instruction.args[0], instruction.span);
+        const needle = this.resolve(frame, instruction.args[1], instruction.span);
+        // Use valuesEqual so f64 non-finite values (NaN, +/-Infinity) follow
+        // native fcmp-OEQ semantics: [NaN].contains(NaN) == false.
+        const found = vec.items.some((item) => valuesEqual(item, needle));
+        this.writeDst(frame, instruction, { kind: "bool", value: found });
+        return;
+      }
+      case "vector.range_slice": {
+        const vec = this.vectorArg(frame, instruction.args[0], instruction.span);
+        const start = this.indexArg(frame, instruction.args[1], instruction.span);
+        const end = this.indexArg(frame, instruction.args[2], instruction.span);
+        if (start < 0 || end < start || end > vec.items.length) {
+          this.trap("vector_bounds", "vector slice out of bounds", instruction.span);
+        }
+        this.writeDst(frame, instruction, {
+          kind: "vector",
+          elementType: vec.elementType,
+          items: vec.items.slice(start, end).map(cloneValue),
+        });
+        return;
+      }
       case "string.concat":
         this.writeDst(frame, instruction, {
           kind: "string",
@@ -1183,17 +1206,9 @@ class Interpreter {
     const right = this.resolve(frame, instruction.args[1], instruction.span);
     switch (instruction.op) {
       case "cmp.eq":
-        // f64 equality mirrors native codegen, which lowers `==` to LLVM `fcmp
-        // OEQ` (ordered equal): false if either operand is NaN, true for equal
-        // non-NaN values (including Infinity==Infinity). JS `===` matches OEQ
-        // exactly (`NaN===NaN` is false, `Infinity===Infinity` is true). The
-        // canonical-JSON path collapses NaN/±Infinity to `null` and cannot model
-        // this, so compare the raw numbers for f64 operands and keep canonical
-        // equality for i64/string/structural values.
-        if (left.kind === "f64" && right.kind === "f64") {
-          return left.value === right.value;
-        }
-        return canonicalComparable(left) === canonicalComparable(right);
+        // f64 equality mirrors native `fcmp OEQ`; see valuesEqual.
+        // All other types use canonical-JSON equality.
+        return valuesEqual(left, right);
       case "cmp.ne":
         // f64 inequality mirrors native `fcmp UNE` (unordered not-equal): true
         // when the operands differ or either operand is NaN. JS `!==` matches
@@ -1673,6 +1688,29 @@ function selectTieIndex(seed: number, counter: number, length: number): number {
 
 function canonicalComparable(value: VmValue): string {
   return canonicalJson(renderComparable(value));
+}
+
+/**
+ * Structural equality matching native code-gen semantics for f64 operands.
+ *
+ * f64 pairs use JS `===`, which mirrors LLVM `fcmp OEQ`:
+ *   - NaN !== NaN  (OEQ is false for any NaN operand)
+ *   - +Infinity !== -Infinity  (sign must match)
+ *   - -0.0 === 0.0  (IEEE-754 OEQ)
+ *
+ * The canonical-JSON path collapses NaN and +/-Infinity to `null` and cannot
+ * model these distinctions, so it must not be used for f64 equality.  All
+ * other types (i64, string, bool, structural records, vectors) use the
+ * canonical-JSON path as before.
+ *
+ * Used by both `cmp.eq` and `vector.contains` so that the two sites can never
+ * drift apart again.
+ */
+function valuesEqual(a: VmValue, b: VmValue): boolean {
+  if (a.kind === "f64" && b.kind === "f64") {
+    return a.value === b.value;
+  }
+  return canonicalComparable(a) === canonicalComparable(b);
 }
 
 function renderComparable(value: VmValue): JsonValue {

@@ -1,0 +1,9 @@
+contains beta:  true
+contains zeta:  false
+slice length:   2
+slice[0]:       beta
+slice[1]:       gamma
+contains 20:    true
+contains 99:    false
+num slice len:  2
+num slice[0]:   10

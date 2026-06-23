@@ -87,6 +87,19 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // f-string interpolation for all canonical integer and char primitives that
     // gained Display impls: i8/i16/i32, u8/u16/u32, u64, isize, usize, char.
     "display_scalars",
+    // `#[wire]` type declaration with tagged fields now uses the sole canonical
+    // surface (`#[wire]` attribute on TypeDecl; bare `wire` keyword removed).
+    // Verifies the sandbox profile and emitter treat `#[wire]` TypeDecl as a
+    // plain struct without rejecting the attribute or the optional-field tag.
+    "wire_types_declaration",
+    // Vec<T>::contains (linear equality scan) and v[start..end] (range slice).
+    // Both map to new sandbox VM opcodes `vector.contains` / `vector.range_slice`
+    // added in this parity sweep.
+    "vec_operations",
+    // Vec<f64>::contains with NaN and +-Infinity follows native fcmp-OEQ: NaN is
+    // never found, +Inf != -Inf.  Uses the shared valuesEqual helper introduced
+    // to align vector.contains with cmp.eq (was: collapsed to null via JSON).
+    "vec_f64_nonfinite_contains",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";

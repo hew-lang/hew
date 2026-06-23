@@ -1,0 +1,25 @@
+//! @name Vec<f64> Non-Finite Contains
+//! @description Vec<f64>::contains follows native fcmp-OEQ semantics for NaN and +-Infinity
+
+fn main() {
+    let zero: f64 = 0.0;
+    let nan: f64 = zero / zero;
+    let inf: f64 = 1.0 / zero;
+    let neg_inf: f64 = -1.0 / zero;
+    let nans: Vec<f64> = Vec::new();
+    nans.push(nan);
+    // NaN never compares equal to anything (fcmp OEQ returns false for any NaN
+    // operand) — matches native hew_vec_contains_f64 exact-equality scan.
+    println(f"[nan].contains(nan)   {nans.contains(nan)}");
+    println(f"[nan].contains(inf)   {nans.contains(inf)}");
+    let infs: Vec<f64> = Vec::new();
+    infs.push(inf);
+    // +Infinity and -Infinity are distinct values under OEQ.
+    println(f"[inf].contains(-inf)  {infs.contains(neg_inf)}");
+
+    // Positive control: finite exact match must still work.
+    let nums: Vec<f64> = Vec::new();
+    nums.push(2.5);
+    println(f"[2.5].contains(2.5)   {nums.contains(2.5)}");
+    println(f"[2.5].contains(nan)   {nums.contains(nan)}");
+}

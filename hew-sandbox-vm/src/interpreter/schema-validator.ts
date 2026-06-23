@@ -49,6 +49,8 @@ const INSTRUCTION_OPS = new Set([
   "vector.get",
   "vector.set",
   "vector.len",
+  "vector.contains",
+  "vector.range_slice",
   "string.concat",
   "string.len",
   "string.slice",

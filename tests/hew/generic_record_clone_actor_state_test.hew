@@ -1,0 +1,67 @@
+//! Drop-safety on actor shutdown / state reassignment.
+//!
+//! An actor holds a CLONED generic aggregate (`Pair<i64, string>`) in a state
+//! field. The clone-into-state path drives the per-mono clone thunk for the
+//! `Pair$$i64$string` instantiation; the actor's shutdown (and each overwrite
+//! of the field) releases the prior value through the MATCHING per-mono drop
+//! thunk. A clone synthesised without its paired drop would leak / double-free
+//! on this path — the lifecycle path the sync fixtures cannot reach.
+//!
+//! A generic record is not yet `Send`, so the `Pair` never crosses the actor
+//! boundary; the actor builds it from scalar/`string` message args (both Send)
+//! and clones it internally. These tests assert the held VALUES are correct
+//! across stores; the leak / double-free freedom on the shutdown path is pinned
+//! by the differential `generic_record_clone_actor_shutdown_no_drop_leak`
+//! oracle (`hew-cli/tests/record_clone_generic_leak_oracle.rs`) under libgmalloc.
+
+import std::testing;
+
+type Pair<A, B> { first: A; second: B; }
+
+actor Keeper {
+    var held: Pair<i64, string> = Pair { first: 0, second: "none" };
+
+    receive fn store(n: i64, tag: string) -> i64 {
+        let p = Pair { first: n, second: tag };
+        held = clone p;
+        return held.first;
+    }
+
+    receive fn label() -> string {
+        return clone held.second;
+    }
+}
+
+// The actor holds a cloned generic aggregate; assert the scalar and the
+// owned `string` leaf are both the values stored (the clone deep-copied them).
+#[test]
+fn actor_holds_cloned_generic_pair_values() {
+    let k = spawn Keeper();
+    match await k.store(7, "alpha") {
+        Ok(n) => testing.assert_eq(n, 7),
+        Err(_) => testing.assert_true(false),
+    }
+    match await k.label() {
+        Ok(s) => testing.assert_eq_str(s, "alpha"),
+        Err(_) => testing.assert_true(false),
+    }
+}
+
+// Drop-on-reassign: a second store overwrites `held`; the prior clone
+// must drop through the per-mono drop thunk and the new clone replace it. The
+// observable label reflects ONLY the latest store, proving the field is a real
+// owned copy reclaimed each cycle (no stale alias, no corruption from an
+// over-drop of the previous value).
+#[test]
+fn actor_reclones_state_field_each_store() {
+    let k = spawn Keeper();
+    let _ = await k.store(7, "alpha");
+    match await k.store(9, "beta") {
+        Ok(n) => testing.assert_eq(n, 9),
+        Err(_) => testing.assert_true(false),
+    }
+    match await k.label() {
+        Ok(s) => testing.assert_eq_str(s, "beta"),
+        Err(_) => testing.assert_true(false),
+    }
+}

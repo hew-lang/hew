@@ -1,0 +1,34 @@
+// Reject fixture: generic_record_clone_opaque_leaf — a GENERIC record whose
+// type parameter is instantiated with an `#[opaque]` runtime handle must fail
+// closed when cloned, exactly like the monomorphic case
+// (`record_clone_unclonable_field.hew`).
+//
+// The clone-admissibility opaque walk is substitution-aware: for `Box<Handle>`
+// it instantiates the declared field `item: T` to `item: Handle` before
+// checking, so the transitive opaque leaf is detected at the concrete
+// instantiation. Without substitution the walk sees only the abstract `T` and
+// would admit the clone, then emit a thunk that byte-copies (aliases) the
+// opaque handle — a double-free when both the original and the clone are freed.
+//
+// Harness verb: hew check
+// Expected: rejected with an `UndefinedMethod` error mentioning the opaque
+// field name ("contains an opaque field").
+
+#[opaque]
+type Handle {}
+
+extern "C" {
+    fn hew_handle_create() -> Handle;
+    fn hew_handle_free(h: Handle);
+}
+
+type Box<T> {
+    item: T,
+}
+
+fn main() -> i64 {
+    let b = Box { item: unsafe { hew_handle_create() } };
+    let _c = clone b;
+    unsafe { hew_handle_free(b.item) };
+    0
+}

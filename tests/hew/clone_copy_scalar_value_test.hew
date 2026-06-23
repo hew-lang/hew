@@ -1,0 +1,18 @@
+//! Regression pin for `clone` on a Copy (scalar) receiver.
+//!
+//! `clone` on a value whose type is `Copy` (e.g. `i64`) is redundant: the
+//! checker emits a redundancy warning and lowers the `clone` as a plain read
+//! (`CopyCloneNoop`) — the build SUCCEEDS and the value is produced unchanged.
+//! This fixture pins that a scalar `clone` still
+//! yields the correct value (the warning itself is pinned in
+//! `hew-hir/tests/clone_not_yet_supported.rs`).
+
+import std::testing;
+
+// Clone on a scalar is a redundant no-op that still produces the value.
+#[test]
+fn test_clone_copy_scalar_produces_value() {
+    let n: i64 = 41;
+    let m = clone n;
+    testing.assert_eq(m, 41);
+}

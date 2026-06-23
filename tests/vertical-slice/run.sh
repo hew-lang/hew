@@ -2873,6 +2873,18 @@ if "${HEW}" check \
 fi
 grep -q 'contains an opaque field' "${reject_output}"
 
+# User-defined GENERIC record `clone` on an instantiation whose type parameter
+# resolves to an opaque handle (`Box<Handle>`) must be rejected too — the
+# admissibility opaque walk is substitution-aware (instantiates `item: T` to
+# `item: Handle` before checking).
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/generic_record_clone_opaque_leaf.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected generic_record_clone_opaque_leaf fixture to fail" >&2
+  exit 1
+fi
+grep -q 'contains an opaque field' "${reject_output}"
+
 # ---------------------------------------------------------------------------
 # let-destructure: record/struct product-type irrefutable patterns
 # ---------------------------------------------------------------------------

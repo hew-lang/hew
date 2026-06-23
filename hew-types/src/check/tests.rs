@@ -1,4 +1,5 @@
 use super::coerce::common_integer_type;
+use super::methods::RecordCloneAdmissibility;
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
@@ -612,6 +613,154 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
         ty_is_eq_eligible(&unknown, &checker.type_defs),
         EqEligibility::IneligibleUnknown
     );
+}
+
+#[test]
+fn generic_record_clone_concrete_instantiation_is_admissible() {
+    // A generic record whose type params resolve to concrete,
+    // clonable types is admissible — the per-mono clone thunk is synthesised
+    // per instantiation.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.type_defs.insert(
+        "Pair".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Record,
+            name: "Pair".to_string(),
+            type_params: vec!["A".to_string(), "B".to_string()],
+            bounds: HashMap::new(),
+            fields: HashMap::from([
+                (
+                    "a".to_string(),
+                    Ty::Named {
+                        name: "A".to_string(),
+                        args: vec![],
+                        builtin: None,
+                    },
+                ),
+                (
+                    "b".to_string(),
+                    Ty::Named {
+                        name: "B".to_string(),
+                        args: vec![],
+                        builtin: None,
+                    },
+                ),
+            ]),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            field_order: vec!["a".to_string(), "b".to_string()],
+            is_indirect: false,
+        },
+    );
+    let span = Span::from(0..0);
+    assert!(matches!(
+        checker.record_clone_admissibility("Pair", &[Ty::I64, Ty::I64], &span),
+        RecordCloneAdmissibility::Admissible
+    ));
+}
+
+#[test]
+fn generic_record_clone_opaque_instantiation_fails_closed() {
+    // The opaque-leaf walk is substitution-aware: `Box<Handle>` instantiates
+    // the declared field `item: T` to `item: Handle` before checking, so the
+    // transitive opaque leaf is detected even though the declared field type
+    // is the abstract param `T`.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.user_opaque_type_names.insert("Handle".to_string());
+    checker.type_defs.insert(
+        "Handle".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Struct,
+            name: "Handle".to_string(),
+            type_params: vec![],
+            bounds: HashMap::new(),
+            fields: HashMap::new(),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            field_order: vec![],
+            is_indirect: true,
+        },
+    );
+    checker.type_defs.insert(
+        "Box".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Record,
+            name: "Box".to_string(),
+            type_params: vec!["T".to_string()],
+            bounds: HashMap::new(),
+            fields: HashMap::from([(
+                "item".to_string(),
+                Ty::Named {
+                    name: "T".to_string(),
+                    args: vec![],
+                    builtin: None,
+                },
+            )]),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            field_order: vec!["item".to_string()],
+            is_indirect: false,
+        },
+    );
+    let span = Span::from(0..0);
+    let handle = Ty::Named {
+        name: "Handle".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+    assert!(matches!(
+        checker.record_clone_admissibility("Box", std::slice::from_ref(&handle), &span),
+        RecordCloneAdmissibility::OpaqueField { .. }
+    ));
+}
+
+#[test]
+fn generic_record_clone_unresolved_var_is_nyi() {
+    // An unresolved receiver (a generic record whose type args are still
+    // inference vars) keeps the `GenericRecord` NYI diagnostic; the
+    // substitution-aware opaque walk must not regress this clean reject.
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.type_defs.insert(
+        "Pair".to_string(),
+        TypeDef {
+            kind: TypeDefKind::Record,
+            name: "Pair".to_string(),
+            type_params: vec!["A".to_string(), "B".to_string()],
+            bounds: HashMap::new(),
+            fields: HashMap::from([
+                (
+                    "a".to_string(),
+                    Ty::Named {
+                        name: "A".to_string(),
+                        args: vec![],
+                        builtin: None,
+                    },
+                ),
+                (
+                    "b".to_string(),
+                    Ty::Named {
+                        name: "B".to_string(),
+                        args: vec![],
+                        builtin: None,
+                    },
+                ),
+            ]),
+            variants: HashMap::new(),
+            methods: HashMap::new(),
+            doc_comment: None,
+            field_order: vec!["a".to_string(), "b".to_string()],
+            is_indirect: false,
+        },
+    );
+    let span = Span::from(0..0);
+    let args = [Ty::Var(crate::ty::TypeVar(0)), Ty::I64];
+    assert!(matches!(
+        checker.record_clone_admissibility("Pair", &args, &span),
+        RecordCloneAdmissibility::GenericRecord
+    ));
 }
 
 #[test]

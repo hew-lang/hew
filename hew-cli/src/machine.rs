@@ -12,6 +12,7 @@
 
 use hew_hir::{lower_program, HirItem, HirMachineDecl, ResolutionCtx};
 use hew_parser::ast::{Item, MachineDecl};
+use hew_parser::ParseResult;
 use hew_types::TypeCheckOutput;
 
 use crate::args::{MachineDiagramArgs, MachineFormat};
@@ -39,7 +40,10 @@ fn read_source(path: &str) -> String {
     }
 }
 
-fn parse_machines(path: &str, source: &str) -> Vec<MachineDecl> {
+/// Parse `source`, extracting machine declarations.  Returns both the flat
+/// machine list and the original `ParseResult` so callers can forward it to
+/// `check_and_lower` without a second parse.
+fn parse_machines(path: &str, source: &str) -> (Vec<MachineDecl>, ParseResult) {
     let result = hew_parser::parse(source);
 
     if !result.errors.is_empty() {
@@ -49,34 +53,26 @@ fn parse_machines(path: &str, source: &str) -> Vec<MachineDecl> {
         std::process::exit(1);
     }
 
-    result
+    let machines = result
         .program
         .items
-        .into_iter()
+        .iter()
         .filter_map(|(item, _)| {
             if let Item::Machine(md) = item {
-                Some(md)
+                Some(md.clone())
             } else {
                 None
             }
         })
-        .collect()
+        .collect();
+    (machines, result)
 }
 
-/// Run HIR lowering + static checks. Returns the checked HIR machines on success,
-/// or exits the process on failure.
-fn check_and_lower(path: &str, source: &str) -> Vec<HirMachineDecl> {
-    let result = hew_parser::parse(source);
-
-    if !result.errors.is_empty() {
-        for err in &result.errors {
-            eprintln!("{path}: parse error: {err:?}");
-        }
-        std::process::exit(1);
-    }
-
+/// Run HIR lowering + static checks on an already-parsed program.  Returns the
+/// checked HIR machines on success, or exits the process on failure.
+fn check_and_lower(path: &str, parsed: &ParseResult) -> Vec<HirMachineDecl> {
     let lowered = lower_program(
-        &result.program,
+        &parsed.program,
         &TypeCheckOutput::default(),
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
@@ -110,7 +106,7 @@ enum MachineCheckResult {
 
 fn check_machines_or_ast_fallback(
     path: &str,
-    source: &str,
+    parsed: &ParseResult,
     ast_machines: &[MachineDecl],
     supports_no_check: bool,
 ) -> MachineCheckResult {
@@ -124,7 +120,7 @@ fn check_machines_or_ast_fallback(
         return MachineCheckResult::AstFallback;
     }
 
-    let hir_machines = check_and_lower(path, source);
+    let hir_machines = check_and_lower(path, parsed);
     if hir_machines.is_empty() {
         eprintln!("No machines found in {path}");
         std::process::exit(1);
@@ -135,11 +131,11 @@ fn check_machines_or_ast_fallback(
 
 fn cmd_list(path: &str) {
     let source = read_source(path);
-    let machines = parse_machines(path, &source);
+    let (machines, parsed) = parse_machines(path, &source);
 
     // `list` renders from the AST below, but keeps fail-closed HIR validation
     // for non-generic machines.
-    check_machines_or_ast_fallback(path, &source, &machines, false);
+    check_machines_or_ast_fallback(path, &parsed, &machines, false);
 
     for md in &machines {
         println!("machine {} {{", md.name);
@@ -186,10 +182,10 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
         args.format.clone().unwrap_or(MachineFormat::Mermaid)
     };
 
-    let ast_machines = parse_machines(path, &source);
+    let (ast_machines, parsed) = parse_machines(path, &source);
 
     if args.check {
-        match check_machines_or_ast_fallback(path, &source, &ast_machines, true) {
+        match check_machines_or_ast_fallback(path, &parsed, &ast_machines, true) {
             MachineCheckResult::AstFallback => {
                 // Fall through to AST rendering below.
             }

@@ -389,7 +389,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.visitor
                     .leave_body(body_info, Self::context(Some(body_info)));
             }
-            Item::Record(_) // TODO(A-3): no walkable bodies until checker support lands
+            Item::Record(_) // records carry no callable bodies by design (fields only)
             | Item::Import(_)
             | Item::ExternBlock(_)
             | Item::TypeAlias(_) => {}

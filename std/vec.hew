@@ -3,68 +3,6 @@
 //! Pure Hew implementations for common vector operations.
 //! These replace the equivalent Rust FFI functions for simple linear scans.
 
-/// Check if a `Vec<i32>` contains `val`. Returns `true` if found.
-pub fn contains_i32(v: Vec<i32>, val: i32) -> bool { // INTERNAL-ABI: typed for 32-bit integer vector storage
-    let n = v.len();
-    for i in 0 .. n {
-        if v.get(i) == val {
-            return true;
-        }
-    }
-    false
-}
-
-/// Check if a `Vec<i64>` contains `val`.
-pub fn contains_i64(v: Vec<i64>, val: i64) -> bool { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
-    let n = v.len();
-    for i in 0 .. n {
-        if v.get(i) == val {
-            return true;
-        }
-    }
-    false
-}
-
-/// Check if a `Vec<f64>` contains `val`. Uses exact equality.
-///
-/// # Examples
-///
-/// ```
-/// let v: Vec<f64> = Vec::new();
-/// v.push(3.14);
-/// println(vec.contains_f64(v, 3.14));  // true
-/// println(vec.contains_f64(v, 0.0));   // false
-/// ```
-pub fn contains_f64(v: Vec<f64>, val: f64) -> bool {
-    let n = v.len();
-    for i in 0 .. n {
-        if v.get(i) == val {
-            return true;
-        }
-    }
-    false
-}
-
-/// Check if a `Vec<string>` contains `val`. Uses string equality.
-///
-/// # Examples
-///
-/// ```
-/// let v: Vec<string> = Vec::new();
-/// v.push("hello");
-/// println(vec.contains_str(v, "hello"));  // true
-/// println(vec.contains_str(v, "world"));  // false
-/// ```
-pub fn contains_str(v: Vec<string>, val: string) -> bool {
-    let n = v.len();
-    for i in 0 .. n {
-        if v.get(i) == val {
-            return true;
-        }
-    }
-    false
-}
-
 // ── index_of ──────────────────────────────────────────────────────────────
 /// Return the index of `val` in a `Vec<i32>`, or `-1` if not found.
 pub fn index_of_i32(v: Vec<i32>, val: i32) -> i64 { // INTERNAL-ABI: typed for 32-bit integer vector storage

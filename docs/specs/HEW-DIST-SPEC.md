@@ -209,12 +209,15 @@ The checker is the authority for ownership classification of supervision tokens,
 per [`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-lifetime.md)
 §5 (single ownership oracle).
 
-**Implementation gap:** Single-holder restart-authority enforcement at the type
-level is not yet implemented. This clause is normative spec intent; runtime
-enforcement is tracked under issue #1228 (RuntimeContext handle-shaped API) and
-issue #1399 (move-checker substrate). No existing supervision scaffolding claims
+**Implementation gap:** Single-holder restart-authority enforcement is
+spec-defined but **NOT** yet runtime-enforced (tracked: #2162). The spec is the
+authority for the ownership/transfer shape described above. The current type
+system does not yet model supervision tokens as a distinct type-level boundary;
+they are treated as ordinary Copy values, and `hew-types` has no
+`MarkerTrait::Capability` or equivalent. The runtime does not yet enforce
+single-holder transfer exclusivity. No existing supervision scaffolding claims
 to enforce single-holder tokens; the gap is absence of enforcement, not wrong
-enforcement.
+enforcement. For rc1, supervision tokens are not a runtime security boundary.
 
 **WASM policy:** Supervision token obligations are native-only; see §15 for WASM
 policy.
@@ -307,10 +310,14 @@ per [`handle-safety-and-resource-lifetime.md`](./handle-safety-and-resource-life
 to the transport/security mode is carried in the handshake contract; §12.1 does
 not restate those mechanics, only the ownership shape of tokens once transferred.
 
-**Implementation gap:** Capability transfer and grantor-side revocation are not
-yet runtime-enforced. This clause is normative spec intent; runtime enforcement
-is tracked under issue #1706 (capability transfer ownership and revocation per
-HEW-DIST-SPEC §12).
+**Implementation gap:** Capability transfer and grantor-side revocation are
+spec-defined but **NOT** yet runtime-enforced (tracked: #1706). The spec is the
+authority for the ownership/transfer shape described above. The current type
+system does not yet model capability tokens as a distinct type-level boundary;
+they are treated as ordinary Copy values, and `hew-types` has no
+`MarkerTrait::Capability` or equivalent. The runtime does not yet enforce
+transfer exclusivity or grantor-side revocation. For rc1, capability tokens are
+not a runtime security boundary.
 
 **WASM policy:** Capability token obligations are native-only; see §15 for WASM
 policy.

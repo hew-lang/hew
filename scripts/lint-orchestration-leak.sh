@@ -47,6 +47,12 @@
 # digit above the live L1–L6 layer-label convention), add a ':!path/to/file'
 # exclusion to the T4 git grep call below — same ':!pattern' syntax used for
 # ':!LESSONS.md' and ':!tests/leak-scan/'.
+#
+# Commit-message opt-out: a commit may include 'Leak-scan-allow: <reason>'
+# anywhere in its message body to suppress ALL pattern checks for that commit.
+# Use this only for legitimate overlaps (e.g. "feat(net): add L7 OSI routing").
+# The opt-out is explicit and greppable:
+#   git log --all --grep='Leak-scan-allow:'
 
 set -Eeuo pipefail
 
@@ -224,6 +230,9 @@ if [[ "${1-}" == "--self-test" ]]; then
     assert_commit_detects "CMSG T4 L8 lane ID in subject"   "chore: fix L8 regression in dispatcher"
     # Clean commit message — must not fire
     assert_commit_clean   "CMSG clean commit (no tokens)"    "feat: add robust error propagation"
+    # Opt-out trailer: Leak-scan-allow suppresses the entire commit from scanning
+    assert_commit_clean   "CMSG opt-out trailer skips scan"  "feat: add networking layer routing
+Leak-scan-allow: OSI layer term, not a lane ID"
 
     echo ""
     echo "lint-orchestration-leak self-test: ${_pass} passed, ${_fail} failed"
@@ -238,8 +247,9 @@ fi
 # — the scan silently passes on a broken environment.  Probe once here (after
 # self-test, before any pattern run) so both --scan-commits and the main scan
 # fail closed rather than silently passing when PCRE is absent.
-# Searches all indexed files (or nothing in an empty repo); the nonce pattern
-# never matches, so exit 1 = PCRE ok, anything else = PCRE unavailable.
+# Searches all indexed files (or nothing in an empty repo); the nonce appears
+# in this script (tracked), so exit 0 = match found (PCRE ok); exit 1 = no
+# match (PCRE ok); exit ≥ 2 = PCRE unavailable.
 _probe_rc=0
 git grep -qP '__PCRE_PROBE_NONCE__' 2>/dev/null || _probe_rc=$?
 if [[ $_probe_rc -ne 0 && $_probe_rc -ne 1 ]]; then
@@ -270,13 +280,13 @@ if [[ "${1-}" == "--scan-commits" ]]; then
     _commit_fail=""
 
     _check_commit_msg() {
-        local _sha="$1" _label="$2" _pat="$3"
+        local _sha="$1" _label="$2" _pat="$3" _msg="$4"
         local _m
         # Use perl -ne for PCRE on commit-message text: macOS system grep lacks -P,
         # but perl (always available) supports the same PCRE patterns as git grep -P.
         # Use m!...! delimiter to avoid conflicts with '/' in T7 path patterns and
         # '{' in T5 quantifiers.
-        _m=$(git log -1 --format='%B' "$_sha" | perl -ne "print \$. . ':' . \$_ if m!${_pat}!")
+        _m=$(printf '%s\n' "$_msg" | perl -ne "print \$. . ':' . \$_ if m!${_pat}!")
         if [[ -n "$_m" ]]; then
             _commit_hits=$((_commit_hits + 1))
             _commit_fail="${_commit_fail}${_sha}: ${_label}
@@ -287,13 +297,19 @@ ${_m}
 
     while IFS= read -r _sha; do
         [[ -z "$_sha" ]] && continue
-        _check_commit_msg "$_sha" "T1 PCA-<digits>"       'PCA-[0-9]+'
-        _check_commit_msg "$_sha" "T2 wire-fleet"          '\bwire-fleet\b'
-        _check_commit_msg "$_sha" "T3 wire-l<N>"           '\bwire-l[0-9]+\b'
-        _check_commit_msg "$_sha" "T4 L[7-9] lane ID"      '\bL[7-9]\b'
-        _check_commit_msg "$_sha" "T5 q<NNN> Q-tag"        '\bq[0-9]{3,}\b'
-        _check_commit_msg "$_sha" "T6 Q<a-z> short Q-tag"  '\bQ[a-z]\b'
-        _check_commit_msg "$_sha" "T7 .tmp/orch path"      '\.tmp/(orchestration|plans|worktrees)'
+        _full_msg=$(git log -1 --format='%B' "$_sha")
+        # Honour 'Leak-scan-allow: <reason>' opt-out trailer: a commit that
+        # explicitly documents an intentional overlap is skipped entirely.
+        if printf '%s\n' "$_full_msg" | grep -qi '^Leak-scan-allow:'; then
+            continue
+        fi
+        _check_commit_msg "$_sha" "T1 PCA-<digits>"       'PCA-[0-9]+'         "$_full_msg"
+        _check_commit_msg "$_sha" "T2 wire-fleet"          '\bwire-fleet\b'      "$_full_msg"
+        _check_commit_msg "$_sha" "T3 wire-l<N>"           '\bwire-l[0-9]+\b'    "$_full_msg"
+        _check_commit_msg "$_sha" "T4 L[7-9] lane ID"      '\bL[7-9]\b'          "$_full_msg"
+        _check_commit_msg "$_sha" "T5 q<NNN> Q-tag"        '\bq[0-9]{3,}\b'      "$_full_msg"
+        _check_commit_msg "$_sha" "T6 Q<a-z> short Q-tag"  '\bQ[a-z]\b'          "$_full_msg"
+        _check_commit_msg "$_sha" "T7 .tmp/orch path"      '\.tmp/(orchestration|plans|worktrees)' "$_full_msg"
     done < <(git log --format='%H' "$_commit_range" 2>/dev/null)
 
     if (( _commit_hits > 0 )); then

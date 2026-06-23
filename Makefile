@@ -319,6 +319,7 @@ install-hooks:
 	mkdir -p "$$pre_commit_dir" "$$pre_push_dir"; \
 	format_link_target="../../../scripts/pre-commit-fmt.sh"; \
 	preflight_link_target="../../../scripts/pre-push-ci-preflight.sh"; \
+	leak_scan_link_target="../../../scripts/pre-push-leak-scan.sh"; \
 	wrote_links=""; \
 	skipped_links=""; \
 	dispatcher_summary=""; \
@@ -333,6 +334,12 @@ install-hooks:
 	else \
 		ln -sfn "$$preflight_link_target" "$$pre_push_dir/ci-preflight"; \
 		wrote_links="$$wrote_links\n  - $$pre_push_dir/ci-preflight -> $$preflight_link_target"; \
+	fi; \
+	if [ -L "$$pre_push_dir/leak-scan" ] && [ "$$(readlink "$$pre_push_dir/leak-scan")" = "$$leak_scan_link_target" ]; then \
+		skipped_links="$$skipped_links\n  - $$pre_push_dir/leak-scan -> $$leak_scan_link_target"; \
+	else \
+		ln -sfn "$$leak_scan_link_target" "$$pre_push_dir/leak-scan"; \
+		wrote_links="$$wrote_links\n  - $$pre_push_dir/leak-scan -> $$leak_scan_link_target"; \
 	fi; \
 	hooks_path="$$(git config --global --get core.hooksPath 2>/dev/null; status=$$?; if [ $$status -eq 0 ]; then :; elif [ $$status -eq 1 ]; then printf ''; else exit $$status; fi)"; \
 	if [ -z "$$hooks_path" ]; then \

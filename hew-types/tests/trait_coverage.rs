@@ -786,3 +786,143 @@ fn primitives_are_not_resource() {
         );
     }
 }
+
+// ===========================================================================
+// Option<T> and Result<T,E> — structural marker derivation (F-02 fix)
+// ===========================================================================
+
+/// `Option<i64>` derives Send, Copy, and Frozen from `i64` (all three hold).
+/// Tests the production path via `Ty::option(Ty::I64)` — no `register_type` scaffolding.
+#[test]
+fn option_i64_is_send_copy_frozen() {
+    let reg = TraitRegistry::new();
+    let opt = Ty::option(Ty::I64);
+    assert!(
+        reg.implements_marker(&opt, MarkerTrait::Send),
+        "Option<i64> must be Send (i64 is Send)"
+    );
+    assert!(
+        reg.implements_marker(&opt, MarkerTrait::Copy),
+        "Option<i64> must be Copy (i64 is Copy)"
+    );
+    assert!(
+        reg.implements_marker(&opt, MarkerTrait::Frozen),
+        "Option<i64> must be Frozen (i64 is Frozen)"
+    );
+}
+
+/// `Option<string>` is Send (string is Send) but NOT Copy or Frozen (string is heap).
+#[test]
+fn option_string_is_send_not_copy() {
+    let reg = TraitRegistry::new();
+    let opt = Ty::option(Ty::String);
+    assert!(
+        reg.implements_marker(&opt, MarkerTrait::Send),
+        "Option<string> must be Send"
+    );
+    assert!(
+        !reg.implements_marker(&opt, MarkerTrait::Copy),
+        "Option<string> must NOT be Copy (string is not Copy)"
+    );
+    assert!(
+        !reg.implements_marker(&opt, MarkerTrait::Frozen),
+        "Option<string> must NOT be Frozen (string is not Frozen)"
+    );
+}
+
+/// `Option<Rc<i64>>` is NOT Send — proves the fix does not over-grant.
+/// The structural arm propagates the Send check into Rc<i64>, which is correctly not-Send.
+#[test]
+fn option_rc_is_not_send() {
+    let reg = TraitRegistry::new();
+    let opt = Ty::option(Ty::rc(Ty::I64));
+    assert!(
+        !reg.implements_marker(&opt, MarkerTrait::Send),
+        "Option<Rc<i64>> must NOT be Send (Rc is not Send)"
+    );
+}
+
+/// `Result<i64, string>` is Send — both type args are Send.
+#[test]
+fn result_i64_string_is_send() {
+    let reg = TraitRegistry::new();
+    let res = Ty::result(Ty::I64, Ty::String);
+    assert!(
+        reg.implements_marker(&res, MarkerTrait::Send),
+        "Result<i64, string> must be Send"
+    );
+}
+
+/// `Result<i64, Rc<i64>>` is NOT Send — the error arm contains a non-Send Rc.
+/// Proves the fix does not over-grant when only one arg fails.
+#[test]
+fn result_rc_err_is_not_send() {
+    let reg = TraitRegistry::new();
+    let res = Ty::result(Ty::I64, Ty::rc(Ty::I64));
+    assert!(
+        !reg.implements_marker(&res, MarkerTrait::Send),
+        "Result<i64, Rc<i64>> must NOT be Send (Rc in error position is not Send)"
+    );
+}
+
+/// `Option<T>` is not a Resource when `T` is a non-resource primitive.
+/// The structural `any()` arm correctly propagates: non-resource args → not Resource.
+#[test]
+fn option_is_not_resource() {
+    let reg = TraitRegistry::new();
+    assert!(
+        !reg.implements_marker(&Ty::option(Ty::I64), MarkerTrait::Resource),
+        "Option<i64> must not be Resource"
+    );
+    assert!(
+        !reg.implements_marker(&Ty::option(Ty::String), MarkerTrait::Resource),
+        "Option<string> must not be Resource"
+    );
+}
+
+/// `Result<T,E>` is not a Resource when neither `T` nor `E` is a resource.
+#[test]
+fn result_is_not_resource() {
+    let reg = TraitRegistry::new();
+    assert!(
+        !reg.implements_marker(&Ty::result(Ty::I64, Ty::String), MarkerTrait::Resource),
+        "Result<i64, string> must not be Resource"
+    );
+}
+
+/// `Option<Duplex<i64,i64>>` IS a Resource — the inner Duplex is a built-in
+/// resource handle (`Resource => true`). The structural `any()` arm propagates
+/// this: a wrapper holding a resource handle is itself conditionally a resource.
+#[test]
+fn option_duplex_is_resource() {
+    let reg = TraitRegistry::new();
+    let opt = Ty::option(Ty::duplex(Ty::I64, Ty::I64));
+    assert!(
+        reg.implements_marker(&opt, MarkerTrait::Resource),
+        "Option<Duplex<i64,i64>> must be Resource (inner Duplex is a resource handle)"
+    );
+}
+
+/// `Result<Duplex<i64,i64>, i64>` IS a Resource — the Ok arm is a Duplex.
+/// Uses `any()`: one resource arg makes the wrapper a resource.
+#[test]
+fn result_duplex_ok_is_resource() {
+    let reg = TraitRegistry::new();
+    let res = Ty::result(Ty::duplex(Ty::I64, Ty::I64), Ty::I64);
+    assert!(
+        reg.implements_marker(&res, MarkerTrait::Resource),
+        "Result<Duplex<i64,i64>, i64> must be Resource (Ok arm is a resource handle)"
+    );
+}
+
+/// `Result<i64, Duplex<i64,i64>>` IS a Resource — the Err arm is a Duplex.
+/// Proves `any()` covers the error arm too.
+#[test]
+fn result_duplex_err_is_resource() {
+    let reg = TraitRegistry::new();
+    let res = Ty::result(Ty::I64, Ty::duplex(Ty::I64, Ty::I64));
+    assert!(
+        reg.implements_marker(&res, MarkerTrait::Resource),
+        "Result<i64, Duplex<i64,i64>> must be Resource (Err arm is a resource handle)"
+    );
+}

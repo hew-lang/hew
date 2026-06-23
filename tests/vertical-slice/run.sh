@@ -1256,6 +1256,26 @@ run_accept_expect_status "closure_param_field_store" 42
 # by the dataflow checker with UseAfterConsume, never a silent double-free.
 reject_check_use_after_consume "closure_param_use_after_store"
 
+# Accept + run: `(rec.f)(x)` where `f` is a fn-typed record field — the
+# parenthesized field-access-callee form. Previously rejected as "undefined
+# function `rec::f`" because the checker built an obj::field name; now
+# synthesises the field type and routes to the indirect-call path.
+# Exit 50 = |x| x*10 applied to 5.
+run_accept_expect_status "fn_typed_field_call" 50
+
+# Accept + run: `(self.f)(x)` inside a record method, motivating the Map
+# adapter body pattern (`(self.f)(elem)` in Iterator::next). Exit 21 = 7*3.
+run_accept_expect_status "fn_field_self_call" 21
+
+# Reject: calling a non-fn-typed field with `(rec.count)(x)` is still
+# rejected. The guard fires correctly: `check_call_with_type` sees `i64`
+# and emits "cannot call value of type `i64`", not the old confusing
+# "undefined function `rec::count`".
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/fn_field_call_non_fn.hew" \
+  "cannot call value of type" \
+  "fn_field_call_non_fn"
+
 # Accept + run: lambda actor capturing a declared-actor pid and forwarding.
 # The pid rides the heap-boxed env as a no-drop field; the state dropper
 # frees env bytes only. Exit 42 = 10 + 32 forwarded.

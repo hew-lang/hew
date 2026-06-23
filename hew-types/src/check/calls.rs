@@ -641,9 +641,25 @@ impl Checker {
         // Get function name from expression
         let func_name = match &func.0 {
             Expr::Identifier(name) => name.clone(),
-            // Handle path-style calls like Vec::new(), HashMap::new()
             Expr::FieldAccess { object, field } => {
                 if let Expr::Identifier(obj_name) = &object.0 {
+                    // When the object identifier names a live value binding,
+                    // the callee is a field access on a value — not a
+                    // module-qualified or type-namespaced name. Synthesise the
+                    // field type and delegate to the indirect-call path so that
+                    // `(rec.f)(args)` where `f: fn(A)->B` reaches
+                    // `check_call_with_type` instead of failing with
+                    // "undefined function `rec::f`".
+                    //
+                    // The `env.lookup_ref` guard keeps type and module
+                    // identifiers on the existing name-building path
+                    // (`(Vec.new)(args)` → `"Vec::new"`) because type/module
+                    // names are not registered as value bindings.
+                    if self.env.lookup_ref(obj_name).is_some() {
+                        let field_ty = self.synthesize(&func.0, &func.1);
+                        let resolved = self.subst.resolve(&field_ty);
+                        return self.check_call_with_type(&resolved, args, span);
+                    }
                     format!("{obj_name}::{field}")
                 } else {
                     let func_ty = self.synthesize(&func.0, &func.1);

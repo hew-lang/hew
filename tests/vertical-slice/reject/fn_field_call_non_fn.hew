@@ -1,0 +1,13 @@
+// Negative control: calling a non-fn-typed field with `(rec.count)(x)`
+// syntax must still be rejected. The field `count` has type `i64`, which
+// is not callable; `check_call_with_type` emits "cannot call value of type `i64`"
+// (not "undefined function") — the guard fires correctly for values that
+// are not function-typed.
+type Counter {
+    count: i64;
+}
+
+fn main() -> i64 {
+    let c = Counter { count: 5 };
+    (c.count)(1)
+}

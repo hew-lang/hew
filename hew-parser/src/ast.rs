@@ -971,9 +971,6 @@ pub struct TypeAliasDecl {
 /// Records are pure data carriers: they hold named, typed fields and support
 /// generic type parameters and where-clauses.  Methods, variants, and tuple
 /// forms are not permitted (those belong to `TypeDecl`).
-///
-/// Checker support (resolving `RecordDecl` into `Ty::Record`) is deferred to
-/// slice A-3; until then the checker emits an "unsupported" diagnostic.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecordDecl {
     #[serde(default)]

@@ -117,8 +117,6 @@ pub fn unwrap_or_str(opt: Option<string>, fallback: string) -> string {
 }
 
 /// Apply `f` to the contained `string` value, or return `None` if empty.
-/// NOTE: This function is currently blocked by the heap-owning composite return
-/// boundary. It will become usable once tag-aware drop is implemented.
 pub fn map_str(opt: Option<string>, f: fn(string) -> string) -> Option<string> {
     match opt {
         Some(v) => Some(f(v)),

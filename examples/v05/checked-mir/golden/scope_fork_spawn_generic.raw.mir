@@ -1,0 +1,316 @@
+fn Driver__recv__drive() -> () [conv=actor_handler]
+  locals:
+    _0: HewTaskScope
+    _1: HewTaskScope
+    _2: <task<()>>
+    _3: <task<()>>
+    _4: HewTaskScope
+    _5: ()
+  bb0:
+    stmt: eval site=SiteId(2) ty=<task<()>>
+    stmt: eval site=SiteId(5) ty=<task<()>>
+    stmt: eval site=SiteId(1) ty=()
+    enter_context
+    _0 = call_rt hew_task_scope_new()
+    _1 = call_rt hew_task_scope_set_current(_0)
+    _2 = call_rt hew_task_new()
+    call_rt hew_task_scope_spawn(_0, _2)
+    _2 = spawn_task_direct __hew_task_entry_worker__i64
+    _3 = call_rt hew_task_new()
+    call_rt hew_task_scope_spawn(_0, _3)
+    _3 = spawn_task_direct __hew_task_entry_worker__string
+    call_rt hew_task_scope_join_all(_0)
+    call_rt hew_task_scope_destroy(_0)
+    _4 = call_rt hew_task_scope_set_current(_1)
+    _5 = unit
+    exit_context
+    return
+
+fn __hew_task_entry_worker__i64() -> () [conv=task_entry]
+  bb0:
+    enter_context
+    call worker$$i64() -> bb1
+  bb1:
+    exit_context
+    return
+
+fn __hew_task_entry_worker__string() -> () [conv=task_entry]
+  bb0:
+    enter_context
+    call worker$$string() -> bb1
+  bb1:
+    exit_context
+    return
+
+fn Driver__recv__run_value() -> i64 [conv=actor_handler]
+  locals:
+    _0: i64
+    _1: i64
+    _2: HewTaskScope
+    _3: HewTaskScope
+    _4: <task<i64>>
+    _5: <task<i64>>
+    _6: i64
+    _7: i64
+    _8: HewTaskScope
+    _9: ()
+  bb0:
+    stmt: bind BindingId(0) out site=SiteId(8) ty=i64
+    stmt: bind BindingId(1) t site=SiteId(12) ty=<task<i64>>
+    stmt: use BindingId(1) t site=SiteId(15) ty=<task<i64>> intent=Consume
+    enter_context
+    _0 = const.i64 0
+    _1 = move _0
+    _2 = call_rt hew_task_scope_new()
+    _3 = call_rt hew_task_scope_set_current(_2)
+    _4 = call_rt hew_task_new()
+    call_rt hew_task_scope_spawn(_2, _4)
+    _4 = spawn_task_direct __hew_task_entry_compute__i64
+    _5 = move _4
+    suspend [task_await] is_final=false -> resume=bb1 cleanup=bb1
+  bb1:
+    stmt: bind BindingId(2) v site=SiteId(15) ty=i64
+    stmt: use BindingId(2) v site=SiteId(17) ty=i64 intent=Consume
+    stmt: eval site=SiteId(17) ty=()
+    stmt: eval site=SiteId(9) ty=()
+    stmt: use BindingId(0) out site=SiteId(18) ty=i64 intent=Consume
+    stmt: return site=Some(SiteId(18)) ty=i64
+    _7 = move _6
+    _1 = move _7
+    call_rt hew_task_scope_join_all(_2)
+    call_rt hew_task_scope_destroy(_2)
+    _8 = call_rt hew_task_scope_set_current(_3)
+    _9 = unit
+    ret = move _1
+    exit_context
+    return
+
+fn __hew_task_entry_compute__i64() -> i64 [conv=task_entry]
+  bb0:
+    enter_context
+    ret = call compute$$i64() -> bb1
+  bb1:
+    exit_context
+    return
+
+fn main() -> i64 [conv=default]
+  locals:
+    _0: LocalPid<Driver>
+    _1: ()
+    _2: i64
+  bb0:
+    stmt: bind BindingId(3) d site=SiteId(19) ty=LocalPid<Driver>
+    stmt: use BindingId(3) d site=SiteId(21) ty=LocalPid<Driver> intent=Read
+    actor0 = spawn_actor Driver cycle_capable=false
+    send actor0[msg=-1712385220] _1 alias=Copy -> bb1
+  bb1:
+    stmt: eval site=SiteId(20) ty=()
+    stmt: return site=Some(SiteId(22)) ty=i64
+    _2 = const.i64 0
+    ret = move _2
+    return
+
+fn i8::fmt(i8) -> string [conv=default]
+  locals:
+    _0: i8
+    _1: i32
+    _2: string
+  bb0:
+    stmt: use BindingId(7) val site=SiteId(53) ty=i8 intent=Read
+    _1 = cast _0 i8 -> i32
+    _2 = call to_string_i32(_1) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(51)) ty=string
+    ret = move _2
+    return
+
+fn i16::fmt(i16) -> string [conv=default]
+  locals:
+    _0: i16
+    _1: i32
+    _2: string
+  bb0:
+    stmt: use BindingId(8) val site=SiteId(57) ty=i16 intent=Read
+    _1 = cast _0 i16 -> i32
+    _2 = call to_string_i32(_1) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(55)) ty=string
+    ret = move _2
+    return
+
+fn i32::fmt(i32) -> string [conv=default]
+  locals:
+    _0: i32
+    _1: string
+  bb0:
+    stmt: use BindingId(9) val site=SiteId(60) ty=i32 intent=Read
+    _1 = call to_string_i32(_0) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(59)) ty=string
+    ret = move _1
+    return
+
+fn i64::fmt(i64) -> string [conv=default]
+  locals:
+    _0: i64
+    _1: string
+  bb0:
+    stmt: use BindingId(10) val site=SiteId(63) ty=i64 intent=Read
+    _1 = call to_string_i64(_0) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(62)) ty=string
+    ret = move _1
+    return
+
+fn u8::fmt(u8) -> string [conv=default]
+  locals:
+    _0: u8
+    _1: string
+  bb0:
+    stmt: use BindingId(11) val site=SiteId(66) ty=u8 intent=Read
+    _1 = call to_string_u8(_0) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(65)) ty=string
+    ret = move _1
+    return
+
+fn u16::fmt(u16) -> string [conv=default]
+  locals:
+    _0: u16
+    _1: string
+  bb0:
+    stmt: use BindingId(12) val site=SiteId(69) ty=u16 intent=Read
+    _1 = call to_string_u16(_0) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(68)) ty=string
+    ret = move _1
+    return
+
+fn u32::fmt(u32) -> string [conv=default]
+  locals:
+    _0: u32
+    _1: string
+  bb0:
+    stmt: use BindingId(13) val site=SiteId(72) ty=u32 intent=Read
+    _1 = call to_string_u32(_0) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(71)) ty=string
+    ret = move _1
+    return
+
+fn u64::fmt(u64) -> string [conv=default]
+  locals:
+    _0: u64
+    _1: string
+  bb0:
+    stmt: use BindingId(14) val site=SiteId(75) ty=u64 intent=Read
+    _1 = call to_string_u64(_0) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(74)) ty=string
+    ret = move _1
+    return
+
+fn isize::fmt(isize) -> string [conv=default]
+  locals:
+    _0: isize
+    _1: i64
+    _2: string
+  bb0:
+    stmt: use BindingId(15) val site=SiteId(79) ty=isize intent=Read
+    _1 = cast _0 isize -> i64
+    _2 = call to_string_i64(_1) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(77)) ty=string
+    ret = move _2
+    return
+
+fn usize::fmt(usize) -> string [conv=default]
+  locals:
+    _0: usize
+    _1: u64
+    _2: string
+  bb0:
+    stmt: use BindingId(16) val site=SiteId(83) ty=usize intent=Read
+    _1 = cast _0 usize -> u64
+    _2 = call to_string_u64(_1) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(81)) ty=string
+    ret = move _2
+    return
+
+fn bool::fmt(bool) -> string [conv=default]
+  locals:
+    _0: bool
+    _1: string
+  bb0:
+    stmt: use BindingId(17) val site=SiteId(86) ty=bool intent=Read
+    _1 = call to_string_bool(_0) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(85)) ty=string
+    ret = move _1
+    return
+
+fn char::fmt(char) -> string [conv=default]
+  locals:
+    _0: char
+    _1: string
+  bb0:
+    stmt: use BindingId(18) val site=SiteId(89) ty=char intent=Read
+    _1 = call to_string_char(_0) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(88)) ty=string
+    ret = move _1
+    return
+
+fn f64::fmt(f64) -> string [conv=default]
+  locals:
+    _0: f64
+    _1: string
+  bb0:
+    stmt: use BindingId(19) val site=SiteId(92) ty=f64 intent=Read
+    _1 = call to_string_f64(_0) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(91)) ty=string
+    ret = move _1
+    return
+
+fn f32::fmt(f32) -> string [conv=default]
+  locals:
+    _0: f32
+    _1: f64
+    _2: string
+  bb0:
+    stmt: use BindingId(20) val site=SiteId(96) ty=f32 intent=Read
+    _1 = cast _0 f32 -> f64
+    _2 = call to_string_f64(_1) -> bb1
+  bb1:
+    stmt: return site=Some(SiteId(94)) ty=string
+    ret = move _2
+    return
+
+fn string::fmt(string) -> string [conv=default]
+  locals:
+    _0: string
+  bb0:
+    stmt: use BindingId(21) val site=SiteId(98) ty=string intent=Read
+    stmt: return site=Some(SiteId(98)) ty=string
+    ret = move _0
+    return
+
+fn worker$$i64() -> () [conv=default]
+  bb0:
+    return
+
+fn worker$$string() -> () [conv=default]
+  bb0:
+    return
+
+fn compute$$i64() -> i64 [conv=default]
+  locals:
+    _0: i64
+  bb0:
+    stmt: return site=Some(SiteId(0)) ty=i64
+    _0 = const.i64 42
+    ret = move _0
+    return
+

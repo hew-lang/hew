@@ -1,0 +1,29 @@
+// Accept fixture: generic free-function task spawn via the TaskEntry adapter.
+//
+// A no-argument, unit-returning generic function is spawned from an actor
+// handler at two distinct concrete type args (i64 and string). Each
+// monomorphized callee (worker$$i64, worker$$string) gets its own
+// task-entry adapter. The scope join-all waits for both tasks before the
+// handler returns.
+//
+// Harness verb: hew compile; execute binary
+// Expected stdout: (empty — worker returns unit, no output)
+fn worker<T>() {}
+
+actor Driver {
+    receive fn drive() -> i64 {
+        scope {
+            fork { worker::<i64>(); }
+            fork { worker::<string>(); }
+        };
+        0
+    }
+}
+
+fn main() -> i64 {
+    let d = spawn Driver;
+    match await d.drive() {
+        Ok(v) => v,
+        Err(_) => 1,
+    }
+}

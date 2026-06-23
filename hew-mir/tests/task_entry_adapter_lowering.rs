@@ -165,7 +165,10 @@ fn default_callconv_spawn_rejects_before_spawn_task_direct() {
 }
 
 #[test]
-fn generic_free_fn_spawn_rejects_before_shape_checks() {
+fn generic_free_fn_spawn_uses_monomorphized_task_entry_adapters() {
+    // After the G8 fix: a generic callee spawned with a concrete type arg
+    // resolves to the monomorphized symbol (worker$$i64) and gets its own
+    // task-entry adapter (__hew_task_entry_worker__i64). No NYI diagnostic.
     let pipeline = lower_source(
         r"
         fn worker<T>() {
@@ -175,6 +178,7 @@ fn generic_free_fn_spawn_rejects_before_shape_checks() {
             receive fn drive() {
                 scope {
                     fork { worker::<i64>(); }
+                    fork { worker::<string>(); }
                 };
             }
         }
@@ -188,18 +192,34 @@ fn generic_free_fn_spawn_rejects_before_shape_checks() {
     );
 
     assert!(
-        pipeline.diagnostics.iter().any(|diag| {
-            matches!(diag.kind, MirDiagnosticKind::NotYetImplemented { .. })
-                && diag.note.contains("generic free-function task spawning")
-        }),
-        "expected generic spawn diagnostic to win over arg/result shape rejects: {:#?}",
+        pipeline.diagnostics.is_empty(),
+        "generic spawn must not emit any diagnostic: {:#?}",
         pipeline.diagnostics
     );
+    // Each concrete type arg gets its own task-entry adapter.
     assert!(
-        !pipeline
+        pipeline
             .raw_mir
             .iter()
-            .any(|func| func.name.starts_with("__hew_task_entry_")),
-        "generic reject must not synthesize task-entry adapters"
+            .any(|func| func.name == "__hew_task_entry_worker__i64"),
+        "expected __hew_task_entry_worker__i64 adapter in MIR"
     );
+    assert!(
+        pipeline
+            .raw_mir
+            .iter()
+            .any(|func| func.name == "__hew_task_entry_worker__string"),
+        "expected __hew_task_entry_worker__string adapter in MIR"
+    );
+    // Each adapter must use the TaskEntry call-convention.
+    for func in &pipeline.raw_mir {
+        if func.name.starts_with("__hew_task_entry_worker__") {
+            assert_eq!(
+                func.call_conv,
+                FunctionCallConv::TaskEntry,
+                "adapter {} must use TaskEntry call-conv",
+                func.name
+            );
+        }
+    }
 }

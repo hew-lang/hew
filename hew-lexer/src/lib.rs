@@ -854,7 +854,7 @@ mod tests {
         // Spot-check first and last
         assert_eq!(toks[0], Token::Let);
         assert_eq!(toks[3], Token::Mut);
-        assert_eq!(toks[70], Token::Is);
+        assert_eq!(toks[69], Token::Is);
     }
 
     #[test]

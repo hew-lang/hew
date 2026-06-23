@@ -58,13 +58,14 @@
 #   make miri         — run the curated rust-runtime Miri allowlist locally
 #   make lint         — cargo clippy (workspace + tests, warnings are errors) + hew fmt gate
 #   make hew-fmt-check — check that std/ and examples/ .hew files are formatted (part of lint)
+#   make leak-scan    — scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths)
 #   make fuzz-corpus    — regenerate ignored cargo-fuzz corpora from current fixtures/examples
 #   make fuzz-smoke     — build and smoke-run cargo-fuzz targets locally
 #   make clean        — remove build/, target/
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-o2-differential test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-o2-differential test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -950,8 +951,14 @@ miri:
 
 # ── Lint ────────────────────────────────────────────────────────────────────
 
-lint: runtime-poison-safe-lint lint-wasm-todo verify-ffi hew-fmt-check
+lint: runtime-poison-safe-lint lint-wasm-todo leak-scan verify-ffi hew-fmt-check
 	cargo clippy --workspace --tests -- -D warnings
+
+# Scan tracked source for orchestration-token leaks (lane IDs, Q-tags, .tmp/ paths).
+# Catches identifiers that belong only in orchestration context before they reach review.
+# See scripts/lint-orchestration-leak.sh and tests/leak-scan/ for the token catalogue.
+leak-scan:
+	bash scripts/lint-orchestration-leak.sh
 
 # Check that std/ and examples/ .hew sources are formatted.
 # Run `find std examples -name "*.hew" -print0 | xargs -0 hew fmt` to fix.

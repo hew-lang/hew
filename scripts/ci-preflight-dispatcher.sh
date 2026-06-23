@@ -642,6 +642,7 @@ case "$LANE" in
         add_command "make test-doc-examples"
         ;;
     scripts-config)
+        add_command "make leak-scan"
         add_command "cargo fmt --all -- --check"
         add_command "make test-rust"
         ;;
@@ -810,6 +811,14 @@ if (( needs_trap_fixtures == 1 )) && [[ "$LANE" != "fallback" && "$LANE" != "com
     # not already include fuzz-oracle.  Append it so the trap signal-code ratchet
     # runs before push regardless of the primary lane selected.
     add_command "make fuzz-oracle"
+fi
+
+# Orchestration-token leak scan — run on every push for every lane.
+# Catches lane IDs, Q-tags, and .tmp/ path references in committed source before review.
+# Fast (<2 s, git grep only).  Fallback lane gets this via `make lint`; scripts-config
+# lane gets it explicitly above; all other lanes get it here so no lane silently skips.
+if [[ "$LANE" != "fallback" && "$LANE" != "scripts-config" ]]; then
+    add_command "make leak-scan"
 fi
 
 # Test-only override for dispatcher command execution. This keeps failure-policy

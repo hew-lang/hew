@@ -6644,6 +6644,118 @@ fn needless_range_loop_allow_level_suppresses() {
     assert_eq!(count_needless_range_loop(&out.errors), 0);
 }
 
+/// Parse `source`, install it as the root lint source (so `// hew:allow(...)`
+/// directives resolve), and type-check at the given level for
+/// `needless_range_loop`.
+fn check_with_lint_source(source: &str, level: LintLevel) -> TypeCheckOutput {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture should parse cleanly: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut levels = LintLevels::from_defaults();
+    levels.set(LintId::NeedlessRangeLoop, level);
+    checker.set_lint_levels(levels);
+    let mut sources = LintSources::new();
+    sources.set_root(source.to_string());
+    checker.set_lint_sources(sources);
+    checker.check_program(&parsed.program)
+}
+
+#[test]
+fn needless_range_loop_suppressed_by_directive_above() {
+    const SOURCE: &str = "fn scan(xs: Vec<i64>) {\n\
+         // hew:allow(needless_range_loop)\n\
+         for i in 0..xs.len() { let _ = xs[i]; }\n\
+         }";
+    let out = check_with_lint_source(SOURCE, LintLevel::Warn);
+    assert_eq!(
+        count_needless_range_loop(&out.warnings),
+        0,
+        "a directive on the line above must suppress, warnings: {:?}",
+        out.warnings
+    );
+    assert_eq!(count_needless_range_loop(&out.errors), 0);
+}
+
+#[test]
+fn needless_range_loop_suppressed_by_trailing_directive() {
+    const SOURCE: &str = "fn scan(xs: Vec<i64>) {\n\
+         for i in 0..xs.len() { let _ = xs[i]; } // hew:allow(needless_range_loop)\n\
+         }";
+    let out = check_with_lint_source(SOURCE, LintLevel::Warn);
+    assert_eq!(
+        count_needless_range_loop(&out.warnings),
+        0,
+        "a trailing directive on the loop line must suppress, warnings: {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn needless_range_loop_suppressed_by_allow_all_directive() {
+    const SOURCE: &str = "fn scan(xs: Vec<i64>) {\n\
+         // hew:allow(all)\n\
+         for i in 0..xs.len() { let _ = xs[i]; }\n\
+         }";
+    let out = check_with_lint_source(SOURCE, LintLevel::Warn);
+    assert_eq!(
+        count_needless_range_loop(&out.warnings),
+        0,
+        "`hew:allow(all)` must suppress every lint, warnings: {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn needless_range_loop_directive_for_other_lint_does_not_suppress() {
+    // A directive naming a *different* lint must leave this one intact.
+    const SOURCE: &str = "fn scan(xs: Vec<i64>) {\n\
+         // hew:allow(some_other_lint)\n\
+         for i in 0..xs.len() { let _ = xs[i]; }\n\
+         }";
+    let out = check_with_lint_source(SOURCE, LintLevel::Warn);
+    assert_eq!(
+        count_needless_range_loop(&out.warnings),
+        1,
+        "a non-matching directive must not suppress, warnings: {:?}",
+        out.warnings
+    );
+}
+
+#[test]
+fn needless_range_loop_directive_overrides_deny() {
+    // A local `allow` wins over a command-line `--deny` (rustc/Clippy rule):
+    // the finding is dropped entirely rather than promoted to an error.
+    const SOURCE: &str = "fn scan(xs: Vec<i64>) {\n\
+         // hew:allow(needless_range_loop)\n\
+         for i in 0..xs.len() { let _ = xs[i]; }\n\
+         }";
+    let out = check_with_lint_source(SOURCE, LintLevel::Deny);
+    assert_eq!(count_needless_range_loop(&out.errors), 0);
+    assert_eq!(count_needless_range_loop(&out.warnings), 0);
+}
+
+#[test]
+fn needless_range_loop_directive_above_code_does_not_suppress() {
+    // The directive is separated from the loop by a real statement, so the
+    // upward scan stops at the code line and the lint still fires.
+    const SOURCE: &str = "fn scan(xs: Vec<i64>) {\n\
+         // hew:allow(needless_range_loop)\n\
+         let n = xs.len();\n\
+         for i in 0..xs.len() { let _ = xs[i]; }\n\
+         }";
+    let out = check_with_lint_source(SOURCE, LintLevel::Warn);
+    assert_eq!(
+        count_needless_range_loop(&out.warnings),
+        1,
+        "a directive shadowed by an intervening statement must not suppress, warnings: {:?}",
+        out.warnings
+    );
+}
+
 #[test]
 fn unused_variable_has_correct_kind() {
     let (_, warnings) = parse_and_check("fn main() { let unused = 42; }");

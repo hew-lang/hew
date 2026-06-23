@@ -33,7 +33,7 @@ mod expressions;
 mod generics;
 mod items;
 mod lints;
-pub use self::lints::{LintId, LintLevel, LintLevels};
+pub use self::lints::{LintId, LintLevel, LintLevels, LintSources};
 mod methods;
 pub use self::methods::collection_dispatch_registry_for_tests;
 mod patterns;
@@ -834,6 +834,7 @@ impl Checker {
             expr_types: &self.expr_types,
             module_idx,
             source_module,
+            source: self.lint_sources.source_for(source_module),
         };
         match item {
             Item::Function(fn_decl) => lints::lint_block(&ctx, levels, &fn_decl.body, out),

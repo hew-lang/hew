@@ -2781,6 +2781,13 @@ pub struct Checker {
     /// `--warn` / `--allow` / `--deny` through [`Checker::set_lint_levels`]
     /// before [`Checker::check_program`] runs the lint sweep.
     pub(super) lint_levels: super::LintLevels,
+    /// Per-module source text for in-source lint suppression (see
+    /// [`super::LintSources`]).
+    ///
+    /// Empty by default; the CLI installs the program's source(s) through
+    /// [`Checker::set_lint_sources`] before [`Checker::check_program`] so the
+    /// lint sweep can resolve `// hew:allow(...)` directives.
+    pub(super) lint_sources: super::LintSources,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2993,6 +3000,7 @@ impl Checker {
             actor_spawn_type_args: HashMap::new(),
             builtin_result_option_method_sigs: HashMap::new(),
             lint_levels: super::LintLevels::from_defaults(),
+            lint_sources: super::LintSources::new(),
         }
     }
 
@@ -3010,6 +3018,17 @@ impl Checker {
     /// [`super::LintLevels::from_defaults`].
     pub fn set_lint_levels(&mut self, levels: super::LintLevels) {
         self.lint_levels = levels;
+    }
+
+    /// Install the program's source text for in-source lint suppression.
+    ///
+    /// The checker only carries byte-offset spans, so the front end hands it
+    /// the source(s) here — keyed by module — before [`Checker::check_program`].
+    /// The lint sweep then resolves `// hew:allow(...)` directives against the
+    /// source owning each finding's span. When left unset, no in-source
+    /// suppression is applied (CLI `--allow` still works).
+    pub fn set_lint_sources(&mut self, sources: super::LintSources) {
+        self.lint_sources = sources;
     }
 
     /// Target pointer width in bits: 32 on `wasm32`, 64 on every native target.

@@ -18,6 +18,10 @@
 //!   (see [`super::Checker::set_lint_levels`]); the CLI threads `--warn` /
 //!   `--allow` / `--deny` flags into it before [`super::Checker::check_program`]
 //!   runs the sweep.
+//! - [`LintSources`] — the per-compilation source text, keyed by module, that
+//!   backs in-source `// hew:allow(...)` suppression. The CLI installs it via
+//!   [`super::Checker::set_lint_sources`]; a directive on (or above) a finding's
+//!   line drops it, even under `Deny`.
 //!
 //! ## The sweep
 //!
@@ -145,6 +149,50 @@ impl Default for LintLevels {
     }
 }
 
+/// Per-compilation source text, keyed by module, for in-source suppression.
+///
+/// The checker only carries byte-offset [`Span`]s, not source text, so the
+/// front end hands it the program's source(s) through
+/// [`super::Checker::set_lint_sources`] before [`super::Checker::check_program`].
+/// A lint then resolves the `// hew:allow(...)` directive on (or above) the line
+/// of its finding's span. `root` is the entry source the user compiled;
+/// `modules` maps a non-root module's dotted name (the same key
+/// [`LintCtx::source_module`] carries) to that module's source.
+#[derive(Debug, Clone, Default)]
+pub struct LintSources {
+    root: Option<String>,
+    modules: HashMap<String, String>,
+}
+
+impl LintSources {
+    /// An empty source set (no suppression resolution possible).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Install the root (entry) source — the file passed to `hew check`/`build`.
+    pub fn set_root(&mut self, source: String) {
+        self.root = Some(source);
+    }
+
+    /// Install a non-root module's source, keyed by its dotted module name
+    /// (e.g. `"std.net.http"`), matching the `source_module` tag the lint
+    /// sweep stamps onto that module's diagnostics.
+    pub fn set_module(&mut self, module: String, source: String) {
+        self.modules.insert(module, source);
+    }
+
+    /// The source text owning `module`'s spans: the root source when
+    /// `module` is `None`, otherwise the named module's source (if known).
+    pub(super) fn source_for(&self, module: Option<&str>) -> Option<&str> {
+        match module {
+            None => self.root.as_deref(),
+            Some(name) => self.modules.get(name).map(String::as_str),
+        }
+    }
+}
+
 /// Read-only view of the checker's type facts that a lint needs.
 ///
 /// Borrows the resolved-type side table and the substitution so a lint can ask
@@ -157,6 +205,11 @@ pub(super) struct LintCtx<'a> {
     pub expr_types: &'a HashMap<SpanKey, Ty>,
     pub module_idx: u32,
     pub source_module: Option<&'a str>,
+    /// Source text owning this body's spans, used to resolve in-source
+    /// `// hew:allow(...)` directives. `None` when the front end did not
+    /// install sources (e.g. internal callers of `check_program`), in which
+    /// case suppression is simply skipped.
+    pub source: Option<&'a str>,
 }
 
 impl LintCtx<'_> {
@@ -169,11 +222,17 @@ impl LintCtx<'_> {
         self.expr_types.get(&key).map(|ty| self.subst.resolve(ty))
     }
 
-    /// Emit one lint diagnostic, honouring the configured [`LintLevel`].
+    /// Emit one lint diagnostic, honouring suppression and the configured
+    /// [`LintLevel`].
     ///
-    /// `Allow` drops the finding; `Warn` emits a [`Severity::Warning`]; `Deny`
-    /// emits a [`Severity::Error`]. The caller (the checker finalization)
-    /// routes warnings and errors into the right output vector by severity.
+    /// An in-source `// hew:allow(<id>)` (or `// hew:allow(all)`) directive on
+    /// the finding's own line or on the contiguous comment/blank lines directly
+    /// above it drops the diagnostic outright — even under `Deny` — mirroring
+    /// the rustc/Clippy rule that a local `allow` wins over a command-line
+    /// `deny`. Otherwise `Allow` drops the finding, `Warn` emits a
+    /// [`Severity::Warning`], and `Deny` emits a [`Severity::Error`]; the caller
+    /// (the checker finalization) routes warnings and errors into the right
+    /// output vector by severity.
     fn emit(
         &self,
         levels: &LintLevels,
@@ -183,6 +242,12 @@ impl LintCtx<'_> {
         suggestion: String,
         out: &mut Vec<TypeError>,
     ) {
+        if self
+            .source
+            .is_some_and(|source| directive_suppresses(source, span.start, id))
+        {
+            return;
+        }
         let severity = match levels.level(id) {
             LintLevel::Allow => return,
             LintLevel::Warn => Severity::Warning,
@@ -198,6 +263,75 @@ impl LintCtx<'_> {
             source_module: self.source_module.map(str::to_string),
         });
     }
+}
+
+/// Whether an in-source `// hew:allow(...)` directive suppresses lint `id` for a
+/// construct beginning at byte offset `span_start` in `source`.
+///
+/// A directive is honoured when it appears either as a trailing comment on the
+/// construct's own line, or on the contiguous run of comment / blank lines
+/// directly above it (the first line of real code stops the search). This
+/// covers `// hew:allow(needless_range_loop)` placed on the line above the loop
+/// and, for item-bodied constructs reached through only comments, the
+/// item-level form. `all` matches every lint.
+fn directive_suppresses(source: &str, span_start: usize, id: LintId) -> bool {
+    let lines: Vec<&str> = source.lines().collect();
+    if lines.is_empty() {
+        return false;
+    }
+    let construct_line = line_index_at(source, span_start).min(lines.len() - 1);
+
+    if comment_allows(lines[construct_line], id) {
+        return true;
+    }
+    let mut idx = construct_line;
+    while idx > 0 {
+        idx -= 1;
+        let trimmed = lines[idx].trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("//") {
+            if comment_allows(lines[idx], id) {
+                return true;
+            }
+            continue;
+        }
+        break;
+    }
+    false
+}
+
+/// 0-based index of the line containing byte offset `offset` (clamped to the
+/// source length), counting `\n` terminators so it aligns with [`str::lines`].
+fn line_index_at(source: &str, offset: usize) -> usize {
+    let clamped = offset.min(source.len());
+    source
+        .bytes()
+        .take(clamped)
+        .filter(|&byte| byte == b'\n')
+        .count()
+}
+
+/// Whether `line`'s comment carries a `// hew:allow(...)` directive naming `id`
+/// (or `all`). Only the text after the first `//` is considered, so a directive
+/// must live in a comment rather than in code.
+fn comment_allows(line: &str, id: LintId) -> bool {
+    let Some(comment_at) = line.find("//") else {
+        return false;
+    };
+    let comment = &line[comment_at..];
+    let Some(open) = comment.find("hew:allow(") else {
+        return false;
+    };
+    let rest = &comment[open + "hew:allow(".len()..];
+    let Some(close) = rest.find(')') else {
+        return false;
+    };
+    rest[..close]
+        .split(',')
+        .map(str::trim)
+        .any(|name| name == "all" || name == id.as_str())
 }
 
 /// Run every enabled lint over one function/method body.

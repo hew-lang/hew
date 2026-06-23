@@ -244,6 +244,12 @@ diff -u "${ROOT}/tests/vertical-slice/accept/hello_println.expected" "${hello_st
 run_accept_expect_status "assert" 0
 
 # ---------------------------------------------------------------------------
+# #[wire] enum run oracle: declare and match on a wire enum value.
+# Proves the sole canonical wire declaration surface compiles and executes.
+# ---------------------------------------------------------------------------
+run_accept_expect_status "wire_enum_attribute_form" 0
+
+# ---------------------------------------------------------------------------
 # W4.002: HIR pre-pass Item::Machine coverage for FC-P0 sibling walkers
 # ---------------------------------------------------------------------------
 

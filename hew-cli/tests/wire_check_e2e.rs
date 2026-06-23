@@ -38,33 +38,37 @@ fn assert_wire_check_ok(current: &str, baseline: &str) -> String {
 // ── (1) Struct field-number reuse / duplicate tags ──────────────────────────
 
 /// Duplicate @N within the same wire type in current schema is an error.
+/// The parser catches this at parse time with `#[wire] struct`.
 #[test]
 fn wire_check_rejects_duplicate_field_tag_in_current() {
     let output = run_wire_check(
-        "wire type Msg { id: String @1; also_id: i32 @1; }\n",
-        "wire type Msg { id: String @1; }\n",
+        "#[wire]\nstruct Msg { id: String @1; also_id: i32 @1; }\n",
+        "#[wire]\nstruct Msg { id: String @1; }\n",
     );
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // Parser catches duplicate @N in #[wire] struct before schema comparison.
     assert!(
-        stderr.contains("current schema: wire `Msg` reuses field number @1"),
+        stderr.contains("duplicate wire field number @1"),
         "{stderr}",
     );
 }
 
 /// Duplicate @N in the baseline schema is also an error.
+/// The parser catches this at parse time with `#[wire] struct`.
 #[test]
 fn wire_check_rejects_duplicate_field_tag_in_baseline() {
     let output = run_wire_check(
-        "wire type Msg { id: String @1; }\n",
-        "wire type Msg { id: String @1; also_id: i32 @1; }\n",
+        "#[wire]\nstruct Msg { id: String @1; }\n",
+        "#[wire]\nstruct Msg { id: String @1; also_id: i32 @1; }\n",
     );
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // Parser catches duplicate @N in #[wire] struct before schema comparison.
     assert!(
-        stderr.contains("baseline schema: wire `Msg` reuses field number @1"),
+        stderr.contains("duplicate wire field number @1"),
         "{stderr}",
     );
 }
@@ -74,8 +78,8 @@ fn wire_check_rejects_duplicate_field_tag_in_baseline() {
 #[test]
 fn wire_check_rejects_field_tag_reassigned_to_different_name() {
     let output = run_wire_check(
-        "wire type Msg { label: String @1; }\n",
-        "wire type Msg { id: String @1; }\n",
+        "#[wire]\nstruct Msg { label: String @1; }\n",
+        "#[wire]\nstruct Msg { id: String @1; }\n",
     );
 
     assert!(!output.status.success());
@@ -92,8 +96,8 @@ fn wire_check_rejects_field_tag_reassigned_to_different_name() {
 #[test]
 fn wire_check_rejects_field_type_change() {
     let output = run_wire_check(
-        "wire type Msg { count: i32 @1; }\n",
-        "wire type Msg { count: String @1; }\n",
+        "#[wire]\nstruct Msg { count: i32 @1; }\n",
+        "#[wire]\nstruct Msg { count: String @1; }\n",
     );
 
     assert!(!output.status.success());
@@ -108,8 +112,8 @@ fn wire_check_rejects_field_type_change() {
 #[test]
 fn wire_check_rejects_field_repeatedness_change() {
     let output = run_wire_check(
-        "wire type Msg { tags: String @1 repeated; }\n",
-        "wire type Msg { tags: String @1; }\n",
+        "#[wire]\nstruct Msg { tags: String @1 repeated; }\n",
+        "#[wire]\nstruct Msg { tags: String @1; }\n",
     );
 
     assert!(!output.status.success());
@@ -127,8 +131,8 @@ fn wire_check_rejects_field_repeatedness_change() {
 #[test]
 fn wire_check_warns_optional_to_required() {
     let output = run_wire_check(
-        "wire type Msg { name: String @1; }\n",
-        "wire type Msg { name: String @1 optional; }\n",
+        "#[wire]\nstruct Msg { name: String @1; }\n",
+        "#[wire]\nstruct Msg { name: String @1 optional; }\n",
     );
 
     assert!(
@@ -150,8 +154,8 @@ fn wire_check_warns_optional_to_required() {
 #[test]
 fn wire_check_warns_new_required_field_without_since() {
     let output = run_wire_check(
-        "wire type Msg { id: String @1; extra: i32 @2; }\n",
-        "wire type Msg { id: String @1; }\n",
+        "#[wire]\nstruct Msg { id: String @1; extra: i32 @2; }\n",
+        "#[wire]\nstruct Msg { id: String @1; }\n",
     );
 
     assert!(
@@ -189,8 +193,8 @@ fn wire_check_suppresses_new_required_field_warning_with_since() {
 #[test]
 fn wire_check_warns_deprecated_field() {
     let output = run_wire_check(
-        "wire type Msg { id: String @1; legacy: i32 @2 deprecated; }\n",
-        "wire type Msg { id: String @1; legacy: i32 @2; }\n",
+        "#[wire]\nstruct Msg { id: String @1; legacy: i32 @2 deprecated; }\n",
+        "#[wire]\nstruct Msg { id: String @1; legacy: i32 @2; }\n",
     );
 
     assert!(
@@ -211,8 +215,8 @@ fn wire_check_warns_deprecated_field() {
 #[test]
 fn wire_check_rejects_removed_required_field() {
     let output = run_wire_check(
-        "wire type Msg { id: String @1; }\n",
-        "wire type Msg { id: String @1; count: i32 @2; }\n",
+        "#[wire]\nstruct Msg { id: String @1; }\n",
+        "#[wire]\nstruct Msg { id: String @1; count: i32 @2; }\n",
     );
 
     assert!(!output.status.success());
@@ -227,8 +231,8 @@ fn wire_check_rejects_removed_required_field() {
 #[test]
 fn wire_check_allows_removed_optional_field() {
     let stderr = assert_wire_check_ok(
-        "wire type Msg { id: String @1; }\n",
-        "wire type Msg { id: String @1; tag: String @2 optional; }\n",
+        "#[wire]\nstruct Msg { id: String @1; }\n",
+        "#[wire]\nstruct Msg { id: String @1; tag: String @2 optional; }\n",
     );
     assert!(
         !stderr.contains("removed"),
@@ -287,8 +291,8 @@ fn wire_check_rejects_min_version_higher_than_baseline() {
 #[test]
 fn wire_check_rejects_struct_to_enum_kind_change() {
     let output = run_wire_check(
-        "wire enum Msg { Ok; Err; }\n",
-        "wire type Msg { id: String @1; }\n",
+        "#[wire]\nenum Msg { Ok; Err; }\n",
+        "#[wire]\nstruct Msg { id: String @1; }\n",
     );
 
     assert!(!output.status.success());
@@ -303,8 +307,8 @@ fn wire_check_rejects_struct_to_enum_kind_change() {
 #[test]
 fn wire_check_rejects_duplicate_declaration_in_current() {
     let output = run_wire_check(
-        "wire type Msg { id: String @1; }\nwire type Msg { id: String @1; }\n",
-        "wire type Msg { id: String @1; }\n",
+        "#[wire]\nstruct Msg { id: String @1; }\n#[wire]\nstruct Msg { id: String @1; }\n",
+        "#[wire]\nstruct Msg { id: String @1; }\n",
     );
 
     assert!(!output.status.success());
@@ -322,7 +326,7 @@ fn wire_check_rejects_duplicate_declaration_in_current() {
 fn wire_check_rejects_removed_wire_struct_with_required_fields() {
     let output = run_wire_check(
         "",
-        "wire type Request { id: String @1; payload: String @2; }\n",
+        "#[wire]\nstruct Request { id: String @1; payload: String @2; }\n",
     );
 
     assert!(!output.status.success());
@@ -336,7 +340,7 @@ fn wire_check_rejects_removed_wire_struct_with_required_fields() {
 /// Removing a wire enum is always a breaking change.
 #[test]
 fn wire_check_rejects_removed_wire_enum() {
-    let output = run_wire_check("", "wire enum Status { Active; Inactive; }\n");
+    let output = run_wire_check("", "#[wire]\nenum Status { Active; Inactive; }\n");
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -353,8 +357,8 @@ fn wire_check_rejects_removed_wire_enum() {
 #[test]
 fn wire_check_rejects_wire_enum_variant_addition() {
     let output = run_wire_check(
-        "wire enum Status { Active; Inactive; Pending; }\n",
-        "wire enum Status { Active; Inactive; }\n",
+        "#[wire]\nenum Status { Active; Inactive; Pending; }\n",
+        "#[wire]\nenum Status { Active; Inactive; }\n",
     );
 
     assert!(!output.status.success());
@@ -369,8 +373,8 @@ fn wire_check_rejects_wire_enum_variant_addition() {
 #[test]
 fn wire_check_rejects_wire_enum_variant_removal() {
     let output = run_wire_check(
-        "wire enum Status { Active; }\n",
-        "wire enum Status { Active; Inactive; }\n",
+        "#[wire]\nenum Status { Active; }\n",
+        "#[wire]\nenum Status { Active; Inactive; }\n",
     );
 
     assert!(!output.status.success());
@@ -385,8 +389,8 @@ fn wire_check_rejects_wire_enum_variant_removal() {
 #[test]
 fn wire_check_rejects_wire_enum_variant_payload_shape_change() {
     let output = run_wire_check(
-        "wire enum Cmd { Start(String); }\n",
-        "wire enum Cmd { Start; }\n",
+        "#[wire]\nenum Cmd { Start(String); }\n",
+        "#[wire]\nenum Cmd { Start; }\n",
     );
 
     assert!(!output.status.success());
@@ -401,8 +405,8 @@ fn wire_check_rejects_wire_enum_variant_payload_shape_change() {
 #[test]
 fn wire_check_rejects_wire_enum_tuple_payload_type_change() {
     let output = run_wire_check(
-        "wire enum Cmd { Data(i32); }\n",
-        "wire enum Cmd { Data(String); }\n",
+        "#[wire]\nenum Cmd { Data(i32); }\n",
+        "#[wire]\nenum Cmd { Data(String); }\n",
     );
 
     assert!(!output.status.success());
@@ -417,8 +421,8 @@ fn wire_check_rejects_wire_enum_tuple_payload_type_change() {
 #[test]
 fn wire_check_rejects_wire_enum_struct_variant_field_type_change() {
     let output = run_wire_check(
-        "wire enum Cmd { Data { value: i32 }; }\n",
-        "wire enum Cmd { Data { value: String }; }\n",
+        "#[wire]\nenum Cmd { Data { value: i32 }; }\n",
+        "#[wire]\nenum Cmd { Data { value: String }; }\n",
     );
 
     assert!(!output.status.success());
@@ -436,7 +440,7 @@ fn wire_check_rejects_wire_enum_struct_variant_field_type_change() {
 #[test]
 fn wire_check_warns_new_wire_struct_with_required_fields() {
     let output = run_wire_check(
-        "wire type NewMessage { id: String @1; payload: String @2; }\n",
+        "#[wire]\nstruct NewMessage { id: String @1; payload: String @2; }\n",
         "",
     );
 
@@ -456,7 +460,7 @@ fn wire_check_warns_new_wire_struct_with_required_fields() {
 #[test]
 fn wire_check_warns_new_wire_struct_with_deprecated_field() {
     let output = run_wire_check(
-        "wire type NewMessage { id: String @1; legacy: i32 @2 deprecated; }\n",
+        "#[wire]\nstruct NewMessage { id: String @1; legacy: i32 @2 deprecated; }\n",
         "",
     );
 
@@ -477,8 +481,8 @@ fn wire_check_warns_new_wire_struct_with_deprecated_field() {
 #[test]
 fn wire_check_rejects_reordered_wire_enum_variants() {
     let output = run_wire_check(
-        "wire enum Command { Start; Pause; Stop; }\n",
-        "wire enum Command { Start; Stop; Pause; }\n",
+        "#[wire]\nenum Command { Start; Pause; Stop; }\n",
+        "#[wire]\nenum Command { Start; Stop; Pause; }\n",
     );
 
     assert!(!output.status.success());
@@ -492,8 +496,8 @@ fn wire_check_rejects_reordered_wire_enum_variants() {
 #[test]
 fn wire_check_rejects_wire_enum_payload_changes() {
     let output = run_wire_check(
-        "wire enum Command { Start; Data(String); }\n",
-        "wire enum Command { Start; Data(String, u32); }\n",
+        "#[wire]\nenum Command { Start; Data(String); }\n",
+        "#[wire]\nenum Command { Start; Data(String, u32); }\n",
     );
 
     assert!(!output.status.success());
@@ -507,8 +511,8 @@ fn wire_check_rejects_wire_enum_payload_changes() {
 #[test]
 fn wire_check_rejects_wire_enum_struct_variant_field_renames() {
     let output = run_wire_check(
-        "wire enum Command { Data { new_value: String }; }\n",
-        "wire enum Command { Data { value: String }; }\n",
+        "#[wire]\nenum Command { Data { new_value: String }; }\n",
+        "#[wire]\nenum Command { Data { value: String }; }\n",
     );
 
     assert!(!output.status.success());

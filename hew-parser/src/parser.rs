@@ -11029,9 +11029,10 @@ enum Mixed {
     }
 
     #[test]
-    fn parse_legacy_wire_type_preserves_since_modifier() {
+    fn wire_struct_field_metadata_preserves_since_modifier() {
         let source = "\
-wire type Msg {
+#[wire]
+struct Msg {
     added: String @2 repeated since 3 yaml(\"added\");
 }
 ";
@@ -11049,12 +11050,13 @@ wire type Msg {
     }
 
     #[test]
-    fn legacy_wire_type_field_metadata_preserves_number_and_outer_naming_cases() {
+    fn wire_struct_field_metadata_preserves_explicit_number_and_naming_cases_kebab() {
         let source = "\
 #[json(\"camelCase\")]
 #[yaml(\"kebab-case\")]
-wire type Msg {
-    added: String = 4 repeated json(\"added_name\");
+#[wire]
+struct Msg {
+    added: String @4 repeated json(\"added_name\");
 }
 ";
         let result = parse(source);
@@ -11074,9 +11076,10 @@ wire type Msg {
     }
 
     #[test]
-    fn parse_wire_since_reports_invalid_version() {
+    fn wire_struct_since_invalid_version_is_rejected() {
         let source = "\
-wire type Msg {
+#[wire]
+struct Msg {
     added: String @2 since 4294967296;
 }
 ";
@@ -12651,6 +12654,67 @@ wire type Msg {
         assert!(
             formatted.contains("let { x, y } = p"),
             "formatted output should preserve shorthand form, got:\n{formatted}"
+        );
+    }
+
+    // Proving gate: bare `wire` keyword is rejected as a declaration form.
+    // Item::Wire no longer exists; the identifier "wire" produces a helpful error.
+    #[test]
+    fn bare_wire_keyword_rejected_with_hint() {
+        let result = parse("wire Foo {}");
+        assert!(
+            !result.errors.is_empty(),
+            "expected parse error for bare `wire`"
+        );
+        let msg = &result.errors[0].message;
+        assert!(
+            msg.contains("wire"),
+            "error should mention 'wire', got: {msg}"
+        );
+        // No Item::Wire variant can be constructed — match ensures the exhaustive check
+        for (item, _) in &result.program.items {
+            match item {
+                Item::TypeDecl(_)
+                | Item::TypeAlias(_)
+                | Item::Function(_)
+                | Item::Actor(_)
+                | Item::Machine(_)
+                | Item::Record(_)
+                | Item::Supervisor(_)
+                | Item::Impl(_)
+                | Item::Trait(_)
+                | Item::Import(_)
+                | Item::Const(_)
+                | Item::ExternBlock(_) => {}
+            }
+        }
+    }
+
+    #[test]
+    fn wire_type_keyword_form_rejected() {
+        let result = parse("wire type Foo { @1 x: string }");
+        assert!(
+            !result.errors.is_empty(),
+            "expected parse error for `wire type`"
+        );
+        let first_msg = &result.errors[0].message;
+        assert!(
+            first_msg.contains("wire"),
+            "first error should mention 'wire', got: {first_msg}"
+        );
+    }
+
+    #[test]
+    fn wire_enum_keyword_form_rejected() {
+        let result = parse("wire enum Status { Active; Inactive; }");
+        assert!(
+            !result.errors.is_empty(),
+            "expected parse error for `wire enum`"
+        );
+        let first_msg = &result.errors[0].message;
+        assert!(
+            first_msg.contains("wire"),
+            "first error should mention 'wire', got: {first_msg}"
         );
     }
 } // mod tests

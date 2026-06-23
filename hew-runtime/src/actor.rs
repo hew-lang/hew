@@ -709,6 +709,44 @@ fn should_fail_actor_state_alloc() -> bool {
     })
 }
 
+// Thread-local one-shot flag: when set, the next `alloc_actor_arena` call
+// returns null to simulate an OOM on the arena allocation step.
+// Reset to `false` automatically by `ArenaAllocFailureGuard::drop`.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    static FAIL_ARENA_ALLOC_NEXT: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+struct ArenaAllocFailureGuard;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl Drop for ArenaAllocFailureGuard {
+    fn drop(&mut self) {
+        FAIL_ARENA_ALLOC_NEXT.with(|slot| slot.set(false));
+    }
+}
+
+/// Arm the arena-alloc failure injection.  Returns a guard that disarms it on
+/// drop so the hook cannot leak across test boundaries.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn fail_arena_alloc_next() -> ArenaAllocFailureGuard {
+    FAIL_ARENA_ALLOC_NEXT.with(|slot| slot.set(true));
+    ArenaAllocFailureGuard
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn should_fail_arena_alloc() -> bool {
+    FAIL_ARENA_ALLOC_NEXT.with(|slot| {
+        if slot.get() {
+            slot.set(false);
+            true
+        } else {
+            false
+        }
+    })
+}
+
 /// Get the ID of the actor currently being dispatched on this thread.
 ///
 /// Returns -1 if no actor is active (called from main or non-actor context).
@@ -2093,6 +2131,24 @@ unsafe fn finalize_spawned_actor(raw: *mut HewActor, _actor_id: u64) {
     unsafe { live_actors::track_actor(raw) };
 }
 
+/// Allocate the per-actor arena for a native spawn.
+///
+/// Centralises the `cap_bytes == 0` / `cap_bytes > 0` branch and provides a
+/// test-only injection point: when `FAIL_ARENA_ALLOC_NEXT` is set, the first
+/// call returns null to simulate an OOM on the arena allocation step.
+#[cfg(not(target_arch = "wasm32"))]
+fn alloc_actor_arena(cap_bytes: usize) -> *mut crate::arena::ActorArena {
+    #[cfg(test)]
+    if should_fail_arena_alloc() {
+        return ptr::null_mut();
+    }
+    if cap_bytes > 0 {
+        crate::arena::hew_arena_new_with_cap(cap_bytes)
+    } else {
+        crate::arena::hew_arena_new()
+    }
+}
+
 /// Shared implementation for all native actor spawn functions.
 ///
 /// # Safety
@@ -2123,12 +2179,17 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
         return ptr::null_mut();
     }
 
+    // Allocate the per-actor arena bump allocator.  Mirror the wasm path:
+    // if allocation fails, free all resources already owned and return null.
+    let arena = alloc_actor_arena(config.cap_bytes);
+    if arena.is_null() {
+        // SAFETY: `init_state` was created above and ownership has not been
+        // transferred.  `cleanup_failed_spawn` also frees `config.state` and
+        // the mailbox; on the adopt path `init_state` is null (no extra alloc).
+        unsafe { cleanup_failed_spawn(&config, init_state) };
+        return ptr::null_mut();
+    }
     let actor_id = next_spawn_actor_identity();
-    let arena = if config.cap_bytes > 0 {
-        crate::arena::hew_arena_new_with_cap(config.cap_bytes)
-    } else {
-        crate::arena::hew_arena_new()
-    };
     let actor = build_spawned_actor(config, actor_id, init_state, arena);
     let raw = Box::into_raw(actor);
     register_actor_state_lock(raw);
@@ -9532,6 +9593,64 @@ mod tests {
         // SAFETY: actor is valid.
         let rc = unsafe { hew_actor_free(actor) };
         assert_eq!(rc, 0, "hew_actor_free must succeed");
+    }
+
+    // ── null-arena guard: backport of wasm OOM behaviour to native path ───
+
+    /// `hew_actor_spawn` must return null and release all owned resources
+    /// (`state`, `init_state` copy, mailbox) when `hew_arena_new` fails (OOM).
+    ///
+    /// Covers the native `spawn_actor_internal` null-arena guard introduced
+    /// to match the wasm twin's existing OOM handling.  The "no-leak" half is
+    /// enforced by ASAN in CI; the "no null-arena actor" half is enforced by
+    /// the null return asserted here (a non-null return from the broken pre-fix
+    /// code would carry `actor.arena = null` and crash on the first arena alloc).
+    #[test]
+    fn spawn_arena_alloc_failure_returns_null() {
+        let _guard = crate::runtime_test_guard();
+
+        // ── case 1: zero-size state (init_state is null on the spawn path) ──
+        // Arena fails → cleanup_failed_spawn frees the (empty) state + mailbox.
+        crate::hew_clear_error();
+        let _arena_guard = fail_arena_alloc_next();
+        // SAFETY: null state with size=0 is valid; dispatch is a valid fn ptr.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(
+            actor.is_null(),
+            "spawn must return null when arena allocation fails (zero-state path)"
+        );
+        // Guard is consumed; injection is disarmed.
+
+        // ── case 2: non-null state (init_state is allocated then freed) ──
+        // `deep_copy_state` succeeds twice (state copy + init_state copy);
+        // arena fails → cleanup_failed_spawn frees both copies + mailbox.
+        let src: [u8; 8] = [0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18];
+        crate::hew_clear_error();
+        let _arena_guard = fail_arena_alloc_next();
+        // SAFETY: src is a valid 8-byte readable buffer; dispatch is valid.
+        let actor = unsafe {
+            hew_actor_spawn(
+                src.as_ptr().cast_mut().cast(),
+                src.len(),
+                Some(noop_dispatch),
+            )
+        };
+        assert!(
+            actor.is_null(),
+            "spawn must return null when arena allocation fails (with-state path)"
+        );
+
+        // ── case 3: normal spawn succeeds immediately after ──
+        // Verifies the injection is fully disarmed and the runtime is intact.
+        // SAFETY: null state with size=0 is valid.
+        let ok_actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(
+            !ok_actor.is_null(),
+            "normal spawn after failed arena alloc must succeed"
+        );
+        // SAFETY: ok_actor is a valid pointer from hew_actor_spawn.
+        let rc = unsafe { hew_actor_free(ok_actor) };
+        assert_eq!(rc, 0, "hew_actor_free on the recovery actor must succeed");
     }
 }
 

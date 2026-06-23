@@ -811,6 +811,19 @@ impl Checker {
                 .and_then(|mg| mg.modules.get(mod_id))
             {
                 module_idx += 1;
+                // Builtin/standard-library modules (`std::`, `hew::`,
+                // `ecosystem::`) ship with the compiler rather than the user's
+                // project, so lint findings inside them are noise the user
+                // cannot act on. Skip them — but only AFTER advancing
+                // `module_idx`, so span tagging for later user modules stays
+                // aligned with the checker's module indexing. Mirrors
+                // `is_builtin_module` in `hew-compile`.
+                if matches!(
+                    mod_id.path.first().map(String::as_str),
+                    Some("std" | "hew" | "ecosystem")
+                ) {
+                    continue;
+                }
                 let module_name = mod_id.path.join(".");
                 for (item, _) in &module.items {
                     self.lint_item(item, module_idx, Some(&module_name), levels, out);

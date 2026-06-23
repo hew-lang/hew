@@ -36,7 +36,6 @@ impl Checker {
             | Item::Import(_)
             | Item::TypeDecl(_)
             | Item::TypeAlias(_)
-            | Item::Wire(_)
             | Item::ExternBlock(_) => {}
             Item::Supervisor(sd) => self.check_supervisor(sd, span),
         }

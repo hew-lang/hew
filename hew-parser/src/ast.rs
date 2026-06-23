@@ -74,7 +74,6 @@ pub enum Item {
     TypeAlias(TypeAliasDecl),
     Trait(TraitDecl),
     Impl(ImplDecl),
-    Wire(WireDecl),
     Function(FnDecl),
     ExternBlock(ExternBlock),
     Actor(ActorDecl),
@@ -1156,97 +1155,6 @@ pub struct ImplTypeAlias {
     pub ty: Spanned<TypeExpr>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WireDecl {
-    #[serde(default)]
-    pub visibility: Visibility,
-    pub kind: WireDeclKind,
-    pub name: String,
-    pub fields: Vec<WireFieldDecl>,
-    pub variants: Vec<VariantDecl>,
-    /// Struct-level JSON key naming convention (`#[json(camelCase)]` etc.).
-    pub json_case: Option<NamingCase>,
-    /// Struct-level YAML key naming convention (`#[yaml(snake_case)]` etc.).
-    pub yaml_case: Option<NamingCase>,
-}
-
-impl WireDecl {
-    /// Convert a `WireDecl` to a `TypeDecl` with wire metadata.
-    /// This desugars the old `wire type Foo { ... }` syntax into the new
-    /// `TypeDecl { wire: Some(WireMetadata { ... }) }` form.
-    #[must_use]
-    pub fn into_type_decl(self) -> TypeDecl {
-        let field_meta: Vec<WireFieldMeta> = self
-            .fields
-            .iter()
-            .map(|f| WireFieldMeta {
-                field_name: f.name.clone(),
-                field_number: f.field_number,
-                is_optional: f.is_optional,
-                is_deprecated: f.is_deprecated,
-                is_repeated: f.is_repeated,
-                json_name: f.json_name.clone(),
-                yaml_name: f.yaml_name.clone(),
-                since: f.since,
-            })
-            .collect();
-
-        let body: Vec<TypeBodyItem> = self
-            .fields
-            .iter()
-            .map(|f| TypeBodyItem::Field {
-                name: f.name.clone(),
-                ty: (
-                    TypeExpr::Named {
-                        name: f.ty.clone(),
-                        type_args: None,
-                    },
-                    0..0,
-                ),
-                attributes: Vec::new(),
-                doc_comment: None,
-                span: 0..0,
-            })
-            .chain(
-                self.variants
-                    .iter()
-                    .map(|v| TypeBodyItem::Variant(v.clone())),
-            )
-            .collect();
-
-        TypeDecl {
-            visibility: self.visibility,
-            kind: match self.kind {
-                WireDeclKind::Struct => TypeDeclKind::Struct,
-                WireDeclKind::Enum => TypeDeclKind::Enum,
-            },
-            name: self.name,
-            type_params: None,
-            where_clause: None,
-            body,
-            doc_comment: None,
-            wire: Some(WireMetadata {
-                field_meta,
-                reserved_numbers: vec![],
-                json_case: self.json_case,
-                yaml_case: self.yaml_case,
-                version: None,
-                min_version: None,
-            }),
-            is_indirect: false,
-            resource_marker: ResourceMarker::None,
-            is_opaque: false,
-            consuming_methods: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum WireDeclKind {
-    Struct,
-    Enum,
-}
-
 /// Naming case convention for JSON/YAML struct-level key transformation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NamingCase {
@@ -1282,28 +1190,6 @@ impl NamingCase {
             Self::KebabCase => "kebab-case",
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "mirrors wire format field attributes"
-)]
-pub struct WireFieldDecl {
-    pub name: String,
-    pub ty: String,
-    pub field_number: u32,
-    pub is_optional: bool,
-    pub is_repeated: bool,
-    pub is_reserved: bool,
-    pub is_deprecated: bool,
-    /// Per-field JSON key override (`json("name")`).
-    pub json_name: Option<String>,
-    /// Per-field YAML key override (`yaml("name")`).
-    pub yaml_name: Option<String>,
-    /// Schema version that introduced this field, from `since N` modifier.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub since: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1509,54 +1395,6 @@ pub enum ShutdownDirective {
     /// deadline wheel in the runtime yet, so this parses but is not enforced.
     /// See `format_child_spec` and the codegen note for the accepted-only seam.
     Infinity,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn into_type_decl_preserves_since() {
-        let decl = WireDecl {
-            visibility: Visibility::Private,
-            kind: WireDeclKind::Struct,
-            name: "Msg".to_string(),
-            fields: vec![
-                WireFieldDecl {
-                    name: "id".to_string(),
-                    ty: "i32".to_string(),
-                    field_number: 1,
-                    is_optional: false,
-                    is_repeated: false,
-                    is_reserved: false,
-                    is_deprecated: false,
-                    json_name: None,
-                    yaml_name: None,
-                    since: None,
-                },
-                WireFieldDecl {
-                    name: "added".to_string(),
-                    ty: "string".to_string(),
-                    field_number: 2,
-                    is_optional: true,
-                    is_repeated: false,
-                    is_reserved: false,
-                    is_deprecated: false,
-                    json_name: None,
-                    yaml_name: None,
-                    since: Some(2),
-                },
-            ],
-            variants: vec![],
-            json_case: None,
-            yaml_case: None,
-        };
-
-        let td = decl.into_type_decl();
-        let wire = td.wire.expect("should have wire metadata");
-        assert_eq!(wire.field_meta[0].since, None);
-        assert_eq!(wire.field_meta[1].since, Some(2));
-    }
 }
 
 // ── Machine declarations ─────────────────────────────────────────────

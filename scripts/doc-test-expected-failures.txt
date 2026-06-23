@@ -41,6 +41,9 @@
 # Updated 2026-06-22: fixed spec-0033/0038/0073 (now PASS) and annotated
 # spec-0048/0049/0051/0052/0066/0067/0069/0070/0097/0099/0113 (now SKIP).
 # Recorded against docs/ @ f16718d2 on 2026-06-22.
+# Updated 2026-06-22: migrated all wire-keyword fences (116-124) to #[wire] form.
+# spec-0119 and spec-0120 now PASS (removed from list). spec-0123 and spec-0124
+# were previously failing (wire enum NYI) but now pass via #[wire] enum.
 #
 # ─── Guide failures (1) ─────────────────────────────────────────────────────────
 
@@ -127,8 +130,6 @@ spec-0107   # IMPL-GAP: `pool` as pattern — reserved word clash in supervisor 
 spec-0109   # FRAGMENT: references `prices` from prior fence context — context-dependent
 spec-0110   # SNIPPET: bare `let` — wire schema illustration
 spec-0111   # SNIPPET: bare `match` — wire format pattern illustration
-spec-0119   # IMPL-GAP: E_NOT_YET_IMPLEMENTED — top-level-item not yet supported
-spec-0120   # IMPL-GAP: E_NOT_YET_IMPLEMENTED — top-level-item not yet supported
 spec-0121   # SNIPPET: bare `let` — distribution illustration
 spec-0122   # SNIPPET: bare `let` — remote PID illustration
 spec-0123   # SNIPPET: bare `mailbox` identifier — mailbox API illustration

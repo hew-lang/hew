@@ -203,7 +203,7 @@ impl<'a> ProfileChecker<'a> {
                     }
                 }
                 Item::Machine(machine) => self.check_machine(machine, span),
-                Item::Wire(_) | Item::Trait(_) | Item::Impl(_) => self.reject(
+                Item::Trait(_) | Item::Impl(_) => self.reject(
                     span.clone(),
                     "reserved_runtime_feature",
                     "this declaration requires runtime features that are reserved for a later sandbox VM milestone",

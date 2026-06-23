@@ -43,7 +43,7 @@ ident
     | 'init' | 'child' | 'restart' | 'budget' | 'strategy'
     | 'permanent' | 'transient' | 'temporary'
     | 'one_for_one' | 'one_for_all' | 'rest_for_one'
-    | 'wire' | 'optional' | 'deprecated' | 'reserved'
+    | 'optional' | 'deprecated' | 'reserved'
     | 'state' | 'event' | 'on' | 'when' | 'join'
     // Domain keywords that are NOT lexer keywords (always lex as Identifier)
     | 'mailbox' | 'overflow'
@@ -74,7 +74,6 @@ item
       | asyncGenFnDecl
       | actorDecl
       | supervisorDecl
-      | wireDecl
       | wireStructDecl
       | machineDecl
       )
@@ -173,12 +172,7 @@ recordTupleBody
     : '(' type_ ( ',' type_ )* ','? ')' ';'
     ;
 
-wireDecl
-    : 'wire' 'type' ident wireStructBody
-    | 'wire' 'enum'   ident wireEnumBody
-    ;
-
-// #[wire] struct syntax — alternative wire struct declaration
+// #[wire] struct syntax — canonical wire struct declaration
 wireStructDecl
     : 'struct' ident '{' wireStructItem* '}'
     ;
@@ -228,21 +222,8 @@ enumBody
     : '{' variantDecl* '}'
     ;
 
-wireStructBody
-    : '{' wireStructItem* '}'
-    ;
-
 wireStructItem
     : wireFieldDecl
-    | reservedDecl ';'?
-    ;
-
-wireEnumBody
-    : '{' wireEnumItem* '}'
-    ;
-
-wireEnumItem
-    : variantDecl
     | reservedDecl ';'?
     ;
 

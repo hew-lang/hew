@@ -57,7 +57,6 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::Enum
         | Token::Trait
         | Token::Impl
-        | Token::Wire
         | Token::Actor
         | Token::Supervisor
         | Token::Child

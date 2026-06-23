@@ -46,7 +46,6 @@ pub(crate) enum TopLevelItemKind {
     Trait,
     Const,
     TypeDecl,
-    Wire,
     TypeAlias,
     Machine,
     Record,
@@ -89,10 +88,6 @@ pub(crate) fn top_level_item_info(item: &Item) -> Option<TopLevelItemInfo<'_>> {
         Item::TypeDecl(td) => Some(TopLevelItemInfo {
             name: &td.name,
             kind: TopLevelItemKind::TypeDecl,
-        }),
-        Item::Wire(w) => Some(TopLevelItemInfo {
-            name: &w.name,
-            kind: TopLevelItemKind::Wire,
         }),
         Item::TypeAlias(ta) => Some(TopLevelItemInfo {
             name: &ta.name,
@@ -397,7 +392,6 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             Item::Record(_) // TODO(A-3): no walkable bodies until checker support lands
             | Item::Import(_)
             | Item::ExternBlock(_)
-            | Item::Wire(_)
             | Item::TypeAlias(_) => {}
         }
     }

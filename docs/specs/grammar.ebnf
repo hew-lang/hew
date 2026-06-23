@@ -31,7 +31,6 @@ Item           = Attribute* Visibility? ( Import
                              | RecordDecl
                              | TraitDecl
                              | ImplDecl
-                             | WireDecl
                              | WireStructDecl
                              | FnDecl
                              | AsyncFnDecl
@@ -72,10 +71,7 @@ ConstDecl      = "const" Ident ":" Type "=" Expr ";" ;
 
 TypeDecl       = "type" Ident TypeParams? WhereClause? TypeBody
                | "indirect"? "enum" Ident TypeParams? WhereClause? TypeBody ;
-(* Struct-level naming: #[json(camelCase)] / #[yaml(snake_case)] before wire decl *)
-(* Valid naming conventions: camelCase, PascalCase, snake_case, SCREAMING_SNAKE, kebab-case *)
-WireDecl       = "wire" ("type" | "enum") Ident WireBody ;
-(* #[wire] struct syntax — alternative wire struct declaration *)
+(* #[wire] struct syntax — sole canonical wire struct declaration *)
 WireStructDecl = "struct" Ident "{" { WireStructFieldDecl | ReservedDecl ";" } "}" ;
 WireStructFieldDecl = Ident ":" Type ( "@" IntLit )? WireAttr* ( "," | ";" ) ;
 
@@ -89,12 +85,11 @@ WhereClause    = "where" WherePredicate { "," WherePredicate } [ "," ] ;
 WherePredicate = Type ":" TraitBounds ;
 
 TypeBody       = "{" { StructFieldDecl | VariantDecl | FnDecl } "}" ;
-WireBody       = "{" { WireFieldDecl | VariantDecl } "}" ;
+(* WireBody is used by the legacy wire keyword form — no longer a production *)
 
 StructFieldDecl = Attribute* Ident ":" Type ( ";" | "," ) ;
 ActorFieldDecl  = ("let" | "var")? Ident ":" Type ("=" Expr)? ";" ;
 (* Without `let`/`var`: bare `ident: type` form; field is immutable (let-like) by default *)
-WireFieldDecl  = Ident ":" Type ( ("@" | "=") IntLit )? WireAttr* ";" ;
 WireAttr       = "optional" | "deprecated" | "repeated"
                | ("default" "(" Expr ")")  (* not yet implemented *)
                | ("since" IntLit)          (* field version: since 2 *)

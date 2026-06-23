@@ -2312,7 +2312,7 @@ Important current details:
 - Built-in `HashSet<T>` currently lowers the supported surface forms
   `HashSet<i64>` and `HashSet<string>` through the typed-layout runtime;
   unsupported `HashSet<T>` usages are rejected fail-closed during type
-  checking, including nested annotations, function signatures, and `wire enum`
+  checking, including nested annotations, function signatures, and `#[wire] enum`
   payloads; collection element admissibility also requires the internal RcFree
   boundary, so `HashSet<Rc<T>>`, named wrappers that contain `Rc`, and
   `LocalPid<A>` handles to actors with `Rc` state are rejected
@@ -3831,7 +3831,7 @@ Hew introduces `wire` definitions for network-serializable data.
 
 ### 7.1 Wire type requirements
 
-A `wire struct` / `wire enum`:
+A `#[wire] struct` / `#[wire] enum`:
 
 - has stable field tags (numeric IDs)
 - has explicit optionality/defaults
@@ -3876,8 +3876,8 @@ Hew wire types map to MessagePack formats as follows:
 | `f64`        | float64                 | `0xcb`                     | IEEE 754 double precision        |
 | `string`     | string                  | `0xa0`–`0xbf`, `0xd9`, ... | Length-prefixed UTF-8 string     |
 | `bytes`      | binary                  | `0xc4`, `0xc5`, `0xc6`     | Length-prefixed raw bytes        |
-| wire struct  | map                     | `0x80`–`0x8f`, `0xde`, ... | Key–value pairs (field number keys) |
-| wire enum    | i64 + str (variant)     | Tag + variant index/name   | Encoded as MessagePack integer (variant index) or string (variant name) |
+| `#[wire] struct` | map                     | `0x80`–`0x8f`, `0xde`, ... | Key–value pairs (field number keys) |
+| `#[wire] enum`   | i64 + str (variant)     | Tag + variant index/name   | Encoded as MessagePack integer (variant index) or string (variant name) |
 | Optional     | nil or value            | `0xc0` or type of Some(v)  | `None` encodes as MessagePack nil |
 | List         | array                   | `0x90`–`0x9f`, `0xdc`, ... | Length-prefixed sequence         |
 
@@ -3886,10 +3886,11 @@ Hew wire types map to MessagePack formats as follows:
 A wire struct is encoded as a MessagePack **map**. Field numbers are used as map keys (as MessagePack integers), and values are encoded according to the table above.
 
 ```hew
-wire struct User {
+#[wire]
+struct User {
     id: u64 @1;
     name: string @2;
-    email: string @3?;
+    email: string @3 optional;
 }
 
 // User { id: 42, name: "alice", email: Some("alice@example.com") } encodes as:
@@ -3911,12 +3912,13 @@ wire struct User {
 
 Wire enums are encoded as MessagePack **integers** representing the 0-based variant index:
 
-> **Not yet implemented.** `wire enum` lowering is parsed but not yet wired
+> **Not yet implemented.** `#[wire] enum` type-checks but codec lowering is not yet implemented
 > in v0.5 (`E_NOT_YET_IMPLEMENTED`). The intended encoding is described below.
 
 <!-- doctest: skip -->
 ```hew
-wire enum Status { Pending; Active; Completed; }
+#[wire]
+enum Status { Pending; Active; Completed; }
 
 // Status::Pending  -> MessagePack: 0 (i64)
 // Status::Active   -> MessagePack: 1 (i64)
@@ -3928,9 +3930,10 @@ wire enum Status { Pending; Active; Completed; }
 Optional fields are represented using MessagePack **nil** for `None`:
 
 ```hew
-wire struct Config {
+#[wire]
+struct Config {
     timeout_ms: u64 @1;
-    proxy_url: string @2?;
+    proxy_url: string @2 optional;
 }
 
 // Config { timeout_ms: 5000, proxy_url: None } encodes as:
@@ -3945,7 +3948,8 @@ wire struct Config {
 Lists are encoded as MessagePack **arrays**. Each element is encoded according to the element type:
 
 ```hew
-wire struct Data {
+#[wire]
+struct Data {
     values: [i64] @1;
     tags: [string] @2;
 }
@@ -3962,8 +3966,10 @@ wire struct Data {
 Nested wire structs are encoded recursively as MessagePack maps:
 
 ```hew
-wire struct Inner { x: i32 @1; }
-wire struct Outer { inner: Inner @1; nested_list: [Inner] @2; }
+#[wire]
+struct Inner { x: i32 @1; }
+#[wire]
+struct Outer { inner: Inner @1; nested_list: [Inner] @2; }
 
 // Outer { inner: Inner { x: 150 }, nested_list: [Inner { x: 200 }] } encodes as:
 // MessagePack map: {
@@ -4008,8 +4014,8 @@ JSON encoding provides human-readable serialization for HTTP APIs, debugging, an
 | `string`                               | JSON string                                                 |
 | `bytes`                                | JSON string (base64-encoded)                                |
 | Lists                                  | JSON array                                                  |
-| `wire struct`                          | JSON object with field names as keys                        |
-| `wire enum`                            | JSON string (variant name)                                  |
+| `#[wire] struct`                       | JSON object with field names as keys                        |
+| `#[wire] enum`                         | JSON string (variant name)                                  |
 | Optional None                          | JSON `null` or field omitted                                |
 | Optional Some(v)                       | JSON value of v                                             |
 
@@ -4018,14 +4024,15 @@ JSON encoding provides human-readable serialization for HTTP APIs, debugging, an
 JSON field names are determined by the following rules, in priority order:
 
 1. **Per-field override** — `json("name")` wire attribute sets the exact JSON key.
-2. **Struct-level convention** — `#[json(convention)]` attribute on the `wire struct` transforms all field names. Valid conventions: `camelCase`, `PascalCase`, `snake_case`, `SCREAMING_SNAKE`, `kebab-case`.
+2. **Struct-level convention** — `#[json(convention)]` attribute on the `#[wire] struct` declaration transforms all field names. Valid conventions: `camelCase`, `PascalCase`, `snake_case`, `SCREAMING_SNAKE`, `kebab-case`.
 3. **Default** — field name is used as-is (no transformation).
 
 Per-field override always wins over the struct-level convention.
 
 ```hew
 #[json(camelCase)]
-wire struct User {
+#[wire]
+struct User {
     user_name: string @1;                       // JSON: "userName"
     email_address: string @2;                   // JSON: "emailAddress"
     internal_id: string @3 json("id");          // JSON: "id"  (override wins)
@@ -4045,7 +4052,8 @@ JSON representation:
 Without the struct-level attribute, names are preserved exactly:
 
 ```hew
-wire struct User {
+#[wire]
+struct User {
     user_name: string @1;
     email_address: string @2;
 }
@@ -4063,7 +4071,8 @@ wire struct User {
 Wire enums encode as the string name of the variant:
 
 ```hew
-wire enum Status { Pending; Active; Completed; }
+#[wire]
+enum Status { Pending; Active; Completed; }
 ```
 
 ```json
@@ -4082,11 +4091,12 @@ JSON decoders SHOULD ignore unknown fields (permissive parsing). This enables fo
 
 ##### 7.3.2.5 Enum Variant Names in JSON
 
-Enum variant names are used as-is by default. Apply `#[json(camelCase)]` (or another convention) to the `wire enum` declaration to transform variant names consistently.
+Enum variant names are used as-is by default. Apply `#[json(camelCase)]` (or another convention) to the `#[wire] enum` declaration to transform variant names consistently.
 
 ```hew
 #[json(camelCase)]
-wire enum Status { PendingReview; ActiveNow; Completed; }
+#[wire]
+enum Status { PendingReview; ActiveNow; Completed; }
 ```
 
 ```json
@@ -4131,12 +4141,12 @@ let msg3 = MyMessage.from_yaml(yaml_str);
 
 Current shipped helper surface, as registered by the type checker:
 
-- `wire struct` instance methods: `encode() -> bytes`, `to_json() -> string`,
+- `#[wire] struct` instance methods: `encode() -> bytes`, `to_json() -> string`,
   `to_yaml() -> string`
-- `wire struct` static methods: `MyMessage.decode(bytes) -> MyMessage`,
+- `#[wire] struct` static methods: `MyMessage.decode(bytes) -> MyMessage`,
   `MyMessage.from_json(string) -> MyMessage`,
   `MyMessage.from_yaml(string) -> MyMessage`
-- unit-only `wire enum` helpers are JSON/YAML-only:
+- unit-only `#[wire] enum` helpers are JSON/YAML-only:
   `to_json()`, `to_yaml()`, `from_json(string) -> Self`,
   `from_yaml(string) -> Self`
 

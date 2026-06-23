@@ -196,7 +196,6 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
             }
             sym
         }
-        Item::Wire(w) => named_symbol(source, &w.name, SymbolKind::Wire, item_span),
         Item::Machine(m) => {
             let mut sym = named_symbol(source, &m.name, SymbolKind::Machine, item_span);
             let mut state_cursor = item_span.start;

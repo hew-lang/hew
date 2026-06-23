@@ -14,7 +14,7 @@ use crate::ast::{
     ShutdownDirective, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
     TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
     TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
-    WhereClause, WireDecl, WireDeclKind, WireFieldDecl, WireMetadata,
+    WhereClause, WireMetadata,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -301,7 +301,6 @@ impl<'a> Formatter<'a> {
             Item::TypeAlias(decl) => self.format_type_alias(decl),
             Item::Trait(decl) => self.format_trait(decl, span_end),
             Item::Impl(decl) => self.format_impl(decl, span_end),
-            Item::Wire(decl) => self.format_wire(decl),
             Item::Function(decl) => self.format_fn(decl, span_end),
             Item::ExternBlock(decl) => self.format_extern_block(decl, span_end),
             Item::Actor(decl) => self.format_actor(decl, span_end),
@@ -839,75 +838,6 @@ impl<'a> Formatter<'a> {
         }
         self.indent -= 1;
         self.writeln("}");
-    }
-
-    fn format_wire(&mut self, decl: &WireDecl) {
-        // Emit struct-level naming attributes before the declaration.
-        if let Some(case) = decl.json_case {
-            self.write_indent();
-            let s = case.as_str();
-            let needs_quotes = s.contains('-');
-            self.write("#[json(");
-            if needs_quotes {
-                self.write("\"");
-            }
-            self.write(s);
-            if needs_quotes {
-                self.write("\"");
-            }
-            self.write(")]\n");
-        }
-        if let Some(case) = decl.yaml_case {
-            self.write_indent();
-            let s = case.as_str();
-            let needs_quotes = s.contains('-');
-            self.write("#[yaml(");
-            if needs_quotes {
-                self.write("\"");
-            }
-            self.write(s);
-            if needs_quotes {
-                self.write("\"");
-            }
-            self.write(")]\n");
-        }
-        self.write_indent();
-        match decl.kind {
-            WireDeclKind::Struct => self.write("wire type "),
-            WireDeclKind::Enum => self.write("wire enum "),
-        }
-        self.write(&decl.name);
-        self.write(" {\n");
-        self.indent += 1;
-        for field in &decl.fields {
-            self.format_wire_field(field);
-        }
-        for v in &decl.variants {
-            self.format_variant(v, true);
-        }
-        self.indent -= 1;
-        self.writeln("}");
-    }
-
-    fn format_wire_field(&mut self, f: &WireFieldDecl) {
-        self.write_indent();
-        if f.is_reserved {
-            self.write("reserved ");
-        }
-        self.write(&f.name);
-        self.write(": ");
-        self.write(&f.ty);
-        self.write(" @");
-        self.write(&f.field_number.to_string());
-        self.format_wire_field_modifiers(
-            f.is_optional,
-            f.is_deprecated,
-            f.is_repeated,
-            f.since,
-            f.json_name.as_deref(),
-            f.yaml_name.as_deref(),
-        );
-        self.write(";\n");
     }
 
     fn format_extern_block(&mut self, decl: &ExternBlock, span_end: usize) {
@@ -4086,19 +4016,30 @@ enum Colour {
     }
 
     #[test]
-    fn wire_type_since_normalizes_with_since_metadata() {
+    fn wire_enum_roundtrips() {
         let src = "\
-wire type Msg {
-    added: String @2 optional since 2 json(\"added\");
-}
-";
-        let expected = "\
 #[wire]
-struct Msg {
-    added: String @2 optional since 2 json(\"added\"),
+enum Status {
+    Pending;
+    Active;
+    Completed;
 }
 ";
-        assert_eq!(roundtrip(src), expected);
+        assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn wire_enum_with_json_case_roundtrips() {
+        let src = "\
+#[json(camelCase)]
+#[wire]
+enum Status {
+    PendingReview;
+    ActiveNow;
+    Completed;
+}
+";
+        assert_eq!(roundtrip(src), src);
     }
 
     #[test]

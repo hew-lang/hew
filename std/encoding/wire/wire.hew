@@ -6,7 +6,7 @@
 //! runtime for actor-to-actor message serialization across network
 //! boundaries.
 //!
-//! Most users should use `wire type` declarations instead of calling
+//! Most users should use `#[wire]` declarations instead of calling
 //! these functions directly.
 
 // HBF header layout (10 bytes):

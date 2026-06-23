@@ -742,7 +742,8 @@ fn stream_decode_fails_closed_before_codegen() {
         r"
         import std::stream;
 
-        wire type Message {
+        #[wire]
+        struct Message {
             id: i64 @1;
         }
 
@@ -768,7 +769,8 @@ fn sink_encode_fails_closed_before_codegen() {
         r"
         import std::stream;
 
-        wire type Message {
+        #[wire]
+        struct Message {
             id: i64 @1;
         }
 

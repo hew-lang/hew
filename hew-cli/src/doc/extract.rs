@@ -517,7 +517,6 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
             | Item::TypeAlias(_)
             | Item::Import(_)
             | Item::Impl(_)
-            | Item::Wire(_)
             | Item::ExternBlock(_)
             | Item::Supervisor(_)
             | Item::Machine(_)

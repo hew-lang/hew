@@ -1,0 +1,17 @@
+#[wire]
+enum Status {
+    Pending;
+    Active;
+    Done;
+}
+
+fn main() -> i64 {
+    let s = Status::Active;
+    let result = match s {
+        Status::Pending => 1,
+        Status::Active => 2,
+        Status::Done => 3,
+    };
+    assert(result == 2);
+    0
+}

@@ -157,7 +157,8 @@ For the current wildcard-import warning caveat, see
 Wire types define versioned serialization schemas for use with actors and distributed protocols. Each field carries an explicit numeric tag (`@1`, `@2`, …) that is the field's stable identity across schema versions. You can safely add new tagged fields or rename existing ones; decoders that encounter an unknown tag skip it. **Never reuse a tag number for a different field.**
 
 ```hew
-wire type UserMessage {
+#[wire]
+struct UserMessage {
     name: string @1;
     age:  i32    @2;
     // Adding a new @3 field later is backwards-compatible; reusing @1 is not.

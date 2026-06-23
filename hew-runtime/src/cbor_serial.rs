@@ -377,7 +377,7 @@ pub unsafe extern "C" fn hew_cbor_ser_finish(buf: *mut c_void, out_len: *mut usi
 }
 
 /// Discard an encode builder without producing output (the encode-side error
-/// path; mirrors `hew_ser_abort`).
+/// path).
 ///
 /// # Safety
 /// `buf` must be a live handle from `hew_cbor_ser_new` (consumed here).

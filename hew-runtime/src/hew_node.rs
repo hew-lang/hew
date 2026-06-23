@@ -3445,11 +3445,11 @@ mod tests {
     ) -> *mut u8 {
         // SAFETY: value_ptr points to a live u32 from the test.
         let v = unsafe { *value_ptr.cast::<u32>() };
-        let buf = crate::xnode_serial::hew_ser_buf_new();
-        // SAFETY: buf is a fresh live SerBuf handle.
-        unsafe { crate::xnode_serial::hew_ser_push_u64(buf, u64::from(v)) };
+        let buf = crate::cbor_serial::hew_cbor_ser_new();
+        // SAFETY: buf is a fresh live CborSerBuf handle.
+        unsafe { crate::cbor_serial::hew_cbor_ser_u64(buf, u64::from(v)) };
         // SAFETY: buf is consumed by finish; out_len is a valid pointer.
-        unsafe { crate::xnode_serial::hew_ser_finish(buf, out_len) }
+        unsafe { crate::cbor_serial::hew_cbor_ser_finish(buf, out_len) }
     }
 
     unsafe extern "C" fn test_u32_deserialize(
@@ -3458,18 +3458,18 @@ mod tests {
         out_struct_size: *mut usize,
     ) -> *mut std::ffi::c_void {
         // SAFETY: data is valid for len bytes.
-        let reader = unsafe { crate::xnode_serial::hew_de_reader_new(data, len) };
+        let reader = unsafe { crate::cbor_serial::hew_cbor_de_new(data, len) };
         // SAFETY: reader is a live handle.
-        let v64 = unsafe { crate::xnode_serial::hew_de_read_u64(reader) };
+        let v64 = unsafe { crate::cbor_serial::hew_cbor_de_u64(reader) };
         #[allow(
             clippy::cast_possible_truncation,
             reason = "test payload is always a u32 round-tripped through the u64 primitive"
         )]
         let v = v64 as u32;
         // SAFETY: reader is a live handle.
-        let failed = unsafe { crate::xnode_serial::hew_de_failed(reader) };
+        let failed = unsafe { crate::cbor_serial::hew_cbor_de_failed(reader) };
         // SAFETY: reader is a live handle.
-        unsafe { crate::xnode_serial::hew_de_reader_free(reader) };
+        unsafe { crate::cbor_serial::hew_cbor_de_free(reader) };
         if failed != 0 {
             if !out_struct_size.is_null() {
                 // SAFETY: out_struct_size validated non-null.

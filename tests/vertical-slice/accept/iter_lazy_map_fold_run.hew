@@ -1,0 +1,98 @@
+//! Runnable end-to-end check for the lazy `Map` adapter composed with a
+//! terminal `fold`. Unlike `iter_lazy_wrappers.hew` (a type-check-only
+//! surface smoke), this fixture is *compiled and executed* — it asserts the
+//! runtime values of a lazy iterator chain.
+//!
+//! Inlined and fully monomorphised on purpose: cross-module generic
+//! instantiation of `std::iter` does not yet lower through MIR (a separate
+//! backend lane), so the chain is built from a concrete `Countdown` source
+//! plus a `Map<Countdown, i64, i64>` adapter so every type parameter pins to
+//! a concrete type at the call site.
+//!
+//! Exercises the Q004 fix: `Map::next` calls the inner iterator's `next()`
+//! and lifts each item through `f`. The inner item `<I as Iterator>::Item`
+//! must project to `A` (not the impl's declared `type Item = B`), which the
+//! resolver only does once a trait-method signature's `Self::Item` stays a
+//! deferred carrier inside an impl body.
+//!
+//! Expected exit code: 12 (the map-then-fold result). Any internal mismatch
+//! returns a distinct diagnostic code (101/102) so a regression is legible.
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    /// Yield `n, n-1, …, 1` then `None`; advance the cursor in place.
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+type Map<I, A, B> {
+    iter: I;
+    f: fn(A) -> B;
+}
+
+impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
+    type Item = B;
+    /// Pump the inner iterator once and lift the item through `f`. The inner
+    /// iterator is moved into a `var` local so its `next(var self)`
+    /// write-back lands on a mutable binding receiver, then stored back so
+    /// `var self`'s write-back persists the cursor across calls.
+    fn next(var self) -> Option<B> {
+        var inner = self.iter;
+        let result = match inner.next() {
+            Some(x) => Some((self.f)(x)),
+            None => None,
+        };
+        self.iter = inner;
+        result
+    }
+}
+
+/// Construct a lazy `Map` adapter (mirrors `std::iter::map`).
+fn mk_map<I, A, B>(it: I, f: fn(A) -> B) -> Map<I, A, B> where I: Iterator<Item = A> {
+    Map { iter: it, f: f }
+}
+
+/// Left-fold a terminal pump loop (mirrors `std::iter::fold`).
+fn fold<I, A, B>(it: I, init: B, f: fn(B, A) -> B) -> B where I: Iterator<Item = A> {
+    var acc = init;
+    var iter = it;
+    loop {
+        match iter.next() {
+            Some(x) => {
+                acc = f(acc, x);
+            }
+            None => {
+                break;
+            }
+        }
+    }
+    acc
+}
+
+fn main() -> i64 {
+    // Plain fold over Countdown[5, 4, 3, 2, 1] → 15.
+    let plain = fold(Countdown { n: 5 }, 0, |acc: i64, x: i64| acc + x);
+    if plain != 15 {
+        return 101;
+    }
+
+    // Lazy map [3, 2, 1] through (* 2) → [6, 4, 2], then fold → 12.
+    let mapped = mk_map(Countdown { n: 3 }, |x: i64| x * 2);
+    let total = fold(mapped, 0, |acc: i64, x: i64| acc + x);
+    if total != 12 {
+        return 102;
+    }
+
+    total
+}

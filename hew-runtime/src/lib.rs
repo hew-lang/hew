@@ -687,7 +687,9 @@ pub mod task_scope;
 pub mod timer_periodic;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod timer_periodic_wasm;
-#[cfg(not(target_arch = "wasm32"))]
+// timer_wheel compiles on every target: native uses it with the background
+// ticker thread (timer_periodic); WASM uses it with a host-driven tick
+// (scheduler_wasm + timer_periodic_wasm).
 pub mod timer_wheel;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

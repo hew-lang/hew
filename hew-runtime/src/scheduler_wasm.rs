@@ -29,8 +29,18 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
 use crate::actor::HEW_PRIORITY_NORMAL;
 use crate::actor::{HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET, HEW_PRIORITY_HIGH, HEW_PRIORITY_LOW};
 use crate::internal::types::{HewActorState, HewDispatchFn};
+use crate::timer_wheel::{
+    hew_timer_wheel_free, hew_timer_wheel_new, hew_timer_wheel_remove,
+    hew_timer_wheel_schedule_handle, timer_wheel_tick_to, HewTimerHandle, HewTimerWheel,
+};
 
 static WASM_CLEANUP_RAN: AtomicBool = AtomicBool::new(false);
+
+/// When set to `true` in tests, `wasm_timer_wheel()` returns null to simulate
+/// an OOM failure from `hew_timer_wheel_new`.  Reset to `false` after use.
+/// Serialised by the `runtime_test_guard` / test lock.
+#[cfg(test)]
+static TEST_FORCE_WHEEL_NULL: AtomicBool = AtomicBool::new(false);
 
 #[inline]
 fn notify_actor_group_waiters(actor_id: u64) {
@@ -317,17 +327,44 @@ unsafe fn arena_reset(arena: *mut c_void) {
 static mut RUN_QUEUE: Option<VecDeque<*mut HewActor>> = None;
 static mut INITIALIZED: bool = false;
 
-/// Sleep queue: actors parked until a host-driven deadline expires.
+// ── WASM unified timer wheel ─────────────────────────────────────────────
+//
+// A single `HewTimerWheel` drives both sleep timers and periodic timers on
+// WASM, replacing the former O(n²) sorted-Vec `SLEEP_QUEUE` and
+// `PERIODIC_QUEUE`. The wheel is lazily initialised in `wasm_timer_wheel()`
+// and freed (along with all pending entries' callback data) in
+// `hew_sched_shutdown`.
+//
+// **Drop-safety contract**:
+//
+// Every `Box`-allocated callback-data struct (`WasmSleepCtx`) is registered
+// in `SLEEP_HANDLES` at insertion and removed at fire or cancel so exactly
+// one party (fire callback OR cancel path) performs the drop — the same
+// "atomic claim" guarantee the native `Arc`-based periodic path upholds.
+//
+// **Semantics identical to native**:
+// - Expiry ordering: `timer_wheel_tick_to` fires callbacks in insertion/slot
+//   order, same as the native ticker path.
+// - Cancel: `hew_timer_wheel_remove` atomically unlinks and frees the wheel
+//   entry, handing ownership of the data to the caller.
+// - Shutdown: entries are drained from the registries (freeing their ctxs)
+//   before `hew_timer_wheel_free` reclaims the wheel struct itself.
+
+/// Global WASM timer wheel.  Null until first use; freed in `hew_sched_shutdown`.
+static mut WASM_TIMER_WHEEL: *mut HewTimerWheel = std::ptr::null_mut();
+
+/// Number of actors currently parked in a sleep timer entry.
+/// Incremented by `park_actor_sleep`, decremented by the sleep callback and
+/// by `cancel_actor_sleep_queue_entry`.  Used by `hew_wasm_sleeping_count`.
+static mut WASM_SLEEP_COUNT: usize = 0;
+
+/// Per-actor map from actor address to the currently-pending sleep handle.
+/// Because an actor can only be in `Sleeping` state once at a time, each
+/// actor has at most one entry here.
 ///
-/// Each entry is `(deadline_ms, actor_ptr)`.  The vector is kept sorted by
-/// ascending deadline so the front is always the soonest to wake.  Actors
-/// in this queue are in `Idle` state; they are re-enqueued as `Runnable`
-/// when the deadline passes (see [`drain_expired_sleepers`]).
-///
-/// Drop/cleanup contract: cleared in [`hew_sched_shutdown`].
-// WASM-TODO(#1451): replace this sorted Vec sleep queue with a WASM-compatible shared
-// timer queue helper; insert/drain/cancel are still O(n)/O(n²).
-static mut SLEEP_QUEUE: Vec<(u64, *mut HewActor)> = Vec::new();
+/// Using `Option<HashMap<…>>` so that the empty-runtime case (no sleeps ever
+/// scheduled) avoids the heap allocation entirely.
+static mut SLEEP_HANDLES: Option<std::collections::HashMap<usize, HewTimerHandle>> = None;
 
 /// Pending sleep deadline set by the currently-dispatching actor via
 /// [`request_sleep`].  Zero means no pending sleep.  Consumed and reset
@@ -392,6 +429,109 @@ pub(crate) fn record_message_received() {
     }
 }
 
+// ── WASM timer wheel accessor ────────────────────────────────────────────
+
+/// Callback data for a wheel-backed sleep entry.
+struct WasmSleepCtx {
+    actor: *mut HewActor,
+}
+
+// SAFETY: WASM is single-threaded; the pointer is only accessed under the
+// cooperative-scheduler invariant (no concurrent mutation).
+unsafe impl Send for WasmSleepCtx {}
+
+/// Timer callback fired when a sleeping actor's deadline passes.
+///
+/// Transitions the actor from `Sleeping` to `Runnable` and re-enqueues it.
+/// Drops the `WasmSleepCtx` and removes its handle from `SLEEP_HANDLES`.
+///
+/// # Safety
+///
+/// Called by `timer_wheel_tick_to` after the wheel lock is released.
+/// The actor pointer stored in `data` must still be valid — `cancel_actor_sleep_queue_entry`
+/// ensures this by removing the wheel entry (and thus preventing this callback from
+/// firing) before the actor is freed.
+unsafe extern "C" fn wasm_sleep_cb(data: *mut c_void) {
+    // SAFETY: data is a Box<WasmSleepCtx> allocated by park_actor_sleep.
+    let ctx = unsafe { Box::from_raw(data.cast::<WasmSleepCtx>()) };
+    let actor = ctx.actor;
+    drop(ctx);
+
+    // SAFETY: Single-threaded; remove the now-consumed handle from the registry.
+    unsafe {
+        if let Some(ref mut handles) = SLEEP_HANDLES {
+            handles.remove(&(actor as usize));
+        }
+        WASM_SLEEP_COUNT = WASM_SLEEP_COUNT.saturating_sub(1);
+    }
+
+    // Transition Sleeping → Runnable and re-enqueue.
+    // SAFETY: actor is alive — cancel_actor_sleep_queue_entry guarantees the
+    // wheel entry (and this callback) are removed before actor free.
+    let state = unsafe { (*actor).actor_state.load(Ordering::Relaxed) };
+    if state == HewActorState::Sleeping as i32 {
+        // SAFETY: actor is alive (see above); actor_state and try_sched_enqueue
+        // only require a valid pointer to a live HewActor.
+        unsafe {
+            (*actor)
+                .actor_state
+                .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+            if let Err(msg) = try_sched_enqueue(actor) {
+                // Scheduler was shut down while the actor was sleeping.
+                // The actor cannot be enqueued — log the situation but don't
+                // panic; shutdown drains the wheel first so this branch
+                // should never fire in practice.
+                crate::set_last_error(msg);
+            }
+        }
+    }
+    // If the actor's state is no longer Sleeping (e.g., it was stopped or
+    // crashed between the sleep park and the deadline), discard silently.
+}
+
+/// Return the WASM global timer wheel, lazily initialising it on first call.
+///
+/// Returns null only if `hew_timer_wheel_new` fails (allocation error), which
+/// is treated as a non-fatal scheduler degradation: sleep/periodic timers
+/// simply won't fire until the wheel is available.
+///
+/// # Safety
+///
+/// Must only be called from a single-threaded WASM context or a serialised
+/// test environment.
+pub(crate) unsafe fn wasm_timer_wheel() -> *mut HewTimerWheel {
+    // In the test build, honour a per-test override that simulates an OOM
+    // failure from `hew_timer_wheel_new`.  This lets tests exercise the
+    // fail-closed paths in `park_actor_sleep` and `hew_actor_schedule_periodic`
+    // without requiring actual memory-allocation failure.
+    #[cfg(test)]
+    if TEST_FORCE_WHEEL_NULL.load(Ordering::Relaxed) {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: Single-threaded cooperative scheduler.
+    unsafe {
+        if WASM_TIMER_WHEEL.is_null() {
+            // SAFETY: hew_timer_wheel_new has no preconditions.
+            WASM_TIMER_WHEEL = hew_timer_wheel_new();
+        }
+        WASM_TIMER_WHEEL
+    }
+}
+
+/// Return the raw wheel pointer without initialising a new one.
+///
+/// Returns null if the wheel has not been created yet or was already freed
+/// by `wasm_timers_shutdown_inner`.  Used by `timer_periodic_wasm` helpers
+/// that must not inadvertently re-create the wheel during teardown.
+///
+/// # Safety
+///
+/// `WASM_TIMER_WHEEL` is a mutable static; caller must ensure single-threaded access.
+pub(crate) unsafe fn wasm_timer_wheel_raw() -> *mut HewTimerWheel {
+    // SAFETY: caller upholds the single-threaded WASM invariant.
+    unsafe { WASM_TIMER_WHEEL }
+}
+
 // ── Sleep timer helpers ─────────────────────────────────────────────────
 
 /// Record a sleep request for the currently-dispatching actor.
@@ -412,10 +552,11 @@ pub(crate) fn request_sleep(deadline_ms: u64) {
     }
 }
 
-/// Park `actor` in the sleep queue until `deadline_ms`.
+/// Park `actor` in the timer wheel until `deadline_ms`.
 ///
-/// Sets the actor state to `Idle` and inserts it into the sorted sleep
-/// queue.  The actor is NOT in the run queue while sleeping.
+/// Sets the actor state to `Sleeping` and inserts a one-shot wheel entry
+/// whose callback transitions the actor back to `Runnable` and re-enqueues it.
+/// The actor is NOT in the run queue while sleeping.
 ///
 /// # Safety
 ///
@@ -426,90 +567,133 @@ unsafe fn park_actor_sleep(actor: *mut HewActor, deadline_ms: u64) {
     let a = unsafe { &*actor };
     // Use Sleeping (not Idle) so that message-send paths do not treat this
     // actor as wake-eligible.  Messages queue in the mailbox and are
-    // delivered when the timer fires and drain_expired_sleepers re-enqueues.
+    // delivered when the timer fires and the sleep callback re-enqueues.
     a.actor_state
         .store(HewActorState::Sleeping as i32, Ordering::Relaxed);
-    #[expect(
-        static_mut_refs,
-        reason = "single-threaded cooperative scheduler; no concurrent mutation"
-    )]
-    // SAFETY: Single-threaded on WASM.
-    unsafe {
-        // Keep the queue sorted by ascending deadline for O(1) front-peek.
-        let pos = SLEEP_QUEUE.partition_point(|&(d, _)| d <= deadline_ms);
-        SLEEP_QUEUE.insert(pos, (deadline_ms, actor));
-    }
-}
 
-/// Wake all sleeping actors whose deadline ≤ `now_ms`.
-///
-/// For each expired entry:
-/// - If the actor is still `Idle`, transitions it to `Runnable` and
-///   re-enqueues it on the run queue.
-/// - If the actor has since been stopped/crashed, discards the entry.
-///
-/// Returns the number of actors woken.
-///
-/// # Safety
-///
-/// Must be called from within the WASM scheduler's single-threaded
-/// execution context.
-unsafe fn drain_expired_sleepers(now_ms: u64) -> u32 {
-    let mut woken: u32 = 0;
-    #[expect(
-        static_mut_refs,
-        reason = "single-threaded cooperative scheduler; no concurrent mutation"
-    )]
-    // SAFETY: Single-threaded cooperative scheduler; SLEEP_QUEUE not aliased.
-    unsafe {
-        while let Some(&(deadline, actor)) = SLEEP_QUEUE.first() {
-            if deadline > now_ms {
-                break; // Queue is sorted; all remaining deadlines are later.
+    // SAFETY: Single-threaded; wasm_timer_wheel has no preconditions here.
+    let wheel = unsafe { wasm_timer_wheel() };
+    if wheel.is_null() {
+        // Wheel unavailable (allocation failure) — fall back to immediate
+        // re-enqueue so the actor doesn't park forever.
+        a.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        // SAFETY: actor is valid; enqueue is safe.
+        unsafe {
+            if let Err(msg) = try_sched_enqueue(actor) {
+                crate::set_last_error(msg);
             }
-            SLEEP_QUEUE.remove(0);
-            let state = (*actor).actor_state.load(Ordering::Relaxed);
-            if state == HewActorState::Sleeping as i32 {
-                (*actor)
-                    .actor_state
-                    .store(HewActorState::Runnable as i32, Ordering::Relaxed);
-                // Fail-closed: panic if the scheduler was not initialized.
-                if let Err(msg) = try_sched_enqueue(actor) {
-                    panic!("{msg}");
-                }
-                woken += 1;
-            }
-            // Stopped/Crashed actors are silently discarded from the queue;
-            // their resources are managed by hew_actor_close / cleanup_all_actors.
         }
+        return;
     }
-    woken
+
+    // Allocate the callback context (Box-owned; freed by callback or cancel).
+    let ctx = Box::into_raw(Box::new(WasmSleepCtx { actor }));
+
+    // Compute delay: deadline_ms is absolute; the wheel takes a relative delay.
+    // SAFETY: hew_now_ms has no preconditions.
+    let now = unsafe { hew_now_ms() };
+    let delay_ms = deadline_ms.saturating_sub(now);
+
+    // Schedule on the wheel and register the handle for O(1) cancel.
+    // SAFETY: wheel is valid; ctx and actor are live.
+    let handle =
+        unsafe { hew_timer_wheel_schedule_handle(wheel, delay_ms, wasm_sleep_cb, ctx.cast()) };
+
+    if handle.entry.is_null() {
+        // Wheel rejected the schedule (e.g. entry allocation failure) — fail
+        // closed, matching the wheel-null path above.  Drop the Box, restore
+        // the actor to Runnable, and re-enqueue so it is not stranded.
+        // SAFETY: ctx is exclusively owned (not yet in SLEEP_HANDLES).
+        unsafe { drop(Box::from_raw(ctx)) };
+        a.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        // SAFETY: actor is valid; enqueue is safe.
+        unsafe {
+            if let Err(msg) = try_sched_enqueue(actor) {
+                crate::set_last_error(msg);
+            }
+        }
+        return;
+    }
+
+    #[expect(
+        static_mut_refs,
+        reason = "single-threaded cooperative WASM scheduler; no concurrent mutation"
+    )]
+    // SAFETY: Single-threaded; SLEEP_HANDLES is not aliased here.
+    unsafe {
+        let map = SLEEP_HANDLES.get_or_insert_with(std::collections::HashMap::new);
+        map.insert(actor as usize, handle);
+        WASM_SLEEP_COUNT += 1;
+    }
 }
 
-/// Remove any [`SLEEP_QUEUE`] entry for `actor`, if present.
+/// Remove any pending sleep-wheel entry for `actor`, if present.
 ///
-/// Called by [`crate::actor::cleanup_all_actors`] just before freeing an
-/// actor to prevent a use-after-free if the host calls
-/// [`hew_wasm_timer_tick`] after an actor has been freed but before the
-/// queue entry has been drained normally.
+/// Called before an actor is freed (`cleanup_all_actors`, `hew_actor_close`,
+/// `hew_actor_stop`) to prevent the wheel's callback from firing on a freed
+/// actor pointer.  The callback data (`WasmSleepCtx`) is freed here so no
+/// memory is leaked.
 ///
-/// Idempotent: if the actor is not in the queue, this is a no-op.
+/// Idempotent: if no entry exists for the actor, this is a no-op.
 ///
 /// # Safety
 ///
 /// Must be called from the single-threaded WASM cooperative scheduler
-/// context (same thread that owns `SLEEP_QUEUE`).
+/// context (same thread that owns the wheel and `SLEEP_HANDLES`).
 pub(crate) unsafe fn cancel_actor_sleep_queue_entry(actor: *mut crate::actor::HewActor) {
-    #[expect(
-        static_mut_refs,
-        reason = "single-threaded cooperative scheduler; no concurrent mutation"
-    )]
-    // SAFETY: single-threaded; caller upholds cooperative-scheduler invariant.
+    // SAFETY: Single-threaded; SLEEP_HANDLES and the wheel are not aliased.
     unsafe {
-        SLEEP_QUEUE.retain(|&(_, a)| !std::ptr::eq(a.cast::<crate::actor::HewActor>(), actor));
+        let wheel = WASM_TIMER_WHEEL;
+        if wheel.is_null() {
+            return;
+        }
+        if let Some(ref mut handles) = SLEEP_HANDLES {
+            if let Some(handle) = handles.remove(&(actor as usize)) {
+                // Remove the wheel entry atomically. If the entry is still
+                // pending, `hew_timer_wheel_remove` unlinks and frees the
+                // `HewTimerEntry` node and returns the data pointer (our ctx).
+                // If the entry had already been collected for firing (not
+                // possible in single-threaded WASM, but guarded for safety),
+                // this returns null and the callback is responsible for the ctx.
+                let data = hew_timer_wheel_remove(wheel, handle.entry, handle.generation);
+                if !data.is_null() {
+                    drop(Box::from_raw(data.cast::<WasmSleepCtx>()));
+                    WASM_SLEEP_COUNT = WASM_SLEEP_COUNT.saturating_sub(1);
+                }
+            }
+        }
     }
 }
 
-// ── C ABI ───────────────────────────────────────────────────────────────
+/// Drain the WASM timer wheel to `now_ms`, firing all expired sleep and
+/// periodic callbacks.
+///
+/// Replaces the former `drain_expired_sleepers` + `drain_ready_periodic`
+/// two-pass approach.  Returns `(fired_total, 0)` — the second element is
+/// kept for call-site compatibility with [`hew_wasm_timer_tick`].
+///
+/// # Safety
+///
+/// Must be called from the single-threaded WASM context after
+/// [`hew_sched_init`].
+unsafe fn drain_timed_work(now_ms: u64) -> (u32, u32) {
+    // SAFETY: Single-threaded; wasm_timer_wheel init is guarded.
+    let wheel = unsafe { wasm_timer_wheel() };
+    if wheel.is_null() {
+        return (0, 0);
+    }
+    // SAFETY: wheel is valid; caller upholds single-threaded invariant.
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "fired count fits in u32; timer_wheel_tick_to returns non-negative i32"
+    )]
+    // SAFETY: wheel is valid (wasm_timer_wheel() ensures it was allocated);
+    // single-threaded WASM scheduler guarantees no concurrent mutation.
+    let fired = unsafe { timer_wheel_tick_to(wheel, now_ms) } as u32;
+    (fired, 0)
+}
 
 /// Initialize the cooperative scheduler.
 ///
@@ -542,8 +726,8 @@ pub extern "C" fn hew_sched_init() -> c_int {
 /// [`hew_sched_shutdown`] to prevent a far-future sleep deadline from
 /// indefinitely blocking teardown.
 ///
-/// Any actor that calls `sleep_ms` during this drain will be parked into
-/// `SLEEP_QUEUE`; the caller must clear that queue afterwards.
+/// Any actor that calls `sleep_ms` during this drain will schedule a new
+/// sleep entry on the wheel; the wheel is cleared after this function returns.
 ///
 /// # Safety
 ///
@@ -565,9 +749,10 @@ unsafe fn drain_run_queue_for_shutdown() {
 /// was never initialized.
 ///
 /// Unlike [`hew_sched_run`], shutdown does **not** wait for sleeping actors
-/// whose timer has not yet expired.  The sleep queue is cleared before the
-/// drain and again after, so any actor that calls `sleep_ms` during the
-/// shutdown drain cannot prolong teardown.
+/// whose timer has not yet expired.  The timer wheel is cleared (freeing all
+/// pending sleep and periodic callback data) before and after the drain to
+/// prevent any actor that calls `sleep_ms` during the shutdown drain from
+/// prolonging teardown.
 ///
 /// Resetting every static (including `ACTIVATING`, `PREV_ARENA`, and the
 /// metrics counters) ensures that a subsequent [`hew_sched_init`] starts
@@ -576,35 +761,26 @@ unsafe fn drain_run_queue_for_shutdown() {
 /// per-activation `HewExecutionContext` and naturally clears with the frame.
 #[cfg_attr(not(test), no_mangle)]
 pub extern "C" fn hew_sched_shutdown() {
-    // Cancel all sleeping actors before draining.  This prevents
-    // hew_sched_run()'s sleep-queue spin-wait from blocking teardown on
-    // far-future timer deadlines.
-    #[expect(
-        static_mut_refs,
-        reason = "single-threaded shutdown; no concurrent access"
-    )]
-    // SAFETY: Single-threaded; no concurrent sleep-queue access during shutdown.
+    // Phase 1: clear all pending timer entries (sleep + periodic) before
+    // draining.  This prevents the sleep-based termination check in
+    // `hew_sched_run` from spin-waiting on far-future deadlines.
+    // SAFETY: Single-threaded; no concurrent timer access during shutdown.
     unsafe {
-        crate::timer_periodic_wasm::hew_periodic_shutdown();
-        SLEEP_QUEUE.clear();
+        wasm_timers_shutdown_inner();
         PENDING_SLEEP_DEADLINE_MS = 0;
     }
 
     // Drain all currently-runnable actors without waiting for sleep deadlines.
-    // If any actor calls sleep_ms during this drain it will be added to
-    // SLEEP_QUEUE, which we clear again immediately below.
+    // Any actor that calls sleep_ms during this drain will insert a new wheel
+    // entry, which we clear again immediately below.
     // SAFETY: Single-threaded on WASM.
     unsafe { drain_run_queue_for_shutdown() };
 
-    // Second clear: discard any new sleep entries created during the drain.
-    #[expect(
-        static_mut_refs,
-        reason = "single-threaded shutdown; no concurrent access"
-    )]
+    // Phase 2: second clear to discard any new timer entries created during
+    // the shutdown drain.
     // SAFETY: Single-threaded; drain_run_queue_for_shutdown has returned.
     unsafe {
-        crate::timer_periodic_wasm::hew_periodic_shutdown();
-        SLEEP_QUEUE.clear();
+        wasm_timers_shutdown_inner();
         PENDING_SLEEP_DEADLINE_MS = 0;
     }
 
@@ -631,11 +807,52 @@ pub extern "C" fn hew_sched_shutdown() {
         TASKS_COMPLETED = 0;
         MESSAGES_SENT = 0;
         MESSAGES_RECEIVED = 0;
-        // Clear the sleep queue and pending-sleep context so any actors that
-        // were parked during a partial run do not linger across a re-init cycle.
-        #[expect(static_mut_refs, reason = "single-threaded shutdown path")]
-        SLEEP_QUEUE.clear();
         PENDING_SLEEP_DEADLINE_MS = 0;
+    }
+}
+
+/// Inner helper: drain all sleep and periodic timer entries, free their
+/// callback data, destroy and null the global wheel.
+///
+/// Called twice in `hew_sched_shutdown` — before and after the run-queue
+/// drain — to bound teardown time regardless of far-future deadlines.
+///
+/// # Safety
+///
+/// Single-threaded; no concurrent timer access.
+unsafe fn wasm_timers_shutdown_inner() {
+    // Step 1: clear periodic timers via timer_periodic_wasm (owns the ctx
+    // registry for periodic entries; uses the same wheel).
+    // SAFETY: Single-threaded; no concurrent periodic-timer access.
+    unsafe { crate::timer_periodic_wasm::hew_periodic_shutdown() };
+
+    // Step 2: clear sleep entries from SLEEP_HANDLES, removing each from the
+    // wheel so the WasmSleepCtx is freed exactly once.
+    // SAFETY: Single-threaded; SLEEP_HANDLES and wheel not aliased.
+    unsafe {
+        let wheel = WASM_TIMER_WHEEL;
+        if !wheel.is_null() {
+            if let Some(ref mut handles) = SLEEP_HANDLES {
+                for (_, handle) in handles.drain() {
+                    let data = hew_timer_wheel_remove(wheel, handle.entry, handle.generation);
+                    if !data.is_null() {
+                        drop(Box::from_raw(data.cast::<WasmSleepCtx>()));
+                    }
+                }
+            }
+        }
+        SLEEP_HANDLES = None;
+        WASM_SLEEP_COUNT = 0;
+    }
+
+    // Step 3: destroy the wheel.  All HewTimerEntry nodes still in the wheel
+    // (if any remain after the two drain steps above) are freed here.
+    // SAFETY: Single-threaded; no other reference to WASM_TIMER_WHEEL exists.
+    unsafe {
+        if !WASM_TIMER_WHEEL.is_null() {
+            hew_timer_wheel_free(WASM_TIMER_WHEEL);
+            WASM_TIMER_WHEEL = std::ptr::null_mut();
+        }
     }
 }
 
@@ -689,10 +906,10 @@ unsafe fn step_one_actor() -> bool {
 
 /// Run all enqueued actors to completion.
 ///
-/// Loops until both the run queue and the sleep queue are empty: pops
+/// Loops until both the run queue and the timer wheel are empty: pops
 /// the front actor, activates it, and re-enqueues it if it still has
-/// pending messages.  Between activation rounds, drains any sleeping
-/// actors whose deadline has passed (using the real/simulated clock).
+/// pending messages.  Between activation rounds, drains any sleeping or
+/// periodic actors whose deadline has passed (using the real/simulated clock).
 ///
 /// For standalone WASM programs where sleeping actors are the only
 /// remaining work, this function spin-polls until all deadlines expire.
@@ -705,18 +922,18 @@ pub extern "C" fn hew_sched_run() {
     loop {
         // SAFETY: hew_now_ms is safe on all targets; drain is single-threaded.
         let now = unsafe { hew_now_ms() };
-        // SAFETY: Single-threaded; timer queues are owned by the cooperative scheduler.
+        // SAFETY: Single-threaded; timer wheel is owned by the cooperative scheduler.
         unsafe {
             let _ = drain_timed_work(now);
         };
 
         // SAFETY: Single-threaded on WASM.
         if !unsafe { step_one_actor() } {
-            // Run queue empty. Stop only when the sleep queue is also empty.
-            // SAFETY: Single-threaded on WASM.
-            #[expect(static_mut_refs, reason = "single-threaded cooperative scheduler")]
+            // Run queue empty. Stop only when no timed work remains.
+            // SAFETY: single-threaded; WASM_SLEEP_COUNT and pending_periodic_count
+            // are only mutated by scheduler paths that run on this thread.
             let timed_work_pending = unsafe {
-                !SLEEP_QUEUE.is_empty() || crate::timer_periodic_wasm::pending_periodic_count() > 0
+                WASM_SLEEP_COUNT > 0 || crate::timer_periodic_wasm::pending_periodic_count() > 0
             };
             if !timed_work_pending {
                 break;
@@ -741,16 +958,7 @@ pub extern "C" fn hew_wasm_runtime_exit() {
     hew_runtime_cleanup();
 }
 
-/// Drain both periodic-timer and sleep-queue entries whose deadlines have passed.
-/// Returns (`periodic_count`, `sleeper_count`).
-unsafe fn drain_timed_work(now_ms: u64) -> (u32, u32) {
-    // SAFETY: Single-threaded cooperative scheduler; timer queues are not mutated concurrently.
-    let periodic = unsafe { crate::timer_periodic_wasm::drain_ready_periodic(now_ms) };
-    // SAFETY: Single-threaded cooperative scheduler; sleep queue is not mutated concurrently.
-    let sleepers = unsafe { drain_expired_sleepers(now_ms) };
-    (periodic, sleepers)
-}
-
+// ── Internal API ────────────────────────────────────────────────────────
 // ── Internal API ────────────────────────────────────────────────────────
 
 /// Submit an actor to the run queue.
@@ -947,15 +1155,12 @@ pub extern "C" fn hew_wasm_sleeping_count() -> i32 {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
-        reason = "sleep queue length will not exceed i32::MAX"
+        reason = "timer count will not exceed i32::MAX"
     )]
-    #[expect(
-        static_mut_refs,
-        reason = "single-threaded cooperative scheduler; read-only access"
-    )]
-    // SAFETY: Single-threaded cooperative scheduler; SLEEP_QUEUE not mutated concurrently.
+    // SAFETY: Single-threaded cooperative scheduler; counts are only mutated
+    // by sleep park/cancel/fire (single-threaded) and periodic schedule/cancel.
     unsafe {
-        (SLEEP_QUEUE.len() + crate::timer_periodic_wasm::pending_periodic_count()) as i32
+        (WASM_SLEEP_COUNT + crate::timer_periodic_wasm::pending_periodic_count()) as i32
     }
 }
 
@@ -2115,11 +2320,9 @@ mod tests {
             ptr::addr_of_mut!(TASKS_COMPLETED).write(0);
             ptr::addr_of_mut!(MESSAGES_SENT).write(0);
             ptr::addr_of_mut!(MESSAGES_RECEIVED).write(0);
-            // Clear sleep queue and pending-sleep context.
-            ptr::drop_in_place(ptr::addr_of_mut!(SLEEP_QUEUE));
-            ptr::addr_of_mut!(SLEEP_QUEUE).write(Vec::new());
+            // Clear timer wheel state (sleep handles, periodic queue, wheel itself).
+            wasm_timers_shutdown_inner();
             ptr::addr_of_mut!(PENDING_SLEEP_DEADLINE_MS).write(0);
-            crate::timer_periodic_wasm::hew_periodic_shutdown();
             // Clear the thread-local current arena so arena lifecycle tests
             // start from a clean slate regardless of test ordering.
             crate::arena::set_current_arena(ptr::null_mut());
@@ -2315,11 +2518,40 @@ mod tests {
                 0,
                 "PENDING_SLEEP_DEADLINE_MS must be zero after shutdown"
             );
+            // Use addr_of! to read without creating a reference to the mutable static.
+            assert_eq!(
+                ptr::addr_of!(WASM_SLEEP_COUNT).read(),
+                0,
+                "WASM_SLEEP_COUNT must be zero after shutdown"
+            );
             assert!(
-                ptr::addr_of!(SLEEP_QUEUE).read().is_empty(),
-                "SLEEP_QUEUE must be empty after shutdown"
+                WASM_TIMER_WHEEL.is_null(),
+                "WASM_TIMER_WHEEL must be null after shutdown"
             );
         }
+        // SLEEP_HANDLES is Option<HashMap<...>>; .is_none() creates a shared ref,
+        // so it must live in its own #[expect(static_mut_refs)] + unsafe block.
+        #[expect(
+            static_mut_refs,
+            reason = "single-threaded test; SLEEP_HANDLES discriminant read only, no mutation"
+        )]
+        // SAFETY: single-threaded test; called immediately after hew_sched_shutdown.
+        unsafe {
+            assert!(
+                SLEEP_HANDLES.is_none(),
+                "SLEEP_HANDLES must be None after shutdown"
+            );
+        }
+        // These helpers access their respective statics without creating refs here.
+        assert_eq!(
+            crate::timer_periodic_wasm::pending_periodic_count(),
+            0,
+            "WASM_PERIODIC_COUNT must be zero after shutdown"
+        );
+        assert!(
+            crate::timer_periodic_wasm::periodic_registry_is_none(),
+            "PERIODIC_CTX_REGISTRY must be None after shutdown"
+        );
     }
 
     #[test]
@@ -5292,7 +5524,7 @@ mod tests {
         unsafe { ptr::addr_of_mut!(PENDING_SLEEP_DEADLINE_MS).write(0) };
     }
 
-    /// `drain_expired_sleepers` re-enqueues actors whose deadline has passed
+    /// `drain_timed_work` re-enqueues actors whose deadline has passed
     /// and leaves actors whose deadline is still in the future.
     #[test]
     fn drain_expired_sleepers_wakes_ready_actors() {
@@ -5312,11 +5544,17 @@ mod tests {
         b.actor_state
             .store(HewActorState::Idle as i32, Ordering::Relaxed);
 
-        // Park actor `a` at t=100 and actor `b` at t=300.
+        // Anchor to the real monotonic clock so the wheel receives
+        // deadlines that are strictly in the future relative to its
+        // current_ms at init time.
+        // SAFETY: hew_now_ms has no preconditions.
+        let now = unsafe { hew_now_ms() };
+
+        // Park actor `a` 100 ms from now and actor `b` 300 ms from now.
         // SAFETY: actors are valid for the duration of the test.
         unsafe {
-            park_actor_sleep(a_ptr, 100);
-            park_actor_sleep(b_ptr, 300);
+            park_actor_sleep(a_ptr, now + 100);
+            park_actor_sleep(b_ptr, now + 300);
             assert_eq!(
                 hew_wasm_sleeping_count(),
                 2,
@@ -5324,10 +5562,9 @@ mod tests {
             );
         }
 
-        // Advance to t=200: only `a` should wake.
+        // Advance to now+200: only `a` should wake.
         // SAFETY: Single-threaded test.
-        let woken = unsafe { drain_expired_sleepers(200) };
-        assert_eq!(woken, 1, "only actor a should wake at t=200");
+        unsafe { drain_timed_work(now + 200) };
         assert_eq!(
             a.actor_state.load(Ordering::Relaxed),
             HewActorState::Runnable as i32,
@@ -5346,10 +5583,9 @@ mod tests {
             "actor a should be in run queue"
         );
 
-        // Advance to t=400: `b` should wake.
+        // Advance to now+400: `b` should wake.
         // SAFETY: Single-threaded test.
-        let woken = unsafe { drain_expired_sleepers(400) };
-        assert_eq!(woken, 1, "actor b should wake at t=400");
+        unsafe { drain_timed_work(now + 400) };
         assert_eq!(
             b.actor_state.load(Ordering::Relaxed),
             HewActorState::Runnable as i32,
@@ -5360,7 +5596,8 @@ mod tests {
         hew_sched_shutdown();
     }
 
-    /// `drain_expired_sleepers` silently discards stopped/crashed actors.
+    /// Timer callbacks for stopped/crashed actors are silently discarded
+    /// (actor not re-enqueued, sleep count decremented).
     #[test]
     fn drain_expired_sleepers_discards_terminal_actors() {
         let _guard = crate::runtime_test_guard();
@@ -5373,21 +5610,29 @@ mod tests {
         a.actor_state
             .store(HewActorState::Idle as i32, Ordering::Relaxed);
 
+        // SAFETY: hew_now_ms has no preconditions.
+        let now = unsafe { hew_now_ms() };
+
         // SAFETY: actor is valid for the duration of the test.
-        unsafe { park_actor_sleep(a_ptr, 50) };
+        unsafe { park_actor_sleep(a_ptr, now + 50) };
 
         // Mark the actor as stopped before the timer fires.
         a.actor_state
             .store(HewActorState::Stopped as i32, Ordering::Relaxed);
 
+        // Advance the wheel past the deadline; the callback fires but does
+        // NOT re-enqueue the stopped actor.
         // SAFETY: Single-threaded test.
-        let woken = unsafe { drain_expired_sleepers(100) };
-        assert_eq!(woken, 0, "stopped actor should be discarded, not woken");
-        assert_eq!(hew_wasm_sleeping_count(), 0, "sleep queue should be empty");
+        unsafe { drain_timed_work(now + 100) };
+        assert_eq!(
+            hew_wasm_sleeping_count(),
+            0,
+            "sleep count must clear even for stopped actors"
+        );
         assert_eq!(
             hew_sched_metrics_global_queue_len(),
             0,
-            "run queue should be empty"
+            "run queue should be empty — stopped actor must not be re-enqueued"
         );
 
         hew_sched_shutdown();
@@ -5436,6 +5681,13 @@ mod tests {
         // SAFETY: actor has a valid mailbox.
         unsafe { queue_wasm_message(a_ptr, 42) };
 
+        // Snapshot the clock just before the tick drives the dispatch.
+        // sleeping_dispatch calls request_sleep(now + 500); the wheel entry
+        // is inserted with delay_ms ≈ 500, firing at approximately t0 + 500.
+        // All of this happens in the same millisecond on any modern host.
+        // SAFETY: hew_now_ms has no preconditions.
+        let t0 = unsafe { hew_now_ms() };
+
         // Run one tick.
         // SAFETY: Single-threaded test.
         let _ = unsafe { hew_wasm_sched_tick(1) };
@@ -5456,17 +5708,10 @@ mod tests {
             "actor should be in sleep queue"
         );
 
-        // Read back the parked deadline from the sleep queue so the wasm-target
-        // test can drive the real timer path without relying on native-only
-        // deterministic clock helpers.
-        // SAFETY: Single-threaded test; SLEEP_QUEUE is not mutated concurrently.
-        let deadline_ms = unsafe {
-            let q_ptr = ptr::addr_of!(SLEEP_QUEUE);
-            (*q_ptr)
-                .first()
-                .map(|&(deadline, _)| deadline)
-                .expect("sleep queue should contain the parked actor")
-        };
+        // The parked deadline is t0 + 500 (sleeping_dispatch sets
+        // PENDING_SLEEP_DEADLINE_MS = hew_now_ms() + 500 ≈ t0 + 500).
+        // Drive the wheel to just before and exactly at that deadline.
+        let deadline_ms = t0 + 500;
 
         // One ms before the parked deadline: actor should NOT wake yet.
         // SAFETY: Single-threaded test.
@@ -5531,12 +5776,18 @@ mod tests {
         a.actor_state
             .store(HewActorState::Idle as i32, Ordering::Relaxed);
 
+        // Anchor all deadlines relative to the real clock so the wheel's
+        // internal current_ms and the test-driven tick values are in the
+        // same numeric space.
+        // SAFETY: hew_now_ms has no preconditions.
+        let now = unsafe { hew_now_ms() };
+
         // SAFETY: actor valid for duration of test.
-        unsafe { park_actor_sleep(a_ptr, 1000) };
+        unsafe { park_actor_sleep(a_ptr, now + 1000) };
 
         // One ms before deadline: nothing wakes.
         // SAFETY: Single-threaded test.
-        let woken = unsafe { hew_wasm_timer_tick(999) };
+        let woken = unsafe { hew_wasm_timer_tick(now + 999) };
         assert_eq!(woken, 0);
         assert_eq!(
             a.actor_state.load(Ordering::Relaxed),
@@ -5545,7 +5796,7 @@ mod tests {
 
         // Exactly at deadline: actor wakes.
         // SAFETY: Single-threaded test.
-        let woken = unsafe { hew_wasm_timer_tick(1000) };
+        let woken = unsafe { hew_wasm_timer_tick(now + 1000) };
         assert_eq!(woken, 1);
         assert_eq!(
             a.actor_state.load(Ordering::Relaxed),
@@ -5573,7 +5824,9 @@ mod tests {
             .store(HewActorState::Idle as i32, Ordering::Relaxed);
 
         // Park actor with a deadline 1 hour in the future.
-        let far_future: u64 = 3_600_000;
+        // SAFETY: hew_now_ms has no preconditions.
+        let now = unsafe { hew_now_ms() };
+        let far_future: u64 = now + 3_600_000;
         // SAFETY: actor is valid for duration of test.
         unsafe { park_actor_sleep(a_ptr, far_future) };
 
@@ -5608,8 +5861,11 @@ mod tests {
         a.actor_state
             .store(HewActorState::Idle as i32, Ordering::Relaxed);
 
-        // SAFETY: actor is valid.
-        unsafe { park_actor_sleep(a_ptr, 500) };
+        // SAFETY: actor is valid; park_actor_sleep requires a live HewActor ptr.
+        // SAFETY: hew_now_ms has no preconditions.
+        let now = unsafe { hew_now_ms() };
+        // SAFETY: actor is valid; park_actor_sleep requires a live HewActor ptr.
+        unsafe { park_actor_sleep(a_ptr, now + 500) };
         assert_eq!(hew_wasm_sleeping_count(), 1);
 
         // Simulate what cleanup_all_actors does before freeing: cancel the entry.
@@ -5624,10 +5880,97 @@ mod tests {
 
         // A subsequent timer tick must not touch the (now-removed) entry.
         // SAFETY: Single-threaded test.
-        let woken = unsafe { hew_wasm_timer_tick(1000) };
+        let woken = unsafe { hew_wasm_timer_tick(now + 1000) };
         assert_eq!(woken, 0, "no actors should wake after entry was cancelled");
 
         hew_sched_shutdown();
+    }
+
+    // ── Fail-closed schedule-failure regression tests (F-1 / F-2) ──────────
+
+    /// Regression (F-2): when `hew_timer_wheel_schedule_handle` returns a null
+    /// handle for a sleep timer, `park_actor_sleep` must drop the `WasmSleepCtx`
+    /// Box, NOT increment `WASM_SLEEP_COUNT`, and restore the actor to
+    /// `Runnable` so it is not stranded.
+    #[test]
+    fn park_actor_sleep_fails_closed_when_wheel_null() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut a = stub_actor();
+        let a_ptr: *mut HewActor = (&raw mut a);
+        a.actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+
+        // Simulate a wheel that is unavailable (OOM on creation).
+        TEST_FORCE_WHEEL_NULL.store(true, Ordering::Relaxed);
+        // SAFETY: hew_now_ms has no preconditions.
+        let now = unsafe { hew_now_ms() };
+        // SAFETY: actor is valid; park_actor_sleep requires a live HewActor ptr.
+        unsafe { park_actor_sleep(a_ptr, now + 500) };
+        TEST_FORCE_WHEEL_NULL.store(false, Ordering::Relaxed);
+
+        // Must not have registered a sleep entry.
+        assert_eq!(
+            hew_wasm_sleeping_count(),
+            0,
+            "WASM_SLEEP_COUNT must not increment on wheel failure"
+        );
+        // Actor must be Runnable (fail-closed re-enqueue), not stranded.
+        assert_eq!(
+            a.actor_state.load(Ordering::Relaxed),
+            HewActorState::Runnable as i32,
+            "actor must be Runnable after sleep scheduling fails"
+        );
+        // Count must still be zero after shutdown.
+        hew_sched_shutdown();
+        assert_eq!(
+            hew_wasm_sleeping_count(),
+            0,
+            "WASM_SLEEP_COUNT must remain zero after shutdown"
+        );
+    }
+
+    /// Regression (F-1): when `wasm_timer_wheel()` returns null (simulated OOM),
+    /// `hew_actor_schedule_periodic` must return null without registering the
+    /// `WasmPeriodicCtx` or incrementing `WASM_PERIODIC_COUNT`.
+    #[test]
+    fn schedule_periodic_fails_closed_when_wheel_null() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut a = stub_actor();
+        let a_ptr: *mut HewActor = (&raw mut a);
+
+        // Simulate wheel unavailability.
+        TEST_FORCE_WHEEL_NULL.store(true, Ordering::Relaxed);
+        // SAFETY: actor is a valid live pointer; cast to actor::HewActor (same repr).
+        let handle = unsafe {
+            crate::timer_periodic_wasm::hew_actor_schedule_periodic(
+                a_ptr.cast::<crate::actor::HewActor>(),
+                1,
+                100,
+            )
+        };
+        TEST_FORCE_WHEEL_NULL.store(false, Ordering::Relaxed);
+
+        assert!(handle.is_null(), "must return null on wheel failure");
+        assert_eq!(
+            crate::timer_periodic_wasm::pending_periodic_count(),
+            0,
+            "WASM_PERIODIC_COUNT must not increment on wheel failure"
+        );
+        assert!(
+            crate::timer_periodic_wasm::periodic_registry_is_none(),
+            "registry must remain None when schedule fails"
+        );
+
+        hew_sched_shutdown();
+        // Shutdown assertions (F-3) now cover all 5 new statics.
     }
 
     /// Regression: `PENDING_SLEEP_DEADLINE_MS` must be cleared even when the
@@ -5889,11 +6232,11 @@ mod tests {
 
     /// Regression: a message sent to a sleeping actor must NOT wake it before
     /// the timer fires.  The message must queue in the mailbox and be
-    /// delivered only when `drain_expired_sleepers` transitions the actor
+    /// delivered only when the timer wheel transitions the actor
     /// from `Sleeping` → `Runnable`.
     ///
-    /// Also verifies that there is no stale `SLEEP_QUEUE` entry after the timer
-    /// fires (no double-enqueue / phantom wake).
+    /// Also verifies that the sleep entry is removed from the wheel after the
+    /// timer fires (no double-enqueue / phantom wake).
     #[test]
     fn message_to_sleeping_actor_queues_without_early_wake() {
         static DISPATCHED: AtomicI32 = AtomicI32::new(0);
@@ -5924,9 +6267,11 @@ mod tests {
         // transition it to Sleeping internally.
         let a_ptr: *mut HewActor = (&raw mut a);
 
-        // Park actor directly at t=1000 (simulating post-dispatch park).
+        // Park actor directly with a deadline 1 s from now (simulating post-dispatch park).
+        // SAFETY: hew_now_ms has no preconditions.
+        let now = unsafe { hew_now_ms() };
         // SAFETY: actor is valid; scheduler is initialized.
-        unsafe { park_actor_sleep(a_ptr, 1000) };
+        unsafe { park_actor_sleep(a_ptr, now + 1000) };
         assert_eq!(
             a.actor_state.load(Ordering::Relaxed),
             HewActorState::Sleeping as i32,
@@ -5961,7 +6306,7 @@ mod tests {
 
         // Advance time past deadline and drain: actor wakes, processes message.
         // SAFETY: Single-threaded test.
-        let woken = unsafe { hew_wasm_timer_tick(1001) };
+        let woken = unsafe { hew_wasm_timer_tick(now + 1001) };
         assert_eq!(woken, 1, "actor must wake when timer fires");
         assert_eq!(
             a.actor_state.load(Ordering::Relaxed),

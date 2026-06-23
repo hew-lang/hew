@@ -74,8 +74,6 @@ TypeDecl       = "type" Ident TypeParams? WhereClause? TypeBody
 (* #[wire] struct syntax — sole canonical wire struct declaration *)
 WireStructDecl = "struct" Ident "{" { WireStructFieldDecl | ReservedDecl ";" } "}" ;
 WireStructFieldDecl = Ident ":" Type ( "@" IntLit )? WireAttr* ( "," | ";" ) ;
-(* #[wire] enum: canonical wire enum — use standard enum syntax with #[wire] attribute *)
-WireEnumDecl   = "enum" Ident TypeBody ;
 
 TypeParams     = "<" TypeParam { "," TypeParam } ">" ;
 TypeParam      = Ident ( ":" TraitBounds )? ;
@@ -92,7 +90,6 @@ TypeBody       = "{" { StructFieldDecl | VariantDecl | FnDecl } "}" ;
 StructFieldDecl = Attribute* Ident ":" Type ( ";" | "," ) ;
 ActorFieldDecl  = ("let" | "var")? Ident ":" Type ("=" Expr)? ";" ;
 (* Without `let`/`var`: bare `ident: type` form; field is immutable (let-like) by default *)
-WireFieldDecl  = Ident ":" Type ( ("@" | "=") IntLit )? WireAttr* ";" ;
 WireAttr       = "optional" | "deprecated" | "repeated"
                | ("default" "(" Expr ")")  (* not yet implemented *)
                | ("since" IntLit)          (* field version: since 2 *)

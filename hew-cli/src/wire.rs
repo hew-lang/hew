@@ -23,20 +23,20 @@ struct WireSchemaField {
     is_optional: bool,
     is_repeated: bool,
     is_deprecated: bool,
-    // Preserved for future L7 cross-schema encoding compatibility checks.
+    // Reserved for future cross-schema encoding compatibility checks.
     #[allow(
         dead_code,
-        reason = "reserved for future L7 encoding compatibility checks"
+        reason = "reserved for future cross-schema encoding compatibility checks"
     )]
     json_name: Option<String>,
     #[allow(
         dead_code,
-        reason = "reserved for future L7 encoding compatibility checks"
+        reason = "reserved for future cross-schema encoding compatibility checks"
     )]
     yaml_name: Option<String>,
     #[allow(
         dead_code,
-        reason = "reserved for future L7 encoding compatibility checks"
+        reason = "reserved for future cross-schema encoding compatibility checks"
     )]
     since: Option<u32>,
 }
@@ -47,15 +47,15 @@ struct WireSchema {
     kind: WireSchemaKind,
     fields: Vec<WireSchemaField>,
     variants: Vec<VariantDecl>,
-    // Preserved for future L7 cross-schema encoding compatibility checks.
+    // Reserved for future cross-schema encoding compatibility checks.
     #[allow(
         dead_code,
-        reason = "reserved for future L7 encoding compatibility checks"
+        reason = "reserved for future cross-schema encoding compatibility checks"
     )]
     json_case: Option<NamingCase>,
     #[allow(
         dead_code,
-        reason = "reserved for future L7 encoding compatibility checks"
+        reason = "reserved for future cross-schema encoding compatibility checks"
     )]
     yaml_case: Option<NamingCase>,
 }

@@ -135,19 +135,6 @@ filter = "test(connection_drop_wakes_pending_remote_ask)"
 retries = 1
 
 [[profile.ci.overrides]]
-# Oracle binaries (leak-oracle, generic_spawn_owned_arg_no_double_free, etc.)
-# each compile two to four Hew programs and run them under the macOS `leaks`
-# allocator inspector.  Each compile+run is subprocess-intensive and takes
-# several seconds; running up to 8 oracles concurrently with the exec/e2e
-# corpus causes oversubscription on 4-core hosted runners.  Route them into
-# subprocess-intensive (max-threads = 8) to give scheduler headroom, and
-# apply a per-period slow-timeout wide enough for the compile+leaks overhead
-# (4 × compile + 4 × leaks-run ≈ 60–90 s on a warm 4-core runner).
-filter = "binary(~oracle)"
-test-group = "subprocess-intensive"
-slow-timeout = { period = "120s", terminate-after = 3 }
-
-[[profile.ci.overrides]]
 # eval_file_cross_chunk_failure_preserves_prior_chunk_stdout drives a full
 # compile+link+execute of two chunks via `hew eval -f`. Under heavy CI load
 # (Linux Rust/codegen, macOS arm64) the pre-codegen tempdir/object setup in

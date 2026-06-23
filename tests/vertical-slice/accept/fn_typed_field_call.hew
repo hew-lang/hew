@@ -1,0 +1,20 @@
+// A fn-typed record field called via parenthesized access `(rec.f)(x)`.
+//
+// This form was previously rejected with "undefined function `rec::f`"
+// because the checker's FieldAccess branch in `check_call` built the
+// name `rec::f` instead of routing to the indirect-call path.
+//
+// After the fix: when the object identifier names a live value binding,
+// `check_call` synthesises the field type and delegates to
+// `check_call_with_type`, reaching the `Ty::Function`/`Ty::Closure` arm
+// and verifying argument types against the function signature.
+
+type Holder {
+    f: fn(i64) -> i64;
+}
+
+fn main() -> i64 {
+    let h = Holder { f: |x: i64| x * 10 };
+    // `(h.f)(5)` — field access + indirect call; must equal 50.
+    (h.f)(5)
+}

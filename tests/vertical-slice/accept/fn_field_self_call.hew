@@ -1,0 +1,23 @@
+// `(self.f)(x)` inside a record method where `f` is a fn-typed field.
+//
+// This is the pattern the lazy `Map` adapter body needs: a record stores a
+// user-provided transformer function and the `next` body calls it via
+// `(self.f)(elem)`. Before the fix this was rejected as
+// "undefined function `self::f`"; after the fix the field access is
+// synthesised to `fn(i64)->i64` and routed through the indirect-call path.
+
+type Map {
+    f: fn(i64) -> i64;
+}
+
+impl Map {
+    fn apply(self, x: i64) -> i64 {
+        (self.f)(x)
+    }
+}
+
+fn main() -> i64 {
+    let m = Map { f: |x: i64| x * 3 };
+    // m.apply(7) = 7 * 3 = 21
+    m.apply(7)
+}

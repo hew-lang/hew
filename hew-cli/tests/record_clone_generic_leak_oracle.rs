@@ -1,5 +1,5 @@
 //! Drop-safety oracle for GENERIC record clone (`clone Pair<i64, i64>` and
-//! owned-field instantiations). Pins R1 of the G6 lane: a per-mono clone thunk
+//! owned-field instantiations). A per-mono clone thunk
 //! synthesised WITHOUT its matching per-mono drop thunk is a leak (and, with a
 //! shallow byte-copy, a double-free). The codegen synthesis loop emits the
 //! clone AND drop body together per monomorphised key
@@ -18,12 +18,12 @@
 //! The clone fixture is measured against a control that performs the IDENTICAL
 //! record CONSTRUCTION but performs NO clone. Constructing an owned record from
 //! a fresh string producer (`seed + "-a"` into a field) has a pre-existing,
-//! clone-independent leak (it reproduces with zero `clone` in the program — see
-//! the `construct-only` shape in the lane notes), so the control absorbs that
+//! clone-independent leak (it reproduces with zero `clone` in the program —
+//! the `construct-only` control fixtures in this file confirm), so the control absorbs that
 //! floor. The DIFFERENCE between fixture and control is exactly the clone's
 //! deep-copied buffers and their matching drop. A balanced clone/drop pair
-//! leaves the fixture at the control's floor; a missing per-mono drop (the R1
-//! asymmetry) puts the fixture `ITERATIONS * fields-per-clone` nodes above it.
+//! leaves the fixture at the control's floor; a missing per-mono drop puts the
+//! fixture `ITERATIONS * fields-per-clone` nodes above it.
 //! This is the floor-equality assertion the `assert-distinguishes-garbage`
 //! rule calls for, not a happy-path `> 0`.
 //!
@@ -263,10 +263,9 @@ fn main() -> i64 {{
 /// Fixture: the actor stores its state field by `clone` (`held = clone p`). The
 /// per-mono clone of `Pair$$i64$string` deep-copies the heap string; its matching
 /// per-mono DROP must fire when the actor shuts down and the state field is
-/// released. This is R1's actor-shutdown path (the lifecycle tests forget): a
-/// clone synthesised without its paired drop puts the fixture `>= ITERATIONS`
-/// nodes above the move control. Against `control_actor_source` the clone must
-/// add no leak beyond the construction floor.
+/// released. A clone synthesised without its paired drop puts the fixture
+/// `>= ITERATIONS` nodes above the move control. Against `control_actor_source`
+/// the clone must add no leak beyond the construction floor.
 fn fixture_actor_source() -> String {
     format!(
         "\
@@ -466,7 +465,7 @@ fn assert_clone_adds_no_leak(shape_name: &str, control_source: &str, fixture_sou
 
 /// Flat `clone Pair<string, string>`: the per-mono clone deep-copies two heap
 /// strings and the matching drop frees them. Reverting the clone-seed collector
-/// makes this fail to COMPILE; dropping the per-mono drop (R1) fails it by
+/// makes this fail to COMPILE; omitting the per-mono drop fails it by
 /// `>= ITERATIONS` leaked nodes.
 #[test]
 fn generic_record_clone_flat_no_drop_leak() {
@@ -496,7 +495,7 @@ fn generic_record_clone_multi_instantiation_no_drop_leak() {
     );
 }
 
-/// Actor-shutdown path (R1's headline hazard): a generic aggregate cloned into
+/// Actor-shutdown path for clone/drop symmetry: a generic aggregate cloned into
 /// an actor STATE field must have its per-mono drop fire when the actor shuts
 /// down. Each iteration spawns + drives + drops a `Keeper` holding a cloned
 /// `Pair$$i64$string`; against the MOVE control (same construction, no clone)

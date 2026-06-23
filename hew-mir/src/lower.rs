@@ -11174,12 +11174,12 @@ impl Builder {
                 // `__hew_record_clone_inplace_Pair$$i64$i64`, not the bare
                 // `Pair` — the bare name names no monomorphic layout, so the
                 // call resolves a declared-but-undefined thunk that fails LLVM
-                // verify (the G6 / E2 bug). A monomorphic record keeps its bare
-                // declared name BYTE-IDENTICALLY via the `record_name.clone()`
-                // arm, so monomorphic goldens and behaviour are unchanged. The
-                // drop side already keys via the same `user_record_layout_key`
+                // verify. A monomorphic record keeps its bare declared name
+                // BYTE-IDENTICALLY via the `record_name.clone()` arm, so
+                // monomorphic goldens and behaviour are unchanged. The drop
+                // side already keys via the same `user_record_layout_key`
                 // helper (`record_inplace_drop_name`), so the clone/drop thunk
-                // PAIR stays symmetric per instantiation (R1).
+                // PAIR stays symmetric per instantiation.
                 let layout_name = match monomorphic_user_record_key(&record_ty) {
                     Some(_) => record_name.clone(),
                     None => {

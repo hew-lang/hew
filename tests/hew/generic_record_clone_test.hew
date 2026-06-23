@@ -16,7 +16,7 @@ import std::testing;
 
 type Pair<A, B> { a: A; b: B; }
 
-// V1 — generic record clone over scalar leaves; mutate the original and assert
+// Generic record clone over scalar leaves; mutate the original and assert
 // the clone is independent (deep copy, not alias).
 #[test]
 fn test_generic_record_clone_scalar_independence() {
@@ -33,7 +33,7 @@ fn test_generic_record_clone_scalar_independence() {
     testing.assert_eq(p.b, 88);
 }
 
-// V2a — generic record clone with an owned `string` leaf; the clone must
+// Generic record clone with an owned `string` leaf; the clone must
 // deep-copy the managed string handle, not alias it.
 #[test]
 fn test_generic_record_clone_string_field() {
@@ -43,7 +43,7 @@ fn test_generic_record_clone_string_field() {
     testing.assert_eq_str(q.b, "hello");
 }
 
-// V2b — nested generic record clone (`Pair<Pair<i64, i64>, string>`); assert
+// Nested generic record clone (`Pair<Pair<i64, i64>, string>`); assert
 // the inner record fields and the string leaf are all deep-copied.
 #[test]
 fn test_generic_record_clone_nested() {
@@ -55,7 +55,7 @@ fn test_generic_record_clone_nested() {
     testing.assert_eq_str(c.b, "tag");
 }
 
-// V5 — two distinct instantiations of the same generic record in one program
+// Two distinct instantiations of the same generic record in one program
 // (`Pair<i64, i64>` and `Pair<string, string>`) must synthesise distinct mono
 // thunks with no symbol collision, both producing correct clones.
 #[test]

@@ -32298,7 +32298,7 @@ fn build_module_for_target<'ctx>(
     // which the bare-name `user_clone_record_seeds` above does not cover and
     // which the `RecordInPlace` drop twin only covers when the record has a
     // non-trivial drop. Seed the clone site directly so the per-mono clone/drop
-    // thunk pair is synthesised together (R1: no clone without its drop).
+    // thunk pair is synthesised together (clone/drop always emitted as a unit per key).
     for seed in collect_record_clone_inplace_seeds(&pipeline.raw_mir, &pipeline.record_layouts) {
         if !vec_owned_record_seeds.contains(&seed) {
             vec_owned_record_seeds.push(seed);

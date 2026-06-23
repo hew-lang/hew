@@ -617,7 +617,7 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
 
 #[test]
 fn generic_record_clone_concrete_instantiation_is_admissible() {
-    // V1 (unit): a generic record whose type params resolve to concrete,
+    // A generic record whose type params resolve to concrete,
     // clonable types is admissible — the per-mono clone thunk is synthesised
     // per instantiation.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
@@ -662,10 +662,10 @@ fn generic_record_clone_concrete_instantiation_is_admissible() {
 
 #[test]
 fn generic_record_clone_opaque_instantiation_fails_closed() {
-    // V7 (unit): the opaque-leaf walk is substitution-aware. `Box<Handle>`
-    // instantiates the declared field `item: T` to `item: Handle` before
-    // checking, so the transitive opaque leaf is detected even though the
-    // declared field type is the abstract param `T`.
+    // The opaque-leaf walk is substitution-aware: `Box<Handle>` instantiates
+    // the declared field `item: T` to `item: Handle` before checking, so the
+    // transitive opaque leaf is detected even though the declared field type
+    // is the abstract param `T`.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.user_opaque_type_names.insert("Handle".to_string());
     checker.type_defs.insert(
@@ -719,7 +719,7 @@ fn generic_record_clone_opaque_instantiation_fails_closed() {
 
 #[test]
 fn generic_record_clone_unresolved_var_is_nyi() {
-    // V9: an unresolved receiver (a generic record whose type args are still
+    // An unresolved receiver (a generic record whose type args are still
     // inference vars) keeps the `GenericRecord` NYI diagnostic; the
     // substitution-aware opaque walk must not regress this clean reject.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));

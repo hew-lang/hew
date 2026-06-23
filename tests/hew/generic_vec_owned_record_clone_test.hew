@@ -1,18 +1,18 @@
 //! Value-asserting fixture for `clone` on a `Vec<R>` whose element `R` is an
-//! owned (managed) record — the deep-clone path G5 wired through
-//! `hew_vec_clone_owned`, which clones every element via the element's
+//! owned (managed) record — the deep-clone path through `hew_vec_clone_owned`,
+//! which clones every element via the element's
 //! `__hew_record_clone_inplace_<R>` thunk.
 //!
-//! G6 adds NO Vec-routing code; this fixture is the value-assertion of the G5
-//! mechanism (G5 shipped the routing with no behavioural clone test — this
-//! pins it). The clone must deep-copy each element's owned `string` field so
-//! the clone survives independently of the original.
+//! No Vec-routing code was added here; this fixture provides the
+//! value-assertion for that mechanism (the routing had no behavioural clone
+//! test — this pins it). The clone must deep-copy each element's owned `string`
+//! field so the clone survives independently of the original.
 
 import std::testing;
 
 type Item { name: string; n: i64; }
 
-// V4 — clone a Vec of owned records; assert each cloned element holds the
+// Clone a Vec of owned records; assert each cloned element holds the
 // correct field values (the owned `string` leaf was deep-copied, not aliased).
 #[test]
 fn test_clone_vec_of_owned_records_copies_fields() {
@@ -30,7 +30,7 @@ fn test_clone_vec_of_owned_records_copies_fields() {
     testing.assert_eq(b.n, 20);
 }
 
-// V4 (independence) — growing the clone leaves the source untouched, proving
+// Growing the clone leaves the source untouched, proving
 // the clone owns a distinct backing allocation.
 #[test]
 fn test_clone_vec_of_owned_records_is_independent() {

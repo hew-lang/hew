@@ -1,11 +1,11 @@
-//! V8 — drop-safety on actor shutdown / state reassignment.
+//! Drop-safety on actor shutdown / state reassignment.
 //!
 //! An actor holds a CLONED generic aggregate (`Pair<i64, string>`) in a state
 //! field. The clone-into-state path drives the per-mono clone thunk for the
 //! `Pair$$i64$string` instantiation; the actor's shutdown (and each overwrite
 //! of the field) releases the prior value through the MATCHING per-mono drop
-//! thunk. R1 (a clone synthesised without its paired drop) would leak / double
-//! free on this path — the lifecycle path the sync fixtures cannot reach.
+//! thunk. A clone synthesised without its paired drop would leak / double-free
+//! on this path — the lifecycle path the sync fixtures cannot reach.
 //!
 //! A generic record is not yet `Send`, so the `Pair` never crosses the actor
 //! boundary; the actor builds it from scalar/`string` message args (both Send)
@@ -32,7 +32,7 @@ actor Keeper {
     }
 }
 
-// V8 — the actor holds a cloned generic aggregate; assert the scalar and the
+// The actor holds a cloned generic aggregate; assert the scalar and the
 // owned `string` leaf are both the values stored (the clone deep-copied them).
 #[test]
 fn actor_holds_cloned_generic_pair_values() {
@@ -47,7 +47,7 @@ fn actor_holds_cloned_generic_pair_values() {
     }
 }
 
-// V8 (drop-on-reassign) — a second store overwrites `held`: the prior clone
+// Drop-on-reassign: a second store overwrites `held`; the prior clone
 // must drop through the per-mono drop thunk and the new clone replace it. The
 // observable label reflects ONLY the latest store, proving the field is a real
 // owned copy reclaimed each cycle (no stale alias, no corruption from an

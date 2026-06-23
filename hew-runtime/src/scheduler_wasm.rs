@@ -36,6 +36,12 @@ use crate::timer_wheel::{
 
 static WASM_CLEANUP_RAN: AtomicBool = AtomicBool::new(false);
 
+/// When set to `true` in tests, `wasm_timer_wheel()` returns null to simulate
+/// an OOM failure from `hew_timer_wheel_new`.  Reset to `false` after use.
+/// Serialised by the `runtime_test_guard` / test lock.
+#[cfg(test)]
+static TEST_FORCE_WHEEL_NULL: AtomicBool = AtomicBool::new(false);
+
 #[inline]
 fn notify_actor_group_waiters(actor_id: u64) {
     #[cfg(not(target_arch = "wasm32"))]
@@ -494,6 +500,14 @@ unsafe extern "C" fn wasm_sleep_cb(data: *mut c_void) {
 /// Must only be called from a single-threaded WASM context or a serialised
 /// test environment.
 pub(crate) unsafe fn wasm_timer_wheel() -> *mut HewTimerWheel {
+    // In the test build, honour a per-test override that simulates an OOM
+    // failure from `hew_timer_wheel_new`.  This lets tests exercise the
+    // fail-closed paths in `park_actor_sleep` and `hew_actor_schedule_periodic`
+    // without requiring actual memory-allocation failure.
+    #[cfg(test)]
+    if TEST_FORCE_WHEEL_NULL.load(Ordering::Relaxed) {
+        return std::ptr::null_mut();
+    }
     // SAFETY: Single-threaded cooperative scheduler.
     unsafe {
         if WASM_TIMER_WHEEL.is_null() {
@@ -585,6 +599,23 @@ unsafe fn park_actor_sleep(actor: *mut HewActor, deadline_ms: u64) {
     // SAFETY: wheel is valid; ctx and actor are live.
     let handle =
         unsafe { hew_timer_wheel_schedule_handle(wheel, delay_ms, wasm_sleep_cb, ctx.cast()) };
+
+    if handle.entry.is_null() {
+        // Wheel rejected the schedule (e.g. entry allocation failure) — fail
+        // closed, matching the wheel-null path above.  Drop the Box, restore
+        // the actor to Runnable, and re-enqueue so it is not stranded.
+        // SAFETY: ctx is exclusively owned (not yet in SLEEP_HANDLES).
+        unsafe { drop(Box::from_raw(ctx)) };
+        a.actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Relaxed);
+        // SAFETY: actor is valid; enqueue is safe.
+        unsafe {
+            if let Err(msg) = try_sched_enqueue(actor) {
+                crate::set_last_error(msg);
+            }
+        }
+        return;
+    }
 
     #[expect(
         static_mut_refs,
@@ -2498,6 +2529,29 @@ mod tests {
                 "WASM_TIMER_WHEEL must be null after shutdown"
             );
         }
+        // SLEEP_HANDLES is Option<HashMap<...>>; .is_none() creates a shared ref,
+        // so it must live in its own #[expect(static_mut_refs)] + unsafe block.
+        #[expect(
+            static_mut_refs,
+            reason = "single-threaded test; SLEEP_HANDLES discriminant read only, no mutation"
+        )]
+        // SAFETY: single-threaded test; called immediately after hew_sched_shutdown.
+        unsafe {
+            assert!(
+                SLEEP_HANDLES.is_none(),
+                "SLEEP_HANDLES must be None after shutdown"
+            );
+        }
+        // These helpers access their respective statics without creating refs here.
+        assert_eq!(
+            crate::timer_periodic_wasm::pending_periodic_count(),
+            0,
+            "WASM_PERIODIC_COUNT must be zero after shutdown"
+        );
+        assert!(
+            crate::timer_periodic_wasm::periodic_registry_is_none(),
+            "PERIODIC_CTX_REGISTRY must be None after shutdown"
+        );
     }
 
     #[test]
@@ -5830,6 +5884,93 @@ mod tests {
         assert_eq!(woken, 0, "no actors should wake after entry was cancelled");
 
         hew_sched_shutdown();
+    }
+
+    // ── Fail-closed schedule-failure regression tests (F-1 / F-2) ──────────
+
+    /// Regression (F-2): when `hew_timer_wheel_schedule_handle` returns a null
+    /// handle for a sleep timer, `park_actor_sleep` must drop the `WasmSleepCtx`
+    /// Box, NOT increment `WASM_SLEEP_COUNT`, and restore the actor to
+    /// `Runnable` so it is not stranded.
+    #[test]
+    fn park_actor_sleep_fails_closed_when_wheel_null() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut a = stub_actor();
+        let a_ptr: *mut HewActor = (&raw mut a);
+        a.actor_state
+            .store(HewActorState::Idle as i32, Ordering::Relaxed);
+
+        // Simulate a wheel that is unavailable (OOM on creation).
+        TEST_FORCE_WHEEL_NULL.store(true, Ordering::Relaxed);
+        // SAFETY: hew_now_ms has no preconditions.
+        let now = unsafe { hew_now_ms() };
+        // SAFETY: actor is valid; park_actor_sleep requires a live HewActor ptr.
+        unsafe { park_actor_sleep(a_ptr, now + 500) };
+        TEST_FORCE_WHEEL_NULL.store(false, Ordering::Relaxed);
+
+        // Must not have registered a sleep entry.
+        assert_eq!(
+            hew_wasm_sleeping_count(),
+            0,
+            "WASM_SLEEP_COUNT must not increment on wheel failure"
+        );
+        // Actor must be Runnable (fail-closed re-enqueue), not stranded.
+        assert_eq!(
+            a.actor_state.load(Ordering::Relaxed),
+            HewActorState::Runnable as i32,
+            "actor must be Runnable after sleep scheduling fails"
+        );
+        // Count must still be zero after shutdown.
+        hew_sched_shutdown();
+        assert_eq!(
+            hew_wasm_sleeping_count(),
+            0,
+            "WASM_SLEEP_COUNT must remain zero after shutdown"
+        );
+    }
+
+    /// Regression (F-1): when `wasm_timer_wheel()` returns null (simulated OOM),
+    /// `hew_actor_schedule_periodic` must return null without registering the
+    /// `WasmPeriodicCtx` or incrementing `WASM_PERIODIC_COUNT`.
+    #[test]
+    fn schedule_periodic_fails_closed_when_wheel_null() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: Serialized by TEST_LOCK — no concurrent access.
+        unsafe { reset_globals() };
+        hew_sched_init();
+
+        let mut a = stub_actor();
+        let a_ptr: *mut HewActor = (&raw mut a);
+
+        // Simulate wheel unavailability.
+        TEST_FORCE_WHEEL_NULL.store(true, Ordering::Relaxed);
+        // SAFETY: actor is a valid live pointer; cast to actor::HewActor (same repr).
+        let handle = unsafe {
+            crate::timer_periodic_wasm::hew_actor_schedule_periodic(
+                a_ptr.cast::<crate::actor::HewActor>(),
+                1,
+                100,
+            )
+        };
+        TEST_FORCE_WHEEL_NULL.store(false, Ordering::Relaxed);
+
+        assert!(handle.is_null(), "must return null on wheel failure");
+        assert_eq!(
+            crate::timer_periodic_wasm::pending_periodic_count(),
+            0,
+            "WASM_PERIODIC_COUNT must not increment on wheel failure"
+        );
+        assert!(
+            crate::timer_periodic_wasm::periodic_registry_is_none(),
+            "registry must remain None when schedule fails"
+        );
+
+        hew_sched_shutdown();
+        // Shutdown assertions (F-3) now cover all 5 new statics.
     }
 
     /// Regression: `PENDING_SLEEP_DEADLINE_MS` must be cleared even when the

@@ -217,6 +217,20 @@ unsafe extern "C" fn wasm_periodic_cb(data: *mut c_void) {
     let new_handle = unsafe {
         hew_timer_wheel_schedule_handle(wheel, ctx.interval_ms, wasm_periodic_cb, ctx_ptr.cast())
     };
+    if new_handle.entry.is_null() {
+        // Re-arm failed (wheel destroyed or entry OOM) — fail closed.
+        // Copy actor before ending the mutable borrow on ctx.
+        let actor = ctx.actor;
+        // End mutable borrow of *ctx_ptr before Box::from_raw.
+        let _ = ctx;
+        // SAFETY: unregister/decrement happen before free; single-threaded WASM.
+        unsafe {
+            unregister_ctx(actor, ctx_ptr);
+            WASM_PERIODIC_COUNT = WASM_PERIODIC_COUNT.saturating_sub(1);
+            drop(Box::from_raw(ctx_ptr));
+        }
+        return;
+    }
     ctx.pending_handle = new_handle;
 }
 
@@ -228,6 +242,19 @@ unsafe extern "C" fn wasm_periodic_cb(data: *mut c_void) {
 pub(crate) fn pending_periodic_count() -> usize {
     // SAFETY: single-threaded WASM; no concurrent mutation.
     unsafe { WASM_PERIODIC_COUNT }
+}
+
+/// Return `true` if the periodic-context registry has been cleared (is `None`).
+///
+/// Used by the shutdown-assertion helper to verify full teardown.
+#[cfg(test)]
+#[expect(
+    static_mut_refs,
+    reason = "single-threaded test; discriminant read, no mutation"
+)]
+pub(crate) fn periodic_registry_is_none() -> bool {
+    // SAFETY: single-threaded test environment; no concurrent mutation.
+    unsafe { PERIODIC_CTX_REGISTRY.is_none() }
 }
 
 /// Schedule a periodic self-send on the shared WASM timer wheel.
@@ -264,14 +291,26 @@ pub unsafe extern "C" fn hew_actor_schedule_periodic(
     // entry in the registry).
     // SAFETY: wasm_timer_wheel() has no preconditions beyond single-threaded access.
     let wheel = unsafe { crate::scheduler_wasm::wasm_timer_wheel() };
-    // SAFETY: wheel is valid (wasm_timer_wheel returned non-null above); ctx is
-    // exclusively owned at this point (not yet in any registry).
+    if wheel.is_null() {
+        // Wheel unavailable (OOM on first creation) — fail closed.
+        // SAFETY: ctx is exclusively owned (not yet in any registry).
+        unsafe { drop(Box::from_raw(ctx)) };
+        return ptr::null_mut();
+    }
+    // SAFETY: wheel is valid (non-null checked above); ctx is exclusively owned.
     let handle = unsafe {
         hew_timer_wheel_schedule_handle(wheel, interval_ms, wasm_periodic_cb, ctx.cast())
     };
+    if handle.entry.is_null() {
+        // Wheel rejected the insert (entry allocation failure) — fail closed.
+        // SAFETY: ctx is exclusively owned (not yet in any registry).
+        unsafe { drop(Box::from_raw(ctx)) };
+        return ptr::null_mut();
+    }
     // SAFETY: ctx was just created; no other reference exists.
     unsafe { (*ctx).pending_handle = handle };
 
+    // Register only after the wheel entry is confirmed live.
     // SAFETY: PERIODIC_CTX_REGISTRY and WASM_PERIODIC_COUNT are single-threaded.
     unsafe {
         register_ctx(actor, ctx);

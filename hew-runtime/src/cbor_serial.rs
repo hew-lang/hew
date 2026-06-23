@@ -482,6 +482,26 @@ pub unsafe extern "C" fn hew_cbor_de_failed(reader: *const c_void) -> i32 {
     i32::from(r.failed)
 }
 
+/// Latch a decode failure on the reader. The generated deserialize walk calls
+/// this to fail closed on a malformed condition only the layout-walking codegen
+/// can detect — e.g. a wire enum tag that matches no known variant — instead of
+/// an inline native trap. An inline trap mid-walk unwinds (via the actor
+/// crash-recovery `siglongjmp` seam) PAST the deserialize thunk's
+/// `hew_cbor_de_free(reader)` + `free(dst)` cleanup, leaking the parsed CBOR
+/// tree and the partial value shell. Latching here lets the walk finish, the
+/// thunk free both, and the call site trap on the null return — the same
+/// free-before-trap discipline every other malformed shape already follows.
+///
+/// # Safety
+/// `reader` must be a live handle from `hew_cbor_de_new`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cbor_de_fail(reader: *mut c_void) {
+    // SAFETY: reader is a live handle per this fn's contract.
+    if let Some(r) = unsafe { as_de_reader(reader) } {
+        r.failed = true;
+    }
+}
+
 /// Free a decode reader and the entire parsed value tree it owns.
 ///
 /// # Safety
@@ -800,6 +820,38 @@ pub unsafe extern "C" fn hew_cbor_de_u64(reader: *mut c_void) -> u64 {
     v
 }
 
+/// Read the staged value as a Unicode scalar value (`char`), returned widened to
+/// `i64` for the generated walk's narrow-to-`i32` store. Latches failure and
+/// returns 0 on type mismatch, a negative / out-of-`u32`-range integer, a
+/// surrogate (U+D800..=U+DFFF), or a value above U+10FFFF — anything that is not
+/// a valid `char` is rejected as a decode failure rather than stored as an
+/// invalid scalar (CLAUDE.md §2: never deliver a fabricated value).
+///
+/// # Safety
+/// `reader` must be a live handle from `hew_cbor_de_new`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_cbor_de_char(reader: *mut c_void) -> i64 {
+    // SAFETY: reader is a live handle per this fn's contract.
+    let Some(r) = (unsafe { as_de_reader(reader) }) else {
+        return 0;
+    };
+    let Some(Value::Integer(integer)) = r.take_staged() else {
+        r.failed = true;
+        return 0;
+    };
+    let Ok(raw) = u32::try_from(i128::from(integer)) else {
+        r.failed = true;
+        return 0;
+    };
+    // `char::from_u32` accepts exactly the Unicode scalar values
+    // (U+0000..=U+10FFFF minus the surrogate range U+D800..=U+DFFF).
+    let Some(c) = char::from_u32(raw) else {
+        r.failed = true;
+        return 0;
+    };
+    i64::from(u32::from(c))
+}
+
 /// Read the staged value as a float. Latches failure and returns 0.0 on type
 /// mismatch.
 ///
@@ -855,6 +907,17 @@ pub unsafe extern "C" fn hew_cbor_de_string(reader: *mut c_void) -> *mut c_char 
         return unsafe { malloc_cstring(std::ptr::null(), 0) };
     };
     let bytes = text.as_bytes();
+    // Fail closed on an interior NUL. `malloc_cstring` produces a
+    // NUL-terminated C string, so an embedded NUL would silently TRUNCATE the
+    // value at the first NUL ("admin\0evil" → "admin") and deliver a fabricated
+    // string. A wire string carrying an interior NUL is rejected as a decode
+    // failure rather than truncated (CLAUDE.md §2: never deliver a fabricated
+    // value).
+    if bytes.contains(&0) {
+        r.failed = true;
+        // SAFETY: empty owned string.
+        return unsafe { malloc_cstring(std::ptr::null(), 0) };
+    }
     // SAFETY: bytes is valid for its length; malloc_cstring copies it.
     unsafe { malloc_cstring(bytes.as_ptr(), bytes.len()) }
 }
@@ -1352,6 +1415,150 @@ mod tests {
                 assert_eq!(got, unsigned, "unsigned extreme {unsigned} round-trips");
                 hew_cbor_de_free(r);
             }
+        }
+    }
+
+    /// A wire text string carrying an INTERIOR NUL is rejected as a decode
+    /// failure rather than truncated at the NUL. `malloc_cstring` builds a
+    /// NUL-terminated C string, so without this guard `"admin\0evil"` would be
+    /// silently delivered as `"admin"` — a fabricated value (CLAUDE.md §2).
+    #[test]
+    fn interior_nul_string_fails_closed() {
+        // Positive control: a NUL-free text string still decodes intact. CBOR
+        // text head `0x65` = major-type-3 (text) length 5, then "admin".
+        let clean = [0x65u8, b'a', b'd', b'm', b'i', b'n'];
+        // SAFETY: test-controlled reader.
+        unsafe {
+            let r = hew_cbor_de_new(clean.as_ptr(), clean.len());
+            let s = hew_cbor_de_string(r);
+            assert_eq!(hew_cbor_de_failed(r), 0, "a NUL-free string decodes clean");
+            let got = core::ffi::CStr::from_ptr(s).to_str().unwrap().to_owned();
+            assert_eq!(got, "admin");
+            hew_string_drop_for_test(s);
+            hew_cbor_de_free(r);
+        }
+        // Interior NUL: CBOR text head `0x6A` = text length 10, then
+        // "admin\0evil" (the embedded NUL at offset 5).
+        let dirty = [
+            0x6Au8, b'a', b'd', b'm', b'i', b'n', 0x00, b'e', b'v', b'i', b'l',
+        ];
+        // SAFETY: test-controlled reader.
+        unsafe {
+            let r = hew_cbor_de_new(dirty.as_ptr(), dirty.len());
+            let s = hew_cbor_de_string(r);
+            assert_eq!(
+                hew_cbor_de_failed(r),
+                1,
+                "an interior-NUL wire string must fail closed, not truncate"
+            );
+            // The fail-closed read returns an empty owned string, never the
+            // truncated "admin" prefix.
+            let got = core::ffi::CStr::from_ptr(s).to_str().unwrap().to_owned();
+            assert_eq!(got, "", "fail-closed read returns an empty owned string");
+            hew_string_drop_for_test(s);
+            hew_cbor_de_free(r);
+        }
+    }
+
+    /// `hew_cbor_de_char` validates the decoded integer is a Unicode scalar
+    /// value: a valid codepoint round-trips, while a surrogate, a value above
+    /// U+10FFFF, a negative tag, and a non-integer each fail closed (returning 0)
+    /// rather than storing an invalid `char` (CLAUDE.md §2).
+    #[test]
+    fn char_decode_validates_unicode_scalar_value() {
+        // SAFETY: test-controlled handles; each prim wraps ciborium directly.
+        unsafe {
+            // Valid scalar value U+1F600 (😀) decodes to its codepoint.
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_u64(buf, 0x1_F600);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            let cp = hew_cbor_de_char(r);
+            assert_eq!(
+                hew_cbor_de_failed(r),
+                0,
+                "a valid scalar value decodes clean"
+            );
+            assert_eq!(cp, 0x1_F600, "codepoint preserved");
+            hew_cbor_de_free(r);
+
+            // A high surrogate (U+D800), a value above U+10FFFF, and a value
+            // that overflows u32 are all rejected.
+            for invalid in [0xD800u64, 0xDFFF, 0x11_0000, u64::from(u32::MAX) + 1] {
+                let buf = hew_cbor_ser_new();
+                hew_cbor_ser_u64(buf, invalid);
+                let mut len = 0usize;
+                let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+                let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+                libc::free(ptr.cast());
+                let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+                let cp = hew_cbor_de_char(r);
+                assert_eq!(
+                    hew_cbor_de_failed(r),
+                    1,
+                    "invalid char scalar {invalid:#x} must fail closed"
+                );
+                assert_eq!(cp, 0, "fail-closed char read returns 0");
+                hew_cbor_de_free(r);
+            }
+
+            // A negative integer is out of `u32` range → fail closed.
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_i64(buf, -1);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            let _ = hew_cbor_de_char(r);
+            assert_eq!(
+                hew_cbor_de_failed(r),
+                1,
+                "a negative char tag must fail closed"
+            );
+            hew_cbor_de_free(r);
+
+            // A non-integer (text) where a char scalar is required → fail closed.
+            let text = std::ffi::CString::new("x").unwrap();
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_string(buf, text.as_ptr());
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            let _ = hew_cbor_de_char(r);
+            assert_eq!(
+                hew_cbor_de_failed(r),
+                1,
+                "a non-integer char must fail closed"
+            );
+            hew_cbor_de_free(r);
+        }
+    }
+
+    /// `hew_cbor_de_fail` latches the reader into the failed state so the
+    /// generated walk can fail closed on a layout-only condition (e.g. an
+    /// out-of-range enum tag) without an inline native trap.
+    #[test]
+    fn de_fail_latches_failure() {
+        // SAFETY: test-controlled handles.
+        unsafe {
+            let buf = hew_cbor_ser_new();
+            hew_cbor_ser_u64(buf, 7);
+            let mut len = 0usize;
+            let ptr = hew_cbor_ser_finish(buf, &raw mut len);
+            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+            libc::free(ptr.cast());
+
+            let r = hew_cbor_de_new(bytes.as_ptr(), bytes.len());
+            assert_eq!(hew_cbor_de_failed(r), 0, "fresh reader is not failed");
+            hew_cbor_de_fail(r);
+            assert_eq!(hew_cbor_de_failed(r), 1, "de_fail latches the failure");
+            hew_cbor_de_free(r);
         }
     }
 }

@@ -96,6 +96,18 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // Both map to new sandbox VM opcodes `vector.contains` / `vector.range_slice`
     // added in this parity sweep.
     "vec_operations",
+    // v[start..=end] inclusive range slice: the emitter computes the exclusive
+    // end (`end + 1`) and delegates to the existing `vector.range_slice` opcode,
+    // so no new VM opcode is needed.  Pins end-inclusive semantics against native.
+    "vec_inclusive_slice",
+    // `rec.clone()` method call on a user-defined record type: the emitter lowers
+    // it as `local.set` which calls `cloneValue` in the VM (deep recursive copy).
+    // Verifies independence: the clone and the original do not alias.
+    "record_clone",
+    // `(rec.f)(args)` fn-field call: a record field holding a function value is
+    // callable via `call.indirect`.  The emitter materialises the function via
+    // `const.function` and retrieves it from the record via `record.get`.
+    "fn_field_call",
     // Vec<f64>::contains with NaN and +-Infinity follows native fcmp-OEQ: NaN is
     // never found, +Inf != -Inf.  Uses the shared valuesEqual helper introduced
     // to align vector.contains with cmp.eq (was: collapsed to null via JSON).

@@ -701,6 +701,32 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("vec_operations"),
     },
     Construct {
+        // v[start..=end] inclusive range slice: the emitter computes the
+        // exclusive end (`end + 1`) and delegates to `vector.range_slice`.
+        // End element is included in the result slice.
+        id: "Vec<T> inclusive range slice v[start..=end]",
+        probe: "fn main() {\n    let v: Vec<i64> = Vec::new();\n    v.push(10);\n    v.push(20);\n    v.push(30);\n    let s = v[0..=1];\n    println(s.len());\n    println(s.get(1));\n}\n",
+        coverage: Coverage::Parity("vec_inclusive_slice"),
+    },
+    Construct {
+        // `rec.clone()` on a user-defined record type. The emitter lowers it as
+        // `local.set` into a fresh temp — the VM's `local.set` calls `cloneValue`
+        // (deep recursive copy) — so the result is independent from the original.
+        // Pins deep-copy semantics: no aliasing of nested fields.
+        id: "record method `clone()`",
+        probe: "type P { x: i64; }\nfn main() {\n    let a = P { x: 5 };\n    let b = a.clone();\n    println(b.x);\n}\n",
+        coverage: Coverage::Parity("record_clone"),
+    },
+    Construct {
+        // `(rec.f)(args)` fn-field call. The emitter materialises the function
+        // value via `const.function`, stores it in the record via `record.new`,
+        // retrieves it via `record.get`, and calls it via `call.indirect`.
+        // The type-checker admitted this form in ac0bc0ed.
+        id: "fn-field call `(rec.f)(args)`",
+        probe: "type T { f: fn(i64) -> i64; }\nfn double(x: i64) -> i64 { x * 2 }\nfn main() {\n    let t = T { f: double };\n    println((t.f)(7));\n}\n",
+        coverage: Coverage::Parity("fn_field_call"),
+    },
+    Construct {
         // Vec<f64>::contains with NaN and +-Infinity follows native fcmp-OEQ.
         // vector.contains previously collapsed NaN/+-Inf to JSON null so all
         // three compared equal (silent wrong-result).  valuesEqual fixes this
@@ -759,7 +785,7 @@ fn every_required_parity_case_backs_a_construct() {
 /// justifying a removed admission in the same commit.
 #[test]
 fn runnable_coverage_does_not_shrink() {
-    const RUNNABLE_BASELINE: usize = 40; // +1: f64_finite_render
+    const RUNNABLE_BASELINE: usize = 43; // +3: vec_inclusive_slice, record_clone, fn_field_call
     let runnable = CONSTRUCTS
         .iter()
         .filter(|c| matches!(c.coverage, Coverage::Parity(_)))

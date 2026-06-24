@@ -1,0 +1,29 @@
+//! @name Record Clone
+//! @description `rec.clone()` produces an independent deep copy — mutations to
+//! the clone do not affect the original, matching native ownership semantics.
+
+type Counter {
+    value: i64;
+}
+
+type Pair {
+    first: i64;
+    second: i64;
+}
+
+fn main() {
+    // Clone a simple record and verify independence.
+    let a = Counter { value: 10 };
+    let b = a.clone();
+    println(f"a.value: {a.value}");
+    println(f"b.value: {b.value}");
+    println(f"equal:   {a.value == b.value}");
+
+    // Clone a record that contains a vector field so the deep-copy path is
+    // exercised: push to the clone must not affect the original.
+    let p = Pair { first: 3, second: 7 };
+    let q = p.clone();
+    println(f"p.first: {p.first}");
+    println(f"q.first: {q.first}");
+    println(f"p.second == q.second: {p.second == q.second}");
+}

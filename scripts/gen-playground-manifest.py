@@ -85,6 +85,9 @@ EXAMPLE_ORDER = {
         "option_result_methods",
         "vec_operations",
         "vec_f64_nonfinite_contains",
+        "vec_inclusive_slice",
+        "record_clone",
+        "fn_field_call",
     ),
 }
 
@@ -195,6 +198,15 @@ SANDBOX_CAPABILITY: dict[str, str] = {
     # types/vec_f64_nonfinite_contains: Vec<f64>::contains for NaN and +-Infinity
     # follows native fcmp-OEQ semantics via the shared valuesEqual helper.
     "types/vec_f64_nonfinite_contains": "runnable",
+    # types/vec_inclusive_slice: v[start..=end] inclusive range slice.  The
+    # emitter computes exclusive end = end + 1 and delegates to vector.range_slice.
+    "types/vec_inclusive_slice": "runnable",
+    # types/record_clone: `rec.clone()` deep-copies a user-defined record via
+    # local.set → cloneValue in the VM.  No field aliasing post-clone.
+    "types/record_clone": "runnable",
+    # types/fn_field_call: `(rec.f)(args)` fn-field call via call.indirect.
+    # Functions are materialised as function-kind values via const.function.
+    "types/fn_field_call": "runnable",
 }
 
 # Entries omitted from WASI_CAPABILITY default to "runnable".

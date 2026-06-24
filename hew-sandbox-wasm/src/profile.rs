@@ -769,6 +769,16 @@ impl<'a> ProfileChecker<'a> {
                         return;
                     }
                 }
+                // `(rec.f)(args)` — fn-field call. The type-checker has admitted
+                // this form (ac0bc0ed); admit it here when the callee expression
+                // resolves to a function or closure type so the emitter can lower
+                // it via `record.get` + `call.indirect`.  Fall through to reject
+                // if the type is unavailable (admit-only when statically known).
+                if let Some(callee_ty) = self.ty_for_expr(function) {
+                    if matches!(callee_ty, Ty::Function { .. } | Ty::Closure { .. }) {
+                        return;
+                    }
+                }
                 self.reject(
                     span.clone(),
                     "unknown_stdlib_symbol",
@@ -880,7 +890,10 @@ impl<'a> ProfileChecker<'a> {
                 method,
                 "is_ok" | "is_err" | "unwrap" | "unwrap_or" | "to_string"
             ),
-            _ => matches!(method, "to_string"),
+            // User-defined records and other named types admit `clone` (deep
+            // structural copy via the VM's `local.set` → `cloneValue` path) and
+            // `to_string` (the generic `fmt.to_string` stdlib call).
+            _ => matches!(method, "clone" | "to_string"),
         }
     }
 

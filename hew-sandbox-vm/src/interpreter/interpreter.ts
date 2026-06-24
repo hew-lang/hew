@@ -390,9 +390,26 @@ class Interpreter {
         this.writeDst(frame, instruction, this.invoke(fn, args));
         return;
       }
-      case "call.indirect":
-        this.unsupported("Unsupported::M4_DEFERRED: call.indirect", instruction.span);
+      case "call.indirect": {
+        // Resolve the callee local, which must hold a `function`-kind value
+        // materialised by `const.function`.  Look up the function by its id and
+        // invoke it with the remaining operands as arguments.
+        const calleeValue = this.resolve(frame, instruction.args[0], instruction.span);
+        if (calleeValue.kind !== "function") {
+          this.trap("invalid_call", "call.indirect: callee is not a function value", instruction.span);
+        }
+        const fn = this.functionFor(calleeValue.id, instruction.span);
+        const args = instruction.args.slice(1).map((arg) => this.resolve(frame, arg, instruction.span));
+        this.writeDst(frame, instruction, this.invoke(fn, args));
         return;
+      }
+      case "const.function": {
+        // Materialise a first-class function reference.  The single operand is a
+        // `function`-kind static operand carrying the bytecode function id.
+        const id = this.functionOperand(instruction.args[0], instruction.span);
+        this.writeDst(frame, instruction, { kind: "function", id });
+        return;
+      }
       case "call.stdlib":
         this.callStdlib(frame, instruction);
         return;
@@ -1747,6 +1764,8 @@ function renderComparable(value: VmValue): JsonValue {
       return { type: value.typeId, tag: value.tag, payload: value.payload.map(renderComparable) };
     case "vector":
       return value.items.map(renderComparable);
+    case "function":
+      return value.id;
   }
 }
 

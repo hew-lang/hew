@@ -1049,5 +1049,7 @@ function heapUnits(value: VmValue): number {
       return 1 + value.payload.reduce((total, field) => total + heapUnits(field), 0);
     case "vector":
       return 1 + value.items.reduce((total, item) => total + heapUnits(item), 0);
+    case "function":
+      return 1;
   }
 }

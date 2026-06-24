@@ -18,7 +18,11 @@ export type VmValue =
   | { kind: "regex"; source: string; regex: RegExp }
   | { kind: "record"; typeId: string; fields: VmValue[] }
   | { kind: "enum"; typeId: string; tag: number; payload: VmValue[] }
-  | { kind: "vector"; elementType: string; items: VmValue[] };
+  | { kind: "vector"; elementType: string; items: VmValue[] }
+  /** A first-class function reference materialised by `const.function`.
+   *  `id` is the bytecode function id (e.g. `"fn:my_handler"`).
+   *  Function values are immutable: `cloneValue` is identity. */
+  | { kind: "function"; id: string };
 
 export const UNIT: VmValue = { kind: "unit" };
 
@@ -39,6 +43,7 @@ export function cloneValue(value: VmValue): VmValue {
     case "stream":
     case "sink":
     case "duplex":
+    case "function":  // function values are immutable — identity clone
       return { ...value };
     case "regex":
       return { kind: "regex", source: value.source, regex: new RegExp(value.source, value.regex.flags) };
@@ -168,6 +173,8 @@ export function renderStdout(value: VmValue): string {
       });
     case "vector":
       return canonicalJson(value.items.map((item) => toJsonValue(item)));
+    case "function":
+      return value.id;
   }
 }
 
@@ -202,6 +209,8 @@ export function toJsonValue(value: VmValue): JsonValue {
       return { type: value.typeId, tag: value.tag, payload: value.payload.map(toJsonValue) };
     case "vector":
       return value.items.map(toJsonValue);
+    case "function":
+      return value.id;
   }
 }
 

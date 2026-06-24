@@ -2429,6 +2429,11 @@ pub struct Checker {
     pub(super) trait_import_bindings: HashMap<(String, String), String>,
     /// Set of (`type_name`, `trait_name`) pairs for concrete impl registrations
     pub(super) trait_impls_set: HashSet<(String, String)>,
+    /// Dedup guard so a rejected overlapping primitive/builtin trait impl emits
+    /// only one `ConflictingTraitImpl` diagnostic even though
+    /// `record_primitive_trait_impl_self_args` runs once per impl method. Keyed
+    /// by (`canonical_constructor`, `trait_name`, `span.start`, `span.end`).
+    pub(super) conflicting_trait_impl_reported: HashSet<(String, String, usize, usize)>,
     /// Method names provided by each concrete trait impl block, keyed by
     /// (`type_name`, `trait_name`) as written on the impl. This preserves
     /// provenance that is lost when impl methods are flattened onto the type's
@@ -2950,6 +2955,7 @@ impl Checker {
             trait_super: HashMap::new(),
             trait_import_bindings: HashMap::new(),
             trait_impls_set: HashSet::new(),
+            conflicting_trait_impl_reported: HashSet::new(),
             trait_impl_method_names: HashMap::new(),
             primitive_trait_impls: HashMap::new(),
             primitive_trait_impl_self_args: HashMap::new(),

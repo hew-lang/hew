@@ -4257,6 +4257,7 @@ impl Checker {
                                 canonical.clone(),
                                 tb.name.clone(),
                                 self_type_args.clone(),
+                                &id.target_type.1,
                             );
                             self.record_primitive_trait_impl_method(
                                 canonical,
@@ -6352,29 +6353,111 @@ impl Checker {
         method_name: String,
         sig: FnSig,
     ) {
+        // First-wins, matching `record_primitive_trait_impl_self_args` and the
+        // assoc-type binding table. Under Hew's coherence rule there is at most
+        // one impl of a trait per constructor, so a second registration is
+        // either the same impl reprocessed across phases or a rejected
+        // conflicting impl (diagnosed at `record_trait_impl`); in neither case
+        // may it overwrite the surviving impl's signature. Keeping every side
+        // table first-wins guarantees the dispatched method signature and the
+        // applicability proof (self-args) always come from the *same* impl, so
+        // they cannot drift.
         self.primitive_trait_impls
             .entry((canonical_key, trait_name))
             .or_default()
-            .insert(method_name, sig);
+            .entry(method_name)
+            .or_insert(sig);
     }
 
     /// Record the impl's `Self` type arguments for an `impl <Trait> for
     /// <PrimitiveOrBuiltinGeneric>` so a later dispatch on a concrete receiver
     /// can bind the impl's type parameters (see
-    /// [`Checker::primitive_trait_impl_self_args`]). Idempotent: the first
-    /// recorded entry per `(canonical, trait)` wins (all methods of one impl
-    /// share the same `Self` args). `canonical_key` must come from
-    /// [`Self::canonical_primitive_or_builtin_key_from_name`] so registration
-    /// and dispatch agree.
+    /// [`Checker::primitive_trait_impl_self_args`]). Idempotent within one impl:
+    /// every method of that impl records the SAME `Self` args, so the first
+    /// recorded entry per `(canonical, trait)` wins.
+    ///
+    /// Coherence enforcement (single-impl-per-constructor): if a *different*
+    /// `Self` shape is already recorded for this `(canonical, trait)`, two
+    /// distinct impls target the same builtin constructor with the same trait —
+    /// e.g. a blanket `impl<T> Acc for Vec<T>` (`self_args = [T]`) and a concrete
+    /// `impl Acc for Vec<i64>` (`self_args = [i64]`). Hew has no specialization
+    /// or overlapping impls (single-crate coherence, mission Q66.b), so the
+    /// second impl is rejected at its declaration site with a clean diagnostic
+    /// and does NOT overwrite the first (first-wins keeps the surviving impl's
+    /// method signatures and this `Self`-arg applicability proof from the SAME
+    /// impl, so they cannot drift).
+    ///
+    /// Comparing the `Self` shape (rather than a source span) makes this robust
+    /// to the registration architecture re-processing the same impl across
+    /// module/import phases: a reprocessed impl re-presents an *identical*
+    /// `Self` shape and is correctly treated as the same impl, while a genuine
+    /// overlap presents a *different* shape. It also naturally scopes the check
+    /// to builtin/primitive receivers — user-record impls never reach this side
+    /// table — which is exactly where the drift fail-open lived.
+    ///
+    /// KNOWN GAP (tracked): two *genuinely-distinct* impls that share an
+    /// *identical* `Self` shape — e.g. two literal `impl<T> Acc for Vec<T>`
+    /// blocks — are NOT rejected here (they compare shape-equal and are treated
+    /// as a re-presentation). Closing this needs the impl's DEFINING identity,
+    /// but the only readily-available per-impl span (`impl.target_type` span)
+    /// cannot be used as the coherence key because the documented user-redeclare
+    /// path lets a user `pub trait Display` shadow the prelude `Display`: the
+    /// prelude `impl Display for i64` and the user `impl Display for i64` are
+    /// distinct traits that collapse to the same `(canonical, "Display")` key,
+    /// so a defining-span key would falsely reject that legal shadow. A correct
+    /// fix must additionally key on the trait's DEFINING identity (not its
+    /// name), which is a larger cross-cutting change tracked as a separate
+    /// follow-up ("trait-impl coherence: reject duplicate same-(type,trait)
+    /// impls via defining-identity"). The projection fix this method supports is
+    /// unaffected: first-wins keeps the dispatched method signature and the
+    /// applicability proof from the SAME (first) impl, so even an accepted
+    /// duplicate cannot cause the mis-projection fail-open this lane closes.
     pub(super) fn record_primitive_trait_impl_self_args(
         &mut self,
         canonical_key: String,
         trait_name: String,
         self_args: Vec<Ty>,
+        impl_span: &Span,
     ) {
-        self.primitive_trait_impl_self_args
-            .entry((canonical_key, trait_name))
-            .or_insert(self_args);
+        match self
+            .primitive_trait_impl_self_args
+            .get(&(canonical_key.clone(), trait_name.clone()))
+        {
+            None => {
+                self.primitive_trait_impl_self_args
+                    .insert((canonical_key, trait_name), self_args);
+            }
+            Some(existing) if existing == &self_args => {
+                // Same impl (same Self shape), re-presented across a later
+                // registration phase — not a conflict. (See KNOWN GAP above:
+                // this also admits a genuine same-shape duplicate, tracked.)
+            }
+            Some(_) => {
+                // A second, structurally-different impl of the same trait on the
+                // same builtin constructor: an overlapping impl, which Hew does
+                // not permit. Reject it; keep the first-registered impl.
+                let dedup = (
+                    canonical_key.clone(),
+                    trait_name.clone(),
+                    impl_span.start,
+                    impl_span.end,
+                );
+                if self.conflicting_trait_impl_reported.insert(dedup) {
+                    self.report_error(
+                        TypeErrorKind::ConflictingTraitImpl {
+                            trait_name: trait_name.clone(),
+                            type_name: canonical_key.clone(),
+                        },
+                        impl_span,
+                        format!(
+                            "conflicting implementation of trait `{trait_name}` for `{canonical_key}`: \
+                             a trait may be implemented at most once per type constructor \
+                             (Hew has no specialization or overlapping impls)"
+                        ),
+                    );
+                }
+            }
+        }
     }
 
     /// Look up a method on the primitive/builtin-generic impl table.
@@ -7278,6 +7361,7 @@ impl Checker {
                                 canonical.clone(),
                                 tb.name.clone(),
                                 self_type_args.clone(),
+                                &id.target_type.1,
                             );
                             self.record_primitive_trait_impl_method(
                                 canonical,
@@ -7501,6 +7585,7 @@ impl Checker {
                                     canonical.clone(),
                                     tb.name.clone(),
                                     self_type_args.clone(),
+                                    &id.target_type.1,
                                 );
                                 self.record_primitive_trait_impl_method(
                                     canonical,
@@ -8022,6 +8107,7 @@ impl Checker {
                                     canonical.clone(),
                                     tb.name.clone(),
                                     self_type_args.clone(),
+                                    &id.target_type.1,
                                 );
                                 self.record_primitive_trait_impl_method(
                                     canonical,

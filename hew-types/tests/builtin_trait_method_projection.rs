@@ -325,3 +325,128 @@ fn concrete_self_impl_projects_for_matching_receiver() {
         "concrete impl Acc for Vec<i64> projects Option<i64> on Vec<i64>",
     );
 }
+
+/// Coherence (builtin): two impls of the same trait for the same builtin
+/// constructor — a blanket `impl<T> Acc for Vec<T>` AND a concrete
+/// `impl Acc for Vec<i64>` — must be rejected. Hew has no specialization or
+/// overlapping impls (mission Q66.b; HEW-FUTURE §single-crate coherence), so a
+/// trait may be implemented at most once per type constructor. Without this
+/// rejection the dispatch side tables (self-args proof vs method signature)
+/// could be populated from different impls and drift, re-opening the
+/// over-application fail-open this lane closes.
+#[test]
+fn overlapping_builtin_impls_rejected() {
+    let output = typecheck(
+        r"
+        trait Acc {
+            type Output;
+            fn fetch(self, key: i64) -> Option<Self::Output>;
+        }
+        impl<T> Acc for Vec<T> {
+            type Output = T;
+            fn fetch(self, key: i64) -> Option<T> { None }
+        }
+        impl Acc for Vec<i64> {
+            type Output = i64;
+            fn fetch(self, key: i64) -> Option<i64> { None }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|err| matches!(err.kind, TypeErrorKind::ConflictingTraitImpl { .. })),
+        "expected a ConflictingTraitImpl coherence diagnostic for the overlapping \
+         Vec impls, got: {:#?}",
+        output.errors
+    );
+}
+
+/// Coherence (builtin, same shape) — TRACKED KNOWN GAP.
+///
+/// Two genuinely-distinct `impl` blocks with the SAME `Self` shape — two
+/// `impl<T> Acc for Vec<T>` — are a duplicate that SHOULD be rejected with
+/// `ConflictingTraitImpl`, but currently are not: the coherence check compares
+/// `Self` shape (shape-equal duplicates read as a re-presentation of one impl).
+///
+/// Closing this needs the impl's DEFINING identity as the coherence key, but the
+/// only readily-available per-impl span cannot be used directly: the documented
+/// user-redeclare path (a user `pub trait Display` shadowing the prelude
+/// `Display`) makes the prelude `impl Display for i64` and the user
+/// `impl Display for i64` — two DISTINCT traits — collapse to the same
+/// `(canonical, "Display")` coherence key, so a defining-span key would falsely
+/// reject that legal shadow. A correct fix must additionally key on the trait's
+/// DEFINING identity (not its name), a larger cross-cutting change tracked as a
+/// separate follow-up: "trait-impl coherence: reject duplicate same-(type,trait)
+/// impls via defining-identity".
+///
+/// The projection fix this lane delivers is unaffected by the gap: first-wins
+/// keeps the dispatched method signature and the applicability proof from the
+/// SAME (first) impl, so an accepted duplicate cannot cause the mis-projection
+/// fail-open this lane closes. `#[ignore]` keeps the regression CI-visible
+/// (`cargo test -- --ignored`) without failing the gate; remove `#[ignore]` when
+/// the follow-up lands.
+#[test]
+#[ignore = "tracked: duplicate same-(type,trait) impl coherence needs defining-identity key (separate follow-up)"]
+fn duplicate_same_shape_builtin_impls_rejected() {
+    let output = typecheck(
+        r"
+        trait Acc {
+            type Output;
+            fn fetch(self, key: i64) -> Option<Self::Output>;
+        }
+        impl<T> Acc for Vec<T> {
+            type Output = T;
+            fn fetch(self, key: i64) -> Option<T> { None }
+        }
+        impl<T> Acc for Vec<T> {
+            type Output = T;
+            fn fetch(self, key: i64) -> Option<T> { None }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|err| matches!(err.kind, TypeErrorKind::ConflictingTraitImpl { .. })),
+        "expected a ConflictingTraitImpl coherence diagnostic for the duplicate \
+         same-shape Vec impls, got: {:#?}",
+        output.errors
+    );
+}
+/// user-defined record constructors — `impl<T> Acc for Box2<T>` AND
+/// `impl Acc for Box2<i64>` must be rejected (fail-closed), never silently
+/// accepted. User-record impls do NOT flow through the primitive/builtin side
+/// table (where this lane's drift fail-open lived), so they are rejected by the
+/// pre-existing impl-coherence path rather than the new `ConflictingTraitImpl`
+/// primitive diagnostic. Either way the overlap must not type-check cleanly.
+#[test]
+fn overlapping_user_record_impls_rejected() {
+    let output = typecheck(
+        r"
+        trait Acc {
+            type Output;
+            fn fetch(self, key: i64) -> Option<Self::Output>;
+        }
+        type Box2<T> { inner: T; }
+        impl<T> Acc for Box2<T> {
+            type Output = T;
+            fn fetch(self, key: i64) -> Option<T> { Some(self.inner) }
+        }
+        impl Acc for Box2<i64> {
+            type Output = i64;
+            fn fetch(self, key: i64) -> Option<i64> { Some(self.inner) }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "expected the overlapping Box2 impls to be rejected (fail-closed), \
+         but type-check was clean",
+    );
+}

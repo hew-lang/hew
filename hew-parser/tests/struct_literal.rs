@@ -124,7 +124,7 @@ fn first_stmt(
 //
 // The empty-block fix added a `no_struct_literal` restriction in `if`/`while`
 // condition and `match` scrutinee position. These tests cover the three edges
-// the cross-eco review found: module-qualified enum-variant struct-init in a
+// the independent review found: module-qualified enum-variant struct-init in a
 // condition, a parenthesised struct literal directly in condition/scrutinee
 // position (formatter must keep the parens), and a block expression in a
 // condition (the restriction must not leak into the block body).

@@ -695,7 +695,7 @@ pub fn sched_enqueue(actor: *mut HewActor) {
 /// assert-net first, reroute/delete at M4). A single-runtime
 /// (`RuntimeId::DEFAULT`) actor never trips it — `rt_default()` IS its runtime —
 /// so the production hot path is unaffected. Full rerouting of the wake to the
-/// owning runtime's scheduler is M4; this lane only installs the trap.
+/// owning runtime's scheduler is M4; this change only installs the trap.
 #[inline]
 fn assert_wake_routes_to_owning_runtime(actor_runtime_id: crate::runtime_id::RuntimeId) {
     if actor_runtime_id == crate::runtime_id::RuntimeId::DEFAULT {
@@ -4395,7 +4395,7 @@ mod tests {
         // P1-B: the completed continuation is destroyed exactly once (the slot
         // is null above) and the tag is RE-ARMED `Destroyed -> Empty` on the
         // quiescent edge, so this actor can park a NEW continuation on its next
-        // `await` rather than being stuck terminal (the one-shot leak this lane
+        // `await` rather than being stuck terminal (the one-shot leak this fix
         // closes).
         assert_eq!(
             actor.cont_tag.load(Ordering::Acquire),
@@ -4412,7 +4412,7 @@ mod tests {
     /// message that ALSO suspends — parking a NEW continuation. Without the
     /// quiescent re-arm the second dispatch's `begin_park` would refuse from the
     /// terminal `Destroyed` tag, leaking the second handle and dropping the
-    /// activation (the fail-OPEN this lane closes). Both continuations are
+    /// activation (the fail-OPEN this fix closes). Both continuations are
     /// destroyed exactly once; the actor ends armed (`Empty`) for a third await.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]

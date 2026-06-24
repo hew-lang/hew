@@ -14,7 +14,7 @@
 //! The structural tests use the tell-shaped `Duplex<i64, ()>` because only the
 //! tell-shaped `.send` (yielding `Result<(), SendError>`) lowers to a runtime
 //! call.  An ask-shaped `.send` (a non-unit `Duplex` reply yielding `Result<R,
-//! AskError>`) is a separate lowering this lane does not own; it fails closed
+//! AskError>`) is a separate lowering this change does not own; it fails closed
 //! with a stable `NotYetImplemented` diagnostic in BOTH statement and value
 //! context (see `*_ask_shaped_send_fails_closed`), never lowering as a
 //! fire-and-forget tell that would silently drop the reply.

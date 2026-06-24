@@ -1317,7 +1317,7 @@ fn run_destructure_payload_no_double_free() {
 /// helper-locals leaked (the buffer was never freed). This test asserts the
 /// program completes and prints `done` across many iterations; the bounded-RSS
 /// proof (identical peak RSS at 100k vs 2M iterations) is recorded in the
-/// lane's validation evidence.
+/// validation evidence.
 #[test]
 fn run_fn_local_string_is_dropped_bounded_memory() {
     require_codegen();
@@ -1350,7 +1350,7 @@ fn run_fn_local_string_is_dropped_bounded_memory() {
 /// (SIGABRT) on a double-free, so a clean exit with `done` across every
 /// iteration of the hot loop is the behavioural proof that each owner is freed
 /// exactly once (and the bounded-RSS leak proof — flat peak RSS at 40M
-/// iterations — is recorded in the lane's validation evidence). The structural
+/// iterations — is recorded in the validation evidence). The structural
 /// single-drop proofs live in
 /// `hew-mir/tests/owned_string_temp_drop_canary.rs`.
 #[test]
@@ -3144,7 +3144,7 @@ fn owned_record_string_field_by_value_round_trips() {
 
 /// Value-class capstone (G12) — a user record aggregating a `Vec<i64>` field is
 /// constructed (the highest-value shape: rejected at MIR even on construction
-/// before this lane), returned by value, field-read, and dropped at scope exit.
+/// before this fix), returned by value, field-read, and dropped at scope exit.
 #[test]
 fn owned_record_vec_field_by_value_round_trips() {
     require_codegen();
@@ -3412,7 +3412,7 @@ fn run_whole_tuple_of_handles_drops_each_member_once() {
 // W5.021 defect #1 — returned-aggregate member drop spine.
 //
 // The exactly-once ORACLE these tests use is the cheap authoritative one the
-// cross-ecosystem review used: a callee that RETURNS an aggregate of owned
+// independent review used: a callee that RETURNS an aggregate of owned
 // handles must elaborate an EMPTY drop-plan for that return — no
 // `Stream::close` / `Sink::close` — because the caller (who received the
 // byte-copied aggregate) now owns the members. A non-empty plan IS the

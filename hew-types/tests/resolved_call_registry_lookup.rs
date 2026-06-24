@@ -24,7 +24,7 @@
 //!    structural enforcement of the Q281=A data-only discipline — a
 //!    `Box<dyn Fn>` or closure smuggled into `ImplDef` would not be
 //!    serialisable and this round-trip would fail to compile or fail
-//!    at runtime. Per the lane plan §7 risk #3.
+//!    at runtime. Per §7 risk #3 of the design notes.
 //!
 //! This test does NOT touch `TypeCheckOutput`. Stage A's invariant is
 //! that no production reader of `resolved_calls` exists; the field is

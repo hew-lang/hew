@@ -1,6 +1,6 @@
 //! Local `HashMap` / `HashSet` scope-exit drop elaboration — invariant pinning.
 //!
-//! Before this lane a local `let m: HashMap<K, V> = HashMap::new();` handle was
+//! Before this fix a local `let m: HashMap<K, V> = HashMap::new();` handle was
 //! `ValueClass::CowValue` but had no dedicated drop class, so it fell through to
 //! the no-op `CowValue` arm and LEAKED its layout-keyed backing storage on every
 //! normal-return AND cancel/cooperate path. This suite pins the fix:
@@ -23,7 +23,7 @@
 //!
 //! The negative controls are load-bearing: per `drop-allowset-from-value-flow`
 //! an allow-set test without a paired exclusion would pass even if the gate
-//! admitted everything (the double-free this lane must never introduce).
+//! admitted everything (the double-free this fix must never introduce).
 
 use hew_mir::{DropKind, ElabDrop, ExitPath, IrPipeline};
 use hew_types::module_registry::ModuleRegistry;

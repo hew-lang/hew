@@ -2669,7 +2669,7 @@ pub unsafe extern "C" fn hew_vec_get_owned(
 /// to `Some` is always a freshly retained/cloned owner, never a borrow into the
 /// live buffer, so dropping the `Option` balances exactly one owner and never
 /// double-frees the element the Vec still holds (`by-value-heap-params-are-borrows`
-/// P0 — the whole reason this lane exists).
+/// P0 — the whole reason this implementation exists).
 ///
 /// Element-class dispatch (exhaustive, fail-closed — GAP-2):
 /// - `String` → `retain_string_element` (refcount bump), write the retained ptr.

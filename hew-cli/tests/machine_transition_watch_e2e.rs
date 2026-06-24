@@ -283,7 +283,7 @@ fn channel_handle_use_after_transfer_refused() {
     );
 }
 
-/// The lane's target composition: a machine-owning service publishes
+/// The target composition: a machine-owning service publishes
 /// record transitions into a channel whose receiver was handed to a
 /// separate observer actor through a message; the observer selects on
 /// transitions with an `after` safety net and reacts to the Faulted edge.

@@ -301,8 +301,8 @@ impl RuntimeCallingConvention {
     ///   in `type_defs` at all (fail-closed: an unresolved nominal
     ///   cannot be silently treated as a pointer).
     ///
-    /// The substrate-vs-discrimination invariant from this lane's
-    /// cross-eco review (and the W4.011 family of findings) lives
+    /// The substrate-vs-discrimination invariant (and the W4.011 family
+    /// of findings) lives
     /// here: the only path that returns [`Self::Pointer`] for a
     /// [`Ty::Named`] is the one that consulted
     /// [`TypeDef::is_indirect`].
@@ -539,7 +539,7 @@ mod tests {
         // Regression: user `type Connection { id: i32 }` (no
         // is_indirect) must classify as LayoutDescriptor, NOT
         // Pointer. This is the W4.011-family invariant the
-        // substrate-vs-discrimination cross-eco finding pinned.
+        // substrate-vs-discrimination independent finding pinned.
         let mut type_defs = std::collections::HashMap::new();
         let (name, td) = make_type_def("Connection", false);
         type_defs.insert(name, td);

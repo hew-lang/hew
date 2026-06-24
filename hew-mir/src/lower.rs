@@ -6713,7 +6713,7 @@ impl Builder {
     /// would double-free the buffer at the move-out site (a use-after-free
     /// at every read of the move destination that happens after the break).
     /// The scan refuses such drops — leak-not-double-free, matching the
-    /// body-end drop's discipline. (Before this lane the recv `Some(item)`
+    /// body-end drop's discipline. (Before this fix the recv `Some(item)`
     /// path never registered an entry here so the conflict was masked;
     /// extending Phase F to recv-call scrutinees exposes the case so the
     /// escape filter is now load-bearing.)
@@ -12480,7 +12480,7 @@ impl Builder {
     /// body's per-iteration drop — identical ownership shape to a generator
     /// yield. Without that release every received frame leaks one heap block
     /// per iteration (every `Stream<string>` recv loop, every `Receiver<T>::recv`
-    /// drain), which is the leak this lane closes.
+    /// drain), which is the leak this fix closes.
     ///
     /// The detector matches structurally on the HIR `Call` callee `BindingRef`
     /// name — the same identity codegen uses to intercept the call and
@@ -14814,7 +14814,7 @@ impl Builder {
             // per-iteration drop — identical ownership shape to a generator
             // yield (`hew_gen_next` returns the same kind of fresh owned value).
             // Without this drop every received frame leaks a heap block per
-            // iteration: the leak this lane closes for `for await item in rx` /
+            // iteration: the leak this fix closes for `for await item in rx` /
             // `match channel.recv(...) { ... }` / `match stream.recv() { ... }`.
             let arm_is_recv_some = recv_next_scrutinee && arm_is_some;
             let mut overwritten_bindings = Vec::with_capacity(arm.bindings.len());
@@ -15285,7 +15285,7 @@ impl Builder {
         // heap-owning bindings declared in `body.scope`. Without this, an
         // `Option<T>` (or other heap-owning) let-binding bound inside the body
         // gets overwritten on the next iteration with no preceding drop — the
-        // memory leak this lane closes (Stream<T>/Receiver<T> recv loops).
+        // memory leak this fix closes (Stream<T>/Receiver<T> recv loops).
         // The scope captured is the body's, not any nested block's: nested
         // block-scope bindings already self-drop when their block closes via
         // the existing scope-exit pass.
@@ -18636,7 +18636,7 @@ impl Builder {
         // Suspendable-caller flip: in an execution-context caller, the four
         // builtin recv/send/sleep families SUSPEND on the coro substrate instead
         // of blocking the worker. Factored into one helper so the per-family
-        // shapes sit together (the suspend-flip surface this lane collapses onto
+        // shapes sit together (the suspend-flip surface this change collapses onto
         // the SuspendKind side-table). `Break(dest)` when a flip fired.
         if let std::ops::ControlFlow::Break(dest) = self.try_lower_suspending_builtin_flip(
             callee_symbol,
@@ -19718,7 +19718,7 @@ impl Builder {
         //     statement context discards the status (`dest: None`,
         //     fire-and-forget delivery).
         //   - ask-shaped `Result<R, AskError>` (a non-unit `Duplex` reply) or
-        //     any other type -> a separate lowering this lane does not own. Fail
+        //     any other type -> a separate lowering this change does not own. Fail
         //     closed with a stable NYI diagnostic BEFORE emitting any send
         //     instruction (`no-fail-open-fallback-after-authority`), rather than
         //     bind nothing (the misleading `UnresolvedPlace`, Evidence #1),
@@ -20167,7 +20167,7 @@ impl Builder {
             //   on the not-live path. The integer/BitCopy spine (every supervisor
             //   example + the dogfood case) is unaffected.
             // WHY now: payload-drop on the recover edge needs drop-elaboration
-            //   threaded into recover_bb; that is a larger change than this lane,
+            //   threaded into recover_bb; that is a larger change than this fix,
             //   and the pre-F-04 behaviour leaked-by-aborting (the trap killed the
             //   whole process), so this is not a regression for the common case.
             // WHEN obsolete: when a heap-payload tell to a supervised child is a
@@ -24405,7 +24405,7 @@ fn elaborate(
     // scan (the source/operand classifier is a compiler-exhaustive match, so
     // a new `Instr`/`Terminator` variant cannot be added without classifying
     // its operands). Worst case the feature drops FEWER strings (leaks, as
-    // before this lane); it can never double-free.
+    // before this fix); it can never double-free.
     //
     // Consume facts narrow the allow-set further: a binding `Consumed` or
     // `MaybeConsumed` at any block exit is removed, because `enumerate_exits`
@@ -27050,7 +27050,7 @@ fn cow_owned_string_terminator_escapes(
 ///
 /// Fail-closed throughout: an unrecognised producer (rule 2), an unrecognised
 /// use (rule 4), or any taint (rule 3) leaves the binding out of the set — it
-/// leaks, exactly as before this lane, and can never double-free.
+/// leaks, exactly as before this fix, and can never double-free.
 ///
 /// LESSONS: boundary-fail-closed (P0), cleanup-all-exits, raii-null-after-move.
 #[must_use]
@@ -27188,7 +27188,7 @@ fn block_by_id(blocks: &[BasicBlock], id: u32) -> Option<&BasicBlock> {
 /// results that flow straight into a borrowing use (or are discarded) WITHOUT a
 /// `let` binding, so the binding-scoped scope-exit derivation never sees them.
 ///
-/// Shapes this releases exactly once (each leaked before this lane):
+/// Shapes this releases exactly once (each leaked before this fix):
 ///
 /// ```text
 ///   (a + b).len()           // concat temp, borrowed by hew_string_length
@@ -27232,7 +27232,7 @@ fn block_by_id(blocks: &[BasicBlock], id: u32) -> Option<&BasicBlock> {
 ///        preceding block (require `U` single-predecessor) → drop at the front
 ///        of `T` (require `T` single-predecessor).
 ///
-/// Any other CFG shape fails closed (the temp leaks, as before this lane). The
+/// Any other CFG shape fails closed (the temp leaks, as before this fix). The
 /// return is a list of `(block_id, insert_index, place, ty)` inline-drop
 /// insertions for the caller to splice in. Pure over `blocks` (no mutation) so
 /// it is unit-testable.
@@ -31027,7 +31027,7 @@ fn ty_is_closure_pair(ty: &ResolvedTy) -> bool {
 /// - `RecordInit` / aggregate ingress — a nested closure capturing the pair
 ///   or a record/Vec storing it owns the env through the aggregate.
 ///
-/// Excluded bindings leak (as before this lane); they never double-free.
+/// Excluded bindings leak (as before this fix); they never double-free.
 fn derive_closure_pair_drop_allowed(
     blocks: &[BasicBlock],
     suspend_kinds: &HashMap<u32, SuspendKind>,
@@ -31374,7 +31374,7 @@ fn build_lifo_drops(
         // `ValueClass::CowValue`, but `cow_value_leaf_drop_symbol` only handles
         // the leaf `string` case, so a local map/set would otherwise fall through
         // to the no-op `CowValue` arm and LEAK its layout-keyed backing storage
-        // on every normal-return AND cancel/cooperate path (the bug this lane
+        // on every normal-return AND cancel/cooperate path (the bug this fix
         // fixes). Intercept BEFORE the value-class match (mirroring the owned-Vec
         // arm above) and emit the `DropKind::CowHeap` runtime release
         // (`hew_hashmap_free_layout` / `hew_hashset_free_layout`, selected by the
@@ -31384,7 +31384,7 @@ fn build_lifo_drops(
         // actor's initial state (`spawn A(f: m)`) or otherwise escaped is
         // excluded by the escape-scan, so the actor's synthesised `state_drop_fn`
         // remains the sole owner of that free — no double-drop. A binding the
-        // prover did not clear leaks (as before this lane); it never double-frees.
+        // prover did not clear leaks (as before this fix); it never double-frees.
         // The local guard here only confirms the binding's type is a collection
         // handle so the `*_free_layout` ABI is correct; route the kind through
         // `drop_kind_for` (the single source of truth the drop-plan validator
@@ -31545,7 +31545,7 @@ fn build_lifo_drops(
         // this one owner left at scope exit. The drop protocol null-checks
         // the env pointer, so named-fn pairs and capture-free escaping
         // closures are no-ops. A binding the prover did not clear leaks (as
-        // before this lane); it never double-frees.
+        // before this fix); it never double-frees.
         // LESSONS: cleanup-all-exits, raii-null-after-move,
         // boundary-fail-closed, ffi-ownership-contracts.
         if closure_pair_drop_allowed.contains(binding) && ty_is_closure_pair(ty) {
@@ -31695,7 +31695,7 @@ fn build_lifo_drops(
             // never aliased out (never read as a source operand) and is not a
             // projection alias of a still-live aggregate, then removing any
             // binding consumed/maybe-consumed on a path. A binding absent from
-            // the allow-set leaks (as before this lane); it never double-frees.
+            // the allow-set leaks (as before this fix); it never double-frees.
             // The default for any binding the prover did not positively clear
             // is exclusion, so an un-enumerated future alias producer cannot
             // re-open the double-free. Aggregate/container `CowValue` self-drops
@@ -31730,7 +31730,7 @@ fn build_lifo_drops(
 /// whose scope-exit drop is deferred to a later slice.
 ///
 /// Slice 2 is intentionally restricted to the single `string` leaf — the
-/// accumulating helper-local leak this lane targets. Aggregate and container
+/// accumulating helper-local leak this fix targets. Aggregate and container
 /// `CowValue` leaves (`Vec`, `HashMap`, `HashSet`, tuples, arrays) own nested
 /// heap that, without retain-on-share at element-ingress sites, cannot be
 /// released here without risking a double-free against the container's own

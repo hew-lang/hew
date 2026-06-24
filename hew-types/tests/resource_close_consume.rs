@@ -80,7 +80,7 @@ fn resource_inherent_single_close_typechecks_cleanly() {
 }
 
 /// A non-`#[resource]` type's inherent `close(self)` does NOT register into the
-/// consume set keyed on the resource marker. The double-free this lane targets
+/// consume set keyed on the resource marker. The double-free this fix targets
 /// only manifests for the `#[resource]` implicit-drop path; an ordinary type's
 /// `close` is a plain by-value method (its receiver still moves as a call
 /// argument, but no per-call-site consume flag is recorded for the resource

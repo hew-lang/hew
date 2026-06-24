@@ -144,7 +144,7 @@ const _: () = assert!(
 ///
 /// Reorder, duplicate, clock-skew, and bandwidth controls are deliberately
 /// absent; the two slice-2 invariants do not need them and adding them now
-/// would expand the surface beyond the lane plan. New fields land alongside
+/// would expand the surface beyond the current design. New fields land alongside
 /// the §14 invariants that need them; tests should construct `SimConfig`
 /// via `SimConfig { seed, ..SimConfig::default() }` so future fields gain
 /// a default without churning every call site.

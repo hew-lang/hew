@@ -58,7 +58,7 @@
 //!   `hew_hashmap_*_layout` / `hew_hashset_*_layout` strings rather
 //!   than reconstructing them.
 //! - `parity-or-tracked-gap` (P0): WASM parity is covered by the
-//!   HashMap/HashSet wasmtime value oracles in `eval_e2e.rs`; this lane
+//!   HashMap/HashSet wasmtime value oracles in `eval_e2e.rs`; this change
 //!   changes nothing in direct method-target resolution.
 
 use std::collections::BTreeSet;

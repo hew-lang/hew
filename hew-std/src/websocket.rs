@@ -60,7 +60,7 @@ struct HewWsConnInner {
     ///       use the single `ws` mutex (the TLS record layer is not thread-safe
     ///       across two independently-created contexts).
     /// WHAT: A proper TLS split would require a mutex-protected TLS write half
-    ///       that the two WebSocket frames share — out of scope for this lane.
+    ///       that the two WebSocket frames share — out of scope for this change.
     ///
     /// Both `ws` and `write_ws` use `parking_lot::Mutex` because
     /// `hew_ws_recv_timeout` needs `try_lock_for(Duration)` to bound the wait

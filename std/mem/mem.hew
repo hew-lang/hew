@@ -2,7 +2,7 @@
 //!
 //! `std::mem` is the **memory-intrinsic floor**: the general-purpose heap
 //! allocator and typed-pointer primitives that the generic containers
-//! (`Vec`/`HashMap`/… in later waves) are built on top of.
+//! (`Vec`/`HashMap`/… in future releases) are built on top of.
 //!
 //! These functions are declared as bodyless `#[intrinsic("mem.*")]` stubs:
 //! the compiler supplies their semantics directly (the stdlib catalog row

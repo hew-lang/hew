@@ -83,7 +83,7 @@ pub type SerializeThunk =
 
 // `serialize` is read by `lookup_serialize` (consumed by the ask reply-encode
 // path); `deserialize` by `lookup_deserialize` (the tell/ask receive-decode
-// path). Both are wired in the runtime receive slices of this lane.
+// path). Both are wired in the runtime receive slices of this implementation.
 struct ThunkPair {
     serialize: SerializeThunk,
     deserialize: DeserializeThunk,

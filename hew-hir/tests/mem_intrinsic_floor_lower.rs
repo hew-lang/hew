@@ -1,6 +1,6 @@
 //! W5.005 / F1b — HIR lowering of the `#[intrinsic("mem.*")]` memory floor.
 //!
-//! Regression guard for D343: before this lane, `#[intrinsic]` functions
+//! Regression guard for D343: before this fix, `#[intrinsic]` functions
 //! declared in an *imported* floor module (`std.mem`) reached HIR lowering via
 //! the module-graph path (`lower_imported_fn_with_name`), which never consulted
 //! `intrinsic_declarations`. The body-skip only fired on the *root-item* path,

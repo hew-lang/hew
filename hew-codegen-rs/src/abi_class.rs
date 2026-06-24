@@ -562,7 +562,7 @@ mod tests {
         // `x86_64-pc-windows-gnu` (Win64-GNU / MinGW) uses the Win64 aggregate
         // ABI (indirect for size ∉ {1,2,4,8}), NOT SysV. It is an unsupported
         // target (Hew targets Windows via MSVC), so it must fail closed — NOT
-        // be admitted to the SysV register-pair arm. This is the cross-eco ABI
+        // be admitted to the SysV register-pair arm. This is the multi-platform ABI
         // correctness fix: an x86_64 non-MSVC Windows triple is no longer
         // misclassified as SysV-like.
         let ctx = Context::create();

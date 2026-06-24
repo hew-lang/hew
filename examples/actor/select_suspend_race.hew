@@ -1,7 +1,7 @@
 // cut-select-waitset — the live non-blocking actor `select{}`.
 //
 // `Coordinator.race_two` runs a `select{}` over two actor-ask arms (plus a
-// safety-net `after` deadline) from INSIDE a handler. Before this lane the
+// safety-net `after` deadline) from INSIDE a handler. Before this change the
 // select called `hew_select_first`, a busy-poll that PINNED the worker until an
 // arm became ready. Now the select registers each arm's readiness observer on a
 // shared await-cancel arbiter, arms the deadline on the global timer wheel, and

@@ -2197,7 +2197,7 @@ mod tests {
     fn hover_machine_declaration_name_shows_type_def() {
         // Hovering over the machine name at its declaration site should surface
         // the machine's type-def hover (via the lookup_type_def fallback path).
-        // This was already reachable before this lane; the test pins the contract.
+        // This was already reachable before this fix; the test pins the contract.
         let source = concat!(
             "machine Counter {\n",
             "    events {\n",

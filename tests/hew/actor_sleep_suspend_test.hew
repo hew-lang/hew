@@ -1,7 +1,7 @@
 //! Cooperative `sleep_ms` inside an actor handler suspends the coroutine
 //! instead of blocking the M:N worker.
 //!
-//! Before this lane `sleep_ms` in an actor receive-fn called
+//! Before this fix `sleep_ms` in an actor receive-fn called
 //! `std::thread::sleep` and pinned the OS worker for the whole duration. The
 //! `SuspendingSleep` carrier reroutes an execution-context `sleep_ms` onto the
 //! coro suspend point + the global timer wheel, freeing the worker. A free-fn /

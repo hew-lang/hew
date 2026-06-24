@@ -1,6 +1,6 @@
 // Accept (W5.020): the `?` operator on a heap-owning `Result` return path.
 // The `?` desugar (W3.044) is type-agnostic and already lowered; its early
-// `return Err(e)` arm was blocked ONLY by the composite-return gate this lane
+// `return Err(e)` arm was blocked ONLY by the composite-return gate this fix
 // lifts. With the gate lifted, heap-owning `?` works end to end with ZERO HIR
 // change: `divide(a, b)?` propagates the owned `Err(string)` on the error path
 // and binds the unwrapped `i64` on the success path.

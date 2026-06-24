@@ -12,8 +12,8 @@
 //!     `Some` payload owning the same independent clone. A missing key is `None`.
 //!
 //! Mutating, overwriting, or removing the source key after the read must not
-//! invalidate the returned value — the headline GAP-2 drop-safety invariant of
-//! this lane (`by-value-heap-params-are-borrows` P0).
+//! invalidate the returned value — the headline GAP-2 drop-safety invariant
+//! (`by-value-heap-params-are-borrows` P0).
 //!
 //! Value classes exercised: scalar (i64), string, owned record, enum. Key
 //! classes: string and i64.

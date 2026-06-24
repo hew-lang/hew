@@ -19458,7 +19458,7 @@ fn lower_hashmap_get_layout_call(
 /// `out` (the dest slot) through the value descriptor's `clone_fn` — a
 /// retained/independent owner, never a borrow into the live table
 /// (`by-value-heap-params-are-borrows` P0 drop-safety; the headline GAP-2
-/// invariant of this lane). The map keeps its own copy. On a miss the runtime
+/// invariant). The map keeps its own copy. On a miss the runtime
 /// returns `false` WITHOUT writing `out`, and we trap (`IndexOutOfBounds`)
 /// instead of materialising a value, so the dest is never observed and never
 /// dropped on the miss path (MIR schedules the dest's scope-exit drop only on

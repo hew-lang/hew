@@ -380,6 +380,7 @@ fn main() -> () [conv=default]
   bb59:
     trap(IntegerOverflow)
   bb60:
+    stmt: bind BindingId(11) total site=SiteId(120) ty=i64
     stmt: eval site=SiteId(121) ty=()
     _64 = move _97
     goto bb54

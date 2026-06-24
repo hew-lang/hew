@@ -770,6 +770,7 @@ fn fs$last_slash_pos(string) -> i64 [conv=default]
   bb21:
     trap(IntegerOverflow)
   bb22:
+    stmt: bind BindingId(22) last site=SiteId(252) ty=i64
     stmt: eval site=SiteId(253) ty=()
     stmt: use BindingId(22) last site=SiteId(258) ty=i64 intent=Read
     _10 = move _26
@@ -779,6 +780,7 @@ fn fs$last_slash_pos(string) -> i64 [conv=default]
   bb23:
     trap(IntegerOverflow)
   bb24:
+    stmt: bind BindingId(23) search_from site=SiteId(256) ty=i64
     stmt: eval site=SiteId(257) ty=()
     _14 = move _29
     goto bb10

@@ -126,6 +126,7 @@ fn Echo__recv__run(i64) -> () [conv=actor_handler]
     _33 = move mvar26.0.0
     _34 = call hew_bytes_to_string(_33) -> bb23
   bb20:
+    stmt: bind BindingId(7) done site=SiteId(42) ty=bool
     stmt: eval site=SiteId(43) ty=()
     _35 = const.i64 1
     _23 = move _35
@@ -828,6 +829,7 @@ fn fs$last_slash_pos(string) -> i64 [conv=default]
   bb21:
     trap(IntegerOverflow)
   bb22:
+    stmt: bind BindingId(27) last site=SiteId(271) ty=i64
     stmt: eval site=SiteId(272) ty=()
     stmt: use BindingId(27) last site=SiteId(277) ty=i64 intent=Read
     _10 = move _26
@@ -837,6 +839,7 @@ fn fs$last_slash_pos(string) -> i64 [conv=default]
   bb23:
     trap(IntegerOverflow)
   bb24:
+    stmt: bind BindingId(28) search_from site=SiteId(275) ty=i64
     stmt: eval site=SiteId(276) ty=()
     _14 = move _29
     goto bb10

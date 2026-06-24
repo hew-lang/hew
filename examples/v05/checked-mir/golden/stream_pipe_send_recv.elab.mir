@@ -21,6 +21,7 @@ fn Echo__recv__run -> ()
     use BindingId(8) item site=SiteId(35) ty=Option<bytes> intent=Read
     bind BindingId(9) b site=SiteId(36) ty=bytes
     use BindingId(9) b site=SiteId(38) ty=bytes intent=Read
+    bind BindingId(7) done site=SiteId(42) ty=bool
     eval site=SiteId(43) ty=()
     eval site=SiteId(45) ty=()
     drop BindingId(9) b ty=bytes
@@ -441,8 +442,10 @@ fn fs$last_slash_pos -> i64
     eval site=SiteId(270) ty=()
     use BindingId(28) search_from site=SiteId(273) ty=i64 intent=Read
     use BindingId(30) next site=SiteId(274) ty=i64 intent=Read
+    bind BindingId(27) last site=SiteId(271) ty=i64
     eval site=SiteId(272) ty=()
     use BindingId(27) last site=SiteId(277) ty=i64 intent=Read
+    bind BindingId(28) search_from site=SiteId(275) ty=i64
     eval site=SiteId(276) ty=()
     drop BindingId(29) rest ty=string
   drop_plans:

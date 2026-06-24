@@ -71,6 +71,7 @@ fn Driver__recv__run_value() -> i64 [conv=actor_handler]
   bb1:
     stmt: bind BindingId(2) v site=SiteId(15) ty=i64
     stmt: use BindingId(2) v site=SiteId(17) ty=i64 intent=Consume
+    stmt: bind BindingId(0) out site=SiteId(16) ty=i64
     stmt: eval site=SiteId(17) ty=()
     stmt: eval site=SiteId(9) ty=()
     stmt: use BindingId(0) out site=SiteId(18) ty=i64 intent=Consume

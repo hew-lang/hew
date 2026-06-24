@@ -8729,6 +8729,25 @@ impl Builder {
             } => {
                 if let Some(dest) = self.binding_locals.get(binding).copied() {
                     self.push_instr(Instr::Move { dest, src });
+                    // A simple-variable assignment RE-DEFINES its target: after
+                    // `h = <rhs>` the binding `h` holds a fresh value and is
+                    // unconditionally Live, regardless of any move/consume the
+                    // RHS performed on `h` itself. Emit a checker-stream `Bind`
+                    // so move-state tracking resets `h` to Live. Without this the
+                    // self-consuming reassign idiom `h = T { ..h, f: new }`
+                    // (the canonical functional-update loop body) would leave `h`
+                    // flagged `Consumed` from the `..h` ingress and every
+                    // subsequent read — including the next loop iteration — would
+                    // spuriously trip `UseAfterConsume`. This re-`Bind` carries no
+                    // drop semantics (it does not touch `owned_locals`, which is
+                    // populated only at `let`/param sites), so scope-exit drop
+                    // accounting for `h` is unchanged.
+                    self.statements.push(MirStatement::Bind {
+                        binding: *binding,
+                        name: name.clone(),
+                        site: target.site,
+                        ty: self.subst_ty(&target.ty),
+                    });
                 } else {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::UnresolvedPlace {
@@ -9655,6 +9674,71 @@ impl Builder {
                     return None;
                 };
 
+                // ── Functional-update base is CONSUMED ──────────────────────
+                // Owned-record `..base` moves the base into the new record:
+                // its carried fields escape via `RecordFieldLoad` and its
+                // OVERRIDDEN owned fields are destructively released at the
+                // construction site (below). Two fail-closed guards keep the
+                // consume sound, so every admitted program is memory-safe:
+                //
+                //   (1) Self-reference reject (here): an overriding field value
+                //       that bare-aliases the base's heap (`{ items: s.items,
+                //       ..s }`) would be freed by the override-drop before the
+                //       new record reads it. Reject at lowering.
+                //
+                //   (2) Use-after-move (consume-marking after the base is
+                //       lowered, below): any later use of the base — including a
+                //       second `..base` from the same source, or a `base.field`
+                //       read — is flagged `UseAfterConsume` by the move-checker.
+                //
+                // The long-term value model targets COW (`cow_share` +
+                // `ensure_unique`, base stays valid — see
+                // tests/corpus/v05-value-model/18_record_update_syntax) where
+                // these shapes become legal. Until the retain-on-share spine
+                // lands, the consume semantics are the fail-closed interim: the
+                // rejected shapes are exactly the ones that would otherwise
+                // miscompile (use-after-free / double-free). BitCopy records are
+                // exempt — they bit-copy and the base stays valid.
+                let base_binding: Option<BindingId> = match base.as_deref().map(|b| &b.kind) {
+                    Some(HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(id),
+                        ..
+                    }) => Some(*id),
+                    _ => None,
+                };
+                if let Some(base_id) = base_binding {
+                    if let Some((fname, _)) = fields.iter().find(|(_, fexpr)| {
+                        self.functional_update_value_aliases_base(fexpr, base_id)
+                    }) {
+                        // Walk every sub-expression for checker-stream coverage
+                        // before bailing, mirroring the field-order-miss path.
+                        for (_, fe) in fields {
+                            let _ = self.lower_value(fe);
+                        }
+                        if let Some(base_expr) = base.as_deref() {
+                            let _ = self.lower_value(base_expr);
+                        }
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "functional-update override aliasing the consumed base"
+                                    .to_string(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "field `{fname}` of `{name}` is initialised from a bare \
+                                 projection of the functional-update base `..base`, which is \
+                                 consumed by the update; the base's overridden owned fields \
+                                 are released at the construction site, so the new record \
+                                 would alias freed memory. Clone the value \
+                                 (`<base>.<field>.clone()`) or bind it into a separate \
+                                 variable before the update. (The COW value model that keeps \
+                                 the base live after an update is not yet implemented.)"
+                            ),
+                        });
+                        return None;
+                    }
+                }
+
                 // Lower each explicit field value to a Place, keyed by name.
                 let mut explicit: HashMap<String, Place> = HashMap::new();
                 for (fname, fexpr) in fields {
@@ -9676,7 +9760,16 @@ impl Builder {
 
                 // Lower the functional-update base, if any.
                 let base_place: Option<Place> = if let Some(base_expr) = base {
-                    self.lower_value(base_expr)
+                    let place = self.lower_value(base_expr);
+                    // (2) Consume the base — see the guard note above. An owned
+                    // record handed in via `..base` moves into the new record,
+                    // so mark the source binding consumed: a later use (a second
+                    // `..base`, or a `base.field` read) is `UseAfterConsume`.
+                    // `alias_moved_owned_operand` is drop-neutral (it does NOT
+                    // suppress the base's scope-exit drop) and self-skips BitCopy
+                    // records via `aggregate_ingress_moves_binding_ty`.
+                    self.alias_moved_owned_operand(base_expr);
+                    place
                 } else {
                     None
                 };
@@ -9685,22 +9778,87 @@ impl Builder {
                 // For each field: use the explicit value if present; otherwise
                 // emit a RecordFieldLoad from the base and use that intermediate.
                 //
-                // SHIM / FAIL-CLOSED (W5.021 Finding 3): for an OVERRIDDEN owned
-                // field, the base's old value is never loaded here (the explicit
-                // value replaces it), so it is not moved into the new record. The
-                // `base` binding itself is then excluded from drop by
-                // `derive_owned_record_drop_allowed` (its kept fields escape into
-                // the new record via these RecordFieldLoads), so the overridden
-                // field's OLD heap value is never released -> it LEAKS. This is
-                // fail-closed (leak, never double-free): the new record owns the
-                // replacement; nothing double-frees the old value.
-                // WHEN OBSOLETE: when functional update over owned records gets a
-                // precise per-field drop (drop the overridden base field at the
-                // RecordInit site). REAL SOLUTION: emit a targeted drop of
-                // `base.<overridden_offset>` for each owned overridden field
-                // before/at construction. Only string-literal overrides are
-                // common today (no heap leak), so the cost is bounded; tracked as
-                // a v0.5.1 follow-on.
+                // For OVERRIDDEN fields with heap-owning types (string / bytes /
+                // Vec<T> / HashMap / HashSet / Generator), destructively release
+                // the OLD base value at the construction site: single-pointer COW
+                // fields via `RecordFieldDrop`, the fat `bytes` triple via
+                // `RecordFieldLoad` + inline `Instr::Drop` (see the per-field
+                // routing comment below). Without this release the overwritten
+                // allocation is orphaned — the original functional-update
+                // overridden-owned-field LEAK (the bug the leak oracle pins; NOT
+                // GitHub issue #14, which is an unrelated, merged matter). The
+                // release is now correct for single-pointer COW leaf fields;
+                // owned-aggregate overrides (record / tuple / enum) remain a
+                // follow-on guarded by the fail-closed pre-flight below.
+                //
+                // SOUNDNESS depends on `..base` consuming the base: the base is
+                // marked consumed (above), so the move-checker rejects any later
+                // read of `base` (a second `..base`, a `base.field`). The old
+                // value freed here therefore has no surviving reader. Were the
+                // base reusable, this destructive release would be a
+                // use-after-free / double-free — which is exactly why the
+                // consume guard and this release ship together.
+                //
+                // Drop-safety across all three exit contexts (sync return, async
+                // cancel, actor shutdown): the drops are emitted BEFORE RecordInit
+                // in the same basic block, so they fire on every execution path
+                // that reaches the functional-update site.  No scope-exit /
+                // suspend-point interleaving exists between the old-value release
+                // and the new-record construction.
+                //
+                // Double-drop avoidance: each emitted RecordFieldLoad+Drop temp
+                // appears in `derive_owned_record_drop_allowed`'s `field_binders`
+                // set AND its `release_owner_bases` set (the Defect-1 guard),
+                // which then excludes the base binding from composite drop —
+                // complementing the existing exclusion from non-overridden field
+                // binders escaping via RecordInit.  No owned field of `base` is
+                // ever dropped twice.
+                //
+                // Fail-closed pre-flight: owned-aggregate field overrides (record /
+                // tuple / enum) have no single-ptr leaf release symbol and surface
+                // a NotYetImplemented diagnostic rather than leaking silently.
+                if base_place.is_some() {
+                    for (fname, fty) in &field_order {
+                        if !explicit.contains_key(fname.as_str()) {
+                            continue; // Not overridden — carries into new record normally.
+                        }
+                        let subst_fty = self.subst_ty(fty);
+                        let vc = ValueClass::of_ty(&subst_fty, &self.type_classes);
+                        if matches!(
+                            vc,
+                            ValueClass::BitCopy | ValueClass::View | ValueClass::PersistentShare
+                        ) {
+                            // No heap ownership — no destructor to emit.
+                            continue;
+                        }
+                        if self.project_field_inline_drop_symbol(&subst_fty).is_none() {
+                            // Owned-aggregate field (record / tuple / enum): in-place
+                            // drop kinds are function-scope only and cannot be emitted
+                            // as inline `Instr::Drop` here.  Fail closed.
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct:
+                                        "functional-update override of owned-aggregate field"
+                                            .to_string(),
+                                    site: expr.site,
+                                },
+                                note: format!(
+                                    "field `{fname}` of `{name}` has owned-aggregate type \
+                                     `{ty}` (record / tuple / enum with heap fields); \
+                                     overriding an owned-aggregate field in a \
+                                     functional-update expression is not yet supported — \
+                                     in-place drop kinds (`RecordInPlace` / `TupleInPlace` \
+                                     / `EnumInPlace`) cannot be emitted as inline \
+                                     `Instr::Drop` here (follow-on to the \
+                                     functional-update overridden-owned-field \
+                                     leak fix)",
+                                    ty = subst_fty.user_facing(),
+                                ),
+                            });
+                            return None;
+                        }
+                    }
+                }
                 let mut field_pairs: Vec<(FieldOffset, Place)> = Vec::new();
                 for (idx, (fname, fty)) in field_order.iter().enumerate() {
                     let offset = FieldOffset(
@@ -9708,6 +9866,73 @@ impl Builder {
                             .expect("record field count exceeds u32::MAX — impossible in Hew"),
                     );
                     if let Some(&src) = explicit.get(fname.as_str()) {
+                        // Emit an inline drop of the OLD base field value when it
+                        // is heap-owning.  The pre-flight above guarantees every
+                        // non-BitCopy overridden field has a known inline drop
+                        // symbol; BitCopy / View / PersistentShare fields need no
+                        // destructor.
+                        if let Some(base_rec) = base_place {
+                            let subst_fty = self.subst_ty(fty);
+                            if let Some(symbol) = self.project_field_inline_drop_symbol(&subst_fty)
+                            {
+                                // Destructively release the OLD value of the
+                                // overridden field, in declaration order, BEFORE
+                                // the new record is constructed. The base is
+                                // CONSUMED by `..base` (the move-checker rejects
+                                // any later use — see the consume guard above), so
+                                // this old value is orphaned and must be freed here
+                                // or it leaks (the functional-update
+                                // overridden-owned-field leak the oracle pins).
+                                //
+                                // SINGLE MECHANISM for single-pointer COW fields
+                                // (`string` / `Vec<T>` / `HashMap` / `HashSet` /
+                                // `Generator`): `RecordFieldDrop` (raw load → release
+                                // → null-store). It is the purpose-built op for an
+                                // in-place field destructor and gives three things
+                                // the old `RecordFieldLoad` + `Drop` split did not:
+                                //   * it bypasses `RecordFieldLoad`'s `string` retain
+                                //     (a retain+drop no-op that LEAVES the original
+                                //     un-freed — the original string-vs-rest split
+                                //     existed only to dodge this);
+                                //   * it does NOT depend on the incidental fact that
+                                //     `RecordFieldLoad` skips retain for `Vec`/map —
+                                //     when the retain-on-share spine lands and that
+                                //     load starts retaining, a `load` + `Drop` here
+                                //     would silently regress to a leak; and
+                                //   * it null-stores the freed slot, so the exotic
+                                //     residual-alias path frees `null` (a no-op for
+                                //     every COW release symbol) instead of a dangle.
+                                //
+                                // `bytes` is the ONE exception: it is a fat
+                                // `{ ptr, len, cap }` triple, not a single pointer,
+                                // so its destructor takes the whole by-value triple
+                                // and must be reached through `RecordFieldLoad` +
+                                // `Instr::Drop` (which materialises the fat value).
+                                // `field_override_uses_record_field_drop` mirrors
+                                // codegen's `cow_heap_release_symbol` single-ptr set
+                                // so the `RecordFieldDrop` congruence assert agrees.
+                                if field_override_uses_record_field_drop(&subst_fty) {
+                                    self.push_instr(Instr::RecordFieldDrop {
+                                        record: base_rec,
+                                        field_offset: offset,
+                                        ty: subst_fty,
+                                        drop_fn: crate::model::DropFnSpec::Release(symbol),
+                                    });
+                                } else {
+                                    let old_val = self.alloc_local(subst_fty.clone());
+                                    self.push_instr(Instr::RecordFieldLoad {
+                                        record: base_rec,
+                                        field_offset: offset,
+                                        dest: old_val,
+                                    });
+                                    self.push_instr(Instr::Drop {
+                                        place: old_val,
+                                        ty: subst_fty,
+                                        drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+                                    });
+                                }
+                            }
+                        }
                         field_pairs.push((offset, src));
                     } else if let Some(base_rec) = base_place {
                         // Field absent from the explicit list — load it from base.
@@ -24037,6 +24262,55 @@ impl Builder {
         });
     }
 
+    /// True when an overriding functional-update field VALUE is, at its
+    /// value-producing root, a bare interior alias of the consumed base's
+    /// heap: a whole `base` reference or a `base.field` projection of an
+    /// OWNED (heap-owning) field.
+    ///
+    /// Owned-record `..base` consumes the base (its carried fields escape via
+    /// `RecordFieldLoad` into the new record and its OVERRIDDEN owned fields
+    /// are destructively released at the construction site). An override value
+    /// that bare-projects an owned field of that same base is a non-retaining
+    /// interior alias; the override-drop frees it before the new record is
+    /// built — a use-after-free (the repro-B self-override shape
+    /// `{ items: s.items, ..s }`). Fail closed: the caller rejects.
+    ///
+    /// Values whose root is a method/function call, operator, index, or
+    /// literal are NOT flagged even when they READ `base.field` internally:
+    /// they produce a fresh or copied value (`base.items.clone()`,
+    /// `base.n + 1`, `base.items.len()`), which the override-drop cannot
+    /// dangle. A `BitCopy` / `View` / `PersistentShare` field projection
+    /// (`base.count`) is a copied scalar that is never released, so it is not
+    /// a hazard either. Transparent tail-only blocks are peeled.
+    fn functional_update_value_aliases_base(&self, value: &HirExpr, base_id: BindingId) -> bool {
+        match &value.kind {
+            // Peel a transparent tail-only block wrapper (`{ base.items }`).
+            HirExprKind::Block(block) if block.statements.is_empty() => block
+                .tail
+                .as_deref()
+                .is_some_and(|tail| self.functional_update_value_aliases_base(tail, base_id)),
+            // A whole `base` value handed into a field position.
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } => *id == base_id,
+            // A bare `base.field` projection of an owned (heap-owning) field.
+            HirExprKind::FieldAccess { object, .. } => {
+                matches!(
+                    &object.kind,
+                    HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(id),
+                        ..
+                    } if *id == base_id
+                ) && !matches!(
+                    ValueClass::of_ty(&self.subst_ty(&value.ty), &self.type_classes),
+                    ValueClass::BitCopy | ValueClass::View | ValueClass::PersistentShare
+                )
+            }
+            _ => false,
+        }
+    }
+
     /// Emit a `MirStatement::Use(Consume)` for a managed-type binding that is
     /// moved into a builtin aggregate method (HashMap/HashSet insert).
     ///
@@ -25749,6 +26023,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             places
         }
         Instr::RecordFieldLoad { record, dest, .. } => vec![*record, *dest],
+        Instr::RecordFieldDrop { record, .. } => vec![*record],
         Instr::RecordFieldStore { record, src, .. } => vec![*record, *src],
         Instr::ActorStateFieldLoad { dest, .. } => vec![*dest],
         Instr::ActorStateFieldStore { src, .. } => vec![*src],
@@ -26037,6 +26312,7 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         // (and, for the interior-aliasing loads, a projection seed — see
         // `projection_alias_dest`).
         Instr::RecordFieldLoad { record, .. } => vec![*record],
+        Instr::RecordFieldDrop { record, .. } => vec![*record],
         Instr::TupleFieldLoad { tuple, .. } => vec![*tuple],
         Instr::ClosureEnvFieldLoad { env, .. } => vec![*env],
         // Field stores: both the target aggregate and the stored value are
@@ -26393,6 +26669,7 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::BytesLit { .. }
         | Instr::ConstGlobalLoad { .. }
         | Instr::RecordFieldLoad { .. }
+        | Instr::RecordFieldDrop { .. }
         | Instr::TupleFieldLoad { .. }
         | Instr::ClosureEnvFieldLoad { .. }
         | Instr::ActorStateFieldLoad { .. }
@@ -26634,6 +26911,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::SpawnTaskDirect { .. }
         | Instr::SpawnTaskClosure { .. }
         | Instr::Drop { .. }
+        | Instr::RecordFieldDrop { .. }
         | Instr::WitnessSizeOf { .. }
         | Instr::WitnessAlignOf { .. }
         | Instr::WitnessDropGlue { .. }
@@ -28315,7 +28593,16 @@ fn derive_owned_record_drop_allowed(
             // alias member or a field binder is an escape. Fail-closed.
             if !matches!(
                 instr,
-                Instr::Move { .. } | Instr::Drop { .. } | Instr::RecordFieldLoad { .. }
+                Instr::Move { .. }
+                    | Instr::Drop { .. }
+                    | Instr::RecordFieldLoad { .. }
+                    // `RecordFieldDrop` is an interior operation (GEP+drop on one
+                    // field slot) and does not transfer ownership of the whole
+                    // record out of the scope, so it must not count as an escape
+                    // of the record root. It is emitted by functional-update
+                    // lowering to release overridden fields; the surrounding record
+                    // binding is still live (and should receive its composite drop).
+                    | Instr::RecordFieldDrop { .. }
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
@@ -31839,6 +32126,43 @@ fn cow_value_leaf_drop_symbol(ty: &ResolvedTy) -> Option<&'static str> {
         ResolvedTy::String => Some("hew_string_drop"),
         _ => None,
     }
+}
+
+/// True when an overridden owned record field in a functional-update
+/// expression must be destructively released via the `RecordFieldDrop` op
+/// (raw load → release → null-store) rather than the `RecordFieldLoad` +
+/// `Instr::Drop` pair.
+///
+/// The predicate selects every SINGLE-POINTER COW-heap field — `string`,
+/// `Vec<T>`, `HashMap`, `HashSet`, and the `Generator` / `AsyncGenerator`
+/// companion handle — whose runtime value is exactly one pointer, so the
+/// `RecordFieldDrop` single-slot GEP + release is the whole destructor.
+///
+/// `bytes` is deliberately EXCLUDED: it is a fat `{ ptr, len, cap }` triple,
+/// not a single pointer. Its destructor takes the by-value triple, so it is
+/// reached through `RecordFieldLoad` + `Instr::Drop` (which materialises the
+/// fat value into a temp). The set mirrors codegen's `cow_heap_release_symbol`
+/// (which returns `None` for `bytes`), so the `RecordFieldDrop` symbol/type
+/// congruence assertion in codegen always agrees with what is emitted here.
+///
+/// Dispatch is on the `builtin` discriminant, never the `name` string, so a
+/// user-defined `type Vec { ... }` (`builtin: None`) is never mis-routed to a
+/// runtime release symbol (LESSONS: boundary-fail-closed, checker-authority).
+fn field_override_uses_record_field_drop(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::String
+            | ResolvedTy::Named {
+                builtin: Some(
+                    hew_types::BuiltinType::Vec
+                        | hew_types::BuiltinType::HashMap
+                        | hew_types::BuiltinType::HashSet
+                        | hew_types::BuiltinType::Generator
+                        | hew_types::BuiltinType::AsyncGenerator,
+                ),
+                ..
+            }
+    )
 }
 
 /// True when `ty` is a builtin `Generator<Y, R>` / `AsyncGenerator<Y>` handle.

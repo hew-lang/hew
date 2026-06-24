@@ -71,6 +71,7 @@ fn main -> ()
     bind BindingId(16) x site=SiteId(122) ty=i64
     use BindingId(11) total site=SiteId(118) ty=i64 intent=Read
     use BindingId(16) x site=SiteId(119) ty=i64 intent=Read
+    bind BindingId(11) total site=SiteId(120) ty=i64
     eval site=SiteId(121) ty=()
     eval site=SiteId(127) ty=()
     drop BindingId(13) __hew_for_iter_12 ty=VecIter<i64>

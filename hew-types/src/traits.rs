@@ -1145,7 +1145,7 @@ impl TraitRegistry {
     /// Structural field check for user-defined types, with generic-arg substitution.
     ///
     /// For non-generic types (`args` is empty) every registered field is checked
-    /// directly — identical to the pre-BUG-01 path.
+    /// directly — identical to the non-generic path.
     ///
     /// For generic instantiations (`args` non-empty) the derivation separates
     /// fields into two groups:
@@ -1864,7 +1864,7 @@ mod tests {
     }
 
     // =========================================================================
-    // A1 — Fix #5: SendHalf/RecvHalf must be explicitly not-Send
+    // SendHalf/RecvHalf must be explicitly not-Send
     // =========================================================================
 
     /// `SendHalf`<T> is NOT Send (exclusive channel ownership; cannot cross actor
@@ -1929,7 +1929,7 @@ mod tests {
     }
 
     // =========================================================================
-    // A1 — Fix #3: dyn Trait + Send resolves as Send (ghost-registry fix)
+    // dyn Trait + Send resolves as Send (ghost-registry fix)
     // =========================================================================
 
     /// `dyn Trait + Send` carries an explicit Send bound: the marker derivation
@@ -1975,7 +1975,7 @@ mod tests {
     }
 
     // =========================================================================
-    // A1 — BUG-01: user-defined generic types derive Send from type args
+    // User-defined generic types derive Send from type args
     // =========================================================================
 
     /// Positive: `Box<T> { v: T }` with `T = i64` IS Send.
@@ -2088,8 +2088,8 @@ mod tests {
 
     /// NEGATIVE GUARD: `Box<T>` with `T = RecvHalf<i64>` must NOT be Send.
     ///
-    /// `RecvHalf` is explicitly not-Send (fix #5). Wrapping it in a user generic
-    /// container must not launder it into something sendable.
+    /// `RecvHalf` is not-Send (exclusive channel ownership). Wrapping it in a
+    /// user generic container must not launder it into something sendable.
     #[test]
     fn user_generic_struct_with_recv_half_arg_is_not_send() {
         let mut registry = TraitRegistry::new();
@@ -2157,10 +2157,10 @@ mod tests {
     }
 
     // =========================================================================
-    // A1 GPT cross-eco regression — over-grant soundness fix
+    // Regression for the placeholder over-grant soundness fix
     // =========================================================================
 
-    /// GPT cross-eco regression (soundness hole, PR A1 review):
+    /// Regression for the placeholder over-grant soundness hole:
     /// `type Wrapper<T> { hidden: NoSend; value: T }` — `NoSend` has an explicit
     /// negative Send fact via `register_negative_impl`.  `Wrapper<i64>` must NOT
     /// be Send even though the only type arg (`i64`) is Send.
@@ -2170,7 +2170,7 @@ mod tests {
     /// concrete-field pass.  The args sweep then saw only `i64` (Send) and
     /// granted Send to the whole type — a data-race / UAF soundness hole.
     #[test]
-    fn gpt_repro_negative_impl_field_not_laundered_by_generic_wrapper() {
+    fn negative_impl_field_not_laundered_by_generic_wrapper() {
         let mut registry = TraitRegistry::new();
         let t_param = Ty::Named {
             builtin: None,
@@ -2248,7 +2248,7 @@ mod tests {
     }
 
     // =========================================================================
-    // A1 — register_type_params: authoritative placeholder detection
+    // register_type_params: authoritative placeholder detection
     // =========================================================================
 
     /// POSITIVE: `Envelope<T> { id: i64; payload: T }` with `T = String` IS Send.
@@ -2368,7 +2368,7 @@ mod tests {
     }
 
     // =========================================================================
-    // A1 — Cross-module name-collision regression (lockstep write policy)
+    // Cross-module name-collision regression (lockstep write policy)
     // =========================================================================
 
     /// CRITICAL REGRESSION GUARD: `register_type_params` must be last-write-wins

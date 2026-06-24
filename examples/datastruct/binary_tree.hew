@@ -169,8 +169,8 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> bool {
 }
 
 fn print_vec(v: Vec<i64>) -> i64 {
-    for i in 0 .. v.len() {
-        print(v[i]);
+    for x in v {
+        print(x);
         print(" ");
     }
     println("");

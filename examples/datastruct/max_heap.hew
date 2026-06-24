@@ -57,8 +57,8 @@ fn heap_pop(heap: Vec<i32>) -> i32 {
 
 // Build heap from array (heapify)
 fn build_heap(arr: Vec<i32>, heap: Vec<i32>) -> i32 {
-    for i in 0 .. arr.len() {
-        heap.push(arr[i]);
+    for x in arr {
+        heap.push(x);
     }
     // Heapify from last non-leaf node
     var i = heap.len() / 2 - 1;

@@ -45,8 +45,8 @@ actor Coordinator {
         }
         // Recompute global total
         var sum = 0;
-        for j in 0 .. replica_totals.len() {
-            sum = sum + replica_totals[j];
+        for total in replica_totals {
+            sum = sum + total;
         }
         global_total = sum;
         println(f"[coordinator] sync #{sync_count}: {name} reported {local_count}, global={global_total}");

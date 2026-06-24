@@ -53,8 +53,7 @@ fn trie_insert(nodes: Vec<i64>, num: i64, NIL: i64) -> i64 {
     let digits: Vec<i64> = Vec::new();
     let _ = get_digits(num, digits);
     var cur = 0;
-    for i in 0 .. digits.len() {
-        let d = digits[i];
+    for d in digits {
         let child = get_child(nodes, cur, d);
         if child == NIL {
             let new_node = new_trie_node(nodes, NIL);
@@ -73,9 +72,8 @@ fn trie_search(nodes: Vec<i64>, num: i64, NIL: i64) -> bool {
     let _ = get_digits(num, digits);
     var cur = 0;
     var found = true;
-    for i in 0 .. digits.len() {
+    for d in digits {
         if found {
-            let d = digits[i];
             let child = get_child(nodes, cur, d);
             if child == NIL {
                 found = false;
@@ -95,9 +93,8 @@ fn trie_starts_with(nodes: Vec<i64>, prefix: i64, NIL: i64) -> bool {
     let _ = get_digits(prefix, digits);
     var cur = 0;
     var found = true;
-    for i in 0 .. digits.len() {
+    for d in digits {
         if found {
-            let d = digits[i];
             let child = get_child(nodes, cur, d);
             if child == NIL {
                 found = false;

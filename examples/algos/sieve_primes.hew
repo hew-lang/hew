@@ -28,8 +28,8 @@ fn sieve(n: i64) -> Vec<i64> {
 
 fn count_primes(flags: Vec<i64>) -> i64 {
     var count = 0;
-    for i in 0 .. flags.len() {
-        if flags[i] == 1 {
+    for flag in flags {
+        if flag == 1 {
             count = count + 1;
         }
     }

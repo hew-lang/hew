@@ -54,8 +54,8 @@ fn main() {
         }
     }
     // Print visit order
-    for i in 0 .. order.len() {
-        println(order[i]);
+    for node in order {
+        println(node);
     }
     // Verify all 6 nodes visited
     var all_visited = 1;

@@ -69,8 +69,8 @@ fn main() {
         }
     }
     // Print result
-    for i in 0 .. result.len() {
-        println(result[i]);
+    for node in result {
+        println(node);
     }
     // Verify: all 6 nodes present and edges go forward
     var valid = 1;

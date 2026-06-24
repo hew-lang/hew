@@ -24,9 +24,9 @@ fn print_help() {
 
 fn print_flags(flags: Vec<string>) {
     println("Flags:");
-    for i in 0 .. flags.len() {
+    for flag in flags {
         print("  ");
-        println(flags[i]);
+        println(flag);
     }
 }
 
@@ -42,9 +42,9 @@ fn print_options(opt_keys: Vec<string>, opt_vals: Vec<string>) {
 
 fn print_positional(positional: Vec<string>) {
     println("Positional:");
-    for i in 0 .. positional.len() {
+    for arg in positional {
         print("  ");
-        println(positional[i]);
+        println(arg);
     }
 }
 

@@ -188,3 +188,34 @@ fn user_code_unused_variable_still_warns_with_stdlib_present() {
         output.warnings
     );
 }
+
+/// A user file named `std.hew` produces a single-segment `ModuleId` `["std"]`.
+/// This must NOT be treated as a stdlib module — the user's own unused
+/// variables inside it must still warn.  This is the regression guard for
+/// the single-segment over-suppression edge case.
+#[test]
+fn single_segment_std_user_module_still_warns_unused_variable() {
+    // A user file whose name happens to be "std.hew" maps to path=["std"].
+    // It is a user module, not the stdlib, so UnusedVariable must still fire.
+    let module_source = r"
+        pub fn user_fn() -> i64 {
+            let user_unused = 42;
+            0
+        }
+    ";
+    let program = program_with_module(&["std"], module_source);
+    let mut checker = isolated_checker();
+    let output = checker.check_program(&program);
+
+    let unused_var_warnings: Vec<_> = output
+        .warnings
+        .iter()
+        .filter(|w| w.kind == TypeErrorKind::UnusedVariable && w.message.contains("user_unused"))
+        .collect();
+
+    assert!(
+        !unused_var_warnings.is_empty(),
+        "single-segment user module named 'std' must still emit UnusedVariable; warnings: {:#?}",
+        output.warnings
+    );
+}

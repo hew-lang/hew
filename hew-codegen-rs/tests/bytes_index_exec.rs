@@ -1,13 +1,14 @@
 //! Execution tests for `bytes` element loads through `hew_bytes_index`.
 //!
 //! A `bytes` value is a stack-resident `BytesTriple { ptr, offset, len }`, NOT
-//! a `*mut HewVec`, so both the `b[i]` indexing sugar and the `bytes.get(i)`
-//! method route to the dedicated `hew_bytes_index(ptr, offset, len, index) -> u8`
-//! runtime getter (not the heap-Vec element getter `hew_vec_get_i32`, whose arg0
-//! ABI is a Vec `ptr`). This was previously a fail-closed codegen-front error
-//! (`hew_vec_get_i32 arg0 resolves to non-pointer type {ptr,i32,i32}`); the
-//! `hew_bytes_index` codegen arm unpacks the triple into the runtime's
-//! (ptr, offset, len) args.
+//! a `*mut HewVec`, so the `b[i]` indexing sugar routes to the dedicated
+//! `hew_bytes_index(ptr, offset, len, index) -> u8` runtime getter (not the
+//! heap-Vec element getter `hew_vec_get_i32`, whose arg0 ABI is a Vec `ptr`),
+//! and `bytes.get(i)` lowers through the `hew_bytes_get` codegen arm to an
+//! in-bounds `Some(u8)` / out-of-bounds `None`. This was previously a
+//! fail-closed codegen-front error (`hew_vec_get_i32 arg0 resolves to
+//! non-pointer type {ptr,i32,i32}`); the `hew_bytes_index` codegen arm unpacks
+//! the triple into the runtime's (ptr, offset, len) args.
 
 #![cfg(not(target_arch = "wasm32"))]
 #![cfg(unix)]
@@ -139,35 +140,53 @@ fn bytes_index_sugar_reads_pushed_bytes() {
     assert_eq!(stdout, "PASS");
 }
 
-/// `bytes.get(i)` method routes to the same `hew_bytes_index` getter and returns
-/// the byte widened to the method's declared `i32` return.
+/// `bytes.get(i)` returns `Option<u8>`: `Some(byte)` in bounds, `None` out of
+/// bounds (de-aliased from the trapping `b[i]`). The high byte 200 (>127) must
+/// round-trip through the `Some` payload as 200, not a sign-extended negative.
 #[test]
-fn bytes_get_method_reads_pushed_bytes() {
+fn bytes_get_method_returns_option() {
     let repo = repo_root();
     let stdout = run_hew_source(
         &repo,
         "bytes_get_method",
         r#"
-        import std::io;
-
         fn main() {
             var b: bytes = bytes::new();
             b.push(200);
             b.push(1);
-            let high = b.get(0);
-            let low = b.get(1);
-            print(high);
-            print(low);
-            if high == 200 {
-                if low == 1 {
-                    print("PASS");
-                }
+            match b.get(0) {
+                Some(high) => {
+                    if high == 200 {
+                        print("A");
+                    }
+                },
+                None => {
+                    print("x");
+                },
+            }
+            match b.get(1) {
+                Some(low) => {
+                    if low == 1 {
+                        print("B");
+                    }
+                },
+                None => {
+                    print("x");
+                },
+            }
+            match b.get(9) {
+                Some(_) => {
+                    print("x");
+                },
+                None => {
+                    print("C");
+                },
             }
         }
         "#,
     );
 
-    // 200 is a high byte (>127); the u8 runtime return must zero-extend to i32
-    // as 200, not sign-extend to a negative value.
-    assert_eq!(stdout, "2001PASS");
+    // A = Some(200) with the high byte preserved (not sign-extended);
+    // B = Some(1); C = None for the out-of-bounds index 9.
+    assert_eq!(stdout, "ABC");
 }

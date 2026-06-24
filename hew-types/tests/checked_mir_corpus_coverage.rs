@@ -108,6 +108,11 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_send_half_send",
     "hew_send_half_try_send",
     "hew_supervisor_nested_get",
+    // -- `bytes.get` lowers to a `Terminator::Call` whose callee codegen
+    //    intercepts to build `Option<u8>`; the call carries the callee as a
+    //    string (`builtin: None`), so the `BytesGet` family is a descriptor
+    //    row only and never renders as `family: BytesGet` in the corpus.
+    "hew_bytes_get",
     // -- No user-facing surface lowers to the catalogued symbol today
     //    (probed: `bytes.len()` routes through `hew_vec_len`; no
     //    `char_count` string method; no Instant/Duration value surface;

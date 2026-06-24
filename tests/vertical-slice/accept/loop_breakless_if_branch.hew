@@ -1,0 +1,17 @@
+// Accept fixture: a break-less `loop {}` in the else branch of an `if`
+// expression must not force the whole `if` to `Unit`.
+//
+// When a loop has no `break` statement it never terminates normally, so its
+// type should be `Never`.  `if_branch_result_ty` already elides the `Never`
+// branch and returns the other branch's type — but only if the loop's HIR
+// node carries `ty: Never`.  Before this fix, `Stmt::Loop` lowering always
+// produced `ty: Unit`, so the `if` was forced to `Unit` and the `let x: i64`
+// annotation caused a type mismatch.
+//
+// Expected exit status: 6 (= 5 + 1, proving `x` resolved to the `then` value
+// `5` and the arithmetic on it ran).
+fn main() -> i64 {
+    let good = true;
+    let x: i64 = if good { 5 } else { loop {} };
+    x + 1
+}

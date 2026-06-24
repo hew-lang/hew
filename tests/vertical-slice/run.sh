@@ -3117,3 +3117,20 @@ expect_check_fail_contains \
 # program must compile and run without HIR shape-mismatch diagnostics.
 run_accept_expect_status "imported_shadow_variant_call" 0
 
+# ---------------------------------------------------------------------------
+# Break-less loop typing (issue #2112)
+# A `loop {}` with no `break` statement has type `Never` (it never returns a
+# value).  In if/match branch position, the `Never`-typed branch is elided so
+# the expression takes the other branch's type.  Before this fix, all loops
+# were typed `Unit`, forcing the whole if/match to `Unit` and breaking the
+# `let x: i64 = if cond { value } else { loop {} }` pattern.
+# ---------------------------------------------------------------------------
+
+# Accept: `if good { 5 } else { loop {} }` must compile and the `5` branch
+# value must be usable as `i64`.  Exit status 6 (5 + 1) proves it.
+run_accept_expect_status "loop_breakless_if_branch" 6
+
+# Accept: `match opt { Some(n) => n, None => loop {} }` must compile and
+# the `Some(3)` arm must produce `3` as the match result type.  Exit 3.
+run_accept_expect_status "loop_breakless_match_arm" 3
+

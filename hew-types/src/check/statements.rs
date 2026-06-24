@@ -104,6 +104,44 @@ impl Checker {
         Some(format!("{actor_name}::{method}"))
     }
 
+    /// Determine the type of the last statement in a block (the statement that
+    /// produces the block's value when there is no trailing expression).
+    ///
+    /// If/IfLet/Match/Return/Break/Continue are value-producing in tail position
+    /// and delegate to `check_stmt_as_expr`.  A break-less `loop {}` diverges
+    /// (type `Never`), allowing `if cond { value } else { loop {} }` to unify
+    /// the branch types without forcing the whole expression to `Unit`.
+    fn check_last_stmt_type(&mut self, stmt: &Stmt, span: &Span, expected: Option<&Ty>) -> Ty {
+        match stmt {
+            Stmt::If { .. }
+            | Stmt::IfLet { .. }
+            | Stmt::Match { .. }
+            | Stmt::Return(_)
+            | Stmt::Break { .. }
+            | Stmt::Continue { .. } => self.check_stmt_as_expr(stmt, span, expected),
+            Stmt::Expression((expr, es)) => {
+                let expr_ty = self.synthesize(expr, es);
+                if matches!(expr_ty, Ty::Never) {
+                    Ty::Never
+                } else {
+                    Ty::Unit
+                }
+            }
+            Stmt::Loop { label, body } => {
+                self.check_stmt(stmt, span);
+                if hew_parser::loop_body_has_break(body, label.as_deref()) {
+                    Ty::Unit
+                } else {
+                    Ty::Never
+                }
+            }
+            _ => {
+                self.check_stmt(stmt, span);
+                Ty::Unit
+            }
+        }
+    }
+
     pub(super) fn check_block(&mut self, block: &Block, expected: Option<&Ty>) -> Ty {
         self.env.push_scope();
         // Snapshot const_values so let-bound literal entries added in this
@@ -144,56 +182,29 @@ impl Checker {
 
             let is_last = i + 1 == num_stmts && block.trailing_expr.is_none();
             if is_last {
-                // The final statement is the block's tail: re-arm so a tail
-                // If/Match (whose arm bodies flow to the function return) can
-                // Ok-coerce. `synthesize` (the `Stmt::Expression` arm) clears
-                // the flag itself, and a trailing-`;` expression statement is
-                // not a value-producing tail, so no coercion fires there.
+                // Re-arm tail Ok-coercion for the block's tail statement so
+                // If/Match arm bodies that flow to return can Ok-coerce.
                 self.tail_ok_armed = tail_ok_armed;
-                let ty = match stmt {
-                    Stmt::If { .. }
-                    | Stmt::IfLet { .. }
-                    | Stmt::Match { .. }
-                    | Stmt::Return(_)
-                    | Stmt::Break { .. }
-                    | Stmt::Continue { .. } => self.check_stmt_as_expr(stmt, span, expected),
-                    Stmt::Expression((expr, es)) => {
-                        let expr_ty = self.synthesize(expr, es);
-                        if matches!(expr_ty, Ty::Never) {
-                            Ty::Never
-                        } else {
-                            Ty::Unit
-                        }
-                    }
-                    _ => {
-                        self.check_stmt(stmt, span);
-                        Ty::Unit
-                    }
-                };
+                let ty = self.check_last_stmt_type(stmt, span, expected);
                 self.const_values = const_values_snapshot;
                 self.emit_scope_warnings();
                 return ty;
             }
-            // For If/Match, use check_stmt_as_expr to get the result type
-            // so we can detect when all branches terminate.
-            if matches!(
-                stmt,
-                Stmt::If { .. } | Stmt::IfLet { .. } | Stmt::Match { .. }
-            ) {
-                let ty = self.check_stmt_as_expr(stmt, span, None);
-                if matches!(ty, Ty::Never) {
+            // Determine whether this non-tail statement terminates control flow.
+            match stmt {
+                Stmt::If { .. } | Stmt::IfLet { .. } | Stmt::Match { .. } => {
+                    terminated = matches!(self.check_stmt_as_expr(stmt, span, None), Ty::Never);
+                }
+                Stmt::Return(_) | Stmt::Break { .. } | Stmt::Continue { .. } => {
+                    self.check_stmt(stmt, span);
                     terminated = true;
                 }
-            } else {
-                self.check_stmt(stmt, span);
-            }
-
-            // Check if this statement terminates control flow
-            if matches!(
-                stmt,
-                Stmt::Return(_) | Stmt::Break { .. } | Stmt::Continue { .. }
-            ) {
-                terminated = true;
+                Stmt::Loop { label, body } => {
+                    self.check_stmt(stmt, span);
+                    // A break-less loop diverges; mark subsequent stmts unreachable.
+                    terminated = !hew_parser::loop_body_has_break(body, label.as_deref());
+                }
+                _ => self.check_stmt(stmt, span),
             }
         }
         // If a trailing expression follows a terminal statement, it's unreachable

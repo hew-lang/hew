@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::{c_int, c_void};
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
 #[cfg(not(target_arch = "wasm32"))]
@@ -1080,6 +1080,27 @@ pub struct HewActor {
     /// WASM has no native `RuntimeInner`; keep the layout mirror opaque.
     #[cfg(target_arch = "wasm32")]
     pub(crate) runtime: *const c_void,
+
+    /// Count of in-flight by-ID send/ask/stop operations currently pinning
+    /// this actor allocation.
+    ///
+    /// `with_actor_send_by_id` increments this field (atomically, under
+    /// `LIVE_ACTORS`) before releasing the registry lock, then decrements it
+    /// via a RAII guard when the operation completes.  The free path in
+    /// `hew_actor_free_inner` treats `send_pin_count > 0` as non-quiescent:
+    /// it will not call `untrack_actor` or free the box until every in-flight
+    /// pin has been released, guaranteeing the allocation remains valid for
+    /// the duration of any by-ID mailbox send or actor stop.
+    ///
+    /// **Why not `dispatch_active`**: `dispatch_active` serialises the
+    /// scheduler worker's activation ownership; reusing it for external sends
+    /// would conflate two orthogonal notions of "in use".
+    ///
+    /// **ABI note**: appended at the end of `HewActor` after all previously
+    /// appended fields (`prof_*`, `arena`, suspend/resume, `runtime_id`,
+    /// `runtime`), so the only codegen-mirrored offsets — `id` at 8 and
+    /// `state` at 16 — are unaffected (verified by `abi_offset_parity`).
+    pub send_pin_count: AtomicU32,
 }
 
 // SAFETY: `HewActor` is designed for concurrent access across worker threads.
@@ -2110,6 +2131,7 @@ fn build_spawned_actor(
         runtime: rt as *const crate::runtime::RuntimeInner,
         #[cfg(target_arch = "wasm32")]
         runtime: ptr::null(),
+        send_pin_count: AtomicU32::new(0),
     })
 }
 
@@ -3228,7 +3250,17 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
             // quiescence decision so we wait the worker out. The `Acquire` load
             // pairs with the guard's `Release` clear so we also observe every
             // write the activation made before we proceed to free.
-            if actor_free_state_is_quiescent(state) && !a.dispatch_active.load(Ordering::Acquire) {
+            //
+            // `send_pin_count > 0` means a `with_actor_send_by_id` operation is
+            // currently using the actor pointer after releasing `LIVE_ACTORS`.
+            // We must not free until the pin drops (the send/stop finishes),
+            // otherwise we get a use-after-free in the send path.  The pin is
+            // decremented with `Release` ordering, so this `Acquire` load
+            // observes the end of the by-ID operation before we proceed.
+            if actor_free_state_is_quiescent(state)
+                && !a.dispatch_active.load(Ordering::Acquire)
+                && a.send_pin_count.load(Ordering::Acquire) == 0
+            {
                 break;
             }
             if std::time::Instant::now() >= deadline {
@@ -5907,6 +5939,7 @@ mod tests {
                 suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
                 runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
                 runtime: ptr::null(),
+                send_pin_count: AtomicU32::new(0),
             }));
             (actor, mailbox)
         }
@@ -5950,6 +5983,7 @@ mod tests {
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             runtime: ptr::null(),
+            send_pin_count: AtomicU32::new(0),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };
@@ -9343,6 +9377,7 @@ mod tests {
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             runtime: ptr::null(),
+            send_pin_count: AtomicU32::new(0),
         }));
         // SAFETY: actor is fully initialised above with a valid id field.
         unsafe { live_actors::track_actor(actor) };

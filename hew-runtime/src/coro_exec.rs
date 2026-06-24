@@ -647,6 +647,7 @@ mod tests {
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             runtime: ptr::null(),
+            send_pin_count: std::sync::atomic::AtomicU32::new(0),
         })
     }
 
@@ -1081,6 +1082,7 @@ mod forced_ordering_probe {
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             runtime: ptr::null(),
+            send_pin_count: std::sync::atomic::AtomicU32::new(0),
         })
     }
 

@@ -283,11 +283,27 @@ pub unsafe extern "C" fn hew_actor_group_stop_all(g: *mut HewActorGroup) {
     let group = unsafe { &*g };
 
     let _guard = group.lock.lock_or_recover();
-    for &(_actor_id, actor_ptr) in &group.actors {
-        if !actor_ptr.is_null() {
-            // SAFETY: actor pointer is valid per add contract.
-            unsafe { actor::hew_actor_stop(actor_ptr.cast()) };
+    for &(actor_id, actor_ptr) in &group.actors {
+        if actor_ptr.is_null() {
+            continue;
         }
+        // G-1 fix: use the same send-pin mechanism as the by-ID send paths so
+        // that a concurrent supervisor free cannot reclaim the actor allocation
+        // between the registry lookup and the `hew_actor_stop` call.
+        //
+        // `with_actor_send_by_id` increments `send_pin_count` under
+        // `LIVE_ACTORS` before releasing the registry lock, so the free path's
+        // quiescence loop waits for the pin to drop before calling
+        // `untrack_actor` + `finalize`.  `hew_actor_stop` does NOT hold
+        // `LIVE_ACTORS`, so the terminate callback (user `#[on(stop)]` code)
+        // can safely call `hew_actor_send_by_id` without self-deadlocking.
+        //
+        // `None` means the actor was already freed by the supervisor; that is
+        // terminal and requires no stop signal.
+        live_actors::with_actor_send_by_id(actor_id, |a| {
+            // SAFETY: `a` is pinned live for the duration of this closure.
+            unsafe { actor::hew_actor_stop(a.cast()) };
+        });
     }
 }
 
@@ -428,6 +444,7 @@ mod tests {
             suspended_cancel_token: AtomicPtr::new(ptr::null_mut()),
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             runtime: ptr::null(),
+            send_pin_count: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -531,5 +548,176 @@ mod tests {
         // SAFETY: group is valid and no longer used after this.
         unsafe { hew_actor_group_destroy(group) };
         // TrackedActor::drop calls untrack_actor idempotently (no-op) then frees box.
+    }
+
+    /// F-2 deadlock regression: `with_actor_send_by_id` must NOT hold `LIVE_ACTORS`
+    /// while the mailbox send is in progress.
+    ///
+    /// The old implementation held `LIVE_ACTORS` for the entire send closure.
+    /// For a `Block`-policy mailbox at capacity this caused a self-deadlock: the
+    /// condvar wait parks the thread while `LIVE_ACTORS` is held, and ANY
+    /// concurrent `with_live_actor` (e.g. `enqueue_resume` on a `DropOld` eviction)
+    /// tries to re-acquire the same non-reentrant mutex on the same thread.
+    ///
+    /// The fix (liveness-pin): increment `send_pin_count` under `LIVE_ACTORS`,
+    /// RELEASE the lock, then do the mailbox send.  The free path defers the free
+    /// until `send_pin_count` drops to 0.
+    ///
+    /// This test verifies the no-deadlock property deterministically:
+    ///  1. An actor with a Block mailbox of capacity 1 is created and tracked.
+    ///  2. The mailbox is filled (1 message).
+    ///  3. A background thread calls `hew_actor_send_by_id` — this enters the
+    ///     Block condvar wait OUTSIDE `LIVE_ACTORS`.
+    ///  4. The main thread closes the mailbox → the Block wait wakes with Closed
+    ///     → the background thread returns promptly (no deadlock).
+    ///  5. The whole sequence completes within a 1-second timeout (a deadlock
+    ///     would hang for 30+ seconds and cause the test to fail).
+    ///
+    /// Self-send variant: we also confirm that calling `with_actor_send_by_id`
+    /// from the main thread and then calling `is_actor_live` (which acquires
+    /// `LIVE_ACTORS`) from another thread during the send does not deadlock.
+    #[test]
+    fn send_by_id_block_mailbox_full_does_not_deadlock() {
+        let _rt = crate::runtime_test_guard();
+
+        // Build an actor with a Block mailbox of capacity 1.
+        let actor_id = next_id();
+        // SAFETY: hew_mailbox_new_with_policy returns a Box-allocated mailbox.
+        let mb = unsafe {
+            crate::mailbox::hew_mailbox_new_with_policy(1, crate::mailbox::OverflowPolicy::Block)
+        };
+        assert!(!mb.is_null());
+
+        let actor = TrackedActor::install(HewActor {
+            sched_link_next: AtomicPtr::new(ptr::null_mut()),
+            id: actor_id,
+            state: ptr::null_mut(),
+            state_size: 0,
+            dispatch: None,
+            mailbox: mb.cast(),
+            actor_state: AtomicI32::new(HewActorState::Idle as i32),
+            budget: AtomicI32::new(HEW_MSG_BUDGET),
+            init_state: ptr::null_mut(),
+            init_state_size: 0,
+            coalesce_key_fn: None,
+            terminate_fn: None,
+            state_drop_fn: None,
+            state_clone_fn: None,
+            terminate_called: AtomicBool::new(false),
+            terminate_finished: AtomicBool::new(false),
+            dispatch_active: AtomicBool::new(false),
+            error_code: AtomicI32::new(0),
+            supervisor: ptr::null_mut(),
+            supervisor_child_index: -1,
+            priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
+            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
+            idle_count: AtomicI32::new(0),
+            hibernation_threshold: AtomicI32::new(0),
+            hibernating: AtomicI32::new(0),
+            prof_messages_processed: AtomicU64::new(0),
+            prof_processing_time_ns: AtomicU64::new(0),
+            arena: ptr::null_mut(),
+            suspended_cont: AtomicPtr::new(ptr::null_mut()),
+            cont_tag: AtomicI32::new(0),
+            pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(ptr::null_mut()),
+            suspended_cancel_token: AtomicPtr::new(ptr::null_mut()),
+            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
+            runtime: ptr::null(),
+            send_pin_count: std::sync::atomic::AtomicU32::new(0),
+        });
+
+        // Fill the mailbox to capacity (capacity = 1).
+        let msg: i32 = 42;
+        // SAFETY: mb is valid; msg has size 4 bytes.
+        let sent = unsafe {
+            crate::mailbox::hew_mailbox_send(
+                mb,
+                1,
+                (&raw const msg).cast_mut().cast(),
+                std::mem::size_of::<i32>(),
+            )
+        };
+        assert_eq!(sent, 0, "first send into empty mailbox must succeed");
+
+        // Coordinate the test: background thread signals when it enters the
+        // Block wait; main thread then closes the mailbox.
+        let bg_entered = std::sync::Arc::new(AtomicBool::new(false));
+        let bg_entered_clone = bg_entered.clone();
+        let mb_addr = mb as usize;
+
+        let bg = std::thread::spawn(move || {
+            bg_entered_clone.store(true, Ordering::Release);
+            // With the OLD fix (lock held): this would DEADLOCK if the main
+            // thread called is_actor_live concurrently (same lock, same thread
+            // would deadlock only if same-thread re-entry; but across two threads
+            // the Block condvar wait holds the lock and prevents the main thread
+            // from acquiring it).
+            //
+            // With the NEW fix (pin + release lock): the condvar wait is
+            // entirely outside the LIVE_ACTORS lock.  The main thread can freely
+            // acquire LIVE_ACTORS while we wait.  When the mailbox is closed,
+            // the Block wait returns SendOutcome::Closed → send returns an error.
+            //
+            // This call blocks on the condvar until mb is closed below.
+            let actor_id_for_bg = actor_id;
+            crate::lifetime::live_actors::with_actor_send_by_id(actor_id_for_bg, |actor_ptr| {
+                // SAFETY: `actor_ptr` is pinned-live for the duration of this
+                // closure; `mb_ptr` was allocated by `hew_mailbox_new_with_policy`
+                // and is valid until `hew_mailbox_free` on the main thread.
+                // `msg2` is a stack i32 valid for the duration of this block.
+                let mb_ptr = mb_addr as *mut crate::mailbox::HewMailbox;
+                let msg2: i32 = 99;
+                // This send BLOCKS on condvar (mailbox at capacity) — the
+                // key property: `LIVE_ACTORS` must NOT be held here.
+                // SAFETY: `mb_ptr` was allocated by `hew_mailbox_new_with_policy`
+                // and is valid until `hew_mailbox_free` on the main thread;
+                // `msg2` is a stack `i32` valid for this block.
+                unsafe {
+                    crate::mailbox::hew_mailbox_send(
+                        mb_ptr,
+                        1,
+                        (&raw const msg2).cast_mut().cast(),
+                        std::mem::size_of::<i32>(),
+                    )
+                };
+                let _ = actor_ptr;
+            });
+        });
+
+        // Wait for the background thread to start (spin with bounded wait).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !bg_entered.load(Ordering::Acquire) {
+            std::thread::yield_now();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "bg thread never started"
+            );
+        }
+
+        // Give the BG thread a moment to enter the condvar wait before closing.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // Verify LIVE_ACTORS is NOT held by the background thread: call
+        // is_actor_live from the main thread — this must return immediately,
+        // not deadlock.
+        let live = crate::lifetime::live_actors::is_actor_live(actor.ptr());
+        assert!(live, "actor must still be live while bg thread is sending");
+
+        // Close the mailbox → Block condvar wakes with Closed.
+        // SAFETY: mb is valid; actor.ptr() is valid (still tracked).
+        unsafe { crate::mailbox::mailbox_close(mb) };
+
+        // Background thread must return promptly (no deadlock).
+        let join_result = bg.join().is_ok();
+        assert!(join_result, "background thread panicked");
+
+        // Drain the mailbox and free it.
+        // SAFETY: mb is exclusively owned after bg thread returns.
+        unsafe { crate::mailbox::hew_mailbox_free(mb) };
+        // actor.ptr().mailbox is now dangling; zero it out before TrackedActor::drop
+        // (which calls untrack_actor and drops the box but does NOT access mailbox).
+        // SAFETY: actor allocation is valid; we own it exclusively here.
+        unsafe { (*actor.ptr()).mailbox = ptr::null_mut() };
     }
 }

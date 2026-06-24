@@ -265,23 +265,58 @@ pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
     .flatten()
 }
 
+/// RAII guard that decrements `HewActor.send_pin_count` on drop.
+///
+/// Taken by [`with_actor_send_by_id`] after the liveness validation
+/// (under `LIVE_ACTORS`) so the free path cannot reclaim the actor
+/// allocation while the by-ID operation is in progress.
+///
+/// The `Release` ordering on drop pairs with the free path's `Acquire`
+/// load of `send_pin_count`, ensuring all writes from the pinned
+/// operation are visible to the freer before it reclaims the allocation.
+// live on not(wasm32); dead on wasm32.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+struct SendPinGuard(*mut HewActor);
+
+// SAFETY: `HewActor` is `Send`; the guard only touches the atomic
+// `send_pin_count` field.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+unsafe impl Send for SendPinGuard {}
+
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+impl Drop for SendPinGuard {
+    fn drop(&mut self) {
+        // SAFETY: the pointer was validated-live when the pin was taken.
+        // The free path defers the free until `send_pin_count` reaches 0,
+        // so the allocation remains valid until this drop runs.
+        unsafe { (*self.0).send_pin_count.fetch_sub(1, Ordering::Release) };
+    }
+}
+
 /// Look up an actor by ID and, if live, call `f` with its raw pointer while
-/// the `LIVE_ACTORS` registry lock is held.
+/// guaranteeing the allocation cannot be freed for the duration of `f`.
 ///
-/// Unlike [`get_actor_ptr_by_id`], the registry lock is **not** released
-/// before the caller accesses the pointer.  The lock is held for the entire
-/// duration of `f`, preventing a concurrent `hew_actor_free_inner` from
-/// freeing the actor while `f` accesses it.
+/// **Lock discipline**: unlike an older design that held `LIVE_ACTORS` across
+/// `f`, this function:
 ///
-/// **Use this for send and ask by-id paths** where the pointer must remain
-/// valid for the duration of the mailbox enqueue and scheduler wake.
+/// 1. Acquires `LIVE_ACTORS`, validates liveness, increments `send_pin_count`
+///    on the actor, then **releases** `LIVE_ACTORS`.
+/// 2. Calls `f(ptr)` with the lock fully released.
+/// 3. Decrements `send_pin_count` via a RAII guard on return **or panic**.
 ///
-/// # Lock ordering
+/// The free path in `hew_actor_free_inner` treats `send_pin_count > 0` as
+/// non-quiescent and defers `untrack_actor` + `finalize` until all pins are
+/// released.  Because `LIVE_ACTORS` is not held across `f`, blocking mailbox
+/// operations (the `Block` overflow condvar wait) and eviction retire paths
+/// (`DropOld` → `hew_msg_node_free` → `retire_orphaned_ask_sender_ref` →
+/// `scheduler::enqueue_resume` → `with_live_actor`) are both safe to call
+/// from `f` without deadlocking.
 ///
-/// `f` must not attempt to re-acquire `LIVE_ACTORS` (it is already held) or
-/// any lock that might transitively acquire it.  Mailbox-send internals and
-/// `sched_enqueue` (crossbeam deque + condvar notify) are safe to call from
-/// `f`; neither acquires `LIVE_ACTORS`.
+/// # Lock ordering (unchanged from the module invariant)
+///
+/// `f` is free to acquire any lock that does not transitively re-acquire
+/// `LIVE_ACTORS`.  `LIVE_ACTORS` is fully released before `f` runs, so
+/// `enqueue_resume` → `with_live_actor` does not self-deadlock.
 ///
 /// Returns `Some(f(ptr))` if the actor is live, `None` if not found.
 // live on not(wasm32) — hew_actor_send_by_id / hew_actor_ask_by_id; dead on wasm32
@@ -290,19 +325,28 @@ pub(crate) fn with_actor_send_by_id<R>(
     actor_id: u64,
     f: impl FnOnce(*mut HewActor) -> R,
 ) -> Option<R> {
-    with_live_actors_opt(|map| {
+    // Phase 1: validate liveness and take a send pin — all under LIVE_ACTORS.
+    // Incrementing send_pin_count here (before releasing the lock) ensures that
+    // if a concurrent hew_actor_free_inner sees pin_count > 0 in its quiescence
+    // loop, it defers the free until the pin drops.
+    let ptr = with_live_actors_opt(|map| {
         let ptr = map
             .as_ref()
             .and_then(|m| m.get(&actor_id).map(|p| p.0))
             .filter(|p| !p.is_null())?;
-        // SAFETY: `ptr` is tracked in LIVE_ACTORS; the registry lock is held
-        // for the entire closure, preventing concurrent `hew_actor_free_inner`
-        // from reclaiming the allocation while `f` runs.  All free paths call
-        // `untrack_actor` (under this same lock) before `hew_actor_free_box`,
-        // so the allocation is valid for the duration of this closure.
-        Some(f(ptr))
+        // SAFETY: `ptr` is tracked-live under the registry lock.  The
+        // fetch_add happens before the lock is released, so the free path
+        // observes pin_count > 0 before it can call untrack_actor.
+        unsafe { (*ptr).send_pin_count.fetch_add(1, Ordering::AcqRel) };
+        Some(ptr)
     })
-    .flatten()
+    .flatten()?;
+
+    // Phase 2: LIVE_ACTORS is released; call `f` with the pinned pointer.
+    // `_pin` drops after `f` returns: decrements send_pin_count with Release
+    // ordering, paired with the free path's Acquire load.
+    let _pin = SendPinGuard(ptr);
+    Some(f(ptr))
 }
 
 /// Resolve the per-actor-TYPE dispatch function pointer for a live actor id,

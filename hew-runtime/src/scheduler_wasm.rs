@@ -23,7 +23,7 @@
 use std::collections::VecDeque;
 use std::ffi::{c_int, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 #[cfg(test)]
 use crate::actor::HEW_PRIORITY_NORMAL;
@@ -130,6 +130,11 @@ pub struct HewActor {
     // Native stores `*const RuntimeInner`; WASM has no native runtime module, so
     // keep this opaque while preserving size/alignment/offset parity.
     pub runtime: *const c_void,
+    // ── Send-pin counter (appended; matches native exactly) ──────────────────
+    // Incremented by `with_actor_send_by_id` before releasing LIVE_ACTORS and
+    // decremented after the by-ID operation completes.  The free path waits for
+    // this counter to reach 0 before reclaiming the allocation.
+    pub send_pin_count: AtomicU32,
 }
 
 // SAFETY: Single-threaded on WASM; on native (tests), the struct is only
@@ -192,6 +197,7 @@ const _: () = {
     assert!(offset_of!(W, suspended_cancel_token) == offset_of!(N, suspended_cancel_token));
     assert!(offset_of!(W, runtime_id) == offset_of!(N, runtime_id));
     assert!(offset_of!(W, runtime) == offset_of!(N, runtime));
+    assert!(offset_of!(W, send_pin_count) == offset_of!(N, send_pin_count));
 };
 
 // ── HewMsgNode layout (strict prefix of native mailbox.rs) ──────────────
@@ -2132,6 +2138,7 @@ mod tests {
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             runtime: ptr::null(),
+            send_pin_count: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -5066,6 +5073,7 @@ mod tests {
             suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
             runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
             runtime: ptr::null(),
+            send_pin_count: std::sync::atomic::AtomicU32::new(0),
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────

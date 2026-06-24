@@ -19448,7 +19448,146 @@ fn lower_hashmap_get_layout_call(
     Ok(())
 }
 
-/// W3.041b-ii — lower a `HashMap::new()` / `HashSet::new()` constructor
+/// Lower the trait-routed `Vec::get` → `Option<T>` call (the Vec twin of
+/// `lower_hashmap_get_layout_call`). Calls the fresh-owner runtime choke point
+/// `hew_vec_get_clone(vec, index, out) -> bool`: the runtime bounds-checks and,
+/// on a hit, writes a freshly retained/cloned owner into the `Some` payload
+/// slot, so the `Option` payload is never a borrow into the live buffer
+/// (`by-value-heap-params-are-borrows` P0 — the headline drop-safety invariant
+/// of this lane). On OOB the runtime returns `false` and we build `None`.
+fn lower_vec_get_clone_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    if args.len() != 2 {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_vec_get_clone expects 2 source-level args (handle, index), got {}",
+            args.len()
+        )));
+    }
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "hew_vec_get_clone returns Option<T>; call must supply a dest".into(),
+        )
+    })?;
+
+    let vec_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
+    let elem_resolved = match vec_ty {
+        ResolvedTy::Named {
+            name,
+            args: ty_args,
+            ..
+        } if name == "Vec" && ty_args.len() == 1 => ty_args[0].clone(),
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_vec_get_clone arg0 must be Vec<T>, got {other:?}"
+            )));
+        }
+    };
+    let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
+    match &dest_ty {
+        ResolvedTy::Named {
+            name,
+            args: ty_args,
+            ..
+        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == elem_resolved => {}
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_vec_get_clone dest must be Option<{elem_resolved:?}>, got {other:?}"
+            )));
+        }
+    }
+
+    let elem_llvm_ty = resolve_ty(fn_ctx.ctx, &elem_resolved, fn_ctx.record_layouts)?;
+    let vec_ptr = load_duplex_handle(fn_ctx, args[0], "hew_vec_get_clone arg0")?;
+    let i64_ty = fn_ctx.ctx.i64_type();
+    let index = load_int_arg(fn_ctx, args[1], i64_ty, "hew_vec_get_clone index")?;
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed("hew_vec_get_clone has no parent fn".into()))?;
+    let none_bb = fn_ctx.ctx.append_basic_block(parent, "vec_get_none");
+    let some_bb = fn_ctx.ctx.append_basic_block(parent, "vec_get_some");
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
+
+    // Compute the Some payload address up front; the runtime clones the stored
+    // slot value into it through the element descriptor's semantic clone path.
+    let dest_local = composite_dest_local(*dest_place, "hew_vec_get_clone")?;
+    let (payload_ptr, payload_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 0,
+            field_idx: 0,
+        },
+    )?;
+    if payload_ty != elem_llvm_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_vec_get_clone Option::Some payload type {payload_ty:?} \
+             does not match Vec element type {elem_llvm_ty:?}"
+        )));
+    }
+    let fv = get_or_declare_vec_get_clone_runtime(fn_ctx.ctx, fn_ctx.llvm_mod);
+    let is_some = fn_ctx
+        .builder
+        .build_call(
+            fv,
+            &[vec_ptr.into(), index.into(), payload_ptr.into()],
+            "hew_vec_get_clone_call",
+        )
+        .llvm_ctx("hew_vec_get_clone call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_vec_get_clone returned void".into()))?
+        .into_int_value();
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_some, some_bb, none_bb)
+        .llvm_ctx("hew_vec_get_clone condbr")?;
+
+    // None = variant 1 for Hew's builtin `Option<T>` layout.
+    fn_ctx.builder.position_at_end(none_bb);
+    emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_vec_get_clone none br")?;
+
+    // Some = variant 0. The runtime already cloned into the payload slot.
+    fn_ctx.builder.position_at_end(some_bb);
+    emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_vec_get_clone some br")?;
+    Ok(())
+}
+
+/// Declare (or fetch) the `hew_vec_get_clone(vec, index, out) -> bool` runtime
+/// choke point: `(ptr, i64, ptr) -> i1`.
+fn get_or_declare_vec_get_clone_runtime<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+) -> FunctionValue<'ctx> {
+    if let Some(fv) = llvm_mod.get_function("hew_vec_get_clone") {
+        return fv;
+    }
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i1_ty = ctx.bool_type();
+    let i64_ty = ctx.i64_type();
+    llvm_mod.add_function(
+        "hew_vec_get_clone",
+        i1_ty.fn_type(&[ptr_ty.into(), i64_ty.into(), ptr_ty.into()], false),
+        Some(Linkage::External),
+    )
+}
 /// call to a runtime allocator invocation.
 ///
 /// Pattern parallel to `lower_vec_constructor_call` (`llvm.rs:10265`).
@@ -24964,6 +25103,10 @@ fn lower_terminator<'ctx>(
             }
             if is_hashmap_layout_get_symbol(callee) {
                 lower_hashmap_get_layout_call(fn_ctx, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
+            if callee == "hew_vec_get_clone" {
+                lower_vec_get_clone_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
             if is_hashmap_constructor_symbol(callee) {

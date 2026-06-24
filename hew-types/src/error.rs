@@ -1028,6 +1028,26 @@ pub enum TypeErrorKind {
         /// Sorted names of the impl methods that are not on the trait.
         methods: Vec<String>,
     },
+    /// Two or more `impl <Trait> for <Type>` blocks target the same trait and
+    /// type constructor. Hew's single-crate coherence rule permits at most one
+    /// impl of a given trait per type constructor; specialization / overlapping
+    /// impls are a permanent non-goal (mission Q66.b, HEW-FUTURE §2.2). This
+    /// covers both overlapping (`impl<T> Acc for Vec<T>` + `impl Acc for
+    /// Vec<i64>`) and disjoint-concrete (`impl Acc for Vec<i64>` + `impl Acc for
+    /// Vec<string>`) duplicates, neither of which the associated-type binding
+    /// table (keyed by constructor name) can represent. Fail-closed: the second
+    /// impl is rejected at its declaration site rather than silently shadowed,
+    /// which would otherwise let its method signature and applicability proof
+    /// drift apart across the dispatch side tables.
+    ///
+    /// Envelope code: `E_CONFLICTING_TRAIT_IMPL`.
+    ConflictingTraitImpl {
+        /// Trait being implemented more than once for the same constructor.
+        trait_name: String,
+        /// The type constructor (e.g. `Vec`, `HashMap`, or a user record name)
+        /// that already has an impl of this trait.
+        type_name: String,
+    },
     /// A refutable pattern was used in a `let` binding.
     ///
     /// `let` bindings have no failure arm, so only irrefutable patterns
@@ -1231,6 +1251,7 @@ impl TypeErrorKind {
             Self::TraitImplSignatureMismatch { .. } => "TraitImplSignatureMismatch",
             Self::TraitImplMissingMethods { .. } => "TraitImplMissingMethods",
             Self::TraitImplExtraMethods { .. } => "TraitImplExtraMethods",
+            Self::ConflictingTraitImpl { .. } => "ConflictingTraitImpl",
             Self::IntrinsicOutsideFloor { .. } => "IntrinsicOutsideFloor",
             Self::IntrinsicOnMethod { .. } => "IntrinsicOnMethod",
             Self::RefutableLetPattern { .. } => "RefutableLetPattern",

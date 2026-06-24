@@ -247,6 +247,22 @@ impl CollectionTyCx {
             resolved,
         }
     }
+
+    /// Reconstruct the concrete receiver `Ty` (carrying type arguments) for the
+    /// given collection kind, so user-trait dispatch on a builtin receiver can
+    /// bind the impl's type parameters from the element/key/value types.
+    /// `HashMap<K, V>` → `[K, V]`, `HashSet<E>` / `Vec<E>` → `[E]`.
+    fn receiver_with_args(&self, kind: CollectionKind) -> Ty {
+        let args = match kind {
+            CollectionKind::HashMap => vec![self.key.clone(), self.val.clone()],
+            CollectionKind::HashSet | CollectionKind::Vec => vec![self.elem.clone()],
+        };
+        Ty::Named {
+            builtin: Some(kind.builtin()),
+            name: kind.name().to_string(),
+            args,
+        }
+    }
 }
 
 impl Checker {
@@ -4028,15 +4044,16 @@ impl Checker {
     fn collection_method_fallback(
         &mut self,
         kind: CollectionKind,
+        cx: &CollectionTyCx,
         method: &str,
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        let receiver = Ty::Named {
-            builtin: Some(kind.builtin()),
-            name: kind.name().to_string(),
-            args: vec![],
-        };
+        // Reconstruct the receiver carrying its concrete type arguments so a
+        // user `impl<T> Trait for HashMap<K, V>` / `Vec<E>` dispatched here can
+        // bind the impl's type parameters from the element/key/value types and
+        // project its `Output`/return — the builtin-vs-user asymmetry fix.
+        let receiver = cx.receiver_with_args(kind);
         if let Some(ret_ty) =
             self.try_dispatch_primitive_trait_method(&receiver, method, args, span)
         {
@@ -4073,7 +4090,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let Some(desc) = collection_method_desc(kind, method) else {
-            return self.collection_method_fallback(kind, method, args, span);
+            return self.collection_method_fallback(kind, cx, method, args, span);
         };
         if let Some(arity) = desc.arity {
             self.check_arity(args, arity, &format!("`{}::{method}`", kind.name()), span);
@@ -5066,7 +5083,7 @@ impl Checker {
                 let receiver = Ty::Named {
                     builtin: Some(BuiltinType::Vec),
                     name: "Vec".to_string(),
-                    args: vec![],
+                    args: vec![self.subst.resolve(&elem_ty)],
                 };
                 if let Some(ret_ty) =
                     self.try_dispatch_primitive_trait_method(&receiver, method, args, span)
@@ -5136,6 +5153,25 @@ impl Checker {
         let defaulted_receiver = resolved_receiver.materialize_literal_defaults();
         let canonical = Checker::canonical_primitive_or_builtin_key(&defaulted_receiver)?;
         let (trait_name, sig) = self.lookup_primitive_trait_method(&defaulted_receiver, method)?;
+        // Bind the impl's type parameters from the concrete receiver's type
+        // arguments BEFORE applying the signature, and PROVE the impl's `Self`
+        // structurally matches the receiver. Without the binding a generic
+        // builtin impl (`impl<E> Index for Vec<E>`) dispatched on `Vec<i64>`
+        // leaves `E` (hence an `Option<E>` / `Self::Output` return) as an
+        // unresolved inference var that escapes past the checker output
+        // boundary — the builtin-vs-user asymmetry this fix closes. Without the
+        // shape proof a constrained/concrete impl (`impl Acc for Vec<i64>`)
+        // would be over-applied to a non-matching receiver (`Vec<string>`) and
+        // project an authoritative-but-wrong return type (a fail-open). On a
+        // non-match `instantiate_*` returns `None` and we fall through to the
+        // "no method" path below, failing closed. User `Ty::Named` receivers
+        // already do both via `lookup_named_method_sig`.
+        let sig = self.instantiate_primitive_trait_method_sig(
+            sig,
+            &canonical,
+            &trait_name,
+            &defaulted_receiver,
+        )?;
         let applied_sig = self.apply_instantiated_call_signature(
             &sig,
             None,
@@ -5170,7 +5206,184 @@ impl Checker {
                 },
             );
         }
-        Some(applied_sig.return_type)
+        // Project any `Self::Output`-style associated-type carrier in the
+        // return now that the impl's type params are bound to the concrete
+        // receiver — `project_assoc_types` keys the concrete builtin base
+        // (`<Vec<i64> as Index>::Output`) through `impl_assoc_type_bindings`.
+        Some(self.project_assoc_types(&applied_sig.return_type))
+    }
+
+    /// Instantiate a primitive/builtin-generic trait-impl method signature
+    /// against a concrete receiver — **fallibly**.
+    ///
+    /// Dispatch reaches here keyed only on the canonical builtin kind
+    /// (`Vec`/`HashMap`/…), so the registered impl's `Self` type must still be
+    /// *proven* to structurally match the concrete receiver before its return
+    /// type is treated as authoritative. Returns `None` when the impl does not
+    /// apply (constrained/concrete/nested `Self` that the receiver does not
+    /// satisfy), so the caller falls through to the normal "no matching
+    /// method/impl" path and fails **closed** — never projecting an authoritative
+    /// return type for a receiver that does not implement the impl.
+    ///
+    /// On a match, binds the impl's type parameters by structurally unifying the
+    /// impl's recorded `Self` type arguments
+    /// ([`Checker::primitive_trait_impl_self_args`]) against the receiver's
+    /// concrete type arguments, then substitutes both `Self` (→ the receiver)
+    /// and the bound parameters through the signature's params and return type.
+    /// Substituted parameters are dropped from `type_params` so
+    /// `apply_instantiated_call_signature` does not re-instantiate them as fresh
+    /// inference vars. Mirrors `instantiate_named_method_sig` (the user
+    /// `Ty::Named` path) for builtin receivers, which have no `type_defs` entry.
+    ///
+    /// Hew rejects overlapping impls (the associated-type binding table is keyed
+    /// by type *name*, so a second impl for the same `(kind, trait)` collides and
+    /// is diagnosed at registration for builtins and user records alike). There
+    /// is therefore at most one usable impl per `(canonical, trait)`, and the
+    /// stored `Self` args identify exactly that impl — no per-impl table needed.
+    ///
+    /// Non-generic primitive impls (`impl Display for i64`) have empty stored
+    /// `Self` args and an argument-less receiver, so the arity check passes
+    /// trivially, no parameters bind, and only the `Self` → receiver substitution
+    /// applies — leaving existing dispatch behaviour unchanged.
+    fn instantiate_primitive_trait_method_sig(
+        &mut self,
+        mut sig: FnSig,
+        canonical: &str,
+        trait_name: &str,
+        receiver_ty: &Ty,
+    ) -> Option<FnSig> {
+        let mut subst: HashMap<String, Ty> = HashMap::new();
+        // Clone out of the side table so the structural match can take `&mut
+        // self` (it unifies unbound receiver vars against concrete `Self` args).
+        if let Some(self_args) = self
+            .primitive_trait_impl_self_args
+            .get(&(canonical.to_string(), trait_name.to_string()))
+            .cloned()
+        {
+            let receiver_args: Vec<Ty> = match receiver_ty {
+                Ty::Named { args, .. } => args.clone(),
+                _ => Vec::new(),
+            };
+            // Arity is part of the shape: an impl whose `Self` constructor takes
+            // a different number of arguments than the receiver cannot apply.
+            if self_args.len() != receiver_args.len() {
+                return None;
+            }
+            let impl_params: HashSet<String> = sig.type_params.iter().cloned().collect();
+            for (self_arg, receiver_arg) in self_args.iter().zip(receiver_args.iter()) {
+                if !self.match_self_arg_param(self_arg, receiver_arg, &impl_params, &mut subst) {
+                    // `Self` does not structurally match the receiver — this impl
+                    // does not apply. Fail closed.
+                    return None;
+                }
+            }
+        }
+        for param_ty in &mut sig.params {
+            *param_ty = param_ty
+                .substitute_named_param("Self", receiver_ty)
+                .substitute_named_params_parallel(&subst);
+        }
+        sig.return_type = sig
+            .return_type
+            .substitute_named_param("Self", receiver_ty)
+            .substitute_named_params_parallel(&subst);
+        sig.type_params.retain(|tp| !subst.contains_key(tp));
+        sig.type_param_bounds
+            .retain(|tp, _| !subst.contains_key(tp));
+        Some(sig)
+    }
+
+    /// Fallibly match a single impl `Self`-position type argument against the
+    /// receiver's corresponding concrete argument, recording impl
+    /// type-parameter bindings into `subst`. Returns `false` on any structural
+    /// mismatch so the impl is rejected (fail closed) rather than over-applied.
+    ///
+    /// - A bare `Ty::Named { name, args: [] }` whose `name` is an impl type
+    ///   parameter (`impl<E> … for Vec<E>` → `E`) binds to the resolved receiver
+    ///   argument; a parameter appearing more than once (`HashMap<K, K>`) must
+    ///   bind consistently.
+    /// - A constructed nominal `Self` type (`Vec<T>` in `impl<T> Acc for
+    ///   Vec<Vec<T>>`, or a concrete `Vec<i64>` / user `Point`) requires the
+    ///   receiver to be the **same constructor** — identical `name`, `builtin`,
+    ///   and arity — before recursing element-wise. This rejects
+    ///   `Vec<Vec<T>>` ⊄ `Vec<Option<i64>>` (Vec ≠ Option) and `Vec<i64>` ⊄
+    ///   `Vec<string>`.
+    /// - A concrete non-`Named` leaf (`i64`, `string`, …) requires equality with
+    ///   the resolved receiver argument.
+    /// - In either concrete case, an unbound receiver `Ty::Var` is unified with
+    ///   the fully-concrete `Self` argument, so inference can resolve the element
+    ///   type when exactly one impl could apply.
+    fn match_self_arg_param(
+        &mut self,
+        self_arg: &Ty,
+        receiver_arg: &Ty,
+        impl_params: &HashSet<String>,
+        subst: &mut HashMap<String, Ty>,
+    ) -> bool {
+        let receiver_resolved = self.subst.resolve(receiver_arg);
+        match self_arg {
+            // Bare impl type parameter: bind to the receiver arg (consistently).
+            Ty::Named { name, args, .. } if args.is_empty() && impl_params.contains(name) => {
+                if let Some(existing) = subst.get(name) {
+                    return *existing == receiver_resolved;
+                }
+                subst.insert(name.clone(), receiver_resolved);
+                true
+            }
+            // Constructed / concrete-nominal `Self` type: same constructor, then
+            // recurse. An unbound receiver var unifies with a fully-concrete one.
+            Ty::Named {
+                name: s_name,
+                builtin: s_builtin,
+                args: s_args,
+            } => {
+                if matches!(receiver_resolved, Ty::Var(_)) {
+                    return !Self::ty_contains_impl_param(self_arg, impl_params)
+                        && crate::unify::unify(&mut self.subst, &receiver_resolved, self_arg)
+                            .is_ok();
+                }
+                let Ty::Named {
+                    name: r_name,
+                    builtin: r_builtin,
+                    args: r_args,
+                } = &receiver_resolved
+                else {
+                    return false;
+                };
+                if s_name != r_name || s_builtin != r_builtin || s_args.len() != r_args.len() {
+                    return false;
+                }
+                s_args
+                    .iter()
+                    .zip(r_args.iter())
+                    .all(|(s, r)| self.match_self_arg_param(s, r, impl_params, subst))
+            }
+            // Concrete non-`Named` leaf (`i64`, `string`, `bool`, …): require
+            // equality, or unify an unbound receiver var with the concrete leaf.
+            concrete => {
+                if matches!(receiver_resolved, Ty::Var(_)) {
+                    return crate::unify::unify(&mut self.subst, &receiver_resolved, concrete)
+                        .is_ok();
+                }
+                receiver_resolved == *concrete
+            }
+        }
+    }
+
+    /// Whether `ty` mentions any of the impl's type parameters anywhere in its
+    /// structure. Used to gate unifying an unbound receiver var against a `Self`
+    /// argument: only fully-concrete `Self` args (no impl params) may drive
+    /// inference of the receiver's element type.
+    fn ty_contains_impl_param(ty: &Ty, impl_params: &HashSet<String>) -> bool {
+        match ty {
+            Ty::Named { name, args, .. } => {
+                impl_params.contains(name)
+                    || args
+                        .iter()
+                        .any(|a| Self::ty_contains_impl_param(a, impl_params))
+            }
+            _ => false,
+        }
     }
 
     /// Stage A3: UFCS form of [`Self::try_dispatch_primitive_trait_method`].
@@ -5238,6 +5451,19 @@ impl Checker {
             .get(&(canonical.clone(), trait_name.to_string()))
             .and_then(|methods| methods.get(method_name))
             .cloned()?;
+        // Bind the impl's type params from the concrete receiver before
+        // applying the signature, and prove `Self` matches (mirroring the
+        // method-form path) so a UFCS call (`Index::get(v, i)`) on a generic
+        // builtin receiver projects its `Output`/return instead of leaking an
+        // unresolved inference var — and a constrained/concrete impl is not
+        // over-applied. On a non-match, fall through to the trait-qualified
+        // path, which fails closed.
+        let sig = self.instantiate_primitive_trait_method_sig(
+            sig,
+            &canonical,
+            trait_name,
+            &resolved_receiver,
+        )?;
         // Do not add an outer check_arity here.  apply_instantiated_call_signature
         // already calls check_arity on trailing_args via PositionalOnly, matching
         // the receiver-form path at try_dispatch_primitive_trait_method.  An
@@ -5264,7 +5490,7 @@ impl Checker {
                 canonical_receiver: canonical,
             },
         );
-        Some(applied.return_type)
+        Some(self.project_assoc_types(&applied.return_type))
     }
 
     #[expect(

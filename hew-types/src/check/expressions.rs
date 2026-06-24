@@ -5207,53 +5207,15 @@ impl Checker {
                                 // native-only stdlib function is itself a
                                 // `PlatformLimitation` rejection on wasm32, mirroring
                                 // the call-form guard in methods.rs.
+                                // NATIVE_ONLY_WASM_MODULE_REJECTIONS is the single source
+                                // of truth; both guards iterate the same slice.
                                 if self.wasm_target && !self.user_modules.contains(name.as_str()) {
-                                    match name.as_str() {
-                                        "stream" => self.reject_wasm_feature(
-                                            span,
-                                            WasmUnsupportedFeature::Streams,
-                                        ),
-                                        "http" => self.reject_wasm_feature(
-                                            span,
-                                            WasmUnsupportedFeature::HttpServer,
-                                        ),
-                                        "net" => self.reject_wasm_feature(
-                                            span,
-                                            WasmUnsupportedFeature::TcpNetworking,
-                                        ),
-                                        "process" => self.reject_wasm_feature(
-                                            span,
-                                            WasmUnsupportedFeature::ProcessExecution,
-                                        ),
-                                        "tls" => self
-                                            .reject_wasm_feature(span, WasmUnsupportedFeature::Tls),
-                                        "quic" => self.reject_wasm_feature(
-                                            span,
-                                            WasmUnsupportedFeature::Quic,
-                                        ),
-                                        "dns" => self
-                                            .reject_wasm_feature(span, WasmUnsupportedFeature::Dns),
-                                        "os" => self.reject_wasm_feature(
-                                            span,
-                                            WasmUnsupportedFeature::OsEnv,
-                                        ),
-                                        "encrypt" => self.reject_wasm_feature(
-                                            span,
-                                            WasmUnsupportedFeature::CryptoEncrypt,
-                                        ),
-                                        "sign" => self.reject_wasm_feature(
-                                            span,
-                                            WasmUnsupportedFeature::CryptoSign,
-                                        ),
-                                        "http_client" => self.reject_wasm_feature(
-                                            span,
-                                            WasmUnsupportedFeature::HttpClient,
-                                        ),
-                                        "smtp" => self.reject_wasm_feature(
-                                            span,
-                                            WasmUnsupportedFeature::Smtp,
-                                        ),
-                                        _ => {}
+                                    for &(module, feature) in
+                                        Self::NATIVE_ONLY_WASM_MODULE_REJECTIONS
+                                    {
+                                        if name.as_str() == module {
+                                            self.reject_wasm_feature(span, feature);
+                                        }
                                     }
                                     // crypto.random_bytes depends on a native-only secure
                                     // entropy source absent from the wasm32 link set.

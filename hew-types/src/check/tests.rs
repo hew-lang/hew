@@ -20290,6 +20290,55 @@ mod wasm_rejects {
 
     // ── Native sibling tests: no platform error on non-wasm target ────────
 
+    // ── Additional value-position coverage: net, http_client, encrypt (#2135) ─
+    // These tests verify that the NATIVE_ONLY_WASM_MODULE_REJECTIONS table
+    // covers a representative subset of the 12 native-only modules in the
+    // value-position path so a future accidental deletion is caught.
+
+    #[test]
+    fn wasm_rejects_net_connect_value_position() {
+        let source = concat!(
+            "import std::net;\n",
+            "fn main() { let _f = net.connect; }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "net.connect value-position reference must be a compile-time error on WASM; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_http_client_request_value_position() {
+        let source = concat!(
+            "import std::net::http::http_client;\n",
+            "fn main() { let _f = http_client.request; }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "http_client.request value-position reference must be a compile-time error on WASM; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_encrypt_seal_value_position() {
+        let source = concat!(
+            "import std::crypto::encrypt;\n",
+            "fn main() { let _f = encrypt.seal; }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "encrypt.seal value-position reference must be a compile-time error on WASM; got: {:?}",
+            output.errors
+        );
+    }
+
+    // ── Native sibling tests: no platform error on non-wasm target ────────
+
     #[test]
     fn native_tls_no_platform_error() {
         let source = concat!(
@@ -25987,6 +26036,26 @@ fn foo(opt: Option<i64>) -> i64 {
         assert!(
             some_arm.payload_variant_patterns.is_empty(),
             "uppercase binder MAX must not be recorded as a nested constructor"
+        );
+    }
+
+    #[test]
+    fn top_level_uppercase_binder_over_option_compiles() {
+        // Concrete repro for issue #2116 follow-up: a bare uppercase identifier
+        // that does NOT resolve as a variant of the scrutinee type (here
+        // `Option<i64>` has variants `Some` / `None`, neither of which is `INF`)
+        // must be treated as a binding catch-all, making the match exhaustive.
+        // The old code used a casing heuristic which caused a false
+        // NonExhaustiveMatch error for this shape.
+        let output = check_source(
+            r"fn foo(opt: Option<i64>) -> i64 {
+    match opt { INF => 0 }
+}",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "match opt {{ INF => 0 }} with uppercase binder must compile without errors; got: {:#?}",
+            output.errors
         );
     }
 }

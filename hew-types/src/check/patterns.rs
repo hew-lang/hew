@@ -76,32 +76,21 @@ fn substitute_pattern_field_ty(raw_field_ty: &Ty, type_params: &[String], type_a
 
 /// Extract the single binding name introduced by a sub-pattern, if any.
 ///
-/// Returns `Some(name)` only for plain lowercase `Identifier` bindings.
-/// Returns `None` for wildcards, literals, constructors, structs, tuples,
-/// and or-patterns — those either introduce no name, or introduce names
-/// that the caller handles recursively.
+/// Returns `Some(name)` for any plain unqualified `Identifier` — both
+/// lowercase and uppercase — because qualified names (containing `::`) are
+/// always constructor paths, while bare names (of any casing) bind a new
+/// variable.
+///
+/// Returns `None` for wildcards, literals, qualified identifiers,
+/// constructors, structs, tuples, and or-patterns — those either introduce
+/// no name, or introduce names the caller handles recursively.
 ///
 /// This is intentionally shallow (top-level only) so the caller decides
 /// whether to recurse into constructor payloads.
 fn binding_name_for_pattern(pattern: &Pattern) -> Option<String> {
     match pattern {
-        Pattern::Identifier(name) => {
-            let is_constructor_like =
-                name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
-            if is_constructor_like {
-                None
-            } else {
-                Some(name.clone())
-            }
-        }
-        Pattern::Wildcard
-        | Pattern::Literal(_)
-        | Pattern::Regex { .. }
-        | Pattern::Constructor { .. }
-        | Pattern::Struct { .. }
-        | Pattern::RecordShorthand { .. }
-        | Pattern::Tuple(_)
-        | Pattern::Or(_, _) => None,
+        Pattern::Identifier(name) if !name.contains("::") => Some(name.clone()),
+        _ => None,
     }
 }
 
@@ -170,26 +159,22 @@ fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static st
     }
 }
 
-/// True for patterns that match every value of any type: `_` and plain
-/// lowercase identifier bindings.
-pub(super) fn pattern_is_catch_all(pattern: &Pattern) -> bool {
-    match pattern {
-        Pattern::Wildcard => true,
-        Pattern::Identifier(name) => {
-            !(name.contains("::") || name.chars().next().is_some_and(char::is_uppercase))
-        }
-        _ => false,
-    }
-}
-
 /// True for payload subpatterns that match every value of their slot type:
-/// wildcards, plain bindings, and the unit tuple `()`.
+/// wildcards, plain bindings (any casing), and the unit tuple `()`.
+///
+/// Bare unqualified identifiers — whether lowercase or uppercase — are
+/// treated as irrefutable bindings here.  Qualified names (containing `::`
+/// such as `Shape::Line`) are always constructor paths and therefore
+/// refutable.  This is used for struct-variant field position exhaustiveness
+/// where concrete field types are not threaded through
+/// `VariantPayloadShape::Struct`; for tuple-payload positions use the
+/// resolution-aware `is_payload_irrefutable_for_ty` method instead.
 fn payload_subpattern_is_irrefutable(pattern: &Pattern) -> bool {
     match pattern {
         Pattern::Wildcard => true,
-        Pattern::Identifier(name) => {
-            !(name.contains("::") || name.chars().next().is_some_and(char::is_uppercase))
-        }
+        // Qualified name — always a constructor path, never a binder.
+        // Bare name (any casing) — treated as a binding (irrefutable).
+        Pattern::Identifier(name) => !name.contains("::"),
         Pattern::Tuple(pats) => pats.is_empty(),
         _ => false,
     }
@@ -265,6 +250,33 @@ impl Checker {
         )
     }
 
+    /// Resolution-aware catch-all test for top-level arm patterns.
+    ///
+    /// A pattern is a catch-all (covers every value of the scrutinee type) when:
+    /// - It is a wildcard `_`, OR
+    /// - It is an unqualified plain identifier that does **not** resolve as a
+    ///   variant of `scrutinee_ty` — i.e., it is a binding, not a constructor.
+    ///
+    /// Qualified identifiers (containing `::`) are always constructor paths
+    /// and are never catch-alls.  An unresolved scrutinee type (`Ty::Var`)
+    /// causes `resolve_variant_match` to return `None`, conservatively treating
+    /// the identifier as a binder; this avoids false exhaustiveness errors when
+    /// the scrutinee type is not yet fully known.
+    pub(super) fn is_catch_all_for_scrutinee(&self, pattern: &Pattern, scrutinee_ty: &Ty) -> bool {
+        match pattern {
+            Pattern::Wildcard => true,
+            Pattern::Identifier(name) => {
+                if name.contains("::") {
+                    return false;
+                }
+                let resolved = self.project_assoc_types(&self.subst.resolve(scrutinee_ty));
+                let short = name.rsplit("::").next().unwrap_or(name);
+                self.resolve_variant_match(short, &resolved, name).is_none()
+            }
+            _ => false,
+        }
+    }
+
     /// True when `patterns` (the flattened, unguarded match-arm leaf patterns)
     /// cover every value of `ty`.
     ///
@@ -276,7 +288,10 @@ impl Checker {
     /// resolved by the user adding a catch-all arm; under-rejection would
     /// push a reachable miss onto the runtime exhaustiveness trap).
     pub(super) fn patterns_cover_type(&self, patterns: &[&Pattern], ty: &Ty) -> bool {
-        if patterns.iter().any(|p| pattern_is_catch_all(p)) {
+        if patterns
+            .iter()
+            .any(|p| self.is_catch_all_for_scrutinee(p, ty))
+        {
             return true;
         }
         let resolved = self.subst.resolve(ty);

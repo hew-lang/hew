@@ -272,6 +272,37 @@ impl CollectionTyCx {
 }
 
 impl Checker {
+    /// Stdlib modules that have no wasm32 runtime support.  Any call
+    /// expression or value-position reference to a function in one of these
+    /// modules is rejected with a `PlatformLimitation` diagnostic when
+    /// targeting wasm32.
+    ///
+    /// `crypto.random_bytes` is handled separately (it is a single function
+    /// within the otherwise-supported `crypto` module) and does NOT appear in
+    /// this table.
+    ///
+    /// Both the call-form guard (`check_method_call`) and the value-position
+    /// guard (`check_field_access`) iterate this slice via
+    /// `Self::NATIVE_ONLY_WASM_MODULE_REJECTIONS` so the two paths cannot
+    /// drift out of sync.
+    pub(super) const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &'static [(
+        &'static str,
+        WasmUnsupportedFeature,
+    )] = &[
+        ("stream", WasmUnsupportedFeature::Streams),
+        ("http", WasmUnsupportedFeature::HttpServer),
+        ("net", WasmUnsupportedFeature::TcpNetworking),
+        ("process", WasmUnsupportedFeature::ProcessExecution),
+        ("tls", WasmUnsupportedFeature::Tls),
+        ("quic", WasmUnsupportedFeature::Quic),
+        ("dns", WasmUnsupportedFeature::Dns),
+        ("os", WasmUnsupportedFeature::OsEnv),
+        ("encrypt", WasmUnsupportedFeature::CryptoEncrypt),
+        ("sign", WasmUnsupportedFeature::CryptoSign),
+        ("http_client", WasmUnsupportedFeature::HttpClient),
+        ("smtp", WasmUnsupportedFeature::Smtp),
+    ];
+
     fn numeric_method_signedness(ty: &Ty) -> Option<NumericSignedness> {
         match ty {
             Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Isize => Some(NumericSignedness::Signed),
@@ -1800,17 +1831,6 @@ impl Checker {
         let key = format!("{module_name}.{method}");
         if self.fn_sigs.contains_key(&key) {
             self.record_module_qualified_method_call_rewrite(span, key);
-        }
-    }
-
-    fn reject_if_wasm_native_only_network_module_call(&mut self, module_name: &str, span: &Span) {
-        if self.user_modules.contains(module_name) {
-            return;
-        }
-        match module_name {
-            "http_client" => self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpClient),
-            "smtp" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Smtp),
-            _ => {}
         }
     }
 
@@ -5760,40 +5780,15 @@ impl Checker {
                     }
                 }
                 self.require_unsafe(&key, span);
-                self.reject_if_wasm_native_only_network_module_call(name, span);
                 // Native-only stdlib modules are rejected on wasm32 because
                 // their runtime implementations are not compiled there.
+                // NATIVE_ONLY_WASM_MODULE_REJECTIONS is the single source of
+                // truth shared with the value-position guard in expressions.rs.
                 if !self.user_modules.contains(name) {
-                    match name.as_str() {
-                        "stream" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Streams),
-                        "http" => {
-                            self.reject_wasm_feature(span, WasmUnsupportedFeature::HttpServer);
+                    for &(module, feature) in Self::NATIVE_ONLY_WASM_MODULE_REJECTIONS {
+                        if name == module {
+                            self.reject_wasm_feature(span, feature);
                         }
-                        "net" => {
-                            self.reject_wasm_feature(span, WasmUnsupportedFeature::TcpNetworking);
-                        }
-                        "process" => {
-                            self.reject_wasm_feature(
-                                span,
-                                WasmUnsupportedFeature::ProcessExecution,
-                            );
-                        }
-                        "tls" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Tls),
-                        "quic" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Quic),
-                        "dns" => self.reject_wasm_feature(span, WasmUnsupportedFeature::Dns),
-                        "os" => self.reject_wasm_feature(span, WasmUnsupportedFeature::OsEnv),
-                        // std::crypto::encrypt and std::crypto::sign are backed by
-                        // native-only staticlib companion crates absent from the wasm32
-                        // link set.  Reject at check time so the caller gets a structured
-                        // diagnostic rather than a `wasm-ld` undefined-symbol failure.
-                        // WASM-TODO(#1451): design WASI-capable crypto surfaces.
-                        "encrypt" => {
-                            self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoEncrypt);
-                        }
-                        "sign" => {
-                            self.reject_wasm_feature(span, WasmUnsupportedFeature::CryptoSign);
-                        }
-                        _ => {}
                     }
                     // crypto.random_bytes depends on a native-only secure entropy
                     // source absent from the wasm32 link set; reject so secure

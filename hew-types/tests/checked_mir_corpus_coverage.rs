@@ -138,6 +138,11 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_regex_compile",
     "hew_regex_free_capture",
     "hew_string_char_count",
+    // -- `string.get` lowers to a `Terminator::Call` whose callee codegen
+    //    intercepts to build `Option<char>`; the call carries the callee as a
+    //    string (`builtin: None`), so the `StringGet` family is a descriptor
+    //    row only and never renders as `family: StringGet` in the corpus.
+    "hew_string_get",
     // -- Layout-witness entry with no probed source producer: bytes
     //    sends ride hew_sink_write_bytes and string pipe sends ride
     //    hew_sink_write_string, so no surface emits the stream send

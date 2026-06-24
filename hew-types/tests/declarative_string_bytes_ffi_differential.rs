@@ -43,6 +43,7 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
             let _: string = s.slice(0, 1);
             let _: string = s.repeat(2);
             let _: i64 = s.char_at(0);
+            let _: Option<char> = s.get(0);
             let _: Vec<char> = s.chars();
             let _: bytes = s.to_bytes();
         }
@@ -74,6 +75,7 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
         "hew_string_slice",
         "hew_string_repeat",
         "hew_string_char_at",
+        "hew_string_get",
         "hew_string_chars",
         "hew_string_to_bytes",
     ] {

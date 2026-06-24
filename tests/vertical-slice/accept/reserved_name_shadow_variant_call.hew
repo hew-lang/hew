@@ -1,0 +1,32 @@
+// Accept: user enum `AppError` with a tuple variant `NotFound(string)` shadows
+// the builtin `LookupError::NotFound` (a unit variant).
+//
+// Before the local-shadows-global fix, the bare call `NotFound("empty key")`
+// would raise an arity-mismatch error because the type checker's `fn_sigs`
+// entry for the bare name "NotFound" referred to the builtin 0-param unit
+// variant instead of the user's 1-param tuple variant.
+//
+// This fixture proves the full pipeline (check + HIR lowering) handles the
+// shadow correctly: the program compiles clean and exits 0.
+enum AppError {
+    NotFound(string);
+    Forbidden;
+    Internal;
+}
+
+fn lookup(key: string) -> AppError {
+    if key == "missing" {
+        NotFound("resource not found")
+    } else {
+        Internal
+    }
+}
+
+fn main() {
+    let e = lookup("missing");
+    match e {
+        NotFound(_msg) => {}
+        Forbidden => {}
+        Internal  => {}
+    }
+}

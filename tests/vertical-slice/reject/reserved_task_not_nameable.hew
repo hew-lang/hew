@@ -1,0 +1,9 @@
+// Reject: `Task` used as a type annotation without a local declaration must
+// still raise E_TASK_NOT_NAMEABLE (`TaskNotNameable`).
+//
+// The local-shadows-global fix bypasses the reservation ONLY when the user
+// has declared their own `Task` type.  With no local declaration, the guard
+// must fire as before.
+fn main() {
+    let _t: Task = 0;
+}

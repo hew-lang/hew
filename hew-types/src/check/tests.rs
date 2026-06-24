@@ -15657,8 +15657,12 @@ fn index_trait_user_impl_runs() {
             bias: i32;
         }
 
-        impl Index for Grid {
+        impl Index<i32> for Grid {
             type Output = i32;
+
+            fn get(g: Grid, key: i32) -> Option<i32> {
+                Some(g.bias + key)
+            }
 
             fn at(g: Grid, key: i32) -> i32 {
                 g.bias + key

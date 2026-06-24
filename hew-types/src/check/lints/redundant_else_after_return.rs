@@ -28,8 +28,13 @@
 //! - Considers the `if` only in statement position (`Stmt::If`) or block-tail
 //!   position (a trailing `Expr::If`), where dropping the `else` preserves
 //!   meaning. A value-position `if` feeding a `let` / argument is left alone.
+//! - Skips when the `else` body introduces a named `let` or `var` binding:
+//!   de-indenting would move it to the enclosing scope, where a later
+//!   same-name `let` becomes a hard same-scope rebinding error.  Wildcard
+//!   patterns (`let _ = …`) are not considered named bindings and do not
+//!   suppress the lint.
 
-use hew_parser::ast::{Block, Expr, Span, Stmt};
+use hew_parser::ast::{Block, Expr, Pattern, PatternField, Span, Stmt};
 
 use crate::error::TypeError;
 use crate::ty::Ty;
@@ -76,6 +81,17 @@ impl NodeVisitor for RedundantElse<'_> {
                 if else_block.if_stmt.is_some() || else_block.block.is_none() {
                     continue;
                 }
+                // Suppress when the else body introduces a named binding.
+                // De-indenting would move that binding to the enclosing scope;
+                // any later same-name `let` there becomes a same-scope
+                // rebinding error.  Wildcard `_` is exempt.
+                if else_block
+                    .block
+                    .as_ref()
+                    .is_some_and(block_has_any_named_binding)
+                {
+                    continue;
+                }
                 if block_always_diverges(self.ctx, then_block) {
                     self.hits.push(span.clone());
                 }
@@ -95,6 +111,11 @@ impl NodeVisitor for RedundantElse<'_> {
                 // An `else if` chain surfaces as the else expression being
                 // itself an `if` / `if let`; skip it.
                 if matches!(else_expr.0, Expr::If { .. } | Expr::IfLet { .. }) {
+                    return;
+                }
+                // Suppress when the else body (an Expr::Block) introduces a
+                // named binding for the same scope-safety reason as above.
+                if expr_block_has_any_named_binding(&else_expr.0) {
                     return;
                 }
                 if expr_always_diverges(self.ctx, &then_block.0, &then_block.1) {
@@ -166,5 +187,63 @@ fn expr_always_diverges(ctx: &LintCtx, expr: &Expr, span: &Span) -> bool {
         _ => ctx
             .resolved_type_at(span)
             .is_some_and(|ty| matches!(ty, Ty::Never)),
+    }
+}
+
+// ── Binding-scope guards ──────────────────────────────────────────────────────
+
+/// `true` when `block` contains a top-level `let` with a named pattern or a
+/// `var` declaration.
+///
+/// De-indenting a block with such statements moves the binding(s) into the
+/// enclosing scope, where a later same-name `let` becomes a hard same-scope
+/// rebinding error.  `let _ = …` (wildcard pattern) is exempted: `_` never
+/// introduces a named binding and cannot conflict.
+fn block_has_any_named_binding(block: &Block) -> bool {
+    block.stmts.iter().any(|(stmt, _)| match stmt {
+        Stmt::Let { pattern, .. } => pattern_introduces_binding(&pattern.0),
+        Stmt::Var { .. } => true,
+        _ => false,
+    })
+}
+
+/// `true` when `expr` is an [`Expr::Block`] that contains a named binding.
+fn expr_block_has_any_named_binding(expr: &Expr) -> bool {
+    if let Expr::Block(block) = expr {
+        block_has_any_named_binding(block)
+    } else {
+        false
+    }
+}
+
+/// `true` when `pat` introduces at least one named (non-wildcard) variable
+/// binding that would occupy a slot in the enclosing scope after de-indent.
+fn pattern_introduces_binding(pat: &Pattern) -> bool {
+    match pat {
+        // Non-binding leaf patterns.
+        Pattern::Wildcard | Pattern::Literal(_) => false,
+        // A single named binding.
+        Pattern::Identifier(_) => true,
+        // Composite patterns: any sub-pattern may bind.
+        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
+            patterns.iter().any(|(p, _)| pattern_introduces_binding(p))
+        }
+        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields, .. } => {
+            fields.iter().any(struct_field_introduces_binding)
+        }
+        Pattern::Or(a, b) => pattern_introduces_binding(&a.0) || pattern_introduces_binding(&b.0),
+        // Regex captures are named bindings.
+        Pattern::Regex { captures, .. } => !captures.is_empty(),
+    }
+}
+
+/// `true` when a struct/record pattern field introduces a named binding.
+///
+/// A shorthand field (`{ x }` with no explicit sub-pattern) always binds the
+/// field name; an explicit sub-pattern (`{ x: pat }`) delegates recursively.
+fn struct_field_introduces_binding(field: &PatternField) -> bool {
+    match &field.pattern {
+        None => true, // shorthand: `{ name }` binds `name`
+        Some((sub, _)) => pattern_introduces_binding(sub),
     }
 }

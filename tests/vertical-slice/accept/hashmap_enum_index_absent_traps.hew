@@ -1,0 +1,21 @@
+// Indexed-accessor trap negative for an enum value class: `m[k]` on an absent
+// key over a `HashMap<K, enum>` must trap (IndexOutOfBounds) exactly like the
+// scalar case — proving the trapping `at` path is value-class-uniform and does
+// not silently synthesise a default variant. Terminates via `llvm.trap`: exit
+// 132 (SIGILL, x86_64 Linux) or 133 (SIGTRAP, aarch64/macOS).
+enum Shade {
+    Light;
+    Medium;
+    Dark;
+}
+
+fn main() -> i64 {
+    let m: HashMap<string, Shade> = HashMap::new();
+    m.insert("present", Shade::Dark);
+    // "absent" was never inserted: the read must trap before yielding a variant.
+    let s = m["absent"];
+    match s {
+        Shade::Dark => 1,
+        _ => 0,
+    }
+}

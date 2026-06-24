@@ -5,8 +5,8 @@
 //! position `m[k]` is the trapping `Index::at` accessor (`-> V`): an absent key
 //! aborts with `IndexOutOfBounds` (the map analogue of `v[i]` OOB), NOT an
 //! `Option` round-trip. The non-aborting `Option<V>` outcome lives on
-//! `m.get(k)`, which is re-routed through the `Index` trait this lane
-//! (runtime-identical). The write `m[k] = v` lowers to
+//! `m.get(k)`, which is re-routed through the `Index` trait (runtime-identical).
+//! The write `m[k] = v` lowers to
 //! `hew_hashmap_insert_layout`.
 //!
 //! Pipeline under test: checker key-bound and value-type wiring; HIR routing
@@ -263,7 +263,7 @@ fn index_read_agrees_with_method_insert() {
 }
 
 /// `m.get(k)` keeps the non-aborting `Option<V>` contract (re-routed through the
-/// `Index` trait this lane, runtime-identical to before): present → `Some`,
+/// `Index` trait, runtime-identical to before): present → `Some`,
 /// absent → `None`. Oracle: `Some(40)` hit + `None` miss-marker 2 = 42. This is
 /// the sibling of the trapping `m[k]` read above.
 #[test]

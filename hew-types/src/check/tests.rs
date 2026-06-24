@@ -4914,6 +4914,201 @@ fn typecheck_or_pattern_incompatible_binding_types_error() {
 }
 
 #[test]
+fn typecheck_or_pattern_uppercase_binders_inconsistent_error() {
+    // #2116 closing blocker: the or-pattern binding-consistency check must be
+    // driven by the AUTHORITATIVE binding result (the env delta), not a casing
+    // re-derivation.  `FOO` and `BAR` do not resolve as variants of `i64`, so
+    // both are *binders*.  The two branches bind different names → inconsistent
+    // → must raise OrPatternBindingMismatch.  The former casing heuristic dropped
+    // uppercase binders, yielding two empty sets that compared equal and silently
+    // accepted the mismatch (the left branch's binding won).
+    let (errors, _) = parse_and_check(concat!(
+        "fn f(x: i64) -> i64 {\n",
+        "    match x {\n",
+        "        FOO | BAR => FOO,\n",
+        "        _ => 0,\n",
+        "    }\n",
+        "}\n",
+    ));
+    let err = errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch))
+        .expect("FOO | BAR distinct uppercase binders must raise OrPatternBindingMismatch");
+    assert!(
+        err.notes
+            .iter()
+            .any(|(_, note)| note.contains("left branch binds `FOO`")),
+        "expected left-branch binding note for `FOO`, got: {err:?}"
+    );
+    assert!(
+        err.notes
+            .iter()
+            .any(|(_, note)| note.contains("right branch binds `BAR`")),
+        "expected right-branch binding note for `BAR`, got: {err:?}"
+    );
+}
+
+#[test]
+fn typecheck_or_pattern_uppercase_binders_consistent_ok() {
+    // The dual of the blocker: same uppercase binder on both sides is a
+    // *consistent* binding and must be accepted (any casing).  This is the case
+    // the old casing heuristic accepted only vacuously (by dropping both names);
+    // the resolution/env-delta path accepts it because both branches genuinely
+    // bind `FOO` at the same type.
+    let (errors, warnings) = parse_and_check(concat!(
+        "fn main() -> i64 {\n",
+        "    let x = 5;\n",
+        "    match x {\n",
+        "        FOO | FOO => FOO,\n",
+        "        _ => 0,\n",
+        "    }\n",
+        "}\n",
+    ));
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch)),
+        "consistent uppercase binder `FOO | FOO` must not raise OrPatternBindingMismatch; got: {errors:?}"
+    );
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+}
+
+#[test]
+fn typecheck_or_pattern_unit_variants_bind_nothing_ok() {
+    // Soundness guard against the false-hit the old `// JUSTIFIED` comment feared:
+    // two unit-variant constructors bind NOTHING on both sides, so the branches
+    // are consistent (empty == empty) and must be accepted.  Because constructor
+    // identifiers are no longer over-defined as env bindings, the env delta for
+    // each branch is empty and no spurious mismatch is raised.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Color { Red; Green; Blue }\n",
+        "fn f(c: Color) -> i64 {\n",
+        "    match c {\n",
+        "        Red | Green => 1,\n",
+        "        Blue => 0,\n",
+        "    }\n",
+        "}\n",
+    ));
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch)),
+        "constructor or-pattern `Red | Green` (binds nothing) must not raise \
+         OrPatternBindingMismatch; got: {errors:?}"
+    );
+}
+
+#[test]
+fn typecheck_or_pattern_constructor_vs_binder_inconsistent_error() {
+    // Mixed branch: a unit variant (`Red`, binds nothing) or a binder (`x`).
+    // The binder is present in only one branch → inconsistent → must error.
+    // This proves the classification is resolution-driven on BOTH sides: `Red`
+    // resolves as a variant (no binder) while `x` does not (a binder).
+    let (errors, _) = parse_and_check(concat!(
+        "enum Color { Red; Green; Blue }\n",
+        "fn f(c: Color) -> i64 {\n",
+        "    match c {\n",
+        "        Red | x => 1,\n",
+        "        Blue => 0,\n",
+        "    }\n",
+        "}\n",
+    ));
+    let err = errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch))
+        .expect("`Red | x` (constructor vs binder) must raise OrPatternBindingMismatch");
+    assert!(
+        err.notes
+            .iter()
+            .any(|(_, note)| note.contains("left branch binds no names")),
+        "expected left-branch 'binds no names' note for unit variant `Red`, got: {err:?}"
+    );
+    assert!(
+        err.notes
+            .iter()
+            .any(|(_, note)| note.contains("right branch binds `x`")),
+        "expected right-branch binding note for `x`, got: {err:?}"
+    );
+}
+
+#[test]
+fn typecheck_or_pattern_regex_capture_inconsistent_error() {
+    // The env-delta consistency check sees regex capture binders, which the old
+    // `collect_pattern_bound_names` dropped for ALL `Pattern::Regex` (returning an
+    // empty set).  A capturing branch (`x`) versus a non-capturing branch is
+    // inconsistent and must error — previously this was silently accepted.
+    let (errors, _) = parse_and_check(concat!(
+        "fn f(s: string) -> i64 {\n",
+        "    match s {\n",
+        "        re\"(?P<x>a+)\" | re\"b+\" => 1,\n",
+        "        _ => 0,\n",
+        "    }\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch)),
+        "regex capture `x` present in only one or-branch must raise \
+         OrPatternBindingMismatch; got: {errors:?}"
+    );
+}
+
+#[test]
+fn typecheck_or_pattern_unit_variant_vs_payload_binder_inconsistent_error() {
+    // `Some(v) | None` over Option: the left binds the payload `v`, the right
+    // (a unit variant) binds nothing → inconsistent.  Confirms payload binders
+    // and unit-variant non-binders are reconciled by the same env-delta path.
+    let (errors, _) = parse_and_check(concat!(
+        "fn f(opt: Option<i64>) -> i64 {\n",
+        "    match opt {\n",
+        "        Some(v) | None => v,\n",
+        "    }\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch)),
+        "`Some(v) | None` must raise OrPatternBindingMismatch (payload binder absent \
+         from the unit-variant branch); got: {errors:?}"
+    );
+}
+
+#[test]
+fn typecheck_or_pattern_error_scrutinee_no_cascade() {
+    // Error-recovery guard: when the scrutinee type is unresolvable (here an
+    // undefined function makes it `Ty::Error`), a bare identifier cannot be
+    // classified as constructor-or-binder, so the binding-consistency check is
+    // suppressed rather than cascading off the already-broken scrutinee.  Only
+    // the root-cause error (the undefined function) is reported — NO
+    // OrPatternBindingMismatch is piled on, even though `Red` and `Green` would
+    // otherwise look like two distinct binders against an unknown type.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Colour { Red; Green }\n",
+        "fn main() {\n",
+        "    let _ = match missing() {\n",
+        "        Red | Green => 0,\n",
+        "    };\n",
+        "}\n",
+    ));
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch)),
+        "an or-pattern over an error-typed scrutinee must not cascade an \
+         OrPatternBindingMismatch; got: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::UndefinedFunction)),
+        "the root-cause undefined-function error must still be reported; got: {errors:?}"
+    );
+}
+
+#[test]
 fn typecheck_error_scrutinee_constructor_pattern_stays_fail_closed() {
     let (errors, _) = parse_and_check(concat!(
         "fn main() {\n",

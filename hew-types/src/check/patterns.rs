@@ -4,49 +4,32 @@
 )]
 use super::*;
 
-fn collect_pattern_bound_names(pattern: &Pattern) -> HashSet<String> {
-    match pattern {
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Regex { .. } => HashSet::new(),
-        // JUSTIFIED casing: this free function has no scrutinee-type context, so it
-        // cannot call `resolve_variant_match`.  Threading `&Checker` + `&Ty` through
-        // every recursive arm is feasible but deferred; for now the heuristic is kept.
-        //
-        // Consequence of the heuristic:
-        //   false-miss — uppercase binder (`FOO | BAR`) is not counted; the branches
-        //     pass the equality check vacuously, and the left branch's binding wins.
-        //   false-hit — if removed, uppercase constructor (`Red | Green`) would be
-        //     counted as a binder, causing a spurious OrPatternBindingMismatch.
-        //
-        // The conservative choice (keep casing) avoids false-hit cascades.
-        // bind_pattern IS resolution-aware so arm-body types are always correct.
-        Pattern::Identifier(name) => {
-            let is_constructor_like =
-                name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
-            if is_constructor_like {
-                HashSet::new()
-            } else {
-                HashSet::from([name.clone()])
-            }
-        }
-        Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => patterns
-            .iter()
-            .flat_map(|pattern| collect_pattern_bound_names(&pattern.0))
-            .collect(),
-        Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => fields
-            .iter()
-            .flat_map(|field| {
-                field.pattern.as_ref().map_or_else(
-                    || HashSet::from([field.name.clone()]),
-                    |(pattern, _)| collect_pattern_bound_names(pattern),
-                )
-            })
-            .collect(),
-        Pattern::Or(left, right) => {
-            let mut names = collect_pattern_bound_names(&left.0);
-            names.extend(collect_pattern_bound_names(&right.0));
-            names
-        }
-    }
+fn or_branch_bound_names(
+    before: &crate::env::TypeEnv,
+    after: &crate::env::TypeEnv,
+) -> HashSet<String> {
+    // The set of names an or-pattern branch introduced is computed from the
+    // authoritative binding result — the delta between the env before binding
+    // the branch and the env after — rather than re-derived from pattern syntax
+    // by casing. This removes the case heuristic from the binding-consistency
+    // path entirely (#2116): a bare identifier counts as a binder iff
+    // `bind_pattern` actually defined it (which it does only when the name does
+    // not resolve as a constructor of the scrutinee type), so uppercase binders
+    // (`FOO | BAR`) are detected and inconsistent constructors (`Red | Green`,
+    // which bind nothing) are not. Regex captures, struct-field shorthands, and
+    // nested payload binders are all captured uniformly, with no duplication of
+    // `bind_pattern`'s type recursion.
+    //
+    // A name counts as newly bound when it is absent from `before` or rebound to
+    // a fresh binding id (shadowing within the same scope), so a branch that
+    // re-binds an outer name to a different type is still observed.
+    let before_ids: HashMap<&str, crate::env::TypeBindingId> =
+        before.current_scope_bindings().collect();
+    after
+        .current_scope_bindings()
+        .filter(|(name, id)| before_ids.get(name) != Some(id))
+        .map(|(name, _)| name.to_owned())
+        .collect()
 }
 
 fn sorted_pattern_bound_names(names: &HashSet<String>) -> Vec<String> {
@@ -586,9 +569,15 @@ impl Checker {
                     let short = name.rsplit("::").next().unwrap_or(name);
                     self.resolve_variant_match(short, ty, name).is_some()
                 };
-                if is_constructor_like
-                    && self.reject_machine_event_pattern_outside_transition(ty, span)
-                {
+                if is_constructor_like {
+                    // A unit-variant constructor pattern introduces no binding. Gate the
+                    // machine-event rejection for its side effect, then return WITHOUT
+                    // defining a name: a constructor is not a binder, so the env must not
+                    // record one. This keeps the env an authoritative record of real
+                    // binders, which the or-pattern arm diffs to check binding
+                    // consistency (a constructor branch like `Red | Green` correctly
+                    // binds nothing on both sides).
+                    self.reject_machine_event_pattern_outside_transition(ty, span);
                     return;
                 }
                 self.check_shadowing(name, span);
@@ -933,18 +922,33 @@ impl Checker {
                 }
             }
             Pattern::Or(a, b) => {
-                let left_names = collect_pattern_bound_names(&a.0);
-                let right_names = collect_pattern_bound_names(&b.0);
                 let env_before = self.env.clone();
 
                 self.bind_pattern(&a.0, ty, is_mutable, &a.1);
                 let left_env = self.env.clone();
+                let left_names = or_branch_bound_names(&env_before, &left_env);
+
                 self.env = env_before.clone();
                 self.bind_pattern(&b.0, ty, is_mutable, &b.1);
                 let right_env = self.env.clone();
+                let right_names = or_branch_bound_names(&env_before, &right_env);
 
-                if self.or_pattern_bindings_match(&left_env, &right_env, &left_names, &right_names)
-                {
+                if matches!(ty, Ty::Var(_) | Ty::Error) {
+                    // The scrutinee type is unresolvable — an earlier error, or a
+                    // not-yet-inferred type variable. A bare identifier then cannot
+                    // be classified as constructor-or-binder (`resolve_variant_match`
+                    // has nothing to resolve against), so the branch binder sets are
+                    // unreliable and a consistency verdict would be a cascade off an
+                    // already-broken scrutinee. Bind the left branch for recovery and
+                    // emit nothing, matching the Constructor/Tuple/Struct arms which
+                    // already treat `Ty::Var | Ty::Error` as silent.
+                    self.env = left_env;
+                } else if self.or_pattern_bindings_match(
+                    &left_env,
+                    &right_env,
+                    &left_names,
+                    &right_names,
+                ) {
                     self.env = left_env;
                 } else {
                     self.env = env_before;

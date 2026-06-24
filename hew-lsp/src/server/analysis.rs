@@ -1369,7 +1369,6 @@ fn unnecessary_diagnostic_tags(kind: &TypeErrorKind) -> Option<Vec<DiagnosticTag
         TypeErrorKind::UnusedVariable
         | TypeErrorKind::UnusedMut
         | TypeErrorKind::UnusedImport
-        | TypeErrorKind::DeadCode
         | TypeErrorKind::UnreachableCode
         | TypeErrorKind::Lint(LintId::DeadCode) => Some(vec![DiagnosticTag::UNNECESSARY]),
         _ => None,

@@ -585,8 +585,6 @@ pub enum TypeErrorKind {
     UnreachableCode,
     /// A variable binding shadows a binding from an outer scope
     Shadowing,
-    /// A function is defined but never called
-    DeadCode,
     /// Impl block violates the orphan rule: neither the type nor the trait is local
     OrphanImpl,
     /// Feature is not available on the selected compilation target
@@ -1190,7 +1188,6 @@ impl TypeErrorKind {
             Self::RedundantIs => "RedundantIs",
             Self::UnreachableCode => "UnreachableCode",
             Self::Shadowing => "Shadowing",
-            Self::DeadCode => "DeadCode",
             Self::OrphanImpl => "OrphanImpl",
             Self::PlatformLimitation => "PlatformLimitation",
             Self::OnUpgradeNotYetWired => "OnUpgradeNotYetWired",

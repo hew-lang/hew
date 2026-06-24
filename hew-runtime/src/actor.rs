@@ -2825,21 +2825,21 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     data: *mut c_void,
     size: usize,
 ) -> c_int {
-    let local_actor = live_actors::get_actor_ptr_by_id(actor_id);
-
-    if let Some(actor) = local_actor {
-        // SAFETY: `LIVE_ACTORS` only proves that the pointer was live at
-        // lookup time. After we drop the mutex, this path intentionally
-        // matches `hew_actor_send`: callers that route by actor ID must
-        // uphold the same liveness invariant as direct-pointer sends and
-        // only race with frees they coordinate. If a free wins before the
-        // lookup, the ID is absent and we fall through below.
-        if unsafe { actor_send_internal(actor, msg_type, data, size) } {
-            return 0;
-        }
+    // Hold LIVE_ACTORS across the lookup and dispatch to close the TOCTOU
+    // window between pointer retrieval and dereference.  A concurrent
+    // hew_actor_free_inner cannot free the actor while the closure runs
+    // (untrack_actor runs under the same lock, before hew_actor_free_box).
+    let sent = live_actors::with_actor_send_by_id(actor_id, |actor| {
+        // SAFETY: `actor` is tracked in LIVE_ACTORS and the registry lock is
+        // held for this closure; the allocation is valid for the send.  Same
+        // data/size preconditions as hew_actor_send.
+        unsafe { actor_send_internal(actor, msg_type, data, size) }
+    });
+    if sent == Some(true) {
+        return 0;
     }
 
-    // Actor not found locally. If the PID belongs to a remote node,
+    // Actor not found locally (or send failed). If the PID belongs to a remote node,
     // route through the distributed node infrastructure (which serializes the
     // payload under the `(dispatch, msg_type)` codec key).
     if crate::pid::hew_pid_is_local(actor_id) == 0 {
@@ -4498,22 +4498,20 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
     // closure preserves the same actor-ID/data preconditions.
     let send_result_code = unsafe {
         submit_ask_with_reply_channel(ch, AskReplyChannelFailureCleanup::FreeCreatorRef, |ch| {
-            // Look up actor and send with reply channel in the msg node
-            // field. Capture the send error code (not just bool) for
-            // accurate error discrimination.
-            live_actors::get_actor_ptr_by_id(actor_id).map_or(
-                HewError::ErrActorStopped as i32,
-                |actor| {
-                    // SAFETY: `LIVE_ACTORS` only proves that the pointer was
-                    // live at lookup time. After we drop the mutex, this path
-                    // intentionally matches `hew_actor_send_by_id`: callers that
-                    // route by actor ID must uphold the same liveness invariant
-                    // as direct-pointer asks and only race with frees they
-                    // coordinate. If a free wins before the lookup, the ID is
-                    // absent and we report ActorStopped above.
-                    actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
-                },
-            )
+            // Hold LIVE_ACTORS across the lookup and dispatch to close the
+            // TOCTOU window between pointer retrieval and dereference.  A
+            // concurrent hew_actor_free_inner cannot free the actor while the
+            // closure runs (untrack_actor runs under the same lock, before
+            // hew_actor_free_box).
+            live_actors::with_actor_send_by_id(actor_id, |actor| {
+                // SAFETY: `actor` is tracked in LIVE_ACTORS and the registry
+                // lock is held for this closure; the allocation is valid.  `ch`
+                // is a live reply channel retained above.  Same data/size
+                // preconditions as hew_actor_ask.  Outer `unsafe` block covers
+                // this call.
+                actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
+            })
+            .unwrap_or(HewError::ErrActorStopped as i32)
         })
     };
 

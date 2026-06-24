@@ -249,20 +249,58 @@ pub(crate) fn with_live_actor_by_id<R>(
 ///
 /// The lock is *not* held after this returns.  Call sites that can tolerate
 /// a narrow TOCTOU window (e.g. remote routing that fails gracefully if the
-/// actor disappears) may use this; call sites that need the pointer to stay
-/// valid must use `with_live_actor_by_id` instead.
+/// actor disappears, or drain paths that immediately re-validate with
+/// `with_live_actor_by_id`) may use this.
 ///
-/// SHIM: `hew_actor_send_by_id` and `hew_actor_ask_by_id` use this variant to
-/// avoid serialising mailbox sends under a single registry mutex. When sharded
-/// `LIVE_ACTORS` lands (see module-level doc), this can be replaced with a
-/// handle-per-shard approach.
-// live on not(wasm32) — hew_actor_send_by_id / hew_actor_ask_by_id / hew_node; dead on wasm32
+/// **Do not use this for send/ask dispatch** — use [`with_actor_send_by_id`]
+/// instead so the actor cannot be freed between lookup and dereference.
+// live on not(wasm32) — collect_pending_actor / hew_node; dead on wasm32
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
     with_live_actors_opt(|map| {
         map.as_ref()
             .and_then(|m| m.get(&actor_id).map(|ptr| ptr.0))
             .filter(|ptr| !ptr.is_null())
+    })
+    .flatten()
+}
+
+/// Look up an actor by ID and, if live, call `f` with its raw pointer while
+/// the `LIVE_ACTORS` registry lock is held.
+///
+/// Unlike [`get_actor_ptr_by_id`], the registry lock is **not** released
+/// before the caller accesses the pointer.  The lock is held for the entire
+/// duration of `f`, preventing a concurrent `hew_actor_free_inner` from
+/// freeing the actor while `f` accesses it.
+///
+/// **Use this for send and ask by-id paths** where the pointer must remain
+/// valid for the duration of the mailbox enqueue and scheduler wake.
+///
+/// # Lock ordering
+///
+/// `f` must not attempt to re-acquire `LIVE_ACTORS` (it is already held) or
+/// any lock that might transitively acquire it.  Mailbox-send internals and
+/// `sched_enqueue` (crossbeam deque + condvar notify) are safe to call from
+/// `f`; neither acquires `LIVE_ACTORS`.
+///
+/// Returns `Some(f(ptr))` if the actor is live, `None` if not found.
+// live on not(wasm32) — hew_actor_send_by_id / hew_actor_ask_by_id; dead on wasm32
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) fn with_actor_send_by_id<R>(
+    actor_id: u64,
+    f: impl FnOnce(*mut HewActor) -> R,
+) -> Option<R> {
+    with_live_actors_opt(|map| {
+        let ptr = map
+            .as_ref()
+            .and_then(|m| m.get(&actor_id).map(|p| p.0))
+            .filter(|p| !p.is_null())?;
+        // SAFETY: `ptr` is tracked in LIVE_ACTORS; the registry lock is held
+        // for the entire closure, preventing concurrent `hew_actor_free_inner`
+        // from reclaiming the allocation while `f` runs.  All free paths call
+        // `untrack_actor` (under this same lock) before `hew_actor_free_box`,
+        // so the allocation is valid for the duration of this closure.
+        Some(f(ptr))
     })
     .flatten()
 }

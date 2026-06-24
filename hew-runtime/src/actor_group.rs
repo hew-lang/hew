@@ -21,6 +21,7 @@ use std::sync::{Arc, LazyLock};
 
 use crate::actor::{self, HewActor};
 use crate::internal::types::{HewActorState, HewError};
+use crate::lifetime::live_actors;
 use crate::util::{CondvarExt, MutexExt};
 
 /// Initial capacity of the actor array.
@@ -66,7 +67,13 @@ pub(crate) fn notify_actor_death(actor_id: u64) {
 /// Dynamic actor group (opaque, Box-allocated).
 #[derive(Debug)]
 pub struct HewActorGroup {
-    actors: Vec<*mut c_void>,
+    /// Each entry is `(actor_id, *mut HewActor)`.
+    ///
+    /// Storing the actor-ID alongside the pointer lets `all_stopped`
+    /// validate liveness through `LIVE_ACTORS` (keyed by ID) rather than
+    /// dereferencing the raw pointer bare — closing the UAF window that
+    /// opens when a supervisor frees a sibling while `wait_all` loops.
+    actors: Vec<(u64, *mut c_void)>,
     lock: std::sync::Mutex<()>,
     done_cond: Arc<std::sync::Condvar>,
 }
@@ -111,13 +118,8 @@ pub unsafe extern "C" fn hew_actor_group_destroy(g: *mut HewActorGroup) {
     let group = unsafe { Box::from_raw(g) }; // ALLOCATOR-PAIRING: GlobalAlloc
 
     // Unregister death notifiers for all tracked actors.
-    for &actor_ptr in &group.actors {
-        if !actor_ptr.is_null() {
-            let a = actor_ptr.cast::<HewActor>();
-            // SAFETY: actor pointers are valid per add contract.
-            let actor_id = unsafe { (*a).id };
-            unregister_death_notifier(actor_id, &group.done_cond);
-        }
+    for &(actor_id, _actor_ptr) in &group.actors {
+        unregister_death_notifier(actor_id, &group.done_cond);
     }
 
     drop(group);
@@ -149,7 +151,7 @@ pub unsafe extern "C" fn hew_actor_group_add(g: *mut HewActorGroup, actor: *mut 
     let actor_id = unsafe { (*a).id };
     register_death_notifier(actor_id, Arc::clone(&group.done_cond));
 
-    group.actors.push(actor);
+    group.actors.push((actor_id, actor));
     0
 }
 
@@ -164,15 +166,34 @@ fn is_terminal(state: i32) -> bool {
 /// Check whether all actors in the group are in a terminal state.
 ///
 /// Must be called with the group's lock held.
+///
+/// Reads each actor's state through `live_actors::with_live_actor_by_id`,
+/// which holds the `LIVE_ACTORS` registry lock for the duration of each
+/// state read.  This closes the UAF window that opens when a supervisor
+/// frees a sibling actor between `wait_all`'s condvar wake and the state
+/// read — the actor cannot be reclaimed while the registry lock is held.
+///
+/// If an actor has already been removed from `LIVE_ACTORS` (freed by a
+/// supervisor before we reach it), we treat it as terminal: a freed actor
+/// is no longer running.
 fn all_stopped(group: &HewActorGroup) -> bool {
-    for &actor_ptr in &group.actors {
+    for &(actor_id, actor_ptr) in &group.actors {
         if actor_ptr.is_null() {
             continue;
         }
         let a = actor_ptr.cast::<HewActor>();
-        // SAFETY: actor pointers are valid per add contract.
-        let state = unsafe { (*a).actor_state.load(Ordering::Acquire) };
-        if !is_terminal(state) {
+        // Hold LIVE_ACTORS across the state read.  A concurrent
+        // hew_actor_free_inner cannot free `a` while the closure runs
+        // (untrack_actor removes the entry under the same lock, and the
+        // free is deferred until after the lock is released).
+        let is_term = live_actors::with_live_actor_by_id(actor_id, a, |actor_ref| {
+            is_terminal(actor_ref.actor_state.load(Ordering::Acquire))
+        })
+        // None means the actor is no longer in LIVE_ACTORS (already freed
+        // by a supervisor restart); treat that as terminal — a freed actor
+        // is not running.
+        .unwrap_or(true);
+        if !is_term {
             return false;
         }
     }
@@ -262,7 +283,7 @@ pub unsafe extern "C" fn hew_actor_group_stop_all(g: *mut HewActorGroup) {
     let group = unsafe { &*g };
 
     let _guard = group.lock.lock_or_recover();
-    for &actor_ptr in &group.actors {
+    for &(_actor_id, actor_ptr) in &group.actors {
         if !actor_ptr.is_null() {
             // SAFETY: actor pointer is valid per add contract.
             unsafe { actor::hew_actor_stop(actor_ptr.cast()) };
@@ -341,4 +362,174 @@ pub unsafe extern "C" fn hew_actor_await_all(actors: *const *mut HewActor, count
         }
     }
     first_error
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+//
+// These tests cover the lock-discipline fix in `all_stopped`:
+//
+// - F-1 regression: `all_stopped` now reads actor state through
+//   `live_actors::with_live_actor_by_id`, holding `LIVE_ACTORS` for the
+//   duration of the read.  Direct pointer dereference (the UAF source) is
+//   gone.
+// - The untracked-as-terminal path is exercised: if a supervisor removes an
+//   actor from `LIVE_ACTORS` while the group holds the raw pointer,
+//   `all_stopped` treats the entry as terminal rather than dereferencing freed
+//   memory.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+    use crate::actor::{HEW_DEFAULT_REDUCTIONS, HEW_MSG_BUDGET, HEW_PRIORITY_NORMAL};
+    use std::ptr;
+    use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64};
+
+    // IDs in the high range to avoid clashing with concurrent tests.
+    static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(0x00ff_0000_0000_0000);
+    fn next_id() -> u64 {
+        NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Minimal `HewActor` stub sufficient for actor-group liveness tests.
+    /// Only `id` and `actor_state` are exercised by `all_stopped`.
+    fn stub_actor(id: u64, state: HewActorState) -> HewActor {
+        HewActor {
+            sched_link_next: AtomicPtr::new(ptr::null_mut()),
+            id,
+            state: ptr::null_mut(),
+            state_size: 0,
+            dispatch: None,
+            mailbox: ptr::null_mut(),
+            actor_state: AtomicI32::new(state as i32),
+            budget: AtomicI32::new(HEW_MSG_BUDGET),
+            init_state: ptr::null_mut(),
+            init_state_size: 0,
+            coalesce_key_fn: None,
+            terminate_fn: None,
+            state_drop_fn: None,
+            state_clone_fn: None,
+            terminate_called: AtomicBool::new(false),
+            terminate_finished: AtomicBool::new(false),
+            dispatch_active: AtomicBool::new(false),
+            error_code: AtomicI32::new(0),
+            supervisor: ptr::null_mut(),
+            supervisor_child_index: -1,
+            priority: AtomicI32::new(HEW_PRIORITY_NORMAL),
+            reductions: AtomicI32::new(HEW_DEFAULT_REDUCTIONS),
+            idle_count: AtomicI32::new(0),
+            hibernation_threshold: AtomicI32::new(0),
+            hibernating: AtomicI32::new(0),
+            prof_messages_processed: AtomicU64::new(0),
+            prof_processing_time_ns: AtomicU64::new(0),
+            arena: ptr::null_mut(),
+            suspended_cont: AtomicPtr::new(ptr::null_mut()),
+            cont_tag: AtomicI32::new(0),
+            pending_wake: AtomicBool::new(false),
+            suspended_reply_channel: AtomicPtr::new(ptr::null_mut()),
+            suspended_cancel_token: AtomicPtr::new(ptr::null_mut()),
+            runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
+            runtime: ptr::null(),
+        }
+    }
+
+    /// RAII guard: allocates actor on heap, tracks in `LIVE_ACTORS`, untracks + frees on drop.
+    struct TrackedActor {
+        ptr: *mut HewActor,
+    }
+
+    impl TrackedActor {
+        fn install(actor: HewActor) -> Self {
+            let ptr = Box::into_raw(Box::new(actor));
+            // SAFETY: `ptr` is a freshly-boxed, fully-initialised actor.
+            unsafe { crate::lifetime::live_actors::track_actor(ptr) };
+            Self { ptr }
+        }
+
+        fn ptr(&self) -> *mut HewActor {
+            self.ptr
+        }
+
+        /// Untrack without freeing: models a supervisor removing the actor from
+        /// `LIVE_ACTORS` before (or instead of) freeing the allocation.  The box
+        /// stays live so the test can safely proceed; in production the allocation
+        /// is freed by `hew_actor_free_box` immediately after `untrack_actor`.
+        fn untrack(&self) {
+            crate::lifetime::live_actors::untrack_actor(self.ptr);
+        }
+    }
+
+    impl Drop for TrackedActor {
+        fn drop(&mut self) {
+            // Idempotent: returns false if already removed by `untrack()`.
+            crate::lifetime::live_actors::untrack_actor(self.ptr);
+            // SAFETY: `ptr` came from Box::into_raw above; freed exactly once.
+            unsafe { drop(Box::from_raw(self.ptr)) };
+        }
+    }
+
+    /// `wait_all` exits immediately when all actors are already in a terminal
+    /// state and tracked in `LIVE_ACTORS`.
+    #[test]
+    fn wait_all_returns_for_stopped_actors() {
+        let _rt = crate::runtime_test_guard();
+
+        let actor_a = TrackedActor::install(stub_actor(next_id(), HewActorState::Stopped));
+        let actor_b = TrackedActor::install(stub_actor(next_id(), HewActorState::Crashed));
+
+        // SAFETY: group was just returned by hew_actor_group_new.
+        let group = unsafe { hew_actor_group_new() };
+        assert!(!group.is_null());
+        // SAFETY: group and actor pointers are valid per their respective constructors.
+        let _ = unsafe { hew_actor_group_add(group, actor_a.ptr().cast()) };
+        // SAFETY: same as above.
+        let _ = unsafe { hew_actor_group_add(group, actor_b.ptr().cast()) };
+
+        // All actors already terminal — should complete well within 200 ms.
+        // SAFETY: group is valid and not concurrently destroyed.
+        let rc = unsafe { hew_actor_group_wait_timeout(group, 200) };
+        assert_eq!(rc, 0, "wait_all should succeed for already-stopped actors");
+
+        // SAFETY: group is valid and no longer used after this.
+        unsafe { hew_actor_group_destroy(group) };
+    }
+
+    /// F-1 regression: when an actor is removed from `LIVE_ACTORS` (simulating a
+    /// supervisor free), `all_stopped` must NOT dereference the raw pointer; it
+    /// must treat the untracked actor as terminal and return true without a UAF.
+    ///
+    /// Deterministic concurrent-race reproduction is infeasible in a unit test, so
+    /// this test verifies the corrected code path: `all_stopped` sees
+    /// `with_live_actor_by_id` return `None` (actor gone from registry) and
+    /// `unwrap_or(true)` → terminal, rather than performing a bare dereference.
+    #[test]
+    fn wait_all_treats_untracked_actor_as_terminal() {
+        let _rt = crate::runtime_test_guard();
+
+        // Actor starts Runnable (not terminal).
+        let actor_a = TrackedActor::install(stub_actor(next_id(), HewActorState::Runnable));
+
+        // SAFETY: group was just returned by hew_actor_group_new.
+        let group = unsafe { hew_actor_group_new() };
+        // SAFETY: group and actor_a pointer are valid per their constructors.
+        let rc_add = unsafe { hew_actor_group_add(group, actor_a.ptr().cast()) };
+        assert_eq!(rc_add, 0);
+
+        // Verify baseline: actor is not stopped → wait_timeout should time out.
+        // SAFETY: group is valid and not concurrently destroyed.
+        let rc_timeout = unsafe { hew_actor_group_wait_timeout(group, 30) };
+        assert_ne!(rc_timeout, 0, "should time out: actor is still running");
+
+        // Simulate supervisor removing the actor from LIVE_ACTORS.
+        // In production, hew_actor_free_box would immediately follow; here the
+        // box stays live so the test can safely call wait_timeout again.
+        actor_a.untrack();
+
+        // all_stopped sees the actor is not in LIVE_ACTORS → treats as terminal.
+        // SAFETY: group is valid and not concurrently destroyed.
+        let rc_done = unsafe { hew_actor_group_wait_timeout(group, 200) };
+        assert_eq!(rc_done, 0, "untracked actor should be treated as terminal");
+
+        // SAFETY: group is valid and no longer used after this.
+        unsafe { hew_actor_group_destroy(group) };
+        // TrackedActor::drop calls untrack_actor idempotently (no-op) then frees box.
+    }
 }

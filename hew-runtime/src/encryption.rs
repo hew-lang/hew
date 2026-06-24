@@ -857,6 +857,12 @@ pub unsafe extern "C" fn hew_allowlist_new(mode: c_int) -> *mut HewPeerAllowlist
     let ptr = Box::into_raw(Box::new(list.clone())); // ALLOCATOR-PAIRING: GlobalAlloc
     #[cfg(not(test))]
     {
+        // Acquire the ops lock before modifying ACTIVE_ALLOWLIST, consistent
+        // with all other mutating paths (hew_allowlist_add / remove / free).
+        // Without it, a concurrent hew_allowlist_free could read ACTIVE_ALLOWLIST
+        // between our write and the strict-latch store, producing an inconsistent
+        // view of the active list / latch pair.
+        let _guard = ALLOWLIST_OPS_LOCK.lock_or_recover();
         let mut active = ACTIVE_ALLOWLIST.write_or_recover();
         *active = Some(ActiveAllowlist {
             ptr: ptr as usize,

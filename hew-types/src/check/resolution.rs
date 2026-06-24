@@ -1349,7 +1349,14 @@ impl Checker {
                 // Any occurrence of the name "Task" in a user-source type
                 // annotation is an error. Emit `E_TASK_NOT_NAMEABLE` and
                 // return `Ty::Error` so downstream checks don't cascade.
-                if name == "Task" {
+                //
+                // Guard: if the user declared their own `Task` type in scope,
+                // the reservation does not fire — the user's declaration shadows
+                // the compiler-internal name (local-shadows-global rule).
+                if name == "Task"
+                    && !self.local_type_defs.contains("Task")
+                    && !self.source_type_defs.contains("Task")
+                {
                     self.report_error(
                         TypeErrorKind::TaskNotNameable,
                         &te.1,

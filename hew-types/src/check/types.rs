@@ -2675,6 +2675,19 @@ pub struct Checker {
     /// routinely referenced by a later REPL input, so emitting those warnings
     /// is noise rather than signal. Set only by the eval paths.
     pub(super) repl_fragment: bool,
+    /// Whether the checker is currently type-checking a stdlib (or built-in
+    /// library) source body.
+    ///
+    /// When `true`, scope-level diagnostic lints (`UnusedVariable`,
+    /// `UnusedMut`) emitted by `emit_scope_warnings` are suppressed: they
+    /// describe implementation details of the standard library that the user
+    /// cannot act on and should not see.  Set transiently in `check_program`
+    /// for each non-root module whose path starts with `"std"`, `"hew"`, or
+    /// `"ecosystem"`, and cleared once that module's items have been checked.
+    /// Distinct from `repl_fragment` (which suppresses all completeness lints
+    /// across the whole program): `is_stdlib_source` is scoped per-module so
+    /// user code in the same compilation unit still receives its own warnings.
+    pub(super) is_stdlib_source: bool,
     /// Tracks (span, feature) pairs we've already warned about for WASM limits.
     pub(super) wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
     /// Tracks (span, feature) pairs we've already rejected as errors for WASM.
@@ -3003,6 +3016,7 @@ impl Checker {
             unsafe_functions: HashSet::new(),
             wasm_target: false,
             repl_fragment: false,
+            is_stdlib_source: false,
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),
             current_machine_transition: None,
@@ -3079,6 +3093,21 @@ impl Checker {
     /// [`Checker::repl_fragment`].
     pub fn set_repl_fragment(&mut self) {
         self.repl_fragment = true;
+    }
+
+    /// Mark the checker as currently processing a stdlib or built-in library
+    /// source body, suppressing scope-level lints (`UnusedVariable`,
+    /// `UnusedMut`) for those bodies.
+    ///
+    /// Set transiently by `check_program` around each non-root module whose
+    /// path starts with `"std"`, `"hew"`, or `"ecosystem"`.  Cleared after
+    /// that module's items have been checked.  Distinct from
+    /// [`set_repl_fragment`](Self::set_repl_fragment) which suppresses ALL
+    /// completeness lints across the whole program; this flag is scoped
+    /// per-module so the user's own code in the same compilation unit still
+    /// receives its warnings.
+    pub fn set_stdlib_source(&mut self) {
+        self.is_stdlib_source = true;
     }
 
     /// Register a qualified `Trait::method` name as one whose dispatch

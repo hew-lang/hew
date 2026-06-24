@@ -581,29 +581,31 @@ impl TraitRegistry {
 
     /// Register the declared type-parameter names for a generic type.
     ///
-    /// Call immediately after `register_type` for every type, record, or
-    /// machine declaration that carries type parameters. Non-generic types
-    /// (empty `params`) may call this with an empty list, which is a no-op but
-    /// keeps call sites uniform. Subsequent calls for the same `name` are
-    /// idempotent (first-write wins, matching the first-write-wins policy on
-    /// `type_fields`).
+    /// **Must be called alongside `register_type`** at every type, record, or
+    /// machine declaration site. Non-generic types pass an empty `params` list.
+    ///
+    /// **Always last-write-wins, matching `register_type` / `type_fields`.**
+    /// Both tables are written together at every declaration site; they must
+    /// have the same write policy so they always describe the same type. If
+    /// this table were first-write-wins while `type_fields` is last-write-wins,
+    /// a cross-module type-name collision would leave stale params in the table
+    /// while the fields are updated — a concrete field whose bare name matched a
+    /// stale param name would be misclassified as a placeholder and skipped in
+    /// the concrete-field pass, granting Send to a type that holds a non-Send
+    /// field (data-race / UAF soundness hole).
+    ///
+    /// Non-generic types register an empty param list, which is a valid sentinel:
+    /// `is_type_param_placeholder` treats `Some([])` as "no params → no field is
+    /// a placeholder → check every field directly", which is correct for
+    /// non-generic types and faster than falling through to the heuristic.
     ///
     /// After registration, `is_type_param_placeholder` resolves field names
     /// against this list rather than the absence-based heuristic, making
-    /// placeholder classification deterministic and fail-closed:
-    /// only declared param names are treated as placeholders; every other
-    /// field name is checked as a concrete type even if it lacks a
-    /// `type_fields` entry.
+    /// placeholder classification deterministic and fail-closed.
     pub fn register_type_params(&mut self, name: String, params: Vec<String>) {
-        // Skip empty registrations — non-generic types carry no param list and
-        // recording an empty Vec would shadow a valid prior registration.
-        if params.is_empty() {
-            return;
-        }
-        // First-write wins: a second registration for the same name is either
-        // the same declaration reprocessed or a shadowed import; neither may
-        // override the first authoritative registration.
-        self.type_params.entry(name).or_insert(params);
+        // Unconditionally last-write-wins to stay in lockstep with
+        // `register_type` / `type_fields`. See doc comment above.
+        self.type_params.insert(name, params);
     }
 
     /// Report whether `name` is a `#[resource]` type.
@@ -2362,6 +2364,102 @@ mod tests {
         assert!(
             !registry.is_send(&wrapper_i64),
             "Wrapper<i64> must NOT be Send: ConcreteBad field holds Rc<i64> (not Send)"
+        );
+    }
+
+    // =========================================================================
+    // A1 — Cross-module name-collision regression (lockstep write policy)
+    // =========================================================================
+
+    /// CRITICAL REGRESSION GUARD: `register_type_params` must be last-write-wins
+    /// to match `register_type` / `type_fields`. When two modules export a type
+    /// with the same bare name (`Collision`), the later registration overwrites
+    /// `type_fields` (last-write-wins). If `register_type_params` were
+    /// first-write-wins, the stale param list from the first module would remain
+    /// after the second module's fields are written, making them inconsistent:
+    ///
+    /// - module a: `type Collision<T> { value: T }` — params `["T"]`, fields `[T_a]`
+    /// - module b: `type T { rc: Rc<i64> }` — concrete, NOT Send
+    /// - module b: `type Collision<U> { hidden: T }` — params `["U"]`, fields `[T_b]`
+    ///
+    /// After both registrations (last-write-wins fix):
+    /// - bare `Collision`: params `["U"]`, fields `[T_b]` (b's definition)
+    /// - `a.Collision`: params `["T"]`, fields `[T_a]` (a's snapshot at alias time)
+    /// - `b.Collision`: params `["U"]`, fields `[T_b]` (b's snapshot at alias time)
+    ///
+    /// Checking `b.Collision<i64>`:
+    /// - `b.Collision` has params `["U"]`
+    /// - field `T` is NOT in `["U"]` — checked directly as concrete
+    /// - `type_fields["T"]` = `[Rc<i64>]` — Rc not Send — b.Collision<i64> NOT Send ✓
+    ///
+    /// With the stale first-write-wins bug:
+    /// - bare `Collision` kept params `["T"]` (a's list, never overwritten)
+    /// - `b.Collision` copied those stale params — params `["T"]`
+    /// - field `T` matched stale param `"T"` — classified as placeholder, SKIPPED
+    /// - args sweep only saw i64 (Send) — wrongly granted Send (UAF hole)
+    #[test]
+    fn cross_module_name_collision_params_must_be_last_write_wins() {
+        let mut registry = TraitRegistry::new();
+
+        // --- module a: type Collision<T> { value: T } ---
+        let t_a_param = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        registry.register_type("Collision".to_string(), vec![t_a_param]);
+        registry.register_type_params("Collision".to_string(), vec!["T".to_string()]);
+        // Simulate alias_type_markers("Collision", "a.Collision") when module a
+        // is imported — snapshots a's fields and params under the qualified key.
+        registry.alias_type_markers("Collision", "a.Collision");
+
+        // --- module b: type T { rc: Rc<i64> } (concrete, NOT Send) ---
+        let rc_i64 = Ty::Named {
+            builtin: Some(BuiltinType::Rc),
+            name: "Rc".to_string(),
+            args: vec![Ty::I64],
+        };
+        registry.register_type("T".to_string(), vec![rc_i64]);
+        // Non-generic; register empty params (last-write-wins sentinel).
+        registry.register_type_params("T".to_string(), vec![]);
+
+        // --- module b: type Collision<U> { hidden: T } ---
+        // Field "T" here refers to b's concrete type, not a type parameter.
+        let t_b_field = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        // last-write-wins: overwrites a's fields.
+        registry.register_type("Collision".to_string(), vec![t_b_field]);
+        // last-write-wins (the fix): overwrites a's stale params ["T"] with ["U"].
+        registry.register_type_params("Collision".to_string(), vec!["U".to_string()]);
+        // Snapshot b's fields and params under the qualified key.
+        registry.alias_type_markers("Collision", "b.Collision");
+
+        // b.Collision<i64>: field "T" is NOT in params ["U"] → checked directly
+        // → T has Rc<i64> → NOT Send. This is the laundering hole test.
+        let b_collision_i64 = Ty::Named {
+            builtin: None,
+            name: "b.Collision".to_string(),
+            args: vec![Ty::I64],
+        };
+        assert!(
+            !registry.is_send(&b_collision_i64),
+            "b.Collision<i64> must NOT be Send: field 'T' is concrete (holds Rc<i64>). \
+             Stale params would misclassify it as a placeholder and launder Send."
+        );
+
+        // a.Collision<i64>: params ["T"] snapshotted when a was aliased;
+        // field "T" IS in params → placeholder → args sweep checks i64 → Send ✓.
+        let a_collision_i64 = Ty::Named {
+            builtin: None,
+            name: "a.Collision".to_string(),
+            args: vec![Ty::I64],
+        };
+        assert!(
+            registry.is_send(&a_collision_i64),
+            "a.Collision<i64> must be Send: field T is a genuine type param (= i64 here)"
         );
     }
 }

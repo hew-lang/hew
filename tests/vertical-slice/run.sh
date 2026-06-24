@@ -297,6 +297,26 @@ run_accept_expect_status "iter_lazy_map_fold_run" 12
 # ([6,4,2] = 12); 101–105 flag a count/length/element mismatch.
 run_accept_expect_status "iter_lazy_count_collect_run" 15
 
+# lane-c: Filter/Take/Skip::next un-stubbed via Route-B var-self write-back.
+# Each fixture is self-contained (no `import std::iter`) to work around the
+# mir-gap-cross-module-std-iter-lowering gap; all types are inlined.
+#
+# filter (x > 2) from Countdown{n:4} → [4, 3], sum = 7; exit 7.
+# Also checks filter (x % 2 == 0) → [4, 2], sum = 6.
+run_accept_expect_status "iter_filter_basic_run" 7
+# take(3) from Countdown{n:5} → [5, 4, 3], sum = 12; exit 12.
+# Also checks take(0) → sum = 0.
+run_accept_expect_status "iter_take_basic_run" 12
+# skip(2) from Countdown{n:5} → [3, 2, 1], sum = 6; exit 6.
+# Also checks skip(0) from Countdown{n:3} → sum = 6.
+run_accept_expect_status "iter_skip_basic_run" 6
+# Map composed with Filter: Countdown{n:5} ×2 then >6 → [10,8], sum = 18.
+# Also checks filter-then-fold: odd items [5,3,1], sum = 9.
+run_accept_expect_status "iter_filter_map_compose_run" 18
+# Filter with owned string items: drop-path coverage.
+# ["keep","keep2","skip_me"] filtered by s!="skip_me" → count = 2; exit 2.
+run_accept_expect_status "iter_filter_string_run" 2
+
 # Reject: spawned closures must not capture non-Send values. This fixture uses
 # a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR
 # diagnostic rather than unrelated Rc construction or lowering diagnostics.

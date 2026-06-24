@@ -83,24 +83,40 @@ pub type Filter<I, A> {
 
 impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
     type Item = A;
-    fn next(it: Filter<I, A>) -> Option<A> {
+    fn next(var self) -> Option<A> {
 
-        // DEFERRED — fail loud, not silent. A correct `Filter::next` must
-        // pump `it.iter.next()` in a loop, returning `Some(x)` for the
-        // first `x` where `pred(x)` is true and `None` once the inner
-        // iterator is exhausted. Returning `None` on the first rejected
-        // item (a previous shape of this body) silently drops every
-        // non-matching prefix and makes the filter look empty.
+        // Route-B multi-pump loop. Q296/Q297 premise falsified by q004
+        // (commit 60ea6b5a); see Map::next for the proven model.
         //
-        // Under the mutable-receiver `fn next(var self)` shape, `self.iter`
-        // is moved on the first inner-`next()` call inside one invocation,
-        // so a multi-call loop cannot be written without either (a) a
-        // shared-state cell that survives the move, or (b) threading the
-        // residual inner iterator out through the return shape. Neither
-        // primitive exists on the substrate yet.
-        // Tracked: var-self write-back, Q297 (lazy wrapper substrate), v06-followups.md
-        panic("Filter::next is unimplemented: deferred iterator wrapper substrate cannot yet loop over `self.iter.next()` to skip rejected items under the current substrate. See std/iter.hew Filter<I,A> doc-comment and v06-followups.md (iterator-foundation lane).");
-        None
+        // `self.iter` is moved into `inner` so the inner iterator's
+        // `next(var self)` write-back lands on a mutable binding receiver.
+        // `self.iter` is written back after the loop so `var self`'s own
+        // write-back persists the cursor across calls.
+        //
+        // `(self.pred)(x)` is a Read borrow of `x`; `x` is still owned
+        // after the call (`by-value-heap-params-are-borrows`). On the
+        // accept path `Some(x)` transfers ownership into `found`. On the
+        // reject path `x` falls out of scope at the end of the `Some` arm
+        // body and is dropped exactly once by RAII
+        // (`drop-allowset-from-value-flow`).
+        var inner = self.iter;
+        var found: Option<A> = None;
+        loop {
+            match inner.next() {
+                Some(x) => {
+                    if (self.pred)(x) {
+                        found = Some(x);
+                        break;
+                    }
+                    // x rejected: falls out of scope here, dropped exactly once
+                },
+                None => {
+                    break;
+                },
+            }
+        }
+        self.iter = inner;
+        found
     }
 }
 
@@ -113,25 +129,27 @@ pub type Take<I> {
 
 impl<I, A> Iterator for Take<I> where I: Iterator<Item = A> {
     type Item = A;
-    fn next(it: Take<I>) -> Option<A> {
+    fn next(var self) -> Option<A> {
 
-        // DEFERRED — fail loud, not silent. A correct `Take::next` must
-        // decrement `remaining` each yield so the adapter actually caps
-        // the inner stream at `n` items. The previous body
-        // (`if remaining <= 0 { None } else { it.iter.next() }`) never
-        // decremented and let `Take` pass every inner item through
-        // forever.
+        // Route-B single-pump + quota decrement. Q296/Q297 premise
+        // falsified by q004 (commit 60ea6b5a); see Map::next for the
+        // proven model and VecIter for the field-store write-back precedent
+        // (`self.idx = self.idx + 1` persists across calls via the same
+        // var-self mechanism).
         //
-        // Q296=B (record-field mutation under a `var` binding) just landed
-        // at 5a1f3764, but it does not compose with the Q001-locked
-        // mutable-receiver `fn next(var self)` shape: `self` is threaded through every
-        // call, so any field-write to `self.remaining` is lost when the
-        // function returns. The remaining-counter has to be carried out
-        // through the return shape (or held in a shared cell); neither
-        // primitive exists yet.
-        // Tracked: var-self write-back, Q296=B (record-field mutation), Q297 (lazy wrapper substrate), v06-followups.md
-        panic("Take::next is unimplemented: deferred iterator wrapper substrate cannot yet persist a decremented `remaining` across calls under the current substrate. See std/iter.hew Take<I> doc-comment and v06-followups.md (iterator-foundation lane).");
-        None
+        // Guard on `remaining` first: once the quota is exhausted the
+        // adapter is transparent-None to all subsequent callers.
+        if self.remaining <= 0 {
+            return None;
+        }
+        var inner = self.iter;
+        let result = match inner.next() {
+            Some(x) => Some(x),
+            None => None,
+        };
+        self.iter = inner;
+        self.remaining = self.remaining - 1;
+        result
     }
 }
 
@@ -144,23 +162,41 @@ pub type Skip<I> {
 
 impl<I, A> Iterator for Skip<I> where I: Iterator<Item = A> {
     type Item = A;
-    fn next(it: Skip<I>) -> Option<A> {
+    fn next(var self) -> Option<A> {
 
-        // DEFERRED — fail loud, not silent. A correct `Skip::next` must
-        // consume `remaining` items from `it.iter` (looping on inner
-        // `next()` until either `remaining == 0` or the inner exhausts)
-        // before yielding. The previous body just forwarded `it.iter
-        // .next()` and ignored `remaining` entirely, so `Skip` had no
-        // observable effect.
+        // Route-B burn-loop then yield. Q296/Q297 premise falsified by
+        // q004 (commit 60ea6b5a); see fold/count/collect for the proven
+        // multi-pump loop model.
         //
-        // Same substrate gap as `Filter::next` and `Take::next`: the
-        // mutable-receiver `fn next(var self)` shape threads `self.iter` on
-        // the first inner call, so a multi-call skip loop is not
-        // expressible without a shared-state cell or a return-shape
-        // change.
-        // Tracked: var-self write-back, Q297 (lazy wrapper substrate), v06-followups.md
-        panic("Skip::next is unimplemented: deferred iterator wrapper substrate cannot yet loop over `self.iter.next()` to drop the skipped prefix under the current substrate. See std/iter.hew Skip<I> doc-comment and v06-followups.md (iterator-foundation lane).");
-        None
+        // On the first call (remaining > 0), the burn loop discards the
+        // leading `remaining` items from the inner stream. Once remaining
+        // reaches 0 the burn loop exits immediately on every subsequent
+        // call and goes straight to the yield pump.
+        //
+        // `self.iter` is moved into `inner` once; both the burn path and
+        // the yield pump write it back before returning
+        // (`raii-null-after-move`). The `self.remaining` decrement inside
+        // the burn loop is a plain field-store write on `var self`; the
+        // var-self write-back persists it across calls (same mechanism as
+        // VecIter's `self.idx`).
+        var inner = self.iter;
+        loop {
+            if self.remaining <= 0 {
+                break;
+            }
+            match inner.next() {
+                Some(_) => {
+                    self.remaining = self.remaining - 1;
+                },
+                None => {
+                    self.iter = inner;
+                    return None;
+                },
+            }
+        }
+        let result = inner.next();
+        self.iter = inner;
+        result
     }
 }
 

@@ -1,0 +1,114 @@
+//! Runnable end-to-end fixture for the lazy `Filter` adapter.
+//!
+//! Exercises the Route-B `Filter::next` body: multi-pump loop that
+//! skips rejected items and writes the inner cursor back through
+//! `var self` on every exit path. The inner item type `A` projects
+//! to `i64` via the where-clause bound so every type parameter pins
+//! to a concrete type at the call site.
+//!
+//! Inlined and fully monomorphised: cross-module generic instantiation
+//! of `std::iter` does not yet lower through MIR (a separate backend
+//! lane), so the adapter types are defined locally.
+//!
+//! Expected exit code: 7 — sum of items in Countdown{n:4} passing
+//! the predicate `x > 2`: [4, 3]. Any internal mismatch returns a
+//! distinct diagnostic code (101/102) so a regression is legible.
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    /// Yield `n, n-1, …, 1` then `None`; advance the cursor in place.
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+type Filter<I, A> {
+    iter: I;
+    pred: fn(A) -> bool;
+}
+
+impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
+    type Item = A;
+    /// Multi-pump loop: advance `inner` until the predicate accepts an
+    /// item or the inner stream exhausts. The inner iterator is moved into
+    /// a `var` local so its write-back lands on a mutable binding receiver;
+    /// `self.iter = inner` is written after the loop so `var self`'s
+    /// own write-back persists the cursor across calls.
+    fn next(var self) -> Option<A> {
+        var inner = self.iter;
+        var found: Option<A> = None;
+        loop {
+            match inner.next() {
+                Some(x) => {
+                    if (self.pred)(x) {
+                        found = Some(x);
+                        break;
+                    }
+                    // x rejected; falls out of scope here, dropped exactly once
+                },
+                None => {
+                    break;
+                },
+            }
+        }
+        self.iter = inner;
+        found
+    }
+}
+
+/// Construct a lazy `Filter` adapter (mirrors `std::iter::filter`).
+fn mk_filter<I, A>(it: I, pred: fn(A) -> bool) -> Filter<I, A>
+where
+    I: Iterator<Item = A>,
+{
+    Filter { iter: it, pred: pred }
+}
+
+/// Left-fold a fixed-`i64` iterator (mirrors `std::iter::fold`).
+fn fold_i64<I>(it: I, init: i64, f: fn(i64, i64) -> i64) -> i64
+where
+    I: Iterator<Item = i64>,
+{
+    var acc = init;
+    var iter = it;
+    loop {
+        match iter.next() {
+            Some(x) => {
+                acc = f(acc, x);
+            },
+            None => {
+                break;
+            },
+        }
+    }
+    acc
+}
+
+fn main() -> i64 {
+    // Countdown{n:4} yields [4, 3, 2, 1].
+    // Filter (x > 2) → [4, 3], sum = 7.
+    let filtered = mk_filter(Countdown { n: 4 }, |x: i64| x > 2);
+    let total = fold_i64(filtered, 0, |acc: i64, x: i64| acc + x);
+    if total != 7 {
+        return 101;
+    }
+
+    // Second pass: Countdown{n:5}, filter (x % 2 == 0) → [4, 2], sum = 6.
+    let filtered2 = mk_filter(Countdown { n: 5 }, |x: i64| x % 2 == 0);
+    let total2 = fold_i64(filtered2, 0, |acc: i64, x: i64| acc + x);
+    if total2 != 6 {
+        return 102;
+    }
+
+    total
+}

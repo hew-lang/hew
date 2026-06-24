@@ -1,0 +1,101 @@
+//! Runnable end-to-end fixture for the lazy `Take` adapter.
+//!
+//! Exercises the Route-B `Take::next` body: single-pump with a
+//! `remaining` quota guard that decrements on each yield, persisted
+//! across calls through `var self` write-back. The adapter halts
+//! exactly after `n` items regardless of inner stream depth.
+//!
+//! The fixture-local `Take<I, A>` carries `A` as a direct type parameter
+//! (unlike `std/iter.hew`'s `Take<I>`) so the monomorphisation site can
+//! pin `A = i64` directly. This is required by the current MIR substrate:
+//! a type parameter appearing ONLY in a where-clause projection cannot be
+//! pinned by the monomorphisation collector (mir-gap-where-clause-proj-
+//! monomorph). The body logic is identical to `std/iter.hew::Take::next`.
+//!
+//! Inlined and fully monomorphised: cross-module generic instantiation
+//! of `std::iter` does not yet lower through MIR (a separate backend
+//! lane), so the adapter types are defined locally.
+//!
+//! Expected exit code: 12 — sum of the first 3 items from
+//! Countdown{n:5}: [5, 4, 3]. Any internal mismatch returns a
+//! distinct diagnostic code (101/102) so a regression is legible.
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    /// Yield `n, n-1, …, 1` then `None`; advance the cursor in place.
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+/// `Take<I, A>` carries `A` as a direct type parameter so concrete call
+/// sites (e.g. `Take<Countdown, i64>`) can pin the item type and satisfy
+/// associated-type bounds in generic helpers (`fold_i64`).
+type Take<I, A> {
+    iter: I;
+    remaining: i64;
+}
+
+impl<I, A> Iterator for Take<I, A> where I: Iterator<Item = A> {
+    type Item = A;
+    /// Single-pump with quota guard. `remaining` is decremented on each
+    /// successful yield; the var-self write-back persists it across calls
+    /// (proven by VecIter's `self.idx = self.idx + 1` precedent). Once
+    /// `remaining` reaches 0 the adapter returns `None` for all subsequent
+    /// calls without pumping the inner iterator.
+    fn next(var self) -> Option<A> {
+        if self.remaining <= 0 {
+            return None;
+        }
+        var inner = self.iter;
+        let result = match inner.next() {
+            Some(x) => Some(x),
+            None => None,
+        };
+        self.iter = inner;
+        self.remaining = self.remaining - 1;
+        result
+    }
+}
+
+/// Sum all items produced by a fixed-`i64` iterator.
+fn fold_i64<I>(it: I) -> i64 where I: Iterator<Item = i64> {
+    var acc: i64 = 0;
+    var iter = it;
+    loop {
+        match iter.next() {
+            Some(x) => { acc = acc + x; },
+            None => { break; },
+        }
+    }
+    acc
+}
+
+fn main() -> i64 {
+    // Countdown{n:5} yields [5, 4, 3, 2, 1].
+    // Take(3) → [5, 4, 3], sum = 12.
+    let taken: Take<Countdown, i64> = Take { iter: Countdown { n: 5 }, remaining: 3 };
+    let total = fold_i64(taken);
+    if total != 12 {
+        return 101;
+    }
+
+    // Quota-exhaustion check: take(0) yields nothing, sum = 0.
+    let taken2: Take<Countdown, i64> = Take { iter: Countdown { n: 5 }, remaining: 0 };
+    let total2 = fold_i64(taken2);
+    if total2 != 0 {
+        return 102;
+    }
+
+    total
+}

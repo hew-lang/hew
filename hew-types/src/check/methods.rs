@@ -5270,10 +5270,21 @@ impl Checker {
                 return None;
             }
             let impl_params: HashSet<String> = sig.type_params.iter().cloned().collect();
+            // Snapshot `self.subst` around the applicability probe: a multi-arg
+            // `Self` (`HashMap<K, V>`) unifies each concrete arg into `self.subst`
+            // as it matches, but a LATER arg may reject the impl. Without the
+            // rollback an early concrete-arg unification would persist into the
+            // checker's substitution past a `None` reject — binding an inference
+            // var from an impl that does not actually apply. Restore on every
+            // non-match so the probe is side-effect-free (hardening per the
+            // A-general gate's non-blocking note).
+            let subst_snapshot = self.subst.snapshot();
             for (self_arg, receiver_arg) in self_args.iter().zip(receiver_args.iter()) {
                 if !self.match_self_arg_param(self_arg, receiver_arg, &impl_params, &mut subst) {
                     // `Self` does not structurally match the receiver — this impl
-                    // does not apply. Fail closed.
+                    // does not apply. Roll back any partial unification, then fail
+                    // closed.
+                    self.subst.restore(subst_snapshot);
                     return None;
                 }
             }

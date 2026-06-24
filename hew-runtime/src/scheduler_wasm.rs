@@ -959,7 +959,6 @@ pub extern "C" fn hew_wasm_runtime_exit() {
 }
 
 // ── Internal API ────────────────────────────────────────────────────────
-// ── Internal API ────────────────────────────────────────────────────────
 
 /// Submit an actor to the run queue.
 ///

@@ -2097,14 +2097,6 @@ impl Checker {
                 }
             }
             Expr::GenBlock { body } => {
-                // WHY: `gen { }` expression-position generator blocks are part
-                //      of the v0.5 surface (parser support present).
-                //      HIR/MIR coroutine lowering is not yet wired; fail closed here.
-                // WHEN OBSOLETE: when generator lowering wires
-                //      HirExprKind::GenBlock and the coroutine scheduler.
-                // REAL SOLUTION: synthesize the yield type from the block,
-                //      return Ty::Named { name: "Iterator", args: [yield_ty] }.
-                //
                 // A98 / Q98: generator blocks inside actor receive handlers are
                 // permanently forbidden.  The scheduler holds the actor-state lock
                 // for the entire handler invocation; there is no safe point to
@@ -2138,8 +2130,6 @@ impl Checker {
                 // useful return type).  `gen { return 1; }` and `gen { 1 }` are
                 // both valid generators with inferred Return=i64.
                 //
-                // The HIR lowerer is still fail-closed on GenBlock; this gates
-                // only the type checker so that type errors surface early.
                 let yield_var = TypeVar::fresh();
                 let return_var = TypeVar::fresh();
                 let gen_ty = Ty::generator(Ty::Var(yield_var), Ty::Var(return_var));

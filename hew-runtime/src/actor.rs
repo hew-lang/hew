@@ -1390,10 +1390,10 @@ pub(crate) unsafe fn cleanup_all_actors() {
         // possible.
         unsafe { prepare_quiescent_actor_for_cleanup(actor) };
 
-        // Remove any SLEEP_QUEUE entry for this actor before freeing it.
-        // This prevents a use-after-free if hew_wasm_timer_tick is called
-        // after cleanup but before the queue entry is drained naturally.
-        // SAFETY: scheduler is shut down; no concurrent SLEEP_QUEUE access.
+        // Remove any pending WASM sleep timer entry for this actor before
+        // freeing it. This prevents a use-after-free if hew_wasm_timer_tick
+        // is called after cleanup but before the timer fires naturally.
+        // SAFETY: scheduler is shut down; no concurrent timer-wheel access.
         #[cfg(target_arch = "wasm32")]
         unsafe {
             crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor);

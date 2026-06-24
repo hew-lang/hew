@@ -4511,13 +4511,14 @@ struct LowerCtx {
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span.
     ///
-    /// Passive pass-through: HIR does not yet lower `Stmt::Assign` (it falls
-    /// through to `unsupported`).  Future consumer: MIR/codegen compound-
-    /// assignment lowering and Machine Lane B actor-field writes.
+    /// Passive pass-through: `Stmt::Assign` is fully lowered in HIR and MIR,
+    /// but neither simple-assign nor compound-assign lowering consults this map
+    /// yet.  Future consumer: compound-assignment signedness dispatch in codegen
+    /// and Machine Lane B actor-field write classification.
     /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
     #[expect(
         dead_code,
-        reason = "passive pass-through; future consumer is Stmt::Assign lowering in MIR/codegen"
+        reason = "passive pass-through; future consumer is compound-assignment signedness in codegen"
     )]
     assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     /// Checker-resolved assignment target type-shape metadata (signedness flag)

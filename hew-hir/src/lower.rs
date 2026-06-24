@@ -1897,9 +1897,14 @@ pub fn lower_program_with_mono_cap(
                             Item::Machine(md) if md.visibility.is_pub() => {
                                 for state in &md.states {
                                     *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
+                                    // Pub machine states shadow same-named builtins
+                                    // across the flat global registry.
+                                    user_declared_variant_names.insert(state.name.clone());
                                 }
                                 for event in &md.events {
                                     *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                                    // Pub machine events shadow same-named builtins.
+                                    user_declared_variant_names.insert(event.name.clone());
                                 }
                             }
                             Item::TypeDecl(td)
@@ -1908,6 +1913,8 @@ pub fn lower_program_with_mono_cap(
                                 for body_item in &td.body {
                                     if let TypeBodyItem::Variant(v) = body_item {
                                         *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
+                                        // Pub enum variants shadow same-named builtins.
+                                        user_declared_variant_names.insert(v.name.clone());
                                     }
                                 }
                             }
@@ -28806,6 +28813,71 @@ mod tests {
                 .iter()
                 .map(|layout| &layout.key)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// A pub enum declared in a non-root (imported) module whose variant name
+    /// matches a builtin variant name must not be overwritten by the builtin
+    /// in `machine_ctor_registry`.  Without the local-shadows-global fix that
+    /// extends `user_declared_variant_names` to non-root pub items, the
+    /// `builtin_enum_specs` registration pass sees `!user_declared_variant_names
+    /// .contains("NotFound")` as true and overwrites the user's
+    /// `AppErr::NotFound` (Tuple kind) entry with `LookupError::NotFound`
+    /// (Unit kind).  The Tuple-variant call `NotFound(msg)` inside the module
+    /// body then hits `report_variant_ctor_call_shape_mismatch` and emits a
+    /// "unit variant called as a function" diagnostic.
+    #[test]
+    fn nonroot_pub_enum_variant_shadows_same_named_builtin_in_hir() {
+        use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+        let mod_src = hew_parser::parse(
+            r"
+            pub enum AppErr { NotFound(string) }
+
+            pub fn make_error(msg: string) -> AppErr {
+                NotFound(msg)
+            }
+            ",
+        );
+        assert!(
+            mod_src.errors.is_empty(),
+            "module parse errors: {:?}",
+            mod_src.errors
+        );
+
+        let root_id = ModuleId::root();
+        let mod_id = ModuleId::new(vec!["errmod".to_string()]);
+        let module = Module {
+            id: mod_id.clone(),
+            items: mod_src.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(module).unwrap();
+        mg.topo_order = vec![mod_id, root_id];
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(
+            tco.errors.is_empty(),
+            "type errors (should be none): {:?}",
+            tco.errors
+        );
+
+        let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "HIR diagnostics must be empty — a 'unit variant NotFound called as a \
+             function' diagnostic means the builtin LookupError::NotFound overwrote \
+             AppErr::NotFound in machine_ctor_registry: {:#?}",
+            lowered.diagnostics
         );
     }
 }

@@ -1087,10 +1087,13 @@ pub struct HewActor {
     /// `with_actor_send_by_id` increments this field (atomically, under
     /// `LIVE_ACTORS`) before releasing the registry lock, then decrements it
     /// via a RAII guard when the operation completes.  The free path in
-    /// `hew_actor_free_inner` treats `send_pin_count > 0` as non-quiescent:
-    /// it will not call `untrack_actor` or free the box until every in-flight
-    /// pin has been released, guaranteeing the allocation remains valid for
-    /// the duration of any by-ID mailbox send or actor stop.
+    /// `hew_actor_free_inner` calls `untrack_actor` first (removing the actor
+    /// from `LIVE_ACTORS` so no new pins can be taken), then spins until
+    /// `send_pin_count` reaches 0 (draining any in-flight pins taken before
+    /// the untrack) before calling `finalize`.  This untrack-first ordering
+    /// makes the pin-drain and the liveness check mutually exclusive: either
+    /// the sender pins before the freer untracks (freer waits), or the freer
+    /// untracks before the sender's map lookup (sender gets `None`, no pin).
     ///
     /// **Why not `dispatch_active`**: `dispatch_active` serialises the
     /// scheduler worker's activation ownership; reusing it for external sends
@@ -1392,6 +1395,11 @@ pub(crate) unsafe fn cleanup_all_actors() {
     live_actors::drain_deferred_teardown_threads();
 
     let actors = live_actors::drain_all_for_cleanup();
+    // After drain_all_for_cleanup LIVE_ACTORS is empty: any subsequent
+    // `with_actor_send_by_id` for these actors returns None (map lookup
+    // fails), so no new send pins can be taken.  Drain any in-flight pins
+    // before finalizing each actor.  LIVE_ACTORS is not held here, so
+    // pinned senders can re-acquire it freely (e.g. enqueue_resume).
 
     for live_actors::ActorPtr(actor) in actors.into_values() {
         if actor.is_null() {
@@ -1420,11 +1428,52 @@ pub(crate) unsafe fn cleanup_all_actors() {
             crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor);
         }
 
+        // Drain send pins.  All worker threads are joined before this runs,
+        // so send_pin_count should be 0.  The spin is a safety net for
+        // unusual paths (e.g. a non-runtime thread that holds a pin during
+        // shutdown); on timeout we log and skip finalize for this actor
+        // (fail-closed: leak) to avoid freeing under an active pin.
+        // SAFETY: LIVE_ACTORS is not held here; no deadlock risk.
+        {
+            // SAFETY: actor came from LIVE_ACTORS (non-null check above);
+            // the scheduler is shut down, so no concurrent dispatch is possible.
+            let a = unsafe { &*actor };
+            debug_assert_eq!(
+                a.send_pin_count.load(Ordering::Acquire),
+                0,
+                "send_pin_count must be 0 in cleanup_all_actors (single-threaded)"
+            );
+            let pin_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut pinned = false;
+            loop {
+                if a.send_pin_count.load(Ordering::Acquire) == 0 {
+                    break;
+                }
+                if std::time::Instant::now() >= pin_deadline {
+                    eprintln!(
+                        "hew: runtime error: actor {:#x} send pins did not drain \
+                     during shutdown cleanup; actor leaked to avoid UAF",
+                        a.id
+                    );
+                    pinned = true;
+                    break;
+                }
+                #[cfg(target_arch = "wasm32")]
+                std::hint::spin_loop();
+                #[cfg(not(target_arch = "wasm32"))]
+                std::thread::yield_now();
+            }
+            if pinned {
+                continue;
+            }
+        }
+
         // Run terminate for actors that never reached a terminal state
         // (still IDLE at process exit). Skip crashed actors — their state
         // may be corrupted. `finalize_quiescent_actor_cleanup` performs the
         // terminate-or-skip dance plus the resource free.
-        // SAFETY: actor is quiescent and no longer tracked.
+        // SAFETY: actor is quiescent, no longer tracked, and all send pins
+        // have drained (verified above).
         unsafe { finalize_quiescent_actor_cleanup(actor, state) };
     }
 }
@@ -2847,14 +2896,19 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     data: *mut c_void,
     size: usize,
 ) -> c_int {
-    // Hold LIVE_ACTORS across the lookup and dispatch to close the TOCTOU
-    // window between pointer retrieval and dereference.  A concurrent
-    // hew_actor_free_inner cannot free the actor while the closure runs
-    // (untrack_actor runs under the same lock, before hew_actor_free_box).
+    // Use the liveness-pin protocol: under LIVE_ACTORS, validate the actor
+    // and increment its `send_pin_count`; release the lock; run the send;
+    // the RAII SendPinGuard decrements the pin on return.  The free path
+    // calls `untrack_actor` first (so no new pins can be taken after that
+    // point), then spins until `send_pin_count == 0` before finalizing.
+    // Because pin-increment and map-removal are both under LIVE_ACTORS, the
+    // two are mutually exclusive: this send either pins before the freer
+    // untracks (freer waits) or the freer untracks before this map lookup
+    // (lookup returns None, no pin, no UAF).
     let sent = live_actors::with_actor_send_by_id(actor_id, |actor| {
-        // SAFETY: `actor` is tracked in LIVE_ACTORS and the registry lock is
-        // held for this closure; the allocation is valid for the send.  Same
-        // data/size preconditions as hew_actor_send.
+        // SAFETY: `actor` is pinned live by `with_actor_send_by_id`;
+        // the allocation is guaranteed valid for the duration of this
+        // closure.  Same data/size preconditions as hew_actor_send.
         unsafe { actor_send_internal(actor, msg_type, data, size) }
     });
     if sent == Some(true) {
@@ -3251,16 +3305,14 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
             // pairs with the guard's `Release` clear so we also observe every
             // write the activation made before we proceed to free.
             //
-            // `send_pin_count > 0` means a `with_actor_send_by_id` operation is
-            // currently using the actor pointer after releasing `LIVE_ACTORS`.
-            // We must not free until the pin drops (the send/stop finishes),
-            // otherwise we get a use-after-free in the send path.  The pin is
-            // decremented with `Release` ordering, so this `Acquire` load
-            // observes the end of the by-ID operation before we proceed.
-            if actor_free_state_is_quiescent(state)
-                && !a.dispatch_active.load(Ordering::Acquire)
-                && a.send_pin_count.load(Ordering::Acquire) == 0
-            {
+            // `send_pin_count` is NOT checked here.  Instead we untrack the actor
+            // first (so no new pins can be taken) and then drain any in-flight
+            // pins after the untrack — see below.  The untrack-first ordering
+            // makes the two operations mutually exclusive: either the sender pins
+            // before the freer's map removal (freer waits in the drain loop), or
+            // the freer removes the map entry before the sender's lookup (sender
+            // gets `None`, no pin, no UAF).
+            if actor_free_state_is_quiescent(state) && !a.dispatch_active.load(Ordering::Acquire) {
                 break;
             }
             if std::time::Instant::now() >= deadline {
@@ -3347,8 +3399,27 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
         return -1;
     }
 
+    // After untrack_actor the map entry is removed: any subsequent
+    // `with_actor_send_by_id` for this actor gets `None` from the map
+    // lookup, so no new send pins can be taken.  Drain any in-flight pins
+    // that were incremented before the untrack (e.g. a concurrent by-ID
+    // send that pinned the actor just before the map entry was removed).
+    // LIVE_ACTORS is NOT held here, so pinned senders can freely re-acquire
+    // it (e.g. via `enqueue_resume` → `with_live_actor`) without deadlock.
+    // The `Release` in `SendPinGuard::drop` pairs with this `Acquire` load.
+    loop {
+        if a.send_pin_count.load(Ordering::Acquire) == 0 {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            crate::set_last_error("hew_actor_free: send pins did not drain after timeout");
+            return -2;
+        }
+        std::thread::yield_now();
+    }
+
     // SAFETY: actor is quiescent (re-verified after detach), no longer tracked,
-    // and not being dispatched.
+    // all send pins drained, and not being dispatched.
     unsafe { finalize_quiescent_actor_cleanup_with_options(actor, state, suppress_state_drop) };
     0
 }
@@ -3395,14 +3466,38 @@ fn drain_backoff_duration(delay: std::time::Duration) -> std::time::Duration {
 /// in `LIVE_ACTORS`. `state` must be the value loaded from `actor_state`
 /// immediately before this call.
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn drain_quiesced_actor(actor_id: ActorId, expected: *mut HewActor, state: i32) {
+unsafe fn drain_quiesced_actor(
+    actor_id: ActorId,
+    expected: *mut HewActor,
+    state: i32,
+    deadline: std::time::Instant,
+) {
     // SAFETY: caller guarantees `expected` is quiescent and still tracked in
     // LIVE_ACTORS. prepare_quiescent_actor_for_cleanup must run before
     // untracking so that any in-flight timer callback or signal propagation
     // still observes the actor as live and bails out cooperatively.
     unsafe { prepare_quiescent_actor_for_cleanup(expected) };
     if let Some(actor) = live_actors::take_actor_by_id(actor_id, expected) {
-        // SAFETY: the actor is quiescent, prepared for cleanup, and no longer tracked.
+        // After take_actor_by_id the map entry is removed: no new send pins
+        // can be taken.  Drain any in-flight pins before finalizing.
+        // LIVE_ACTORS is not held here; pinned senders can re-acquire it.
+        // SAFETY: actor is a live pointer returned by take_actor_by_id.
+        let a = unsafe { &*actor };
+        loop {
+            if a.send_pin_count.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                crate::set_last_error(
+                    "drain_quiesced_actor: send pins did not drain after timeout",
+                );
+                // Fail-closed: actor is untracked but not freed (leak).
+                return;
+            }
+            std::thread::yield_now();
+        }
+        // SAFETY: the actor is quiescent, prepared for cleanup, no longer tracked,
+        // and all send pins have drained.
         unsafe { finalize_quiescent_actor_cleanup(actor, state) };
     }
 }
@@ -3447,7 +3542,7 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
                 }
                 Some(state) if actor_free_state_is_quiescent(state) => {
                     // SAFETY: `expected` is quiescent and still tracked in LIVE_ACTORS.
-                    unsafe { drain_quiesced_actor(actor_id, expected, state) };
+                    unsafe { drain_quiesced_actor(actor_id, expected, state, deadline) };
                     pending.swap_remove(index);
                 }
                 Some(_) => {
@@ -3482,7 +3577,7 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
             Some(state) if state == HewActorState::Crashed as i32 => crashed.push(actor_id),
             Some(state) if actor_free_state_is_quiescent(state) => {
                 // SAFETY: `expected` is quiescent and still tracked in LIVE_ACTORS.
-                unsafe { drain_quiesced_actor(actor_id, expected, state) };
+                unsafe { drain_quiesced_actor(actor_id, expected, state, deadline) };
             }
             Some(_) => still_live.push(actor_id),
         }
@@ -4530,17 +4625,15 @@ pub(crate) unsafe fn hew_actor_ask_by_id(
     // closure preserves the same actor-ID/data preconditions.
     let send_result_code = unsafe {
         submit_ask_with_reply_channel(ch, AskReplyChannelFailureCleanup::FreeCreatorRef, |ch| {
-            // Hold LIVE_ACTORS across the lookup and dispatch to close the
-            // TOCTOU window between pointer retrieval and dereference.  A
-            // concurrent hew_actor_free_inner cannot free the actor while the
-            // closure runs (untrack_actor runs under the same lock, before
-            // hew_actor_free_box).
+            // Use the liveness-pin protocol (same as hew_actor_send_by_id):
+            // under LIVE_ACTORS, validate + pin; release lock; run the send;
+            // SendPinGuard decrements on return.  The untrack-first free path
+            // cannot finalize while this pin is held.
             live_actors::with_actor_send_by_id(actor_id, |actor| {
-                // SAFETY: `actor` is tracked in LIVE_ACTORS and the registry
-                // lock is held for this closure; the allocation is valid.  `ch`
-                // is a live reply channel retained above.  Same data/size
-                // preconditions as hew_actor_ask.  Outer `unsafe` block covers
-                // this call.
+                // SAFETY: `actor` is pinned live by `with_actor_send_by_id`;
+                // allocation valid for the closure.  `ch` is a live reply
+                // channel retained above.  Same data/size preconditions as
+                // hew_actor_ask.  Outer `unsafe` block covers this call.
                 actor_send_result_internal_reply(actor, msg_type, data, size, ch.cast())
             })
             .unwrap_or(HewError::ErrActorStopped as i32)
@@ -5571,6 +5664,14 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
         crate::set_last_error("hew_actor_free: actor already freed or not tracked");
         return -1;
     }
+
+    // WASM is single-threaded: no concurrent by-ID operations can hold a
+    // pin after we reach this point.
+    debug_assert_eq!(
+        a.send_pin_count.load(Ordering::Acquire),
+        0,
+        "send_pin_count must be 0 before finalize in actor_free_wasm_impl"
+    );
 
     // SAFETY: actor is quiescent, no longer tracked, and not being dispatched.
     unsafe { finalize_quiescent_actor_cleanup(actor, state) };
@@ -6773,6 +6874,141 @@ mod tests {
             queued_after_free, None,
             "no actor pointer may remain queued after free (a queued pointer here \
              would dangle — the use-after-free)"
+        );
+        drop(sched);
+    }
+
+    // ── Forced-ordering test: free must drain send pins before finalizing ──
+
+    /// Set to `true` by the background thread spawned by
+    /// `post_latch_inject_send_pin` BEFORE it decrements `send_pin_count`.
+    /// On the fixed code the freer spins until the pin drops, so the bg
+    /// thread runs while the freer is blocked and `SEND_PIN_DRAIN_WAITED` is
+    /// `true` when the freer proceeds to finalize.  On 520ad161d (no drain
+    /// loop) the freer proceeds to finalize immediately (no spin); the bg
+    /// thread is still sleeping so `SEND_PIN_DRAIN_WAITED` is `false` when
+    /// `hew_actor_free` returns → assertion fails → test fails.
+    static SEND_PIN_DRAIN_WAITED: AtomicBool = AtomicBool::new(false);
+
+    /// Set to `true` by the test thread immediately after `hew_actor_free`
+    /// returns.  The background thread checks this flag before decrementing
+    /// the pin: on the old (unfixed) code, free returned while the bg thread
+    /// was still sleeping; setting CANCEL prevents the bg thread from
+    /// performing a use-after-free write to the freed actor box.
+    static SEND_PIN_TEST_CANCEL: AtomicBool = AtomicBool::new(false);
+
+    /// Post-latch hook for `free_waits_for_send_pin_drain_before_finalize`.
+    ///
+    /// Simulates a concurrent by-ID sender that managed to pin the actor
+    /// after the quiescence check but before `untrack_actor`.  Increments
+    /// `send_pin_count` directly (as `with_actor_send_by_id` would) and
+    /// spawns a background thread that will release the pin after a delay
+    /// long enough to distinguish "free waited" from "free raced ahead".
+    fn post_latch_inject_send_pin(actor: *mut HewActor) {
+        // Simulate pin-increment (the step with_actor_send_by_id performs
+        // under LIVE_ACTORS before releasing the lock).
+        // SAFETY: the actor is still live; free holds it across this hook.
+        unsafe { (*actor).send_pin_count.fetch_add(1, Ordering::AcqRel) };
+
+        // Cast to usize so the closure captures a Send-safe integer.
+        // (RFC 2229 field-level capture would capture `ap.0: *mut HewActor`
+        // — not Send — if we used a newtype wrapper with a field access.)
+        let actor_addr = actor as usize;
+        std::thread::spawn(move || {
+            // Sleep long enough that an unblocked freer returns before we run.
+            std::thread::sleep(std::time::Duration::from_millis(60));
+
+            // Check the cancel flag set by the test thread after free returns.
+            // On 520ad161d (no pin drain spin) free returns immediately and
+            // CANCEL is set before we wake — we must NOT do the fetch_sub on
+            // the now-freed box.
+            if SEND_PIN_TEST_CANCEL.load(Ordering::Acquire) {
+                return;
+            }
+
+            // Record that we ran before decrementing — the freer must observe
+            // this flag as `true` when it proceeds past the pin drain loop.
+            SEND_PIN_DRAIN_WAITED.store(true, Ordering::Release);
+
+            // Release the pin.  The freer's Acquire load of send_pin_count
+            // pairs with this Release, so it sees all writes we made above.
+            let actor_ptr = actor_addr as *mut HewActor;
+            // SAFETY: CANCEL was false → free is still spinning (pin drain loop),
+            // so the actor box is still live and the atomic write is valid.
+            unsafe { (*actor_ptr).send_pin_count.fetch_sub(1, Ordering::Release) };
+        });
+    }
+
+    /// Verify that `hew_actor_free` drains all send pins **before** finalizing
+    /// (calling terminate + freeing the box), not before the quiescence check.
+    ///
+    /// **Why this test catches the TOCTOU bug in 520ad161d:**
+    ///
+    /// 520ad161d checked `send_pin_count == 0` inside the quiescence *wait
+    /// loop* (before the latch), not after `untrack_actor`.  The post-latch
+    /// hook fires AFTER the latch succeeds but BEFORE `untrack_actor`.  In
+    /// that window, `with_actor_send_by_id` can still find the actor in the
+    /// map and increment the pin — the quiescence check that passed was
+    /// already stale.  520ad161d then proceeded to `untrack_actor` +
+    /// `finalize` without waiting → use-after-free.
+    ///
+    /// **On 520ad161d (FAIL):** the hook increments `send_pin_count`; free
+    /// has no pin-drain loop after `untrack_actor` → proceeds to finalize
+    /// immediately → returns in < 5 ms.  The bg thread wakes at 60 ms, finds
+    /// `CANCEL == true` (set just after free returned), skips the `fetch_sub`
+    /// (no UAF).  `SEND_PIN_DRAIN_WAITED` is `false` → assertion fails.
+    ///
+    /// **On fixed code (PASS):** free calls `untrack_actor`, then spins on
+    /// `send_pin_count`.  The bg thread wakes at 60 ms, sees `CANCEL ==
+    /// false` (free still spinning), stores `SEND_PIN_DRAIN_WAITED = true`,
+    /// decrements pin.  Free sees pin == 0, finalize, return.  Assertion
+    /// passes.
+    #[test]
+    fn free_waits_for_send_pin_drain_before_finalize() {
+        let _guard = crate::runtime_test_guard();
+        // Worker-less scheduler: same setup as the latch / reactor tests.
+        let sched = scheduler::NoWorkerSchedulerForTest::install();
+        let _tracing = crate::tracing::tracing_test_guard();
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        // Freshly spawned actors are Idle — the quiescence wait passes
+        // immediately so the post-latch hook fires before untrack.
+        // SAFETY: actor is valid (just spawned); the state field is always initialized.
+        let spawned_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        assert_eq!(spawned_state, HewActorState::Idle as i32);
+
+        SEND_PIN_DRAIN_WAITED.store(false, Ordering::Release);
+        SEND_PIN_TEST_CANCEL.store(false, Ordering::Release);
+        set_free_post_latch_hook_for_test(Some(post_latch_inject_send_pin));
+
+        // SAFETY: actor is valid; free is the operation under test.
+        let rc = unsafe { hew_actor_free(actor) };
+
+        set_free_post_latch_hook_for_test(None);
+        // Signal the bg thread: if free returned before the bg thread ran
+        // (the 520ad161d regression path), the bg thread must not touch the
+        // freed box.
+        SEND_PIN_TEST_CANCEL.store(true, Ordering::Release);
+
+        // Fixed code: free spun until the bg thread decremented send_pin_count;
+        // the bg thread stored WAITED = true before decrementing, so when free
+        // proceeded to finalize it observed WAITED = true, meaning all pins
+        // were drained before finalize ran.
+        //
+        // 520ad161d: free returned before the bg thread ran → WAITED = false.
+        assert!(
+            SEND_PIN_DRAIN_WAITED.load(Ordering::Acquire),
+            "hew_actor_free must drain all send pins before finalizing the actor \
+             box; if this assertion fails, finalize ran while a send pin was held \
+             (use-after-free window)"
+        );
+        assert_eq!(rc, 0, "hew_actor_free must succeed (got {rc})");
+        assert!(
+            !live_actors::is_actor_live(actor),
+            "freed actor must no longer be tracked in LIVE_ACTORS"
         );
         drop(sched);
     }

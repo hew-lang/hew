@@ -326,17 +326,25 @@ pub(crate) fn with_actor_send_by_id<R>(
     f: impl FnOnce(*mut HewActor) -> R,
 ) -> Option<R> {
     // Phase 1: validate liveness and take a send pin — all under LIVE_ACTORS.
-    // Incrementing send_pin_count here (before releasing the lock) ensures that
-    // if a concurrent hew_actor_free_inner sees pin_count > 0 in its quiescence
-    // loop, it defers the free until the pin drops.
+    // Incrementing send_pin_count here (before releasing the lock) makes the
+    // pin-increment and the freer's map-removal mutually exclusive: both
+    // operations run under LIVE_ACTORS, so either this fetch_add completes
+    // before the freer's untrack_actor (freer will then spin until the pin
+    // drops before finalizing), or the freer's untrack_actor completes first
+    // (this map lookup returns None → we return None without taking a pin).
+    // The allocation cannot be freed while the pin is held.
     let ptr = with_live_actors_opt(|map| {
         let ptr = map
             .as_ref()
             .and_then(|m| m.get(&actor_id).map(|p| p.0))
             .filter(|p| !p.is_null())?;
         // SAFETY: `ptr` is tracked-live under the registry lock.  The
-        // fetch_add happens before the lock is released, so the free path
-        // observes pin_count > 0 before it can call untrack_actor.
+        // fetch_add runs before the lock is released and before any
+        // concurrent untrack_actor (which also runs under the lock), so the
+        // two are mutually exclusive — the freer cannot remove the map entry
+        // while we are incrementing the pin, and we cannot increment the pin
+        // after the freer has removed the map entry (the map.get above would
+        // return None first).
         unsafe { (*ptr).send_pin_count.fetch_add(1, Ordering::AcqRel) };
         Some(ptr)
     })

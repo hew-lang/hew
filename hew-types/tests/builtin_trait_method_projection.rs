@@ -200,3 +200,128 @@ fn unresolvable_element_fails_closed() {
         output.errors
     );
 }
+
+/// Fail-closed (over-application): a concrete-`Self` builtin impl
+/// (`impl Acc for Vec<i64>`) must NOT be selected for a non-matching receiver
+/// (`Vec<string>`). Dispatch keys only on the canonical builtin (`Vec`), so the
+/// instantiation must prove the impl's concrete `Self` arg (`i64`) matches the
+/// receiver's element (`string`) — it does not, so this must fail closed with a
+/// clean "no method" diagnostic, never project an authoritative `Option<i64>`.
+#[test]
+fn concrete_self_impl_not_overapplied_to_mismatched_element() {
+    let output = typecheck(
+        r#"
+        trait Acc {
+            type Output;
+            fn fetch(self, key: i64) -> Option<Self::Output>;
+        }
+        impl Acc for Vec<i64> {
+            type Output = i64;
+            fn fetch(self, key: i64) -> Option<i64> { None }
+        }
+        fn main() {
+            let v: Vec<string> = ["a"];
+            let r = v.fetch(0);
+        }
+        "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|err| err.kind == TypeErrorKind::UndefinedMethod),
+        "expected a no-method diagnostic (concrete impl must not over-apply), got: {:#?}",
+        output.errors
+    );
+}
+
+/// Fail-closed (constrained `Self`): `impl<V> Lookup for HashMap<string, V>`
+/// must NOT be selected for `HashMap<i64, bool>` — the constrained key position
+/// (`string`) does not match the receiver key (`i64`).
+#[test]
+fn constrained_key_impl_not_overapplied_to_mismatched_key() {
+    let output = typecheck(
+        r"
+        trait Lookup {
+            type Output;
+            fn grab(self, key: i64) -> Option<Self::Output>;
+        }
+        impl<V> Lookup for HashMap<string, V> {
+            type Output = V;
+            fn grab(self, key: i64) -> Option<V> { None }
+        }
+        fn main() {
+            let m: HashMap<i64, bool> = HashMap::new();
+            let r = m.grab(0);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|err| err.kind == TypeErrorKind::UndefinedMethod),
+        "expected a no-method diagnostic (constrained key must not over-apply), got: {:#?}",
+        output.errors
+    );
+}
+
+/// Fail-closed (nested constructor mismatch): `impl<T> Acc for Vec<Vec<T>>` must
+/// NOT bind `T` from `Vec<Option<i64>>` — the nested `Self` constructor (`Vec`)
+/// differs from the receiver element constructor (`Option`), so the recursive
+/// match must reject it rather than spuriously bind `T = i64`.
+#[test]
+fn nested_self_constructor_mismatch_does_not_bind() {
+    let output = typecheck(
+        r"
+        trait Acc {
+            type Output;
+            fn fetch(self, key: i64) -> Option<Self::Output>;
+        }
+        impl<T> Acc for Vec<Vec<T>> {
+            type Output = T;
+            fn fetch(self, key: i64) -> Option<T> { None }
+        }
+        fn main() {
+            let v: Vec<Option<i64>> = [Some(1)];
+            let r = v.fetch(0);
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|err| err.kind == TypeErrorKind::UndefinedMethod),
+        "expected a no-method diagnostic (nested ctor mismatch must not bind), got: {:#?}",
+        output.errors
+    );
+}
+
+/// Positive control for the shape-check: a concrete-`Self` builtin impl DOES
+/// apply to its exact receiver (`impl Acc for Vec<i64>` on `Vec<i64>`), proving
+/// the shape-check admits the matching case while rejecting the mismatched one.
+#[test]
+fn concrete_self_impl_projects_for_matching_receiver() {
+    assert_clean(
+        r"
+        trait Acc {
+            type Output;
+            fn fetch(self, key: i64) -> Option<Self::Output>;
+        }
+        impl Acc for Vec<i64> {
+            type Output = i64;
+            fn fetch(self, key: i64) -> Option<i64> { None }
+        }
+        fn takes_int(x: i64) {}
+        fn main() {
+            let v: Vec<i64> = [1, 2];
+            match v.fetch(0) {
+                Some(x) => takes_int(x),
+                None => {}
+            }
+        }
+        ",
+        "concrete impl Acc for Vec<i64> projects Option<i64> on Vec<i64>",
+    );
+}

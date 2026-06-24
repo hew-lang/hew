@@ -60,10 +60,10 @@ pub fn decode(s: string) -> bytes {
     let nvals = vals.len();
     var i = 0;
     while i + 4 <= nvals {
-        let a = vals.get(i);
-        let b = vals.get(i + 1);
-        let c = vals.get(i + 2);
-        let d = vals.get(i + 3);
+        let a = vals[i];
+        let b = vals[i + 1];
+        let c = vals[i + 2];
+        let d = vals[i + 3];
         out.push(a << 2 | b >> 4);
         out.push((b & 15) << 4 | c >> 2);
         out.push((c & 3) << 6 | d);
@@ -72,13 +72,13 @@ pub fn decode(s: string) -> bytes {
     // Handle remaining values (from stripped padding)
     let remaining = nvals - i;
     if remaining == 2 {
-        let a = vals.get(i);
-        let b = vals.get(i + 1);
+        let a = vals[i];
+        let b = vals[i + 1];
         out.push(a << 2 | b >> 4);
     } else if remaining == 3 {
-        let a = vals.get(i);
-        let b = vals.get(i + 1);
-        let c = vals.get(i + 2);
+        let a = vals[i];
+        let b = vals[i + 1];
+        let c = vals[i + 2];
         out.push(a << 2 | b >> 4);
         out.push((b & 15) << 4 | c >> 2);
     }
@@ -119,9 +119,9 @@ fn encode_impl(data: bytes, url_safe: bool) -> string {
     var i = 0;
     // Process complete 3-byte groups
     while i + 3 <= dlen {
-        let a = data.get(i);
-        let b = data.get(i + 1);
-        let c = data.get(i + 2);
+        let a = data[i];
+        let b = data[i + 1];
+        let c = data[i + 2];
         out.push(b64_char(a as i32 >> 2, url_safe) as u8);
         out.push(b64_char((a as i32 & 3) << 4 | b as i32 >> 4, url_safe) as u8);
         out.push(b64_char((b as i32 & 15) << 2 | c as i32 >> 6, url_safe) as u8);
@@ -131,14 +131,14 @@ fn encode_impl(data: bytes, url_safe: bool) -> string {
     // Handle remaining bytes (always pad with '=')
     let remaining = dlen - i;
     if remaining == 1 {
-        let a = data.get(i);
+        let a = data[i];
         out.push(b64_char(a as i32 >> 2, url_safe) as u8);
         out.push(b64_char((a as i32 & 3) << 4, url_safe) as u8);
         out.push(61); // '='
         out.push(61);
     } else if remaining == 2 {
-        let a = data.get(i);
-        let b = data.get(i + 1);
+        let a = data[i];
+        let b = data[i + 1];
         out.push(b64_char(a as i32 >> 2, url_safe) as u8);
         out.push(b64_char((a as i32 & 3) << 4 | b as i32 >> 4, url_safe) as u8);
         out.push(b64_char((b as i32 & 15) << 2, url_safe) as u8);

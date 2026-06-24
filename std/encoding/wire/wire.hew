@@ -51,10 +51,10 @@ pub fn decode_header(buffer: bytes) -> i64 {
     if !validate_header(buffer) {
         return -1;
     }
-    let b0 = buffer.get(6);
-    let b1 = buffer.get(7);
-    let b2 = buffer.get(8);
-    let b3 = buffer.get(9);
+    let b0 = buffer[6];
+    let b1 = buffer[7];
+    let b2 = buffer[8];
+    let b3 = buffer[9];
     // Reconstruct little-endian u32 as i64. Operands are cast to i64 before
     // arithmetic to prevent i32 overflow at the high byte (b3 * 16777216 can
     // exceed i32::MAX when b3 >= 128). This also fixes the latent overflow bug
@@ -70,24 +70,24 @@ pub fn validate_header(buffer: bytes) -> bool {
         return false;
     }
     // Check magic "HEW1"
-    if buffer.get(0) != 72 {
+    if buffer[0] != 72 {
         return false;
     }
-    if buffer.get(1) != 69 {
+    if buffer[1] != 69 {
         return false;
     }
-    if buffer.get(2) != 87 {
+    if buffer[2] != 87 {
         return false;
     }
-    if buffer.get(3) != 49 {
+    if buffer[3] != 49 {
         return false;
     }
     // Check version
-    if buffer.get(4) != 1 {
+    if buffer[4] != 1 {
         return false;
     }
     // Check flags (only bit 0 allowed)
-    if (buffer.get(5) & 254) != 0 {
+    if (buffer[5] & 254) != 0 {
         return false;
     }
     true

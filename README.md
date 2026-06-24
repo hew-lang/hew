@@ -225,7 +225,7 @@ source.hew → Lexer → Parser → Type Checker → HIR → MIR → LLVM IR/obj
 - **adze-cli/** — Package manager (`adze` binary) — init, install, publish, search
 - **hew-lsp/** — Language server (tower-lsp)
 - **hew-observe/** — Runtime observability TUI (`hew-observe`)
-- **hew-wasm/** — Analysis-only frontend compiled to WASM for in-browser diagnostics and editor tooling (not browser runtime/codegen/execution)
+- **hew-wasm/** — Analysis-only diagnostics frontend compiled to WASM (lexer/parser/type-checker for in-browser editor tooling); the full browser execution runtime is a v0.6.0 deliverable
 
 ### Standard Library & Build Support
 
@@ -304,11 +304,9 @@ everything else falls back to broader local preflight commands.
 
 ### Browser / Playground Validation
 
-This repo does not build the downstream browser app or a full in-browser Hew
-runtime. The repo-local browser/playground slice here is analysis-only tooling:
-`hew-wasm` plus the curated
-[`examples/playground/manifest.json`](examples/playground/manifest.json)
-consumed by downstream browser tooling.
+The sandbox VM (`hew-sandbox-vm`) runs admitted Hew programs in a deterministic browser-hosted runtime with a virtual clock, seeded randomness, M4–M7 actor/channel/supervision semantics, and structured-concurrency coordination. Almost all of Hew runs in a browser today; the only native-only class is features that depend on OS threads (parallel work-stealing, production supervision trees, real-time network I/O). The full browser execution runtime for thread-dependent features is planned for v0.6.0.
+
+This repo carries the analysis-side browser tooling (`hew-wasm`) plus the sandbox bytecode emission crate (`hew-sandbox-wasm`); the downstream browser app and the `hew-sandbox-vm` TypeScript worker are in `hew-lang/playground`.
 
 ```bash
 make playground-manifest        # regenerate examples/playground/manifest.json
@@ -317,7 +315,7 @@ make playground-check           # repo-local preflight: manifest freshness + cur
 make playground-wasi-check      # focused manifest-driven WASI runtime preflight
 ```
 
-Use `make playground-manifest-check` when you only need to confirm the checked-in manifest is current. Use `make playground-check` for the repo-local browser/tooling slice: curated `hew-wasm` analysis smoke plus the repo-local `hew-wasm` build (`make wasm`) that powers browser-side analysis tooling. Use `make playground-wasi-check` in codegen-capable environments when you also want the focused manifest-driven WASI runtime proof. Browser coverage remains analysis-only; this repo does not claim downstream browser execution exists.
+Use `make playground-manifest-check` when you only need to confirm the checked-in manifest is current. Use `make playground-check` for the repo-local browser/tooling slice: curated `hew-wasm` analysis smoke plus the repo-local `hew-wasm` build (`make wasm`) that powers browser-side diagnostics tooling. Use `make playground-wasi-check` in codegen-capable environments when you also want the focused manifest-driven WASI runtime proof. The `hew-wasm` crate in this repo is analysis-only; the sandbox VM execution target and downstream browser app live in `hew-lang/playground`.
 
 ### Optional Dependencies
 

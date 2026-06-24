@@ -4244,12 +4244,24 @@ not a conforming compiler.
 
 The authoritative WASM capability matrix lives in
 [`docs/wasm-capability-matrix.md`](../wasm-capability-matrix.md). The
-specification commits to two target tiers:
+specification tracks four target tiers:
 
-- **Tier 1** (`wasm32-unknown-unknown` via `wasm-bindgen`):
+- **Tier 1** (`wasm32-unknown-unknown` via `wasm-bindgen`, crate `hew-wasm`):
   analysis-only browser surface — lexer, parser, and type checker
   only. Powers the online playground and editor tooling. Does not
   execute Hew programs.
+- **sandbox-vm-export** (`wasm32-unknown-unknown` via `wasm-bindgen`, crate
+  `hew-sandbox-wasm`): deterministic bytecode package emission for the
+  browser sandbox. Runs parse + type-check + explicit sandbox profile
+  admission; does not execute programs directly.
+- **sandbox-vm** (`hew-sandbox-vm` TypeScript worker): executes admitted
+  sandbox bytecode in a browser Web Worker. Covers deterministic sequential
+  code, actors (M4), channels + structured concurrency (M5), and supervision
+  trees (M6). Almost all of Hew runs in a browser via this path; the only
+  native-only feature class is OS-thread-dependent features (parallel
+  work-stealing, production supervision restart policies, real-time network
+  I/O). The full browser execution runtime for those thread-dependent
+  features is the v0.6.0 browser-runtime lane.
 - **Tier 2** (`wasm32-wasip1`): WASI execution runtime with a
   single-threaded cooperative actor scheduler.
 

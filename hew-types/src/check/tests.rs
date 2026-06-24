@@ -5108,6 +5108,115 @@ fn typecheck_or_pattern_error_scrutinee_no_cascade() {
     );
 }
 
+// ── Borrowed-param escape: constructor classification (#2116 audit) ──────────
+// `callee_is_aggregate_constructor` decides whether the borrowed-param escape
+// analysis descends into a call's arguments.  It must classify by resolution,
+// not by the callee's casing, or it both falsely rejects valid programs (an
+// uppercase regular function) and falsely accepts memory-unsafe ones (a
+// lowercase variant constructor that embeds a borrowed parameter).
+
+#[test]
+fn borrowed_param_escape_uppercase_function_call_not_flagged() {
+    // Regression for the casing false-positive: a regular function that merely
+    // *happens* to be uppercase-named is not a constructor, so passing a borrow
+    // parameter to it is a safe borrow under call-boundary ownership — it must
+    // NOT raise BorrowedParamReturn.
+    let (errors, _) = parse_and_check(concat!(
+        "fn Helper(x: &i64) -> i64 { 5 }\n",
+        "fn f(r: &i64) -> i64 { Helper(r) }\n",
+    ));
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "passing a borrow param to the uppercase regular fn `Helper` is safe and must \
+         not raise BorrowedParamReturn; got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_lowercase_function_call_not_flagged() {
+    // Control for the above: the lowercase spelling was already accepted; it must
+    // stay accepted.
+    let (errors, _) = parse_and_check(concat!(
+        "fn helper(x: &i64) -> i64 { 5 }\n",
+        "fn f(r: &i64) -> i64 { helper(r) }\n",
+    ));
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "passing a borrow param to a regular fn is safe; got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_lowercase_variant_constructor_flagged() {
+    // Regression for the casing false-NEGATIVE (a memory-safety hole): a
+    // lowercase enum variant constructor that embeds a borrow parameter in the
+    // returned aggregate must raise BorrowedParamReturn.  The old uppercase-first
+    // heuristic dropped this, letting a returned reference outlive its owner.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Holder { wrap(&i64); empty }\n",
+        "fn f(r: &i64) -> Holder { wrap(r) }\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "embedding a borrow param in the lowercase variant `wrap` must raise \
+         BorrowedParamReturn; got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_uppercase_variant_constructor_flagged() {
+    // The uppercase variant spelling was already caught and must stay caught —
+    // proves the fix does not regress the originally-handled direction.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Holder { Wrap(&i64); Empty }\n",
+        "fn f(r: &i64) -> Holder { Wrap(r) }\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "embedding a borrow param in the variant `Wrap` must raise \
+         BorrowedParamReturn; got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_builtin_variant_constructor_flagged() {
+    // Builtin Option/Result variant constructors must remain classified as
+    // aggregate constructors so an embedded borrow param is still flagged.
+    let (errors, _) = parse_and_check("fn f(r: &i64) -> Option<&i64> { Some(r) }\n");
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "embedding a borrow param in `Some(_)` must raise BorrowedParamReturn; \
+         got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_qualified_path_constructor_flagged() {
+    // A `Type::Variant` qualified path constructor must remain classified as an
+    // aggregate constructor (fail-closed for all `::` paths, including `Rc::new`).
+    let (errors, _) = parse_and_check(concat!(
+        "enum Holder { V(&i64); E }\n",
+        "fn f(r: &i64) -> Holder { Holder::V(r) }\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "embedding a borrow param in the qualified variant `Holder::V` must raise \
+         BorrowedParamReturn; got: {errors:?}"
+    );
+}
+
 #[test]
 fn typecheck_error_scrutinee_constructor_pattern_stays_fail_closed() {
     let (errors, _) = parse_and_check(concat!(

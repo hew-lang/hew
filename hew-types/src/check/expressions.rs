@@ -4209,11 +4209,12 @@ impl Checker {
             }
             // Aggregate escapes: enum-variant constructors like Some(r), Ok(r),
             // Err(r) embed an Rc param in a container, transferring the borrowed
-            // pointer without a clone.  Only check calls whose callee looks like
-            // a constructor (uppercase-initial identifier or Type::Variant path)
-            // — regular lowercase function calls are borrows under call-boundary
-            // ownership and are safe.
-            Expr::Call { function, args, .. } if Self::looks_like_constructor(&function.0) => {
+            // pointer without a clone.  Only check calls whose callee constructs
+            // an aggregate (variant constructor or `Type::assoc` path) — regular
+            // function calls are borrows under call-boundary ownership and safe.
+            Expr::Call { function, args, .. }
+                if self.callee_is_aggregate_constructor(&function.0) =>
+            {
                 for arg in args {
                     let (e, s) = arg.expr();
                     self.check_expr_is_rc_param_return(e, s, scopes);
@@ -4270,21 +4271,40 @@ impl Checker {
         }
     }
 
-    /// Returns `true` when the callee expression looks like a value constructor
-    /// (enum variant or type-associated constructor like `Rc::new`).
+    /// Returns `true` when a call's callee constructs an aggregate that may embed
+    /// the argument into its result — an enum/struct variant constructor, or a
+    /// `Type::assoc` path such as `Rc::new`.  Such a result, when returned,
+    /// aliases the embedded argument, so the borrowed-param escape analysis must
+    /// descend into the call's arguments.  Regular function calls pass arguments
+    /// as borrows under call-boundary ownership (the callee owns the escape
+    /// question), so they are NOT descended into.
     ///
-    /// Heuristic: an uppercase-initial bare identifier (`Some`, `Ok`, `Err`,
-    /// user-defined variants) or a `Type::method` / field-access path where
-    /// the receiver is uppercase-initial (`Rc::new`, `MyEnum::Variant`).
-    pub(super) fn looks_like_constructor(expr: &Expr) -> bool {
-        match expr {
-            Expr::Identifier(name) => name.starts_with(char::is_uppercase),
-            Expr::FieldAccess { object, .. } => {
-                // Rc::new, MyEnum::Variant, etc.
-                matches!(&object.0, Expr::Identifier(name) if name.starts_with(char::is_uppercase))
-            }
-            _ => false,
+    /// Classification is resolution-based, not casing-based (#2116): a bare
+    /// identifier is a constructor iff it is a builtin `Option`/`Result` variant
+    /// or resolves via `lookup_variant_constructor`.  This fixes two casing bugs:
+    /// an uppercase regular function (`Helper(r)`) is no longer a false hit
+    /// (spurious `BorrowedParamReturn`), and a lowercase user variant (`wrap(r)`)
+    /// is no longer a false miss (a real aggregate escape that the old uppercase
+    /// heuristic silently dropped).
+    pub(super) fn callee_is_aggregate_constructor(&self, function: &Expr) -> bool {
+        let Expr::Identifier(name) = function else {
+            // Calling a function-valued field or closure (`(obj.f)(arg)`) passes
+            // the argument as a borrow; it is never an aggregate constructor.
+            return false;
+        };
+        // `Type::assoc` / `E::Variant` paths construct or wrap a value and may
+        // embed the argument (`Rc::new(r)`, `MyEnum::Variant(r)`).  Fail-closed:
+        // descend on every qualified call so an aggregate escape is never missed.
+        if name.contains("::") {
+            return true;
         }
+        // Builtin Option/Result variant constructors embed their payload.
+        if matches!(name.as_str(), "Some" | "Ok" | "Err" | "None") {
+            return true;
+        }
+        // User enum / struct tuple-variant constructors, resolved by name
+        // (any casing) rather than an uppercase-first heuristic.
+        self.lookup_variant_constructor(name).is_some()
     }
 
     /// Return the nearest visible dangerous Rc binding for `name`.
@@ -4437,9 +4457,10 @@ impl Checker {
     /// Check if `expr` directly names or structurally contains a visible
     /// dangerous Rc binding. Returns the first match or `None`.
     ///
-    /// Structural descent mirrors `check_expr_is_rc_param_return`: constructors
-    /// (uppercase-initial calls), tuples, struct inits, and blocks are
-    /// containers that embed the value.  Regular lowercase function/method
+    /// Structural descent mirrors `check_expr_is_rc_param_return`: aggregate
+    /// constructors (variant constructors and `Type::assoc` paths, classified by
+    /// resolution — see `callee_is_aggregate_constructor`), tuples, struct inits,
+    /// and blocks are containers that embed the value.  Regular function/method
     /// calls are borrows under call-boundary ownership — the return value is
     /// unrelated, so we do NOT recurse into those.
     pub(super) fn dangerous_source_in_expr(
@@ -4449,7 +4470,9 @@ impl Checker {
     ) -> Option<DangerousRcBinding> {
         match expr {
             Expr::Identifier(name) => Self::lookup_dangerous_binding(name, scopes),
-            Expr::Call { function, args, .. } if Self::looks_like_constructor(&function.0) => {
+            Expr::Call { function, args, .. }
+                if self.callee_is_aggregate_constructor(&function.0) =>
+            {
                 for arg in args {
                     let (e, _) = arg.expr();
                     if let Some(hit) = self.dangerous_source_in_expr(e, scopes) {

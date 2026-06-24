@@ -4253,7 +4253,7 @@ impl Checker {
                                 &sig,
                             );
                         }
-                        // Stage A1: when the receiver is a primitive or compiler-builtin
+                        // When the receiver is a primitive or compiler-builtin
                         // generic, `lookup_type_def_mut(type_name)` returns `None` so the
                         // sig has nowhere to live for later dispatch.  Mirror it onto the
                         // side table keyed by the canonical receiver kind + trait name so

@@ -2011,8 +2011,8 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     );
                     return Ok(dst);
                 }
-                // WASM-TODO: inclusive range slice `v[start..=end]` — deferred
-                // until `vector.range_slice_inclusive` is added to the VM.
+                // WASM-TODO(#2183): inclusive range slice `v[start..=end]` —
+                // deferred until `vector.range_slice_inclusive` is added to the VM.
                 if matches!(
                     &index.0,
                     Expr::Range {
@@ -2475,7 +2475,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                         return Ok(self.lower_vector_new(span));
                     }
                 }
-                // WASM-TODO: fn-field call `(rec.f)(args)` — the type-checker
+                // WASM-TODO(#2183): fn-field call `(rec.f)(args)` — the type-checker
                 // (ac0bc0ed) now admits calling a function-typed record field when
                 // the callee object is a value binding. The sandbox VM has
                 // `call.indirect` in its schema but marks it M4_DEFERRED; emit

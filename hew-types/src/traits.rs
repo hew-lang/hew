@@ -1135,7 +1135,7 @@ impl TraitRegistry {
         // placeholder. For non-generic types all fields are concrete and this
         // is the only pass.
         let concrete_ok = fields.iter().all(|f| {
-            if !args.is_empty() && self.is_type_param_placeholder(f) {
+            if !args.is_empty() && self.is_type_param_placeholder(f, marker) {
                 // Placeholder covered by the type-args sweep; vacuously ok here.
                 true
             } else {
@@ -1157,8 +1157,9 @@ impl TraitRegistry {
     ///
     /// A type-param placeholder is a `Ty::Named` with:
     /// - no builtin tag (`builtin: None`),
-    /// - no type arguments of its own (`args` is empty), and
-    /// - no entry in the structural `type_fields` registry.
+    /// - no type arguments of its own (`args` is empty),
+    /// - no entry in the structural `type_fields` registry, and
+    /// - no registered negative marker fact for `marker`.
     ///
     /// These arise when `register_type` stores the field types of a generic
     /// declaration verbatim: `T` in `type Box<T> { v: T }` ends up as
@@ -1168,9 +1169,20 @@ impl TraitRegistry {
     /// `type_fields.contains_key` correctly excludes:
     /// - types registered with an empty field list (concrete zero-field types)
     /// - any type that happens to share a single-letter name with a param
-    fn is_type_param_placeholder(&self, ty: &Ty) -> bool {
+    ///
+    /// The `negative_impls` guard is the soundness seal: a type registered via
+    /// `register_negative_impl` is a KNOWN concrete type, not a generic param.
+    /// Without this guard a field like `NoSend` (explicitly not-Send, but not
+    /// in `type_fields`) would be misclassified as a placeholder and skipped in
+    /// the concrete-field pass, allowing a `Wrapper<i64>` that holds a `NoSend`
+    /// field to be granted Send — a data-race / UAF soundness hole.
+    fn is_type_param_placeholder(&self, ty: &Ty, marker: MarkerTrait) -> bool {
         matches!(ty, Ty::Named { builtin: None, args, name }
-            if args.is_empty() && !self.type_fields.contains_key(name.as_str()))
+            if args.is_empty()
+                && !self.type_fields.contains_key(name.as_str())
+                && !self.negative_impls
+                    .get(name.as_str())
+                    .is_some_and(|s| s.contains(&marker)))
     }
 }
 
@@ -2076,6 +2088,97 @@ mod tests {
         assert!(
             registry.is_send(&point),
             "Point (i64 fields) must remain Send"
+        );
+    }
+
+    // =========================================================================
+    // A1 GPT cross-eco regression — over-grant soundness fix
+    // =========================================================================
+
+    /// GPT cross-eco regression (soundness hole, PR A1 review):
+    /// `type Wrapper<T> { hidden: NoSend; value: T }` — `NoSend` has an explicit
+    /// negative Send fact via `register_negative_impl`.  `Wrapper<i64>` must NOT
+    /// be Send even though the only type arg (`i64`) is Send.
+    ///
+    /// Before the fix, `NoSend` matched `is_type_param_placeholder` (no builtin,
+    /// no args, no `type_fields` entry) and was silently skipped in the
+    /// concrete-field pass.  The args sweep then saw only `i64` (Send) and
+    /// granted Send to the whole type — a data-race / UAF soundness hole.
+    #[test]
+    fn gpt_repro_negative_impl_field_not_laundered_by_generic_wrapper() {
+        let mut registry = TraitRegistry::new();
+        let t_param = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        let no_send = Ty::Named {
+            builtin: None,
+            name: "NoSend".to_string(),
+            args: vec![],
+        };
+        // NoSend is a concrete type explicitly opted out of Send.
+        registry.register_negative_impl("NoSend".to_string(), MarkerTrait::Send);
+        // type Wrapper<T> { hidden: NoSend; value: T }
+        registry.register_type("Wrapper".to_string(), vec![no_send, t_param]);
+
+        let wrapper_i64 = Ty::Named {
+            builtin: None,
+            name: "Wrapper".to_string(),
+            args: vec![Ty::I64],
+        };
+        assert!(
+            !registry.is_send(&wrapper_i64),
+            "Wrapper<i64> must NOT be Send: it holds a NoSend field (registered negative impl)"
+        );
+        // Positive control: a wrapper with a genuine param field only IS Send.
+        let t_only = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        registry.register_type("PureWrapper".to_string(), vec![t_only]);
+        let pure_i64 = Ty::Named {
+            builtin: None,
+            name: "PureWrapper".to_string(),
+            args: vec![Ty::I64],
+        };
+        assert!(
+            registry.is_send(&pure_i64),
+            "PureWrapper<i64> (no NoSend field) must remain Send"
+        );
+    }
+
+    /// A generic type containing a concrete field with a negative marker fact
+    /// for a marker OTHER than Send must also fail that specific marker while
+    /// remaining Send-able (the negative fact is marker-scoped, not global).
+    #[test]
+    fn negative_impl_is_marker_scoped_not_global() {
+        let mut registry = TraitRegistry::new();
+        let t_param = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        let bad_sync = Ty::Named {
+            builtin: None,
+            name: "BadSync".to_string(),
+            args: vec![],
+        };
+        // BadSync has a negative Sync fact but NOT a negative Send fact.
+        registry.register_negative_impl("BadSync".to_string(), MarkerTrait::Sync);
+        // type Container<T> { bad: BadSync; item: T }
+        registry.register_type("Container".to_string(), vec![bad_sync, t_param]);
+
+        let container_i64 = Ty::Named {
+            builtin: None,
+            name: "Container".to_string(),
+            args: vec![Ty::I64],
+        };
+        // Must fail Sync (BadSync has negative Sync fact, must not be skipped).
+        assert!(
+            !registry.implements_marker(&container_i64, MarkerTrait::Sync),
+            "Container<i64> must NOT be Sync: BadSync field has negative Sync fact"
         );
     }
 }

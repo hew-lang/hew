@@ -2,19 +2,19 @@
 // Each node: [value, left, right, height] = 4 slots
 // NIL = -1 means no child
 fn node_val(nodes: Vec<i64>, i: i64) -> i64 {
-    nodes.get(i * 4)
+    nodes[i * 4]
 }
 
 fn node_left(nodes: Vec<i64>, i: i64) -> i64 {
-    nodes.get(i * 4 + 1)
+    nodes[i * 4 + 1]
 }
 
 fn node_right(nodes: Vec<i64>, i: i64) -> i64 {
-    nodes.get(i * 4 + 2)
+    nodes[i * 4 + 2]
 }
 
 fn node_height(nodes: Vec<i64>, i: i64) -> i64 {
-    nodes.get(i * 4 + 3)
+    nodes[i * 4 + 3]
 }
 
 fn set_left(nodes: Vec<i64>, i: i64, v: i64) -> i64 {
@@ -161,8 +161,8 @@ fn avl_insert(nodes: Vec<i64>, root: i64, val: i64, NIL: i64) -> i64 {
         }
         // Update parent's pointer to this subtree
         if path.len() > 0 {
-            let parent = path.get(path.len() - 1);
-            let dir = dirs.get(dirs.len() - 1);
+            let parent = path[path.len() - 1];
+            let dir = dirs[dirs.len() - 1];
             if dir == 0 {
                 let _ = set_left(nodes, parent, new_subtree_root);
             } else {
@@ -204,7 +204,7 @@ fn is_sorted(v: Vec<i64>) -> bool {
     }
     var i = 1;
     while i < v.len() {
-        if v.get(i) <= v.get(i - 1) {
+        if v[i] <= v[i - 1] {
             return false;
         }
         i = i + 1;

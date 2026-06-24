@@ -2,7 +2,10 @@ fn main() -> i64 {
     let values = [1, 2, 3];
     if values.len() != 3 { return 70; }
     if values[0] != 1 { return 71; }
-    if values.get(0) != 1 { return 72; }
+    match values.get(0) {
+        Some(v) => { if v != 1 { return 72; } }
+        None => { return 72; }
+    }
     var sum: i64 = 0;
     for value in values {
         sum = sum + value;

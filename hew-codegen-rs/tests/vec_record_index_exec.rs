@@ -174,8 +174,8 @@ fn vec_record_get_method_reads_correct_field_values() {
             let pts: Vec<Point> = Vec::new();
             pts.push(Point{x:100, y:200});
             pts.push(Point{x:300, y:400});
-            let a = pts.get(0);
-            let b = pts.get(1);
+            let a = pts[0];
+            let b = pts[1];
             print(a.x); print(" "); print(a.y); print(" ");
             print(b.x); print(" "); println(b.y);
         }

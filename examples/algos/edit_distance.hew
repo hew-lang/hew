@@ -35,17 +35,17 @@ fn main() {
             let c1 = s1.char_at(i - 1);
             let c2 = s2.char_at(j - 1);
             if c1 == c2 {
-                let prev = dp.get((i - 1) * cols + (j - 1));
+                let prev = dp[(i - 1) * cols + (j - 1)];
                 dp.set(i * cols + j, prev);
             } else {
-                let insert = dp.get(i * cols + (j - 1)) + 1;
-                let delete = dp.get((i - 1) * cols + j) + 1;
-                let replace = dp.get((i - 1) * cols + (j - 1)) + 1;
+                let insert = dp[i * cols + (j - 1)] + 1;
+                let delete = dp[(i - 1) * cols + j] + 1;
+                let replace = dp[(i - 1) * cols + (j - 1)] + 1;
                 dp.set(i * cols + j, min3(insert, delete, replace));
             }
         }
     }
-    let result = dp.get(m * cols + n);
+    let result = dp[m * cols + n];
     println(result);
     if result == 3 {
         println("PASS");

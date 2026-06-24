@@ -6,7 +6,7 @@ import std::testing;
 fn assert_string_vec_eq(actual: Vec<string>, expected: Vec<string>) {
     testing.assert_eq(actual.len(), expected.len());
     for i in 0 .. expected.len() {
-        testing.assert_eq_str(actual.get(i), expected.get(i));
+        testing.assert_eq_str(actual[i], expected[i]);
     }
 }
 

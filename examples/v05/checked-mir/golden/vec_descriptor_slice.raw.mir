@@ -63,26 +63,30 @@ fn main() -> () [conv=default]
     _13: Vec<CheckedMirColour>
     _14: Vec<CheckedMirColour>
     _15: i64
-    _16: CheckedMirColour
-    _17: i64
-    _18: Vec<CheckedMirPoint>
-    _19: Vec<CheckedMirPoint>
-    _20: i64
-    _21: i64
-    _22: CheckedMirPoint
+    _16: i64
+    _17: bool
+    _18: CheckedMirColour
+    _19: i64
+    _20: Vec<CheckedMirPoint>
+    _21: Vec<CheckedMirPoint>
+    _22: i64
     _23: i64
-    _24: i64
-    _25: CheckedMirPoint
+    _24: CheckedMirPoint
+    _25: i64
     _26: i64
-    _27: i64
-    _28: bool
+    _27: CheckedMirPoint
+    _28: i64
     _29: i64
     _30: bool
-    _31: Vec<CheckedMirPoint>
-    _32: Vec<CheckedMirPoint>
-    _33: i64
-    _34: CheckedMirPoint
+    _31: i64
+    _32: bool
+    _33: Vec<CheckedMirPoint>
+    _34: Vec<CheckedMirPoint>
     _35: i64
+    _36: i64
+    _37: bool
+    _38: CheckedMirPoint
+    _39: i64
   bb0:
     _0 = call Vec::new() -> bb1
   bb1:
@@ -123,53 +127,63 @@ fn main() -> () [conv=default]
     _13 = call_rt hew_vec_slice_range_layout(_1, _8, _9)
     _14 = move _13
     _15 = const.i64 0
-    _16 = call hew_vec_get_layout(_14, _15) [builtin=VecGet(Layout)] -> bb8
+    _16 = call_rt hew_vec_len(_14)
+    _17 = icmp.uge _15 _16
+    branch _17 ? bb8 : bb9
   bb8:
-    _17 = call checked_mir_colour_tag(_16) -> bb9
+    trap(IndexOutOfBounds)
   bb9:
-    call println_i64(_17) -> bb10
+    _18 = call_rt hew_vec_get_layout(_14, _15)
+    _19 = call checked_mir_colour_tag(_18) -> bb10
   bb10:
-    stmt: eval site=SiteId(20) ty=()
-    _18 = call Vec::new() -> bb11
+    call println_i64(_19) -> bb11
   bb11:
+    stmt: eval site=SiteId(20) ty=()
+    _20 = call Vec::new() -> bb12
+  bb12:
     stmt: bind BindingId(3) points site=SiteId(27) ty=Vec<CheckedMirPoint>
     stmt: use BindingId(3) points site=SiteId(30) ty=Vec<CheckedMirPoint> intent=Read
-    _19 = move _18
-    _20 = const.i64 10
-    _21 = const.i64 20
-    _22 = record_init CheckedMirPoint { .0=_20, .1=_21 }
-    call hew_vec_push_layout(_19, _22) -> bb12
-  bb12:
+    _21 = move _20
+    _22 = const.i64 10
+    _23 = const.i64 20
+    _24 = record_init CheckedMirPoint { .0=_22, .1=_23 }
+    call hew_vec_push_layout(_21, _24) -> bb13
+  bb13:
     stmt: eval site=SiteId(29) ty=()
     stmt: use BindingId(3) points site=SiteId(35) ty=Vec<CheckedMirPoint> intent=Read
-    _23 = const.i64 30
-    _24 = const.i64 40
-    _25 = record_init CheckedMirPoint { .0=_23, .1=_24 }
-    call hew_vec_push_layout(_19, _25) -> bb13
-  bb13:
+    _25 = const.i64 30
+    _26 = const.i64 40
+    _27 = record_init CheckedMirPoint { .0=_25, .1=_26 }
+    call hew_vec_push_layout(_21, _27) -> bb14
+  bb14:
     stmt: eval site=SiteId(34) ty=()
     stmt: use BindingId(3) points site=SiteId(40) ty=Vec<CheckedMirPoint> intent=Read
-    _26 = const.i64 0
-    _27 = const.i64 2
-    _28 = icmp.sgt _26 _27
-    branch _28 ? bb14 : bb15
-  bb14:
-    trap(IndexOutOfBounds)
+    _28 = const.i64 0
+    _29 = const.i64 2
+    _30 = icmp.sgt _28 _29
+    branch _30 ? bb15 : bb16
   bb15:
-    _29 = call_rt hew_vec_len(_19)
-    _30 = icmp.sgt _27 _29
-    branch _30 ? bb14 : bb16
+    trap(IndexOutOfBounds)
   bb16:
+    _31 = call_rt hew_vec_len(_21)
+    _32 = icmp.sgt _29 _31
+    branch _32 ? bb15 : bb17
+  bb17:
     stmt: bind BindingId(4) point_slice site=SiteId(39) ty=Vec<CheckedMirPoint>
     stmt: use BindingId(4) point_slice site=SiteId(46) ty=Vec<CheckedMirPoint> intent=Read
-    _31 = call_rt hew_vec_slice_range_layout(_19, _26, _27)
-    _32 = move _31
-    _33 = const.i64 1
-    _34 = call hew_vec_get_layout(_32, _33) [builtin=VecGet(Layout)] -> bb17
-  bb17:
-    _35 = _34.field[1]
-    call println_i64(_35) -> bb18
+    _33 = call_rt hew_vec_slice_range_layout(_21, _28, _29)
+    _34 = move _33
+    _35 = const.i64 1
+    _36 = call_rt hew_vec_len(_34)
+    _37 = icmp.uge _35 _36
+    branch _37 ? bb18 : bb19
   bb18:
+    trap(IndexOutOfBounds)
+  bb19:
+    _38 = call_rt hew_vec_get_layout(_34, _35)
+    _39 = _38.field[1]
+    call println_i64(_39) -> bb20
+  bb20:
     stmt: eval site=SiteId(43) ty=()
     return
 

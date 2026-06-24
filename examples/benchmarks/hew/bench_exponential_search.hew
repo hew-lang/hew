@@ -5,7 +5,7 @@ fn binary_search_range(v: Vec<i64>, target: i64, lo_in: i64, hi_in: i64) -> i64 
     var hi = hi_in;
     while lo <= hi {
         let mid = lo + (hi - lo) / 2;
-        let val = v.get(mid);
+        let val = v[mid];
         if val == target {
             return mid;
         }
@@ -23,12 +23,12 @@ fn exponential_search(v: Vec<i64>, target: i64) -> i64 {
     if n == 0 {
         return 0 - 1;
     }
-    if v.get(0) == target {
+    if v[0] == target {
         return 0;
     }
     var bound = 1;
     while bound < n {
-        if v.get(bound) >= target {
+        if v[bound] >= target {
             // Binary search in [bound/2, bound]
             return binary_search_range(v, target, bound / 2, bound);
         }

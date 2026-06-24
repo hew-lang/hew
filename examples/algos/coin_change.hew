@@ -16,16 +16,16 @@ fn main() {
     }
     for i in 1 .. amount + 1 {
         for j in 0 .. num_coins {
-            let c: i64 = coins.get(j) as i64;
+            let c: i64 = coins[j] as i64;
             if c <= i {
-                let prev = dp.get(i - c);
-                if prev + 1 < dp.get(i) {
+                let prev = dp[i - c];
+                if prev + 1 < dp[i] {
                     dp.set(i, prev + 1);
                 }
             }
         }
     }
-    let result = dp.get(amount);
+    let result = dp[amount];
     println(result);
     if result == 2 {
         println("PASS");

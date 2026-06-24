@@ -2660,6 +2660,78 @@ pub unsafe extern "C" fn hew_vec_get_owned(
     }
 }
 
+/// Indexed `Option<T>` getter — the trait-routed `Vec::get` choke point.
+///
+/// Bounds-checks `index`; on out-of-bounds (or negative) returns `false`
+/// leaving `out` untouched (the caller builds `None`). On success writes a
+/// FRESH OWNER of the element into `out` and returns `true` (the caller builds
+/// `Some(out)`). This is the single drop-safe Vec-get site: the payload handed
+/// to `Some` is always a freshly retained/cloned owner, never a borrow into the
+/// live buffer, so dropping the `Option` balances exactly one owner and never
+/// double-frees the element the Vec still holds (`by-value-heap-params-are-borrows`
+/// P0 — the whole reason this lane exists).
+///
+/// Element-class dispatch (exhaustive, fail-closed — GAP-2):
+/// - `String` → `retain_string_element` (refcount bump), write the retained ptr.
+/// - owned (`elem_layout` non-null) → memcpy the slot bytes then run `clone_fn`
+///   (deep-copy the owned heap; the clone-fn contract requires the memcpy first
+///   so `BitCopy` fields / enum tag bytes are correct before the deep copy).
+/// - otherwise (scalar / `BitCopy` `layout` / `Copy` handle) → memcpy
+///   `elem_size` bytes (the bits ARE a fresh owner for these classes; no
+///   borrowing `hew_vec_get_ptr` ever participates).
+///
+/// # Safety
+///
+/// `v` must be a valid `HewVec`. `out` must point to at least the element's
+/// size in writable, properly aligned bytes (the `Option` payload slot).
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_get_clone(
+    v: *const HewVec,
+    index: i64,
+    out: *mut core::ffi::c_void,
+) -> bool {
+    cabi_guard!(v.is_null() || out.is_null(), false);
+    // SAFETY: guards reject null pointers.
+    unsafe {
+        if index < 0 || index as usize >= (*v).len {
+            return false;
+        }
+        let idx = index as usize;
+        match (*v).elem_kind {
+            ElemKind::String => {
+                let raw = (*v).data.cast::<*const c_char>().add(idx).read();
+                let retained = retain_string_element(raw);
+                out.cast::<*mut c_char>().write(retained);
+            }
+            ElemKind::Plain => {
+                if (*v).elem_layout.is_null() {
+                    // scalar / BitCopy / Copy handle: the bits are a fresh owner.
+                    let elem_size = (*v).elem_size;
+                    let src = (*v).data.add(idx * elem_size);
+                    core::ptr::copy_nonoverlapping(src, out.cast::<u8>(), elem_size);
+                } else {
+                    // owned element: memcpy then deep-clone the owned heap.
+                    let layout = owned_descriptor(v);
+                    let elem_size = layout.size;
+                    let clone_fn = owned_clone_fn(layout);
+                    let src = (*v).data.add(idx * elem_size);
+                    core::ptr::copy_nonoverlapping(src, out.cast::<u8>(), elem_size);
+                    let status = clone_fn(src.cast::<core::ffi::c_void>(), out);
+                    if status != 0 {
+                        // The clone thunk rolled back its partial work; the
+                        // payload is not live. Fail closed rather than hand a
+                        // half-cloned element to `Some`.
+                        let msg = b"PANIC: Vec owned element clone failed (get)\n\0";
+                        write_stderr(&msg[..msg.len() - 1]);
+                        libc::abort();
+                    }
+                }
+            }
+        }
+        true
+    }
+}
+
 /// Overwrite an owned element: drop the old element (descriptor `drop_fn`),
 /// then deep-copy the new one in (`clone_fn`). Aborts on out-of-bounds.
 ///

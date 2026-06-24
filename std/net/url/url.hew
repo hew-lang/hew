@@ -161,7 +161,7 @@ fn encode_impl(s: string) -> string {
     let data = s.to_bytes();
     var out = "";
     for i in 0 .. data.len() {
-        let b = data.get(i);
+        let b = data[i];
         if is_unreserved_byte(b) {
             out = out + s.slice(i, i + 1);
         } else {
@@ -194,12 +194,12 @@ fn decode_impl(s: string) -> string {
     let out: bytes = bytes::new();
     var i = 0;
     while i < data.len() {
-        let b = data.get(i);
+        let b = data[i];
         if b == 37 && i + 2 < data.len() {
             // '%' followed by two hex digits decodes to one byte; anything
             // else passes through literally.
-            let hi = hex_nibble(data.get(i + 1));
-            let lo = hex_nibble(data.get(i + 2));
+            let hi = hex_nibble(data[i + 1]);
+            let lo = hex_nibble(data[i + 2]);
             if hi >= 0 && lo >= 0 {
                 out.push((hi * 16 + lo) as u8);
                 i = i + 3;
@@ -224,9 +224,9 @@ fn valid_percent_utf8(data: bytes) -> bool {
     var i = 0;
     while i < data.len() {
         var decoded = -1 as i32;
-        if data.get(i) == 37 && i + 2 < data.len() {
-            let hi = hex_nibble(data.get(i + 1));
-            let lo = hex_nibble(data.get(i + 2));
+        if data[i] == 37 && i + 2 < data.len() {
+            let hi = hex_nibble(data[i + 1]);
+            let lo = hex_nibble(data[i + 2]);
             if hi >= 0 && lo >= 0 {
                 decoded = hi * 16 + lo;
             }
@@ -303,7 +303,7 @@ fn encode_query_impl(params: string) -> string {
     let encoded: Vec<string> = Vec::new();
     let lines = string.lines(params);
     for i in 0 .. lines.len() {
-        let line = lines.get(i);
+        let line = lines[i];
         let eq = line.find("=");
         if eq >= 0 {
             let key = line.slice(0, eq);

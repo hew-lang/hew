@@ -5,10 +5,10 @@ fn sentinel_search(v: Vec<i64>, target: i64) -> i64 {
     if n == 0 {
         return 0 - 1;
     }
-    let last = v.get(n - 1);
+    let last = v[n - 1];
     v.set(n - 1, target);
     var i = 0;
-    while v.get(i) != target {
+    while v[i] != target {
         i = i + 1;
     }
     v.set(n - 1, last);

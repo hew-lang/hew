@@ -21,12 +21,12 @@ fn sorted_insert(positions: Vec<i64>, nodes: Vec<i64>, pos: i64, node_id: i64) {
     // Find insertion point
     var insert_at = len;
     for i in 0 .. len {
-        if positions.get(i) > pos {
+        if positions[i] > pos {
             insert_at = i;
             // break out by setting i to len (no break in for)
             return sorted_insert_at(positions, nodes, pos, node_id, insert_at);
         }
-        if positions.get(i) == pos {
+        if positions[i] == pos {
             // Duplicate position, skip
             return;
         }
@@ -42,8 +42,8 @@ fn sorted_insert_at(positions: Vec<i64>, nodes: Vec<i64>, pos: i64, node_id: i64
     // Shift elements right
     var j = len;
     while j > insert_at {
-        positions.set(j, positions.get(j - 1));
-        nodes.set(j, nodes.get(j - 1));
+        positions.set(j, positions[j - 1]);
+        nodes.set(j, nodes[j - 1]);
         j = j - 1;
     }
     positions.set(insert_at, pos);
@@ -62,9 +62,9 @@ fn remove_node(positions: Vec<i64>, nodes: Vec<i64>, node_id: i64) {
     let len = positions.len();
     var write = 0;
     for read in 0 .. len {
-        if nodes.get(read) != node_id {
-            positions.set(write, positions.get(read));
-            nodes.set(write, nodes.get(read));
+        if nodes[read] != node_id {
+            positions.set(write, positions[read]);
+            nodes.set(write, nodes[read]);
             write = write + 1;
         }
     }
@@ -85,12 +85,12 @@ fn lookup(positions: Vec<i64>, nodes: Vec<i64>, key: i64, ring_size: i64) -> i64
     let pos = hash_pos(key, ring_size);
     // Find first position >= pos (binary-like scan)
     for i in 0 .. len {
-        if positions.get(i) >= pos {
-            return nodes.get(i);
+        if positions[i] >= pos {
+            return nodes[i];
         }
     }
     // Wrap around to first node
-    nodes.get(0)
+    nodes[0]
 }
 
 fn main() {
@@ -175,7 +175,7 @@ fn main() {
     for k in 0 .. num_keys {
         let key = k * 37;
         let new_node = lookup(positions, nodes, key, ring_size);
-        let old_node = before.get(k);
+        let old_node = before[k];
         if new_node == old_node {
             same_count = same_count + 1;
         }

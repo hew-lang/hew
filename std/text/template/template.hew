@@ -142,8 +142,8 @@ fn template_error_message(e: TemplateError) -> string {
 fn lookup_scalar(ctx: Ctx, key: string) -> string {
     let n = ctx.skeys.len();
     for i in 0 .. n {
-        if ctx.skeys.get(i) == key {
-            return ctx.svals.get(i);
+        if ctx.skeys[i] == key {
+            return ctx.svals[i];
         }
     }
     ""
@@ -157,8 +157,8 @@ fn is_truthy(ctx: Ctx, key: string) -> bool {
 fn lookup_list_start(ctx: Ctx, key: string) -> i64 {
     let n = ctx.lkeys.len();
     for i in 0 .. n {
-        if ctx.lkeys.get(i) == key {
-            return ctx.lstart.get(i);
+        if ctx.lkeys[i] == key {
+            return ctx.lstart[i];
         }
     }
     -1
@@ -167,8 +167,8 @@ fn lookup_list_start(ctx: Ctx, key: string) -> i64 {
 fn lookup_list_len(ctx: Ctx, key: string) -> i64 {
     let n = ctx.lkeys.len();
     for i in 0 .. n {
-        if ctx.lkeys.get(i) == key {
-            return ctx.llen.get(i);
+        if ctx.lkeys[i] == key {
+            return ctx.llen[i];
         }
     }
     0
@@ -334,7 +334,7 @@ fn consume_range_body(tmpl: string, start: i64, tlen: i64, ctx: Ctx, key: string
     var out = "";
     if list_start >= 0 {
         for i in 0 .. list_len {
-            let elem = ctx.litems.get(list_start + i);
+            let elem = ctx.litems[list_start + i];
             let rendered = render_segment(body, ctx, elem, true);
             match rendered {
                 Ok(s) => {
@@ -433,7 +433,7 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
         let open = rest.find("{{");
         if open < 0 {
             if stack.len() > 0 {
-                let top = stack.get(stack.len() - 1);
+                let top = stack[stack.len() - 1];
                 return Err(unclosed_block_error(top));
             }
             return Ok(0);
@@ -459,7 +459,7 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
             if stack.len() == 0 {
                 return Err(TemplateError::UnexpectedTag("template: unexpected `{{else}}`"));
             }
-            let top = stack.get(stack.len() - 1);
+            let top = stack[stack.len() - 1];
             if top != "if" {
                 return Err(TemplateError::UnexpectedTag("template: unexpected `{{else}}`"));
             }
@@ -476,7 +476,7 @@ fn validate(tmpl: string) -> Result<i64, TemplateError> {
         }
     }
     if stack.len() > 0 {
-        let top = stack.get(stack.len() - 1);
+        let top = stack[stack.len() - 1];
         Err(unclosed_block_error(top))
     } else {
         Ok(0)
@@ -594,7 +594,7 @@ pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
     ctx.lstart.push(start);
     ctx.llen.push(n);
     for i in 0 .. n {
-        ctx.litems.push(items.get(i));
+        ctx.litems.push(items[i]);
     }
 }
 

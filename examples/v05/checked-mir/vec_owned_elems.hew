@@ -22,23 +22,22 @@ fn main() {
     names.push("grace");
     let who = names[1];
     println(who);
-    println(names.get(0));
+    println(names[0]);
     let tail = names[1..3];
     println(tail.len());
-    for i in 0 .. names.len() {
-        let n = names.get(i);
+    for n in names {
         println(n);
     }
     let pts: Vec<Point> = Vec::new();
     pts.push(Point { x: 1, y: 2 });
     pts.push(Point { x: 3, y: 4 });
-    let p = pts.get(1);
+    let p = pts[1];
     println(p.x);
     let tags: Vec<Tag> = Vec::new();
     tags.push(Tag { name: "a", n: 1 });
     tags.push(Tag { name: "b", n: 2 });
-    let t = tags.get(0);
+    let t = tags[0];
     println(t.n);
     let tail_tags = tags[1..2];
-    println(tail_tags.get(0).n);
+    println(tail_tags[0].n);
 }

@@ -67,14 +67,14 @@ fn main() {
     expected.push(5);
     var pass = true;
     for i in 0 .. total {
-        if mat.get(i) != expected.get(i) {
+        if mat[i] != expected[i] {
             pass = false;
             println("FAIL at index:");
             println(i);
             println("expected:");
-            println(expected.get(i));
+            println(expected[i]);
             println("got:");
-            println(mat.get(i));
+            println(mat[i]);
         }
     }
     if pass {

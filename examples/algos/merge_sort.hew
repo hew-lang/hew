@@ -20,24 +20,24 @@ fn merge_sort(v: Vec<i64>) {
                     var j = mid;
                     while i < mid {
                         if j < end {
-                            if v.get(i) <= v.get(j) {
-                                aux.push(v.get(i));
+                            if v[i] <= v[j] {
+                                aux.push(v[i]);
                                 i = i + 1;
                             } else {
-                                aux.push(v.get(j));
+                                aux.push(v[j]);
                                 j = j + 1;
                             }
                         } else {
-                            aux.push(v.get(i));
+                            aux.push(v[i]);
                             i = i + 1;
                         }
                     }
                     while j < end {
-                        aux.push(v.get(j));
+                        aux.push(v[j]);
                         j = j + 1;
                     }
                     for k in 0 .. aux.len() {
-                        v.set(start + k, aux.get(k));
+                        v.set(start + k, aux[k]);
                     }
                     start = start + width + width;
                 }
@@ -53,7 +53,7 @@ fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
     }
     var i = 0;
     while i < a.len() {
-        if a.get(i) != b.get(i) {
+        if a[i] != b[i] {
             return 0;
         }
         i = i + 1;

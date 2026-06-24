@@ -19,7 +19,7 @@ fn fibonacci_search(v: Vec<i64>, target: i64) -> i64 {
         if i >= n - 1 {
             i = n - 1;
         }
-        let val = v.get(i);
+        let val = v[i];
         if val < target {
             fib = fib1;
             fib1 = fib2;
@@ -37,7 +37,7 @@ fn fibonacci_search(v: Vec<i64>, target: i64) -> i64 {
     }
     if fib1 == 1 {
         if offset + 1 < n {
-            if v.get(offset + 1) == target {
+            if v[offset + 1] == target {
                 return offset + 1;
             }
         }

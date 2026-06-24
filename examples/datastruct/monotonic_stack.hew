@@ -16,7 +16,7 @@ fn stack_pop(s: Vec<i64>) -> i64 {
 }
 
 fn stack_peek(s: Vec<i64>) -> i64 {
-    s.get(s.len() - 1)
+    s[s.len() - 1]
 }
 
 fn stack_is_empty(s: Vec<i64>) -> bool {
@@ -38,11 +38,11 @@ fn next_greater_element(arr: Vec<i64>) -> Vec<i64> {
     }
     let stk = stack_new();
     for i in 0 .. n {
-        let val = arr.get(i);
+        let val = arr[i];
         // Pop all indices whose values are less than current
         while !stack_is_empty(stk) {
             let top_idx = stack_peek(stk);
-            if arr.get(top_idx) < val {
+            if arr[top_idx] < val {
                 stack_pop(stk);
                 result.set(top_idx, val);
             } else {
@@ -131,19 +131,19 @@ fn main() {
     arr.push(8);
     let nge = next_greater_element(arr);
     var nge_ok = 1;
-    if nge.get(0) != 5 {
+    if nge[0] != 5 {
         nge_ok = 0;
     }
-    if nge.get(1) != 10 {
+    if nge[1] != 10 {
         nge_ok = 0;
     }
-    if nge.get(2) != 10 {
+    if nge[2] != 10 {
         nge_ok = 0;
     }
-    if nge.get(3) != 0 - 1 {
+    if nge[3] != 0 - 1 {
         nge_ok = 0;
     }
-    if nge.get(4) != 0 - 1 {
+    if nge[4] != 0 - 1 {
         nge_ok = 0;
     }
     if nge_ok == 1 {
@@ -164,19 +164,19 @@ fn main() {
     arr2.push(5);
     let nge2 = next_greater_element(arr2);
     var nge2_ok = 1;
-    if nge2.get(0) != 2 {
+    if nge2[0] != 2 {
         nge2_ok = 0;
     }
-    if nge2.get(1) != 3 {
+    if nge2[1] != 3 {
         nge2_ok = 0;
     }
-    if nge2.get(2) != 4 {
+    if nge2[2] != 4 {
         nge2_ok = 0;
     }
-    if nge2.get(3) != 5 {
+    if nge2[3] != 5 {
         nge2_ok = 0;
     }
-    if nge2.get(4) != 0 - 1 {
+    if nge2[4] != 0 - 1 {
         nge2_ok = 0;
     }
     if nge2_ok == 1 {
@@ -198,7 +198,7 @@ fn main() {
     let nge3 = next_greater_element(arr3);
     var nge3_ok = 1;
     for i in 0 .. 5 {
-        if nge3.get(i) != 0 - 1 {
+        if nge3[i] != 0 - 1 {
             nge3_ok = 0;
         }
     }
@@ -213,7 +213,7 @@ fn main() {
     let arr4: Vec<i64> = Vec::new();
     arr4.push(42);
     let nge4 = next_greater_element(arr4);
-    if nge4.get(0) == 0 - 1 {
+    if nge4[0] == 0 - 1 {
         println("PASS: NGE single");
         passed = passed + 1;
     } else {
@@ -230,7 +230,7 @@ fn main() {
     let nge5 = next_greater_element(arr5);
     var nge5_ok = 1;
     for i in 0 .. 3 {
-        if nge5.get(i) != 0 - 1 {
+        if nge5[i] != 0 - 1 {
             nge5_ok = 0;
         }
     }

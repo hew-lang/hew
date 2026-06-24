@@ -8,23 +8,23 @@
 
 // Node field offsets
 fn node_left(nodes: Vec<i64>, node: i64) -> i64 {
-    nodes.get(node * 5)
+    nodes[node * 5]
 }
 
 fn node_right(nodes: Vec<i64>, node: i64) -> i64 {
-    nodes.get(node * 5 + 1)
+    nodes[node * 5 + 1]
 }
 
 fn node_weight(nodes: Vec<i64>, node: i64) -> i64 {
-    nodes.get(node * 5 + 2)
+    nodes[node * 5 + 2]
 }
 
 fn node_data_start(nodes: Vec<i64>, node: i64) -> i64 {
-    nodes.get(node * 5 + 3)
+    nodes[node * 5 + 3]
 }
 
 fn node_data_len(nodes: Vec<i64>, node: i64) -> i64 {
-    nodes.get(node * 5 + 4)
+    nodes[node * 5 + 4]
 }
 
 fn is_leaf(nodes: Vec<i64>, node: i64) -> bool {
@@ -70,7 +70,7 @@ fn rope_length(nodes: Vec<i64>, node: i64) -> i64 {
 fn rope_index(nodes: Vec<i64>, data: Vec<i64>, node: i64, idx: i64) -> i64 {
     if is_leaf(nodes, node) {
         let start = node_data_start(nodes, node);
-        data.get(start + idx)
+        data[start + idx]
     } else {
         let w = node_weight(nodes, node);
         if idx < w {
@@ -92,7 +92,7 @@ fn rope_collect(nodes: Vec<i64>, data: Vec<i64>, node: i64, result: Vec<i64>) ->
         let start = node_data_start(nodes, node);
         let len = node_data_len(nodes, node);
         for i in 0 .. len {
-            result.push(data.get(start + i));
+            result.push(data[start + i]);
         }
         return 0;
     }
@@ -226,7 +226,7 @@ fn main() {
     if col_ok == 1 {
         for i in 0 .. 8 {
             let expected = (i + 1) * 10;
-            if collected.get(i) != expected {
+            if collected[i] != expected {
                 col_ok = 0;
             }
         }

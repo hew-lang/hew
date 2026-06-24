@@ -2,7 +2,7 @@
 fn linear_search(arr: Vec<i64>, target: i64) -> i64 {
     var i = 0;
     while i < arr.len() {
-        if arr.get(i) == target {
+        if arr[i] == target {
             return i;
         }
         i = i + 1;

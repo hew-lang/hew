@@ -9,18 +9,18 @@ fn floyd_warshall(n: i64, edge_src: Vec<i64>, edge_dst: Vec<i64>, edge_wt: Vec<i
         dist.set(i * n + i, 0);
     }
     for e in 0 .. num_edges {
-        let u = edge_src.get(e);
-        let v = edge_dst.get(e);
-        let w = edge_wt.get(e);
-        if w < dist.get(u * n + v) {
+        let u = edge_src[e];
+        let v = edge_dst[e];
+        let w = edge_wt[e];
+        if w < dist[u * n + v] {
             dist.set(u * n + v, w);
         }
     }
     for k in 0 .. n {
         for i in 0 .. n {
             for j in 0 .. n {
-                let through_k = dist.get(i * n + k) + dist.get(k * n + j);
-                if through_k < dist.get(i * n + j) {
+                let through_k = dist[i * n + k] + dist[k * n + j];
+                if through_k < dist[i * n + j] {
                     dist.set(i * n + j, through_k);
                 }
             }
@@ -29,7 +29,7 @@ fn floyd_warshall(n: i64, edge_src: Vec<i64>, edge_dst: Vec<i64>, edge_wt: Vec<i
     var sum = 0;
     for i in 0 .. n {
         for j in 0 .. n {
-            let d = dist.get(i * n + j);
+            let d = dist[i * n + j];
             if d < INF {
                 sum = sum + d;
             }

@@ -14,7 +14,7 @@ fn sieve(n: i64) -> Vec<i64> {
     // Sieve
     var p = 2;
     while p * p <= n {
-        if is_prime.get(p) == 1 {
+        if is_prime[p] == 1 {
             var j = p * p;
             while j <= n {
                 is_prime.set(j, 0);
@@ -28,8 +28,8 @@ fn sieve(n: i64) -> Vec<i64> {
 
 fn count_primes(flags: Vec<i64>) -> i64 {
     var count = 0;
-    for i in 0 .. flags.len() {
-        if flags.get(i) == 1 {
+    for flag in flags {
+        if flag == 1 {
             count = count + 1;
         }
     }
@@ -60,21 +60,21 @@ fn main() {
 
     // Check specific primes
     total = total + 1;
-    passed = passed + check("2 is prime", flags.get(2), 1);
+    passed = passed + check("2 is prime", flags[2], 1);
     total = total + 1;
-    passed = passed + check("3 is prime", flags.get(3), 1);
+    passed = passed + check("3 is prime", flags[3], 1);
     total = total + 1;
-    passed = passed + check("5 is prime", flags.get(5), 1);
+    passed = passed + check("5 is prime", flags[5], 1);
     total = total + 1;
-    passed = passed + check("97 is prime", flags.get(97), 1);
+    passed = passed + check("97 is prime", flags[97], 1);
 
     // Check specific composites
     total = total + 1;
-    passed = passed + check("4 is not prime", flags.get(4), 0);
+    passed = passed + check("4 is not prime", flags[4], 0);
     total = total + 1;
-    passed = passed + check("9 is not prime", flags.get(9), 0);
+    passed = passed + check("9 is not prime", flags[9], 0);
     total = total + 1;
-    passed = passed + check("100 is not prime", flags.get(100), 0);
+    passed = passed + check("100 is not prime", flags[100], 0);
     println("---");
     print("Passed: ");
     print(passed);

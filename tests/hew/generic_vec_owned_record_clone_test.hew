@@ -22,8 +22,8 @@ fn test_clone_vec_of_owned_records_copies_fields() {
     let ys = xs.clone();
 
     testing.assert_eq(ys.len(), 2);
-    let a = ys.get(0);
-    let b = ys.get(1);
+    let a = ys[0];
+    let b = ys[1];
     testing.assert_eq_str(a.name, "alpha");
     testing.assert_eq(a.n, 10);
     testing.assert_eq_str(b.name, "beta");
@@ -41,7 +41,7 @@ fn test_clone_vec_of_owned_records_is_independent() {
 
     testing.assert_eq(xs.len(), 1);
     testing.assert_eq(ys.len(), 2);
-    let extra = ys.get(1);
+    let extra = ys[1];
     testing.assert_eq_str(extra.name, "extra");
     testing.assert_eq(extra.n, 2);
 }

@@ -180,7 +180,7 @@
               ],
               "dst": "local:main.11",
               "op": "local.get",
-              "span": "span:132-138"
+              "span": "span:130-136"
             },
             {
               "args": [
@@ -191,7 +191,7 @@
               ],
               "dst": "local:main.12",
               "op": "const.i64",
-              "span": "span:143-144"
+              "span": "span:141-142"
             },
             {
               "args": [
@@ -206,7 +206,117 @@
               ],
               "dst": "local:main.13",
               "op": "vector.get",
-              "span": "span:132-145"
+              "span": "span:130-144"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.13"
+                }
+              ],
+              "dst": "local:main.15",
+              "op": "enum.tag",
+              "span": "span:130-144"
+            }
+          ],
+          "params": [],
+          "span": null,
+          "terminator": {
+            "args": [],
+            "op": "br",
+            "span": "span:124-212",
+            "target": "block:main.match_check_0.2"
+          }
+        },
+        {
+          "id": "block:main.match_exit.1",
+          "instructions": [],
+          "params": [],
+          "span": "span:124-212",
+          "terminator": {
+            "args": [
+              {
+                "kind": "local",
+                "value": "local:main.14"
+              }
+            ],
+            "op": "return",
+            "span": "span:0-213"
+          }
+        },
+        {
+          "id": "block:main.match_check_0.2",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ],
+              "dst": "local:main.16",
+              "op": "const.i64",
+              "span": "span:154-162"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.15"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.16"
+                }
+              ],
+              "dst": "local:main.17",
+              "op": "cmp.eq",
+              "span": "span:154-162"
+            }
+          ],
+          "params": [],
+          "span": "span:154-162",
+          "terminator": {
+            "args": [],
+            "condition": {
+              "kind": "local",
+              "value": "local:main.17"
+            },
+            "else_target": "block:main.match_check_1.4",
+            "op": "br_if",
+            "span": "span:154-162",
+            "target": "block:main.match_arm_0.3"
+          }
+        },
+        {
+          "id": "block:main.match_arm_0.3",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.13"
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ],
+              "dst": "local:main.18",
+              "op": "enum.payload",
+              "span": "span:159-160"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.18"
+                }
+              ],
+              "dst": "local:main.19",
+              "op": "local.get",
+              "span": "span:173-174"
             },
             {
               "args": [
@@ -216,37 +326,157 @@
                 },
                 {
                   "kind": "local",
-                  "value": "local:main.13"
+                  "value": "local:main.19"
                 }
               ],
               "dst": null,
               "op": "call.stdlib",
-              "span": "span:124-146"
+              "span": "span:165-175"
             },
             {
               "args": [],
-              "dst": "local:main.14",
+              "dst": "local:main.20",
               "op": "const.unit",
-              "span": "span:124-146"
+              "span": "span:165-175"
             },
             {
-              "args": [],
-              "dst": "local:main.15",
-              "op": "const.unit",
-              "span": "span:0-149"
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.14"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.20"
+                }
+              ],
+              "dst": null,
+              "op": "local.set",
+              "span": "span:165-175"
             }
           ],
           "params": [],
-          "span": null,
+          "span": "span:165-175",
           "terminator": {
-            "args": [
-              {
-                "kind": "local",
-                "value": "local:main.15"
-              }
-            ],
-            "op": "return",
-            "span": "span:0-149"
+            "args": [],
+            "op": "br",
+            "span": "span:165-175",
+            "target": "block:main.match_exit.1"
+          }
+        },
+        {
+          "id": "block:main.match_check_1.4",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 1
+                }
+              ],
+              "dst": "local:main.21",
+              "op": "const.i64",
+              "span": "span:185-190"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.15"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.21"
+                }
+              ],
+              "dst": "local:main.22",
+              "op": "cmp.eq",
+              "span": "span:185-190"
+            }
+          ],
+          "params": [],
+          "span": "span:185-190",
+          "terminator": {
+            "args": [],
+            "condition": {
+              "kind": "local",
+              "value": "local:main.22"
+            },
+            "else_target": "block:main.match_arm_1.5",
+            "op": "br_if",
+            "span": "span:185-190",
+            "target": "block:main.match_arm_1.5"
+          }
+        },
+        {
+          "id": "block:main.match_arm_1.5",
+          "instructions": [
+            {
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 1
+                }
+              ],
+              "dst": "local:main.23",
+              "op": "const.i64",
+              "span": "span:202-203"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.23"
+                }
+              ],
+              "dst": "local:main.24",
+              "op": "i64.neg",
+              "span": "span:201-203"
+            },
+            {
+              "args": [
+                {
+                  "kind": "symbol",
+                  "value": "sym:core.stdout.println"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.24"
+                }
+              ],
+              "dst": null,
+              "op": "call.stdlib",
+              "span": "span:193-204"
+            },
+            {
+              "args": [],
+              "dst": "local:main.25",
+              "op": "const.unit",
+              "span": "span:193-204"
+            },
+            {
+              "args": [
+                {
+                  "kind": "local",
+                  "value": "local:main.14"
+                },
+                {
+                  "kind": "local",
+                  "value": "local:main.25"
+                }
+              ],
+              "dst": null,
+              "op": "local.set",
+              "span": "span:193-204"
+            }
+          ],
+          "params": [],
+          "span": "span:193-204",
+          "terminator": {
+            "args": [],
+            "op": "br",
+            "span": "span:193-204",
+            "target": "block:main.match_exit.1"
           }
         }
       ],
@@ -333,35 +563,105 @@
           "id": "local:main.11",
           "mutable": false,
           "name": null,
-          "span": "span:132-138",
+          "span": "span:130-136",
           "type": "type:Vec.type.i64"
         },
         {
           "id": "local:main.12",
           "mutable": false,
           "name": null,
-          "span": "span:143-144",
+          "span": "span:141-142",
           "type": "type:i64"
         },
         {
           "id": "local:main.13",
           "mutable": false,
           "name": null,
-          "span": "span:132-145",
-          "type": "type:i64"
+          "span": "span:130-144",
+          "type": "type:Option.type.i64"
         },
         {
           "id": "local:main.14",
-          "mutable": false,
+          "mutable": true,
           "name": null,
-          "span": "span:124-146",
+          "span": "span:124-212",
           "type": "type:unit"
         },
         {
           "id": "local:main.15",
           "mutable": false,
           "name": null,
-          "span": "span:0-149",
+          "span": "span:130-144",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.16",
+          "mutable": false,
+          "name": null,
+          "span": "span:154-162",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.17",
+          "mutable": false,
+          "name": null,
+          "span": "span:154-162",
+          "type": "type:bool"
+        },
+        {
+          "id": "local:main.18",
+          "mutable": false,
+          "name": "v",
+          "span": "span:159-160",
+          "type": "type:unit"
+        },
+        {
+          "id": "local:main.19",
+          "mutable": false,
+          "name": null,
+          "span": "span:173-174",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.20",
+          "mutable": false,
+          "name": null,
+          "span": "span:165-175",
+          "type": "type:unit"
+        },
+        {
+          "id": "local:main.21",
+          "mutable": false,
+          "name": null,
+          "span": "span:185-190",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.22",
+          "mutable": false,
+          "name": null,
+          "span": "span:185-190",
+          "type": "type:bool"
+        },
+        {
+          "id": "local:main.23",
+          "mutable": false,
+          "name": null,
+          "span": "span:202-203",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.24",
+          "mutable": false,
+          "name": null,
+          "span": "span:201-203",
+          "type": "type:i64"
+        },
+        {
+          "id": "local:main.25",
+          "mutable": false,
+          "name": null,
+          "span": "span:193-204",
           "type": "type:unit"
         }
       ],
@@ -369,7 +669,7 @@
       "name": "main",
       "params": [],
       "result": "type:unit",
-      "span": "span:0-149"
+      "span": "span:0-213"
     }
   ],
   "hew_version": "0.5.6",
@@ -389,6 +689,14 @@
         "id": "type:LocalPid",
         "kind": "record",
         "name": "LocalPid"
+      },
+      {
+        "id": "type:Option.type.i64",
+        "kind": "record",
+        "name": "Option",
+        "parameters": [
+          "type:i64"
+        ]
       },
       {
         "id": "type:RemotePid",
@@ -484,13 +792,13 @@
       }
     ]
   },
-  "package_id": "pkg:bc7a6020ba57273b",
+  "package_id": "pkg:54088d524674cc71",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {
     "sources": [
       {
-        "content_sha256": "95c1ce5010aa10515514c68d56df09ebf40c0d4b17abbb4ad9e91ea1136d6991",
+        "content_sha256": "5b3437fdfc2c9ef3d71c8111cdb3c021a848ff2ad22b4ac5a543d340dc01c278",
         "id": "src:main",
         "path": "main.hew"
       }
@@ -498,11 +806,11 @@
     "spans": [
       {
         "end": {
-          "byte_offset": 149,
+          "byte_offset": 213,
           "column": 2,
-          "line": 7
+          "line": 10
         },
-        "id": "span:0-149",
+        "id": "span:0-213",
         "source_id": "src:main",
         "start": {
           "byte_offset": 0,
@@ -680,11 +988,11 @@
       },
       {
         "end": {
-          "byte_offset": 146,
-          "column": 27,
-          "line": 6
+          "byte_offset": 212,
+          "column": 1,
+          "line": 10
         },
-        "id": "span:124-146",
+        "id": "span:124-212",
         "source_id": "src:main",
         "start": {
           "byte_offset": 124,
@@ -694,29 +1002,15 @@
       },
       {
         "end": {
-          "byte_offset": 138,
-          "column": 19,
+          "byte_offset": 136,
+          "column": 17,
           "line": 6
         },
-        "id": "span:132-138",
+        "id": "span:130-136",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 132,
-          "column": 13,
-          "line": 6
-        }
-      },
-      {
-        "end": {
-          "byte_offset": 145,
-          "column": 26,
-          "line": 6
-        },
-        "id": "span:132-145",
-        "source_id": "src:main",
-        "start": {
-          "byte_offset": 132,
-          "column": 13,
+          "byte_offset": 130,
+          "column": 11,
           "line": 6
         }
       },
@@ -726,12 +1020,138 @@
           "column": 25,
           "line": 6
         },
-        "id": "span:143-144",
+        "id": "span:130-144",
         "source_id": "src:main",
         "start": {
-          "byte_offset": 143,
-          "column": 24,
+          "byte_offset": 130,
+          "column": 11,
           "line": 6
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 142,
+          "column": 23,
+          "line": 6
+        },
+        "id": "span:141-142",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 141,
+          "column": 22,
+          "line": 6
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 162,
+          "column": 17,
+          "line": 7
+        },
+        "id": "span:154-162",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 154,
+          "column": 9,
+          "line": 7
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 160,
+          "column": 15,
+          "line": 7
+        },
+        "id": "span:159-160",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 159,
+          "column": 14,
+          "line": 7
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 175,
+          "column": 30,
+          "line": 7
+        },
+        "id": "span:165-175",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 165,
+          "column": 20,
+          "line": 7
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 174,
+          "column": 29,
+          "line": 7
+        },
+        "id": "span:173-174",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 173,
+          "column": 28,
+          "line": 7
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 190,
+          "column": 14,
+          "line": 8
+        },
+        "id": "span:185-190",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 185,
+          "column": 9,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 204,
+          "column": 28,
+          "line": 8
+        },
+        "id": "span:193-204",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 193,
+          "column": 17,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 203,
+          "column": 27,
+          "line": 8
+        },
+        "id": "span:201-203",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 201,
+          "column": 25,
+          "line": 8
+        }
+      },
+      {
+        "end": {
+          "byte_offset": 203,
+          "column": 27,
+          "line": 8
+        },
+        "id": "span:202-203",
+        "source_id": "src:main",
+        "start": {
+          "byte_offset": 202,
+          "column": 26,
+          "line": 8
         }
       }
     ]

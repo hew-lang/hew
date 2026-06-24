@@ -418,6 +418,13 @@ run_accept_expect_status "isize_shift_boundary" 0
 run_accept_expect_trap "isize_div_by_zero_traps"
 run_accept_expect_trap "isize_shift_oob_traps"
 
+# Indexed-accessor trap negatives: `v[i]` on an out-of-bounds index traps
+# (IndexOutOfBounds) for every element class — the trapping `at` half of the
+# `Index<Idx>` model (the `get` half returns `None`). Same arch-dependent trap
+# signal (132/133) as the arithmetic trap negatives above.
+run_accept_expect_trap "vec_index_oob_traps"
+run_accept_expect_trap "vec_enum_index_oob_traps"
+
 # defer: basic (no effect on return), executes (exit override), LIFO, block scope
 run_accept_expect_status "defer_basic" 7
 run_accept_expect_status "defer_executes" 42

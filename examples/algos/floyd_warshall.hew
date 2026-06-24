@@ -30,8 +30,8 @@ fn main() {
     for k in 0 .. n {
         for i in 0 .. n {
             for j in 0 .. n {
-                let through_k = dist.get(i * n + k) + dist.get(k * n + j);
-                if through_k < dist.get(i * n + j) {
+                let through_k = dist[i * n + k] + dist[k * n + j];
+                if through_k < dist[i * n + j] {
                     dist.set(i * n + j, through_k);
                 }
             }
@@ -58,8 +58,8 @@ fn main() {
     var ok = 1;
     for i in 0 .. n {
         for j in 0 .. n {
-            let d = dist.get(i * n + j);
-            let e = expected.get(i * n + j);
+            let d = dist[i * n + j];
+            let e = expected[i * n + j];
             print(d);
             print(" ");
             if d != e {

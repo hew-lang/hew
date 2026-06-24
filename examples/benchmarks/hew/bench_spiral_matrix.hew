@@ -45,7 +45,7 @@ fn spiral_matrix(n: i64) -> i64 {
             }
         }
     }
-    return mat.get(0) + mat.get(total / 2) + mat.get(total - 1);
+    return mat[0] + mat[total / 2] + mat[total - 1];
 }
 
 const ITERS: i64 = 50000;

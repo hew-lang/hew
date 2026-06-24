@@ -2,8 +2,8 @@ fn bubble_sort(v: Vec<i64>) -> Vec<i64> {
     let n = v.len();
     for i in 0 .. n {
         for j in 0 .. n - 1 - i {
-            let a = v.get(j);
-            let b = v.get(j + 1);
+            let a = v[j];
+            let b = v[j + 1];
             if a > b {
                 v.set(j, b);
                 v.set(j + 1, a);

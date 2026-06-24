@@ -188,7 +188,12 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             "push" => desc(Some(1), &[Elem], Unit),
             "pop" => desc(Some(0), &[], RetElem),
             "len" => desc(None, &[], RetI64),
-            "get" => desc(Some(1), &[I64], RetElem),
+            // `get` is intentionally ABSENT: it is routed through the
+            // `Index<i64>` trait (`<Vec<T> as Index>::get -> Option<T>`) so the
+            // accessor model is uniform across collections. `check_vec_method`
+            // falls through to `try_dispatch_primitive_trait_method`, which
+            // projects `Option<T>` and records the `hew_vec_get_clone`
+            // intrinsic via the `index_get` lang-item seam.
             "remove" => desc(Some(1), &[I64], Unit),
             "is_empty" => desc(None, &[], Bool),
             "clear" => desc(Some(0), &[], Unit),
@@ -4280,6 +4285,55 @@ impl Checker {
         elem_ty: &Ty,
         span: &Span,
     ) -> Option<&'static str> {
+        // `get` is the trait-routed (`<Vec<T> as Index>::get`) accessor. Every
+        // ADMISSIBLE element class resolves to the SINGLE element-agnostic
+        // runtime choke point `hew_vec_get_clone`, which dispatches on the
+        // element descriptor at runtime and writes a FRESH OWNER into the
+        // `Option<T>` payload (the drop-safe Vec.get site —
+        // `by-value-heap-params-are-borrows` P0). One symbol covers every
+        // modelled element class, so `get` never needs the #1929 per-element /
+        // monomorphisation re-resolution. Admissibility is still gated below:
+        //   * function/closure elements own a heap-boxed environment the choke
+        //     point does not model — fail closed (GAP-2 parity-or-tracked-gap)
+        //     rather than aliasing a borrowed box into a `Some`;
+        //   * every other element flows through the normal per-element
+        //     resolution purely as the admissibility gate (an element it
+        //     rejects — `Rc`, unsupported layout — keeps failing closed), then
+        //     the resolved symbol is OVERRIDDEN to the choke point at the end.
+        if method == "get" {
+            let resolved_elem = self.subst.resolve(elem_ty);
+            if matches!(resolved_elem, Ty::Function { .. } | Ty::Closure { .. }) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "`Vec::get` on a function/closure element is not supported under \
+                     the `Option<T>` accessor model: the element owns a heap-boxed \
+                     closure environment that the fresh-owner get choke point does \
+                     not yet clone (tracked gap)"
+                        .to_string(),
+                );
+                return None;
+            }
+            // Run the per-element resolution as the admissibility gate; only on
+            // an admissible verdict (Some) do we route to the choke point.
+            let admissible = self.resolve_vec_element_runtime_symbol(method, &resolved_elem, span);
+            return admissible.map(|_| "hew_vec_get_clone");
+        }
+        self.resolve_vec_element_runtime_symbol(method, elem_ty, span)
+    }
+
+    /// Per-element `Vec<T>` runtime-symbol resolution (the legacy mapping:
+    /// `hew_vec_{method}_{i64,str,layout,owned,…}`). Used directly for every
+    /// element-typed Vec op EXCEPT `get`, which routes through the
+    /// element-agnostic `hew_vec_get_clone` choke point in
+    /// [`Self::resolve_vec_runtime_symbol`] but reuses this as its
+    /// admissibility gate.
+    fn resolve_vec_element_runtime_symbol(
+        &mut self,
+        method: &str,
+        elem_ty: &Ty,
+        span: &Span,
+    ) -> Option<&'static str> {
         if method == "join" {
             return matches!(elem_ty, Ty::String).then_some("hew_vec_join_str");
         }
@@ -4880,6 +4934,52 @@ impl Checker {
                     builtin: None,
                 }
             }
+            "get" => {
+                // Trait-routed `Index<i64>` accessor: `<Vec<T> as Index>::get
+                // -> Option<T>`. Dispatch is marked as the `Index` primitive
+                // trait impl and lowered to the element-agnostic
+                // `hew_vec_get_clone` intrinsic — the SINGLE fresh-owner choke
+                // point that writes a retained/cloned owner into the `Option`
+                // payload (drop-safe; `by-value-heap-params-are-borrows` P0).
+                // `get` is intentionally NOT in `collection_method_desc`: this
+                // explicit arm preserves the index-site widening ergonomic
+                // (i8/i16/i32 → i64) that the strict trait signature would
+                // otherwise reject.
+                self.check_arity(args, 1, "`Vec::get`", span);
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    let actual = self.synthesize(expr, sp);
+                    let resolved_idx = self.subst.resolve(&actual);
+                    // Accept i64 or any narrower signed int (widened at the
+                    // index site, identical to `[]`/`set`/`remove`); otherwise
+                    // run the normal i64 coercion (literals, error wording).
+                    if !Self::is_narrower_signed_int(&resolved_idx) {
+                        self.check_against(expr, sp, &Ty::I64);
+                    }
+                }
+                let resolved_elem = self.subst.resolve(&elem_ty);
+                // Rc elements are not tracked by the collection runtime; reject
+                // them with the same `UnsafeCollectionElement` diagnostic the
+                // collection-driver admission hook fired for the legacy get
+                // (fire-and-continue, matching history).
+                self.reject_rc_collection_element("Vec", &resolved_elem, span);
+                self.record_method_call_receiver_kind(
+                    span,
+                    MethodCallReceiverKind::PrimitiveTraitImpl {
+                        trait_name: "Index".to_string(),
+                        canonical_receiver: "Vec".to_string(),
+                    },
+                );
+                // Records the `hew_vec_get_clone` resolved call (the symbol
+                // override lives in `resolve_vec_runtime_symbol`). For
+                // function/closure elements `resolve_vec_runtime_symbol`
+                // fails closed (named GAP-2 gap) so no resolved call is
+                // recorded and HIR fails closed on the missing entry.
+                self.record_resolved_vec_call("get", &resolved_elem, span);
+                // `<Vec<T> as Index>::Output` is `T`, so the projected return
+                // is `Option<T>`.
+                Ty::option(resolved_elem)
+            }
             "contains" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
@@ -5270,10 +5370,21 @@ impl Checker {
                 return None;
             }
             let impl_params: HashSet<String> = sig.type_params.iter().cloned().collect();
+            // Snapshot `self.subst` around the applicability probe: a multi-arg
+            // `Self` (`HashMap<K, V>`) unifies each concrete arg into `self.subst`
+            // as it matches, but a LATER arg may reject the impl. Without the
+            // rollback an early concrete-arg unification would persist into the
+            // checker's substitution past a `None` reject — binding an inference
+            // var from an impl that does not actually apply. Restore on every
+            // non-match so the probe is side-effect-free (hardening per the
+            // A-general gate's non-blocking note).
+            let subst_snapshot = self.subst.snapshot();
             for (self_arg, receiver_arg) in self_args.iter().zip(receiver_args.iter()) {
                 if !self.match_self_arg_param(self_arg, receiver_arg, &impl_params, &mut subst) {
                     // `Self` does not structurally match the receiver — this impl
-                    // does not apply. Fail closed.
+                    // does not apply. Roll back any partial unification, then fail
+                    // closed.
+                    self.subst.restore(subst_snapshot);
                     return None;
                 }
             }
@@ -8695,7 +8806,10 @@ mod tests {
         assert_eq!(arity_of(CollectionKind::HashSet, "contains"), Some(1));
         assert_eq!(arity_of(CollectionKind::HashSet, "clone"), Some(0));
         assert_eq!(arity_of(CollectionKind::Vec, "push"), Some(1));
-        assert_eq!(arity_of(CollectionKind::Vec, "get"), Some(1));
+        // Vec `get` is no longer in the descriptor table: it is trait-routed
+        // (`<Vec<T> as Index>::get -> Option<T>`) and resolved through
+        // `try_dispatch_primitive_trait_method`, not the collection driver.
+        assert!(collection_method_desc(CollectionKind::Vec, "get").is_none());
         assert_eq!(arity_of(CollectionKind::Vec, "pop"), Some(0));
         assert_eq!(arity_of(CollectionKind::Vec, "clone"), Some(0));
     }
@@ -8722,9 +8836,10 @@ mod tests {
         assert_eq!(set_insert.arg_templates, &[ArgTemplate::Elem]);
         assert_eq!(set_insert.ret, RetTemplate::Bool);
 
-        let vec_get = collection_method_desc(CollectionKind::Vec, "get").unwrap();
-        assert_eq!(vec_get.arg_templates, &[ArgTemplate::I64]);
-        assert_eq!(vec_get.ret, RetTemplate::Elem);
+        // Vec `get` is intentionally absent from the descriptor table: the
+        // accessor is trait-routed through `Index<i64>` (see
+        // `descriptor_table_checked_arities`).
+        assert!(collection_method_desc(CollectionKind::Vec, "get").is_none());
 
         let vec_set = collection_method_desc(CollectionKind::Vec, "set").unwrap();
         assert_eq!(

@@ -6,12 +6,12 @@ fn catalan(n: i64) -> i64 {
     while i <= n {
         var sum = 0;
         for j in 0 .. i {
-            sum = sum + dp.get(j) * dp.get(i - 1 - j);
+            sum = sum + dp[j] * dp[i - 1 - j];
         }
         dp.push(sum);
         i = i + 1;
     }
-    dp.get(n)
+    dp[n]
 }
 
 fn check(name: string, got: i64, expected: i64) -> i64 {

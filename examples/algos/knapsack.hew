@@ -23,12 +23,12 @@ fn main() {
         dp.push(0);
     }
     for i in 1 .. rows {
-        let w: i32 = weights.get(i - 1);
-        let v: i32 = values.get(i - 1);
+        let w: i32 = weights[i - 1];
+        let v: i32 = values[i - 1];
         for j in 1 .. cols {
-            let exclude = dp.get((i - 1) * cols + j);
+            let exclude = dp[(i - 1) * cols + j];
             if w as i64 <= j {
-                let include = dp.get((i - 1) * cols + (j - w as i64)) + v;
+                let include = dp[(i - 1) * cols + (j - w as i64)] + v;
                 if include > exclude {
                     dp.set(i * cols + j, include);
                 } else {
@@ -39,7 +39,7 @@ fn main() {
             }
         }
     }
-    let result = dp.get(n * cols + capacity);
+    let result = dp[n * cols + capacity];
     println(result);
     if result == 7 {
         println("PASS");

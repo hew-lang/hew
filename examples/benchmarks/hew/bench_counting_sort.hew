@@ -3,10 +3,10 @@ fn counting_sort(v: Vec<i64>) -> Vec<i64> {
     if n == 0 {
         return v;
     }
-    var max_val = v.get(0);
+    var max_val = v[0];
     for i in 1 .. n {
-        if v.get(i) > max_val {
-            max_val = v.get(i);
+        if v[i] > max_val {
+            max_val = v[i];
         }
     }
     let count: Vec<i64> = Vec::new();
@@ -14,12 +14,12 @@ fn counting_sort(v: Vec<i64>) -> Vec<i64> {
         count.push(0);
     }
     for i in 0 .. n {
-        let val = v.get(i);
-        count.set(val, count.get(val) + 1);
+        let val = v[i];
+        count.set(val, count[val] + 1);
     }
     var pos = 0;
     for i in 0 .. max_val + 1 {
-        var c = count.get(i);
+        var c = count[i];
         while c > 0 {
             v.set(pos, i);
             pos = pos + 1;

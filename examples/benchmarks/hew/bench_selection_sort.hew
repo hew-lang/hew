@@ -4,13 +4,13 @@ fn selection_sort(v: Vec<i64>) -> Vec<i64> {
         var min_idx = i;
         var j = i + 1;
         while j < n {
-            if v.get(j) < v.get(min_idx) {
+            if v[j] < v[min_idx] {
                 min_idx = j;
             }
             j = j + 1;
         }
-        let tmp = v.get(i);
-        v.set(i, v.get(min_idx));
+        let tmp = v[i];
+        v.set(i, v[min_idx]);
         v.set(min_idx, tmp);
     }
     v

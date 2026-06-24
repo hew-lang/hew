@@ -5,7 +5,7 @@ fn main() {
     v.push(20);
     v.push(30);
     println(v.len());
-    println(v.get(0));
-    println(v.get(1));
-    println(v.get(2));
+    println(v[0]);
+    println(v[1]);
+    println(v[2]);
 }

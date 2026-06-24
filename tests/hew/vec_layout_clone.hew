@@ -25,15 +25,15 @@ fn test_clone_record_vec_copies_all_elements() {
 
     if dst.len() != 3 { panic(f"expected dst len 3, got {dst.len()}"); }
 
-    let a = dst.get(0);
+    let a = dst[0];
     if a.x != 10 { panic(f"expected dst[0].x=10, got {a.x}"); }
     if a.y != 20 { panic(f"expected dst[0].y=20, got {a.y}"); }
 
-    let b = dst.get(1);
+    let b = dst[1];
     if b.x != 30 { panic(f"expected dst[1].x=30, got {b.x}"); }
     if b.y != 40 { panic(f"expected dst[1].y=40, got {b.y}"); }
 
-    let c = dst.get(2);
+    let c = dst[2];
     if c.x != 50 { panic(f"expected dst[2].x=50, got {c.x}"); }
     if c.y != 60 { panic(f"expected dst[2].y=60, got {c.y}"); }
 }
@@ -61,11 +61,11 @@ fn test_clone_is_independent_of_source_after_set() {
     src.set(0, Point { x: 99, y: 99 });
 
     // Source reflects the mutation.
-    let s0 = src.get(0);
+    let s0 = src[0];
     if s0.x != 99 { panic(f"expected src[0].x=99 after set, got {s0.x}"); }
 
     // Clone is unaffected.
-    let d0 = dst.get(0);
+    let d0 = dst[0];
     if d0.x != 1 { panic(f"expected dst[0].x=1 (unchanged), got {d0.x}"); }
     if d0.y != 2 { panic(f"expected dst[0].y=2 (unchanged), got {d0.y}"); }
 }
@@ -90,7 +90,7 @@ fn test_clone_grows_independently_of_source() {
     if src.len() != 1 { panic(f"expected src len 1, got {src.len()}"); }
     if dst.len() != 2 { panic(f"expected dst len 2, got {dst.len()}"); }
 
-    let extra = dst.get(1);
+    let extra = dst[1];
     if extra.x != 100 { panic(f"expected dst[1].x=100, got {extra.x}"); }
     if extra.y != 200 { panic(f"expected dst[1].y=200, got {extra.y}"); }
 }

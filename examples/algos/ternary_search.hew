@@ -6,8 +6,8 @@ fn ternary_search(arr: Vec<i64>, target: i64) -> i64 {
         let third = (high - low) / 3;
         let mid1 = low + third;
         let mid2 = high - third;
-        let val1 = arr.get(mid1);
-        let val2 = arr.get(mid2);
+        let val1 = arr[mid1];
+        let val2 = arr[mid2];
         if val1 == target {
             return mid1;
         }

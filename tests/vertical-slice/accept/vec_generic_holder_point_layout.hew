@@ -13,7 +13,7 @@ fn main() {
     values.push(Holder { value: Point { x: 7, y: 8 } });
     values.push(Holder { value: Point { x: 9, y: 10 } });
 
-    let first = values.get(0);
+    let first = values[0];
     let second = values[1];
     values.set(1, Holder { value: Point { x: 11, y: 12 } });
     let popped = values.pop();

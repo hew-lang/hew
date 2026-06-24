@@ -9,10 +9,10 @@ fn climb(n: i32) -> i32 {
         dp.push(1);
         let n64: i64 = n as i64;
         for i in 2 .. n64 + 1 {
-            let val = dp.get(i - 1) + dp.get(i - 2);
+            let val = dp[i - 1] + dp[i - 2];
             dp.push(val);
         }
-        dp.get(n64)
+        dp[n64]
     }
 }
 

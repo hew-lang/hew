@@ -9,14 +9,14 @@ fn main() {
     v.push(40);
     v.push(50);
     println(f"length: {v.len()}");
-    println(f"first:  {v.get(0)}");
-    println(f"third:  {v.get(2)}");
+    println(f"first:  {v[0]}");
+    println(f"third:  {v[2]}");
     var total = 0;
     // Sum by index: the sandbox VM iterates ranges but not collection values
     // directly, so indexing is intentional here.
     // hew:allow(needless_range_loop)
     for i in 0 .. v.len() {
-        total = total + v.get(i);
+        total = total + v[i];
     }
     println(f"sum:    {total}");
 }

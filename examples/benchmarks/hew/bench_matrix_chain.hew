@@ -12,8 +12,8 @@ fn matrix_chain(dims: Vec<i64>, n: i64) -> i64 {
             let j = i + length - 1;
             dp.set(i * n + j, INF);
             for k in i .. j {
-                let cost = dp.get(i * n + k) + dp.get((k + 1) * n + j) + dims.get(i) * dims.get(k + 1) * dims.get(j + 1);
-                if cost < dp.get(i * n + j) {
+                let cost = dp[i * n + k] + dp[(k + 1) * n + j] + dims[i] * dims[k + 1] * dims[j + 1];
+                if cost < dp[i * n + j] {
                     dp.set(i * n + j, cost);
                 }
             }
@@ -21,7 +21,7 @@ fn matrix_chain(dims: Vec<i64>, n: i64) -> i64 {
         }
         length = length + 1;
     }
-    return dp.get(0 * n + (n - 1));
+    return dp[0 * n + (n - 1)];
 }
 
 const ITERS: i64 = 50000;

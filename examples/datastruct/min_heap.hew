@@ -6,9 +6,9 @@ fn heap_push(heap: Vec<i32>, val: i32) -> i32 {
     var i = heap.len() - 1;
     while i > 0 {
         let parent = (i - 1) / 2;
-        if heap.get(i) < heap.get(parent) {
-            let tmp = heap.get(i);
-            heap.set(i, heap.get(parent));
+        if heap[i] < heap[parent] {
+            let tmp = heap[i];
+            heap.set(i, heap[parent]);
             heap.set(parent, tmp);
             i = parent;
         } else {
@@ -19,11 +19,11 @@ fn heap_push(heap: Vec<i32>, val: i32) -> i32 {
 }
 
 fn heap_peek(heap: Vec<i32>) -> i32 {
-    heap.get(0)
+    heap[0]
 }
 
 fn heap_pop(heap: Vec<i32>) -> i32 {
-    let min_val = heap.get(0);
+    let min_val = heap[0];
     let last = heap.pop();
     if heap.len() > 0 {
         heap.set(0, last);
@@ -35,18 +35,18 @@ fn heap_pop(heap: Vec<i32>) -> i32 {
             let right = 2 * i + 2;
             var smallest = i;
             if left < heap.len() {
-                if heap.get(left) < heap.get(smallest) {
+                if heap[left] < heap[smallest] {
                     smallest = left;
                 }
             }
             if right < heap.len() {
-                if heap.get(right) < heap.get(smallest) {
+                if heap[right] < heap[smallest] {
                     smallest = right;
                 }
             }
             if smallest != i {
-                let tmp = heap.get(i);
-                heap.set(i, heap.get(smallest));
+                let tmp = heap[i];
+                heap.set(i, heap[smallest]);
                 heap.set(smallest, tmp);
                 i = smallest;
             } else {
@@ -150,12 +150,12 @@ fn test_heap_property() -> i32 {
         let left = 2 * i + 1;
         let right = 2 * i + 2;
         if left < heap.len() {
-            if heap.get(i) > heap.get(left) {
+            if heap[i] > heap[left] {
                 ok = false;
             }
         }
         if right < heap.len() {
-            if heap.get(i) > heap.get(right) {
+            if heap[i] > heap[right] {
                 ok = false;
             }
         }

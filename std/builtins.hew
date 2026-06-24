@@ -364,22 +364,48 @@ impl<T> IntoIterator for Vec<T> {
 }
 
 // ---------------------------------------------------------------------------
-// Index trait
+// Index trait — the single indexed/keyed-access protocol
 // ---------------------------------------------------------------------------
-/// Bracket indexing surface for values that define an element lookup.
+/// `c[i]` and `c.get(i)` for EVERY indexable collection resolve through this
+/// trait. A new collection type gets both accessors by writing one `impl` —
+/// no compiler change (the A195 mandate).
 ///
-/// `obj[k]` type-checks through this trait for user-defined receivers. Vec
-/// keeps its compiler-backed bounds-check/runtime path, with this impl
-/// providing the same trait surface for bounds and associated-type projection.
-pub trait Index {
+/// - `get(self, i) -> Option<Self::Output>` is the FUNDAMENTAL safe accessor:
+///   `None` on out-of-bounds/absent, else `Some(elem)` where the payload is a
+///   FRESH, independently-droppable owner (retain-share for strings, deep
+///   clone for owned records/enums, by-value for scalars). The container is
+///   borrowed, not consumed.
+/// - `at(self, i) -> Self::Output` is the TRAPPING accessor: `c[i]`. It asserts
+///   presence and traps (`TrapKind::IndexOutOfBounds`) on absence.
+///
+/// `Idx` is a trait TYPE PARAMETER (not an associated type) so a collection may
+/// index by more than one key type (`Vec`/`bytes`/`string` by `i64`; `HashMap`
+/// by `K`), and a future `Index<Range>` slicing convergence is accommodated.
+///
+/// Leaf containers (Vec/HashMap/bytes/string) carry intrinsic bodies the
+/// compiler lowers directly (the `index_get`/`index_at` lang-items); user
+/// composites write ordinary Hew bodies that delegate to a leaf's `get`.
+#[lang_item("index")]
+pub trait Index<Idx> {
     type Output;
 
-    fn at(self, key: i32) -> Self::Output;
+    #[lang_item("index_get")]
+    fn get(self, index: Idx) -> Option<Self::Output>;
+
+    #[lang_item("index_at")]
+    fn at(self, index: Idx) -> Self::Output;
 }
 
-impl<T> Index for Vec<T> {
+impl<T> Index<i64> for Vec<T> {
     type Output = T;
-    fn at(vec: Vec<T>, key: i32) -> T {}
+    fn get(self, index: i64) -> Option<T> {}
+    fn at(self, index: i64) -> T {}
+}
+
+impl<K, V> Index<K> for HashMap<K, V> {
+    type Output = V;
+    fn get(self, index: K) -> Option<V> {}
+    fn at(self, index: K) -> V {}
 }
 
 // ---------------------------------------------------------------------------

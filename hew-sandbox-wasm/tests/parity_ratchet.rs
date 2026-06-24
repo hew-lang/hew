@@ -705,7 +705,7 @@ const CONSTRUCTS: &[Construct] = &[
         // exclusive end (`end + 1`) and delegates to `vector.range_slice`.
         // End element is included in the result slice.
         id: "Vec<T> inclusive range slice v[start..=end]",
-        probe: "fn main() {\n    let v: Vec<i64> = Vec::new();\n    v.push(10);\n    v.push(20);\n    v.push(30);\n    let s = v[0..=1];\n    println(s.len());\n    println(s.get(1));\n}\n",
+        probe: "fn main() {\n    let v: Vec<i64> = Vec::new();\n    v.push(10);\n    v.push(20);\n    v.push(30);\n    let s = v[0..=1];\n    println(s.len());\n    println(s[1]);\n}\n",
         coverage: Coverage::Parity("vec_inclusive_slice"),
     },
     Construct {

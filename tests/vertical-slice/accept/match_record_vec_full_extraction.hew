@@ -39,7 +39,7 @@ fn main() -> i64 {
         let extracted = match p {
             Pair { a: _, b: v } => v,
         };
-        total = total + extracted.len() + extracted.get(0) + extracted.get(1);
+        total = total + extracted.len() + extracted[0] + extracted[1];
         i = i + 1;
     }
     println(total);

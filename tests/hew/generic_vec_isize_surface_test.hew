@@ -3,7 +3,7 @@
 import std::testing;
 
 fn first_isize<T>(xs: Vec<T>) -> T {
-    xs.get(0)
+    xs[0]
 }
 
 #[test]
@@ -14,6 +14,6 @@ fn test_generic_vec_isize_push_get_pop() {
     values.push(first);
     values.push(second);
     testing.assert_eq(first_isize(values) as i64, 41);
-    testing.assert_eq(values.get(1) as i64, 42);
+    testing.assert_eq(values[1] as i64, 42);
     testing.assert_eq(values.pop() as i64, 42);
 }

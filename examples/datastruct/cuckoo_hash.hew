@@ -35,11 +35,11 @@ fn cuckoo_insert(t1: Vec<i64>, t2: Vec<i64>, key: i64) -> bool {
     let max_loops = capacity * 2;
     // Check if already present
     let idx1 = hash1(key, capacity);
-    if t1.get(idx1) == key {
+    if t1[idx1] == key {
         return true;
     }
     let idx2 = hash2(key, capacity);
-    if t2.get(idx2) == key {
+    if t2[idx2] == key {
         return true;
     }
     var cur = key;
@@ -47,7 +47,7 @@ fn cuckoo_insert(t1: Vec<i64>, t2: Vec<i64>, key: i64) -> bool {
     while i < max_loops {
         // Try table 1
         let pos1 = hash1(cur, capacity);
-        let old1 = t1.get(pos1);
+        let old1 = t1[pos1];
         t1.set(pos1, cur);
         if old1 == EMPTY {
             return true;
@@ -56,7 +56,7 @@ fn cuckoo_insert(t1: Vec<i64>, t2: Vec<i64>, key: i64) -> bool {
 
         // Try table 2
         let pos2 = hash2(cur, capacity);
-        let old2 = t2.get(pos2);
+        let old2 = t2[pos2];
         t2.set(pos2, cur);
         if old2 == EMPTY {
             return true;
@@ -70,11 +70,11 @@ fn cuckoo_insert(t1: Vec<i64>, t2: Vec<i64>, key: i64) -> bool {
 fn cuckoo_lookup(t1: Vec<i64>, t2: Vec<i64>, key: i64) -> bool {
     let capacity = t1.len();
     let idx1 = hash1(key, capacity);
-    if t1.get(idx1) == key {
+    if t1[idx1] == key {
         return true;
     }
     let idx2 = hash2(key, capacity);
-    if t2.get(idx2) == key {
+    if t2[idx2] == key {
         return true;
     }
     false
@@ -84,12 +84,12 @@ fn cuckoo_remove(t1: Vec<i64>, t2: Vec<i64>, key: i64) -> bool {
     let capacity = t1.len();
     let EMPTY = 0 - 1;
     let idx1 = hash1(key, capacity);
-    if t1.get(idx1) == key {
+    if t1[idx1] == key {
         t1.set(idx1, EMPTY);
         return true;
     }
     let idx2 = hash2(key, capacity);
-    if t2.get(idx2) == key {
+    if t2[idx2] == key {
         t2.set(idx2, EMPTY);
         return true;
     }
@@ -101,10 +101,10 @@ fn cuckoo_size(t1: Vec<i64>, t2: Vec<i64>) -> i64 {
     let EMPTY = 0 - 1;
     var count = 0;
     for i in 0 .. capacity {
-        if t1.get(i) != EMPTY {
+        if t1[i] != EMPTY {
             count = count + 1;
         }
-        if t2.get(i) != EMPTY {
+        if t2[i] != EMPTY {
             count = count + 1;
         }
     }

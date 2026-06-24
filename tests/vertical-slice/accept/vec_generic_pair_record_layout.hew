@@ -9,7 +9,7 @@ fn main() {
     values.push(Pair { a: 2, b: 20 });
     values.push(Pair { a: 3, b: 30 });
 
-    let first = values.get(0);
+    let first = values[0];
     let second = values[1];
     values.set(1, Pair { a: 4, b: 40 });
     let popped = values.pop();

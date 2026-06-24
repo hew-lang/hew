@@ -57,14 +57,17 @@ use support::{describe_output, hew_binary, repo_root, require_codegen};
 const GENERIC_GET_SINGLE_ROUNDTRIP_SOURCE: &str = "\
 type Name { label: string; }\n\
 \n\
-fn first<T>(v: Vec<T>) -> T {\n\
+fn first<T>(v: Vec<T>) -> Option<T> {\n\
 \x20   v.get(0)\n\
 }\n\
 \n\
 fn main() {\n\
 \x20   let vn: Vec<Name> = Vec::new();\n\
 \x20   vn.push(Name { label: \"owned-ok\" });\n\
-\x20   let got = first(vn);\n\
+\x20   let got = match first(vn) {\n\
+\x20       Some(g) => g,\n\
+\x20       None => { print(\"none\"); return; }\n\
+\x20   };\n\
 \x20   print(got.label);\n\
 }\n";
 
@@ -85,14 +88,17 @@ const GENERIC_GET_SINGLE_ROUNDTRIP_EXPECTED: &str = "owned-ok";
 const GENERIC_GET_ZERO_LEAK_SOURCE: &str = "\
 type Name { label: string; }\n\
 \n\
-fn first<T>(v: Vec<T>) -> T {\n\
+fn first<T>(v: Vec<T>) -> Option<T> {\n\
 \x20   v.get(0)\n\
 }\n\
 \n\
 fn run_one_cycle() {\n\
 \x20   let vn: Vec<Name> = Vec::new();\n\
 \x20   vn.push(Name { label: \"owned-ok\" });\n\
-\x20   let got = first(vn);\n\
+\x20   let got = match first(vn) {\n\
+\x20       Some(g) => g,\n\
+\x20       None => { print(\"none\"); return; }\n\
+\x20   };\n\
 \x20   print(got.label);\n\
 }\n\
 \n\

@@ -9,7 +9,7 @@ fn sieve(n: i64) -> i64 {
     flags.set(1, 0);
     var p = 2;
     while p * p <= n {
-        if flags.get(p) == 1 {
+        if flags[p] == 1 {
             var j = p * p;
             while j <= n {
                 flags.set(j, 0);
@@ -21,7 +21,7 @@ fn sieve(n: i64) -> i64 {
     var count = 0;
     var k = 0;
     while k <= n {
-        count = count + flags.get(k);
+        count = count + flags[k];
         k = k + 1;
     }
     count

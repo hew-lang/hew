@@ -300,7 +300,7 @@ pub fn parse_response(raw: string) -> AsyncResponse {
     let body = raw.slice(sep + 4, raw.len());
     let head_lines = string.split(head, "\r\n");
     let status_line = if head_lines.len() > 0 {
-        head_lines.get(0)
+        head_lines[0]
     } else {
         ""
     };
@@ -324,10 +324,10 @@ fn parse_status_code(status_line: string) -> i64 {
     if parts.len() < 2 {
         return -1;
     }
-    if !is_http_version(parts.get(0)) {
+    if !is_http_version(parts[0]) {
         return -1;
     }
-    let code_str = parts.get(1);
+    let code_str = parts[1];
     if !string.is_numeric(code_str) {
         return -1;
     }
@@ -376,7 +376,7 @@ fn find_response_header(header_section: string, name: string) -> string {
     let n = lines.len();
     var found = "";
     for i in 0 .. n {
-        let line = lines.get(i);
+        let line = lines[i];
         let colon = line.find(":");
         if colon > 0 {
             let key = string.to_lower(string.trim(line.slice(0, colon)));

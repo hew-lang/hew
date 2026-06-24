@@ -12,10 +12,10 @@ fn compare_suffixes(text: Vec<i64>, a: i64, b: i64) -> i64 {
         if j >= n {
             return 1;
         }
-        if text.get(i) < text.get(j) {
+        if text[i] < text[j] {
             return 0 - 1;
         }
-        if text.get(i) > text.get(j) {
+        if text[i] > text[j] {
             return 1;
         }
         i = i + 1;
@@ -38,16 +38,16 @@ fn build_suffix_array(text: Vec<i64>) -> Vec<i64> {
     // Insertion sort on suffix indices
     var i = 1;
     while i < n {
-        let key = sa.get(i);
+        let key = sa[i];
         var j = i - 1;
         var done = false;
         while !done {
             if j < 0 {
                 done = true;
             } else {
-                let cmp = compare_suffixes(text, sa.get(j), key);
+                let cmp = compare_suffixes(text, sa[j], key);
                 if cmp > 0 {
-                    sa.set(j + 1, sa.get(j));
+                    sa.set(j + 1, sa[j]);
                     j = j - 1;
                 } else {
                     done = true;
@@ -68,14 +68,14 @@ fn build_lcp_array(text: Vec<i64>, sa: Vec<i64>) -> Vec<i64> {
     lcp.push(0);
     var i = 1;
     while i < n {
-        let a = sa.get(i - 1);
-        let b = sa.get(i);
+        let a = sa[i - 1];
+        let b = sa[i];
         var l = 0;
         while a + l < n {
             if b + l >= n {
                 break;
             }
-            if text.get(a + l) != text.get(b + l) {
+            if text[a + l] != text[b + l] {
                 break;
             }
             l = l + 1;
@@ -95,7 +95,7 @@ fn sa_search(text: Vec<i64>, sa: Vec<i64>, pattern: Vec<i64>) -> i64 {
     var hi = n - 1;
     while lo <= hi {
         let mid = lo + (hi - lo) / 2;
-        let suffix_start = sa.get(mid);
+        let suffix_start = sa[mid];
         let cmp = compare_prefix(text, suffix_start, pattern);
         if cmp == 0 {
             return suffix_start;
@@ -121,10 +121,10 @@ fn compare_prefix(text: Vec<i64>, pos: i64, pattern: Vec<i64>) -> i64 {
         if pos + i >= n {
             return 0 - 1;
         }
-        if text.get(pos + i) < pattern.get(i) {
+        if text[pos + i] < pattern[i] {
             return 0 - 1;
         }
-        if text.get(pos + i) > pattern.get(i) {
+        if text[pos + i] > pattern[i] {
             return 1;
         }
         i = i + 1;
@@ -158,7 +158,7 @@ fn main() {
     var sorted = 1;
     var i = 1;
     while i < sa.len() {
-        let cmp = compare_suffixes(text, sa.get(i - 1), sa.get(i));
+        let cmp = compare_suffixes(text, sa[i - 1], sa[i]);
         if cmp > 0 {
             sorted = 0;
         }
@@ -174,7 +174,7 @@ fn main() {
     // Test 3: All indices present (sum = 0+1+2+...+7 = 28)
     var sum = 0;
     for j in 0 .. 8 {
-        sum = sum + sa.get(j);
+        sum = sum + sa[j];
     }
     if sum == 28 {
         println("PASS: SA all indices present");
@@ -225,7 +225,7 @@ fn main() {
     // Test 7: LCP array
     let lcp = build_lcp_array(text, sa);
     if lcp.len() == 8 {
-        if lcp.get(0) == 0 {
+        if lcp[0] == 0 {
             println("PASS: LCP array basics");
             passed = passed + 1;
         } else {
@@ -250,7 +250,7 @@ fn main() {
     // Suffixes starting with [1,2,...] should have LCP >= 2
     var found_lcp2 = false;
     for k in 1 .. lcp2.len() {
-        if lcp2.get(k) >= 2 {
+        if lcp2[k] >= 2 {
             found_lcp2 = true;
         }
     }

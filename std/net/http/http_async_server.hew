@@ -201,7 +201,7 @@ pub fn parse_request(raw: string) -> AsyncRequest {
     };
     let head_lines = string.split(head, "\r\n");
     let request_line = if head_lines.len() > 0 {
-        head_lines.get(0)
+        head_lines[0]
     } else {
         ""
     };
@@ -323,7 +323,7 @@ fn token_at(line: string, index: i64) -> string {
     }
     let parts = string.split(line, " ");
     if parts.len() > index {
-        parts.get(index)
+        parts[index]
     } else {
         ""
     }
@@ -371,7 +371,7 @@ fn find_header(header_section: string, name: string) -> string {
     let n = lines.len();
     var found = "";
     for i in 0 .. n {
-        let line = lines.get(i);
+        let line = lines[i];
         let colon = line.find(":");
         if colon > 0 {
             let key = string.to_lower(string.trim(line.slice(0, colon)));
@@ -394,7 +394,7 @@ fn header_count(header_section: string, name: string) -> i64 {
     let n = lines.len();
     var count: i64 = 0;
     for i in 0 .. n {
-        let line = lines.get(i);
+        let line = lines[i];
         let colon = line.find(":");
         if colon > 0 {
             let key = string.to_lower(string.trim(line.slice(0, colon)));
@@ -417,7 +417,7 @@ fn headers_have_colons(header_section: string) -> bool {
     let lines = string.split(header_section, "\r\n");
     let n = lines.len();
     for i in 0 .. n {
-        let line = lines.get(i);
+        let line = lines[i];
         if !string.is_empty(line) {
             if line.find(":") <= 0 {
                 return false;
@@ -449,9 +449,9 @@ fn valid_request_line(line: string) -> bool {
     if parts.len() != 3 {
         return false;
     }
-    let method = parts.get(0);
-    let target = parts.get(1);
-    let version = parts.get(2);
+    let method = parts[0];
+    let target = parts[1];
+    let version = parts[2];
     if !is_alpha_token(method) {
         return false;
     }

@@ -15,15 +15,15 @@ fn cb_new(capacity: i64) -> Vec<i64> {
 }
 
 fn cb_capacity(buf: Vec<i64>) -> i64 {
-    buf.get(0)
+    buf[0]
 }
 
 fn cb_count(buf: Vec<i64>) -> i64 {
-    buf.get(3)
+    buf[3]
 }
 
 fn cb_is_empty(buf: Vec<i64>) -> i64 {
-    if buf.get(3) == 0 {
+    if buf[3] == 0 {
         1
     } else {
         0
@@ -31,7 +31,7 @@ fn cb_is_empty(buf: Vec<i64>) -> i64 {
 }
 
 fn cb_is_full(buf: Vec<i64>) -> i64 {
-    if buf.get(3) == buf.get(0) {
+    if buf[3] == buf[0] {
         1
     } else {
         0
@@ -39,12 +39,12 @@ fn cb_is_full(buf: Vec<i64>) -> i64 {
 }
 
 fn cb_push(buf: Vec<i64>, val: i64) -> i64 {
-    let cap = buf.get(0);
-    let count = buf.get(3);
+    let cap = buf[0];
+    let count = buf[3];
     if count == cap {
         0 // full, return failure
     } else {
-        let tail = buf.get(2);
+        let tail = buf[2];
         buf.set(4 + tail, val);
         let new_tail = (tail + 1) % cap;
         buf.set(2, new_tail);
@@ -54,10 +54,10 @@ fn cb_push(buf: Vec<i64>, val: i64) -> i64 {
 }
 
 fn cb_pop(buf: Vec<i64>) -> i64 {
-    let head = buf.get(1);
-    let cap = buf.get(0);
-    let count = buf.get(3);
-    let val = buf.get(4 + head);
+    let head = buf[1];
+    let cap = buf[0];
+    let count = buf[3];
+    let val = buf[4 + head];
     let new_head = (head + 1) % cap;
     buf.set(1, new_head);
     buf.set(3, count - 1);
@@ -65,8 +65,8 @@ fn cb_pop(buf: Vec<i64>) -> i64 {
 }
 
 fn cb_peek(buf: Vec<i64>) -> i64 {
-    let head = buf.get(1);
-    buf.get(4 + head)
+    let head = buf[1];
+    buf[4 + head]
 }
 
 fn run_test(name: string, passed: i64) -> i64 {

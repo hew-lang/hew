@@ -5,10 +5,10 @@ fn sentinel_search(arr: Vec<i64>, target: i64) -> i64 {
         return 0 - 1;
     }
     // Save last element and replace with target (sentinel)
-    let last = arr.get(n - 1);
+    let last = arr[n - 1];
     arr.set(n - 1, target);
     var i = 0;
-    while arr.get(i) != target {
+    while arr[i] != target {
         i = i + 1;
     }
     // Restore original last element

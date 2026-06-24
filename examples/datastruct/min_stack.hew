@@ -21,7 +21,7 @@ fn main() {
     total = total + 1;
     data.push(5);
     mins.push(5);
-    let r1 = if mins.get(mins.len() - 1) == 5 {
+    let r1 = if mins[mins.len() - 1] == 5 {
         1
     } else {
         0
@@ -31,13 +31,13 @@ fn main() {
     // Test 2: push smaller, min updates
     total = total + 1;
     data.push(3);
-    let cur_min1 = mins.get(mins.len() - 1);
+    let cur_min1 = mins[mins.len() - 1];
     if 3 < cur_min1 {
         mins.push(3);
     } else {
         mins.push(cur_min1);
     }
-    let r2 = if mins.get(mins.len() - 1) == 3 {
+    let r2 = if mins[mins.len() - 1] == 3 {
         1
     } else {
         0
@@ -47,13 +47,13 @@ fn main() {
     // Test 3: push larger, min stays
     total = total + 1;
     data.push(7);
-    let cur_min2 = mins.get(mins.len() - 1);
+    let cur_min2 = mins[mins.len() - 1];
     if 7 < cur_min2 {
         mins.push(7);
     } else {
         mins.push(cur_min2);
     }
-    let r3 = if mins.get(mins.len() - 1) == 3 {
+    let r3 = if mins[mins.len() - 1] == 3 {
         1
     } else {
         0
@@ -63,13 +63,13 @@ fn main() {
     // Test 4: push even smaller
     total = total + 1;
     data.push(1);
-    let cur_min3 = mins.get(mins.len() - 1);
+    let cur_min3 = mins[mins.len() - 1];
     if 1 < cur_min3 {
         mins.push(1);
     } else {
         mins.push(cur_min3);
     }
-    let r4 = if mins.get(mins.len() - 1) == 1 {
+    let r4 = if mins[mins.len() - 1] == 1 {
         1
     } else {
         0
@@ -82,7 +82,7 @@ fn main() {
     total = total + 1;
     data.pop();
     mins.pop();
-    let r5 = if mins.get(mins.len() - 1) == 3 {
+    let r5 = if mins[mins.len() - 1] == 3 {
         1
     } else {
         0
@@ -93,7 +93,7 @@ fn main() {
     total = total + 1;
     data.pop();
     mins.pop();
-    let r6 = if mins.get(mins.len() - 1) == 3 {
+    let r6 = if mins[mins.len() - 1] == 3 {
         1
     } else {
         0
@@ -104,7 +104,7 @@ fn main() {
     total = total + 1;
     data.pop();
     mins.pop();
-    let r7 = if mins.get(mins.len() - 1) == 5 {
+    let r7 = if mins[mins.len() - 1] == 5 {
         1
     } else {
         0
@@ -127,12 +127,12 @@ fn main() {
     vals.push(80);
     vals.push(10);
     for i in 0 .. 8 {
-        let v = vals.get(i);
+        let v = vals[i];
         data2.push(v);
         if mins2.len() == 0 {
             mins2.push(v);
         } else {
-            let cm = mins2.get(mins2.len() - 1);
+            let cm = mins2[mins2.len() - 1];
             if v < cm {
                 mins2.push(v);
             } else {
@@ -140,7 +140,7 @@ fn main() {
             }
         }
     }
-    let r8 = if mins2.get(mins2.len() - 1) == 10 {
+    let r8 = if mins2[mins2.len() - 1] == 10 {
         1
     } else {
         0
@@ -158,7 +158,7 @@ fn main() {
     mins2.pop();
     data2.pop();
     mins2.pop();
-    let r9 = if mins2.get(mins2.len() - 1) == 30 {
+    let r9 = if mins2[mins2.len() - 1] == 30 {
         1
     } else {
         0

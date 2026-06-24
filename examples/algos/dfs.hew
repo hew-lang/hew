@@ -37,16 +37,16 @@ fn main() {
     stack.push(0);
     while stack.len() > 0 {
         let u: i64 = stack.pop() as i64;
-        if visited.get(u) == 0 {
+        if visited[u] == 0 {
             visited.set(u, 1);
             order.push(u as i32);
             // Push neighbours in reverse so lower-numbered visited first
-            let start: i64 = adj_offsets.get(u) as i64;
-            let end: i64 = adj_offsets.get(u + 1) as i64;
+            let start: i64 = adj_offsets[u] as i64;
+            let end: i64 = adj_offsets[u + 1] as i64;
             var idx: i64 = end - 1;
             while idx >= start {
-                let v: i64 = adj_nodes.get(idx) as i64;
-                if visited.get(v) == 0 {
+                let v: i64 = adj_nodes[idx] as i64;
+                if visited[v] == 0 {
                     stack.push(v as i32);
                 }
                 idx = idx - 1;
@@ -54,19 +54,19 @@ fn main() {
         }
     }
     // Print visit order
-    for i in 0 .. order.len() {
-        println(order.get(i));
+    for node in order {
+        println(node);
     }
     // Verify all 6 nodes visited
     var all_visited = 1;
     for i in 0 .. num_nodes {
-        if visited.get(i) == 0 {
+        if visited[i] == 0 {
             all_visited = 0;
         }
     }
     // Verify first node is 0
     if all_visited == 1 {
-        if order.get(0) == 0 {
+        if order[0] == 0 {
             if order.len() == 6 {
                 println("PASS");
             } else {

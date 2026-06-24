@@ -33,10 +33,10 @@ fn main() -> i64 {
         // NESTED transform (inline drop).
         let _d = "more".to_uppercase().len();
         // BOUND Vec<string> getter — retained owner, scope-exit drop.
-        let y3 = xs.get(0);
+        let y3 = xs[0];
         let _e = y3.len();
         // NESTED Vec<string> getter — retained owner, inline drop.
-        let _f = xs.get(1).len();
+        let _f = xs[1].len();
         // DISCARD producer — inline drop of the unused fresh owner.
         "discard-" + "this";
         i = i + 1;

@@ -1,31 +1,39 @@
-// #1929 Stage 2 leak proof: `Vec<T>.push`/`.get` for a NON-Copy record element
-// under a type parameter, exercised 100k times. Each iteration builds a fresh
-// owned `Name`, pushes it into a `Vec<Name>` through the generic owned ABI,
-// gets it back out via a returning generic helper (the ownership escape), reads
-// the field, and drops both the returned record and the Vec at scope exit.
+// #1929 Stage 2 leak proof, updated for the Index-trait `Vec<T>.get(i)` model:
+// `Vec<T>.push`/`.get` for a NON-Copy record element under a type parameter,
+// exercised 100k times. Each iteration builds a fresh owned `Name`, pushes it
+// into a `Vec<Name>` through the generic owned ABI, gets it back out via a
+// returning generic helper (`first<T> -> Option<T>`), reads the field, and
+// drops both the returned record and the Vec at scope exit.
 //
-// The owned getter (`hew_vec_get_owned`) borrows the live slot; returning it
-// transfers ownership to the caller while the Vec's scope-exit
-// `hew_vec_free_owned` also releases the element. If those two paths aliased one
-// heap string a double-free would SIGABRT within a few iterations; a missed drop
-// would grow RSS linearly across 100k iterations. A clean run with flat RSS is
-// the exactly-once witness for the generic owned-element ABI.
+// `get` now resolves — for EVERY element class, concrete or type-parameter —
+// to the single drop-safe choke point `hew_vec_get_clone`, which writes a FRESH
+// OWNER into the `Option<T>` payload. The returned `Some(Name)` and the Vec's
+// own slot are therefore DISJOINT heaps: the caller drops the clone, the Vec's
+// scope-exit `hew_vec_free_owned` drops its element — no aliasing, no
+// interior-borrow taint. A double-free of one heap string would SIGABRT within
+// a few iterations; a missed drop (the clone or the slot) would grow RSS
+// linearly across 100k iterations. A clean run with flat RSS is the
+// exactly-once witness for the generic clone-getter ABI.
 type Name {
     label: string;
 }
 
-fn first<T>(v: Vec<T>) -> T {
+fn first<T>(v: Vec<T>) -> Option<T> {
     v.get(0)
 }
 
 fn roundtrip(print_it: bool) -> i64 {
     let vn: Vec<Name> = Vec::new();
     vn.push(Name { label: "owned-ok" });
-    let got = first(vn);
-    if print_it {
-        println(got.label);
+    match first(vn) {
+        Some(got) => {
+            if print_it {
+                println(got.label);
+            }
+            got.label.len()
+        }
+        None => 0,
     }
-    got.label.len()
 }
 
 fn main() -> i64 {

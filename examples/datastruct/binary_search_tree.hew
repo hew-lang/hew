@@ -17,9 +17,9 @@ fn bst_insert(nodes: Vec<i64>, val: i64, NIL: i64) -> i64 {
     var cur = 0;
     var placed = false;
     while !placed {
-        let cur_val = nodes.get(cur * 3);
+        let cur_val = nodes[cur * 3];
         if val < cur_val {
-            let left = nodes.get(cur * 3 + 1);
+            let left = nodes[cur * 3 + 1];
             if left == NIL {
                 let new_idx = add_node(nodes, val, NIL);
                 nodes.set(cur * 3 + 1, new_idx);
@@ -28,7 +28,7 @@ fn bst_insert(nodes: Vec<i64>, val: i64, NIL: i64) -> i64 {
                 cur = left;
             }
         } else {
-            let right = nodes.get(cur * 3 + 2);
+            let right = nodes[cur * 3 + 2];
             if right == NIL {
                 let new_idx = add_node(nodes, val, NIL);
                 nodes.set(cur * 3 + 2, new_idx);
@@ -47,13 +47,13 @@ fn bst_search(nodes: Vec<i64>, val: i64, NIL: i64) -> bool {
     }
     var cur = 0;
     while cur != NIL {
-        let cur_val = nodes.get(cur * 3);
+        let cur_val = nodes[cur * 3];
         if val == cur_val {
             return true;
         } else if val < cur_val {
-            cur = nodes.get(cur * 3 + 1);
+            cur = nodes[cur * 3 + 1];
         } else {
-            cur = nodes.get(cur * 3 + 2);
+            cur = nodes[cur * 3 + 2];
         }
     }
     false
@@ -61,22 +61,22 @@ fn bst_search(nodes: Vec<i64>, val: i64, NIL: i64) -> bool {
 
 fn bst_min(nodes: Vec<i64>, NIL: i64) -> i64 {
     var cur = 0;
-    var left = nodes.get(cur * 3 + 1);
+    var left = nodes[cur * 3 + 1];
     while left != NIL {
         cur = left;
-        left = nodes.get(cur * 3 + 1);
+        left = nodes[cur * 3 + 1];
     }
-    nodes.get(cur * 3)
+    nodes[cur * 3]
 }
 
 fn bst_max(nodes: Vec<i64>, NIL: i64) -> i64 {
     var cur = 0;
-    var right = nodes.get(cur * 3 + 2);
+    var right = nodes[cur * 3 + 2];
     while right != NIL {
         cur = right;
-        right = nodes.get(cur * 3 + 2);
+        right = nodes[cur * 3 + 2];
     }
-    nodes.get(cur * 3)
+    nodes[cur * 3]
 }
 
 // Iterative inorder traversal
@@ -90,14 +90,14 @@ fn inorder(nodes: Vec<i64>, result: Vec<i64>, NIL: i64) -> i64 {
     while running {
         while cur != NIL {
             stack.push(cur);
-            cur = nodes.get(cur * 3 + 1);
+            cur = nodes[cur * 3 + 1];
         }
         if stack.len() == 0 {
             running = false;
         } else {
             cur = stack.pop();
-            result.push(nodes.get(cur * 3));
-            cur = nodes.get(cur * 3 + 2);
+            result.push(nodes[cur * 3]);
+            cur = nodes[cur * 3 + 2];
         }
     }
     0
@@ -109,7 +109,7 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> bool {
     }
     var i = 0;
     while i < a.len() {
-        if a.get(i) != b.get(i) {
+        if a[i] != b[i] {
             return false;
         }
         i = i + 1;
@@ -118,8 +118,8 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> bool {
 }
 
 fn print_vec(v: Vec<i64>) -> i64 {
-    for i in 0 .. v.len() {
-        print(v.get(i));
+    for x in v {
+        print(x);
         print(" ");
     }
     println("");
@@ -234,7 +234,7 @@ fn test_sorted_insert() -> i64 {
         ok = false;
     } else {
         for j in 0 .. 10 {
-            if result.get(j) != j + 1 {
+            if result[j] != j + 1 {
                 ok = false;
             }
         }

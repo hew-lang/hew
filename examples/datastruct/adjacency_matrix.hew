@@ -1,7 +1,7 @@
 // Adjacency Matrix - Flat n*n Vec<i64> representation
 // matrix[i*n + j] = 1 if edge (i,j) exists, 0 otherwise
 fn mat_get(matrix: Vec<i64>, n: i64, i: i64, j: i64) -> i64 {
-    matrix.get(i * n + j)
+    matrix[i * n + j]
 }
 
 fn mat_set(matrix: Vec<i64>, n: i64, i: i64, j: i64, val: i64) {

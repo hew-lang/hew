@@ -12,7 +12,7 @@ fn main() {
     let first = fns[0];
     println(first(3)); // 6
     fns.push(|x: i64| x + 100);
-    let third = fns.get(2);
+    let third = fns[2];
     println(third(1)); // 101
     let last = fns.pop();
     println(last(5)); // 105

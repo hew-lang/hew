@@ -25,7 +25,7 @@ fn set_insert(set: Vec<i64>, key: i64) -> bool {
     var idx = hash(key, capacity);
     var i = 0;
     while i < capacity {
-        let val = set.get(idx);
+        let val = set[idx];
         if val == key {
             return false;
         }
@@ -50,7 +50,7 @@ fn set_contains(set: Vec<i64>, key: i64) -> bool {
     var idx = hash(key, capacity);
     var i = 0;
     while i < capacity {
-        let val = set.get(idx);
+        let val = set[idx];
         if val == key {
             return true;
         }
@@ -70,7 +70,7 @@ fn set_remove(set: Vec<i64>, key: i64) -> bool {
     var idx = hash(key, capacity);
     var i = 0;
     while i < capacity {
-        let val = set.get(idx);
+        let val = set[idx];
         if val == key {
             set.set(idx, DELETED);
             return true;
@@ -90,7 +90,7 @@ fn set_size(set: Vec<i64>) -> i64 {
     let DELETED = 0 - 2;
     var count = 0;
     for i in 0 .. capacity {
-        let val = set.get(i);
+        let val = set[i];
         if val != EMPTY {
             if val != DELETED {
                 count = count + 1;

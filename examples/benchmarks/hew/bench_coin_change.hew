@@ -7,17 +7,17 @@ fn coin_change(coins: Vec<i64>, num_coins: i64, amount: i64) -> i64 {
     }
     dp.set(0, 0);
     for i in 0 .. num_coins {
-        let c = coins.get(i);
+        let c = coins[i];
         var a = c;
         while a <= amount {
-            let prev = dp.get(a - c) + 1;
-            if prev < dp.get(a) {
+            let prev = dp[a - c] + 1;
+            if prev < dp[a] {
                 dp.set(a, prev);
             }
             a = a + 1;
         }
     }
-    return dp.get(amount);
+    return dp[amount];
 }
 
 const ITERS: i64 = 100000;

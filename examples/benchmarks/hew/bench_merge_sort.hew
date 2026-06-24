@@ -3,12 +3,12 @@ fn merge(v: Vec<i64>, left: i64, mid: i64, right: i64) {
     let right_arr: Vec<i64> = Vec::new();
     var i = left;
     while i <= mid {
-        left_arr.push(v.get(i));
+        left_arr.push(v[i]);
         i = i + 1;
     }
     i = mid + 1;
     while i <= right {
-        right_arr.push(v.get(i));
+        right_arr.push(v[i]);
         i = i + 1;
     }
     var li = 0;
@@ -18,21 +18,21 @@ fn merge(v: Vec<i64>, left: i64, mid: i64, right: i64) {
     let right_len = right_arr.len();
     while li < left_len {
         if ri < right_len {
-            if left_arr.get(li) <= right_arr.get(ri) {
-                v.set(k, left_arr.get(li));
+            if left_arr[li] <= right_arr[ri] {
+                v.set(k, left_arr[li]);
                 li = li + 1;
             } else {
-                v.set(k, right_arr.get(ri));
+                v.set(k, right_arr[ri]);
                 ri = ri + 1;
             }
         } else {
-            v.set(k, left_arr.get(li));
+            v.set(k, left_arr[li]);
             li = li + 1;
         }
         k = k + 1;
     }
     while ri < right_len {
-        v.set(k, right_arr.get(ri));
+        v.set(k, right_arr[ri]);
         ri = ri + 1;
         k = k + 1;
     }

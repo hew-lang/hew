@@ -12,27 +12,27 @@ fn mat_create(rows: i64, cols: i64) -> Vec<i64> {
 }
 
 fn mat_rows(m: Vec<i64>) -> i64 {
-    m.get(0)
+    m[0]
 }
 
 fn mat_cols(m: Vec<i64>) -> i64 {
-    m.get(1)
+    m[1]
 }
 
 fn mat_get(m: Vec<i64>, r: i64, c: i64) -> i64 {
-    let cols = m.get(1);
-    m.get(2 + r * cols + c)
+    let cols = m[1];
+    m[2 + r * cols + c]
 }
 
 fn mat_set(m: Vec<i64>, r: i64, c: i64, val: i64) -> i64 {
-    let cols = m.get(1);
+    let cols = m[1];
     m.set(2 + r * cols + c, val);
     0
 }
 
 fn mat_transpose(m: Vec<i64>) -> Vec<i64> {
-    let rows = m.get(0);
-    let cols = m.get(1);
+    let rows = m[0];
+    let cols = m[1];
     let t = mat_create(cols, rows);
     for r in 0 .. rows {
         for c in 0 .. cols {

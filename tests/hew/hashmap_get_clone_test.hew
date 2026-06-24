@@ -65,9 +65,9 @@ fn test_hashmap_get_nested_vec_value_survives_remove() {
     match got {
         Some(v) => {
             testing.assert_eq(v.len(), 3);
-            testing.assert_eq(v.get(0), 1);
-            testing.assert_eq(v.get(1), 2);
-            testing.assert_eq(v.get(2), 3);
+            testing.assert_eq(v[0], 1);
+            testing.assert_eq(v[1], 2);
+            testing.assert_eq(v[2], 3);
         },
         None => testing.assert_true(false),
     }

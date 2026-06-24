@@ -25,8 +25,7 @@ fn main() {
     let text = "Hé 9世!";
     println(f"runes={unicode.rune_count(text)} bytes={text.len()}");
     let runes = unicode.runes(text);
-    for i in 0 .. runes.len() {
-        let cp = runes.get(i);
+    for cp in runes {
         let kind = classify(cp);
         let upper = unicode.to_upper(cp);
         println(f"cp={cp} width={unicode.rune_len(cp)} kind={kind} upper_cp={upper}");

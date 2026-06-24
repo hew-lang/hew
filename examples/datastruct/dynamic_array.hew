@@ -13,15 +13,15 @@ fn da_new(initial_cap: i64) -> Vec<i64> {
 }
 
 fn da_size(arr: Vec<i64>) -> i64 {
-    arr.get(0)
+    arr[0]
 }
 
 fn da_capacity(arr: Vec<i64>) -> i64 {
-    arr.get(1)
+    arr[1]
 }
 
 fn da_grow(arr: Vec<i64>) {
-    let old_cap = arr.get(1);
+    let old_cap = arr[1];
     let new_cap = old_cap * 2;
     // Add more slots
     for i in 0 .. old_cap {
@@ -31,18 +31,18 @@ fn da_grow(arr: Vec<i64>) {
 }
 
 fn da_push(arr: Vec<i64>, val: i64) {
-    let sz = arr.get(0);
-    let cap = arr.get(1);
+    let sz = arr[0];
+    let cap = arr[1];
     if sz == cap {
         da_grow(arr);
     }
-    let sz2 = arr.get(0);
+    let sz2 = arr[0];
     arr.set(2 + sz2, val);
     arr.set(0, sz2 + 1);
 }
 
 fn da_get(arr: Vec<i64>, idx: i64) -> i64 {
-    arr.get(2 + idx)
+    arr[2 + idx]
 }
 
 fn da_set(arr: Vec<i64>, idx: i64, val: i64) {
@@ -50,8 +50,8 @@ fn da_set(arr: Vec<i64>, idx: i64, val: i64) {
 }
 
 fn da_pop(arr: Vec<i64>) -> i64 {
-    let sz = arr.get(0);
-    let val = arr.get(2 + sz - 1);
+    let sz = arr[0];
+    let val = arr[2 + sz - 1];
     arr.set(0, sz - 1);
     val
 }

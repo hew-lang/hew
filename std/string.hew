@@ -649,9 +649,9 @@ pub fn join(parts: Vec<string>, sep: string) -> string {
     if n == 0 {
         return "";
     }
-    var result = parts.get(0);
+    var result = parts[0];
     for i in 1 .. n {
-        result = result + sep + parts.get(i);
+        result = result + sep + parts[i];
     }
     result
 }

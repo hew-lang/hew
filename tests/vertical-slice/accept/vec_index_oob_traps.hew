@@ -1,0 +1,13 @@
+// Indexed-accessor trap negative: `v[i]` on an out-of-bounds index must trap
+// (IndexOutOfBounds) rather than read past the buffer or return garbage. This
+// is the trapping `at` half of the `Index<Idx>` model: `v[i]` traps on OOB for
+// EVERY element class, while `v.get(i)` returns `None`. The binary terminates
+// via `llvm.trap`: exit 132 (SIGILL, x86_64 Linux) or 133 (SIGTRAP,
+// aarch64/macOS) — run_accept_expect_trap accepts either.
+fn main() -> i64 {
+    let v: Vec<i64> = [10, 20, 30];
+    // Index 10 is past the end of a length-3 vector: must trap before the read.
+    let x = v[10];
+    // Unreachable: the index trap fires above.
+    x
+}

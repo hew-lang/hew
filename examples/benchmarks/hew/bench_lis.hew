@@ -5,9 +5,9 @@ fn lis(arr: Vec<i64>, n: i64) -> i64 {
     }
     for i in 1 .. n {
         for j in 0 .. i {
-            if arr.get(j) < arr.get(i) {
-                let candidate = dp.get(j) + 1;
-                if candidate > dp.get(i) {
+            if arr[j] < arr[i] {
+                let candidate = dp[j] + 1;
+                if candidate > dp[i] {
                     dp.set(i, candidate);
                 }
             }
@@ -15,8 +15,8 @@ fn lis(arr: Vec<i64>, n: i64) -> i64 {
     }
     var best = 0;
     for i in 0 .. n {
-        if dp.get(i) > best {
-            best = dp.get(i);
+        if dp[i] > best {
+            best = dp[i];
         }
     }
     return best;

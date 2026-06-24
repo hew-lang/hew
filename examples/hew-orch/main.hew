@@ -158,7 +158,7 @@ fn main() {
         5
     };
     for k in 0 .. limit {
-        let id = keys.get(k);
+        let id = keys[k];
         match index.get(id) {
             Some(c) => {
                 println(id);

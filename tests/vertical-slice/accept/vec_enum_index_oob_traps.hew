@@ -1,0 +1,20 @@
+// Indexed-accessor trap negative for an enum element class: `v[i]` OOB on a
+// `Vec<enum>` must trap (IndexOutOfBounds) exactly like the scalar case —
+// proving the trapping `at` path is element-class-uniform and does not silently
+// fall back to a default variant. Terminates via `llvm.trap`: exit 132
+// (SIGILL, x86_64 Linux) or 133 (SIGTRAP, aarch64/macOS).
+enum Shade {
+    Light;
+    Medium;
+    Dark;
+}
+
+fn main() -> i64 {
+    let v: Vec<Shade> = [Shade::Light, Shade::Dark];
+    // Index 9 is past the end of a length-2 vector: must trap before the read.
+    let s = v[9];
+    match s {
+        Shade::Dark => 1,
+        _ => 0,
+    }
+}

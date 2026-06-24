@@ -17,5 +17,5 @@ fn main() {
     m.insert("right", 32);
     let values = m.values();
     println(values.len());
-    println(values.get(0));
+    println(values[0]);
 }

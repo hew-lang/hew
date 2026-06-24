@@ -1,7 +1,7 @@
 // Bubble Sort - repeatedly swap adjacent elements if out of order
 fn swap(v: Vec<i64>, i: i64, j: i64) {
-    let tmp = v.get(i);
-    v.set(i, v.get(j));
+    let tmp = v[i];
+    v.set(i, v[j]);
     v.set(j, tmp);
 }
 
@@ -9,7 +9,7 @@ fn bubble_sort(v: Vec<i64>) {
     let n = v.len();
     for i in 0 .. n {
         for j in 0 .. n - 1 - i {
-            if v.get(j) > v.get(j + 1) {
+            if v[j] > v[j + 1] {
                 swap(v, j, j + 1);
             }
         }
@@ -22,7 +22,7 @@ fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
     }
     var i = 0;
     while i < a.len() {
-        if a.get(i) != b.get(i) {
+        if a[i] != b[i] {
             return 0;
         }
         i = i + 1;

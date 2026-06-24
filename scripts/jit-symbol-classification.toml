@@ -699,6 +699,7 @@ stable = [
   "hew_vec_free_owned",
   "hew_vec_from_u8_data",
   "hew_vec_get_bool",
+  "hew_vec_get_clone",
   "hew_vec_get_f32",
   "hew_vec_get_f64",
   "hew_vec_get_generic",

@@ -12,8 +12,8 @@ fn test_map_str_transforms_each_element() {
     v.push("world");
     let result = iter.map_str(v, |s: string| s + "!");
     testing.assert_eq(result.len(), 2);
-    testing.assert_eq_str(result.get(0), "hello!");
-    testing.assert_eq_str(result.get(1), "world!");
+    testing.assert_eq_str(result[0], "hello!");
+    testing.assert_eq_str(result[1], "world!");
 }
 
 #[test]
@@ -33,8 +33,8 @@ fn test_filter_str_keeps_matching_elements() {
     v.push("baz");
     let result = iter.filter_str(v, |s: string| s.starts_with("b"));
     testing.assert_eq(result.len(), 2);
-    testing.assert_eq_str(result.get(0), "bar");
-    testing.assert_eq_str(result.get(1), "baz");
+    testing.assert_eq_str(result[0], "bar");
+    testing.assert_eq_str(result[1], "baz");
 }
 
 #[test]
@@ -131,8 +131,8 @@ fn test_map_f64_doubles_elements() {
     v.push(2.5);
     let result = iter.map_f64(v, |x: f64| x * 2.0);
     testing.assert_eq(result.len(), 2);
-    testing.assert_true(result.get(0) == 2.0);
-    testing.assert_true(result.get(1) == 5.0);
+    testing.assert_true(result[0] == 2.0);
+    testing.assert_true(result[1] == 5.0);
 }
 
 #[test]
@@ -152,8 +152,8 @@ fn test_filter_f64_keeps_positives() {
     v.push(3.0);
     let result = iter.filter_f64(v, |x: f64| x > 0.0);
     testing.assert_eq(result.len(), 2);
-    testing.assert_true(result.get(0) == 2.5);
-    testing.assert_true(result.get(1) == 3.0);
+    testing.assert_true(result[0] == 2.5);
+    testing.assert_true(result[1] == 3.0);
 }
 
 #[test]
@@ -266,8 +266,8 @@ fn test_take_int_fewer_than_length() {
     v.push(10); v.push(20); v.push(30);
     let result = iter.take_int(v, 2);
     testing.assert_eq(result.len(), 2);
-    testing.assert_eq(result.get(0), 10);
-    testing.assert_eq(result.get(1), 20);
+    testing.assert_eq(result[0], 10);
+    testing.assert_eq(result[1], 20);
 }
 
 #[test]
@@ -301,8 +301,8 @@ fn test_skip_int_drops_first_n() {
     v.push(10); v.push(20); v.push(30);
     let result = iter.skip_int(v, 1);
     testing.assert_eq(result.len(), 2);
-    testing.assert_eq(result.get(0), 20);
-    testing.assert_eq(result.get(1), 30);
+    testing.assert_eq(result[0], 20);
+    testing.assert_eq(result[1], 30);
 }
 
 #[test]
@@ -351,8 +351,8 @@ fn test_take_str_fewer_than_length() {
     v.push("a"); v.push("b"); v.push("c");
     let result = iter.take_str(v, 2);
     testing.assert_eq(result.len(), 2);
-    testing.assert_eq_str(result.get(0), "a");
-    testing.assert_eq_str(result.get(1), "b");
+    testing.assert_eq_str(result[0], "a");
+    testing.assert_eq_str(result[1], "b");
 }
 
 #[test]
@@ -379,8 +379,8 @@ fn test_skip_str_drops_first_n() {
     v.push("a"); v.push("b"); v.push("c");
     let result = iter.skip_str(v, 1);
     testing.assert_eq(result.len(), 2);
-    testing.assert_eq_str(result.get(0), "b");
-    testing.assert_eq_str(result.get(1), "c");
+    testing.assert_eq_str(result[0], "b");
+    testing.assert_eq_str(result[1], "c");
 }
 
 #[test]
@@ -429,8 +429,8 @@ fn test_take_f64_fewer_than_length() {
     v.push(1.0); v.push(2.0); v.push(3.0);
     let result = iter.take_f64(v, 2);
     testing.assert_eq(result.len(), 2);
-    testing.assert_true(result.get(0) == 1.0);
-    testing.assert_true(result.get(1) == 2.0);
+    testing.assert_true(result[0] == 1.0);
+    testing.assert_true(result[1] == 2.0);
 }
 
 #[test]
@@ -457,8 +457,8 @@ fn test_skip_f64_drops_first_n() {
     v.push(1.0); v.push(2.0); v.push(3.0);
     let result = iter.skip_f64(v, 1);
     testing.assert_eq(result.len(), 2);
-    testing.assert_true(result.get(0) == 2.0);
-    testing.assert_true(result.get(1) == 3.0);
+    testing.assert_true(result[0] == 2.0);
+    testing.assert_true(result[1] == 3.0);
 }
 
 #[test]
@@ -554,7 +554,7 @@ fn test_skip_int_negative_n_returns_all() {
     v.push(1); v.push(2); v.push(3);
     let result = iter.skip_int(v, -1);
     testing.assert_eq(result.len(), 3);
-    testing.assert_eq(result.get(0), 1);
+    testing.assert_eq(result[0], 1);
 }
 
 #[test]
@@ -563,7 +563,7 @@ fn test_skip_str_negative_n_returns_all() {
     v.push("a"); v.push("b");
     let result = iter.skip_str(v, -5);
     testing.assert_eq(result.len(), 2);
-    testing.assert_eq_str(result.get(0), "a");
+    testing.assert_eq_str(result[0], "a");
 }
 
 #[test]
@@ -572,7 +572,7 @@ fn test_skip_f64_negative_n_returns_all() {
     v.push(1.0); v.push(2.0); v.push(3.0);
     let result = iter.skip_f64(v, -99);
     testing.assert_eq(result.len(), 3);
-    testing.assert_true(result.get(0) == 1.0);
+    testing.assert_true(result[0] == 1.0);
 }
 
 // ── take_* negative-n clamp tests ─────────────────────────────────────────

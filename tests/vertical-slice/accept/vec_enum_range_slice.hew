@@ -16,6 +16,6 @@ fn main() {
     colours.push(Colour::Red);
     let middle = colours[1..3];
     println(middle.len());
-    println(tag(middle.get(0)));
-    println(tag(middle.get(1)));
+    println(tag(middle[0]));
+    println(tag(middle[1]));
 }

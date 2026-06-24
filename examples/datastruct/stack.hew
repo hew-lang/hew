@@ -13,7 +13,7 @@ fn stack_pop(s: Vec<i64>) -> i64 {
 }
 
 fn stack_peek(s: Vec<i64>) -> i64 {
-    s.get(s.len() - 1)
+    s[s.len() - 1]
 }
 
 fn stack_size(s: Vec<i64>) -> i64 {

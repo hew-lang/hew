@@ -7,12 +7,12 @@ fn bellman_ford(edge_src: Vec<i64>, edge_dst: Vec<i64>, edge_wt: Vec<i64>, num_e
     dist.set(start_node, 0);
     for iter in 0 .. n - 1 {
         for e in 0 .. num_edges {
-            let u = edge_src.get(e);
-            let v = edge_dst.get(e);
-            let w = edge_wt.get(e);
-            let nd = dist.get(u) + w;
-            if dist.get(u) < INF {
-                if nd < dist.get(v) {
+            let u = edge_src[e];
+            let v = edge_dst[e];
+            let w = edge_wt[e];
+            let nd = dist[u] + w;
+            if dist[u] < INF {
+                if nd < dist[v] {
                     dist.set(v, nd);
                 }
             }
@@ -20,7 +20,7 @@ fn bellman_ford(edge_src: Vec<i64>, edge_dst: Vec<i64>, edge_wt: Vec<i64>, num_e
     }
     var total = 0;
     for i in 0 .. n {
-        total = total + dist.get(i);
+        total = total + dist[i];
     }
     return total;
 }

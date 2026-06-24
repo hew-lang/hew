@@ -2,19 +2,19 @@
 // Node layout: [key, value, prev, next] = 4 slots per node
 // Most recently used at front (head), least recently used at back (tail)
 fn node_key(n: Vec<i64>, i: i64) -> i64 {
-    n.get(i * 4)
+    n[i * 4]
 }
 
 fn node_val(n: Vec<i64>, i: i64) -> i64 {
-    n.get(i * 4 + 1)
+    n[i * 4 + 1]
 }
 
 fn node_prev(n: Vec<i64>, i: i64) -> i64 {
-    n.get(i * 4 + 2)
+    n[i * 4 + 2]
 }
 
 fn node_next(n: Vec<i64>, i: i64) -> i64 {
-    n.get(i * 4 + 3)
+    n[i * 4 + 3]
 }
 
 fn set_val(n: Vec<i64>, i: i64, v: i64) {
@@ -40,19 +40,19 @@ fn alloc_node(n: Vec<i64>, key: i64, val: i64) -> i64 {
 
 // meta[0] = head, meta[1] = tail, meta[2] = size, meta[3] = capacity
 fn cache_head(m: Vec<i64>) -> i64 {
-    m.get(0)
+    m[0]
 }
 
 fn cache_tail(m: Vec<i64>) -> i64 {
-    m.get(1)
+    m[1]
 }
 
 fn cache_size(m: Vec<i64>) -> i64 {
-    m.get(2)
+    m[2]
 }
 
 fn cache_cap(m: Vec<i64>) -> i64 {
-    m.get(3)
+    m[3]
 }
 
 fn set_head(m: Vec<i64>, h: i64) {
@@ -164,7 +164,7 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
         return 0;
     }
     for i in 0 .. a.len() {
-        if a.get(i) != b.get(i) {
+        if a[i] != b[i] {
             return 0;
         }
     }

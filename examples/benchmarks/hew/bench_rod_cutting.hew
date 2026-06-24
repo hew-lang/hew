@@ -9,15 +9,15 @@ fn rod_cutting(prices: Vec<i64>, n: i64) -> i64 {
     while i <= n {
         var j = 1;
         while j <= i {
-            let candidate = prices.get(j - 1) + dp.get(i - j);
-            if candidate > dp.get(i) {
+            let candidate = prices[j - 1] + dp[i - j];
+            if candidate > dp[i] {
                 dp.set(i, candidate);
             }
             j = j + 1;
         }
         i = i + 1;
     }
-    return dp.get(n);
+    return dp[n];
 }
 
 const ITERS: i64 = 100000;

@@ -5,8 +5,8 @@ fn reverse_range(arr: Vec<i32>, start: i32, end: i32) {
     let end64: i64 = end as i64;
     var r: i64 = end64 - 1;
     while l < r {
-        let tmp = arr.get(l);
-        arr.set(l, arr.get(r));
+        let tmp = arr[l];
+        arr.set(l, arr[r]);
         arr.set(r, tmp);
         l = l + 1;
         r = r - 1;
@@ -36,7 +36,7 @@ fn main() {
     expected.push(3);
     var pass = true;
     for i in 0 .. 5 {
-        if arr.get(i) != expected.get(i) {
+        if arr[i] != expected[i] {
             pass = false;
             println("FAIL at index:");
             println(i);

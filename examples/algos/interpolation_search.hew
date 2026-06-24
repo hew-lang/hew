@@ -12,8 +12,8 @@ fn interpolation_search(arr: Vec<i64>, target: i64) -> i64 {
         if done {
             break;
         }
-        let lo_val = arr.get(low);
-        let hi_val = arr.get(high);
+        let lo_val = arr[low];
+        let hi_val = arr[high];
         if lo_val == hi_val {
             if lo_val == target {
                 result = low;
@@ -25,7 +25,7 @@ fn interpolation_search(arr: Vec<i64>, target: i64) -> i64 {
             done = true;
         } else {
             let pos = low + (target - lo_val) * (high - low) / (hi_val - lo_val);
-            let pos_val = arr.get(pos);
+            let pos_val = arr[pos];
             if pos_val == target {
                 result = pos;
                 done = true;

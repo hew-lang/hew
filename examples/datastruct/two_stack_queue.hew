@@ -23,7 +23,7 @@ fn tsq_peek(inbox: Vec<i64>, outbox: Vec<i64>) -> i64 {
     if outbox.len() == 0 {
         transfer(inbox, outbox);
     }
-    outbox.get(outbox.len() - 1)
+    outbox[outbox.len() - 1]
 }
 
 fn tsq_size(inbox: Vec<i64>, outbox: Vec<i64>) -> i64 {

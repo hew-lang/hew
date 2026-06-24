@@ -144,7 +144,7 @@ fn split_preserves_last_element() {
             let n = parts.len();
             print(f"count={n};");
             for i in 0 .. n {
-                print(f"[{parts.get(i)}]");
+                print(f"[{parts[i]}]");
             }
         }
         "#,
@@ -173,7 +173,7 @@ fn lines_has_no_phantom_empty_and_keeps_last() {
             let n = ls.len();
             print(f"count={n};");
             for i in 0 .. n {
-                print(f"[{ls.get(i)}]");
+                print(f"[{ls[i]}]");
             }
         }
         "#,

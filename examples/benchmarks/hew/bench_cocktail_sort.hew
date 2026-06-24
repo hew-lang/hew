@@ -7,9 +7,9 @@ fn cocktail_sort(v: Vec<i64>) -> Vec<i64> {
         swapped = 0;
         var i = start;
         while i < end {
-            if v.get(i) > v.get(i + 1) {
-                let tmp = v.get(i);
-                v.set(i, v.get(i + 1));
+            if v[i] > v[i + 1] {
+                let tmp = v[i];
+                v.set(i, v[i + 1]);
                 v.set(i + 1, tmp);
                 swapped = 1;
             }
@@ -22,9 +22,9 @@ fn cocktail_sort(v: Vec<i64>) -> Vec<i64> {
             swapped = 0;
             i = end;
             while i > start {
-                if v.get(i) < v.get(i - 1) {
-                    let tmp = v.get(i);
-                    v.set(i, v.get(i - 1));
+                if v[i] < v[i - 1] {
+                    let tmp = v[i];
+                    v.set(i, v[i - 1]);
                     v.set(i - 1, tmp);
                     swapped = 1;
                 }

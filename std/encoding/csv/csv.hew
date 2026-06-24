@@ -59,18 +59,18 @@ impl TableMethods for Table {
         if col < 0 || col >= tbl.hdrs.len() {
             return "";
         }
-        tbl.hdrs.get(col)
+        tbl.hdrs[col]
     }
     /// Return the cell value at the given row and column index.
     fn get(tbl: Table, row: i64, col: i64) -> string {
         if row < 0 || row >= tbl.data.len() {
             return "";
         }
-        let r = tbl.data.get(row);
+        let r = tbl.data[row];
         if col < 0 || col >= r.len() {
             return "";
         }
-        r.get(col)
+        r[col]
     }
     /// Return the cell value at the given row for the named column.
     fn get_by_name(tbl: Table, row: i64, col_name: string) -> string {
@@ -170,7 +170,7 @@ fn parse_impl(data: string, has_headers: bool) -> Table {
                 if cur_row.len() > 0 {
                     if has_headers && rows.len() == 0 && headers.len() == 0 {
                         for i in 0 .. cur_row.len() {
-                            headers.push(cur_row.get(i));
+                            headers.push(cur_row[i]);
                         }
                     } else {
                         rows.push(cur_row);
@@ -192,7 +192,7 @@ fn parse_impl(data: string, has_headers: bool) -> Table {
             if cur_row.len() > 0 {
                 if has_headers && rows.len() == 0 && headers.len() == 0 {
                     for i in 0 .. cur_row.len() {
-                        headers.push(cur_row.get(i));
+                        headers.push(cur_row[i]);
                     }
                 } else {
                     rows.push(cur_row);
@@ -220,7 +220,7 @@ fn parse_impl(data: string, has_headers: bool) -> Table {
         cur_row.push(cur_field);
         if has_headers && rows.len() == 0 && headers.len() == 0 {
             for i in 0 .. cur_row.len() {
-                headers.push(cur_row.get(i));
+                headers.push(cur_row[i]);
             }
         } else {
             rows.push(cur_row);
@@ -229,7 +229,7 @@ fn parse_impl(data: string, has_headers: bool) -> Table {
     }
     // Generate synthetic headers if no header row
     if !has_headers && rows.len() > 0 {
-        let ncols = rows.get(0).len();
+        let ncols = rows[0].len();
         for i in 0 .. ncols {
             headers.push(f"col{i}");
         }
@@ -240,7 +240,7 @@ fn parse_impl(data: string, has_headers: bool) -> Table {
 /// Find the column index for a header name. Returns -1 if not found.
 fn find_header(headers: Vec<string>, name: string) -> i32 { // INTERNAL-ABI: sentinel -1 for not-found; used only by get_by_name impl
     for i in 0 .. headers.len() {
-        if headers.get(i) == name {
+        if headers[i] == name {
             return i as i32;
         }
     }

@@ -300,6 +300,11 @@ extern "C" {
     ) -> *const c_void;
     // Owned-element get (W5.016): borrow into the live buffer (no clone/drop).
     pub fn hew_vec_get_owned(v: *const HewVec, index: i64) -> *const c_void;
+    // Trait-routed `Vec::get` choke point: fresh-owner `Option<T>` getter.
+    // Bounds-checks, writes a freshly retained/cloned owner into `out` and
+    // returns `true` on hit; `false` (out untouched) on OOB. The single
+    // drop-safe Vec-get site (`by-value-heap-params-are-borrows` P0).
+    pub fn hew_vec_get_clone(v: *const HewVec, index: i64, out: *mut c_void) -> bool;
 
     // Set
     pub fn hew_vec_set_bool(v: *mut HewVec, index: i64, val: bool);

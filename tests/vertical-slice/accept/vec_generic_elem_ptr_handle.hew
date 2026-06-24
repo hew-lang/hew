@@ -12,7 +12,7 @@ actor Counter {
 
 fn store_and_read<T>(v: Vec<T>, x: T) -> T {
     v.push(x);
-    v.get(0)
+    v[0]
 }
 
 fn main() {

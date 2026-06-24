@@ -5,11 +5,11 @@ fn main() {
     points.push(Point { x: 1, y: 2 });
     points.push(Point { x: 3, y: 4 });
 
-    let first = points.get(0);
+    let first = points[0];
     println(first.x);
 
     points.set(0, Point { x: 5, y: 6 });
-    let updated = points.get(0);
+    let updated = points[0];
     println(updated.y);
 
     let popped = points.pop();

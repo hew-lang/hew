@@ -1,18 +1,18 @@
 fn partition(v: Vec<i64>, low: i64, high: i64) -> i64 {
-    let pivot = v.get(high);
+    let pivot = v[high];
     var i = low - 1;
     var j = low;
     while j < high {
-        if v.get(j) <= pivot {
+        if v[j] <= pivot {
             i = i + 1;
-            let tmp = v.get(i);
-            v.set(i, v.get(j));
+            let tmp = v[i];
+            v.set(i, v[j]);
             v.set(j, tmp);
         }
         j = j + 1;
     }
-    let tmp = v.get(i + 1);
-    v.set(i + 1, v.get(high));
+    let tmp = v[i + 1];
+    v.set(i + 1, v[high]);
     v.set(high, tmp);
     i + 1
 }

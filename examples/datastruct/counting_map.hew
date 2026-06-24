@@ -32,7 +32,7 @@ fn cm_find_slot(keys: Vec<i64>, key: i64) -> i64 {
     var idx = hash(key, capacity);
     var i = 0;
     while i < capacity {
-        let k = keys.get(idx);
+        let k = keys[idx];
         if k == key {
             return idx;
         }
@@ -49,12 +49,12 @@ fn cm_increment(keys: Vec<i64>, vals: Vec<i64>, key: i64) {
     let EMPTY = 0 - 1;
     let slot = cm_find_slot(keys, key);
     if slot >= 0 {
-        let k = keys.get(slot);
+        let k = keys[slot];
         if k == EMPTY {
             keys.set(slot, key);
             vals.set(slot, 1);
         } else {
-            let cur = vals.get(slot);
+            let cur = vals[slot];
             vals.set(slot, cur + 1);
         }
     }
@@ -64,9 +64,9 @@ fn cm_get_count(keys: Vec<i64>, vals: Vec<i64>, key: i64) -> i64 {
     let EMPTY = 0 - 1;
     let slot = cm_find_slot(keys, key);
     if slot >= 0 {
-        let k = keys.get(slot);
+        let k = keys[slot];
         if k == key {
-            return vals.get(slot);
+            return vals[slot];
         }
     }
     0
@@ -78,9 +78,9 @@ fn cm_most_frequent(keys: Vec<i64>, vals: Vec<i64>) -> i64 {
     var best_key = 0;
     var best_count = 0;
     for i in 0 .. capacity {
-        let k = keys.get(i);
+        let k = keys[i];
         if k != EMPTY {
-            let c = vals.get(i);
+            let c = vals[i];
             if c > best_count {
                 best_count = c;
                 best_key = k;

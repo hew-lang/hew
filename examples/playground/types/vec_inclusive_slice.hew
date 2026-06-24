@@ -13,9 +13,9 @@ fn main() {
     // v[1..=3] should yield ["beta", "gamma", "delta"] (3 elements)
     let slice = words[1..=3];
     println(f"inclusive slice len: {slice.len()}");
-    println(f"slice[0]: {slice.get(0)}");
-    println(f"slice[1]: {slice.get(1)}");
-    println(f"slice[2]: {slice.get(2)}");
+    println(f"slice[0]: {slice[0]}");
+    println(f"slice[1]: {slice[1]}");
+    println(f"slice[2]: {slice[2]}");
     let nums: Vec<i64> = Vec::new();
     nums.push(10);
     nums.push(20);
@@ -25,11 +25,11 @@ fn main() {
     // v[0..=2] should yield [10, 20, 30] (3 elements)
     let ns = nums[0..=2];
     println(f"num inclusive len: {ns.len()}");
-    println(f"ns[0]: {ns.get(0)}");
-    println(f"ns[2]: {ns.get(2)}");
+    println(f"ns[0]: {ns[0]}");
+    println(f"ns[2]: {ns[2]}");
 
     // v[2..=2] is a single-element inclusive slice
     let one = nums[2..=2];
     println(f"single-elem len: {one.len()}");
-    println(f"single-elem[0]: {one.get(0)}");
+    println(f"single-elem[0]: {one[0]}");
 }

@@ -5,11 +5,11 @@ fn pascal(n: i64) -> i64 {
         row.push(0);
         var j = row.len() - 1;
         while j > 0 {
-            row.set(j, row.get(j) + row.get(j - 1));
+            row.set(j, row[j] + row[j - 1]);
             j = j - 1;
         }
     }
-    row.get(n / 2)
+    row[n / 2]
 }
 
 const ITERS: i64 = 100000;

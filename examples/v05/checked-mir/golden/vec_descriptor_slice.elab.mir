@@ -71,31 +71,36 @@ fn main -> ()
       (none)
     branch[bb6: bb5/bb7] ->
       (none)
-    call[bb7 hew_vec_get_layout -> bb8] ->
+    branch[bb7: bb8/bb9] ->
       (none)
-    call[bb8 checked_mir_colour_tag -> bb9] ->
+    panic[bb8] ->
       (none)
-    call[bb9 println_i64 -> bb10] ->
+    call[bb9 checked_mir_colour_tag -> bb10] ->
       (none)
-    call[bb10 Vec::new -> bb11] ->
+    call[bb10 println_i64 -> bb11] ->
       (none)
-    call[bb11 hew_vec_push_layout -> bb12] ->
+    call[bb11 Vec::new -> bb12] ->
       (none)
     call[bb12 hew_vec_push_layout -> bb13] ->
       (none)
-    branch[bb13: bb14/bb15] ->
+    call[bb13 hew_vec_push_layout -> bb14] ->
       (none)
-    panic[bb14] ->
-      drop _19 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
-    branch[bb15: bb14/bb16] ->
+    branch[bb14: bb15/bb16] ->
       (none)
-    call[bb16 hew_vec_get_layout -> bb17] ->
+    panic[bb15] ->
+      drop _21 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+    branch[bb16: bb15/bb17] ->
       (none)
-    call[bb17 println_i64 -> bb18] ->
+    branch[bb17: bb18/bb19] ->
       (none)
-    return[bb18] ->
-      drop _32 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
-      drop _19 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+    panic[bb18] ->
+      drop _34 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+    call[bb19 println_i64 -> bb20] ->
+      (none)
+    return[bb20] ->
+      drop _34 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<CheckedMirPoint> kind=cow_heap(hew_vec_free)
 
 fn i8::fmt -> string
   statements:

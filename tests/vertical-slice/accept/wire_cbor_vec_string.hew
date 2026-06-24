@@ -14,8 +14,8 @@ fn main() -> i64 {
     let h = Names { items: xs };
     let back = Names.decode(h.encode());
     if back.items.len() != 2 { return 1; }
-    let a = back.items.get(0);
-    let b = back.items.get(1);
+    let a = back.items[0];
+    let b = back.items[1];
     if a != "Hello" { return 2; }
     if b != "World" { return 3; }
     42

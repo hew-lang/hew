@@ -37,7 +37,7 @@ fn main() -> i64 {
     u8s.push(1);
     u8s.push(200);
     u8s.push(255);
-    println(u8s.get(1) as i64);
+    println(u8s[1] as i64);
     println(u8s.pop() as i64);
 
     let i16s: Vec<i16> = Vec::new();

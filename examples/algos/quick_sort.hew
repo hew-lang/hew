@@ -1,16 +1,16 @@
 // Quick Sort - partition around pivot, sort sub-arrays
 fn swap(v: Vec<i64>, i: i64, j: i64) {
-    let tmp = v.get(i);
-    v.set(i, v.get(j));
+    let tmp = v[i];
+    v.set(i, v[j]);
     v.set(j, tmp);
 }
 
 fn partition(v: Vec<i64>, lo: i64, hi: i64) -> i64 {
-    let pivot = v.get(hi);
+    let pivot = v[hi];
     var i = lo;
     var j = lo;
     while j < hi {
-        if v.get(j) < pivot {
+        if v[j] < pivot {
             swap(v, i, j);
             i = i + 1;
         }
@@ -43,7 +43,7 @@ fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
     }
     var i = 0;
     while i < a.len() {
-        if a.get(i) != b.get(i) {
+        if a[i] != b[i] {
             return 0;
         }
         i = i + 1;

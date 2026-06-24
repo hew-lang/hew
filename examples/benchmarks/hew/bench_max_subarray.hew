@@ -1,9 +1,9 @@
 fn max_subarray(arr: Vec<i64>) -> i64 {
     let n = arr.len();
-    var max_ending = arr.get(0);
-    var max_so_far = arr.get(0);
+    var max_ending = arr[0];
+    var max_so_far = arr[0];
     for i in 1 .. n {
-        let val = arr.get(i);
+        let val = arr[i];
         if val > max_ending + val {
             max_ending = val;
         } else {

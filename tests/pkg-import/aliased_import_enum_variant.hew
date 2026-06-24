@@ -1,0 +1,32 @@
+// Aliased import alias resolves for enum variant construction and pattern matching.
+//
+// `hew::aliassrc` exports an enum `Color { Red; Green; Blue(i64); }`.
+// The importer opts it in under the alias `Hue`
+// (`import hew::aliassrc::{ Color as Hue }`), then:
+//   (a) annotates a variable with the alias as its type: `let h: Hue = ...`
+//   (b) constructs a tuple variant through the alias: `Hue::Blue(42)`
+//   (c) matches on alias-typed unit and tuple variants: `Hue::Red`, `Hue::Blue(n)`
+//
+// Before this fix, `lower_type` did not resolve `Hue` in annotation position,
+// `lookup_variant_constructor` did not resolve `Hue::Blue` through the alias,
+// and `resolve_named_type_ref` did not canonicalise `Hue` in type-annotation
+// position.
+//
+// Harness verb: hew run
+// Expected: values from variant construction and match dispatch.
+import hew::aliassrc::{ Color as Hue };
+
+fn color_value(h: Hue) -> i64 {
+    match h {
+        Hue::Red => 1,
+        Hue::Green => 2,
+        Hue::Blue(n) => n,
+    }
+}
+
+fn main() {
+    let a: Hue = Hue::Red;
+    let b: Hue = Hue::Blue(42);
+    println(color_value(a));
+    println(color_value(b));
+}

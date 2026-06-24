@@ -94,6 +94,22 @@ fixtures=(
   # resolved source identity rather than the bare alias binding so the field-order
   # lookup hits `Payload`, not the unregistered `Other` alias key.
   alias_import_does_not_conflate_with_same_named_export
+  # An ALIASED import alias resolves in function-parameter type-annotation
+  # position. `import hew::aliassrc::{ Payload as Tag }` then
+  # `fn get_code(item: Tag) -> i64` must lower `Tag` in the parameter type
+  # annotation to the source identity `aliassrc.Payload`. Before this fix,
+  # HIR `lower_type` / `resolve_named_type_ref` had no access to the alias
+  # table and produced an unresolvable `ResolvedTy::Named { name: "Tag" }`.
+  aliased_import_type_annotation
+  # An ALIASED enum import alias resolves in type-annotation position, tuple
+  # variant construction, and match-arm pattern dispatch. `import
+  # hew::aliassrc::{ Color as Hue }` then `let h: Hue = Hue::Blue(42)` and
+  # `match h { Hue::Red => 1, Hue::Blue(n) => n }` must all resolve through
+  # the alias. Before this fix the annotation `Hue` was not canonicalised in
+  # `lower_type`, the constructor `Hue::Blue(42)` was not found in
+  # `lookup_variant_constructor`, and the HIR `lookup_variant_ctor` missed the
+  # aliased path `Hue::Blue` → `aliassrc.Color::Blue`.
+  aliased_import_enum_variant
   # An ALIASED trait opt-in (`import hew::closableerr::{ Closable as C }`) impls
   # the trait under its alias (`impl C for MonitorRef`) returning the error type
   # through its CORRECT module-qualified spelling (`closableerr.CloseError`). The

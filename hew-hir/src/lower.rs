@@ -4842,6 +4842,15 @@ struct LowerCtx {
     /// the checker's module-scoped inserts, preventing byte-offset collisions
     /// across stdlib files (L23 defect root cause).
     current_module_idx: u32,
+    /// Import type alias resolution table: maps each bare alias name to its
+    /// canonical qualified source identity, for every `import m::{ T as U }`.
+    ///
+    /// Sourced from [`hew_types::check::TypeCheckOutput::import_type_name_aliases`]
+    /// at `LowerCtx::new` time and consulted in:
+    /// - `resolve_named_type_ref` to resolve alias names in type-annotation
+    ///   position (`fn f(x: Tag)`, `let x: Tag = …`).
+    /// - `lookup_variant_ctor` to resolve `Tag::Variant` enum-constructor paths.
+    import_type_name_aliases: HashMap<String, String>,
 }
 
 /// True when `ty` is — or transitively carries through generic args, tuples,
@@ -4963,6 +4972,7 @@ impl LowerCtx {
             opaque_type_short_names: HashSet::new(),
             non_opaque_type_short_names: HashSet::new(),
             current_module_idx: 0,
+            import_type_name_aliases: tc_output.import_type_name_aliases.clone(),
         }
     }
 
@@ -11442,11 +11452,24 @@ impl LowerCtx {
                 // Bare `loop { body }` — lowered to a HIR `Loop` expression so
                 // MIR can build the body/exit CFG shape with an unconditional
                 // back-edge and a `break`-targeted exit block.
+                //
+                // Type rule: if no `break` statement can reach this loop's exit
+                // (break-less infinite loop), the expression never produces a
+                // value — its type is `Never`.  If at least one `break` exists,
+                // control can exit normally and the type is `Unit`.  This allows
+                // a break-less loop in if/match branch position to unify with
+                // the other branch's type instead of forcing the whole
+                // expression to `Unit`.
+                let loop_ty = if hew_parser::loop_body_has_break(body, label.as_deref()) {
+                    ResolvedTy::Unit
+                } else {
+                    ResolvedTy::Never
+                };
                 let body_block = self.lower_block(body, &ResolvedTy::Unit);
                 let loop_expr = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
-                    ty: ResolvedTy::Unit,
+                    ty: loop_ty,
                     value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
                     kind: HirExprKind::Loop {
@@ -16491,6 +16514,29 @@ impl LowerCtx {
                 .as_deref()
                 .and_then(|q| self.machine_ctor_registry.get(q).cloned())
         });
+        // Import-alias fallback: `Hue::Red` where "Hue" is an alias for
+        // "aliassrc.Color".  Resolve the prefix through `import_type_name_aliases`
+        // and retry with the canonical qualified key ("aliassrc.Color::Red").
+        let registry_hit = if registry_hit.is_none() {
+            if let Some(sep) = name.rfind("::") {
+                let prefix = &name[..sep];
+                let variant_part = &name[sep + 2..];
+                let canonical = self.import_type_name_aliases.get(prefix).cloned();
+                if let Some(canonical) = canonical {
+                    let canonical_key = format!("{canonical}::{variant_part}");
+                    self.machine_ctor_registry
+                        .get(&canonical_key)
+                        .cloned()
+                        .or(registry_hit)
+                } else {
+                    registry_hit
+                }
+            } else {
+                registry_hit
+            }
+        } else {
+            registry_hit
+        };
         if let Some((tagged_union_name, variant_idx)) = registry_hit {
             let checker_agrees = match self.expr_types.get(&key) {
                 None => true,
@@ -16721,6 +16767,14 @@ impl LowerCtx {
     /// already-lowered generic arguments. Split out of `lower_type` to keep
     /// that dispatcher under the line budget.
     fn resolve_named_type_ref(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
+        // Import-alias resolution: `Tag` from `import aliassrc::{ Payload as Tag }`
+        // must resolve to `aliassrc.Payload` before all other registry lookups.
+        // The canonical name (e.g., "aliassrc.Payload") contains a dot, so the
+        // recursive call takes the module-qualified branch and produces the right
+        // `ResolvedTy::Named { name: "aliassrc.Payload", … }`.
+        if let Some(canonical) = self.import_type_name_aliases.get(name).cloned() {
+            return self.resolve_named_type_ref(&canonical, args);
+        }
         let type_name = name
             .rsplit_once('.')
             .map_or(name, |(_, unqualified)| unqualified);
@@ -19460,10 +19514,29 @@ impl LowerCtx {
     /// an enum which somehow has no recorded variant at that index (should
     /// never happen — same-source ordering invariant).
     fn lookup_variant_ctor(&self, name: &str) -> Option<(String, usize, &HirVariantKind)> {
-        let (type_name, idx) = self.machine_ctor_registry.get(name)?;
-        let variants = self.enum_variants_by_name.get(type_name)?;
-        let variant = variants.get(*idx)?;
-        Some((type_name.clone(), *idx, &variant.kind))
+        // Direct lookup first.
+        if let Some((type_name, idx)) = self.machine_ctor_registry.get(name) {
+            let variants = self.enum_variants_by_name.get(type_name)?;
+            let variant = variants.get(*idx)?;
+            return Some((type_name.clone(), *idx, &variant.kind));
+        }
+        // Import-alias fallback: `Geo::Box` where "Geo" is an alias for
+        // "shapes.Shape".  The `machine_ctor_registry` has "shapes.Shape::Box"
+        // but not "Geo::Box".  Resolve the prefix through the alias table and
+        // retry with the canonical qualified key.
+        if let Some(sep) = name.find("::") {
+            let prefix = &name[..sep];
+            let variant_suffix = &name[sep..]; // includes the "::"
+            if let Some(canonical_prefix) = self.import_type_name_aliases.get(prefix) {
+                let canonical_key = format!("{canonical_prefix}{variant_suffix}");
+                if let Some((type_name, idx)) = self.machine_ctor_registry.get(&canonical_key) {
+                    let variants = self.enum_variants_by_name.get(type_name)?;
+                    let variant = variants.get(*idx)?;
+                    return Some((type_name.clone(), *idx, &variant.kind));
+                }
+            }
+        }
+        None
     }
 
     fn resolved_option_inner(ty: &ResolvedTy) -> Option<&ResolvedTy> {

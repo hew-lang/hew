@@ -232,6 +232,7 @@ mod tests {
             resolved_calls: HashMap::new(),
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
+            import_type_name_aliases: HashMap::new(),
         }
     }
 

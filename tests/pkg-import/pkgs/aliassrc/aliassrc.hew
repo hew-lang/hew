@@ -27,3 +27,12 @@ pub type Other {
     tag: i64;
     note: i64;
 }
+
+/// Enum with a mix of unit and tuple variants.
+/// Used to test that an import alias like `Color as Hue` resolves
+/// the alias in both type-annotation position and variant-path position.
+pub enum Color {
+    Red;
+    Green;
+    Blue(i64);
+}

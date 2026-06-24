@@ -409,6 +409,7 @@ pub enum RuntimeCallFamily {
     // --- String runtime helpers --------------------------------------------
     StringCharCount,
     StringConcat,
+    StringGet,
     StringIndex,
     StringSliceCodepoints,
 
@@ -635,6 +636,7 @@ impl RuntimeCallFamily {
             // String
             Self::StringCharCount => "hew_string_char_count",
             Self::StringConcat => "hew_string_concat",
+            Self::StringGet => "hew_string_get",
             Self::StringIndex => "hew_string_index",
             Self::StringSliceCodepoints => "hew_string_slice_codepoints",
             // Supervisor
@@ -872,6 +874,7 @@ impl RuntimeCallFamily {
             // String
             "hew_string_char_count" => Self::StringCharCount,
             "hew_string_concat" => Self::StringConcat,
+            "hew_string_get" => Self::StringGet,
             "hew_string_index" => Self::StringIndex,
             "hew_string_slice_codepoints" => Self::StringSliceCodepoints,
             // Supervisor
@@ -1107,6 +1110,7 @@ impl RuntimeCallFamily {
             | F::SendHalfTrySend
             | F::StringCharCount
             | F::StringConcat
+            | F::StringGet
             | F::StringIndex
             | F::StringSliceCodepoints
             | F::SupervisorChildGet

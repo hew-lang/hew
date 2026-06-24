@@ -746,6 +746,13 @@ impl string {
     fn char_at(s: string, idx: i64) -> i64 {
         0
     }
+    /// Return the `char` at codepoint-index `index`, or `None` when the index
+    /// is out of bounds. This is the non-trapping `Index::get` accessor,
+    /// de-aliased from the trapping `s[i]` sugar (which aborts on OOB).
+    #[extern_symbol(hew_string_get)]
+    fn get(s: string, index: i64) -> Option<char> {
+        None
+    }
     #[extern_symbol(hew_string_chars)]
     fn chars(s: string) -> Vec<char> {
         Vec::new()

@@ -18820,6 +18820,7 @@ impl Builder {
             "hew_bytes_push" => self.lower_bytes_push(hir_args, site, context),
             "hew_vec_len" => self.lower_bytes_len(hir_args, site, context),
             "hew_bytes_get" => self.lower_bytes_get_option(hir_args, site, context, result_ty),
+            "hew_string_get" => self.lower_string_get_option(hir_args, site, context, result_ty),
             "hew_string_char_count" => self.lower_string_char_count(hir_args, site, context),
             "hew_observe_read_u64"
             | "hew_observe_scrape"
@@ -19011,8 +19012,73 @@ impl Builder {
         Some(result)
     }
 
-    /// Emit `hew_string_char_count(s) -> i32`, widened to the Hew-facing `i64`.
+    /// Lower `string.get(index) -> Option<char>` to a single `Terminator::Call`
+    /// to the codegen-intercepted `hew_string_get` symbol.
     ///
+    /// Mirrors the bytes `.get` shape — the symbol carries no runtime export
+    /// (`builtin: None`): codegen bounds-checks the index against
+    /// `hew_string_char_count` and materialises `Some(char)` / `None` over the
+    /// in-bounds `hew_string_index` codepoint load.
+    ///
+    /// The receiver is BORROWED, not consumed — `hew_string_get` is listed in
+    /// `is_collection_receiver_borrow_callee`, so `s` keeps its scope-exit drop.
+    /// The `char` element is a scalar (Copy): the `Some` payload is a by-value
+    /// codepoint with no owned clone, so drop-safety is trivial.
+    fn lower_string_get_option(
+        &mut self,
+        hir_args: &[hew_hir::HirExpr],
+        site: hew_hir::SiteId,
+        context: RuntimeCallContext,
+        result_ty: Option<&ResolvedTy>,
+    ) -> Option<Place> {
+        if hir_args.len() != 2 {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_string_get` arity".to_string(),
+                    site,
+                },
+                note: format!(
+                    "`hew_string_get` (string.get) expects 2 arguments (receiver, index), got {}",
+                    hir_args.len()
+                ),
+            });
+            return None;
+        }
+        // The checker types `s.get(i)` as `Option<char>`; size the dest enum slot
+        // with that exact type so codegen resolves the registered Option layout
+        // (`checker-authority`: consume the recorded type, never re-infer it).
+        let Some(opt_ty) = result_ty else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_string_get` result type".to_string(),
+                    site,
+                },
+                note: "`hew_string_get` (string.get) needs the checker-recorded \
+                       `Option<char>` result type to size its dest slot"
+                    .to_string(),
+            });
+            return None;
+        };
+        let s = self.lower_value(&hir_args[0])?;
+        let idx = self.lower_value(&hir_args[1])?;
+        // Always materialise the Option; the bounds-check CFG lives in codegen.
+        // A discarded result is a dead local the optimiser elides, but the Call
+        // terminator still needs a dest + a `next` block to continue into.
+        let result = self.alloc_local(opt_ty.clone());
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_string_get".to_string(),
+            builtin: None,
+            args: vec![s, idx],
+            dest: Some(result),
+            next,
+        });
+        self.start_block(next);
+        let _ = context;
+        Some(result)
+    }
+
+    /// Emit `hew_string_char_count(s) -> i32`, widened to the Hew-facing `i64`.
     /// The runtime ABI returns i32, while the stdlib-facing
     /// `string.char_count_utf8()` declaration returns i64. Keep the call ABI
     /// honest by storing the runtime result in an i32 temporary and inserting

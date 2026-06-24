@@ -20242,6 +20242,52 @@ mod wasm_rejects {
         );
     }
 
+    // ── Issue #2135: value-position (first-class fn reference) wasm rejects ──
+
+    #[test]
+    fn wasm_rejects_crypto_random_bytes_value_position() {
+        // Taking crypto.random_bytes as a first-class function value on wasm32
+        // must be rejected with PlatformLimitation, not silently allowed.
+        let source = concat!(
+            "import std::crypto::crypto;\n",
+            "fn main() { let _f = crypto.random_bytes; }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "crypto.random_bytes value-position reference must be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "random_bytes"),
+            "error message should mention random_bytes; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn native_crypto_random_bytes_value_position_no_error() {
+        // The same value-position reference must be accepted on native (non-wasm)
+        // targets so the guard does not break native builds.
+        let source = concat!(
+            "import std::crypto::crypto;\n",
+            "fn main() { let _f = crypto.random_bytes; }\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "crypto.random_bytes value-position must not error on native target; got: {:?}",
+            output.errors
+        );
+    }
+
     // ── Native sibling tests: no platform error on non-wasm target ────────
 
     #[test]
@@ -25850,6 +25896,97 @@ fn foo(t: Tri) -> i64 {
         assert_eq!(
             bar_arm.payload_bindings[0].field_idx, 1,
             "field_idx must reflect declaration order, not alphabetical order"
+        );
+    }
+
+    // ── Issue #2116: resolution-based constructor vs binder detection ─────────
+
+    #[test]
+    fn uppercase_binder_not_constructor_records_binding_kind() {
+        // An uppercase plain identifier that does NOT resolve to a unit variant
+        // of the scrutinee type must be classified as `PatternKind::Binding`,
+        // not as `PatternKind::VariantCtor`. The old case heuristic mis-classified
+        // `INF` as a constructor and then failed to resolve it.
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(x: i64) -> i64 {
+    match x {
+        INF => INF,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 1);
+        let arm = resolutions.values().next().unwrap();
+        assert_eq!(
+            arm.pattern_kind,
+            PatternKind::Binding,
+            "uppercase binder `INF` against non-enum type must record Binding, not VariantCtor"
+        );
+        assert!(
+            arm.variant_match.is_none(),
+            "uppercase binder must not have a variant_match"
+        );
+    }
+
+    #[test]
+    fn known_unit_variant_still_records_ctor_kind() {
+        // Ensure the resolution-based fix does NOT accidentally reclassify a
+        // genuine unit-variant constructor (`None`) as a binder when it DOES
+        // resolve against the scrutinee type.
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(opt: Option<i64>) -> i64 {
+    match opt {
+        None => 0,
+        Some(v) => v,
+    }
+}",
+        );
+        let none_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "None")
+            })
+            .expect("None arm must be recorded with a variant_match");
+        assert_eq!(
+            none_arm.pattern_kind,
+            PatternKind::VariantCtor,
+            "`None` against Option<i64> must record VariantCtor"
+        );
+    }
+
+    #[test]
+    fn uppercase_binder_in_payload_position_records_as_binding() {
+        // An uppercase name in a constructor-payload slot that does NOT resolve
+        // as a variant of the payload type must become a plain PayloadBinding
+        // rather than a failed nested-constructor attempt.
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(opt: Option<i64>) -> i64 {
+    match opt {
+        Some(MAX) => MAX,
+        None => 0,
+    }
+}",
+        );
+        let some_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Some")
+            })
+            .expect("Some arm must be recorded");
+        assert_eq!(some_arm.payload_bindings.len(), 1);
+        assert_eq!(
+            some_arm.payload_bindings[0].binding_name, "MAX",
+            "uppercase payload binder MAX must appear in payload_bindings"
+        );
+        assert!(
+            some_arm.payload_variant_patterns.is_empty(),
+            "uppercase binder MAX must not be recorded as a nested constructor"
         );
     }
 }

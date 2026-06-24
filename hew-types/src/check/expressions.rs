@@ -5202,6 +5202,68 @@ impl Checker {
                                     self.current_module.clone(),
                                     name.clone(),
                                 ));
+                                // Apply the same wasm native-only guard used for call
+                                // expressions (#2135): a value-position reference to a
+                                // native-only stdlib function is itself a
+                                // `PlatformLimitation` rejection on wasm32, mirroring
+                                // the call-form guard in methods.rs.
+                                if self.wasm_target && !self.user_modules.contains(name.as_str()) {
+                                    match name.as_str() {
+                                        "stream" => self.reject_wasm_feature(
+                                            span,
+                                            WasmUnsupportedFeature::Streams,
+                                        ),
+                                        "http" => self.reject_wasm_feature(
+                                            span,
+                                            WasmUnsupportedFeature::HttpServer,
+                                        ),
+                                        "net" => self.reject_wasm_feature(
+                                            span,
+                                            WasmUnsupportedFeature::TcpNetworking,
+                                        ),
+                                        "process" => self.reject_wasm_feature(
+                                            span,
+                                            WasmUnsupportedFeature::ProcessExecution,
+                                        ),
+                                        "tls" => self
+                                            .reject_wasm_feature(span, WasmUnsupportedFeature::Tls),
+                                        "quic" => self.reject_wasm_feature(
+                                            span,
+                                            WasmUnsupportedFeature::Quic,
+                                        ),
+                                        "dns" => self
+                                            .reject_wasm_feature(span, WasmUnsupportedFeature::Dns),
+                                        "os" => self.reject_wasm_feature(
+                                            span,
+                                            WasmUnsupportedFeature::OsEnv,
+                                        ),
+                                        "encrypt" => self.reject_wasm_feature(
+                                            span,
+                                            WasmUnsupportedFeature::CryptoEncrypt,
+                                        ),
+                                        "sign" => self.reject_wasm_feature(
+                                            span,
+                                            WasmUnsupportedFeature::CryptoSign,
+                                        ),
+                                        "http_client" => self.reject_wasm_feature(
+                                            span,
+                                            WasmUnsupportedFeature::HttpClient,
+                                        ),
+                                        "smtp" => self.reject_wasm_feature(
+                                            span,
+                                            WasmUnsupportedFeature::Smtp,
+                                        ),
+                                        _ => {}
+                                    }
+                                    // crypto.random_bytes depends on a native-only secure
+                                    // entropy source absent from the wasm32 link set.
+                                    if name.as_str() == "crypto" && field == "random_bytes" {
+                                        self.reject_wasm_feature(
+                                            span,
+                                            WasmUnsupportedFeature::CryptoRandom,
+                                        );
+                                    }
+                                }
                                 return ty;
                             }
                             self.report_error(

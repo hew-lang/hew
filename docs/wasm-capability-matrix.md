@@ -323,7 +323,7 @@ form consumed by browser/playground tooling and the WASI e2e test suite.
 
 | Field | Value | Meaning |
 |-------|-------|---------|
-| `browser` | `"analysis-only"` | The entry can be analysed (lex/parse/typecheck) in-browser via `hew-wasm`, but no in-browser program execution is available yet. This value is invariant for all curated entries. |
+| `browser` | `"analysis-only"` | The entry can be analysed (lex/parse/typecheck) in-browser via `hew-wasm`. This value tracks the `hew-wasm` analysis crate and is invariant for all curated entries in this manifest; the sandbox VM execution target is tracked separately in `hew-lang/playground`. |
 | `wasi` | `"runnable"` | The example compiles and executes correctly under `hew build --target=wasm32-wasi` (Tier 2). |
 | `wasi` | `"unsupported"` | The example uses a Warn / Reject surface or relies on a documented `WASM-TODO` capability that Hew does not currently treat as runnable on WASM32. |
 

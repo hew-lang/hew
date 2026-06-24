@@ -48,6 +48,9 @@ The `--` separator is mandatory when passing program arguments — everything be
 - Within a fn or actor there is no borrow checker: pass values freely, mutations to Vec/HashMap persist in the caller.
 - Last expression of a block (no trailing semicolon) is its value; a trailing `;` makes it unit.
 - Lean on the safe stdlib trio: `std::string`, `std::math`, `std::iter`. Do not import `std::option`/`std::result`.
+- Negate a bool with `!`: `!x` is `true` when `x` is `false`.
+- `break` and `continue` work in both `loop {}` and `while` loops.
+- Iterate all HashMap keys with `.keys()` → `Vec<string>`; all values with `.values()` → `Vec<V>`.
 
 ## Primitives
 
@@ -148,6 +151,19 @@ fn main() {
 Use `var` when the name will be reassigned or when a scalar field on a `var`-bound record will be mutated. `let` collections (`Vec`, `HashMap`, `HashSet`) have interior mutability — `.push()`/`.insert()` work on a `let` binding because you are not reassigning the binding itself. Use `var` only when you need to rebind the name to a new value.
 
 Compound-assign operators (`+=`, `-=`, `*=`, `/=`) are available for `var` bindings.
+
+The `!` prefix operator negates a `bool`:
+
+```hew
+fn main() {
+    let x = true;
+    println(!x);               // false
+    let empty = false;
+    if !empty { println("not empty"); }  // not empty
+}
+```
+
+`!` is the logical NOT operator. You can also use `== false` or `!= true` — all three spellings are accepted, but `!x` is the shortest form.
 
 ### var binding with a type annotation
 
@@ -304,6 +320,22 @@ fn main() {
 
 `loop` is a statement, not an expression — capture results in a `var` declared before the loop, then `break`.
 
+### break and continue in while loops
+
+```hew
+fn main() {
+    var i = 0;
+    while i < 10 {
+        if i == 7 { break; }
+        if i % 2 == 0 { i += 1; continue; }
+        println(i);   // 1, 3, 5
+        i += 1;
+    }
+}
+```
+
+`break` and `continue` work inside `while` loops, not just `loop` blocks. `break` exits the loop immediately; `continue` skips the rest of the body and re-evaluates the condition.
+
 ### if let on Option
 
 ```hew
@@ -449,6 +481,50 @@ fn main() {
 
 `v.set(i, value)` overwrites the element at index `i` in place. It complements `v[i]` (read) — reading uses the subscript, writing uses `.set()`. Out-of-bounds traps at runtime; guard with `i < v.len()`.
 
+### .contains(), .clear(), .extend()
+
+```hew
+fn main() {
+    let v: Vec<i64> = Vec::new();
+    v.push(1); v.push(2); v.push(3);
+    println(v.contains(2));   // true
+    println(v.contains(9));   // false
+
+    let v2: Vec<i64> = Vec::new();
+    v2.push(4); v2.push(5);
+    v.extend(v2);             // v is now [1, 2, 3, 4, 5]
+    println(v.len());         // 5
+
+    v.clear();                // removes all elements
+    println(v.len());         // 0
+}
+```
+
+`.contains(x)` returns `bool` — works for scalars, strings, and records. `.extend(v2)` appends every element of `v2` to `v` in order. `.clear()` empties the Vec without freeing it (you can push again afterward).
+
+### Vec<Vec<T>> — nested Vecs
+
+```hew
+fn main() {
+    let matrix: Vec<Vec<i64>> = Vec::new();
+
+    let row0: Vec<i64> = Vec::new();
+    row0.push(1); row0.push(2); row0.push(3);
+
+    let row1: Vec<i64> = Vec::new();
+    row1.push(4); row1.push(5); row1.push(6);
+
+    matrix.push(row0);
+    matrix.push(row1);
+
+    println(matrix.len());            // 2
+    let r = matrix.get(1);
+    println(r.get(2));                // 6
+}
+```
+
+`Vec<Vec<T>>` works for any element type, including other `Vec<T>` and `HashMap<K,V>`. Use `.get(i)` to retrieve the inner Vec, then chain further operations.
+
 ## Collections — HashMap and HashSet
 
 ### Create and insert into a HashMap
@@ -497,15 +573,28 @@ fn main() {
 ### Supported HashMap value types
 
 ```hew
+type User { name: string; score: i64; }
+
 fn main() {
+    // Scalar values
     let flags: HashMap<string, bool> = HashMap::new();
     flags.insert("debug", true);
     let ratios: HashMap<string, f64> = HashMap::new();
     ratios.insert("pi", 3.14);
+
+    // User-defined records work as values
+    let users: HashMap<string, User> = HashMap::new();
+    users.insert("alice", User { name: "Alice", score: 100 });
+
+    // Vec<T> also works as a value
+    let tags: HashMap<string, Vec<string>> = HashMap::new();
+    let v: Vec<string> = Vec::new();
+    v.push("admin");
+    tags.insert("alice", v);
 }
 ```
 
-Keys are `string`; verified value types are `i64`, `string`, `bool`, `f64`.
+Keys are `string`. Value types include `i64`, `string`, `bool`, `f64`, user-defined records, and `Vec<T>`.
 
 ### Mutating a HashMap value (copy-rebuild-reinsert)
 
@@ -532,6 +621,29 @@ fn main() {
 
 `.get(k)` returns an owned copy of the value (not a reference). Modify the copy and reinsert with `.insert(k, new_value)`. This is the only mutation path — there is no `.get_mut()` or entry API.
 
+### Iterating a HashMap — .keys() and .values()
+
+```hew
+fn main() {
+    let m: HashMap<string, i64> = HashMap::new();
+    m.insert("alice", 10);
+    m.insert("bob", 20);
+    m.insert("carol", 30);
+
+    let ks = m.keys();         // Vec<string> — all keys
+    let vs = m.values();       // Vec<i64>    — all values (same order)
+
+    for k in ks {
+        println(k);            // alice, bob, carol (order unspecified)
+    }
+    for v in vs {
+        println(v);            // 10, 20, 30 (order matches keys())
+    }
+}
+```
+
+`.keys()` returns a `Vec<string>` snapshot of every key; `.values()` returns a `Vec<V>` snapshot of the corresponding values. Order is unspecified but both snapshots use the same internal order, so `keys().get(i)` maps to `values().get(i)`. Both return new Vecs — safe to iterate or pass to other functions.
+
 ### Create and use a HashSet
 
 ```hew
@@ -547,7 +659,7 @@ fn main() {
 }
 ```
 
-Set membership is `.contains(x)` (note: `.contains_key` is the HashMap spelling). Inserts dedup automatically. Supported element types are `i64` and `string`. There is no iteration over maps or sets — track keys externally in a `Vec` and probe with `.get`/`.contains`.
+Set membership is `.contains(x)` (note: `.contains_key` is the HashMap spelling). Inserts dedup automatically. Supported element types are `i64` and `string`.
 
 ## Functions and ownership
 
@@ -1083,7 +1195,7 @@ let r = await actor.method();
 match r { Ok(v) => println(v), Err(_) => println("err") }
 ```
 
-Note that `.send()` is a reserved method name in the actor system — name your actor's message-passing methods something other than `send` (e.g. `deliver`, `push`, `enqueue`).
+Note that `.send()` is accepted as an actor method name and compiles correctly — there is no compiler-level restriction on it.
 
 ### Ask try-sugar in a Result-returning fn
 
@@ -1893,6 +2005,98 @@ fn main() {
 ```
 
 For Vec processing use the typed monomorphic helpers (`map_int`/`map_str`/`map_f64`, `filter_*`, `fold_*`, `sum`, `any`/`all`, `take_*`/`skip_*`/`count_*`). Pass closures as `|x| body`.
+
+### std::sort — sorting vectors
+
+```hew
+import std::sort;
+fn main() {
+    let nums: Vec<i64> = Vec::new();
+    nums.push(3); nums.push(1); nums.push(4); nums.push(1); nums.push(5);
+    let sorted   = sort.sort_ints(nums);       // returns new Vec — original unchanged
+    let reversed = sort.reverse_ints(sorted);
+    println(sorted.get(0));    // 1
+    println(reversed.get(0));  // 5
+
+    let words: Vec<string> = Vec::new();
+    words.push("banana"); words.push("apple"); words.push("cherry");
+    let sw = sort.sort_strings(words);
+    println(sw.get(0));        // apple
+
+    let floats: Vec<f64> = Vec::new();
+    floats.push(3.14); floats.push(1.41); floats.push(2.72);
+    let sf = sort.sort_floats(floats);
+    println(sf.get(0));        // 1.41
+}
+```
+
+`sort_ints` / `sort_strings` / `sort_floats` return new sorted Vecs (ascending); `reverse_ints` / `reverse_strings` / `reverse_floats` return new reversed Vecs. The original is never modified.
+
+### std::random — pseudo-random number generation
+
+```hew
+import std::random;
+fn main() {
+    random.seed(42);                   // deterministic sequence
+    let r = random.random();           // f64 in [0.0, 1.0)
+    let n = random.randint(1, 7);      // i64 in [1, 7)  — like a d6 roll
+    let g = random.gauss(0.0, 1.0);   // Gaussian sample
+
+    let v: Vec<i64> = Vec::new();
+    v.push(10); v.push(20); v.push(30);
+    random.shuffle(v);                 // in-place Fisher-Yates shuffle
+    println(v.get(0));                 // non-deterministic (seeded above)
+}
+```
+
+Backed by a CPython-compatible MT19937 Mersenne Twister — the same seed produces the same sequence as CPython's `random` module. Call `seed(n)` first for reproducible output; without a seed, the state is initialised from OS entropy. `randint(lo, hi)` returns in the half-open range `[lo, hi)`.
+
+### std::time::datetime — timestamps and date arithmetic
+
+```hew
+import std::time::datetime;
+fn main() {
+    let now = datetime.now_ms();             // i64 epoch milliseconds
+    println(datetime.to_iso8601(now));       // 2026-06-23T18:42:22Z
+    println(datetime.format(now, "%Y-%m-%d")); // 2026-06-23
+
+    println(datetime.year(now));    // 2026
+    println(datetime.month(now));   // 6
+    println(datetime.day(now));     // 23
+    println(datetime.hour(now));    // 18
+    println(datetime.minute(now));  // 42
+
+    let tomorrow = datetime.add_days(now, 1);
+    let diff = datetime.diff_secs(tomorrow, now);
+    println(diff);                  // 86400
+
+    match datetime.try_parse("2026-01-01", "%Y-%m-%d") {
+        Ok(ts) => println(datetime.year(ts)),   // 2026
+        Err(e) => println(f"parse error: {e}"),
+    }
+}
+```
+
+Timestamps are `i64` epoch milliseconds throughout. `to_iso8601` formats as RFC 3339 UTC; `format(ts, fmt)` uses strftime-style patterns. `year`/`month`/`day`/`hour`/`minute`/`second`/`weekday` extract components. `add_days` / `add_hours` perform arithmetic; `diff_secs` returns the signed difference. Use `try_parse` when the input may be malformed.
+
+### std::deque — double-ended queue
+
+```hew
+import std::deque;
+fn main() {
+    let dq = deque.new();
+    dq.push_back(1);
+    dq.push_back(2);
+    dq.push_front(0);     // [0, 1, 2]
+    println(dq.len());    // 3
+    println(dq.pop_front());  // 0
+    println(dq.pop_back());   // 2
+    println(dq.is_empty());   // false
+    dq.free();
+}
+```
+
+`deque.new()` returns an opaque `Deque` handle. `push_front` / `push_back` add to either end; `pop_front` / `pop_back` remove and return the element (traps on empty). Current element type is `i64`. Call `free()` when done — the Deque is a heap-managed handle.
 
 ### Multiple stdlib imports coexisting
 

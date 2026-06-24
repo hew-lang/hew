@@ -1,0 +1,11 @@
+// Sibling module imported by imported_shadow_variant_call.hew.
+// Declares a pub enum whose variant name (NotFound) matches a builtin variant
+// name.  The function make_error uses the bare constructor form NotFound(msg),
+// which must resolve to AppErr::NotFound (the user type), not to the builtin
+// LookupError::NotFound unit variant.
+
+pub enum AppErr { NotFound(string) }
+
+pub fn make_error(msg: string) -> AppErr {
+    NotFound(msg)
+}

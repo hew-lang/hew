@@ -29317,3 +29317,198 @@ mod every_attribute {
         }
     }
 }
+
+/// Tests for local-shadows-global reserved-name resolution.
+///
+/// Four invariants:
+///   1. A user payload variant shadows a builtin unit variant of the same name.
+///   2. A user unit variant deterministically shadows a builtin unit variant.
+///   3. Qualified builtin variant still resolves after the fix (no regression).
+///   4. Two user enums with the same variant name remain ambiguous (user-vs-user
+///      behaviour is unchanged by this fix).
+#[cfg(test)]
+mod reserved_names {
+    use super::*;
+
+    /// User `enum AppError { NotFound(string); }` — bare `NotFound("msg")`
+    /// must resolve to `AppError::NotFound`, NOT to the builtin
+    /// `LookupError::NotFound` unit variant.
+    ///
+    /// In the no-search-paths test context, `register_builtins` runs before
+    /// `collect_types`, so the user's registration overwrites the builtin's
+    /// `fn_sigs` slot (user already wins).  This test pins the expected
+    /// behaviour as a regression guard, and also validates the
+    /// `resolve_identifier_variant` two-pass fix does not break this.
+    #[test]
+    fn user_payload_variant_shadows_builtin_unit() {
+        let output = check_source(
+            r#"
+            enum AppError {
+                NotFound(string);
+                Timeout;
+                Forbidden;
+            }
+
+            fn get_error() -> AppError {
+                NotFound("resource missing")
+            }
+
+            fn main() {
+                let _e = get_error();
+            }
+            "#,
+        );
+        assert!(
+            output.errors.is_empty(),
+            "user payload variant NotFound should shadow builtin LookupError::NotFound; \
+             got errors: {:#?}",
+            output.errors
+        );
+    }
+
+    /// User `enum Status { Timeout; }` — bare `Timeout` must deterministically
+    /// resolve to `Status::Timeout`, not `LookupError::Timeout` (builtin unit).
+    ///
+    /// The two-pass scan in `resolve_identifier_variant` ensures user-declared
+    /// types always win regardless of `HashMap` iteration order.
+    #[test]
+    fn user_unit_variant_shadows_builtin_unit() {
+        let output = check_source(
+            r"
+            enum Status {
+                Timeout;
+                Ready;
+            }
+
+            fn check_timeout(s: Status) -> bool {
+                s == Timeout
+            }
+
+            fn main() {
+                let s: Status = Timeout;
+                let _b = check_timeout(s);
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "user unit variant Timeout should shadow builtin; got errors: {:#?}",
+            output.errors
+        );
+    }
+
+    /// Qualified form `LookupError::NotFound` must still resolve correctly
+    /// even when a user enum declares `NotFound`.  Qualified resolution
+    /// bypasses the bare-name collision entirely.
+    #[test]
+    fn qualified_builtin_variant_still_resolves() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _e: LookupError = LookupError::NotFound;
+            }
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "qualified LookupError::NotFound must still resolve; got errors: {:#?}",
+            output.errors
+        );
+    }
+
+    /// Two user enums that both declare the same bare variant name: the TYPE
+    /// CHECKER resolves it to whichever registration ran last (last-write-wins
+    /// `fn_sigs` slot for user enums) — no type error at the checker layer.
+    ///
+    /// User-vs-user ambiguity is enforced at the HIR lowering layer via
+    /// `bare_counts` (not the type checker), which is unchanged by the
+    /// local-shadows-global fix.  This test pins the checker-layer behaviour:
+    /// bare `Conflict` is NOT a type error even with two same-named variants,
+    /// and this is unchanged by the shadowing fix (which only demotes BUILTIN
+    /// variants relative to user-declared ones).
+    #[test]
+    fn user_vs_user_same_variant_checker_resolves_last_writer() {
+        // At the checker layer, fn_sigs["Conflict"] is last-write-wins: A
+        // registers first, B overwrites.  The expression `Conflict` resolves
+        // to whichever won the slot — no type error.
+        let output = check_source(
+            r"
+            enum A { Conflict; }
+            enum B { Conflict; }
+
+            fn main() {
+                let _x = Conflict;
+            }
+            ",
+        );
+        // Type checker does not enforce uniqueness for bare variants when there
+        // are multiple user-declared types with the same variant name — that
+        // guard lives in HIR lowering (bare_counts).  No type errors expected.
+        assert!(
+            output.errors.is_empty(),
+            "bare Conflict with two user enums should not produce type errors \
+             (HIR lowering enforces uniqueness, not the checker); got: {:#?}",
+            output.errors
+        );
+    }
+
+    /// A user-declared `Task` enum must not trigger `TaskNotNameable`.
+    ///
+    /// `Task<T>` is normally a compiler-internal name.  When the user declares
+    /// their own `Task` enum, the local-shadows-global rule must bypass the
+    /// reservation guard so `Task` in type-annotation positions resolves to the
+    /// user's enum, not the compiler-internal type.
+    #[test]
+    fn user_task_enum_shadows_reserved_name() {
+        let output = check_source(
+            r#"
+            enum Task {
+                Pending;
+                Done;
+            }
+
+            fn describe(t: Task) -> string {
+                match t {
+                    Pending => { return "pending"; }
+                    Done    => { return "done"; }
+                }
+            }
+
+            fn main() {
+                let t: Task = Pending;
+                let _s = describe(t);
+            }
+            "#,
+        );
+        assert!(
+            output.errors.is_empty(),
+            "user-declared Task enum must not raise TaskNotNameable; got: {:#?}",
+            output.errors
+        );
+    }
+
+    /// `Task<T>` without a local declaration must still raise `TaskNotNameable`.
+    ///
+    /// This is the negative companion to `user_task_enum_shadows_reserved_name`:
+    /// the reservation guard must fire when the user has NOT declared a `Task`
+    /// type of their own.
+    #[test]
+    fn bare_task_without_declaration_still_reserved() {
+        let output = check_source(
+            r"
+            fn main() {
+                let _t: Task = 0;
+            }
+            ",
+        );
+        let has_not_nameable = output
+            .errors
+            .iter()
+            .any(|e| e.kind == crate::error::TypeErrorKind::TaskNotNameable);
+        assert!(
+            has_not_nameable,
+            "Task without local declaration must raise TaskNotNameable; got: {:#?}",
+            output.errors
+        );
+    }
+}

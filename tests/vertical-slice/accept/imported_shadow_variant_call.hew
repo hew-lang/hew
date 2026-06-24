@@ -1,0 +1,13 @@
+// Regression: a bare variant constructor whose name matches a builtin variant
+// must resolve to the user-declared variant in an imported module, not to the
+// builtin.  imported_shadow_errmod.make_error("gone") constructs AppErr using
+// the bare name NotFound; the pipeline must compile and run without errors.
+
+import imported_shadow_errmod;
+
+fn main() {
+    let e = imported_shadow_errmod.make_error("gone");
+    match e {
+        AppErr::NotFound(msg) => println(msg)
+    }
+}

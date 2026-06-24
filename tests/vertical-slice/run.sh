@@ -3079,3 +3079,27 @@ expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/wire_cbor_vec_owned_compound_rejected.hew" \
     "owned-compound element" \
     "wire_cbor_vec_owned_compound_rejected"
+
+# ---------------------------------------------------------------------------
+# Reserved-name shadowing.
+# A user-declared enum variant with the same bare name as a builtin variant
+# must shadow the builtin — the program must compile and run without arity
+# errors.
+# ---------------------------------------------------------------------------
+run_accept_expect_status "reserved_name_shadow_variant_call" 0
+
+# Reject: `Task` in a type annotation without a local `Task` declaration must
+# still raise TaskNotNameable — the reservation guard is only bypassed when
+# the user has declared their own type named `Task`.
+expect_check_fail_contains \
+    "${ROOT}/tests/vertical-slice/reject/reserved_task_not_nameable.hew" \
+    "compiler-internal type" \
+    "reserved_task_not_nameable"
+
+# Layout: accept/imported_shadow_variant_call.hew imports
+# accept/imported_shadow_errmod.hew.  A pub enum in a non-root (imported)
+# module that declares NotFound(string) must have its bare constructor
+# registered over the builtin LookupError::NotFound unit variant; the
+# program must compile and run without HIR shape-mismatch diagnostics.
+run_accept_expect_status "imported_shadow_variant_call" 0
+

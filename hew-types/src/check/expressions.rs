@@ -1203,6 +1203,15 @@ impl Checker {
                     .insert(name.to_string());
             }
             let sig = self.fn_sigs[name].clone();
+            // local-shadows-global: when the fn_sig slot was won by a builtin enum
+            // variant, prefer any user-declared enum that has a variant with the
+            // same name (e.g. user `enum AppError { NotFound(string); }` shadows
+            // the builtin `LookupError::NotFound` unit variant).
+            if sig.is_builtin_variant {
+                if let Some(user_ty) = self.find_user_variant_shadow_ty(name) {
+                    return user_ty;
+                }
+            }
             if sig.params.is_empty() {
                 sig.return_type
             } else {
@@ -1216,19 +1225,111 @@ impl Checker {
         }
     }
 
+    /// Look up whether any user-declared enum type (in `local_type_defs` or
+    /// `source_type_defs`) has a variant named `variant_name`.  Returns the
+    /// resolved `Ty` for that variant if found (unit variant → the enum type;
+    /// tuple variant → a `Ty::Function` constructing that enum), or `None` if
+    /// no user type shadows the given bare name.
+    ///
+    /// Used by `check_identifier` to implement the local-shadows-global rule:
+    /// when `fn_sigs[variant_name].is_builtin_variant` is `true`, the builtin
+    /// won the bare-name slot but a user-declared variant with the same name
+    /// should take priority within this compilation unit.
+    fn find_user_variant_shadow_ty(&self, variant_name: &str) -> Option<Ty> {
+        // Iterate over local types (user-declared in root or imported source modules).
+        // Two-set iteration: local first, then source.  In practice most programs
+        // won't have shadowing at all, so this is a short-circuit path.
+        for type_name in self
+            .local_type_defs
+            .iter()
+            .chain(self.source_type_defs.iter())
+        {
+            let Some(td) = self.type_defs.get(type_name.as_str()) else {
+                continue;
+            };
+            if td.kind != TypeDefKind::Enum {
+                continue;
+            }
+            let Some(variant) = td.variants.get(variant_name) else {
+                continue;
+            };
+            // Build fresh inference variables for any type parameters on the
+            // user enum (e.g. `enum Outcome<T> { Found(T); NotFound; }`).
+            let type_args: Vec<Ty> = td
+                .type_params
+                .iter()
+                .map(|_| Ty::Var(TypeVar::fresh()))
+                .collect();
+            let return_type = Ty::normalize_named(type_name.clone(), type_args.clone());
+            return Some(match variant {
+                VariantDef::Tuple(payload_tys) => {
+                    // Substitute generic type params with their corresponding
+                    // fresh inference variables in each payload type.
+                    let params: Vec<Ty> = payload_tys
+                        .iter()
+                        .map(|ty| {
+                            td.type_params.iter().zip(&type_args).fold(
+                                ty.clone(),
+                                |acc, (tp_name, fresh_var)| {
+                                    acc.substitute_named_param(tp_name, fresh_var)
+                                },
+                            )
+                        })
+                        .collect();
+                    Ty::Function {
+                        params,
+                        ret: Box::new(return_type),
+                    }
+                }
+                // Unit variants are values (no call needed); struct variants
+                // are constructed via `Expr::StructInit`, not
+                // `Expr::Identifier` — this path is not reached for them.
+                VariantDef::Unit | VariantDef::Struct(_) => return_type,
+            });
+        }
+        None
+    }
+
     /// Look up an identifier as a unit enum variant or qualified variant name.
     #[allow(
         clippy::too_many_lines,
         reason = "multi-branch variant resolution: unqualified, qualified-in-type_defs, and qualified-in-fn_sigs each need distinct handling"
     )]
     pub(super) fn resolve_identifier_variant(&mut self, name: &str, span: &Span) -> Ty {
+        // Two-pass scan: user-declared (local/source) types win over builtin/
+        // imported types when both declare a unit variant with the same bare name
+        // (local-shadows-global rule).  Pass 1 considers only types recorded in
+        // `local_type_defs` or `source_type_defs`; pass 2 considers the rest.
         let mut found = None;
+        // Pass 1: user-declared types.
         for (type_name, td) in &self.type_defs {
+            if !self.local_type_defs.contains(type_name.as_str())
+                && !self.source_type_defs.contains(type_name.as_str())
+            {
+                continue;
+            }
             if let Some(variant) = td.variants.get(name) {
                 if matches!(variant, VariantDef::Unit) {
                     let ty = Ty::normalize_named(type_name.clone(), vec![]);
                     found = Some(ty);
                     break;
+                }
+            }
+        }
+        // Pass 2: builtin/imported types (only when no user type matched).
+        if found.is_none() {
+            for (type_name, td) in &self.type_defs {
+                if self.local_type_defs.contains(type_name.as_str())
+                    || self.source_type_defs.contains(type_name.as_str())
+                {
+                    continue; // already scanned in pass 1
+                }
+                if let Some(variant) = td.variants.get(name) {
+                    if matches!(variant, VariantDef::Unit) {
+                        let ty = Ty::normalize_named(type_name.clone(), vec![]);
+                        found = Some(ty);
+                        break;
+                    }
                 }
             }
         }

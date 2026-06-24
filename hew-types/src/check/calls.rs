@@ -42,19 +42,38 @@ impl Checker {
                 })
             })
         } else {
-            self.type_defs
-                .iter()
-                .filter(|(_, td)| td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct)
-                .find_map(|(type_name, td)| {
-                    td.variants.get(func_name).and_then(|variant| {
-                        let params = match variant {
-                            VariantDef::Unit => Vec::new(),
-                            VariantDef::Tuple(p) => p.clone(),
-                            VariantDef::Struct(_) => return None,
-                        };
-                        Some((type_name.clone(), params, td.type_params.clone()))
+            // Two-pass scan: local/source types win over builtin/imported types
+            // (local-shadows-global rule).  Pass 1 scans only locally-declared
+            // types; pass 2 scans the remainder.  This prevents a builtin unit
+            // variant (e.g. `LookupError::NotFound`) from shadowing a user-
+            // declared tuple variant with the same bare name
+            // (e.g. `AppError::NotFound(string)`).
+            let find_in = |name: &str, check_local: bool| {
+                self.type_defs
+                    .iter()
+                    .filter(|(type_name, td)| {
+                        let is_local = self.local_type_defs.contains(type_name.as_str())
+                            || self.source_type_defs.contains(type_name.as_str());
+                        let kind_ok =
+                            td.kind == TypeDefKind::Enum || td.kind == TypeDefKind::Struct;
+                        kind_ok && (is_local == check_local)
                     })
-                })
+                    .find_map(|(type_name, td)| {
+                        td.variants.get(name).and_then(|variant| {
+                            let params = match variant {
+                                VariantDef::Unit => Vec::new(),
+                                VariantDef::Tuple(p) => p.clone(),
+                                VariantDef::Struct(_) => return None,
+                            };
+                            Some((type_name.clone(), params, td.type_params.clone()))
+                        })
+                    })
+            };
+            // Pass 1: user-declared types.
+            find_in(func_name, true).or_else(|| {
+                // Pass 2: builtin/imported types.
+                find_in(func_name, false)
+            })
         }
     }
 

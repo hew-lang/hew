@@ -2048,6 +2048,17 @@ pub struct FnSig {
     /// signatures whose receiver was declared by-value, and for free
     /// functions whose first parameter happens to be named `self`.
     pub requires_mutable_receiver: bool,
+    /// `true` iff this `fn_sig` was registered for a builtin enum variant
+    /// (e.g. `LookupError::NotFound`, `SendError::Timeout`).
+    ///
+    /// When a user-declared enum variant shares the same bare name as a
+    /// builtin variant, `fn_sigs` can only hold one entry for that bare
+    /// name.  Marking the builtin entry lets the resolution pass prefer any
+    /// locally-declared user variant that shadows it (local-shadows-global
+    /// rule — local-shadows-global).
+    ///
+    /// Default `false` for every non-builtin-variant signature.
+    pub is_builtin_variant: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -2069,6 +2080,7 @@ impl Default for FnSig {
             doc_comment: None,
             extern_symbol: None,
             requires_mutable_receiver: false,
+            is_builtin_variant: false,
         }
     }
 }
@@ -2688,6 +2700,12 @@ pub struct Checker {
     /// across the whole program): `is_stdlib_source` is scoped per-module so
     /// user code in the same compilation unit still receives its own warnings.
     pub(super) is_stdlib_source: bool,
+    /// Set to `true` while `register_stdlib_hew_items` is processing a stdlib
+    /// type declaration. Enum-variant `fn_sig` entries inserted in this state carry
+    /// `is_builtin_variant: true`, enabling the local-shadows-global rule: if a
+    /// user-declared enum in `local_type_defs` has a variant with the same bare
+    /// name, body-checking (`check_identifier`) prefers the user's declaration.
+    pub(super) in_stdlib_registration: bool,
     /// Tracks (span, feature) pairs we've already warned about for WASM limits.
     pub(super) wasm_warning_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
     /// Tracks (span, feature) pairs we've already rejected as errors for WASM.
@@ -3017,6 +3035,7 @@ impl Checker {
             wasm_target: false,
             repl_fragment: false,
             is_stdlib_source: false,
+            in_stdlib_registration: false,
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),
             current_machine_transition: None,

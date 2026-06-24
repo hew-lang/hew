@@ -1817,18 +1817,31 @@ pub fn lower_program_with_mono_cap(
         // redeclares `Some` or `Ok` will correctly mark the bare name as
         // ambiguous (qualified forms still resolve via `Option::Some`,
         // `Result::Ok`).
+        //
+        // Local-shadows-global: builtins are NOT pre-seeded any longer.
+        // Instead, after counting all user variants, builtin names are
+        // inserted with count 1 ONLY WHERE user count is 0 (via `or_insert`).
+        // A companion `user_declared_variant_names` set tracks which bare
+        // names the root program declared, so the builtin spec registration
+        // pass can skip the bare-form insertion for those names (preventing
+        // the last-write-wins overwrite of the user's registration).
         let mut bare_counts: HashMap<String, usize> = HashMap::new();
-        for name in BUILTIN_ENUM_VARIANT_BARE_NAMES {
-            *bare_counts.entry((*name).to_string()).or_insert(0) += 1;
-        }
+        // Accumulate user-declared variant names from root `program.items` so
+        // the builtin registration pass can honour local-shadows-global.
+        let mut user_declared_variant_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for (item, _) in &program.items {
             match item {
                 Item::Machine(md) => {
                     for state in &md.states {
                         *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
+                        // Machine states shadow same-named builtins (local-shadows-global).
+                        user_declared_variant_names.insert(state.name.clone());
                     }
                     for event in &md.events {
                         *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                        // Machine events shadow same-named builtins (local-shadows-global).
+                        user_declared_variant_names.insert(event.name.clone());
                     }
                 }
                 Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
@@ -1839,6 +1852,9 @@ pub fn lower_program_with_mono_cap(
                     for body_item in &td.body {
                         if let TypeBodyItem::Variant(v) = body_item {
                             *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
+                            // Track root-program user variants for the
+                            // local-shadows-global builtin registration guard.
+                            user_declared_variant_names.insert(v.name.clone());
                         }
                     }
                 }
@@ -1878,26 +1894,36 @@ pub fn lower_program_with_mono_cap(
                 if let Some(module) = mg.modules.get(mod_id) {
                     for (item, _) in &module.items {
                         match item {
-                            Item::Machine(md) if md.visibility.is_pub() => {
+                            Item::Machine(md) => {
                                 for state in &md.states {
                                     *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
+                                    // Machine states (pub or private) shadow same-named
+                                    // builtins across the flat global registry, matching
+                                    // the checker's global register_machine_decl walk.
+                                    user_declared_variant_names.insert(state.name.clone());
                                 }
                                 for event in &md.events {
                                     *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                                    // Machine events shadow same-named builtins.
+                                    user_declared_variant_names.insert(event.name.clone());
                                 }
                             }
-                            Item::TypeDecl(td)
-                                if td.visibility.is_pub() && td.kind == TypeDeclKind::Enum =>
-                            {
+                            Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
+                                // All enum variants (pub or private) shadow same-named
+                                // builtins, matching the checker's global
+                                // pre_register_type_decl walk (registration.rs:1359)
+                                // which inserts bare variant fn_sigs regardless of
+                                // visibility.
                                 for body_item in &td.body {
                                     if let TypeBodyItem::Variant(v) = body_item {
                                         *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
+                                        user_declared_variant_names.insert(v.name.clone());
                                     }
                                 }
                             }
-                            // No pub variant bare-names in imported modules for
-                            // these items. Compiler enforces exhaustivity if a
-                            // new Item variant is added.
+                            // No variant bare-names to count for these items.
+                            // Compiler enforces exhaustivity if a new Item variant
+                            // is added. Item::Machine is handled by the arm above.
                             Item::Import(_)
                             | Item::Const(_)
                             | Item::TypeDecl(_)
@@ -1906,7 +1932,6 @@ pub fn lower_program_with_mono_cap(
                             | Item::Impl(_)
                             | Item::Function(_)
                             | Item::ExternBlock(_)
-                            | Item::Machine(_)
                             | Item::Actor(_)
                             | Item::Supervisor(_)
                             | Item::Record(_) => {}
@@ -1914,6 +1939,16 @@ pub fn lower_program_with_mono_cap(
                     }
                 }
             }
+        }
+        // Post-user-scan: seed builtin enum variant names with count 1 where
+        // the user has not declared any variant with that name.  This preserves
+        // bare-form accessibility for pure-builtin names (e.g. `Ok`, `None`,
+        // `Full`) while preventing builtins from contributing a spurious "1"
+        // to names the user already declared.  Combined with the guard in the
+        // builtin spec registration pass below, this implements the
+        // local-shadows-global rule at the HIR bare-name layer.
+        for name in BUILTIN_ENUM_VARIANT_BARE_NAMES {
+            bare_counts.entry((*name).to_string()).or_insert(1);
         }
         for (item, _) in &program.items {
             match item {
@@ -1982,15 +2017,13 @@ pub fn lower_program_with_mono_cap(
         // Mirror the machine_ctor_registry fill over `program.module_graph`
         // non-root modules. The checker's `register_machine_decl` walk in
         // `hew-types/src/check/registration.rs` already populates `type_defs`
-        // for imported pub machines and enums; this loop is the HIR-side
-        // symmetric producer so `resolve_identifier_variant` hits in
-        // `lower_identifier` (machine_ctor_registry lookup) for cross-module
-        // ctors. Without this, a root `fn main() { var t: Toggle = Toggle::Off; }`
-        // that imports `std::machines::toggle` would emit `UnresolvedSymbol`
-        // at HIR even though the checker accepted the reference.
-        //
-        // Same Pub gating as the bare-count walk above so private machines /
-        // enums in imported modules are invisible to consumers.
+        // for imported machines and enums regardless of visibility; this loop
+        // is the HIR-side symmetric producer.  Visibility is NOT used as a
+        // filter here: private machines and enums in imported modules are
+        // registered globally so that their own pub function bodies (which are
+        // lowered in §4b / fourth-pass) resolve bare variant constructors
+        // correctly.  This matches the checker's global pre_register_type_decl
+        // behaviour (registration.rs:1359, no pub guard).
         if let Some(ref mg) = program.module_graph {
             for mod_id in &mg.topo_order {
                 if *mod_id == mg.root {
@@ -2000,7 +2033,7 @@ pub fn lower_program_with_mono_cap(
                 if let Some(module) = mg.modules.get(mod_id) {
                     for (item, _) in &module.items {
                         match item {
-                            Item::Machine(md) if md.visibility.is_pub() => {
+                            Item::Machine(md) => {
                                 let event_type_name = format!("{}Event", md.name);
                                 for (idx, state) in md.states.iter().enumerate() {
                                     let qualified = format!("{}::{}", md.name, state.name);
@@ -2031,9 +2064,7 @@ pub fn lower_program_with_mono_cap(
                                     }
                                 }
                             }
-                            Item::TypeDecl(td)
-                                if td.visibility.is_pub() && td.kind == TypeDeclKind::Enum =>
-                            {
+                            Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
                                 let mut variant_idx: usize = 0;
                                 for body_item in &td.body {
                                     if let TypeBodyItem::Variant(v) = body_item {
@@ -2056,9 +2087,10 @@ pub fn lower_program_with_mono_cap(
                                     }
                                 }
                             }
-                            // No pub ctor entries to register from imported
-                            // modules for these items. Compiler enforces
-                            // exhaustivity if a new Item variant is added.
+                            // No ctor entries to register for these items.
+                            // Compiler enforces exhaustivity if a new Item variant
+                            // is added. Item::Machine and TypeDecl::Enum are
+                            // handled by the arms above.
                             Item::Import(_)
                             | Item::Const(_)
                             | Item::TypeDecl(_)
@@ -2067,7 +2099,6 @@ pub fn lower_program_with_mono_cap(
                             | Item::Impl(_)
                             | Item::Function(_)
                             | Item::ExternBlock(_)
-                            | Item::Machine(_)
                             | Item::Actor(_)
                             | Item::Supervisor(_)
                             | Item::Record(_) => {}
@@ -2084,12 +2115,21 @@ pub fn lower_program_with_mono_cap(
         // user enums. Without these entries, `Ok(42)` would lower as an
         // unresolved identifier and `match r { Ok(n) => ... }` would emit
         // `match arm variant not registered in machine/enum ctor registry`.
+        //
+        // Local-shadows-global: skip the bare-form insertion for any builtin
+        // variant name that the root program has already declared.  The
+        // qualified form (`LookupError::NotFound`) is always registered so
+        // existing code that uses the fully-qualified path keeps working.
         for spec in builtin_enum_specs() {
             for (variant_idx, variant_name) in spec.variant_names.iter().enumerate() {
                 let qualified = format!("{}::{}", spec.type_name, variant_name);
                 ctx.machine_ctor_registry
                     .insert(qualified, (spec.type_name.to_string(), variant_idx));
-                if bare_counts.get(*variant_name).copied().unwrap_or(0) == 1 {
+                // Register the bare form only when count == 1 (unique) AND
+                // the user has not declared their own variant with this name.
+                if bare_counts.get(*variant_name).copied().unwrap_or(0) == 1
+                    && !user_declared_variant_names.contains(*variant_name)
+                {
                     ctx.machine_ctor_registry.insert(
                         (*variant_name).to_string(),
                         (spec.type_name.to_string(), variant_idx),
@@ -2380,6 +2420,7 @@ pub fn lower_program_with_mono_cap(
                     match item {
                         Item::TypeDecl(decl)
                             if decl.visibility.is_pub()
+                                || decl.kind == TypeDeclKind::Enum
                                 || (decl.kind == TypeDeclKind::Struct
                                     && decl.type_params.is_none()) =>
                         {
@@ -2461,11 +2502,15 @@ pub fn lower_program_with_mono_cap(
                             }
                             type_decl_cache.insert(decl as *const _, hir_decl);
                         }
-                        Item::Machine(md) if md.visibility.is_pub() => {
+                        Item::Machine(md) => {
                             // Synthesise state variants. Unit when stateless,
                             // Struct otherwise — mirrors how `lookup_variant_ctor`
                             // dispatches on `HirVariantKind` at struct-init /
-                            // identifier resolution sites.
+                            // identifier resolution sites.  Matches pub and
+                            // private machines: the checker's register_machine_decl
+                            // (registration.rs:1371) uses an idempotency guard, not
+                            // a pub guard, so private machines are registered globally
+                            // by the checker too.
                             let state_variants: Vec<HirVariant> = md
                                 .states
                                 .iter()
@@ -2525,7 +2570,8 @@ pub fn lower_program_with_mono_cap(
                         // No enum-variant/machine descriptors to cache for
                         // these items in imported modules (§4b pre-pass). If
                         // a new Item variant is added, the compiler will force
-                        // a conscious decision here.
+                        // a conscious decision here. Item::Machine is handled
+                        // by the arm above.
                         Item::Import(_)
                         | Item::Const(_)
                         | Item::TypeDecl(_)
@@ -2534,7 +2580,6 @@ pub fn lower_program_with_mono_cap(
                         | Item::Impl(_)
                         | Item::Function(_)
                         | Item::ExternBlock(_)
-                        | Item::Machine(_)
                         | Item::Actor(_)
                         | Item::Supervisor(_)
                         | Item::Record(_) => {}
@@ -28771,6 +28816,134 @@ mod tests {
                 .iter()
                 .map(|layout| &layout.key)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// A pub enum declared in a non-root (imported) module whose variant name
+    /// matches a builtin variant name must not be overwritten by the builtin
+    /// in `machine_ctor_registry`.  Without the local-shadows-global fix that
+    /// extends `user_declared_variant_names` to non-root pub items, the
+    /// `builtin_enum_specs` registration pass sees `!user_declared_variant_names
+    /// .contains("NotFound")` as true and overwrites the user's
+    /// `AppErr::NotFound` (Tuple kind) entry with `LookupError::NotFound`
+    /// (Unit kind).  The Tuple-variant call `NotFound(msg)` inside the module
+    /// body then hits `report_variant_ctor_call_shape_mismatch` and emits a
+    /// "unit variant called as a function" diagnostic.
+    #[test]
+    fn nonroot_pub_enum_variant_shadows_same_named_builtin_in_hir() {
+        use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+        let mod_src = hew_parser::parse(
+            r"
+            pub enum AppErr { NotFound(string) }
+
+            pub fn make_error(msg: string) -> AppErr {
+                NotFound(msg)
+            }
+            ",
+        );
+        assert!(
+            mod_src.errors.is_empty(),
+            "module parse errors: {:?}",
+            mod_src.errors
+        );
+
+        let root_id = ModuleId::root();
+        let mod_id = ModuleId::new(vec!["errmod".to_string()]);
+        let module = Module {
+            id: mod_id.clone(),
+            items: mod_src.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(module).unwrap();
+        mg.topo_order = vec![mod_id, root_id];
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(
+            tco.errors.is_empty(),
+            "type errors (should be none): {:?}",
+            tco.errors
+        );
+
+        let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "HIR diagnostics must be empty — a 'unit variant NotFound called as a \
+             function' diagnostic means the builtin LookupError::NotFound overwrote \
+             AppErr::NotFound in machine_ctor_registry: {:#?}",
+            lowered.diagnostics
+        );
+    }
+
+    /// Same as `nonroot_pub_enum_variant_shadows_same_named_builtin_in_hir`
+    /// but with a PRIVATE enum.  The checker's `pre_register_type_decl`
+    /// (registration.rs:1359) inserts bare variant `fn_sigs` for ALL non-root
+    /// `TypeDecl`s regardless of visibility, so a program where a private enum
+    /// uses a builtin-named variant is accepted by the checker.  HIR must
+    /// match: the bare form of the variant constructor in the module body
+    /// must resolve to the user's private enum, not to the builtin unit
+    /// variant.
+    #[test]
+    fn nonroot_private_enum_variant_shadows_same_named_builtin_in_hir() {
+        use hew_parser::module::{Module, ModuleGraph, ModuleId};
+
+        let mod_src = hew_parser::parse(
+            r"
+            enum AppErr { NotFound(string) }
+
+            pub fn make_error(msg: string) -> AppErr {
+                NotFound(msg)
+            }
+            ",
+        );
+        assert!(
+            mod_src.errors.is_empty(),
+            "module parse errors: {:?}",
+            mod_src.errors
+        );
+
+        let root_id = ModuleId::root();
+        let mod_id = ModuleId::new(vec!["errmod".to_string()]);
+        let module = Module {
+            id: mod_id.clone(),
+            items: mod_src.program.items,
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        };
+        let mut mg = ModuleGraph::new(root_id.clone());
+        mg.add_module(module).unwrap();
+        mg.topo_order = vec![mod_id, root_id];
+        let program = Program {
+            module_graph: Some(mg),
+            items: vec![],
+            module_doc: None,
+        };
+
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(
+            tco.errors.is_empty(),
+            "type errors (should be none): {:?}",
+            tco.errors
+        );
+
+        let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
+        assert!(
+            lowered.diagnostics.is_empty(),
+            "HIR diagnostics must be empty — a 'unit variant NotFound called as a \
+             function' diagnostic means the builtin LookupError::NotFound overwrote \
+             the private AppErr::NotFound in machine_ctor_registry: {:#?}",
+            lowered.diagnostics
         );
     }
 }

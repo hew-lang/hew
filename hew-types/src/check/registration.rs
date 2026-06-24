@@ -1591,6 +1591,7 @@ impl Checker {
                                     type_params: type_param_names.clone(),
                                     type_param_bounds: type_param_bounds.clone(),
                                     return_type,
+                                    is_builtin_variant: self.in_stdlib_registration,
                                     ..FnSig::default()
                                 },
                             );
@@ -1613,6 +1614,7 @@ impl Checker {
                                     type_param_bounds: type_param_bounds.clone(),
                                     params: variant_tys,
                                     return_type,
+                                    is_builtin_variant: self.in_stdlib_registration,
                                     ..FnSig::default()
                                 },
                             );
@@ -7123,7 +7125,9 @@ impl Checker {
                     if !self.register_type_namespace_name(Some(module_short), &td.name, span) {
                         continue;
                     }
+                    self.in_stdlib_registration = true;
                     self.register_type_decl(td);
+                    self.in_stdlib_registration = false;
                     self.known_types.insert(td.name.clone());
                     // Qualified authority is always published, mirroring the
                     // user-module path: the qualified alias and the module-export

@@ -72,92 +72,118 @@ fn main -> ()
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
     call[bb6 println_str -> bb7] ->
       (none)
-    call[bb7 hew_vec_get_str -> bb8] ->
+    branch[bb7: bb8/bb9] ->
       (none)
-    call[bb8 println_str -> bb9] ->
-      (none)
-    branch[bb9: bb10/bb11] ->
-      (none)
-    panic[bb10] ->
+    panic[bb8] ->
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-    branch[bb11: bb10/bb12] ->
+    call[bb9 println_str -> bb10] ->
       (none)
-    call[bb12 hew_vec_len -> bb13] ->
+    branch[bb10: bb11/bb12] ->
       (none)
-    call[bb13 println_i64 -> bb14] ->
-      (none)
-    branch[bb14: bb15/bb16] ->
-      (none)
-    panic[bb15] ->
-      drop _18 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    panic[bb11] ->
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-    call[bb16 hew_vec_len -> bb17] ->
+    branch[bb12: bb11/bb13] ->
       (none)
-    goto[bb17->bb18] ->
+    call[bb13 hew_vec_len -> bb14] ->
       (none)
-    branch[bb18: bb19/bb21] ->
+    call[bb14 println_i64 -> bb15] ->
       (none)
-    call[bb19 hew_vec_get_str -> bb22] ->
+    branch[bb15: bb16/bb17] ->
       (none)
-    branch[bb20: bb24/bb18] ->
-      (none)
-    call[bb21 Vec::new -> bb25] ->
-      (none)
-    call[bb22 println_str -> bb23] ->
-      (none)
-    goto[bb23->bb20] ->
-      drop _30 ty=string kind=cow_heap(hew_string_drop)
-    cancel[bb23] ->
-      drop _30 ty=string kind=cow_heap(hew_string_drop)
-      drop _18 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    panic[bb16] ->
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-    panic[bb24] ->
-      drop _30 ty=string kind=cow_heap(hew_string_drop)
-      drop _18 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb17 hew_vec_len -> bb18] ->
+      (none)
+    goto[bb18->bb19] ->
+      (none)
+    branch[bb19: bb20/bb22] ->
+      (none)
+    branch[bb20: bb23/bb24] ->
+      (none)
+    branch[bb21: bb26/bb19] ->
+      (none)
+    call[bb22 Vec::new -> bb27] ->
+      (none)
+    panic[bb23] ->
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-    call[bb25 hew_vec_push_layout -> bb26] ->
+    call[bb24 println_str -> bb25] ->
       (none)
-    call[bb26 hew_vec_push_layout -> bb27] ->
-      (none)
-    call[bb27 hew_vec_get_layout -> bb28] ->
-      (none)
-    call[bb28 println_i64 -> bb29] ->
-      (none)
-    call[bb29 Vec::new -> bb30] ->
-      (none)
-    call[bb30 hew_vec_push_owned -> bb31] ->
-      (none)
-    call[bb31 hew_vec_push_owned -> bb32] ->
-      (none)
-    call[bb32 hew_vec_get_owned -> bb33] ->
-      (none)
-    call[bb33 println_i64 -> bb34] ->
-      (none)
-    branch[bb34: bb35/bb36] ->
-      (none)
-    panic[bb35] ->
-      drop _54 ty=Tag kind=record_in_place
-      drop _45 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
-      drop _33 ty=Vec<Point> kind=cow_heap(hew_vec_free)
-      drop _18 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    goto[bb25->bb21] ->
+      drop _34 ty=string kind=cow_heap(hew_string_drop)
+    cancel[bb25] ->
+      drop _34 ty=string kind=cow_heap(hew_string_drop)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
-    branch[bb36: bb35/bb37] ->
+    panic[bb26] ->
+      drop _34 ty=string kind=cow_heap(hew_string_drop)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb27 hew_vec_push_layout -> bb28] ->
       (none)
-    call[bb37 hew_vec_get_owned -> bb38] ->
+    call[bb28 hew_vec_push_layout -> bb29] ->
       (none)
-    call[bb38 println_i64 -> bb39] ->
+    branch[bb29: bb30/bb31] ->
       (none)
-    return[bb39] ->
-      drop _62 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
-      drop _54 ty=Tag kind=record_in_place
-      drop _45 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
-      drop _33 ty=Vec<Point> kind=cow_heap(hew_vec_free)
-      drop _18 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    panic[bb30] ->
+      drop _37 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb31 println_i64 -> bb32] ->
+      (none)
+    call[bb32 Vec::new -> bb33] ->
+      (none)
+    call[bb33 hew_vec_push_owned -> bb34] ->
+      (none)
+    call[bb34 hew_vec_push_owned -> bb35] ->
+      (none)
+    branch[bb35: bb36/bb37] ->
+      (none)
+    panic[bb36] ->
+      drop _51 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _37 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb37 println_i64 -> bb38] ->
+      (none)
+    branch[bb38: bb39/bb40] ->
+      (none)
+    panic[bb39] ->
+      drop _62 ty=Tag kind=record_in_place
+      drop _51 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _37 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    branch[bb40: bb39/bb41] ->
+      (none)
+    branch[bb41: bb42/bb43] ->
+      (none)
+    panic[bb42] ->
+      drop _70 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _62 ty=Tag kind=record_in_place
+      drop _51 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _37 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
+      drop _9 ty=string kind=cow_heap(hew_string_drop)
+      drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    call[bb43 println_i64 -> bb44] ->
+      (none)
+    return[bb44] ->
+      drop _70 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _62 ty=Tag kind=record_in_place
+      drop _51 ty=Vec<Tag> kind=cow_heap(hew_vec_free_owned)
+      drop _37 ty=Vec<Point> kind=cow_heap(hew_vec_free)
+      drop _20 ty=Vec<string> kind=cow_heap(hew_vec_free)
       drop _9 ty=string kind=cow_heap(hew_string_drop)
       drop _1 ty=Vec<string> kind=cow_heap(hew_vec_free)
 

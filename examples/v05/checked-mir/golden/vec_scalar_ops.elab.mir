@@ -96,172 +96,188 @@ fn main -> ()
       (none)
     call[bb5 println_i64 -> bb6] ->
       (none)
-    call[bb6 hew_vec_get_i64 -> bb7] ->
+    branch[bb6: bb7/bb8] ->
       (none)
-    call[bb7 println_i64 -> bb8] ->
+    panic[bb7] ->
       (none)
-    branch[bb8: bb9/bb10] ->
+    call[bb8 println_i64 -> bb9] ->
       (none)
-    panic[bb9] ->
+    branch[bb9: bb10/bb11] ->
       (none)
-    branch[bb10: bb9/bb11] ->
+    panic[bb10] ->
       (none)
-    call[bb11 hew_vec_len -> bb12] ->
+    branch[bb11: bb10/bb12] ->
       (none)
-    call[bb12 println_i64 -> bb13] ->
+    call[bb12 hew_vec_len -> bb13] ->
       (none)
-    call[bb13 hew_vec_pop_i64 -> bb14] ->
+    call[bb13 println_i64 -> bb14] ->
       (none)
-    call[bb14 println_i64 -> bb15] ->
+    call[bb14 hew_vec_pop_i64 -> bb15] ->
       (none)
-    call[bb15 Vec::new -> bb16] ->
+    call[bb15 println_i64 -> bb16] ->
       (none)
-    call[bb16 hew_vec_push_f64 -> bb17] ->
+    call[bb16 Vec::new -> bb17] ->
       (none)
     call[bb17 hew_vec_push_f64 -> bb18] ->
       (none)
-    call[bb18 hew_vec_get_f64 -> bb19] ->
+    call[bb18 hew_vec_push_f64 -> bb19] ->
       (none)
-    call[bb19 println_f64 -> bb20] ->
+    branch[bb19: bb20/bb21] ->
       (none)
-    branch[bb20: bb21/bb22] ->
+    panic[bb20] ->
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+    call[bb21 println_f64 -> bb22] ->
       (none)
-    panic[bb21] ->
-      drop _19 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _14 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    branch[bb22: bb21/bb23] ->
+    branch[bb22: bb23/bb24] ->
       (none)
-    call[bb23 hew_vec_len -> bb24] ->
+    panic[bb23] ->
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+    branch[bb24: bb23/bb25] ->
       (none)
-    call[bb24 println_i64 -> bb25] ->
+    call[bb25 hew_vec_len -> bb26] ->
       (none)
-    call[bb25 Vec::new -> bb26] ->
+    call[bb26 println_i64 -> bb27] ->
       (none)
-    call[bb26 hew_vec_push_bool -> bb27] ->
+    call[bb27 Vec::new -> bb28] ->
       (none)
-    call[bb27 hew_vec_get_bool -> bb28] ->
+    call[bb28 hew_vec_push_bool -> bb29] ->
       (none)
-    call[bb28 println_bool -> bb29] ->
+    branch[bb29: bb30/bb31] ->
       (none)
-    call[bb29 Vec::new -> bb30] ->
+    panic[bb30] ->
+      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
+      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+    call[bb31 println_bool -> bb32] ->
       (none)
-    call[bb30 hew_vec_push_i32 -> bb31] ->
+    call[bb32 Vec::new -> bb33] ->
       (none)
-    call[bb31 hew_vec_push_i32 -> bb32] ->
+    call[bb33 hew_vec_push_i32 -> bb34] ->
       (none)
-    call[bb32 hew_vec_get_i32 -> bb33] ->
+    call[bb34 hew_vec_push_i32 -> bb35] ->
       (none)
-    branch[bb33: bb34/bb35] ->
+    branch[bb35: bb36/bb37] ->
       (none)
-    panic[bb34] ->
-      drop _39 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _33 ty=Vec<bool> kind=cow_heap(hew_vec_free)
-      drop _30 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _19 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _14 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    branch[bb35: bb34/bb36] ->
+    panic[bb36] ->
+      drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
+      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+    branch[bb37: bb38/bb39] ->
       (none)
-    call[bb36 hew_vec_len -> bb37] ->
+    panic[bb38] ->
+      drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
+      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+    branch[bb39: bb38/bb40] ->
       (none)
-    call[bb37 println_i64 -> bb38] ->
+    call[bb40 hew_vec_len -> bb41] ->
       (none)
-    call[bb38 println_i64 -> bb39] ->
+    call[bb41 println_i64 -> bb42] ->
       (none)
-    goto[bb39->bb40] ->
+    call[bb42 println_i64 -> bb43] ->
       (none)
-    call[bb40 hew_vec_len -> bb42] ->
+    goto[bb43->bb44] ->
       (none)
-    call[bb41 println_i64 -> bb58] ->
+    call[bb44 hew_vec_len -> bb46] ->
       (none)
-    branch[bb42: bb43/bb44] ->
+    call[bb45 println_i64 -> bb62] ->
       (none)
-    goto[bb43->bb45] ->
+    branch[bb46: bb47/bb48] ->
       (none)
-    branch[bb44: bb46/bb47] ->
+    goto[bb47->bb49] ->
       (none)
-    branch[bb45: bb51/bb54] ->
+    branch[bb48: bb50/bb51] ->
       (none)
-    panic[bb46] ->
-      drop _51 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _39 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _33 ty=Vec<bool> kind=cow_heap(hew_vec_free)
-      drop _30 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _19 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _14 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    branch[bb47: bb48/bb49] ->
+    branch[bb49: bb55/bb58] ->
       (none)
-    panic[bb48] ->
-      drop _51 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _39 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _33 ty=Vec<bool> kind=cow_heap(hew_vec_free)
-      drop _30 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _19 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _14 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    goto[bb49->bb45] ->
+    panic[bb50] ->
+      drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
+      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+    branch[bb51: bb52/bb53] ->
       (none)
-    cancel[bb49] ->
-      drop _51 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _39 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _33 ty=Vec<bool> kind=cow_heap(hew_vec_free)
-      drop _30 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _19 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _14 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    goto[bb50->bb40] ->
+    panic[bb52] ->
+      drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
+      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+    goto[bb53->bb49] ->
       (none)
-    cancel[bb50] ->
-      drop _51 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _39 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _33 ty=Vec<bool> kind=cow_heap(hew_vec_free)
-      drop _30 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _19 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _14 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    branch[bb51: bb55/bb56] ->
+    cancel[bb53] ->
+      drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
+      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+    goto[bb54->bb44] ->
       (none)
-    goto[bb52->bb41] ->
+    cancel[bb54] ->
+      drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
+      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+    branch[bb55: bb59/bb60] ->
       (none)
-    cancel[bb52] ->
-      drop _51 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _39 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _33 ty=Vec<bool> kind=cow_heap(hew_vec_free)
-      drop _30 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _19 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _14 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    panic[bb53] ->
-      drop _51 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _39 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _33 ty=Vec<bool> kind=cow_heap(hew_vec_free)
-      drop _30 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _19 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _14 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    branch[bb54: bb52/bb53] ->
-      (none)
-    panic[bb55] ->
-      drop _51 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _39 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _33 ty=Vec<bool> kind=cow_heap(hew_vec_free)
-      drop _30 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _19 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _14 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    goto[bb56->bb50] ->
+    goto[bb56->bb45] ->
       (none)
     cancel[bb56] ->
-      drop _51 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _39 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _33 ty=Vec<bool> kind=cow_heap(hew_vec_free)
-      drop _30 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _19 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _14 ty=Vec<i64> kind=cow_heap(hew_vec_free)
-    goto[bb57->bb50] ->
+      drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
+      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+    panic[bb57] ->
+      drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
+      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+    branch[bb58: bb56/bb57] ->
       (none)
-    cancel[bb57] ->
+    panic[bb59] ->
+      drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
+      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+    goto[bb60->bb54] ->
       (none)
-    return[bb58] ->
-      drop _51 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _39 ty=Vec<i32> kind=cow_heap(hew_vec_free)
-      drop _33 ty=Vec<bool> kind=cow_heap(hew_vec_free)
-      drop _30 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _19 ty=Vec<f64> kind=cow_heap(hew_vec_free)
-      drop _14 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+    cancel[bb60] ->
+      drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
+      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
+    goto[bb61->bb54] ->
+      (none)
+    cancel[bb61] ->
+      (none)
+    return[bb62] ->
+      drop _59 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _45 ty=Vec<i32> kind=cow_heap(hew_vec_free)
+      drop _37 ty=Vec<bool> kind=cow_heap(hew_vec_free)
+      drop _34 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _21 ty=Vec<f64> kind=cow_heap(hew_vec_free)
+      drop _16 ty=Vec<i64> kind=cow_heap(hew_vec_free)
 
 fn i8::fmt -> string
   statements:

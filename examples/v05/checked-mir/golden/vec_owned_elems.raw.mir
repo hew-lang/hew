@@ -11,61 +11,71 @@ fn main() -> () [conv=default]
     _8: string
     _9: string
     _10: i64
-    _11: string
-    _12: i64
-    _13: i64
-    _14: bool
+    _11: i64
+    _12: bool
+    _13: string
+    _14: i64
     _15: i64
     _16: bool
-    _17: Vec<string>
-    _18: Vec<string>
-    _19: i64
-    _20: i64
+    _17: i64
+    _18: bool
+    _19: Vec<string>
+    _20: Vec<string>
     _21: i64
     _22: i64
     _23: i64
     _24: i64
-    _25: bool
+    _25: i64
     _26: i64
-    _27: i64
-    _28: bool
-    _29: string
-    _30: string
-    _31: bool
-    _32: Vec<Point>
-    _33: Vec<Point>
-    _34: i64
-    _35: i64
-    _36: Point
-    _37: i64
+    _27: bool
+    _28: i64
+    _29: i64
+    _30: bool
+    _31: i64
+    _32: bool
+    _33: string
+    _34: string
+    _35: bool
+    _36: Vec<Point>
+    _37: Vec<Point>
     _38: i64
-    _39: Point
-    _40: i64
-    _41: Point
-    _42: Point
-    _43: i64
-    _44: Vec<Tag>
-    _45: Vec<Tag>
-    _46: string
-    _47: i64
-    _48: Tag
-    _49: string
-    _50: i64
-    _51: Tag
-    _52: i64
-    _53: Tag
+    _39: i64
+    _40: Point
+    _41: i64
+    _42: i64
+    _43: Point
+    _44: i64
+    _45: i64
+    _46: bool
+    _47: Point
+    _48: Point
+    _49: i64
+    _50: Vec<Tag>
+    _51: Vec<Tag>
+    _52: string
+    _53: i64
     _54: Tag
-    _55: i64
+    _55: string
     _56: i64
-    _57: i64
-    _58: bool
+    _57: Tag
+    _58: i64
     _59: i64
     _60: bool
-    _61: Vec<Tag>
-    _62: Vec<Tag>
+    _61: Tag
+    _62: Tag
     _63: i64
-    _64: Tag
+    _64: i64
     _65: i64
+    _66: bool
+    _67: i64
+    _68: bool
+    _69: Vec<Tag>
+    _70: Vec<Tag>
+    _71: i64
+    _72: i64
+    _73: bool
+    _74: Tag
+    _75: i64
   bb0:
     _0 = call Vec::new() -> bb1
   bb1:
@@ -103,151 +113,176 @@ fn main() -> () [conv=default]
     stmt: eval site=SiteId(14) ty=()
     stmt: use BindingId(0) names site=SiteId(19) ty=Vec<string> intent=Read
     _10 = const.i64 0
-    _11 = call hew_vec_get_str(_1, _10) [builtin=VecGet(Str)] -> bb8
+    _11 = call_rt hew_vec_len(_1)
+    _12 = icmp.uge _10 _11
+    branch _12 ? bb8 : bb9
   bb8:
-    call println_str(_11) -> bb9
+    trap(IndexOutOfBounds)
   bb9:
+    _13 = call_rt hew_vec_get_str(_1, _10)
+    call println_str(_13) -> bb10
+  bb10:
     stmt: eval site=SiteId(17) ty=()
     stmt: use BindingId(0) names site=SiteId(23) ty=Vec<string> intent=Read
-    drop _11 ty=string fn=release(hew_string_drop)
-    _12 = const.i64 1
-    _13 = const.i64 3
-    _14 = icmp.sgt _12 _13
-    branch _14 ? bb10 : bb11
-  bb10:
-    trap(IndexOutOfBounds)
+    drop _13 ty=string fn=release(hew_string_drop)
+    _14 = const.i64 1
+    _15 = const.i64 3
+    _16 = icmp.sgt _14 _15
+    branch _16 ? bb11 : bb12
   bb11:
-    _15 = call_rt hew_vec_len(_1)
-    _16 = icmp.sgt _13 _15
-    branch _16 ? bb10 : bb12
+    trap(IndexOutOfBounds)
   bb12:
+    _17 = call_rt hew_vec_len(_1)
+    _18 = icmp.sgt _15 _17
+    branch _18 ? bb11 : bb13
+  bb13:
     stmt: bind BindingId(2) tail site=SiteId(22) ty=Vec<string>
     stmt: use BindingId(2) tail site=SiteId(28) ty=Vec<string> intent=Read
-    _17 = call_rt hew_vec_slice_range_str(_1, _12, _13)
-    _18 = move _17
-    _19 = call hew_vec_len(_18) [builtin=VecLen] -> bb13
-  bb13:
-    call println_i64(_19) -> bb14
+    _19 = call_rt hew_vec_slice_range_str(_1, _14, _15)
+    _20 = move _19
+    _21 = call hew_vec_len(_20) [builtin=VecLen] -> bb14
   bb14:
-    stmt: eval site=SiteId(26) ty=()
-    _22 = const.i64 1
-    _23 = move _22
-    _24 = const.i64 0
-    _25 = icmp.sle _23 _24
-    branch _25 ? bb15 : bb16
+    call println_i64(_21) -> bb15
   bb15:
-    trap(DivideByZero)
-  bb16:
-    stmt: use BindingId(0) names site=SiteId(32) ty=Vec<string> intent=Read
+    stmt: eval site=SiteId(26) ty=()
+    _24 = const.i64 1
+    _25 = move _24
     _26 = const.i64 0
-    _27 = call hew_vec_len(_1) [builtin=VecLen] -> bb17
+    _27 = icmp.sle _25 _26
+    branch _27 ? bb16 : bb17
+  bb16:
+    trap(DivideByZero)
   bb17:
-    _20 = move _26
-    _21 = move _27
-    goto bb18
+    stmt: use BindingId(0) names site=SiteId(32) ty=Vec<string> intent=Read
+    _28 = const.i64 0
+    _29 = call hew_vec_len(_1) [builtin=VecLen] -> bb18
   bb18:
-    _28 = icmp.slt _20 _21
-    branch _28 ? bb19 : bb21
+    _22 = move _28
+    _23 = move _29
+    goto bb19
   bb19:
+    _30 = icmp.slt _22 _23
+    branch _30 ? bb20 : bb22
+  bb20:
     stmt: bind BindingId(3) i site=SiteId(0) ty=i64
     stmt: use BindingId(0) names site=SiteId(35) ty=Vec<string> intent=Read
     stmt: use BindingId(3) i site=SiteId(36) ty=i64 intent=Read
-    _29 = call hew_vec_get_str(_1, _20) [builtin=VecGet(Str)] -> bb22
-  bb20:
-    _20 ovf=_31 = add.checked.s _20 _23
-    branch _31 ? bb24 : bb18
+    _31 = call_rt hew_vec_len(_1)
+    _32 = icmp.uge _22 _31
+    branch _32 ? bb23 : bb24
   bb21:
-    stmt: eval site=SiteId(40) ty=()
-    _32 = call Vec::new() -> bb25
+    _22 ovf=_35 = add.checked.s _22 _25
+    branch _35 ? bb26 : bb19
   bb22:
+    stmt: eval site=SiteId(40) ty=()
+    _36 = call Vec::new() -> bb27
+  bb23:
+    trap(IndexOutOfBounds)
+  bb24:
     stmt: bind BindingId(4) n site=SiteId(34) ty=string
     stmt: use BindingId(4) n site=SiteId(38) ty=string intent=Read
-    _30 = move _29
-    call println_str(_30) -> bb23
-  bb23:
-    stmt: eval site=SiteId(37) ty=()
-    goto bb20
-  bb24:
-    trap(IntegerOverflow)
+    _33 = call_rt hew_vec_get_str(_1, _22)
+    _34 = move _33
+    call println_str(_34) -> bb25
   bb25:
+    stmt: eval site=SiteId(37) ty=()
+    goto bb21
+  bb26:
+    trap(IntegerOverflow)
+  bb27:
     stmt: bind BindingId(5) pts site=SiteId(41) ty=Vec<Point>
     stmt: use BindingId(5) pts site=SiteId(44) ty=Vec<Point> intent=Read
-    _33 = move _32
-    _34 = const.i64 1
-    _35 = const.i64 2
-    _36 = record_init Point { .0=_34, .1=_35 }
-    call hew_vec_push_layout(_33, _36) -> bb26
-  bb26:
+    _37 = move _36
+    _38 = const.i64 1
+    _39 = const.i64 2
+    _40 = record_init Point { .0=_38, .1=_39 }
+    call hew_vec_push_layout(_37, _40) -> bb28
+  bb28:
     stmt: eval site=SiteId(43) ty=()
     stmt: use BindingId(5) pts site=SiteId(49) ty=Vec<Point> intent=Read
-    _37 = const.i64 3
-    _38 = const.i64 4
-    _39 = record_init Point { .0=_37, .1=_38 }
-    call hew_vec_push_layout(_33, _39) -> bb27
-  bb27:
+    _41 = const.i64 3
+    _42 = const.i64 4
+    _43 = record_init Point { .0=_41, .1=_42 }
+    call hew_vec_push_layout(_37, _43) -> bb29
+  bb29:
     stmt: eval site=SiteId(48) ty=()
     stmt: use BindingId(5) pts site=SiteId(54) ty=Vec<Point> intent=Read
-    _40 = const.i64 1
-    _41 = call hew_vec_get_layout(_33, _40) [builtin=VecGet(Layout)] -> bb28
-  bb28:
+    _44 = const.i64 1
+    _45 = call_rt hew_vec_len(_37)
+    _46 = icmp.uge _44 _45
+    branch _46 ? bb30 : bb31
+  bb30:
+    trap(IndexOutOfBounds)
+  bb31:
     stmt: bind BindingId(6) p site=SiteId(53) ty=Point
     stmt: use BindingId(6) p site=SiteId(58) ty=Point intent=Read
-    _42 = move _41
-    _43 = _42.field[0]
-    call println_i64(_43) -> bb29
-  bb29:
+    _47 = call_rt hew_vec_get_layout(_37, _44)
+    _48 = move _47
+    _49 = _48.field[0]
+    call println_i64(_49) -> bb32
+  bb32:
     stmt: eval site=SiteId(56) ty=()
-    _44 = call Vec::new() -> bb30
-  bb30:
+    _50 = call Vec::new() -> bb33
+  bb33:
     stmt: bind BindingId(7) tags site=SiteId(60) ty=Vec<Tag>
     stmt: use BindingId(7) tags site=SiteId(63) ty=Vec<Tag> intent=Read
-    _45 = move _44
-    _46 = string_lit "a"
-    _47 = const.i64 1
-    _48 = record_init Tag { .0=_46, .1=_47 }
-    call hew_vec_push_owned(_45, _48) -> bb31
-  bb31:
+    _51 = move _50
+    _52 = string_lit "a"
+    _53 = const.i64 1
+    _54 = record_init Tag { .0=_52, .1=_53 }
+    call hew_vec_push_owned(_51, _54) -> bb34
+  bb34:
     stmt: eval site=SiteId(62) ty=()
     stmt: use BindingId(7) tags site=SiteId(68) ty=Vec<Tag> intent=Read
-    _49 = string_lit "b"
-    _50 = const.i64 2
-    _51 = record_init Tag { .0=_49, .1=_50 }
-    call hew_vec_push_owned(_45, _51) -> bb32
-  bb32:
+    _55 = string_lit "b"
+    _56 = const.i64 2
+    _57 = record_init Tag { .0=_55, .1=_56 }
+    call hew_vec_push_owned(_51, _57) -> bb35
+  bb35:
     stmt: eval site=SiteId(67) ty=()
     stmt: use BindingId(7) tags site=SiteId(73) ty=Vec<Tag> intent=Read
-    _52 = const.i64 0
-    _53 = call hew_vec_get_owned(_45, _52) [builtin=VecGet(Owned)] -> bb33
-  bb33:
+    _58 = const.i64 0
+    _59 = call_rt hew_vec_len(_51)
+    _60 = icmp.uge _58 _59
+    branch _60 ? bb36 : bb37
+  bb36:
+    trap(IndexOutOfBounds)
+  bb37:
     stmt: bind BindingId(8) t site=SiteId(72) ty=Tag
     stmt: use BindingId(8) t site=SiteId(77) ty=Tag intent=Read
-    _54 = move _53
-    _55 = _54.field[1]
-    call println_i64(_55) -> bb34
-  bb34:
+    _61 = call_rt hew_vec_get_owned(_51, _58)
+    _62 = move _61
+    _63 = _62.field[1]
+    call println_i64(_63) -> bb38
+  bb38:
     stmt: eval site=SiteId(75) ty=()
     stmt: use BindingId(7) tags site=SiteId(80) ty=Vec<Tag> intent=Read
-    _56 = const.i64 1
-    _57 = const.i64 2
-    _58 = icmp.sgt _56 _57
-    branch _58 ? bb35 : bb36
-  bb35:
+    _64 = const.i64 1
+    _65 = const.i64 2
+    _66 = icmp.sgt _64 _65
+    branch _66 ? bb39 : bb40
+  bb39:
     trap(IndexOutOfBounds)
-  bb36:
-    _59 = call_rt hew_vec_len(_45)
-    _60 = icmp.sgt _57 _59
-    branch _60 ? bb35 : bb37
-  bb37:
+  bb40:
+    _67 = call_rt hew_vec_len(_51)
+    _68 = icmp.sgt _65 _67
+    branch _68 ? bb39 : bb41
+  bb41:
     stmt: bind BindingId(9) tail_tags site=SiteId(79) ty=Vec<Tag>
     stmt: use BindingId(9) tail_tags site=SiteId(86) ty=Vec<Tag> intent=Read
-    _61 = call_rt hew_vec_slice_range_owned(_45, _56, _57)
-    _62 = move _61
-    _63 = const.i64 0
-    _64 = call hew_vec_get_owned(_62, _63) [builtin=VecGet(Owned)] -> bb38
-  bb38:
-    _65 = _64.field[1]
-    call println_i64(_65) -> bb39
-  bb39:
+    _69 = call_rt hew_vec_slice_range_owned(_51, _64, _65)
+    _70 = move _69
+    _71 = const.i64 0
+    _72 = call_rt hew_vec_len(_70)
+    _73 = icmp.uge _71 _72
+    branch _73 ? bb42 : bb43
+  bb42:
+    trap(IndexOutOfBounds)
+  bb43:
+    _74 = call_rt hew_vec_get_owned(_70, _71)
+    _75 = _74.field[1]
+    call println_i64(_75) -> bb44
+  bb44:
     stmt: eval site=SiteId(83) ty=()
     return
 

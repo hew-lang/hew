@@ -176,8 +176,10 @@ fn Pattern::capture(Pattern, string, i64) -> Option<string> [conv=default]
     _13: Option<string>
     _14: i64
     _15: i64
-    _16: string
-    _17: Option<string>
+    _16: i64
+    _17: bool
+    _18: string
+    _19: Option<string>
   bb0:
     stmt: use BindingId(12) pat site=SiteId(49) ty=Pattern intent=Read
     stmt: use BindingId(13) input site=SiteId(50) ty=string intent=Read
@@ -204,15 +206,20 @@ fn Pattern::capture(Pattern, string, i64) -> Option<string> [conv=default]
     _14 = const.i64 0
     mtag13 = move _14
     _15 = const.i64 0
-    _16 = call hew_vec_get_str(_5, _15) [builtin=VecGet(Str)] -> bb6
+    _16 = call_rt hew_vec_len(_5)
+    _17 = icmp.uge _15 _16
+    branch _17 ? bb6 : bb7
   bb5:
     stmt: return site=Some(SiteId(53)) ty=Option<string>
     ret = move _6
     return
   bb6:
-    mvar13.0.0 = move _16
-    _17 = move _13
-    _6 = move _17
+    trap(IndexOutOfBounds)
+  bb7:
+    _18 = call_rt hew_vec_get_str(_5, _15)
+    mvar13.0.0 = move _18
+    _19 = move _13
+    _6 = move _19
     goto bb5
 
 fn Pattern::capture_named(Pattern, string, string) -> Option<string> [conv=default]
@@ -233,8 +240,10 @@ fn Pattern::capture_named(Pattern, string, string) -> Option<string> [conv=defau
     _13: Option<string>
     _14: i64
     _15: i64
-    _16: string
-    _17: Option<string>
+    _16: i64
+    _17: bool
+    _18: string
+    _19: Option<string>
   bb0:
     stmt: use BindingId(16) pat site=SiteId(67) ty=Pattern intent=Read
     stmt: use BindingId(17) input site=SiteId(68) ty=string intent=Read
@@ -261,15 +270,20 @@ fn Pattern::capture_named(Pattern, string, string) -> Option<string> [conv=defau
     _14 = const.i64 0
     mtag13 = move _14
     _15 = const.i64 0
-    _16 = call hew_vec_get_str(_5, _15) [builtin=VecGet(Str)] -> bb6
+    _16 = call_rt hew_vec_len(_5)
+    _17 = icmp.uge _15 _16
+    branch _17 ? bb6 : bb7
   bb5:
     stmt: return site=Some(SiteId(71)) ty=Option<string>
     ret = move _6
     return
   bb6:
-    mvar13.0.0 = move _16
-    _17 = move _13
-    _6 = move _17
+    trap(IndexOutOfBounds)
+  bb7:
+    _18 = call_rt hew_vec_get_str(_5, _15)
+    mvar13.0.0 = move _18
+    _19 = move _13
+    _6 = move _19
     goto bb5
 
 fn Pattern::captures(Pattern, string) -> CaptureMatches [conv=default]
@@ -481,7 +495,9 @@ fn CaptureMatches::group(CaptureMatches, i64, i64) -> Option<string> [conv=defau
     _25: bool
     _26: i64
     _27: bool
-    _28: string
+    _28: i64
+    _29: bool
+    _30: string
   bb0:
     stmt: use BindingId(34) match_index site=SiteId(138) ty=i64 intent=Read
     _4 = const.i64 1
@@ -557,10 +573,15 @@ fn CaptureMatches::group(CaptureMatches, i64, i64) -> Option<string> [conv=defau
   bb16:
     trap(IntegerOverflow)
   bb17:
-    _28 = call hew_vec_get_str(_22, _26) [builtin=VecGet(Str)] -> bb18
+    _28 = call_rt hew_vec_len(_22)
+    _29 = icmp.uge _26 _28
+    branch _29 ? bb18 : bb19
   bb18:
+    trap(IndexOutOfBounds)
+  bb19:
     stmt: return site=Some(SiteId(159)) ty=Option<string>
-    mvar20.0.0 = move _28
+    _30 = call_rt hew_vec_get_str(_22, _26)
+    mvar20.0.0 = move _30
     ret = move _20
     return
 

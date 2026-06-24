@@ -135,13 +135,15 @@ fn Pattern::capture -> Option<string>
       (none)
     goto[bb3->bb5] ->
       (none)
-    call[bb4 hew_vec_get_str -> bb6] ->
+    branch[bb4: bb6/bb7] ->
       (none)
     return[bb5] ->
       drop _5 ty=Vec<string> kind=cow_heap(hew_vec_free)
-    goto[bb6->bb5] ->
+    panic[bb6] ->
+      drop _5 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    goto[bb7->bb5] ->
       (none)
-    cancel[bb6] ->
+    cancel[bb7] ->
       drop _5 ty=Vec<string> kind=cow_heap(hew_vec_free)
 
 fn Pattern::capture_named -> Option<string>
@@ -165,13 +167,15 @@ fn Pattern::capture_named -> Option<string>
       (none)
     goto[bb3->bb5] ->
       (none)
-    call[bb4 hew_vec_get_str -> bb6] ->
+    branch[bb4: bb6/bb7] ->
       (none)
     return[bb5] ->
       drop _5 ty=Vec<string> kind=cow_heap(hew_vec_free)
-    goto[bb6->bb5] ->
+    panic[bb6] ->
+      drop _5 ty=Vec<string> kind=cow_heap(hew_vec_free)
+    goto[bb7->bb5] ->
       (none)
-    cancel[bb6] ->
+    cancel[bb7] ->
       drop _5 ty=Vec<string> kind=cow_heap(hew_vec_free)
 
 fn Pattern::captures -> CaptureMatches
@@ -358,9 +362,11 @@ fn CaptureMatches::group -> Option<string>
       (none)
     panic[bb16] ->
       (none)
-    call[bb17 hew_vec_get_str -> bb18] ->
+    branch[bb17: bb18/bb19] ->
       (none)
-    return[bb18] ->
+    panic[bb18] ->
+      (none)
+    return[bb19] ->
       (none)
 
 fn CaptureMatches::whole -> Option<string>

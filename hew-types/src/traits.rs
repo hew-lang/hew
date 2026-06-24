@@ -836,6 +836,22 @@ impl TraitRegistry {
                 _ => false,
             },
 
+            // SendHalf<T> / RecvHalf<T>: exclusive ownership of one end of a
+            // duplex channel. They are OS/runtime resources (have a `close()`
+            // contract), so `Resource` and `Drop` are true.  They are NOT
+            // `Send` or `Sync` — a channel half is an exclusive handle that
+            // must not cross an actor boundary.  This arm must come before
+            // the fallthrough `Ty::Named` arm so it fires for the builtin
+            // variants rather than going through the unknown-type path.
+            //
+            // Not-Send propagation: any user type that holds a SendHalf or
+            // RecvHalf (e.g. `type W { h: RecvHalf<i64> }`) will visit this
+            // arm during its field check and correctly derive not-Send.
+            Ty::Named {
+                builtin: Some(BuiltinType::SendHalf | BuiltinType::RecvHalf),
+                ..
+            } => matches!(marker, MarkerTrait::Resource | MarkerTrait::Drop),
+
             // Tuple: marker holds if ALL elements have it
             Ty::Tuple(elems) => elems
                 .iter()
@@ -960,15 +976,11 @@ impl TraitRegistry {
                         // `&mut visiting` recursion below.
                         _ => {
                             let fields = self.type_fields.get(name).cloned().unwrap_or_default();
-                            fields
-                                .iter()
-                                .all(|f| self.implements_marker_guarded(f, marker, visiting))
+                            self.check_structural_fields(&fields, args, marker, visiting)
                         }
                     }
                 } else if let Some(fields) = self.type_fields.get(name).cloned() {
-                    fields
-                        .iter()
-                        .all(|f| self.implements_marker_guarded(f, marker, visiting))
+                    self.check_structural_fields(&fields, args, marker, visiting)
                 } else {
                     false // Unknown type — conservatively fail
                 };
@@ -1015,16 +1027,36 @@ impl TraitRegistry {
             // first.
             Ty::Var(_) | Ty::AssocType { .. } => false,
 
-            // Trait objects: check if any of the traits has the bound
+            // Trait objects: `dyn T + Send` carries the marker directly as a
+            // named bound. Route derivation through the bound names first, then
+            // fall back to super-trait lookup in the registered `trait_decls`
+            // (populated via `register_trait`; empty in production — seeded only
+            // by test fixtures — but retained so that `dyn Drawable` where
+            // `Drawable` extends `Send` resolves correctly in those contexts).
+            //
+            // The direct-bound path is the production fix for #3: the ghost
+            // `trait_decls` table is always empty at the compiler's type-check
+            // phase because `register_trait` has no production call-sites.
+            // `dyn T + Send` now resolves Send correctly via the direct check.
+            //
+            // Control: `dyn T` (without `+ Send`) has no Send bound and no
+            // registered super-traits → returns false for `MarkerTrait::Send`.
             Ty::TraitObject { traits } => traits.iter().any(|bound| {
+                // Direct bound: `dyn T + Marker` — marker appears in the list.
+                if bound.trait_name == marker.to_string() {
+                    return true;
+                }
+                // Super-trait lookup: `dyn Drawable` where Drawable: Marker.
                 if let Some(trait_def) = self.trait_decls.get(&bound.trait_name) {
-                    trait_def
+                    if trait_def
                         .super_traits
                         .iter()
                         .any(|s| s == &marker.to_string())
-                } else {
-                    false
+                    {
+                        return true;
+                    }
                 }
+                false
             }),
 
             // Task<T> is a compiler-internal consume-once handle. It is NOT
@@ -1059,11 +1091,93 @@ impl TraitRegistry {
     pub fn is_sync(&self, ty: &Ty) -> bool {
         self.implements_marker(ty, MarkerTrait::Sync)
     }
+
+    /// Structural field check for user-defined types, with generic-arg substitution.
+    ///
+    /// For non-generic types (`args` is empty) every registered field is checked
+    /// directly — identical to the pre-BUG-01 path.
+    ///
+    /// For generic instantiations (`args` non-empty) the derivation separates
+    /// fields into two groups:
+    ///
+    /// * **Concrete fields** — field types whose own marker can be determined
+    ///   without substitution (builtins, registered types, or fields that are
+    ///   themselves generic instantiations). These are checked recursively as
+    ///   before; the existing `visiting` guard prevents infinite recursion.
+    ///
+    /// * **Type-param placeholder fields** — bare `Ty::Named` entries with no
+    ///   builtin tag, no type arguments, and no entry in the structural member
+    ///   registry (see [`Self::is_type_param_placeholder`]). These arise because
+    ///   `register_type` stores the generic declaration's field types verbatim;
+    ///   `T` in `type Box<T> { v: T }` is stored as `Ty::Named { name: "T" }`.
+    ///   Placeholder fields are skipped in the direct check and are instead
+    ///   covered by the **type-args sweep** below.
+    ///
+    /// **Type-args sweep** (`all(args.implements(marker))`): checks every
+    /// declared type argument against `marker`. This is a conservative proxy
+    /// for the substituted-field check: if every instantiation arg satisfies the
+    /// marker then every type-param-bearing field in the declaration also
+    /// satisfies it, regardless of the positional param-to-arg mapping. The
+    /// converse (any arg failing ⇒ outer type fails) is also correct because
+    /// a non-marker arg eventually substitutes into at least one field.
+    ///
+    /// **Soundness (no over-grant):** both arms use `all()`, so no non-Send
+    /// component is silently dropped. A type holding ANY non-Send field or ANY
+    /// non-Send type arg is correctly rejected.
+    fn check_structural_fields(
+        &self,
+        fields: &[Ty],
+        args: &[Ty],
+        marker: MarkerTrait,
+        visiting: &mut HashSet<String>,
+    ) -> bool {
+        // Concrete-field pass: check every field that is not a bare type-param
+        // placeholder. For non-generic types all fields are concrete and this
+        // is the only pass.
+        let concrete_ok = fields.iter().all(|f| {
+            if !args.is_empty() && self.is_type_param_placeholder(f) {
+                // Placeholder covered by the type-args sweep; vacuously ok here.
+                true
+            } else {
+                self.implements_marker_guarded(f, marker, visiting)
+            }
+        });
+        if !concrete_ok {
+            return false;
+        }
+        // Type-args sweep: for generic instantiations, every declared type
+        // argument must satisfy the marker. This covers all type-param-bearing
+        // fields (spec §4.1.2: "all variant payload / field types satisfy Send").
+        args.iter()
+            .all(|a| self.implements_marker_guarded(a, marker, visiting))
+    }
+
+    /// Returns `true` for a bare unknown-named type that looks like a type
+    /// parameter placeholder.
+    ///
+    /// A type-param placeholder is a `Ty::Named` with:
+    /// - no builtin tag (`builtin: None`),
+    /// - no type arguments of its own (`args` is empty), and
+    /// - no entry in the structural `type_fields` registry.
+    ///
+    /// These arise when `register_type` stores the field types of a generic
+    /// declaration verbatim: `T` in `type Box<T> { v: T }` ends up as
+    /// `Ty::Named { name: "T", args: [], builtin: None }` with no registry
+    /// entry, because `T` is the type parameter, not a concrete type.
+    ///
+    /// `type_fields.contains_key` correctly excludes:
+    /// - types registered with an empty field list (concrete zero-field types)
+    /// - any type that happens to share a single-letter name with a param
+    fn is_type_param_placeholder(&self, ty: &Ty) -> bool {
+        matches!(ty, Ty::Named { builtin: None, args, name }
+            if args.is_empty() && !self.type_fields.contains_key(name.as_str()))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ty::TraitObjectBound;
 
     #[test]
     fn test_primitives_are_send() {
@@ -1670,5 +1784,298 @@ mod tests {
             args: vec![ptr],
         };
         assert!(!registry.is_send(&vec_ptr));
+    }
+
+    // =========================================================================
+    // A1 — Fix #5: SendHalf/RecvHalf must be explicitly not-Send
+    // =========================================================================
+
+    /// `SendHalf`<T> is NOT Send (exclusive channel ownership; cannot cross actor
+    /// boundary). Resource and Drop ARE true (it has a `close()` contract).
+    #[test]
+    fn send_half_is_not_send() {
+        let registry = TraitRegistry::new();
+        let sh = Ty::Named {
+            builtin: Some(BuiltinType::SendHalf),
+            name: "SendHalf".to_string(),
+            args: vec![Ty::I64],
+        };
+        assert!(!registry.is_send(&sh), "SendHalf must NOT be Send");
+        assert!(!registry.is_sync(&sh), "SendHalf must NOT be Sync");
+        assert!(!registry.implements_marker(&sh, MarkerTrait::Copy));
+        assert!(!registry.implements_marker(&sh, MarkerTrait::Clone));
+        assert!(registry.implements_marker(&sh, MarkerTrait::Resource));
+        assert!(registry.implements_marker(&sh, MarkerTrait::Drop));
+    }
+
+    /// `RecvHalf`<T> is NOT Send (exclusive channel ownership; cannot cross actor
+    /// boundary). Resource and Drop ARE true (it has a `close()` contract).
+    #[test]
+    fn recv_half_is_not_send() {
+        let registry = TraitRegistry::new();
+        let rh = Ty::Named {
+            builtin: Some(BuiltinType::RecvHalf),
+            name: "RecvHalf".to_string(),
+            args: vec![Ty::I64],
+        };
+        assert!(!registry.is_send(&rh), "RecvHalf must NOT be Send");
+        assert!(!registry.is_sync(&rh), "RecvHalf must NOT be Sync");
+        assert!(!registry.implements_marker(&rh, MarkerTrait::Copy));
+        assert!(!registry.implements_marker(&rh, MarkerTrait::Clone));
+        assert!(registry.implements_marker(&rh, MarkerTrait::Resource));
+        assert!(registry.implements_marker(&rh, MarkerTrait::Drop));
+    }
+
+    /// A user struct that holds a `RecvHalf` field must NOT be Send — the
+    /// not-Send-ness of `RecvHalf` propagates structurally to its container.
+    /// This is the load-bearing negative guard: sending a struct containing a
+    /// channel half to an actor must be rejected.
+    #[test]
+    fn struct_holding_recv_half_is_not_send() {
+        let mut registry = TraitRegistry::new();
+        let recv_half = Ty::Named {
+            builtin: Some(BuiltinType::RecvHalf),
+            name: "RecvHalf".to_string(),
+            args: vec![Ty::I64],
+        };
+        // type Worker { half: RecvHalf<i64>; id: i64 }
+        registry.register_type("Worker".to_string(), vec![recv_half, Ty::I64]);
+        let worker = Ty::Named {
+            builtin: None,
+            name: "Worker".to_string(),
+            args: vec![],
+        };
+        assert!(
+            !registry.is_send(&worker),
+            "Worker holding RecvHalf must NOT be Send"
+        );
+    }
+
+    // =========================================================================
+    // A1 — Fix #3: dyn Trait + Send resolves as Send (ghost-registry fix)
+    // =========================================================================
+
+    /// `dyn Trait + Send` carries an explicit Send bound: the marker derivation
+    /// must recognise it and return true for Send.
+    #[test]
+    fn dyn_trait_plus_send_is_send() {
+        let registry = TraitRegistry::new();
+        let dyn_send = Ty::TraitObject {
+            traits: vec![
+                TraitObjectBound {
+                    trait_name: "Handler".to_string(),
+                    args: vec![],
+                    assoc_bindings: vec![],
+                },
+                TraitObjectBound {
+                    trait_name: "Send".to_string(),
+                    args: vec![],
+                    assoc_bindings: vec![],
+                },
+            ],
+        };
+        assert!(
+            registry.is_send(&dyn_send),
+            "dyn Handler + Send must be Send"
+        );
+    }
+
+    /// `dyn Trait` without `+ Send` must NOT be Send — the control case.
+    #[test]
+    fn dyn_trait_without_send_is_not_send() {
+        let registry = TraitRegistry::new();
+        let dyn_no_send = Ty::TraitObject {
+            traits: vec![TraitObjectBound {
+                trait_name: "Handler".to_string(),
+                args: vec![],
+                assoc_bindings: vec![],
+            }],
+        };
+        assert!(
+            !registry.is_send(&dyn_no_send),
+            "dyn Handler (no +Send) must NOT be Send"
+        );
+    }
+
+    // =========================================================================
+    // A1 — BUG-01: user-defined generic types derive Send from type args
+    // =========================================================================
+
+    /// Positive: `Box<T> { v: T }` with `T = i64` IS Send.
+    /// Spec §4.1.2: "A type T satisfies Send if all its variant payload / field
+    /// types satisfy Send." With T instantiated to i64 (which IS Send), Box<i64>
+    /// must be Send.
+    #[test]
+    fn user_generic_struct_with_send_arg_is_send() {
+        let mut registry = TraitRegistry::new();
+        // Simulates: type Box<T> { v: T }
+        // Registration stores the field as Ty::Named { name: "T" } — the type
+        // parameter placeholder.
+        let t_param = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        registry.register_type("Box".to_string(), vec![t_param]);
+
+        // Box<i64> — T instantiated to i64
+        let box_i64 = Ty::Named {
+            builtin: None,
+            name: "Box".to_string(),
+            args: vec![Ty::I64],
+        };
+        assert!(
+            registry.is_send(&box_i64),
+            "Box<i64> must be Send (T = i64 is Send)"
+        );
+    }
+
+    /// Positive: `enum Tree<T> { Leaf(T); Empty }` with `T = i64` IS Send.
+    /// Variant payloads are stored as structural members alongside field types.
+    #[test]
+    fn user_generic_enum_with_send_arg_is_send() {
+        let mut registry = TraitRegistry::new();
+        // Simulates: enum Tree<T> { Leaf(T); Empty }
+        let t_param = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        registry.register_type("Tree".to_string(), vec![t_param]);
+
+        let tree_i64 = Ty::Named {
+            builtin: None,
+            name: "Tree".to_string(),
+            args: vec![Ty::I64],
+        };
+        assert!(
+            registry.is_send(&tree_i64),
+            "Tree<i64> must be Send (T = i64 is Send)"
+        );
+    }
+
+    /// Positive: `Msg<T> { payload: T; id: i64 }` — struct with both a type-param
+    /// field and a concrete field.  With T = i64 the whole struct IS Send.
+    #[test]
+    fn user_generic_struct_with_concrete_and_param_fields_is_send() {
+        let mut registry = TraitRegistry::new();
+        let t_param = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        // type Msg<T> { payload: T; id: i64 }
+        registry.register_type("Msg".to_string(), vec![t_param, Ty::I64]);
+
+        let msg_i64 = Ty::Named {
+            builtin: None,
+            name: "Msg".to_string(),
+            args: vec![Ty::I64],
+        };
+        assert!(registry.is_send(&msg_i64), "Msg<i64> must be Send");
+    }
+
+    /// NEGATIVE GUARD — load-bearing fail-open prevention:
+    /// `Box<T>` with `T = Rc<i64>` must NOT be Send.
+    ///
+    /// Rc<T> is NOT Send (single-threaded ref-count). Any container whose type
+    /// argument is Rc must remain not-Send — admitting it would constitute an
+    /// over-grant soundness hole (a Rc value crossing an actor boundary → data
+    /// race).
+    #[test]
+    fn user_generic_struct_with_rc_arg_is_not_send() {
+        let mut registry = TraitRegistry::new();
+        let t_param = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        registry.register_type("Box".to_string(), vec![t_param]);
+
+        // Box<Rc<i64>> — Rc is explicitly not-Send
+        let rc_i64 = Ty::Named {
+            builtin: Some(BuiltinType::Rc),
+            name: "Rc".to_string(),
+            args: vec![Ty::I64],
+        };
+        let box_rc = Ty::Named {
+            builtin: None,
+            name: "Box".to_string(),
+            args: vec![rc_i64],
+        };
+        assert!(
+            !registry.is_send(&box_rc),
+            "Box<Rc<i64>> must NOT be Send — Rc is not Send"
+        );
+    }
+
+    /// NEGATIVE GUARD: `Box<T>` with `T = RecvHalf<i64>` must NOT be Send.
+    ///
+    /// `RecvHalf` is explicitly not-Send (fix #5). Wrapping it in a user generic
+    /// container must not launder it into something sendable.
+    #[test]
+    fn user_generic_struct_with_recv_half_arg_is_not_send() {
+        let mut registry = TraitRegistry::new();
+        let t_param = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        registry.register_type("Box".to_string(), vec![t_param]);
+
+        let recv_half = Ty::Named {
+            builtin: Some(BuiltinType::RecvHalf),
+            name: "RecvHalf".to_string(),
+            args: vec![Ty::I64],
+        };
+        let box_recv = Ty::Named {
+            builtin: None,
+            name: "Box".to_string(),
+            args: vec![recv_half],
+        };
+        assert!(
+            !registry.is_send(&box_recv),
+            "Box<RecvHalf<i64>> must NOT be Send — RecvHalf is not Send"
+        );
+    }
+
+    /// NEGATIVE GUARD: a concrete user struct that DIRECTLY holds a `RecvHalf`
+    /// field (non-generic) must stay not-Send after the fix.
+    #[test]
+    fn concrete_struct_holding_recv_half_is_not_send() {
+        let mut registry = TraitRegistry::new();
+        let recv_half = Ty::Named {
+            builtin: Some(BuiltinType::RecvHalf),
+            name: "RecvHalf".to_string(),
+            args: vec![Ty::I64],
+        };
+        // type Holder { half: RecvHalf<i64>; value: i64 }
+        registry.register_type("Holder".to_string(), vec![recv_half, Ty::I64]);
+        let holder = Ty::Named {
+            builtin: None,
+            name: "Holder".to_string(),
+            args: vec![],
+        };
+        assert!(
+            !registry.is_send(&holder),
+            "Holder (RecvHalf field) must NOT be Send"
+        );
+    }
+
+    /// Regression guard: non-generic concrete structs whose fields are all Send
+    /// must still be Send after the generic-derivation change.
+    #[test]
+    fn concrete_struct_with_all_send_fields_still_send_after_generic_fix() {
+        let mut registry = TraitRegistry::new();
+        registry.register_type("Point".to_string(), vec![Ty::I64, Ty::I64]);
+        let point = Ty::Named {
+            builtin: None,
+            name: "Point".to_string(),
+            args: vec![],
+        };
+        assert!(
+            registry.is_send(&point),
+            "Point (i64 fields) must remain Send"
+        );
     }
 }

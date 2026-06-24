@@ -146,7 +146,7 @@ fn split_legacy_packed_args(args: string) -> Vec<string> {
     let raw_parts = string.split(args, " ");
     let filtered: Vec<string> = Vec::new();
     for i in 0 .. raw_parts.len() {
-        let part = raw_parts.get(i);
+        let part = raw_parts[i];
         if part != "" {
             filtered.push(part);
         }

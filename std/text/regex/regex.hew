@@ -144,7 +144,7 @@ impl PatternMethods for Pattern {
         if values.len() == 0 {
             None
         } else {
-            Some(values.get(0))
+            Some(values[0])
         }
     }
     /// Return the named capture from the first match.
@@ -155,7 +155,7 @@ impl PatternMethods for Pattern {
         if values.len() == 0 {
             None
         } else {
-            Some(values.get(0))
+            Some(values[0])
         }
     }
     /// Return first-match submatches as one flat row.
@@ -238,7 +238,7 @@ impl CaptureMatchesMethods for CaptureMatches {
         if match_index >= row_count {
             return None;
         }
-        Some(rows.groups.get(match_index * rows.group_count + group_index))
+        Some(rows.groups[match_index * rows.group_count + group_index])
     }
     /// Return group 0 for the requested match row.
     fn whole(rows: CaptureMatches, match_index: i64) -> Option<string> {

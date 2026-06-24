@@ -95,7 +95,7 @@ impl SuiteMethods for Suite {
     fn report(suite: Suite) {
         println(f"=== {suite.name} ===");
         for i in 0 .. suite.results.len() {
-            let r = suite.results.get(i);
+            let r = suite.results[i];
             let avg_str = format_time(r.avg_ns);
             let min_str = format_time(r.min_ns);
             let max_str = format_time(r.max_ns);
@@ -107,7 +107,7 @@ impl SuiteMethods for Suite {
     fn report_json(suite: Suite) {
         var json = f"\{\"suite\":\"{suite.name}\",\"benchmarks\":[";
         for i in 0 .. suite.results.len() {
-            let r = suite.results.get(i);
+            let r = suite.results[i];
             if i > 0 {
                 json = json + ",";
             }

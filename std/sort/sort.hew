@@ -22,7 +22,7 @@
 fn copy_ints(v: Vec<i64>) -> Vec<i64> {
     let out: Vec<i64> = Vec::new();
     for i in 0 .. v.len() {
-        out.push(v.get(i));
+        out.push(v[i]);
     }
     out
 }
@@ -30,7 +30,7 @@ fn copy_ints(v: Vec<i64>) -> Vec<i64> {
 fn copy_strings(v: Vec<string>) -> Vec<string> {
     let out: Vec<string> = Vec::new();
     for i in 0 .. v.len() {
-        out.push(v.get(i));
+        out.push(v[i]);
     }
     out
 }
@@ -38,26 +38,26 @@ fn copy_strings(v: Vec<string>) -> Vec<string> {
 fn copy_floats(v: Vec<f64>) -> Vec<f64> {
     let out: Vec<f64> = Vec::new();
     for i in 0 .. v.len() {
-        out.push(v.get(i));
+        out.push(v[i]);
     }
     out
 }
 
 fn swap_ints(v: Vec<i64>, i: i64, j: i64) {
-    let tmp = v.get(i);
-    v.set(i, v.get(j));
+    let tmp = v[i];
+    v.set(i, v[j]);
     v.set(j, tmp);
 }
 
 fn swap_strings(v: Vec<string>, i: i64, j: i64) {
-    let tmp = v.get(i);
-    v.set(i, v.get(j));
+    let tmp = v[i];
+    v.set(i, v[j]);
     v.set(j, tmp);
 }
 
 fn swap_floats(v: Vec<f64>, i: i64, j: i64) {
-    let tmp = v.get(i);
-    v.set(i, v.get(j));
+    let tmp = v[i];
+    v.set(i, v[j]);
     v.set(j, tmp);
 }
 
@@ -66,7 +66,7 @@ fn sort_ints_in_place(v: Vec<i64>) {
     for i in 0 .. n {
         var min_idx = i;
         for j in i + 1 .. n {
-            if v.get(j) < v.get(min_idx) {
+            if v[j] < v[min_idx] {
                 min_idx = j;
             }
         }
@@ -81,7 +81,7 @@ fn sort_strings_in_place(v: Vec<string>) {
     for i in 0 .. n {
         var min_idx = i;
         for j in i + 1 .. n {
-            if v.get(j) < v.get(min_idx) {
+            if v[j] < v[min_idx] {
                 min_idx = j;
             }
         }

@@ -8,7 +8,7 @@
 pub fn index_of_i32(v: Vec<i32>, val: i32) -> i64 { // INTERNAL-ABI: typed for 32-bit integer vector storage
     let n = v.len();
     for i in 0 .. n {
-        if v.get(i) == val {
+        if v[i] == val {
             return i;
         }
     }
@@ -19,7 +19,7 @@ pub fn index_of_i32(v: Vec<i32>, val: i32) -> i64 { // INTERNAL-ABI: typed for 3
 pub fn index_of_i64(v: Vec<i64>, val: i64) -> i64 { // INTERNAL-ABI: legacy typed alias; Vec<i64> == Vec<i64> in Hew
     let n = v.len();
     for i in 0 .. n {
-        if v.get(i) == val {
+        if v[i] == val {
             return i;
         }
     }
@@ -41,7 +41,7 @@ pub fn index_of_i64(v: Vec<i64>, val: i64) -> i64 { // INTERNAL-ABI: legacy type
 pub fn index_of_f64(v: Vec<f64>, val: f64) -> i64 {
     let n = v.len();
     for i in 0 .. n {
-        if v.get(i) == val {
+        if v[i] == val {
             return i;
         }
     }
@@ -62,7 +62,7 @@ pub fn index_of_f64(v: Vec<f64>, val: f64) -> i64 {
 pub fn index_of_str(v: Vec<string>, val: string) -> i64 {
     let n = v.len();
     for i in 0 .. n {
-        if v.get(i) == val {
+        if v[i] == val {
             return i;
         }
     }
@@ -75,7 +75,7 @@ pub fn first_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed ali
     if v.len() == 0 {
         return None;
     }
-    Some(v.get(0))
+    Some(v[0])
 }
 
 /// Return `Some` of the first element of `v`, or `None` if `v` is empty.
@@ -83,7 +83,7 @@ pub fn first_f64(v: Vec<f64>) -> Option<f64> {
     if v.len() == 0 {
         return None;
     }
-    Some(v.get(0))
+    Some(v[0])
 }
 
 /// Return `Some` of the first element of `v`, or `None` if `v` is empty.
@@ -91,7 +91,7 @@ pub fn first_str(v: Vec<string>) -> Option<string> {
     if v.len() == 0 {
         return None;
     }
-    Some(v.get(0))
+    Some(v[0])
 }
 
 /// Return `Some` of the last element of a `Vec<i64>`, or `None` if empty.
@@ -100,7 +100,7 @@ pub fn last_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed alia
     if n == 0 {
         return None;
     }
-    Some(v.get(n - 1))
+    Some(v[n - 1])
 }
 
 /// Return `Some` of the last element of `v`, or `None` if `v` is empty.
@@ -109,7 +109,7 @@ pub fn last_f64(v: Vec<f64>) -> Option<f64> {
     if n == 0 {
         return None;
     }
-    Some(v.get(n - 1))
+    Some(v[n - 1])
 }
 
 /// Return `Some` of the last element of `v`, or `None` if `v` is empty.
@@ -118,7 +118,7 @@ pub fn last_str(v: Vec<string>) -> Option<string> {
     if n == 0 {
         return None;
     }
-    Some(v.get(n - 1))
+    Some(v[n - 1])
 }
 
 // ── min / max ─────────────────────────────────────────────────────────────
@@ -127,10 +127,10 @@ pub fn min_i32(v: Vec<i32>) -> Option<i64> { // INTERNAL-ABI: typed for 32-bit i
     if v.len() == 0 {
         return None;
     }
-    var m = v.get(0);
+    var m = v[0];
     let n = v.len();
     for i in 1 .. n {
-        let val = v.get(i);
+        let val = v[i];
         if val < m {
             m = val;
         }
@@ -143,10 +143,10 @@ pub fn min_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed alias
     if v.len() == 0 {
         return None;
     }
-    var m = v.get(0);
+    var m = v[0];
     let n = v.len();
     for i in 1 .. n {
-        let val = v.get(i);
+        let val = v[i];
         if val < m {
             m = val;
         }
@@ -160,10 +160,10 @@ pub fn min_f64(v: Vec<f64>) -> Option<f64> {
     if v.len() == 0 {
         return None;
     }
-    var m = v.get(0);
+    var m = v[0];
     let n = v.len();
     for i in 1 .. n {
-        let val = v.get(i);
+        let val = v[i];
         if val < m {
             m = val;
         }
@@ -176,10 +176,10 @@ pub fn max_i32(v: Vec<i32>) -> Option<i64> { // INTERNAL-ABI: typed for 32-bit i
     if v.len() == 0 {
         return None;
     }
-    var m = v.get(0);
+    var m = v[0];
     let n = v.len();
     for i in 1 .. n {
-        let val = v.get(i);
+        let val = v[i];
         if val > m {
             m = val;
         }
@@ -192,10 +192,10 @@ pub fn max_i64(v: Vec<i64>) -> Option<i64> { // INTERNAL-ABI: legacy typed alias
     if v.len() == 0 {
         return None;
     }
-    var m = v.get(0);
+    var m = v[0];
     let n = v.len();
     for i in 1 .. n {
-        let val = v.get(i);
+        let val = v[i];
         if val > m {
             m = val;
         }
@@ -209,10 +209,10 @@ pub fn max_f64(v: Vec<f64>) -> Option<f64> {
     if v.len() == 0 {
         return None;
     }
-    var m = v.get(0);
+    var m = v[0];
     let n = v.len();
     for i in 1 .. n {
-        let val = v.get(i);
+        let val = v[i];
         if val > m {
             m = val;
         }

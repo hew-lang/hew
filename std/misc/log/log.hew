@@ -187,7 +187,7 @@ fn join_fields(fields: Vec<string>) -> string {
     var result = "";
     let n = fields.len();
     for i in 0 .. n {
-        let f = fields.get(i);
+        let f = fields[i];
         if result.len() > 0 {
             result = result + " " + f;
         } else {

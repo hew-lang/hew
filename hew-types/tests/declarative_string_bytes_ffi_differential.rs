@@ -43,6 +43,7 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
             let _: string = s.slice(0, 1);
             let _: string = s.repeat(2);
             let _: i64 = s.char_at(0);
+            let _: Option<char> = s.get(0);
             let _: Vec<char> = s.chars();
             let _: bytes = s.to_bytes();
         }
@@ -74,6 +75,7 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
         "hew_string_slice",
         "hew_string_repeat",
         "hew_string_char_at",
+        "hew_string_get",
         "hew_string_chars",
         "hew_string_to_bytes",
     ] {
@@ -92,7 +94,7 @@ fn bytes_methods_resolve_through_std_io_extern_symbols() {
             buf.push(65);
             let _: u8 = buf.pop();
             let _: i64 = buf.len();
-            let _: u8 = buf.get(0);
+            let _: Option<u8> = buf.get(0);
             buf.set(0, 66);
             let _: bool = buf.is_empty();
             buf.clear();
@@ -112,9 +114,10 @@ fn bytes_methods_resolve_through_std_io_extern_symbols() {
         "hew_bytes_push",
         "hew_vec_pop_i32",
         "hew_vec_len",
-        // `bytes.get` routes to the dedicated `hew_bytes_index` getter (the
-        // BytesTriple element load), NOT the heap-Vec getter `hew_vec_get_i32`.
-        "hew_bytes_index",
+        // `bytes.get` routes to the dedicated `hew_bytes_get` getter, which
+        // returns `Option<u8>` — de-aliased from the trapping index getter
+        // `hew_bytes_index` that backs `buf[i]`.
+        "hew_bytes_get",
         "hew_vec_set_i32",
         "hew_vec_is_empty",
         "hew_vec_clear",

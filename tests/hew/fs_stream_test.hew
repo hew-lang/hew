@@ -177,11 +177,11 @@ fn test_try_write_and_try_read_bytes_binary_roundtrip() {
     match fs.try_read_bytes(file_path) {
         Ok(data) => {
             testing.assert_eq(data.len(), expected_len);
-            testing.assert_eq_u8(data.get(0), b0);
-            testing.assert_eq_u8(data.get(1), b1);
-            testing.assert_eq_u8(data.get(2), b2);
-            testing.assert_eq_u8(data.get(3), b3);
-            testing.assert_eq_u8(data.get(4), b4);
+            testing.assert_eq_u8(data[0], b0);
+            testing.assert_eq_u8(data[1], b1);
+            testing.assert_eq_u8(data[2], b2);
+            testing.assert_eq_u8(data[3], b3);
+            testing.assert_eq_u8(data[4], b4);
         },
         Err(_) => panic("expected try_read_bytes to preserve bytes"),
     }

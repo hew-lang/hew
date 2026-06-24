@@ -989,6 +989,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::AutoMutexFree
         | F::AutoMutexLock
         | F::AutoMutexUnlock
+        | F::BytesGet
         | F::BytesIndex
         | F::BytesLen
         | F::BytesPush
@@ -1089,6 +1090,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         | F::StreamTryNextLayout
         | F::StringCharCount
         | F::StringConcat
+        | F::StringGet
         | F::StringIndex
         | F::StringSliceCodepoints
         | F::TcpAttachLocal
@@ -19701,6 +19703,330 @@ fn lower_vec_get_clone_call(
     Ok(())
 }
 
+/// Lower the `bytes.get(index) -> Option<u8>` choke (`Index::get`), de-aliased
+/// from the trapping `b[i]` (`hew_bytes_index`). Mirrors `lower_vec_get_clone_call`
+/// but owns the bounds check inline (bytes carries no `*_get_clone` runtime
+/// export — plan §4.2: "do the check in MIR/codegen + an in-bounds typed load"):
+///
+/// ```text
+///   entry:  unpack BytesTriple {ptr, offset, len}; index_in_bounds := index <u len
+///           condbr index_in_bounds -> some_bb, none_bb
+///   some_bb: byte := hew_bytes_index(ptr, offset, len, index)   -- in-bounds, no trap
+///            store byte into Option::Some payload; tag := 0; br next
+///   none_bb: tag := 1 (None); br next
+/// ```
+///
+/// The receiver is borrowed (`is_collection_receiver_borrow_callee`), so `buf`
+/// keeps its scope-exit drop. `u8` is a scalar (Copy): the `Some` payload is a
+/// by-value load — no owned clone, no drop obligation on the payload.
+fn lower_bytes_get_option_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    if args.len() != 2 {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_bytes_get expects 2 source-level args (bytes, index), got {}",
+            args.len()
+        )));
+    }
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed("hew_bytes_get returns Option<u8>; call must supply a dest".into())
+    })?;
+    if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::Bytes) {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_bytes_get arg0 must be a `bytes` receiver; got {:?}",
+            place_resolved_ty(fn_ctx, args[0])?
+        )));
+    }
+    let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
+    match &dest_ty {
+        ResolvedTy::Named {
+            name,
+            args: ty_args,
+            ..
+        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == ResolvedTy::U8 => {}
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_bytes_get dest must be Option<u8>, got {other:?}"
+            )));
+        }
+    }
+
+    let ptr_ty = fn_ctx.ctx.ptr_type(AddressSpace::default());
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let i64_ty = fn_ctx.ctx.i64_type();
+
+    // Unpack the stack-resident BytesTriple {ptr, i32 offset, i32 len} by value,
+    // field-by-field — identical to the `hew_bytes_index` ABI marshalling. A
+    // `bytes` value is NOT a `*mut HewVec`, so it must not route through the Vec
+    // handle load.
+    let (triple_ptr, triple_ty) = place_pointer(fn_ctx, args[0])?;
+    let BasicTypeEnum::StructType(triple_struct_ty) = triple_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_bytes_get: bytes receiver alloca has non-struct type {triple_ty:?}; \
+             expected the `{{ptr, i32, i32}}` BytesTriple layout"
+        )));
+    };
+    let data_ptr_gep = fn_ctx
+        .builder
+        .build_struct_gep(triple_struct_ty, triple_ptr, 0, "bytes_get_ptr_gep")
+        .llvm_ctx("hew_bytes_get ptr GEP")?;
+    let data_ptr = fn_ctx
+        .builder
+        .build_load(ptr_ty, data_ptr_gep, "bytes_get_ptr")
+        .llvm_ctx("hew_bytes_get ptr load")?
+        .into_pointer_value();
+    let offset_gep = fn_ctx
+        .builder
+        .build_struct_gep(triple_struct_ty, triple_ptr, 1, "bytes_get_offset_gep")
+        .llvm_ctx("hew_bytes_get offset GEP")?;
+    let offset_val = fn_ctx
+        .builder
+        .build_load(i32_ty, offset_gep, "bytes_get_offset")
+        .llvm_ctx("hew_bytes_get offset load")?
+        .into_int_value();
+    let len_gep = fn_ctx
+        .builder
+        .build_struct_gep(triple_struct_ty, triple_ptr, 2, "bytes_get_len_gep")
+        .llvm_ctx("hew_bytes_get len GEP")?;
+    let len_val = fn_ctx
+        .builder
+        .build_load(i32_ty, len_gep, "bytes_get_len")
+        .llvm_ctx("hew_bytes_get len load")?
+        .into_int_value();
+    let index = load_int_arg(fn_ctx, args[1], i64_ty, "hew_bytes_get index")?;
+
+    // index_in_bounds := (index <u zext(len)). The unsigned compare folds the
+    // negative-index case into "out of bounds" (a negative i64 reinterpreted as
+    // u64 exceeds any real length) so `.get(-1)` yields `None`, never a trap.
+    let len_i64 = fn_ctx
+        .builder
+        .build_int_z_extend_or_bit_cast(len_val, i64_ty, "bytes_get_len_i64")
+        .llvm_ctx("hew_bytes_get len zext")?;
+    let in_bounds = fn_ctx
+        .builder
+        .build_int_compare(IntPredicate::ULT, index, len_i64, "bytes_get_in_bounds")
+        .llvm_ctx("hew_bytes_get bounds cmp")?;
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed("hew_bytes_get has no parent fn".into()))?;
+    let some_bb = fn_ctx.ctx.append_basic_block(parent, "bytes_get_some");
+    let none_bb = fn_ctx.ctx.append_basic_block(parent, "bytes_get_none");
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(in_bounds, some_bb, none_bb)
+        .llvm_ctx("hew_bytes_get condbr")?;
+
+    // Some = variant 0. The in-bounds typed load reuses the canonical
+    // `hew_bytes_index` getter (single source of truth for byte addressing); it
+    // is reached only on the in-bounds edge, so its OOB trap is unreachable.
+    fn_ctx.builder.position_at_end(some_bb);
+    let byte_val = fn_ctx.call_runtime_int(
+        "hew_bytes_index",
+        &[
+            data_ptr.into(),
+            offset_val.into(),
+            len_val.into(),
+            index.into(),
+        ],
+        "bytes_get_byte",
+        "hew_bytes_get element load",
+    )?;
+    let dest_local = composite_dest_local(*dest_place, "hew_bytes_get")?;
+    let (payload_ptr, payload_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 0,
+            field_idx: 0,
+        },
+    )?;
+    let BasicTypeEnum::IntType(payload_int_ty) = payload_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_bytes_get Option::Some payload must be integer-shaped (u8); got {payload_ty:?}"
+        )));
+    };
+    let store_val = fn_ctx
+        .builder
+        .build_int_z_extend_or_bit_cast(byte_val, payload_int_ty, "bytes_get_byte_cast")
+        .llvm_ctx("hew_bytes_get payload cast")?;
+    fn_ctx
+        .builder
+        .build_store(payload_ptr, store_val)
+        .llvm_ctx("hew_bytes_get payload store")?;
+    emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_bytes_get some br")?;
+
+    // None = variant 1 for Hew's builtin `Option<T>` layout.
+    fn_ctx.builder.position_at_end(none_bb);
+    emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_bytes_get none br")?;
+    Ok(())
+}
+
+/// Lower the codegen-intercepted `hew_string_get(s, index) -> Option<char>`
+/// accessor: the non-trapping, drop-safe counterpart to the trapping `s[i]`
+/// (`hew_string_index`). Builds the bounds-check CFG and the `Some`/`None`
+/// materialisation inline, mirroring `lower_bytes_get_option_call`:
+///
+/// ```text
+///   entry:  s_ptr := load string handle; count := hew_string_char_count(s_ptr)
+///           index_in_bounds := index <u zext(count)
+///           condbr index_in_bounds -> some_bb, none_bb
+///   some_bb: cp := hew_string_index(s_ptr, index)   -- in-bounds, no trap
+///            store cp into Option::Some payload; tag := 0; br next
+///   none_bb: tag := 1 (None); br next
+/// ```
+///
+/// The receiver is borrowed (`is_collection_receiver_borrow_callee`), so `s`
+/// keeps its scope-exit drop. `char` is a scalar (Copy): the `Some` payload is
+/// a by-value codepoint load — no owned clone, no drop obligation on the
+/// payload. Unlike `bytes` (a stack `BytesTriple`), a `string` value is a
+/// single heap `*const c_char` handle, so the receiver marshals through
+/// `load_duplex_handle` exactly like the trapping `hew_string_index` arm.
+fn lower_string_get_option_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    if args.len() != 2 {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_string_get expects 2 source-level args (string, index), got {}",
+            args.len()
+        )));
+    }
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "hew_string_get returns Option<char>; call must supply a dest".into(),
+        )
+    })?;
+    if !matches!(place_resolved_ty(fn_ctx, args[0])?, ResolvedTy::String) {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_string_get arg0 must be a `string` receiver; got {:?}",
+            place_resolved_ty(fn_ctx, args[0])?
+        )));
+    }
+    let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
+    match &dest_ty {
+        ResolvedTy::Named {
+            name,
+            args: ty_args,
+            ..
+        } if name == "Option" && ty_args.len() == 1 && ty_args[0] == ResolvedTy::Char => {}
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_string_get dest must be Option<char>, got {other:?}"
+            )));
+        }
+    }
+
+    let i64_ty = fn_ctx.ctx.i64_type();
+
+    // A `string` value is a single heap `*const c_char` handle — marshal it
+    // exactly like the trapping `hew_string_index` ABI arm.
+    let s_ptr = load_duplex_handle(fn_ctx, args[0], "hew_string_get arg0")?;
+    let index = load_int_arg(fn_ctx, args[1], i64_ty, "hew_string_get index")?;
+
+    // count := hew_string_char_count(s_ptr) -> i32 (codepoint count, NOT byte
+    // length). index_in_bounds := (index <u zext(count)). The unsigned compare
+    // folds the negative-index case into "out of bounds" so `.get(-1)` yields
+    // `None`, never a trap.
+    let count = fn_ctx.call_runtime_int(
+        "hew_string_char_count",
+        &[s_ptr.into()],
+        "string_get_count",
+        "hew_string_get char count",
+    )?;
+    let count_i64 = fn_ctx
+        .builder
+        .build_int_z_extend_or_bit_cast(count, i64_ty, "string_get_count_i64")
+        .llvm_ctx("hew_string_get count zext")?;
+    let in_bounds = fn_ctx
+        .builder
+        .build_int_compare(IntPredicate::ULT, index, count_i64, "string_get_in_bounds")
+        .llvm_ctx("hew_string_get bounds cmp")?;
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| CodegenError::FailClosed("hew_string_get has no parent fn".into()))?;
+    let some_bb = fn_ctx.ctx.append_basic_block(parent, "string_get_some");
+    let none_bb = fn_ctx.ctx.append_basic_block(parent, "string_get_none");
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(in_bounds, some_bb, none_bb)
+        .llvm_ctx("hew_string_get condbr")?;
+
+    // Some = variant 0. The in-bounds codepoint load reuses the canonical
+    // `hew_string_index` getter (single source of truth for codepoint
+    // addressing); it is reached only on the in-bounds edge, so its OOB trap is
+    // unreachable.
+    fn_ctx.builder.position_at_end(some_bb);
+    let codepoint = fn_ctx.call_runtime_int(
+        "hew_string_index",
+        &[s_ptr.into(), index.into()],
+        "string_get_codepoint",
+        "hew_string_get codepoint load",
+    )?;
+    let dest_local = composite_dest_local(*dest_place, "hew_string_get")?;
+    let (payload_ptr, payload_ty) = place_pointer(
+        fn_ctx,
+        Place::MachineVariant {
+            local: dest_local,
+            variant_idx: 0,
+            field_idx: 0,
+        },
+    )?;
+    let BasicTypeEnum::IntType(payload_int_ty) = payload_ty else {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_string_get Option::Some payload must be integer-shaped (char); got {payload_ty:?}"
+        )));
+    };
+    let store_val = fn_ctx
+        .builder
+        .build_int_z_extend_or_bit_cast(codepoint, payload_int_ty, "string_get_codepoint_cast")
+        .llvm_ctx("hew_string_get payload cast")?;
+    fn_ctx
+        .builder
+        .build_store(payload_ptr, store_val)
+        .llvm_ctx("hew_string_get payload store")?;
+    emit_enum_variant_literal(fn_ctx, *dest_place, 0, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_string_get some br")?;
+
+    // None = variant 1 for Hew's builtin `Option<T>` layout.
+    fn_ctx.builder.position_at_end(none_bb);
+    emit_enum_variant_literal(fn_ctx, *dest_place, 1, &[])?;
+    fn_ctx
+        .builder
+        .build_unconditional_branch(next_bb)
+        .llvm_ctx("hew_string_get none br")?;
+    Ok(())
+}
+
 /// Declare (or fetch) the `hew_vec_get_clone(vec, index, out) -> bool` runtime
 /// choke point: `(ptr, i64, ptr) -> i1`.
 fn get_or_declare_vec_get_clone_runtime<'ctx>(
@@ -25238,6 +25564,14 @@ fn lower_terminator<'ctx>(
             }
             if callee == "hew_vec_get_clone" {
                 lower_vec_get_clone_call(fn_ctx, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
+            if callee == "hew_bytes_get" {
+                lower_bytes_get_option_call(fn_ctx, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
+            if callee == "hew_string_get" {
+                lower_string_get_option_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
             if callee == "hew_hashmap_get_clone_layout" {

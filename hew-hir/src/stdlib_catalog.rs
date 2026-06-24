@@ -990,18 +990,41 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
-    // `bytes.get(index)` — element load over the `BytesTriple` representation.
-    // A `bytes` value is a `{ptr, offset, len}` triple, NOT a `*mut HewVec`, so
-    // it routes to the dedicated `hew_bytes_index(ptr, offset, len, index) -> u8`
-    // runtime entry (the same getter the `b[i]` indexing sugar uses) rather than
-    // the Vec element getter `hew_vec_get_i32`. `CalleeNameDispatchOnly`: the MIR
-    // producer arm and the codegen `hew_bytes_index` arm unpack the single triple
-    // operand into the runtime's (ptr, offset, len) args and store the u8 result.
+    // `bytes.get(index) -> Option<u8>` — the non-trapping `Index::get` accessor,
+    // de-aliased from the trapping `b[i]` sugar (`hew_bytes_index`). This row
+    // exists only to REGISTER the `hew_bytes_get` symbol name so the HIR
+    // method-call rewrite resolves at the import boundary; `CalleeNameDispatchOnly`
+    // means the params/return here are NOT consulted by typecheck — checker
+    // authority drives the `Option<u8>` result type (read from `expr_types` at
+    // the `RewriteToFunction` lowering site). `hew_bytes_get` carries no runtime
+    // export: the MIR producer arm emits a `Terminator::Call` and codegen
+    // intercepts the callee, bounds-checks the `BytesTriple`, and materialises
+    // `Some(byte)` / `None`. (`U8` below is the element class, not the wrapped
+    // return — there is no `BuiltinTy::Option`.)
     direct(
-        "hew_bytes_index",
+        "hew_bytes_get",
         BuiltinClass::ClassA,
         BYTES_I64,
         BuiltinTy::U8,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // `string.get(index) -> Option<char>` — the non-trapping `Index::get`
+    // accessor, de-aliased from the trapping `s[i]` sugar (`hew_string_index`).
+    // This row exists only to REGISTER the `hew_string_get` symbol name so the
+    // HIR method-call rewrite resolves at the import boundary;
+    // `CalleeNameDispatchOnly` means the params/return here are NOT consulted by
+    // typecheck — checker authority drives the `Option<char>` result type (read
+    // from `expr_types` at the `RewriteToFunction` lowering site).
+    // `hew_string_get` carries no runtime export: the MIR producer arm emits a
+    // `Terminator::Call` and codegen intercepts the callee, bounds-checks the
+    // index against `hew_string_char_count`, and materialises `Some(char)` /
+    // `None`. (`Char` below is the element class, not the wrapped return — there
+    // is no `BuiltinTy::Option`.)
+    direct(
+        "hew_string_get",
+        BuiltinClass::ClassA,
+        STRING_I64,
+        BuiltinTy::Char,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(

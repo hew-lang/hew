@@ -10,7 +10,7 @@ const DEFAULT_DECOMPRESS_LIMIT: i64 = 64 * 1024 * 1024;
 fn assert_bytes_eq(actual: bytes, expected: bytes) {
     testing.assert_eq(actual.len(), expected.len());
     for i in 0 .. expected.len() {
-        testing.assert_eq_u8(actual.get(i), expected.get(i));
+        testing.assert_eq_u8(actual[i], expected[i]);
     }
 }
 

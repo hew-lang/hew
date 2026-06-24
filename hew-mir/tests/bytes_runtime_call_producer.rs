@@ -1,19 +1,18 @@
 //! MIR producer tests for `bytes.len()` and `bytes.get()` runtime calls.
 //!
 //! `bytes.len()` and `bytes.get(i)` are declared in `std/io.hew`'s
-//! `impl bytes` extern block with `#[extern_symbol(hew_vec_len)]` and
-//! `#[extern_symbol(hew_bytes_index)]`. After HIR lowers the method call
-//! the callee becomes `BindingRef { name: "hew_vec_len" | "hew_bytes_index",
-//! resolved: Unresolved }`, which `runtime_symbol_for_call_expr` recognises
-//! as an allowlisted symbol and routes to `lower_runtime_call`.
+//! `impl bytes` extern block. `len` binds `#[extern_symbol(hew_vec_len)]` and
+//! lowers to an `Instr::CallRuntimeAbi(hew_vec_len)`. `get` binds
+//! `#[extern_symbol(hew_bytes_get)]` returning `Option<u8>`; it lowers to a
+//! `Terminator::Call { callee: "hew_bytes_get", dest: Some(Option<u8>) }` whose
+//! callee codegen intercepts to build `Some(byte)` in bounds / `None` out of
+//! bounds (the trapping `b[i]` half stays on the dedicated `hew_bytes_index`
+//! getter — `get` is de-aliased from it).
 //!
-//! `bytes.get` uses `hew_bytes_index` (not `hew_vec_get_i32`): a `bytes` value
-//! is a `BytesTriple { ptr, offset, len }`, so element loads route to the
-//! dedicated bytes getter rather than the heap-Vec element getter.
-//!
-//! Before the fix these both fell into the `_ =>` NYI arm and produced
-//! `MirDiagnosticKind::NotYetImplemented`. These tests assert the producer
-//! arms now exist and emit `Instr::CallRuntimeAbi` without diagnostics.
+//! After HIR lowers the method call the callee becomes
+//! `BindingRef { name, resolved: Unresolved }`, which
+//! `runtime_symbol_for_call_expr` recognises as an allowlisted symbol and
+//! routes to `lower_runtime_call`.
 
 use std::collections::HashMap;
 
@@ -21,7 +20,7 @@ use hew_hir::{
     ids::IdGen, HirBinding, HirBlock, HirExpr, HirExprKind, HirFn, HirItem, HirLiteral, HirModule,
     HirStmt, HirStmtKind, IntentKind, ResolvedRef, ScopeId, ValueClass,
 };
-use hew_mir::{lower_hir_module, Instr, Place};
+use hew_mir::{lower_hir_module, Instr, Place, Terminator};
 use hew_types::ResolvedTy;
 
 fn empty_module(items: Vec<HirItem>) -> HirModule {
@@ -166,6 +165,27 @@ fn find_abi_call<'a>(
         })
 }
 
+/// `Option<u8>` — the de-aliased `bytes.get` return type.
+fn option_u8_ty() -> ResolvedTy {
+    ResolvedTy::Named {
+        name: "Option".to_string(),
+        args: vec![ResolvedTy::U8],
+        builtin: None,
+        is_opaque: false,
+    }
+}
+
+/// Find the first `Terminator::Call` whose callee matches `callee`.
+fn find_terminator_call<'a>(
+    func: &'a hew_mir::RawMirFunction,
+    callee: &str,
+) -> Option<&'a Terminator> {
+    func.blocks
+        .iter()
+        .map(|b| &b.terminator)
+        .find(|t| matches!(t, Terminator::Call { callee: c, .. } if c == callee))
+}
+
 // ---------------------------------------------------------------------------
 // bytes.len() — hew_vec_len producer
 // ---------------------------------------------------------------------------
@@ -295,23 +315,22 @@ fn bytes_len_value_needed_emits_i64_dest() {
 }
 
 // ---------------------------------------------------------------------------
-// bytes.get(i) — hew_bytes_index producer
+// bytes.get(i) — hew_bytes_get producer (Option<u8>, de-aliased from b[i])
 // ---------------------------------------------------------------------------
 
-/// `bytes.get(index)` in statement position must emit
-/// `CallRuntimeAbi { symbol: "hew_bytes_index", args: [buf, idx], dest: None }`.
-///
-/// A `bytes` value is a `BytesTriple { ptr, offset, len }`, NOT a `*mut HewVec`,
-/// so `bytes.get` routes to the dedicated `hew_bytes_index` getter (the same
-/// runtime entry the `b[i]` indexing sugar uses) rather than the Vec element
-/// getter `hew_vec_get_i32` (whose arg0 ABI is a heap-Vec `ptr`).
+/// `bytes.get(index)` lowers to a `Terminator::Call` whose callee is the
+/// synthetic `hew_bytes_get` (codegen intercepts it to build the `Option<u8>`),
+/// carrying the two producer args `[buf, idx]`. It is NOT an
+/// `Instr::CallRuntimeAbi`: the result is an `Option`, constructed at the call
+/// site, so the call rides the terminator route the move/borrow/drop analyses
+/// already understand for Vec/HashMap `.get`.
 #[test]
-fn bytes_get_discarded_emits_call_runtime_abi() {
+fn bytes_get_emits_terminator_call_to_hew_bytes_get() {
     let mut ids = IdGen::default();
-    let callee = runtime_callee(&mut ids, "hew_bytes_index", ResolvedTy::I32);
+    let callee = runtime_callee(&mut ids, "hew_bytes_get", option_u8_ty());
     let buf = bytes_lit(&mut ids);
     let idx = i64_lit(&mut ids);
-    let call = call_expr(&mut ids, callee, vec![buf, idx], ResolvedTy::I32);
+    let call = call_expr(&mut ids, callee, vec![buf, idx], option_u8_ty());
     let module = module_with_stmt(&mut ids, call);
 
     let pipeline = lower_hir_module(&module);
@@ -320,39 +339,40 @@ fn bytes_get_discarded_emits_call_runtime_abi() {
         pipeline.diagnostics.iter().all(|d| !matches!(
             &d.kind,
             hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
-                if construct.contains("hew_bytes_index")
+                if construct.contains("hew_bytes_get")
         )),
-        "bytes.get() in discarded position must not produce NYI; diagnostics: {:#?}",
+        "bytes.get() must not produce NYI; diagnostics: {:#?}",
         pipeline.diagnostics
     );
 
     let func = find_probe(&pipeline);
-    let call = find_abi_call(func, "hew_bytes_index")
-        .expect("bytes.get() must emit Instr::CallRuntimeAbi(hew_bytes_index)");
-
-    assert_eq!(
-        call.args().len(),
-        2,
-        "hew_bytes_index takes 2 producer args (bytes receiver, index); got {:?}",
-        call.args()
-    );
     assert!(
-        call.dest().is_none(),
-        "discarded bytes.get() must have dest=None; got {:?}",
-        call.dest()
+        find_abi_call(func, "hew_bytes_get").is_none(),
+        "bytes.get() must NOT emit Instr::CallRuntimeAbi — it rides Terminator::Call"
+    );
+
+    let term = find_terminator_call(func, "hew_bytes_get")
+        .expect("bytes.get() must emit Terminator::Call(hew_bytes_get)");
+    let Terminator::Call { args, .. } = term else {
+        unreachable!("find_terminator_call returns only Terminator::Call");
+    };
+    assert_eq!(
+        args.len(),
+        2,
+        "hew_bytes_get takes 2 producer args (bytes receiver, index); got {args:?}"
     );
 }
 
-/// `bytes.get(i)` in value-needed context allocates a `u8` dest local: the
-/// typed runtime-call catalog carries `hew_bytes_index`'s real C return type
-/// (`u8`), and the dest follows the catalog rather than a pre-widened `i32`.
+/// `bytes.get(i)` in value-needed context allocates an `Option<u8>` dest local:
+/// the de-aliased getter returns `Option<u8>` (the `Some`/`None` is built at the
+/// call site by codegen), so the dest follows that type rather than a bare `u8`.
 #[test]
-fn bytes_get_value_needed_emits_u8_dest() {
+fn bytes_get_value_needed_dest_is_option_u8() {
     let mut ids = IdGen::default();
-    let callee = runtime_callee(&mut ids, "hew_bytes_index", ResolvedTy::I32);
+    let callee = runtime_callee(&mut ids, "hew_bytes_get", option_u8_ty());
     let buf = bytes_lit(&mut ids);
     let idx = i64_lit(&mut ids);
-    let rhs = call_expr(&mut ids, callee, vec![buf, idx], ResolvedTy::I32);
+    let rhs = call_expr(&mut ids, callee, vec![buf, idx], option_u8_ty());
 
     let binding_id = ids.binding();
     let let_stmt = HirStmt {
@@ -361,7 +381,7 @@ fn bytes_get_value_needed_emits_u8_dest() {
             HirBinding {
                 id: binding_id,
                 name: "_b".to_string(),
-                ty: ResolvedTy::I32,
+                ty: option_u8_ty(),
                 mutable: false,
                 span: 0..0,
             },
@@ -401,29 +421,31 @@ fn bytes_get_value_needed_emits_u8_dest() {
         pipeline.diagnostics.iter().all(|d| !matches!(
             &d.kind,
             hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
-                if construct.contains("hew_bytes_index")
+                if construct.contains("hew_bytes_get")
         )),
         "bytes.get() in value-needed position must not produce NYI; diagnostics: {:#?}",
         pipeline.diagnostics
     );
 
     let func = find_probe(&pipeline);
-    let call = find_abi_call(func, "hew_bytes_index")
-        .expect("bytes.get() in value-needed context must emit hew_bytes_index CallRuntimeAbi");
-
-    let dest = call
-        .dest()
-        .expect("value-needed bytes.get() must carry a dest local");
+    let term = find_terminator_call(func, "hew_bytes_get")
+        .expect("value-needed bytes.get() must emit Terminator::Call(hew_bytes_get)");
+    let Terminator::Call { dest, .. } = term else {
+        unreachable!("find_terminator_call returns only Terminator::Call");
+    };
+    let dest = dest
+        .as_ref()
+        .expect("value-needed bytes.get() must carry a dest place");
     let Place::Local(dest_idx) = dest else {
         panic!("dest must be Local; got {dest:?}");
     };
     let dest_ty = func
         .locals
-        .get(dest_idx as usize)
+        .get(*dest_idx as usize)
         .expect("dest local must be in locals table");
     assert_eq!(
         *dest_ty,
-        ResolvedTy::U8,
-        "bytes.get() dest local must follow the catalog return type u8; got {dest_ty:?}"
+        option_u8_ty(),
+        "bytes.get() dest local must be typed Option<u8>; got {dest_ty:?}"
     );
 }

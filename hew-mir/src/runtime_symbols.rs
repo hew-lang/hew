@@ -117,6 +117,13 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // compiler emits this immediately AFTER the access completes.
     "hew_auto_mutex_unlock",
     // --- Bytes value index/slice substrate (W3 collections-sugar S2) --------
+    // `hew_bytes_get` is the non-trapping `bytes.get(index) -> Option<u8>`
+    //   accessor (de-aliased from the trapping `b[i]` `hew_bytes_index`). It
+    //   carries no runtime export: codegen intercepts the `Terminator::Call`
+    //   callee, performs the bounds check over the stack triple, and
+    //   materialises `Some(byte)` / `None`. Listed here so the HIR method
+    //   rewrite routes through the `lower_runtime_call` producer.
+    "hew_bytes_get",
     // `hew_bytes_index(ptr, offset, len, index) -> u8`
     //   (`hew-runtime/src/bytes.rs`). O(1) byte load over a (ptr,offset,len)
     //   `BytesTriple`. Aborts on negative index or index >= len. Emitted by
@@ -371,6 +378,13 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     //   Fresh owned concatenation result. Emitted for `string + string`;
     //   drop-safety follows the existing `String` value-class discipline.
     "hew_string_concat",
+    // `hew_string_get` is the non-trapping `string.get(index) -> Option<char>`
+    //   accessor (de-aliased from the trapping `s[i]` `hew_string_index`). It
+    //   carries no runtime export: codegen intercepts the `Terminator::Call`
+    //   callee, bounds-checks the index against `hew_string_char_count`, and
+    //   materialises `Some(char)` / `None`. Listed here so the HIR method
+    //   rewrite routes through the `lower_runtime_call` producer.
+    "hew_string_get",
     // `hew_string_index(s, i) -> i32` (`hew-runtime/src/string.rs`).
     //   Codepoint at codepoint offset i; O(n). Aborts on null / invalid
     //   UTF-8 / negative / OOB. NO -1 sentinel. Emitted by the MIR

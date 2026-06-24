@@ -1,0 +1,16 @@
+// Indexed-accessor trap negative: `b[i]` on an out-of-bounds index must trap
+// (IndexOutOfBounds) rather than read past the buffer or return garbage. This
+// is the trapping `at` half of the `Index<Idx>` model for `bytes`: `b[i]` traps
+// on OOB while `b.get(i)` returns `None`. bytes routes `b[i]` through the
+// `hew_bytes_index` runtime getter, which aborts via `libc::abort()` on OOB —
+// the binary terminates with exit 134 (SIGABRT+128); run.sh asserts that code.
+fn main() -> i64 {
+    let b: bytes = bytes::new();
+    b.push(10);
+    b.push(20);
+    b.push(30);
+    // Index 10 is past the end of a length-3 buffer: must trap before the read.
+    let x: u8 = b[10];
+    // Unreachable: the index trap fires above.
+    x as i64
+}

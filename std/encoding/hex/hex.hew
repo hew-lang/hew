@@ -59,7 +59,7 @@ pub fn decode(s: string) -> bytes {
 fn encode_impl(data: bytes, upper: bool) -> string {
     let out: bytes = bytes::new();
     for i in 0 .. data.len() {
-        let b = data.get(i);
+        let b = data[i];
         let hi = b as i32 / 16;
         let lo = b as i32 % 16;
         out.push(nibble_to_char(hi, upper) as u8);

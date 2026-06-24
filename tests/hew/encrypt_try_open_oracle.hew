@@ -13,7 +13,7 @@ fn tamper_last_byte(ciphertext: bytes) -> bytes {
     let tampered: bytes = bytes::new();
     var i = 0;
     while i < ciphertext.len() {
-        let byte = ciphertext.get(i);
+        let byte = ciphertext[i];
         if i == last_index {
             if byte == 0 {
                 tampered.push(1);

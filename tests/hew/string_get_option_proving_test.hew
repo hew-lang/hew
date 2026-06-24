@@ -1,0 +1,81 @@
+//! Proving fixtures for `string.get()` under the `Index<Idx>` trait-convergence.
+//!
+//! `string.get(i)` returns `Option<char>`: `Some(char)` at an in-bounds
+//! codepoint offset, `None` out of bounds (it does NOT trap — trapping is
+//! `s[i]`'s job, covered by the vertical-slice fixture `string_index_oob_traps`).
+//! The element class is the scalar `char`, which is `Copy`, so the `Some`
+//! payload is an independent value by construction; the receiver is borrowed,
+//! not consumed, and stays usable after `get`.
+
+import std::testing;
+
+#[test]
+fn test_string_get_some_and_oob_none() {
+    let s = "hello";
+
+    match s.get(0) {
+        Some(c) => testing.assert_true(c == 'h'),
+        None => testing.assert_true(false),
+    }
+    match s.get(4) {
+        Some(c) => testing.assert_true(c == 'o'),
+        None => testing.assert_true(false),
+    }
+    match s.get(5) {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+    match s.get(99) {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+}
+
+#[test]
+fn test_string_get_negative_index_is_none() {
+    let s = "hi";
+    // The codegen bounds-check is an unsigned compare, so a negative index
+    // folds to "out of bounds" and yields `None` rather than trapping.
+    match s.get(0 - 1) {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+}
+
+#[test]
+fn test_string_get_multibyte_codepoint() {
+    // "héllo" is five codepoints; index 1 is the multi-byte 'é'. `get` indexes
+    // by codepoint (rune) offset, not byte offset.
+    let s = "héllo";
+    match s.get(1) {
+        Some(c) => testing.assert_true(c == 'é'),
+        None => testing.assert_true(false),
+    }
+    match s.get(4) {
+        Some(c) => testing.assert_true(c == 'o'),
+        None => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_string_get_does_not_consume_receiver() {
+    let s = "abc";
+
+    // A borrowed receiver survives repeated `get`; the trapping `s[i]` and
+    // `len()` must still observe the live string afterwards.
+    let _ = s.get(0);
+    let _ = s.get(1);
+    let _ = s.get(50);
+
+    testing.assert_eq(s.len(), 3);
+    testing.assert_true(s[2] == 'c');
+}
+
+#[test]
+fn test_string_get_empty_is_none() {
+    let s = "";
+    match s.get(0) {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+}

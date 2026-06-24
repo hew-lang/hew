@@ -432,6 +432,20 @@ run_accept_expect_trap "vec_enum_index_oob_traps"
 run_accept_expect_trap "hashmap_index_absent_traps"
 run_accept_expect_trap "hashmap_enum_index_absent_traps"
 
+# Indexed-accessor trap negative for bytes: `b[i]` on an out-of-bounds index
+# traps (IndexOutOfBounds) — the trapping `at` half of the `Index<Idx>` model
+# (the `get` half returns `Option<u8>`). bytes routes `b[i]` through the
+# `hew_bytes_index` runtime getter, which aborts via `libc::abort()` on OOB:
+# exit 134 (SIGABRT+128), the same fail-closed termination as `assert_eq_fail`.
+run_accept_expect_status "bytes_index_oob_traps" 134
+
+# Indexed-accessor trap negative for string: `s[i]` on an out-of-bounds index
+# traps (IndexOutOfBounds) — the trapping `at` half of the `Index<Idx>` model
+# (the `get` half returns `Option<char>`). string routes `s[i]` through the
+# `hew_string_index` runtime getter, which aborts via `libc::abort()` on OOB:
+# exit 134 (SIGABRT+128), the same fail-closed termination as `bytes_index_oob_traps`.
+run_accept_expect_status "string_index_oob_traps" 134
+
 # defer: basic (no effect on return), executes (exit override), LIFO, block scope
 run_accept_expect_status "defer_basic" 7
 run_accept_expect_status "defer_executes" 42

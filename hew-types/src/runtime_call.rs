@@ -173,7 +173,8 @@ pub enum RuntimeCallFamily {
     AutoMutexLock,
     AutoMutexUnlock,
 
-    // --- Bytes value index/length/slice/push --------------------------------
+    // --- Bytes value get/index/length/slice/push ----------------------------
+    BytesGet,
     BytesIndex,
     BytesLen,
     BytesPush,
@@ -408,6 +409,7 @@ pub enum RuntimeCallFamily {
     // --- String runtime helpers --------------------------------------------
     StringCharCount,
     StringConcat,
+    StringGet,
     StringIndex,
     StringSliceCodepoints,
 
@@ -484,6 +486,7 @@ impl RuntimeCallFamily {
             Self::AutoMutexLock => "hew_auto_mutex_lock",
             Self::AutoMutexUnlock => "hew_auto_mutex_unlock",
             // Bytes
+            Self::BytesGet => "hew_bytes_get",
             Self::BytesIndex => "hew_bytes_index",
             Self::BytesLen => "hew_bytes_len",
             Self::BytesPush => "hew_bytes_push",
@@ -633,6 +636,7 @@ impl RuntimeCallFamily {
             // String
             Self::StringCharCount => "hew_string_char_count",
             Self::StringConcat => "hew_string_concat",
+            Self::StringGet => "hew_string_get",
             Self::StringIndex => "hew_string_index",
             Self::StringSliceCodepoints => "hew_string_slice_codepoints",
             // Supervisor
@@ -721,6 +725,7 @@ impl RuntimeCallFamily {
             "hew_auto_mutex_lock" => Self::AutoMutexLock,
             "hew_auto_mutex_unlock" => Self::AutoMutexUnlock,
             // Bytes
+            "hew_bytes_get" => Self::BytesGet,
             "hew_bytes_index" => Self::BytesIndex,
             "hew_bytes_len" => Self::BytesLen,
             "hew_bytes_push" => Self::BytesPush,
@@ -869,6 +874,7 @@ impl RuntimeCallFamily {
             // String
             "hew_string_char_count" => Self::StringCharCount,
             "hew_string_concat" => Self::StringConcat,
+            "hew_string_get" => Self::StringGet,
             "hew_string_index" => Self::StringIndex,
             "hew_string_slice_codepoints" => Self::StringSliceCodepoints,
             // Supervisor
@@ -1017,6 +1023,7 @@ impl RuntimeCallFamily {
             | F::AutoMutexFree
             | F::AutoMutexLock
             | F::AutoMutexUnlock
+            | F::BytesGet
             | F::BytesIndex
             | F::BytesLen
             | F::BytesPush
@@ -1103,6 +1110,7 @@ impl RuntimeCallFamily {
             | F::SendHalfTrySend
             | F::StringCharCount
             | F::StringConcat
+            | F::StringGet
             | F::StringIndex
             | F::StringSliceCodepoints
             | F::SupervisorChildGet

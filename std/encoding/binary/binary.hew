@@ -149,8 +149,8 @@ pub fn put_i64_be(v: i64) -> bytes {
 ///
 /// Aborts if `buf.len() < 2`.
 pub fn get_u16_le(buf: bytes) -> i64 {
-    let b0 = buf.get(0) as i64;
-    let b1 = buf.get(1) as i64;
+    let b0 = buf[0] as i64;
+    let b1 = buf[1] as i64;
     b0 | b1 << 8
 }
 
@@ -159,10 +159,10 @@ pub fn get_u16_le(buf: bytes) -> i64 {
 ///
 /// Aborts if `buf.len() < 4`.
 pub fn get_u32_le(buf: bytes) -> i64 {
-    let b0 = buf.get(0) as i64;
-    let b1 = buf.get(1) as i64;
-    let b2 = buf.get(2) as i64;
-    let b3 = buf.get(3) as i64;
+    let b0 = buf[0] as i64;
+    let b1 = buf[1] as i64;
+    let b2 = buf[2] as i64;
+    let b3 = buf[3] as i64;
     b0 | b1 << 8 | b2 << 16 | b3 << 24
 }
 
@@ -170,14 +170,14 @@ pub fn get_u32_le(buf: bytes) -> i64 {
 ///
 /// Aborts if `buf.len() < 8`.
 pub fn get_u64_le(buf: bytes) -> i64 {
-    let b0 = buf.get(0) as i64;
-    let b1 = buf.get(1) as i64;
-    let b2 = buf.get(2) as i64;
-    let b3 = buf.get(3) as i64;
-    let b4 = buf.get(4) as i64;
-    let b5 = buf.get(5) as i64;
-    let b6 = buf.get(6) as i64;
-    let b7 = buf.get(7) as i64;
+    let b0 = buf[0] as i64;
+    let b1 = buf[1] as i64;
+    let b2 = buf[2] as i64;
+    let b3 = buf[3] as i64;
+    let b4 = buf[4] as i64;
+    let b5 = buf[5] as i64;
+    let b6 = buf[6] as i64;
+    let b7 = buf[7] as i64;
     b0 | b1 << 8 | b2 << 16 | b3 << 24 | b4 << 32 | b5 << 40 | b6 << 48 | b7 << 56
 }
 
@@ -187,8 +187,8 @@ pub fn get_u64_le(buf: bytes) -> i64 {
 ///
 /// Aborts if `buf.len() < 2`.
 pub fn get_u16_be(buf: bytes) -> i64 {
-    let b0 = buf.get(0) as i64;
-    let b1 = buf.get(1) as i64;
+    let b0 = buf[0] as i64;
+    let b1 = buf[1] as i64;
     b0 << 8 | b1
 }
 
@@ -197,10 +197,10 @@ pub fn get_u16_be(buf: bytes) -> i64 {
 ///
 /// Aborts if `buf.len() < 4`.
 pub fn get_u32_be(buf: bytes) -> i64 {
-    let b0 = buf.get(0) as i64;
-    let b1 = buf.get(1) as i64;
-    let b2 = buf.get(2) as i64;
-    let b3 = buf.get(3) as i64;
+    let b0 = buf[0] as i64;
+    let b1 = buf[1] as i64;
+    let b2 = buf[2] as i64;
+    let b3 = buf[3] as i64;
     b0 << 24 | b1 << 16 | b2 << 8 | b3
 }
 
@@ -208,14 +208,14 @@ pub fn get_u32_be(buf: bytes) -> i64 {
 ///
 /// Aborts if `buf.len() < 8`.
 pub fn get_u64_be(buf: bytes) -> i64 {
-    let b0 = buf.get(0) as i64;
-    let b1 = buf.get(1) as i64;
-    let b2 = buf.get(2) as i64;
-    let b3 = buf.get(3) as i64;
-    let b4 = buf.get(4) as i64;
-    let b5 = buf.get(5) as i64;
-    let b6 = buf.get(6) as i64;
-    let b7 = buf.get(7) as i64;
+    let b0 = buf[0] as i64;
+    let b1 = buf[1] as i64;
+    let b2 = buf[2] as i64;
+    let b3 = buf[3] as i64;
+    let b4 = buf[4] as i64;
+    let b5 = buf[5] as i64;
+    let b6 = buf[6] as i64;
+    let b7 = buf[7] as i64;
     b0 << 56 | b1 << 48 | b2 << 40 | b3 << 32 | b4 << 24 | b5 << 16 | b6 << 8 | b7
 }
 

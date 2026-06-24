@@ -2719,6 +2719,11 @@ pub(crate) fn lower_call_runtime_abi(
         | F::AutoMutexFree
         | F::AutoMutexLock
         | F::AutoMutexUnlock
+        // `hew_bytes_get` rides a `Terminator::Call` whose callee codegen
+        // intercepts to build `Option<u8>` inline; it is never emitted as an
+        // `Instr::CallRuntimeAbi`, so it has no MIR-ABI lowering arm here and
+        // fails closed if it ever reaches this dispatch, like `TaskSetResult`.
+        | F::BytesGet
         | F::CancelTokenIsRequested
         | F::CancelTokenRelease
         | F::CancelTokenRetain
@@ -2792,6 +2797,11 @@ pub(crate) fn lower_call_runtime_abi(
         | F::StreamNextLayout
         | F::StreamSendLayout
         | F::StreamTryNextLayout
+        // `hew_string_get` rides a `Terminator::Call` whose callee codegen
+        // intercepts to build `Option<char>` inline; it is never emitted as an
+        // `Instr::CallRuntimeAbi`, so it has no MIR-ABI lowering arm here and
+        // fails closed if it ever reaches this dispatch, like `BytesGet`.
+        | F::StringGet
         | F::SupervisorNestedGet
         | F::TcpAttachLocal
         | F::TaskCompleteThreaded

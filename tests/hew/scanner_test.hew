@@ -16,48 +16,48 @@ fn test_lines_empty_input_returns_empty_vec() {
 fn test_lines_single_line_no_newline() {
     let ls = scanner.lines("hello");
     testing.assert_eq(ls.len(), 1);
-    testing.assert_eq_str(ls.get(0), "hello");
+    testing.assert_eq_str(ls[0], "hello");
 }
 
 #[test]
 fn test_lines_single_line_with_trailing_newline() {
     let ls = scanner.lines("hello\n");
     testing.assert_eq(ls.len(), 1);
-    testing.assert_eq_str(ls.get(0), "hello");
+    testing.assert_eq_str(ls[0], "hello");
 }
 
 #[test]
 fn test_lines_two_lines() {
     let ls = scanner.lines("foo\nbar");
     testing.assert_eq(ls.len(), 2);
-    testing.assert_eq_str(ls.get(0), "foo");
-    testing.assert_eq_str(ls.get(1), "bar");
+    testing.assert_eq_str(ls[0], "foo");
+    testing.assert_eq_str(ls[1], "bar");
 }
 
 #[test]
 fn test_lines_trailing_newline_no_extra_element() {
     let ls = scanner.lines("foo\nbar\n");
     testing.assert_eq(ls.len(), 2);
-    testing.assert_eq_str(ls.get(0), "foo");
-    testing.assert_eq_str(ls.get(1), "bar");
+    testing.assert_eq_str(ls[0], "foo");
+    testing.assert_eq_str(ls[1], "bar");
 }
 
 #[test]
 fn test_lines_crlf_endings_stripped() {
     let ls = scanner.lines("a\r\nb\r\nc");
     testing.assert_eq(ls.len(), 3);
-    testing.assert_eq_str(ls.get(0), "a");
-    testing.assert_eq_str(ls.get(1), "b");
-    testing.assert_eq_str(ls.get(2), "c");
+    testing.assert_eq_str(ls[0], "a");
+    testing.assert_eq_str(ls[1], "b");
+    testing.assert_eq_str(ls[2], "c");
 }
 
 #[test]
 fn test_lines_blank_lines_preserved() {
     let ls = scanner.lines("a\n\nb");
     testing.assert_eq(ls.len(), 3);
-    testing.assert_eq_str(ls.get(0), "a");
-    testing.assert_eq_str(ls.get(1), "");
-    testing.assert_eq_str(ls.get(2), "b");
+    testing.assert_eq_str(ls[0], "a");
+    testing.assert_eq_str(ls[1], "");
+    testing.assert_eq_str(ls[2], "b");
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn test_lines_only_newline() {
     // "\n" → one empty content line, trailing newline suppressed
     let ls = scanner.lines("\n");
     testing.assert_eq(ls.len(), 1);
-    testing.assert_eq_str(ls.get(0), "");
+    testing.assert_eq_str(ls[0], "");
 }
 
 #[test]
@@ -73,15 +73,15 @@ fn test_lines_multiple_trailing_newlines() {
     // "a\n\n" → "a", "" (the empty line between \n and \n)
     let ls = scanner.lines("a\n\n");
     testing.assert_eq(ls.len(), 2);
-    testing.assert_eq_str(ls.get(0), "a");
-    testing.assert_eq_str(ls.get(1), "");
+    testing.assert_eq_str(ls[0], "a");
+    testing.assert_eq_str(ls[1], "");
 }
 
 #[test]
 fn test_lines_crlf_trailing() {
     let ls = scanner.lines("x\r\n");
     testing.assert_eq(ls.len(), 1);
-    testing.assert_eq_str(ls.get(0), "x");
+    testing.assert_eq_str(ls[0], "x");
 }
 
 // ── scan() / has_next() / text() iterative API ────────────────────────
@@ -95,9 +95,9 @@ fn test_scan_iterate_three_lines() {
         sc = scanner.scan(sc);
     }
     testing.assert_eq(result.len(), 3);
-    testing.assert_eq_str(result.get(0), "line1");
-    testing.assert_eq_str(result.get(1), "line2");
-    testing.assert_eq_str(result.get(2), "line3");
+    testing.assert_eq_str(result[0], "line1");
+    testing.assert_eq_str(result[1], "line2");
+    testing.assert_eq_str(result[2], "line3");
 }
 
 #[test]
@@ -127,9 +127,9 @@ fn test_scan_blank_lines_emitted() {
         sc = scanner.scan(sc);
     }
     testing.assert_eq(result.len(), 3);
-    testing.assert_eq_str(result.get(0), "a");
-    testing.assert_eq_str(result.get(1), "");
-    testing.assert_eq_str(result.get(2), "b");
+    testing.assert_eq_str(result[0], "a");
+    testing.assert_eq_str(result[1], "");
+    testing.assert_eq_str(result[2], "b");
 }
 
 #[test]
@@ -142,9 +142,9 @@ fn test_scan_crlf_stripped() {
         sc = scanner.scan(sc);
     }
     testing.assert_eq(result.len(), 3);
-    testing.assert_eq_str(result.get(0), "p");
-    testing.assert_eq_str(result.get(1), "q");
-    testing.assert_eq_str(result.get(2), "r");
+    testing.assert_eq_str(result[0], "p");
+    testing.assert_eq_str(result[1], "q");
+    testing.assert_eq_str(result[2], "r");
 }
 
 #[test]
@@ -157,8 +157,8 @@ fn test_scan_trailing_newline_no_extra_token() {
         sc = scanner.scan(sc);
     }
     testing.assert_eq(result.len(), 2);
-    testing.assert_eq_str(result.get(0), "x");
-    testing.assert_eq_str(result.get(1), "y");
+    testing.assert_eq_str(result[0], "x");
+    testing.assert_eq_str(result[1], "y");
 }
 
 // ── next_line() ───────────────────────────────────────────────────────
@@ -230,32 +230,32 @@ fn test_words_empty_input_returns_empty_vec() {
 fn test_words_single_word() {
     let ws = scanner.words("hello");
     testing.assert_eq(ws.len(), 1);
-    testing.assert_eq_str(ws.get(0), "hello");
+    testing.assert_eq_str(ws[0], "hello");
 }
 
 #[test]
 fn test_words_two_words_single_space() {
     let ws = scanner.words("hello world");
     testing.assert_eq(ws.len(), 2);
-    testing.assert_eq_str(ws.get(0), "hello");
-    testing.assert_eq_str(ws.get(1), "world");
+    testing.assert_eq_str(ws[0], "hello");
+    testing.assert_eq_str(ws[1], "world");
 }
 
 #[test]
 fn test_words_leading_trailing_whitespace_ignored() {
     let ws = scanner.words("  hello   world  ");
     testing.assert_eq(ws.len(), 2);
-    testing.assert_eq_str(ws.get(0), "hello");
-    testing.assert_eq_str(ws.get(1), "world");
+    testing.assert_eq_str(ws[0], "hello");
+    testing.assert_eq_str(ws[1], "world");
 }
 
 #[test]
 fn test_words_tab_and_newline_as_separator() {
     let ws = scanner.words("a\tb\nc");
     testing.assert_eq(ws.len(), 3);
-    testing.assert_eq_str(ws.get(0), "a");
-    testing.assert_eq_str(ws.get(1), "b");
-    testing.assert_eq_str(ws.get(2), "c");
+    testing.assert_eq_str(ws[0], "a");
+    testing.assert_eq_str(ws[1], "b");
+    testing.assert_eq_str(ws[2], "c");
 }
 
 #[test]
@@ -276,9 +276,9 @@ fn test_with_split_switches_to_words_mode() {
         sc = scanner.scan(sc);
     }
     testing.assert_eq(result.len(), 3);
-    testing.assert_eq_str(result.get(0), "foo");
-    testing.assert_eq_str(result.get(1), "bar");
-    testing.assert_eq_str(result.get(2), "baz");
+    testing.assert_eq_str(result[0], "foo");
+    testing.assert_eq_str(result[1], "bar");
+    testing.assert_eq_str(result[2], "baz");
 }
 
 #[test]
@@ -300,9 +300,9 @@ fn test_collect_from_fresh_scanner_scans_all() {
     sc = scanner.scan(sc);
     let all = scanner.collect(sc);
     testing.assert_eq(all.len(), 3);
-    testing.assert_eq_str(all.get(0), "x");
-    testing.assert_eq_str(all.get(1), "y");
-    testing.assert_eq_str(all.get(2), "z");
+    testing.assert_eq_str(all[0], "x");
+    testing.assert_eq_str(all[1], "y");
+    testing.assert_eq_str(all[2], "z");
 }
 
 #[test]
@@ -313,9 +313,9 @@ fn test_collect_after_partial_advance() {
     let rest = scanner.collect(sc);
     // collect includes current ("b") plus remainder
     testing.assert_eq(rest.len(), 3);
-    testing.assert_eq_str(rest.get(0), "b");
-    testing.assert_eq_str(rest.get(1), "c");
-    testing.assert_eq_str(rest.get(2), "d");
+    testing.assert_eq_str(rest[0], "b");
+    testing.assert_eq_str(rest[1], "c");
+    testing.assert_eq_str(rest[2], "d");
 }
 
 #[test]

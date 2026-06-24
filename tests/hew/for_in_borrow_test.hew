@@ -19,9 +19,9 @@ fn test_vec_i64_for_in_borrows_collection() {
     }
     // Collection must still be alive after the loop.
     testing.assert_eq(v.len(), 3);
-    testing.assert_eq(v.get(0), 10);
-    testing.assert_eq(v.get(1), 20);
-    testing.assert_eq(v.get(2), 30);
+    testing.assert_eq(v[0], 10);
+    testing.assert_eq(v[1], 20);
+    testing.assert_eq(v[2], 30);
     // Loop must have seen all elements.
     testing.assert_eq(sum, 60);
 }
@@ -59,9 +59,9 @@ fn test_vec_string_for_in_borrows_collection() {
     }
     // Collection must still be alive after the loop.
     testing.assert_eq(v.len(), 3);
-    testing.assert_eq_str(v.get(0), "alpha");
-    testing.assert_eq_str(v.get(1), "beta");
-    testing.assert_eq_str(v.get(2), "gamma");
+    testing.assert_eq_str(v[0], "alpha");
+    testing.assert_eq_str(v[1], "beta");
+    testing.assert_eq_str(v[2], "gamma");
     // alpha=5, beta=4, gamma=5 = 14
     testing.assert_eq(count, 14);
 }
@@ -79,9 +79,9 @@ fn test_vec_f64_for_in_borrows_collection() {
     }
     // Collection must still be alive after the loop.
     testing.assert_eq(v.len(), 3);
-    testing.assert_true(v.get(0) == 1.5);
-    testing.assert_true(v.get(1) == 2.5);
-    testing.assert_true(v.get(2) == 3.0);
+    testing.assert_true(v[0] == 1.5);
+    testing.assert_true(v[1] == 2.5);
+    testing.assert_true(v[2] == 3.0);
     testing.assert_true(total == 7.0);
 }
 
@@ -128,5 +128,5 @@ fn test_vec_mutable_after_for_in() {
     // Push a new element after iterating — collection is still alive.
     v.push(3);
     testing.assert_eq(v.len(), 3);
-    testing.assert_eq(v.get(2), 3);
+    testing.assert_eq(v[2], 3);
 }

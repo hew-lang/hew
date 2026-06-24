@@ -25,11 +25,11 @@ fn test_remove_middle_shrinks_length_and_shifts_tail() {
 
     if points.len() != 2 { panic(f"expected len 2, got {points.len()}"); }
 
-    let first = points.get(0);
+    let first = points[0];
     if first.x != 10 { panic(f"expected first.x=10, got {first.x}"); }
     if first.y != 20 { panic(f"expected first.y=20, got {first.y}"); }
 
-    let second = points.get(1);
+    let second = points[1];
     if second.x != 50 { panic(f"expected second.x=50, got {second.x}"); }
     if second.y != 60 { panic(f"expected second.y=60, got {second.y}"); }
 }
@@ -48,11 +48,11 @@ fn test_remove_first_shifts_all_remaining() {
 
     if points.len() != 2 { panic(f"expected len 2, got {points.len()}"); }
 
-    let first = points.get(0);
+    let first = points[0];
     if first.x != 30 { panic(f"expected first.x=30, got {first.x}"); }
     if first.y != 40 { panic(f"expected first.y=40, got {first.y}"); }
 
-    let second = points.get(1);
+    let second = points[1];
     if second.x != 50 { panic(f"expected second.x=50, got {second.x}"); }
     if second.y != 60 { panic(f"expected second.y=60, got {second.y}"); }
 }
@@ -71,11 +71,11 @@ fn test_remove_last_element_leaves_prefix_intact() {
 
     if points.len() != 2 { panic(f"expected len 2, got {points.len()}"); }
 
-    let first = points.get(0);
+    let first = points[0];
     if first.x != 10 { panic(f"expected first.x=10, got {first.x}"); }
     if first.y != 20 { panic(f"expected first.y=20, got {first.y}"); }
 
-    let second = points.get(1);
+    let second = points[1];
     if second.x != 30 { panic(f"expected second.x=30, got {second.x}"); }
     if second.y != 40 { panic(f"expected second.y=40, got {second.y}"); }
 }
@@ -108,7 +108,7 @@ fn test_sequential_removals_reach_empty() {
     points.remove(0);
     if points.len() != 1 { panic(f"expected len 1, got {points.len()}"); }
 
-    let last = points.get(0);
+    let last = points[0];
     if last.x != 50 { panic(f"expected last.x=50, got {last.x}"); }
     if last.y != 60 { panic(f"expected last.y=60, got {last.y}"); }
 

@@ -17,11 +17,11 @@ fn test_sort_ints_ascending_order() {
     v.push(5);
     let out = sort.sort_ints(v);
     testing.assert_eq(out.len(), 5);
-    testing.assert_eq(out.get(0), 1);
-    testing.assert_eq(out.get(1), 1);
-    testing.assert_eq(out.get(2), 3);
-    testing.assert_eq(out.get(3), 4);
-    testing.assert_eq(out.get(4), 5);
+    testing.assert_eq(out[0], 1);
+    testing.assert_eq(out[1], 1);
+    testing.assert_eq(out[2], 3);
+    testing.assert_eq(out[3], 4);
+    testing.assert_eq(out[4], 5);
 }
 
 #[test]
@@ -31,9 +31,9 @@ fn test_sort_ints_does_not_mutate_original() {
     v.push(3);
     v.push(7);
     sort.sort_ints(v);
-    testing.assert_eq(v.get(0), 9);
-    testing.assert_eq(v.get(1), 3);
-    testing.assert_eq(v.get(2), 7);
+    testing.assert_eq(v[0], 9);
+    testing.assert_eq(v[1], 3);
+    testing.assert_eq(v[2], 7);
 }
 
 #[test]
@@ -43,9 +43,9 @@ fn test_sort_ints_already_sorted() {
     v.push(2);
     v.push(3);
     let out = sort.sort_ints(v);
-    testing.assert_eq(out.get(0), 1);
-    testing.assert_eq(out.get(1), 2);
-    testing.assert_eq(out.get(2), 3);
+    testing.assert_eq(out[0], 1);
+    testing.assert_eq(out[1], 2);
+    testing.assert_eq(out[2], 3);
 }
 
 #[test]
@@ -57,8 +57,8 @@ fn test_sort_ints_reverse_sorted_input() {
     v.push(2);
     v.push(1);
     let out = sort.sort_ints(v);
-    testing.assert_eq(out.get(0), 1);
-    testing.assert_eq(out.get(4), 5);
+    testing.assert_eq(out[0], 1);
+    testing.assert_eq(out[4], 5);
 }
 
 #[test]
@@ -67,7 +67,7 @@ fn test_sort_ints_single_element() {
     v.push(42);
     let out = sort.sort_ints(v);
     testing.assert_eq(out.len(), 1);
-    testing.assert_eq(out.get(0), 42);
+    testing.assert_eq(out[0], 42);
 }
 
 #[test]
@@ -85,10 +85,10 @@ fn test_sort_ints_negative_values() {
     v.push(3);
     v.push(-2);
     let out = sort.sort_ints(v);
-    testing.assert_eq(out.get(0), -5);
-    testing.assert_eq(out.get(1), -2);
-    testing.assert_eq(out.get(2), 0);
-    testing.assert_eq(out.get(3), 3);
+    testing.assert_eq(out[0], -5);
+    testing.assert_eq(out[1], -2);
+    testing.assert_eq(out[2], 0);
+    testing.assert_eq(out[3], 3);
 }
 
 // ── sort_strings ──────────────────────────────────────────────────────
@@ -101,9 +101,9 @@ fn test_sort_strings_alphabetical_order() {
     v.push("cherry");
     let out = sort.sort_strings(v);
     testing.assert_eq(out.len(), 3);
-    testing.assert_eq_str(out.get(0), "apple");
-    testing.assert_eq_str(out.get(1), "banana");
-    testing.assert_eq_str(out.get(2), "cherry");
+    testing.assert_eq_str(out[0], "apple");
+    testing.assert_eq_str(out[1], "banana");
+    testing.assert_eq_str(out[2], "cherry");
 }
 
 #[test]
@@ -112,8 +112,8 @@ fn test_sort_strings_does_not_mutate_original() {
     v.push("zebra");
     v.push("ant");
     sort.sort_strings(v);
-    testing.assert_eq_str(v.get(0), "zebra");
-    testing.assert_eq_str(v.get(1), "ant");
+    testing.assert_eq_str(v[0], "zebra");
+    testing.assert_eq_str(v[1], "ant");
 }
 
 #[test]
@@ -122,7 +122,7 @@ fn test_sort_strings_single_element() {
     v.push("only");
     let out = sort.sort_strings(v);
     testing.assert_eq(out.len(), 1);
-    testing.assert_eq_str(out.get(0), "only");
+    testing.assert_eq_str(out[0], "only");
 }
 
 #[test]
@@ -139,9 +139,9 @@ fn test_sort_strings_duplicate_entries() {
     v.push("a");
     v.push("b");
     let out = sort.sort_strings(v);
-    testing.assert_eq_str(out.get(0), "a");
-    testing.assert_eq_str(out.get(1), "b");
-    testing.assert_eq_str(out.get(2), "b");
+    testing.assert_eq_str(out[0], "a");
+    testing.assert_eq_str(out[1], "b");
+    testing.assert_eq_str(out[2], "b");
 }
 
 // ── sort_floats ───────────────────────────────────────────────────────
@@ -154,9 +154,9 @@ fn test_sort_floats_ascending_order() {
     v.push(2.0);
     let out = sort.sort_floats(v);
     testing.assert_eq(out.len(), 3);
-    testing.assert_true(out.get(0) == 1.25);
-    testing.assert_true(out.get(1) == 2.0);
-    testing.assert_true(out.get(2) == 3.5);
+    testing.assert_true(out[0] == 1.25);
+    testing.assert_true(out[1] == 2.0);
+    testing.assert_true(out[2] == 3.5);
 }
 
 #[test]
@@ -167,10 +167,10 @@ fn test_sort_floats_negative_values() {
     v.push(0.5);
     v.push(-1.5);
     let out = sort.sort_floats(v);
-    testing.assert_true(out.get(0) == -3.0);
-    testing.assert_true(out.get(1) == -1.5);
-    testing.assert_true(out.get(2) == 0.5);
-    testing.assert_true(out.get(3) == 1.0);
+    testing.assert_true(out[0] == -3.0);
+    testing.assert_true(out[1] == -1.5);
+    testing.assert_true(out[2] == 0.5);
+    testing.assert_true(out[3] == 1.0);
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn test_sort_floats_single_element() {
     v.push(9.9);
     let out = sort.sort_floats(v);
     testing.assert_eq(out.len(), 1);
-    testing.assert_true(out.get(0) == 9.9);
+    testing.assert_true(out[0] == 9.9);
 }
 
 #[test]
@@ -198,9 +198,9 @@ fn test_reverse_ints_three_elements() {
     v.push(2);
     v.push(3);
     let out = sort.reverse_ints(v);
-    testing.assert_eq(out.get(0), 3);
-    testing.assert_eq(out.get(1), 2);
-    testing.assert_eq(out.get(2), 1);
+    testing.assert_eq(out[0], 3);
+    testing.assert_eq(out[1], 2);
+    testing.assert_eq(out[2], 1);
 }
 
 #[test]
@@ -210,7 +210,7 @@ fn test_reverse_ints_does_not_mutate_original() {
     v.push(2);
     v.push(3);
     sort.reverse_ints(v);
-    testing.assert_eq(v.get(0), 1);
+    testing.assert_eq(v[0], 1);
 }
 
 #[test]
@@ -219,7 +219,7 @@ fn test_reverse_ints_single_element() {
     v.push(7);
     let out = sort.reverse_ints(v);
     testing.assert_eq(out.len(), 1);
-    testing.assert_eq(out.get(0), 7);
+    testing.assert_eq(out[0], 7);
 }
 
 #[test]
@@ -238,9 +238,9 @@ fn test_reverse_then_sort_round_trips() {
     let sorted = sort.sort_ints(v);
     let reversed = sort.reverse_ints(sorted);
     let re_sorted = sort.sort_ints(reversed);
-    testing.assert_eq(re_sorted.get(0), 1);
-    testing.assert_eq(re_sorted.get(1), 2);
-    testing.assert_eq(re_sorted.get(2), 3);
+    testing.assert_eq(re_sorted[0], 1);
+    testing.assert_eq(re_sorted[1], 2);
+    testing.assert_eq(re_sorted[2], 3);
 }
 
 // ── reverse_strings ───────────────────────────────────────────────────
@@ -252,9 +252,9 @@ fn test_reverse_strings_three_elements() {
     v.push("b");
     v.push("c");
     let out = sort.reverse_strings(v);
-    testing.assert_eq_str(out.get(0), "c");
-    testing.assert_eq_str(out.get(1), "b");
-    testing.assert_eq_str(out.get(2), "a");
+    testing.assert_eq_str(out[0], "c");
+    testing.assert_eq_str(out[1], "b");
+    testing.assert_eq_str(out[2], "a");
 }
 
 #[test]
@@ -263,7 +263,7 @@ fn test_reverse_strings_single_element() {
     v.push("solo");
     let out = sort.reverse_strings(v);
     testing.assert_eq(out.len(), 1);
-    testing.assert_eq_str(out.get(0), "solo");
+    testing.assert_eq_str(out[0], "solo");
 }
 
 #[test]
@@ -282,9 +282,9 @@ fn test_reverse_floats_three_elements() {
     v.push(2.5);
     v.push(3.0);
     let out = sort.reverse_floats(v);
-    testing.assert_true(out.get(0) == 3.0);
-    testing.assert_true(out.get(1) == 2.5);
-    testing.assert_true(out.get(2) == 1.0);
+    testing.assert_true(out[0] == 3.0);
+    testing.assert_true(out[1] == 2.5);
+    testing.assert_true(out[2] == 1.0);
 }
 
 #[test]
@@ -293,7 +293,7 @@ fn test_reverse_floats_single_element() {
     v.push(4.4);
     let out = sort.reverse_floats(v);
     testing.assert_eq(out.len(), 1);
-    testing.assert_true(out.get(0) == 4.4);
+    testing.assert_true(out[0] == 4.4);
 }
 
 #[test]

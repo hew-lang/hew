@@ -1,0 +1,153 @@
+//! Proving fixtures for `Vec<T>.get()` under the `Index<Idx>` trait-convergence.
+//!
+//! `Vec<T>.get(i)` returns `Option<T>` for EVERY element class, with the `Some`
+//! payload owning an independent, drop-safe clone of the element (never a borrow
+//! into the backing buffer). Mutating or clearing the source after `get` must not
+//! invalidate the returned value. Out-of-bounds `get` returns `None` (it does NOT
+//! trap — trapping is `v[i]`'s job, covered by the vertical-slice fixtures).
+//!
+//! Element classes exercised: scalar (i64), string, owned record, enum.
+
+import std::testing;
+
+type Rec {
+    label: string;
+    count: i64;
+}
+
+enum Shade {
+    Light;
+    Medium;
+    Dark;
+}
+
+// ── scalar ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_vec_get_scalar_some_and_oob_none() {
+    let v: Vec<i64> = Vec::new();
+    v.push(10);
+    v.push(20);
+    v.push(30);
+
+    match v.get(0) {
+        Some(x) => testing.assert_eq(x, 10),
+        None => testing.assert_true(false),
+    }
+    match v.get(2) {
+        Some(x) => testing.assert_eq(x, 30),
+        None => testing.assert_true(false),
+    }
+    match v.get(3) {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+    match v.get(99) {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+}
+
+// ── string (drop-safe retain) ───────────────────────────────────────────────
+
+#[test]
+fn test_vec_get_string_some_survives_clear() {
+    let v: Vec<string> = Vec::new();
+    let n: i64 = 424242;
+    v.push(f"heap-string-{n}-padding-zzzzzzzzzzzzzzzzzzzzzzzz");
+
+    let got: Option<string> = v.get(0);
+    // Drop the backing buffer: a borrowed payload would dangle here.
+    v.clear();
+
+    match got {
+        Some(s) => testing.assert_eq_str(s, "heap-string-424242-padding-zzzzzzzzzzzzzzzzzzzzzzzz"),
+        None => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_vec_get_string_oob_none() {
+    let v: Vec<string> = Vec::new();
+    v.push("only");
+    match v.get(1) {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+}
+
+// ── owned record (drop-safe deep copy) ──────────────────────────────────────
+
+#[test]
+fn test_vec_get_owned_record_some_is_independent_clone() {
+    let v: Vec<Rec> = Vec::new();
+    v.push(Rec { label: "alpha-heap-owned-label", count: 1 });
+    v.push(Rec { label: "beta-heap-owned-label", count: 2 });
+
+    let got: Option<Rec> = v.get(0);
+    // Overwrite slot 0 in the source; the returned clone must be unaffected.
+    v.set(0, Rec { label: "mutated-after-get", count: 999 });
+
+    match got {
+        Some(r) => {
+            testing.assert_eq_str(r.label, "alpha-heap-owned-label");
+            testing.assert_eq(r.count, 1);
+        },
+        None => testing.assert_true(false),
+    }
+    // And the source mutation actually landed (sanity).
+    match v.get(0) {
+        Some(r) => testing.assert_eq_str(r.label, "mutated-after-get"),
+        None => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_vec_get_owned_record_some_survives_clear() {
+    let v: Vec<Rec> = Vec::new();
+    v.push(Rec { label: "survives-the-clear-heap-zzzz", count: 77 });
+
+    let got: Option<Rec> = v.get(0);
+    // Drop the source element (`clear` is not yet runtime-backed for layout Vecs;
+    // `pop` is, and dropping the popped owner exercises the same free path).
+    let _ = v.pop();
+
+    match got {
+        Some(r) => {
+            testing.assert_eq_str(r.label, "survives-the-clear-heap-zzzz");
+            testing.assert_eq(r.count, 77);
+        },
+        None => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_vec_get_owned_record_oob_none() {
+    let v: Vec<Rec> = Vec::new();
+    v.push(Rec { label: "x", count: 0 });
+    match v.get(5) {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+}
+
+// ── enum ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_vec_get_enum_some_and_oob_none() {
+    let v: Vec<Shade> = Vec::new();
+    v.push(Shade::Light);
+    v.push(Shade::Dark);
+
+    match v.get(1) {
+        Some(s) => match s {
+            Shade::Dark => testing.assert_true(true),
+            _ => testing.assert_true(false),
+        },
+        None => testing.assert_true(false),
+    }
+    match v.get(2) {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+}

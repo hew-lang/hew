@@ -85,13 +85,13 @@ fn action_codes(a: Action) -> Vec<i64> {
 fn test_vec_return_from_all_diverging_tail_match() {
     let m = action_codes(Action::Move);
     testing.assert_eq(m.len(), 2);
-    testing.assert_eq(m.get(0), 10);
-    testing.assert_eq(m.get(1), 11);
+    testing.assert_eq(m[0], 10);
+    testing.assert_eq(m[1], 11);
     let r = action_codes(Action::Right);
     testing.assert_eq(r.len(), 3);
-    testing.assert_eq(r.get(0), 30);
-    testing.assert_eq(r.get(1), 31);
-    testing.assert_eq(r.get(2), 32);
+    testing.assert_eq(r[0], 30);
+    testing.assert_eq(r[1], 31);
+    testing.assert_eq(r[2], 32);
     let w = action_codes(Action::Wait);
     testing.assert_eq(w.len(), 0);
 }
@@ -215,11 +215,11 @@ fn routed_codes(a: Action, c: bool) -> Vec<i64> {
 fn test_vec_return_through_nested_if() {
     let a = routed_codes(Action::Move, true);
     testing.assert_eq(a.len(), 2);
-    testing.assert_eq(a.get(0), 1);
-    testing.assert_eq(a.get(1), 2);
+    testing.assert_eq(a[0], 1);
+    testing.assert_eq(a[1], 2);
     let b = routed_codes(Action::Move, false);
     testing.assert_eq(b.len(), 1);
-    testing.assert_eq(b.get(0), 9);
+    testing.assert_eq(b[0], 9);
     let w = routed_codes(Action::Wait, true);
     testing.assert_eq(w.len(), 0);
 }

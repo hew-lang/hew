@@ -27,13 +27,13 @@ fn test_vec_vec_string_reuse_keeps_each_row() {
     rows.push(cur);
 
     testing.assert_eq(rows.len(), 2);
-    let r0 = rows.get(0);
+    let r0 = rows[0];
     testing.assert_eq(r0.len(), 2);
-    testing.assert_eq_str(r0.get(0), "alpha");
-    testing.assert_eq_str(r0.get(1), "beta");
-    let r1 = rows.get(1);
+    testing.assert_eq_str(r0[0], "alpha");
+    testing.assert_eq_str(r0[1], "beta");
+    let r1 = rows[1];
     testing.assert_eq(r1.len(), 1);
-    testing.assert_eq_str(r1.get(0), "gamma");
+    testing.assert_eq_str(r1[0], "gamma");
 }
 
 // Pushing the SAME accumulator twice must yield two independent rows, so a
@@ -48,10 +48,10 @@ fn test_vec_vec_string_push_same_source_twice_is_independent() {
     cur.push("two");
 
     testing.assert_eq(rows.len(), 2);
-    testing.assert_eq(rows.get(0).len(), 1);
-    testing.assert_eq(rows.get(1).len(), 1);
-    testing.assert_eq_str(rows.get(0).get(0), "one");
-    testing.assert_eq_str(rows.get(1).get(0), "one");
+    testing.assert_eq(rows[0].len(), 1);
+    testing.assert_eq(rows[1].len(), 1);
+    testing.assert_eq_str(rows[0][0], "one");
+    testing.assert_eq_str(rows[1][0], "one");
     // Source kept growing without disturbing the stored copies.
     testing.assert_eq(cur.len(), 2);
 }
@@ -68,7 +68,7 @@ fn test_vec_hashmap_push_is_copy_in() {
     rows.push(m);
     m.insert("beta", 2);
 
-    let stored = rows.get(0);
+    let stored = rows[0];
     testing.assert_eq(stored.len(), 1);
     testing.assert_true(stored.contains_key("alpha"));
     testing.assert_false(stored.contains_key("beta"));
@@ -87,7 +87,7 @@ fn test_vec_hashset_push_is_copy_in() {
     rows.push(s);
     s.insert("beta");
 
-    let stored = rows.get(0);
+    let stored = rows[0];
     testing.assert_eq(stored.len(), 1);
     testing.assert_true(stored.contains("alpha"));
     testing.assert_false(stored.contains("beta"));
@@ -109,10 +109,10 @@ fn test_vec_vec_vec_string_deep_nesting() {
     inner.clear();
 
     testing.assert_eq(outer.len(), 1);
-    let stored_mid = outer.get(0);
+    let stored_mid = outer[0];
     testing.assert_eq(stored_mid.len(), 1);
-    let stored_inner = stored_mid.get(0);
+    let stored_inner = stored_mid[0];
     testing.assert_eq(stored_inner.len(), 2);
-    testing.assert_eq_str(stored_inner.get(0), "alpha");
-    testing.assert_eq_str(stored_inner.get(1), "beta");
+    testing.assert_eq_str(stored_inner[0], "alpha");
+    testing.assert_eq_str(stored_inner[1], "beta");
 }

@@ -29,8 +29,8 @@ fn test_vec_clone_deep_copies_nested_tuple_fields() {
     xs.push((("b", 2), false));
     let ys = xs.clone();
     xs.set(0, (("zzz", 9), true));
-    let first = ys.get(0);
-    let second = ys.get(1);
+    let first = match ys.get(0) { Some(x) => x, None => panic("ys.get(0) None") };
+    let second = match ys.get(1) { Some(x) => x, None => panic("ys.get(1) None") };
     let (f_inner, f_flag) = first;
     let (f_s, f_n) = f_inner;
     let (s_inner, s_flag) = second;
@@ -56,8 +56,8 @@ fn test_vec_clone_drops_nested_bytes_leaf_cleanly() {
     xs.push(((a, 11), true));
     xs.push(((b, 12), false));
     let ys = xs.clone();
-    let first = ys.get(0);
-    let second = ys.get(1);
+    let first = match ys.get(0) { Some(x) => x, None => panic("ys.get(0) None") };
+    let second = match ys.get(1) { Some(x) => x, None => panic("ys.get(1) None") };
     let (f_inner, f_flag) = first;
     let (f_b, f_n) = f_inner;
     let (s_inner, s_flag) = second;
@@ -78,8 +78,8 @@ fn test_vec_clone_drops_nested_record_leaf_cleanly() {
     xs.push(((Rec { s: "bye" }, 22), false));
     let ys = xs.clone();
     xs.set(0, ((Rec { s: "changed" }, 99), true));
-    let first = ys.get(0);
-    let second = ys.get(1);
+    let first = match ys.get(0) { Some(x) => x, None => panic("ys.get(0) None") };
+    let second = match ys.get(1) { Some(x) => x, None => panic("ys.get(1) None") };
     let (f_inner, f_flag) = first;
     let (f_rec, f_n) = f_inner;
     let (s_inner, s_flag) = second;

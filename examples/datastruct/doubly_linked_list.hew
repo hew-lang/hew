@@ -2,15 +2,15 @@
 // Node layout: nodes[i*3] = value, nodes[i*3+1] = prev, nodes[i*3+2] = next
 // NIL = -1
 fn node_val(n: Vec<i64>, i: i64) -> i64 {
-    n.get(i * 3)
+    n[i * 3]
 }
 
 fn node_prev(n: Vec<i64>, i: i64) -> i64 {
-    n.get(i * 3 + 1)
+    n[i * 3 + 1]
 }
 
 fn node_next(n: Vec<i64>, i: i64) -> i64 {
-    n.get(i * 3 + 2)
+    n[i * 3 + 2]
 }
 
 fn set_prev(n: Vec<i64>, i: i64, p: i64) {
@@ -107,7 +107,7 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
         return 0;
     }
     for i in 0 .. a.len() {
-        if a.get(i) != b.get(i) {
+        if a[i] != b[i] {
             return 0;
         }
     }
@@ -226,7 +226,7 @@ fn test_delete_tail() -> i64 {
     let r: Vec<i64> = Vec::new();
     traverse_forward(n, head, r);
     if r.len() == 1 {
-        if r.get(0) == 10 {
+        if r[0] == 10 {
             println("PASS: delete tail");
             return 1;
         }

@@ -8,12 +8,12 @@ fn matrix_multiply(a: Vec<i64>, b: Vec<i64>, n: i64) -> i64 {
         for j in 0 .. n {
             var sum = 0;
             for k in 0 .. n {
-                sum = sum + a.get(i * n + k) * b.get(k * n + j);
+                sum = sum + a[i * n + k] * b[k * n + j];
             }
             c.set(i * n + j, sum);
         }
     }
-    return c.get(0) + c.get(total / 2) + c.get(total - 1);
+    return c[0] + c[total / 2] + c[total - 1];
 }
 
 const ITERS: i64 = 10000;

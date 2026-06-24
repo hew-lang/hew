@@ -11,18 +11,18 @@ fn main() {
     var mid = 0;
     var hi = arr.len() - 1;
     while mid <= hi {
-        let val = arr.get(mid);
+        let val = arr[mid];
         if val == 0 {
-            let tmp = arr.get(lo);
-            arr.set(lo, arr.get(mid));
+            let tmp = arr[lo];
+            arr.set(lo, arr[mid]);
             arr.set(mid, tmp);
             lo = lo + 1;
             mid = mid + 1;
         } else if val == 1 {
             mid = mid + 1;
         } else {
-            let tmp = arr.get(hi);
-            arr.set(hi, arr.get(mid));
+            let tmp = arr[hi];
+            arr.set(hi, arr[mid]);
             arr.set(mid, tmp);
             hi = hi - 1;
         }
@@ -37,7 +37,7 @@ fn main() {
     expected.push(2);
     var pass = true;
     for i in 0 .. 6 {
-        if arr.get(i) != expected.get(i) {
+        if arr[i] != expected[i] {
             pass = false;
             println("FAIL at index:");
             println(i);

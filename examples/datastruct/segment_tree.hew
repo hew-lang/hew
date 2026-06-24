@@ -3,13 +3,13 @@
 // Tree stored in a flat array of size 4*n
 fn seg_build(tree: Vec<i64>, arr: Vec<i64>, node: i64, start: i64, end: i64) -> i64 {
     if start == end {
-        tree.set(node, arr.get(start));
+        tree.set(node, arr[start]);
         return 0;
     }
     let mid = (start + end) / 2;
     let _ = seg_build(tree, arr, 2 * node + 1, start, mid);
     let _ = seg_build(tree, arr, 2 * node + 2, mid + 1, end);
-    tree.set(node, tree.get(2 * node + 1) + tree.get(2 * node + 2));
+    tree.set(node, tree[2 * node + 1] + tree[2 * node + 2]);
     0
 }
 
@@ -22,7 +22,7 @@ fn seg_query(tree: Vec<i64>, node: i64, start: i64, end: i64, l: i64, r: i64) ->
     }
     if l <= start {
         if end <= r {
-            return tree.get(node);
+            return tree[node];
         }
     }
     let mid = (start + end) / 2;
@@ -42,7 +42,7 @@ fn seg_update(tree: Vec<i64>, node: i64, start: i64, end: i64, idx: i64, val: i6
     } else {
         let _ = seg_update(tree, 2 * node + 2, mid + 1, end, idx, val);
     }
-    tree.set(node, tree.get(2 * node + 1) + tree.get(2 * node + 2));
+    tree.set(node, tree[2 * node + 1] + tree[2 * node + 2]);
     0
 }
 

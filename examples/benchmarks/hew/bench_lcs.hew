@@ -9,11 +9,11 @@ fn lcs(a: Vec<i64>, b: Vec<i64>, m: i64, n: i64) -> i64 {
     while i <= m {
         var j = 1;
         while j <= n {
-            if a.get(i - 1) == b.get(j - 1) {
-                dp.set(i * cols + j, dp.get((i - 1) * cols + (j - 1)) + 1);
+            if a[i - 1] == b[j - 1] {
+                dp.set(i * cols + j, dp[(i - 1) * cols + (j - 1)] + 1);
             } else {
-                let top = dp.get((i - 1) * cols + j);
-                let left = dp.get(i * cols + (j - 1));
+                let top = dp[(i - 1) * cols + j];
+                let left = dp[i * cols + (j - 1)];
                 if top > left {
                     dp.set(i * cols + j, top);
                 } else {
@@ -24,7 +24,7 @@ fn lcs(a: Vec<i64>, b: Vec<i64>, m: i64, n: i64) -> i64 {
         }
         i = i + 1;
     }
-    return dp.get(m * cols + n);
+    return dp[m * cols + n];
 }
 
 const ITERS: i64 = 50000;

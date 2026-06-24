@@ -13,7 +13,7 @@ fn caesar_checksum(s: string, lower: string, table: Vec<i64>) -> i64 {
             }
         }
         if found >= 0 {
-            let mapped = table.get(found);
+            let mapped = table[found];
             checksum = checksum + mapped;
         }
     }

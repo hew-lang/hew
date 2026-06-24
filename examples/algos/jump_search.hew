@@ -17,7 +17,7 @@ fn jump_search(arr: Vec<i64>, target: i64) -> i64 {
     var prev = 0;
     var curr = step;
     while curr < n {
-        if arr.get(curr) >= target {
+        if arr[curr] >= target {
             break;
         }
         prev = curr;
@@ -30,7 +30,7 @@ fn jump_search(arr: Vec<i64>, target: i64) -> i64 {
         end = n - 1;
     }
     while i <= end {
-        if arr.get(i) == target {
+        if arr[i] == target {
             return i;
         }
         i = i + 1;

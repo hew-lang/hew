@@ -6,7 +6,7 @@ fn sa_find_insert_pos(arr: Vec<i64>, val: i64) -> i64 {
     var hi = arr.len();
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
-        if arr.get(mid) < val {
+        if arr[mid] < val {
             lo = mid + 1;
         } else {
             hi = mid;
@@ -21,7 +21,7 @@ fn sa_insert(arr: Vec<i64>, val: i64) {
     arr.push(0);
     var i = arr.len() - 1;
     while i > pos {
-        let prev = arr.get(i - 1);
+        let prev = arr[i - 1];
         arr.set(i, prev);
         i = i - 1;
     }
@@ -34,7 +34,7 @@ fn sa_search(arr: Vec<i64>, val: i64) -> i64 {
     var hi = arr.len();
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
-        let m = arr.get(mid);
+        let m = arr[mid];
         if m == val {
             return mid;
         }
@@ -55,7 +55,7 @@ fn sa_remove(arr: Vec<i64>, val: i64) -> i64 {
     // Shift left
     var i = idx;
     while i < arr.len() - 1 {
-        let next = arr.get(i + 1);
+        let next = arr[i + 1];
         arr.set(i, next);
         i = i + 1;
     }
@@ -68,7 +68,7 @@ fn sa_is_sorted(arr: Vec<i64>) -> i64 {
         return 1;
     }
     for i in 0 .. arr.len() - 1 {
-        if arr.get(i) > arr.get(i + 1) {
+        if arr[i] > arr[i + 1] {
             return 0;
         }
     }
@@ -105,11 +105,11 @@ fn main() {
     // Test 2: correct values [10, 20, 30, 40, 50]
     total = total + 1;
     var r2 = 0;
-    if arr.get(0) == 10 {
-        if arr.get(1) == 20 {
-            if arr.get(2) == 30 {
-                if arr.get(3) == 40 {
-                    if arr.get(4) == 50 {
+    if arr[0] == 10 {
+        if arr[1] == 20 {
+            if arr[2] == 30 {
+                if arr[3] == 40 {
+                    if arr[4] == 50 {
                         r2 = 1;
                     }
                 }

@@ -3,7 +3,7 @@
 fn fw_update(tree: Vec<i64>, n: i64, idx: i64, delta: i64) -> i64 {
     var i = idx;
     while i <= n {
-        tree.set(i, tree.get(i) + delta);
+        tree.set(i, tree[i] + delta);
         // i += i & (-i) -- since no negative literals, compute lowest set bit
         let neg_i = 0 - i;
         // In two's complement, -i = ~i + 1. Bitwise AND gives lowest set bit.
@@ -29,7 +29,7 @@ fn fw_query(tree: Vec<i64>, idx: i64) -> i64 {
     var sum = 0;
     var i = idx;
     while i > 0 {
-        sum = sum + tree.get(i);
+        sum = sum + tree[i];
         // i -= i & (-i)
         var lsb = 1;
         var tmp = i;
@@ -70,7 +70,7 @@ fn brute_force_sum(arr: Vec<i64>, l: i64, r: i64) -> i64 {
     var sum = 0;
     var i = l;
     while i <= r {
-        sum = sum + arr.get(i);
+        sum = sum + arr[i];
         i = i + 1;
     }
     sum

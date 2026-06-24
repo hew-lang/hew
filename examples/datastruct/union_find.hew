@@ -1,13 +1,13 @@
 // Union-Find (Disjoint Set) with path compression and union by rank
 fn find(parent: Vec<i64>, x: i64) -> i64 {
     var r = x;
-    while parent.get(r) != r {
-        r = parent.get(r);
+    while parent[r] != r {
+        r = parent[r];
     }
     // Path compression
     var c = x;
     while c != r {
-        let next = parent.get(c);
+        let next = parent[c];
         parent.set(c, r);
         c = next;
     }
@@ -20,8 +20,8 @@ fn union(parent: Vec<i64>, rank: Vec<i64>, a: i64, b: i64) -> bool {
     if ra == rb {
         return false;
     }
-    let rka = rank.get(ra);
-    let rkb = rank.get(rb);
+    let rka = rank[ra];
+    let rkb = rank[rb];
     if rka < rkb {
         parent.set(ra, rb);
     } else if rka > rkb {

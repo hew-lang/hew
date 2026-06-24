@@ -1,10 +1,10 @@
 fn get_max(v: Vec<i64>) -> i64 {
     let n = v.len();
-    var max_val = v.get(0);
+    var max_val = v[0];
     var i = 1;
     while i < n {
-        if v.get(i) > max_val {
-            max_val = v.get(i);
+        if v[i] > max_val {
+            max_val = v[i];
         }
         i = i + 1;
     }
@@ -27,26 +27,26 @@ fn count_sort_by_exp(v: Vec<i64>, exp: i64) {
     }
     i = 0;
     while i < n {
-        let idx = v.get(i) / exp % 10;
-        count.set(idx, count.get(idx) + 1);
+        let idx = v[i] / exp % 10;
+        count.set(idx, count[idx] + 1);
         i = i + 1;
     }
     i = 1;
     while i < 10 {
-        count.set(i, count.get(i) + count.get(i - 1));
+        count.set(i, count[i] + count[i - 1]);
         i = i + 1;
     }
     i = n - 1;
     while i >= 0 {
-        let idx = v.get(i) / exp % 10;
-        let pos = count.get(idx) - 1;
-        output.set(pos, v.get(i));
-        count.set(idx, count.get(idx) - 1);
+        let idx = v[i] / exp % 10;
+        let pos = count[idx] - 1;
+        output.set(pos, v[i]);
+        count.set(idx, count[idx] - 1);
         i = i - 1;
     }
     i = 0;
     while i < n {
-        v.set(i, output.get(i));
+        v.set(i, output[i]);
         i = i + 1;
     }
 }

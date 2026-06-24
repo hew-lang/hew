@@ -2,11 +2,11 @@
 // Node layout: [value, next] pairs at i*2, i*2+1
 // Maintains sorted order on insert
 fn node_val(n: Vec<i64>, i: i64) -> i64 {
-    n.get(i * 2)
+    n[i * 2]
 }
 
 fn node_next(n: Vec<i64>, i: i64) -> i64 {
-    n.get(i * 2 + 1)
+    n[i * 2 + 1]
 }
 
 fn set_next(n: Vec<i64>, i: i64, nx: i64) {
@@ -132,7 +132,7 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
         return 0;
     }
     for i in 0 .. a.len() {
-        if a.get(i) != b.get(i) {
+        if a[i] != b[i] {
             return 0;
         }
     }

@@ -14,32 +14,32 @@ fn rb_create(capacity: i64) -> Vec<i64> {
 }
 
 fn rb_capacity(rb: Vec<i64>) -> i64 {
-    rb.get(0)
+    rb[0]
 }
 
 fn rb_count(rb: Vec<i64>) -> i64 {
-    rb.get(3)
+    rb[3]
 }
 
 fn rb_is_empty(rb: Vec<i64>) -> bool {
-    rb.get(3) == 0
+    rb[3] == 0
 }
 
 fn rb_is_full(rb: Vec<i64>) -> bool {
-    rb.get(3) == rb.get(0)
+    rb[3] == rb[0]
 }
 
 fn rb_available(rb: Vec<i64>) -> i64 {
-    rb.get(0) - rb.get(3)
+    rb[0] - rb[3]
 }
 
 fn rb_write(rb: Vec<i64>, val: i64) -> bool {
-    let cap = rb.get(0);
-    let count = rb.get(3);
+    let cap = rb[0];
+    let count = rb[3];
     if count == cap {
         return false;
     }
-    let tail = rb.get(2);
+    let tail = rb[2];
     rb.set(4 + tail, val);
     let new_tail = (tail + 1) % cap;
     rb.set(2, new_tail);
@@ -48,13 +48,13 @@ fn rb_write(rb: Vec<i64>, val: i64) -> bool {
 }
 
 fn rb_read(rb: Vec<i64>) -> i64 {
-    let count = rb.get(3);
+    let count = rb[3];
     if count == 0 {
         return 0 - 1;
     }
-    let head = rb.get(1);
-    let cap = rb.get(0);
-    let val = rb.get(4 + head);
+    let head = rb[1];
+    let cap = rb[0];
+    let val = rb[4 + head];
     let new_head = (head + 1) % cap;
     rb.set(1, new_head);
     rb.set(3, count - 1);

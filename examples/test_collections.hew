@@ -10,9 +10,9 @@ fn test_vec_basic() -> i32 {
     v.push(20);
     v.push(30);
     let len = v.len();
-    let first = v.get(0);
-    let second = v.get(1);
-    let third = v.get(2);
+    let first = v[0];
+    let second = v[1];
+    let third = v[2];
     if len == 3 {
         if first == 10 {
             if second == 20 {
@@ -60,7 +60,7 @@ fn test_vec_many_elements() -> i32 {
         v.push(i);
     }
     let len = v.len();
-    let last = v.get(99);
+    let last = v[99];
     if len == 100 {
         if last == 99 {
             println("PASS: vec 100 elements");

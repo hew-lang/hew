@@ -3,18 +3,18 @@ fn heapify(v: Vec<i64>, n: i64, i: i64) {
     let left = 2 * i + 1;
     let right = 2 * i + 2;
     if left < n {
-        if v.get(left) > v.get(largest) {
+        if v[left] > v[largest] {
             largest = left;
         }
     }
     if right < n {
-        if v.get(right) > v.get(largest) {
+        if v[right] > v[largest] {
             largest = right;
         }
     }
     if largest != i {
-        let tmp = v.get(i);
-        v.set(i, v.get(largest));
+        let tmp = v[i];
+        v.set(i, v[largest]);
         v.set(largest, tmp);
         heapify(v, n, largest);
     }
@@ -29,8 +29,8 @@ fn heap_sort(v: Vec<i64>) -> Vec<i64> {
     }
     i = n - 1;
     while i > 0 {
-        let tmp = v.get(0);
-        v.set(0, v.get(i));
+        let tmp = v[0];
+        v.set(0, v[i]);
         v.set(i, tmp);
         heapify(v, i, 0);
         i = i - 1;

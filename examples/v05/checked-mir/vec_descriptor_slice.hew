@@ -23,10 +23,10 @@ fn main() {
     colours.push(CheckedMirColour::Green);
     colours.push(CheckedMirColour::Blue);
     let colour_slice = colours[1..3];
-    println(checked_mir_colour_tag(colour_slice.get(0)));
+    println(checked_mir_colour_tag(colour_slice[0]));
     let points: Vec<CheckedMirPoint> = Vec::new();
     points.push(CheckedMirPoint { x: 10, y: 20 });
     points.push(CheckedMirPoint { x: 30, y: 40 });
     let point_slice = points[0..2];
-    println(point_slice.get(1).y);
+    println(point_slice[1].y);
 }

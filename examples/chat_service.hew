@@ -30,7 +30,7 @@ actor ChatRoom {
         println(f"[room] {total} messages total");
         var i = 0;
         while i < total {
-            println(f"  {messages.get(i)}");
+            println(f"  {messages[i]}");
             i = i + 1;
         }
         total

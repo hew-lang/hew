@@ -4,10 +4,10 @@ fn dutch_flag(arr: Vec<i64>) -> i64 {
     var mid = 0;
     var high = n - 1;
     while mid <= high {
-        let val = arr.get(mid);
+        let val = arr[mid];
         if val == 0 {
-            let tmp = arr.get(low);
-            arr.set(low, arr.get(mid));
+            let tmp = arr[low];
+            arr.set(low, arr[mid]);
             arr.set(mid, tmp);
             low = low + 1;
             mid = mid + 1;
@@ -15,14 +15,14 @@ fn dutch_flag(arr: Vec<i64>) -> i64 {
             if val == 1 {
                 mid = mid + 1;
             } else {
-                let tmp = arr.get(high);
-                arr.set(high, arr.get(mid));
+                let tmp = arr[high];
+                arr.set(high, arr[mid]);
                 arr.set(mid, tmp);
                 high = high - 1;
             }
         }
     }
-    return arr.get(0) + arr.get(n / 2) + arr.get(n - 1);
+    return arr[0] + arr[n / 2] + arr[n - 1];
 }
 
 const ITERS: i64 = 100000;

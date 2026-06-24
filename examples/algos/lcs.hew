@@ -17,11 +17,11 @@ fn main() {
             let c1 = s1.char_at(i - 1);
             let c2 = s2.char_at(j - 1);
             if c1 == c2 {
-                let prev = dp.get((i - 1) * cols + (j - 1));
+                let prev = dp[(i - 1) * cols + (j - 1)];
                 dp.set(i * cols + j, prev + 1);
             } else {
-                let top = dp.get((i - 1) * cols + j);
-                let left = dp.get(i * cols + (j - 1));
+                let top = dp[(i - 1) * cols + j];
+                let left = dp[i * cols + (j - 1)];
                 if top > left {
                     dp.set(i * cols + j, top);
                 } else {
@@ -30,7 +30,7 @@ fn main() {
             }
         }
     }
-    let result = dp.get(m * cols + n);
+    let result = dp[m * cols + n];
     println(result);
     if result == 4 {
         println("PASS");

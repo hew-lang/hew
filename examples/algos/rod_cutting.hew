@@ -20,14 +20,14 @@ fn main() {
     for i in 1 .. rod_len + 1 {
         var best: i32 = 0;
         for j in 1 .. i + 1 {
-            let candidate = prices.get(j - 1) + dp.get(i - j);
+            let candidate = prices[j - 1] + dp[i - j];
             if candidate > best {
                 best = candidate;
             }
         }
         dp.set(i, best);
     }
-    let result = dp.get(rod_len);
+    let result = dp[rod_len];
     println(result);
     if result == 22 {
         println("PASS");

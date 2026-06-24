@@ -4,11 +4,11 @@
 // Bottom node: [value, next_bottom] at i*2, i*2+1
 // Top node stored in separate vec: [bottom_idx, next_top] at i*2, i*2+1
 fn bot_val(bot: Vec<i64>, i: i64) -> i64 {
-    bot.get(i * 2)
+    bot[i * 2]
 }
 
 fn bot_next(bot: Vec<i64>, i: i64) -> i64 {
-    bot.get(i * 2 + 1)
+    bot[i * 2 + 1]
 }
 
 fn set_bot_next(bot: Vec<i64>, i: i64, nx: i64) {
@@ -16,11 +16,11 @@ fn set_bot_next(bot: Vec<i64>, i: i64, nx: i64) {
 }
 
 fn top_bidx(top: Vec<i64>, i: i64) -> i64 {
-    top.get(i * 2)
+    top[i * 2]
 }
 
 fn top_next(top: Vec<i64>, i: i64) -> i64 {
-    top.get(i * 2 + 1)
+    top[i * 2 + 1]
 }
 
 fn set_top_next(top: Vec<i64>, i: i64, nx: i64) {
@@ -261,8 +261,8 @@ fn test_fewer_comparisons() -> i64 {
     let _skip_idx = search_skip(bot, top, top_head, 190, skip_c);
     let lin_c: Vec<i64> = Vec::new();
     let _lin_idx = search_linear(bot, head, 190, lin_c);
-    let skip_comps = skip_c.get(0);
-    let lin_comps = lin_c.get(0);
+    let skip_comps = skip_c[0];
+    let lin_comps = lin_c[0];
     if skip_comps <= lin_comps {
         println("PASS: fewer comparisons");
         return 1;

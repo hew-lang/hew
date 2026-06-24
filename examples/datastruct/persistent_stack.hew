@@ -23,7 +23,7 @@ fn ps_peek(store: Vec<i64>, head: i64) -> i64 {
     if head < 0 {
         return 0 - 1;
     }
-    store.get(head * 2)
+    store[head * 2]
 }
 
 // Pop from stack version 'head', return new head (previous version)
@@ -31,7 +31,7 @@ fn ps_pop(store: Vec<i64>, head: i64) -> i64 {
     if head < 0 {
         return 0 - 1;
     }
-    store.get(head * 2 + 1)
+    store[head * 2 + 1]
 }
 
 // Check if stack version is empty
@@ -45,7 +45,7 @@ fn ps_size(store: Vec<i64>, head: i64) -> i64 {
     var curr = head;
     while curr >= 0 {
         count = count + 1;
-        curr = store.get(curr * 2 + 1);
+        curr = store[curr * 2 + 1];
     }
     count
 }
@@ -55,8 +55,8 @@ fn ps_collect(store: Vec<i64>, head: i64) -> Vec<i64> {
     let result: Vec<i64> = Vec::new();
     var curr = head;
     while curr >= 0 {
-        result.push(store.get(curr * 2));
-        curr = store.get(curr * 2 + 1);
+        result.push(store[curr * 2]);
+        curr = store[curr * 2 + 1];
     }
     result
 }
@@ -188,13 +188,13 @@ fn main() {
         col_ok = 0;
     }
     if col_ok == 1 {
-        if items.get(0) != 30 {
+        if items[0] != 30 {
             col_ok = 0;
         }
-        if items.get(1) != 20 {
+        if items[1] != 20 {
             col_ok = 0;
         }
-        if items.get(2) != 10 {
+        if items[2] != 10 {
             col_ok = 0;
         }
     }
@@ -212,10 +212,10 @@ fn main() {
         col4_ok = 0;
     }
     if col4_ok == 1 {
-        if items4.get(0) != 99 {
+        if items4[0] != 99 {
             col4_ok = 0;
         }
-        if items4.get(1) != 10 {
+        if items4[1] != 10 {
             col4_ok = 0;
         }
     }

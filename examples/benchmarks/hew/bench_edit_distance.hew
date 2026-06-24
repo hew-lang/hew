@@ -13,12 +13,12 @@ fn edit_distance(a: Vec<i64>, b: Vec<i64>, m: i64, n: i64) -> i64 {
     }
     for i in 1 .. m + 1 {
         for j in 1 .. n + 1 {
-            if a.get(i - 1) == b.get(j - 1) {
-                dp.set(i * cols + j, dp.get((i - 1) * cols + (j - 1)));
+            if a[i - 1] == b[j - 1] {
+                dp.set(i * cols + j, dp[(i - 1) * cols + (j - 1)]);
             } else {
-                let rep = dp.get((i - 1) * cols + (j - 1)) + 1;
-                let del = dp.get((i - 1) * cols + j) + 1;
-                let ins = dp.get(i * cols + (j - 1)) + 1;
+                let rep = dp[(i - 1) * cols + (j - 1)] + 1;
+                let del = dp[(i - 1) * cols + j] + 1;
+                let ins = dp[i * cols + (j - 1)] + 1;
                 var best = rep;
                 if del < best {
                     best = del;
@@ -30,7 +30,7 @@ fn edit_distance(a: Vec<i64>, b: Vec<i64>, m: i64, n: i64) -> i64 {
             }
         }
     }
-    return dp.get(m * cols + n);
+    return dp[m * cols + n];
 }
 
 const ITERS: i64 = 50000;

@@ -8,7 +8,7 @@ fn pq_insert(pq: Vec<i64>, val: i64) {
     var done = 0;
     while i > 0 {
         if done == 0 {
-            let prev = pq.get(i - 1);
+            let prev = pq[i - 1];
             if prev < val {
                 pq.set(i, prev);
                 i = i - 1;
@@ -30,7 +30,7 @@ fn pq_extract_min(pq: Vec<i64>) -> i64 {
 }
 
 fn pq_peek_min(pq: Vec<i64>) -> i64 {
-    pq.get(pq.len() - 1)
+    pq[pq.len() - 1]
 }
 
 fn pq_size(pq: Vec<i64>) -> i64 {

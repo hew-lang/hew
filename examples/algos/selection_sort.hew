@@ -1,7 +1,7 @@
 // Selection Sort - find minimum element and place it at beginning
 fn swap(v: Vec<i64>, i: i64, j: i64) {
-    let tmp = v.get(i);
-    v.set(i, v.get(j));
+    let tmp = v[i];
+    v.set(i, v[j]);
     v.set(j, tmp);
 }
 
@@ -11,7 +11,7 @@ fn selection_sort(v: Vec<i64>) {
         var min_idx = i;
         var j = i + 1;
         while j < n {
-            if v.get(j) < v.get(min_idx) {
+            if v[j] < v[min_idx] {
                 min_idx = j;
             }
             j = j + 1;
@@ -28,7 +28,7 @@ fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
     }
     var i = 0;
     while i < a.len() {
-        if a.get(i) != b.get(i) {
+        if a[i] != b[i] {
             return 0;
         }
         i = i + 1;

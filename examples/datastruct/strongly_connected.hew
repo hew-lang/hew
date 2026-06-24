@@ -8,26 +8,26 @@ fn build_directed(num_nodes: i64, esrc: Vec<i64>, edst: Vec<i64>, adj_nodes: Vec
         degree.push(0);
     }
     for i in 0 .. num_edges {
-        let s = esrc.get(i);
-        degree.set(s, degree.get(s) + 1);
+        let s = esrc[i];
+        degree.set(s, degree[s] + 1);
     }
     adj_offsets.push(0);
     for i in 0 .. num_nodes {
-        adj_offsets.push(adj_offsets.get(i) + degree.get(i));
+        adj_offsets.push(adj_offsets[i] + degree[i]);
     }
-    let total = adj_offsets.get(num_nodes);
+    let total = adj_offsets[num_nodes];
     for i in 0 .. total {
         adj_nodes.push(0);
     }
     let pos: Vec<i64> = Vec::new();
     for i in 0 .. num_nodes {
-        pos.push(adj_offsets.get(i));
+        pos.push(adj_offsets[i]);
     }
     for i in 0 .. num_edges {
-        let s = esrc.get(i);
-        let d = edst.get(i);
-        adj_nodes.set(pos.get(s), d);
-        pos.set(s, pos.get(s) + 1);
+        let s = esrc[i];
+        let d = edst[i];
+        adj_nodes.set(pos[s], d);
+        pos.set(s, pos[s] + 1);
     }
 }
 
@@ -40,7 +40,7 @@ fn dfs_finish_order(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64, 
     // Stack entries: node*2 for "enter", node*2+1 for "exit"
     let stack: Vec<i64> = Vec::new();
     for start in 0 .. num_nodes {
-        if visited.get(start) == 0 {
+        if visited[start] == 0 {
             stack.push(start * 2);
             while stack.len() > 0 {
                 let entry = stack.pop();
@@ -49,15 +49,15 @@ fn dfs_finish_order(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64, 
                 if is_exit == 1 {
                     order.push(node);
                 } else {
-                    if visited.get(node) == 0 {
+                    if visited[node] == 0 {
                         visited.set(node, 1);
                         stack.push(node * 2 + 1);
-                        let s = adj_offsets.get(node);
-                        let e = adj_offsets.get(node + 1);
+                        let s = adj_offsets[node];
+                        let e = adj_offsets[node + 1];
                         var j = e - 1;
                         while j >= s {
-                            let nb = adj_nodes.get(j);
-                            if visited.get(nb) == 0 {
+                            let nb = adj_nodes[j];
+                            if visited[nb] == 0 {
                                 stack.push(nb * 2);
                             }
                             j = j - 1;
@@ -80,19 +80,19 @@ fn assign_components(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64,
         if idx < 0 {
             break;
         }
-        let node = order.get(idx);
-        if comp.get(node) == 0 - 1 {
+        let node = order[idx];
+        if comp[node] == 0 - 1 {
             let stack: Vec<i64> = Vec::new();
             stack.push(node);
             comp.set(node, comp_id);
             while stack.len() > 0 {
                 let cur = stack.pop();
-                let s = adj_offsets.get(cur);
-                let e = adj_offsets.get(cur + 1);
+                let s = adj_offsets[cur];
+                let e = adj_offsets[cur + 1];
                 var j = s;
                 while j < e {
-                    let nb = adj_nodes.get(j);
-                    if comp.get(nb) == 0 - 1 {
+                    let nb = adj_nodes[j];
+                    if comp[nb] == 0 - 1 {
                         comp.set(nb, comp_id);
                         stack.push(nb);
                     }
@@ -108,7 +108,7 @@ fn assign_components(adj_nodes: Vec<i64>, adj_offsets: Vec<i64>, num_nodes: i64,
 fn count_components(comp: Vec<i64>, num_nodes: i64) -> i64 {
     var max_c = 0;
     for i in 0 .. num_nodes {
-        let c = comp.get(i);
+        let c = comp[i];
         if c > max_c {
             max_c = c;
         }
@@ -117,7 +117,7 @@ fn count_components(comp: Vec<i64>, num_nodes: i64) -> i64 {
 }
 
 fn same_component(comp: Vec<i64>, a: i64, b: i64) -> bool {
-    comp.get(a) == comp.get(b)
+    comp[a] == comp[b]
 }
 
 fn main() {
@@ -165,8 +165,8 @@ fn main() {
     let tsrc: Vec<i64> = Vec::new();
     let tdst: Vec<i64> = Vec::new();
     for i in 0 .. num_edges {
-        tsrc.push(edst.get(i));
-        tdst.push(esrc.get(i));
+        tsrc.push(edst[i]);
+        tdst.push(esrc[i]);
     }
     let rev_nodes: Vec<i64> = Vec::new();
     let rev_offsets: Vec<i64> = Vec::new();
@@ -251,7 +251,7 @@ fn main() {
     // Test 8: All nodes assigned a component (no -1)
     var all_assigned = true;
     for i in 0 .. num_nodes {
-        if comp.get(i) < 0 {
+        if comp[i] < 0 {
             all_assigned = false;
         }
     }

@@ -32,7 +32,7 @@ fn find_slot(keys: Vec<i64>, key: i64) -> i64 {
     var idx = hash(key, capacity);
     var i = 0;
     while i < capacity {
-        let k = keys.get(idx);
+        let k = keys[idx];
         if k == key {
             return idx;
         }
@@ -49,12 +49,12 @@ fn count_element(keys: Vec<i64>, vals: Vec<i64>, key: i64) {
     let EMPTY = 0 - 1;
     let slot = find_slot(keys, key);
     if slot >= 0 {
-        let k = keys.get(slot);
+        let k = keys[slot];
         if k == EMPTY {
             keys.set(slot, key);
             vals.set(slot, 1);
         } else {
-            vals.set(slot, vals.get(slot) + 1);
+            vals.set(slot, vals[slot] + 1);
         }
     }
 }
@@ -63,9 +63,9 @@ fn get_freq(keys: Vec<i64>, vals: Vec<i64>, key: i64) -> i64 {
     let EMPTY = 0 - 1;
     let slot = find_slot(keys, key);
     if slot >= 0 {
-        let k = keys.get(slot);
+        let k = keys[slot];
         if k == key {
-            return vals.get(slot);
+            return vals[slot];
         }
     }
     0
@@ -75,7 +75,7 @@ fn get_freq(keys: Vec<i64>, vals: Vec<i64>, key: i64) -> i64 {
 fn count_all(data: Vec<i64>, keys: Vec<i64>, vals: Vec<i64>) {
     let len = data.len();
     for i in 0 .. len {
-        count_element(keys, vals, data.get(i));
+        count_element(keys, vals, data[i]);
     }
 }
 
@@ -86,9 +86,9 @@ fn find_top1(keys: Vec<i64>, vals: Vec<i64>) -> i64 {
     var best_key = EMPTY;
     var best_val = 0;
     for i in 0 .. capacity {
-        let k = keys.get(i);
+        let k = keys[i];
         if k != EMPTY {
-            let v = vals.get(i);
+            let v = vals[i];
             if v > best_val {
                 best_val = v;
                 best_key = k;
@@ -112,10 +112,10 @@ fn find_topk(keys: Vec<i64>, vals: Vec<i64>, k: i64, result: Vec<i64>) {
         var best_idx = 0 - 1;
         var best_val = 0;
         for i in 0 .. capacity {
-            let ki = keys.get(i);
+            let ki = keys[i];
             if ki != EMPTY {
-                if used.get(i) == 0 {
-                    let v = vals.get(i);
+                if used[i] == 0 {
+                    let v = vals[i];
                     if v > best_val {
                         best_val = v;
                         best_idx = i;
@@ -124,7 +124,7 @@ fn find_topk(keys: Vec<i64>, vals: Vec<i64>, k: i64, result: Vec<i64>) {
             }
         }
         if best_idx >= 0 {
-            result.push(keys.get(best_idx));
+            result.push(keys[best_idx]);
             used.set(best_idx, 1);
             found = found + 1;
         } else {
@@ -214,9 +214,9 @@ fn main() {
     let result: Vec<i64> = Vec::new();
     find_topk(keys, vals, 3, result);
     if result.len() == 3 {
-        let r0 = result.get(0);
-        let r1 = result.get(1);
-        let r2 = result.get(2);
+        let r0 = result[0];
+        let r1 = result[1];
+        let r2 = result[2];
         // Should be 1(freq=4), 2(freq=3), 3(freq=2)
         if r0 == 1 {
             if r1 == 2 {

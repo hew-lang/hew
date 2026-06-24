@@ -2,7 +2,7 @@
 // Searches sequentially through the array from start to end.
 fn linear_search(v: Vec<i64>, target: i64) -> i64 {
     for i in 0 .. v.len() {
-        if v.get(i) == target {
+        if v[i] == target {
             return i;
         }
     }

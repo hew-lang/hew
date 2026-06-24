@@ -2,15 +2,15 @@
 // Node layout: [idx, value, next] = 3 slots per node
 // Sorted by idx for efficient traversal
 fn node_idx(n: Vec<i64>, i: i64) -> i64 {
-    n.get(i * 3)
+    n[i * 3]
 }
 
 fn node_val(n: Vec<i64>, i: i64) -> i64 {
-    n.get(i * 3 + 1)
+    n[i * 3 + 1]
 }
 
 fn node_next(n: Vec<i64>, i: i64) -> i64 {
-    n.get(i * 3 + 2)
+    n[i * 3 + 2]
 }
 
 fn set_val(n: Vec<i64>, i: i64, v: i64) {
@@ -118,7 +118,7 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
         return 0;
     }
     for i in 0 .. a.len() {
-        if a.get(i) != b.get(i) {
+        if a[i] != b[i] {
             return 0;
         }
     }
@@ -237,9 +237,9 @@ fn test_iterate() -> i64 {
     iterate(n, head, r);
     // Should be sorted by index: (2,20), (5,50), (8,80)
     if r.len() == 6 {
-        if r.get(0) == 2 {
-            if r.get(2) == 5 {
-                if r.get(4) == 8 {
+        if r[0] == 2 {
+            if r[2] == 5 {
+                if r[4] == 8 {
                     println("PASS: iterate");
                     return 1;
                 }

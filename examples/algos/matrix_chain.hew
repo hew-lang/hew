@@ -24,8 +24,8 @@ fn main() {
             dp.set(i * n + j, INF);
             var k = i;
             while k < j {
-                let cost = dp.get(i * n + k) + dp.get((k + 1) * n + j) + dims.get(i) * dims.get(k + 1) * dims.get(j + 1);
-                if cost < dp.get(i * n + j) {
+                let cost = dp[i * n + k] + dp[(k + 1) * n + j] + dims[i] * dims[k + 1] * dims[j + 1];
+                if cost < dp[i * n + j] {
                     dp.set(i * n + j, cost);
                 }
                 k = k + 1;
@@ -34,7 +34,7 @@ fn main() {
         }
         l = l + 1;
     }
-    let result = dp.get(0 * n + (n - 1));
+    let result = dp[0 * n + (n - 1)];
     println(result);
     if result == 4500 {
         println("PASS");

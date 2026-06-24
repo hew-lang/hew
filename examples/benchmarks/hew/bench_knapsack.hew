@@ -9,10 +9,10 @@ fn knapsack(weights: Vec<i64>, values: Vec<i64>, n: i64, cap: i64) -> i64 {
     while i <= n {
         var w = 0;
         while w <= cap {
-            let skip = dp.get((i - 1) * cols + w);
-            let wi = weights.get(i - 1);
+            let skip = dp[(i - 1) * cols + w];
+            let wi = weights[i - 1];
             if wi <= w {
-                let take = dp.get((i - 1) * cols + (w - wi)) + values.get(i - 1);
+                let take = dp[(i - 1) * cols + (w - wi)] + values[i - 1];
                 if take > skip {
                     dp.set(i * cols + w, take);
                 } else {
@@ -25,7 +25,7 @@ fn knapsack(weights: Vec<i64>, values: Vec<i64>, n: i64, cap: i64) -> i64 {
         }
         i = i + 1;
     }
-    return dp.get(n * cols + cap);
+    return dp[n * cols + cap];
 }
 
 const ITERS: i64 = 50000;

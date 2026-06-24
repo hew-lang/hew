@@ -32,7 +32,7 @@ fn map_insert(keys: Vec<i64>, vals: Vec<i64>, key: i64, value: i64) -> bool {
     var idx = hash(key, capacity);
     var i = 0;
     while i < capacity {
-        let k = keys.get(idx);
+        let k = keys[idx];
         if k == key {
             vals.set(idx, value);
             return true;
@@ -55,9 +55,9 @@ fn map_get(keys: Vec<i64>, vals: Vec<i64>, key: i64) -> i64 {
     var idx = hash(key, capacity);
     var i = 0;
     while i < capacity {
-        let k = keys.get(idx);
+        let k = keys[idx];
         if k == key {
-            return vals.get(idx);
+            return vals[idx];
         }
         if k == EMPTY {
             return NOT_FOUND;
@@ -74,7 +74,7 @@ fn map_contains_key(keys: Vec<i64>, key: i64) -> bool {
     var idx = hash(key, capacity);
     var i = 0;
     while i < capacity {
-        let k = keys.get(idx);
+        let k = keys[idx];
         if k == key {
             return true;
         }
@@ -94,7 +94,7 @@ fn map_remove(keys: Vec<i64>, vals: Vec<i64>, key: i64) -> bool {
     var idx = hash(key, capacity);
     var i = 0;
     while i < capacity {
-        let k = keys.get(idx);
+        let k = keys[idx];
         if k == key {
             keys.set(idx, DELETED);
             vals.set(idx, 0);
@@ -115,7 +115,7 @@ fn map_size(keys: Vec<i64>) -> i64 {
     let DELETED = 0 - 2;
     var count = 0;
     for i in 0 .. capacity {
-        let k = keys.get(i);
+        let k = keys[i];
         if k != EMPTY {
             if k != DELETED {
                 count = count + 1;

@@ -5,7 +5,7 @@ fn binary_search(v: Vec<i64>, target: i64) -> i64 {
     var hi = v.len() - 1;
     while lo <= hi {
         let mid = lo + (hi - lo) / 2;
-        let val = v.get(mid);
+        let val = v[mid];
         if val == target {
             return mid;
         }

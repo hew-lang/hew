@@ -44,13 +44,13 @@ fn bloom_add(filter: Vec<i64>, key: i64) {
 
 fn bloom_might_contain(filter: Vec<i64>, key: i64) -> bool {
     let m = filter.len();
-    if filter.get(h1(key, m)) == 0 {
+    if filter[h1(key, m)] == 0 {
         return false;
     }
-    if filter.get(h2(key, m)) == 0 {
+    if filter[h2(key, m)] == 0 {
         return false;
     }
-    if filter.get(h3(key, m)) == 0 {
+    if filter[h3(key, m)] == 0 {
         return false;
     }
     true
@@ -141,7 +141,7 @@ fn main() {
     // Count how many bits are set
     var bits_set = 0;
     for i in 0 .. 16 {
-        if small.get(i) == 1 {
+        if small[i] == 1 {
             bits_set = bits_set + 1;
         }
     }

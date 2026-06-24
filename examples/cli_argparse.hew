@@ -26,7 +26,7 @@ fn print_flags(flags: Vec<string>) {
     println("Flags:");
     for i in 0 .. flags.len() {
         print("  ");
-        println(flags.get(i));
+        println(flags[i]);
     }
 }
 
@@ -34,9 +34,9 @@ fn print_options(opt_keys: Vec<string>, opt_vals: Vec<string>) {
     println("Options:");
     for i in 0 .. opt_keys.len() {
         print("  ");
-        print(opt_keys.get(i));
+        print(opt_keys[i]);
         print(" = ");
-        println(opt_vals.get(i));
+        println(opt_vals[i]);
     }
 }
 
@@ -44,7 +44,7 @@ fn print_positional(positional: Vec<string>) {
     println("Positional:");
     for i in 0 .. positional.len() {
         print("  ");
-        println(positional.get(i));
+        println(positional[i]);
     }
 }
 

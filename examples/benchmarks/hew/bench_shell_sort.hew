@@ -4,11 +4,11 @@ fn shell_sort(v: Vec<i64>) -> Vec<i64> {
     while gap > 0 {
         var i = gap;
         while i < n {
-            let temp = v.get(i);
+            let temp = v[i];
             var j = i;
             while j >= gap {
-                if v.get(j - gap) > temp {
-                    v.set(j, v.get(j - gap));
+                if v[j - gap] > temp {
+                    v.set(j, v[j - gap]);
                     j = j - gap;
                 } else {
                     j = 0;

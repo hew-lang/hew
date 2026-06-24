@@ -26,10 +26,10 @@ fn jump_search(v: Vec<i64>, target: i64) -> i64 {
     // Jump ahead
     while curr < n {
         if done == 0 {
-            if v.get(curr) >= target {
+            if v[curr] >= target {
                 var j = prev;
                 while j <= curr {
-                    if v.get(j) == target {
+                    if v[j] == target {
                         if found == 0 - 1 {
                             found = j;
                         }
@@ -48,7 +48,7 @@ fn jump_search(v: Vec<i64>, target: i64) -> i64 {
     if done == 0 {
         var j = prev;
         while j < n {
-            if v.get(j) == target {
+            if v[j] == target {
                 if found == 0 - 1 {
                     found = j;
                 }

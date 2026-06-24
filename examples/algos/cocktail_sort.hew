@@ -1,7 +1,7 @@
 // Cocktail Sort - bidirectional bubble sort
 fn swap(v: Vec<i64>, i: i64, j: i64) {
-    let tmp = v.get(i);
-    v.set(i, v.get(j));
+    let tmp = v[i];
+    v.set(i, v[j]);
     v.set(j, tmp);
 }
 
@@ -16,7 +16,7 @@ fn cocktail_sort(v: Vec<i64>) {
             // Forward pass
             var i = start;
             while i < end {
-                if v.get(i) > v.get(i + 1) {
+                if v[i] > v[i + 1] {
                     swap(v, i, i + 1);
                     swapped = 1;
                 }
@@ -29,7 +29,7 @@ fn cocktail_sort(v: Vec<i64>) {
                 var j = end;
                 while j > start {
                     if j > 0 {
-                        if v.get(j - 1) > v.get(j) {
+                        if v[j - 1] > v[j] {
                             swap(v, j - 1, j);
                             swapped = 1;
                         }
@@ -48,7 +48,7 @@ fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
     }
     var i = 0;
     while i < a.len() {
-        if a.get(i) != b.get(i) {
+        if a[i] != b[i] {
             return 0;
         }
         i = i + 1;

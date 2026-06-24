@@ -35,7 +35,7 @@ fn ht_find(ht_keys: Vec<i64>, key: i64) -> i64 {
     var idx = hash(key, capacity);
     var i = 0;
     while i < capacity {
-        let k = ht_keys.get(idx);
+        let k = ht_keys[idx];
         if k == key {
             return idx;
         }
@@ -61,14 +61,14 @@ fn mm_insert(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, node_ne
     let new_node = node_vals.len();
     node_vals.push(value);
     node_next.push(NONE);
-    let k = ht_keys.get(slot);
+    let k = ht_keys[slot];
     if k == EMPTY {
         // New key
         ht_keys.set(slot, key);
         ht_heads.set(slot, new_node);
     } else {
         // Existing key: prepend to list
-        let old_head = ht_heads.get(slot);
+        let old_head = ht_heads[slot];
         node_next.set(new_node, old_head);
         ht_heads.set(slot, new_node);
     }
@@ -82,15 +82,15 @@ fn mm_get_all(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, node_n
     if slot < 0 {
         return 0;
     }
-    let k = ht_keys.get(slot);
+    let k = ht_keys[slot];
     if k != key {
         return 0;
     }
-    var cur = ht_heads.get(slot);
+    var cur = ht_heads[slot];
     var count = 0;
     while cur != NONE {
-        result.push(node_vals.get(cur));
-        cur = node_next.get(cur);
+        result.push(node_vals[cur]);
+        cur = node_next[cur];
         count = count + 1;
     }
     count
@@ -104,30 +104,30 @@ fn mm_remove_one(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, nod
     if slot < 0 {
         return false;
     }
-    let k = ht_keys.get(slot);
+    let k = ht_keys[slot];
     if k != key {
         return false;
     }
     // Check head node
-    let head = ht_heads.get(slot);
+    let head = ht_heads[slot];
     if head == NONE {
         return false;
     }
-    if node_vals.get(head) == value {
+    if node_vals[head] == value {
         // Remove head
-        ht_heads.set(slot, node_next.get(head));
+        ht_heads.set(slot, node_next[head]);
         return true;
     }
     // Search through list
     var prev = head;
-    var cur = node_next.get(head);
+    var cur = node_next[head];
     while cur != NONE {
-        if node_vals.get(cur) == value {
-            node_next.set(prev, node_next.get(cur));
+        if node_vals[cur] == value {
+            node_next.set(prev, node_next[cur]);
             return true;
         }
         prev = cur;
-        cur = node_next.get(cur);
+        cur = node_next[cur];
     }
     false
 }
@@ -140,15 +140,15 @@ fn mm_count(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_next: Vec<i64>, key: i64
     if slot < 0 {
         return 0;
     }
-    let k = ht_keys.get(slot);
+    let k = ht_keys[slot];
     if k != key {
         return 0;
     }
-    var cur = ht_heads.get(slot);
+    var cur = ht_heads[slot];
     var count = 0;
     while cur != NONE {
         count = count + 1;
-        cur = node_next.get(cur);
+        cur = node_next[cur];
     }
     count
 }
@@ -156,7 +156,7 @@ fn mm_count(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_next: Vec<i64>, key: i64
 fn vec_contains(v: Vec<i64>, val: i64) -> bool {
     let len = v.len();
     for i in 0 .. len {
-        if v.get(i) == val {
+        if v[i] == val {
             return true;
         }
     }

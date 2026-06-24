@@ -50,9 +50,9 @@ actor Broker {
         published = published + 1;
         var delivered = 0;
         for i in 0 .. sub_topics.len() {
-            if sub_topics.get(i) == topic {
-                let target = sub_actors.get(i);
-                target.on_message(sub_topics.get(i), payload);
+            if sub_topics[i] == topic {
+                let target = sub_actors[i];
+                target.on_message(sub_topics[i], payload);
                 delivered = delivered + 1;
             }
         }

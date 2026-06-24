@@ -7,7 +7,7 @@ fn reverse_string(s: string) -> i64 {
     }
     var checksum = 0;
     for k in 0 .. n {
-        let j = result.get(k);
+        let j = result[k];
         if s.char_at(j) == s.char_at(k) {
             checksum = checksum + 1;
         }

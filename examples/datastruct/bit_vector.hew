@@ -13,7 +13,7 @@ fn bv_set_bit(bv: Vec<i64>, bit: i64) -> i64 {
     let word = bit / 32;
     let offset = bit % 32;
     let mask = bv_shl(1, offset);
-    let old = bv.get(word);
+    let old = bv[word];
     bv.set(word, bv_or(old, mask));
     1
 }
@@ -22,7 +22,7 @@ fn bv_clear_bit(bv: Vec<i64>, bit: i64) -> i64 {
     let word = bit / 32;
     let offset = bit % 32;
     let mask = bv_shl(1, offset);
-    let old = bv.get(word);
+    let old = bv[word];
     // If bit is set, subtract the mask to clear it
     if bv_get_ith_bit(old, offset) == 1 {
         bv.set(word, old - mask);
@@ -34,7 +34,7 @@ fn bv_get_bit(bv: Vec<i64>, bit: i64) -> i64 {
     let word = bit / 32;
     let offset = bit % 32;
     let mask = bv_shl(1, offset);
-    let val = bv_and(bv.get(word), mask);
+    let val = bv_and(bv[word], mask);
     if val != 0 {
         1
     } else {
@@ -105,7 +105,7 @@ fn bv_count_ones(bv: Vec<i64>) -> i64 {
     var count = 0;
     let num_words = bv.len();
     for w in 0 .. num_words {
-        let word = bv.get(w);
+        let word = bv[w];
         for b in 0 .. 32 {
             if bv_get_ith_bit(word, b) == 1 {
                 count = count + 1;

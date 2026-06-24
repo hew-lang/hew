@@ -7,7 +7,7 @@ fn mat_mul(a: Vec<i32>, b: Vec<i32>, n: i32) -> Vec<i32> {
         for j in 0 .. n64 {
             var sum = 0;
             for k in 0 .. n64 {
-                sum = sum + a.get(i * n64 + k) * b.get(k * n64 + j);
+                sum = sum + a[i * n64 + k] * b[k * n64 + j];
             }
             c.push(sum as i32);
         }
@@ -30,25 +30,25 @@ fn main() {
     b.push(8);
     let c = mat_mul(a, b, 2);
     var pass = true;
-    if c.get(0) != 19 {
+    if c[0] != 19 {
         pass = false;
         println("FAIL [0,0]");
-        println(c.get(0));
+        println(c[0]);
     }
-    if c.get(1) != 22 {
+    if c[1] != 22 {
         pass = false;
         println("FAIL [0,1]");
-        println(c.get(1));
+        println(c[1]);
     }
-    if c.get(2) != 43 {
+    if c[2] != 43 {
         pass = false;
         println("FAIL [1,0]");
-        println(c.get(2));
+        println(c[2]);
     }
-    if c.get(3) != 50 {
+    if c[3] != 50 {
         pass = false;
         println("FAIL [1,1]");
-        println(c.get(3));
+        println(c[3]);
     }
     // Test 2: identity * A = A
     let id: Vec<i32> = Vec::new();
@@ -62,19 +62,19 @@ fn main() {
     a2.push(2);
     a2.push(5);
     let r = mat_mul(id, a2, 2);
-    if r.get(0) != 3 {
+    if r[0] != 3 {
         pass = false;
         println("FAIL id[0]");
     }
-    if r.get(1) != 7 {
+    if r[1] != 7 {
         pass = false;
         println("FAIL id[1]");
     }
-    if r.get(2) != 2 {
+    if r[2] != 2 {
         pass = false;
         println("FAIL id[2]");
     }
-    if r.get(3) != 5 {
+    if r[3] != 5 {
         pass = false;
         println("FAIL id[3]");
     }

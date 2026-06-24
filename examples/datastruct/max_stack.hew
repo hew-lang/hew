@@ -14,7 +14,7 @@ fn ms_push(data: Vec<i64>, maxs: Vec<i64>, val: i64) {
     if maxs.len() == 0 {
         maxs.push(val);
     } else {
-        let cm = maxs.get(maxs.len() - 1);
+        let cm = maxs[maxs.len() - 1];
         if val > cm {
             maxs.push(val);
         } else {
@@ -29,11 +29,11 @@ fn ms_pop(data: Vec<i64>, maxs: Vec<i64>) -> i64 {
 }
 
 fn ms_max(maxs: Vec<i64>) -> i64 {
-    maxs.get(maxs.len() - 1)
+    maxs[maxs.len() - 1]
 }
 
 fn ms_peek(data: Vec<i64>) -> i64 {
-    data.get(data.len() - 1)
+    data[data.len() - 1]
 }
 
 fn ms_size(data: Vec<i64>) -> i64 {

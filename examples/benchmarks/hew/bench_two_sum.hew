@@ -3,7 +3,7 @@ fn two_sum(arr: Vec<i64>, target: i64) -> i64 {
     for i in 0 .. n {
         var j = i + 1;
         while j < n {
-            if arr.get(i) + arr.get(j) == target {
+            if arr[i] + arr[j] == target {
                 return i + j;
             }
             j = j + 1;

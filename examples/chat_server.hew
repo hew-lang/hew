@@ -28,9 +28,9 @@ actor ChatRoom {
         var new_handlers: Vec<LocalPid<ClientHandler>> = Vec::new();
         var new_names: Vec<string> = Vec::new();
         for i in 0 .. names.len() {
-            if names.get(i) != name {
-                new_handlers.push(handlers.get(i));
-                new_names.push(names.get(i));
+            if names[i] != name {
+                new_handlers.push(handlers[i]);
+                new_names.push(names[i]);
             }
         }
         handlers = new_handlers;
@@ -39,8 +39,8 @@ actor ChatRoom {
     }
     receive fn broadcast(sender_name: string, msg: string) {
         for i in 0 .. names.len() {
-            if names.get(i) != sender_name {
-                handlers.get(i).deliver(msg);
+            if names[i] != sender_name {
+                handlers[i].deliver(msg);
             }
         }
     }

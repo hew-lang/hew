@@ -2,11 +2,11 @@ fn insertion_sort(v: Vec<i64>) -> Vec<i64> {
     let n = v.len();
     var i = 1;
     while i < n {
-        let key = v.get(i);
+        let key = v[i];
         var j = i - 1;
         while j >= 0 {
-            if v.get(j) > key {
-                v.set(j + 1, v.get(j));
+            if v[j] > key {
+                v.set(j + 1, v[j]);
                 j = j - 1;
             } else {
                 j = 0 - 1;

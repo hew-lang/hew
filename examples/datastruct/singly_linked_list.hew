@@ -2,11 +2,11 @@
 // Node layout: nodes[i*2] = value, nodes[i*2+1] = next
 // NIL sentinel = -1
 fn node_val(nodes: Vec<i64>, idx: i64) -> i64 {
-    nodes.get(idx * 2)
+    nodes[idx * 2]
 }
 
 fn node_next(nodes: Vec<i64>, idx: i64) -> i64 {
-    nodes.get(idx * 2 + 1)
+    nodes[idx * 2 + 1]
 }
 
 fn set_next(nodes: Vec<i64>, idx: i64, nxt: i64) {
@@ -99,7 +99,7 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
         return 0;
     }
     for i in 0 .. a.len() {
-        if a.get(i) != b.get(i) {
+        if a[i] != b[i] {
             return 0;
         }
     }
@@ -176,7 +176,7 @@ fn test_delete_head() -> i64 {
     let result: Vec<i64> = Vec::new();
     traverse(nodes, head, result);
     if result.len() == 1 {
-        if result.get(0) == 20 {
+        if result[0] == 20 {
             println("PASS: delete head");
             return 1;
         }

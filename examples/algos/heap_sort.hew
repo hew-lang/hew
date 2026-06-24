@@ -1,7 +1,7 @@
 // Heap Sort - build max-heap in-place, then extract elements
 fn swap(v: Vec<i64>, i: i64, j: i64) {
-    let tmp = v.get(i);
-    v.set(i, v.get(j));
+    let tmp = v[i];
+    v.set(i, v[j]);
     v.set(j, tmp);
 }
 
@@ -14,12 +14,12 @@ fn sift_down(v: Vec<i64>, start: i64, end: i64) {
             done = 1;
         } else {
             var largest = root;
-            if v.get(left) > v.get(largest) {
+            if v[left] > v[largest] {
                 largest = left;
             }
             let right = left + 1;
             if right <= end {
-                if v.get(right) > v.get(largest) {
+                if v[right] > v[largest] {
                     largest = right;
                 }
             }
@@ -58,7 +58,7 @@ fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
     }
     var i = 0;
     while i < a.len() {
-        if a.get(i) != b.get(i) {
+        if a[i] != b[i] {
             return 0;
         }
         i = i + 1;

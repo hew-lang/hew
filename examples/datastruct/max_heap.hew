@@ -5,9 +5,9 @@ fn heap_push(heap: Vec<i32>, val: i32) -> i32 {
     var i = heap.len() - 1;
     while i > 0 {
         let parent = (i - 1) / 2;
-        if heap.get(i) > heap.get(parent) {
-            let tmp = heap.get(i);
-            heap.set(i, heap.get(parent));
+        if heap[i] > heap[parent] {
+            let tmp = heap[i];
+            heap.set(i, heap[parent]);
             heap.set(parent, tmp);
             i = parent;
         } else {
@@ -18,11 +18,11 @@ fn heap_push(heap: Vec<i32>, val: i32) -> i32 {
 }
 
 fn heap_peek(heap: Vec<i32>) -> i32 {
-    heap.get(0)
+    heap[0]
 }
 
 fn heap_pop(heap: Vec<i32>) -> i32 {
-    let max_val = heap.get(0);
+    let max_val = heap[0];
     let last = heap.pop();
     if heap.len() > 0 {
         heap.set(0, last);
@@ -33,18 +33,18 @@ fn heap_pop(heap: Vec<i32>) -> i32 {
             let right = 2 * i + 2;
             var largest = i;
             if left < heap.len() {
-                if heap.get(left) > heap.get(largest) {
+                if heap[left] > heap[largest] {
                     largest = left;
                 }
             }
             if right < heap.len() {
-                if heap.get(right) > heap.get(largest) {
+                if heap[right] > heap[largest] {
                     largest = right;
                 }
             }
             if largest != i {
-                let tmp = heap.get(i);
-                heap.set(i, heap.get(largest));
+                let tmp = heap[i];
+                heap.set(i, heap[largest]);
                 heap.set(largest, tmp);
                 i = largest;
             } else {
@@ -58,7 +58,7 @@ fn heap_pop(heap: Vec<i32>) -> i32 {
 // Build heap from array (heapify)
 fn build_heap(arr: Vec<i32>, heap: Vec<i32>) -> i32 {
     for i in 0 .. arr.len() {
-        heap.push(arr.get(i));
+        heap.push(arr[i]);
     }
     // Heapify from last non-leaf node
     var i = heap.len() / 2 - 1;
@@ -70,18 +70,18 @@ fn build_heap(arr: Vec<i32>, heap: Vec<i32>) -> i32 {
             let right = 2 * cur + 2;
             var largest = cur;
             if left < heap.len() {
-                if heap.get(left) > heap.get(largest) {
+                if heap[left] > heap[largest] {
                     largest = left;
                 }
             }
             if right < heap.len() {
-                if heap.get(right) > heap.get(largest) {
+                if heap[right] > heap[largest] {
                     largest = right;
                 }
             }
             if largest != cur {
-                let tmp = heap.get(cur);
-                heap.set(cur, heap.get(largest));
+                let tmp = heap[cur];
+                heap.set(cur, heap[largest]);
                 heap.set(largest, tmp);
                 cur = largest;
             } else {
@@ -99,12 +99,12 @@ fn check_max_heap_property(heap: Vec<i32>) -> bool {
         let left = 2 * i + 1;
         let right = 2 * i + 2;
         if left < heap.len() {
-            if heap.get(i) < heap.get(left) {
+            if heap[i] < heap[left] {
                 ok = false;
             }
         }
         if right < heap.len() {
-            if heap.get(i) < heap.get(right) {
+            if heap[i] < heap[right] {
                 ok = false;
             }
         }
@@ -248,7 +248,7 @@ fn test_heapsort() -> i32 {
     var ok = true;
     var i = 1;
     while i < sorted.len() {
-        if sorted.get(i) > sorted.get(i - 1) {
+        if sorted[i] > sorted[i - 1] {
             ok = false;
         }
         i = i + 1;

@@ -46,9 +46,9 @@ fn main() {
         var u = 0 - 1;
         var min_dist = INF;
         for i in 0 .. num_nodes {
-            if visited.get(i) == 0 {
-                if dist.get(i) < min_dist {
-                    min_dist = dist.get(i);
+            if visited[i] == 0 {
+                if dist[i] < min_dist {
+                    min_dist = dist[i];
                     u = i;
                 }
             }
@@ -57,14 +57,14 @@ fn main() {
             // No more reachable nodes - use while+break alternative
         } else {
             visited.set(u, 1);
-            let start: i64 = adj_offsets.get(u) as i64;
-            let end: i64 = adj_offsets.get(u + 1) as i64;
+            let start: i64 = adj_offsets[u] as i64;
+            let end: i64 = adj_offsets[u + 1] as i64;
             var idx: i64 = start;
             while idx < end {
-                let v: i64 = adj_nodes.get(idx) as i64;
-                let w: i32 = adj_weights.get(idx);
-                let new_dist = dist.get(u) + w;
-                if new_dist < dist.get(v) {
+                let v: i64 = adj_nodes[idx] as i64;
+                let w: i32 = adj_weights[idx];
+                let new_dist = dist[u] + w;
+                if new_dist < dist[v] {
                     dist.set(v, new_dist);
                 }
                 idx = idx + 1;
@@ -80,8 +80,8 @@ fn main() {
     expected.push(7);
     var ok = 1;
     for i in 0 .. num_nodes {
-        println(dist.get(i));
-        if dist.get(i) != expected.get(i) {
+        println(dist[i]);
+        if dist[i] != expected[i] {
             ok = 0;
         }
     }

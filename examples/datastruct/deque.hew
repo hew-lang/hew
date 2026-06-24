@@ -8,7 +8,7 @@ fn deque_new() -> Vec<i64> {
 }
 
 fn deque_size(d: Vec<i64>) -> i64 {
-    let head = d.get(0);
+    let head = d[0];
     d.len() - 1 - head
 }
 
@@ -26,7 +26,7 @@ fn deque_push_back(d: Vec<i64>, val: i64) {
 
 fn deque_push_front(d: Vec<i64>, val: i64) {
     // If there's space before head, use it
-    let head = d.get(0);
+    let head = d[0];
     if head > 0 {
         let new_head = head - 1;
         d.set(0, new_head);
@@ -37,7 +37,7 @@ fn deque_push_front(d: Vec<i64>, val: i64) {
         let sz = d.len();
         var i = sz - 1;
         while i > 1 {
-            let prev = d.get(i - 1);
+            let prev = d[i - 1];
             d.set(i, prev);
             i = i - 1;
         }
@@ -50,19 +50,19 @@ fn deque_pop_back(d: Vec<i64>) -> i64 {
 }
 
 fn deque_pop_front(d: Vec<i64>) -> i64 {
-    let head = d.get(0);
-    let val = d.get(head + 1);
+    let head = d[0];
+    let val = d[head + 1];
     d.set(0, head + 1);
     val
 }
 
 fn deque_peek_front(d: Vec<i64>) -> i64 {
-    let head = d.get(0);
-    d.get(head + 1)
+    let head = d[0];
+    d[head + 1]
 }
 
 fn deque_peek_back(d: Vec<i64>) -> i64 {
-    d.get(d.len() - 1)
+    d[d.len() - 1]
 }
 
 fn run_test(name: string, passed: i64) -> i64 {

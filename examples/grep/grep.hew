@@ -122,7 +122,7 @@ fn grep_content(content: string, pat: regex.Pattern, cfg: Config, label: string,
     var lineno: i64 = 1;
     var li = 0;
     while li < nlines {
-        let raw_line = lines.get(li);
+        let raw_line = lines[li];
         // For -i, fold the line to lowercase before matching.
         // The pattern was already folded when the Pattern was compiled.
         let test_line = if cfg.flag_i {
@@ -205,7 +205,7 @@ fn grep_dir(dir_path: string, pat: regex.Pattern, cfg: Config, state: MatchState
             var ei = 0;
             var s = state;
             while ei < n {
-                let name = entries.get(ei);
+                let name = entries[ei];
                 let full = path.combine(dir_path, name);
                 if fs.is_dir(full) {
                     s = grep_dir(full, pat, cfg, s);
@@ -261,7 +261,7 @@ fn main() -> i64 {
                 let show_label = nfiles > 1 || cfg.flag_r;
                 var fi = 0;
                 while fi < nfiles {
-                    let arg = cfg.files.get(fi);
+                    let arg = cfg.files[fi];
                     if cfg.flag_r && fs.is_dir(arg) {
                         state = grep_dir(arg, pat, cfg, state);
                     } else {

@@ -6,9 +6,9 @@ fn climbing_stairs(n: i64) -> i64 {
     dp.set(0, 1);
     dp.set(1, 1);
     for i in 2 .. n + 1 {
-        dp.set(i, dp.get(i - 1) + dp.get(i - 2));
+        dp.set(i, dp[i - 1] + dp[i - 2]);
     }
-    dp.get(n)
+    dp[n]
 }
 
 const ITERS: i64 = 5000000;

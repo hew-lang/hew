@@ -1,6 +1,9 @@
 //! Status: runs
 //! Description: `obj[k]` desugars to `Index::at(obj, k)` via the Index trait,
 //! mirroring the trait-based pattern used by Iterator (associated-type `Output`).
+//! A user composite implements both halves of the convergence: `get` returns
+//! `Option<Output>` (delegating to the wrapped leaf's `get`), and `at` is the
+//! trapping accessor `obj[k]` desugars to.
 //! Requires: Index trait stdlib + checker desugar.
 
 type Grid {
@@ -8,10 +11,13 @@ type Grid {
     width: i32;
 }
 
-impl Index for Grid {
+impl Index<i64> for Grid {
     type Output = i32;
-    fn at(g: Grid, index: i32) -> i32 {
-        g.data.get(index as i64)
+    fn get(g: Grid, index: i64) -> Option<i32> {
+        g.data.get(index)
+    }
+    fn at(g: Grid, index: i64) -> i32 {
+        g.data[index]
     }
 }
 

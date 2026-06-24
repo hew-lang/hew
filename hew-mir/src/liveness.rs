@@ -1,7 +1,7 @@
 //! Backward liveness dataflow over MIR locals, and the MIR-stage lints built on
-//! it (`dead_store` today; `clean_counter` is registered in the lint registry
-//! but intentionally not yet emitted — see the decision recorded in
-//! `docs/design/lint-pass.md`).
+//! it (`dead_store`). A `clean_counter` lint was considered but is deferred and
+//! deliberately NOT registered — see the decision recorded in
+//! `docs/design/lint-pass.md` (tracked in issue #2178).
 //!
 //! ## Why backward, and why over the `Instr` stream
 //!
@@ -86,6 +86,13 @@ fn full_def_local(place: Place) -> Option<u32> {
 /// participate in `Drop`. `dead_store` only targets these, which sidesteps
 /// drop-safety entirely — overwriting such a value can never strand a resource
 /// a later drop would observe.
+///
+/// LOAD-BEARING: this scalar restriction is what makes it sound to run the lint
+/// on `raw_mir`, i.e. *before* drop elaboration (see `run_mir_lints`'s call site
+/// in `lower.rs`). A `Drop` is itself a read of the dropped local for liveness,
+/// but raw MIR has not yet materialised drop points — so widening this guard
+/// past no-drop scalars would require re-running the lint on elaborated MIR,
+/// else a value a `Drop` observes could be wrongly flagged dead.
 fn is_no_drop_scalar(ty: &ResolvedTy) -> bool {
     matches!(
         ty,
@@ -247,7 +254,17 @@ impl Liveness {
     /// Whether `local` is live immediately after instruction `instr_idx` of
     /// `block_id` — the value present after that instruction is read on some
     /// later path. This is the exact query `dead_store` runs on a `Move` dest.
-    /// Returns `false` for an unknown block / out-of-range index.
+    ///
+    /// A not-found block or out-of-range index resolves to **`true`**
+    /// (conservatively live): a point we cannot locate must never be reported
+    /// dead, which is the unsound direction for a removal lint.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `func` is not the function this `Liveness` was computed from:
+    /// `analyze_liveness` populates `live_out` for every block of its input, so
+    /// a block found in `func.blocks` but absent from `live_out` can only mean a
+    /// mismatched `func` was passed.
     #[must_use]
     pub fn live_after(
         &self,
@@ -257,12 +274,22 @@ impl Liveness {
         local: u32,
     ) -> bool {
         let Some(block) = func.blocks.iter().find(|b| b.id == block_id) else {
-            return false;
+            // Unknown block ⇒ conservatively live.
+            return true;
         };
-        let empty = HashSet::new();
-        let live_out = self.live_out.get(&block_id).unwrap_or(&empty);
+        // `block_id` was just found in `func.blocks`, and `analyze_liveness`
+        // populates `live_out` for every block of the analysed function, so a
+        // miss here is a real invariant violation, not an empty-set default.
+        let live_out = self
+            .live_out
+            .get(&block_id)
+            .expect("live_out populated for every block (analyze_liveness invariant)");
         let points = live_after_points(block, func.suspend_kinds.get(&block_id), live_out);
-        points.get(instr_idx).is_some_and(|s| s.contains(&local))
+        match points.get(instr_idx) {
+            Some(live) => live.contains(&local),
+            // Out-of-range point ⇒ conservatively live.
+            None => true,
+        }
     }
 }
 
@@ -332,7 +359,6 @@ fn dead_store_span(
 fn detect_dead_stores(func: &RawMirFunction, liveness: &Liveness, out: &mut Vec<MirLint>) {
     let reachable = reachable_from_entry(&func.blocks);
     let param_count = func.params.len();
-    let empty = HashSet::new();
 
     for block in &func.blocks {
         // Dead stores inside unreachable code are noise — the unreachable block
@@ -340,7 +366,13 @@ fn detect_dead_stores(func: &RawMirFunction, liveness: &Liveness, out: &mut Vec<
         if !reachable.contains(&block.id) {
             continue;
         }
-        let live_out = liveness.live_out.get(&block.id).unwrap_or(&empty);
+        // `block` is iterated straight out of `func.blocks`, and `liveness` was
+        // produced by `analyze_liveness(func)`, which populates `live_out` for
+        // every block — so a miss is an invariant violation, not a default.
+        let live_out = liveness
+            .live_out
+            .get(&block.id)
+            .expect("live_out populated for every block (analyze_liveness invariant)");
         let points = live_after_points(block, func.suspend_kinds.get(&block.id), live_out);
 
         for (idx, instr) in block.instructions.iter().enumerate() {

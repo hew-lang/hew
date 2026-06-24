@@ -909,7 +909,7 @@ fn vec_generic_bitcopy_record_methods_route_to_plain_layout_abi() {
         output.errors
     );
 
-    for method in ["push", "get", "set", "pop"] {
+    for method in ["push", "set", "pop"] {
         assert!(
             output.resolved_calls.values().any(|call| {
                 call.method_name == method
@@ -919,6 +919,15 @@ fn vec_generic_bitcopy_record_methods_route_to_plain_layout_abi() {
             output.resolved_calls
         );
     }
+    // `get` is trait-routed (`<Vec<T> as Index>::get`) to the element-agnostic
+    // fresh-owner choke point, NOT the per-element `_layout` getter.
+    assert!(
+        output.resolved_calls.values().any(|call| {
+            call.method_name == "get" && call.target.symbol_name == "hew_vec_get_clone"
+        }),
+        "Vec<Wrap<i64>>::get must route to the hew_vec_get_clone intrinsic, got: {:#?}",
+        output.resolved_calls
+    );
     assert!(
         output
             .resolved_calls
@@ -12579,7 +12588,10 @@ fn array_literal_methods_index_and_get_resolve() {
             let values = [1, 2, 3];
             if values.len() != 3 { return 10; }
             if values[0] != 1 { return 11; }
-            if values.get(0) != 1 { return 12; }
+            match values.get(0) {
+                Some(x) => { if x != 1 { return 12; } }
+                None => { return 13; }
+            }
             0
         }
         ",

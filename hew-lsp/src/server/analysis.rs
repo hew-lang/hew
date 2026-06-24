@@ -9,7 +9,7 @@ use hew_parser::ast::{ImportDecl, Item};
 use hew_parser::{ParseDiagnosticKind, ParseResult};
 use hew_types::error::{Severity, TypeErrorKind};
 use hew_types::module_registry::{build_module_search_paths, build_module_search_paths_for};
-use hew_types::{Checker, TypeCheckOutput};
+use hew_types::{Checker, LintId, TypeCheckOutput};
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location,
     NumberOrString, Url,
@@ -1369,8 +1369,8 @@ fn unnecessary_diagnostic_tags(kind: &TypeErrorKind) -> Option<Vec<DiagnosticTag
         TypeErrorKind::UnusedVariable
         | TypeErrorKind::UnusedMut
         | TypeErrorKind::UnusedImport
-        | TypeErrorKind::DeadCode
-        | TypeErrorKind::UnreachableCode => Some(vec![DiagnosticTag::UNNECESSARY]),
+        | TypeErrorKind::UnreachableCode
+        | TypeErrorKind::Lint(LintId::DeadCode) => Some(vec![DiagnosticTag::UNNECESSARY]),
         _ => None,
     }
 }

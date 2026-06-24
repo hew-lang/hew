@@ -393,6 +393,37 @@ pub(crate) fn from_mir_diagnostic(
     }
 }
 
+/// Build a [`JsonDiagnostic`] for a MIR-stage lint warning.
+///
+/// Unlike [`from_mir_diagnostic`] — which is always the hard `error` family —
+/// a lint carries its configured severity: `warning` by default, `error` when
+/// promoted by `--deny`. The `code` is the lint's stable name (`dead_store`),
+/// matching the `-A/-W/-D` selector and the HIR-stage lint codes.
+pub(crate) fn from_mir_lint(
+    source: &str,
+    filename: &str,
+    span: &Range<usize>,
+    code: &str,
+    message: &str,
+    is_error: bool,
+) -> JsonDiagnostic {
+    JsonDiagnostic {
+        code: code.to_string(),
+        severity: if is_error {
+            SEVERITY_ERROR
+        } else {
+            SEVERITY_WARNING
+        }
+        .to_string(),
+        source: "hew-mir".to_string(),
+        file: filename.to_string(),
+        span: JsonSpan::from_range(source, span),
+        message: message.to_string(),
+        notes: Vec::new(),
+        fixes: Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

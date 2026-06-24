@@ -110,6 +110,7 @@ fn pipeline_with_task_scope_new_call() -> IrPipeline {
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
     }
 }
 
@@ -200,6 +201,7 @@ fn pipeline_with_task_scope_spawn_call() -> IrPipeline {
         actor_send_aliasing: std::collections::HashMap::new(),
         polymorphic_mir: Vec::new(),
         user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
     }
 }
 

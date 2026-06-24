@@ -5570,7 +5570,7 @@ fn main() {
     assert!(
         has(
             &default_out.warnings,
-            &TypeErrorKind::DeadCode,
+            &TypeErrorKind::Lint(LintId::DeadCode),
             "dead_helper"
         ),
         "default should warn dead code, got: {:?}",
@@ -5602,7 +5602,7 @@ fn main() {
     let repl_out = repl_checker.check_program(&parsed.program);
     let suppressed = [
         TypeErrorKind::UnusedImport,
-        TypeErrorKind::DeadCode,
+        TypeErrorKind::Lint(LintId::DeadCode),
         TypeErrorKind::UnusedVariable,
         TypeErrorKind::UnusedMut,
     ];
@@ -6810,6 +6810,599 @@ fn needless_range_loop_not_flagged_for_non_vec_collection() {
     );
 }
 
+// ---- M2 checker-stage lints ----
+
+/// Parse `source`, install it as the root lint source (so `// hew:allow(...)`
+/// resolves) and as the level for `id`, then type-check. A single helper serves
+/// every M2 lint because they all route through the shared registry.
+fn check_with_lint_level(source: &str, id: LintId, level: LintLevel) -> TypeCheckOutput {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture should parse cleanly: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let mut levels = LintLevels::from_defaults();
+    levels.set(id, level);
+    checker.set_lint_levels(levels);
+    let mut sources = LintSources::new();
+    sources.set_root(source.to_string());
+    checker.set_lint_sources(sources);
+    checker.check_program(&parsed.program)
+}
+
+// ---- redundant_else_after_return ----
+
+fn count_redundant_else(diags: &[TypeError]) -> usize {
+    diags
+        .iter()
+        .filter(|d| d.kind == TypeErrorKind::Lint(LintId::RedundantElseAfterReturn))
+        .count()
+}
+
+#[test]
+fn redundant_else_flags_return_then_else() {
+    let (errors, warnings) =
+        parse_and_check("fn f(c: bool) { if c { return; } else { let _ = 1; } }");
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check, got: {errors:?}"
+    );
+    let hit = warnings
+        .iter()
+        .find(|w| w.kind == TypeErrorKind::Lint(LintId::RedundantElseAfterReturn))
+        .expect("expected a redundant_else_after_return warning");
+    assert_eq!(hit.kind.as_kind_str(), "redundant_else_after_return");
+    assert_eq!(hit.severity, crate::error::Severity::Warning);
+    assert!(
+        hit.suggestions.iter().any(|s| s.contains("de-indent")),
+        "suggestions: {:?}",
+        hit.suggestions
+    );
+}
+
+#[test]
+fn redundant_else_flags_break_in_loop() {
+    let (_, warnings) =
+        parse_and_check("fn f(c: bool) { loop { if c { break; } else { let _ = 1; } } }");
+    assert_eq!(
+        count_redundant_else(&warnings),
+        1,
+        "a diverging `break` then-branch with an else must fire, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn redundant_else_not_flagged_without_else() {
+    let (_, warnings) = parse_and_check("fn f(c: bool) { if c { return; } let _ = 1; }");
+    assert_eq!(
+        count_redundant_else(&warnings),
+        0,
+        "no else means nothing to de-indent, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn redundant_else_not_flagged_when_then_falls_through() {
+    let (_, warnings) =
+        parse_and_check("fn f(c: bool) { if c { let _ = 1; } else { let _ = 2; } }");
+    assert_eq!(
+        count_redundant_else(&warnings),
+        0,
+        "a then-branch that falls through keeps the else meaningful, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn redundant_else_not_flagged_for_else_if_chain() {
+    let (_, warnings) = parse_and_check(
+        "fn f(c: bool, d: bool) { if c { return; } else if d { let _ = 1; } else { let _ = 2; } }",
+    );
+    assert_eq!(
+        count_redundant_else(&warnings),
+        0,
+        "an else-if chain is not a clean de-indent, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn redundant_else_deny_routes_to_errors() {
+    let out = check_with_lint_level(
+        "fn f(c: bool) { if c { return; } else { let _ = 1; } }",
+        LintId::RedundantElseAfterReturn,
+        LintLevel::Deny,
+    );
+    assert_eq!(
+        count_redundant_else(&out.errors),
+        1,
+        "errors: {:?}",
+        out.errors
+    );
+    assert_eq!(count_redundant_else(&out.warnings), 0);
+}
+
+#[test]
+fn redundant_else_suppressed_by_directive() {
+    const SOURCE: &str = "fn f(c: bool) {\n    // hew:allow(redundant_else_after_return)\n    if c { return; } else { let _ = 1; }\n}";
+    let out = check_with_lint_level(SOURCE, LintId::RedundantElseAfterReturn, LintLevel::Warn);
+    assert_eq!(
+        count_redundant_else(&out.warnings),
+        0,
+        "a directive above the `if` must suppress, warnings: {:?}",
+        out.warnings
+    );
+}
+
+// ---- needless_match_to_if_let ----
+
+fn count_needless_match(diags: &[TypeError]) -> usize {
+    diags
+        .iter()
+        .filter(|d| d.kind == TypeErrorKind::Lint(LintId::NeedlessMatchToIfLet))
+        .count()
+}
+
+#[test]
+fn needless_match_flags_some_none_empty() {
+    let (errors, warnings) = parse_and_check(
+        "fn f(o: Option<i64>) { match o { Some(x) => { let _ = x; } None => {} } }",
+    );
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check, got: {errors:?}"
+    );
+    let hit = warnings
+        .iter()
+        .find(|w| w.kind == TypeErrorKind::Lint(LintId::NeedlessMatchToIfLet))
+        .expect("expected a needless_match_to_if_let warning");
+    assert_eq!(hit.kind.as_kind_str(), "needless_match_to_if_let");
+    assert!(
+        hit.suggestions.iter().any(|s| s.contains("if let Some(x)")),
+        "suggestions: {:?}",
+        hit.suggestions
+    );
+}
+
+#[test]
+fn needless_match_flags_none_first() {
+    let (_, warnings) = parse_and_check(
+        "fn f(o: Option<i64>) { match o { None => {} Some(x) => { let _ = x; } } }",
+    );
+    assert_eq!(
+        count_needless_match(&warnings),
+        1,
+        "arm order must not matter, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_match_not_flagged_when_none_does_work() {
+    let (_, warnings) = parse_and_check(
+        "fn f(o: Option<i64>) { match o { Some(x) => { let _ = x; } None => { let _ = 0; } } }",
+    );
+    assert_eq!(
+        count_needless_match(&warnings),
+        0,
+        "a None arm that does work is not an `if let`, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_match_not_flagged_with_guard() {
+    let (_, warnings) = parse_and_check(
+        "fn f(o: Option<i64>) { match o { Some(x) if x > 0 => { let _ = x; } None => {} _ => {} } }",
+    );
+    assert_eq!(
+        count_needless_match(&warnings),
+        0,
+        "a guarded arm disqualifies the rewrite, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_match_not_flagged_in_value_position() {
+    let (_, warnings) = parse_and_check(
+        "fn f(o: Option<i64>) -> i64 { let y = match o { Some(x) => x, None => 0 }; y }",
+    );
+    assert_eq!(
+        count_needless_match(&warnings),
+        0,
+        "a match feeding a `let` is in value position, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_match_deny_routes_to_errors() {
+    let out = check_with_lint_level(
+        "fn f(o: Option<i64>) { match o { Some(x) => { let _ = x; } None => {} } }",
+        LintId::NeedlessMatchToIfLet,
+        LintLevel::Deny,
+    );
+    assert_eq!(
+        count_needless_match(&out.errors),
+        1,
+        "errors: {:?}",
+        out.errors
+    );
+    assert_eq!(count_needless_match(&out.warnings), 0);
+}
+
+#[test]
+fn needless_match_suppressed_by_directive() {
+    const SOURCE: &str = "fn f(o: Option<i64>) {\n    // hew:allow(needless_match_to_if_let)\n    match o { Some(x) => { let _ = x; } None => {} }\n}";
+    let out = check_with_lint_level(SOURCE, LintId::NeedlessMatchToIfLet, LintLevel::Warn);
+    assert_eq!(
+        count_needless_match(&out.warnings),
+        0,
+        "a directive above the match must suppress, warnings: {:?}",
+        out.warnings
+    );
+}
+
+// ---- len_zero_comparison ----
+
+fn count_len_zero(diags: &[TypeError]) -> usize {
+    diags
+        .iter()
+        .filter(|d| d.kind == TypeErrorKind::Lint(LintId::LenZeroComparison))
+        .count()
+}
+
+#[test]
+fn len_zero_flags_eq_zero_as_is_empty() {
+    let (errors, warnings) = parse_and_check("fn f(xs: Vec<i64>) -> bool { xs.len() == 0 }");
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check, got: {errors:?}"
+    );
+    let hit = warnings
+        .iter()
+        .find(|w| w.kind == TypeErrorKind::Lint(LintId::LenZeroComparison))
+        .expect("expected a len_zero_comparison warning");
+    assert_eq!(hit.kind.as_kind_str(), "len_zero_comparison");
+    assert!(
+        hit.suggestions.iter().any(|s| s.contains("xs.is_empty()")),
+        "suggestions: {:?}",
+        hit.suggestions
+    );
+}
+
+#[test]
+fn len_zero_flags_gt_zero_as_not_empty() {
+    let (_, warnings) = parse_and_check("fn f(xs: Vec<i64>) -> bool { xs.len() > 0 }");
+    let hit = warnings
+        .iter()
+        .find(|w| w.kind == TypeErrorKind::Lint(LintId::LenZeroComparison))
+        .expect("len() > 0 should fire");
+    assert!(
+        hit.suggestions.iter().any(|s| s.contains("!xs.is_empty()")),
+        "suggestions: {:?}",
+        hit.suggestions
+    );
+}
+
+#[test]
+fn len_zero_flags_literal_on_left() {
+    let (_, warnings) = parse_and_check("fn f(xs: Vec<i64>) -> bool { 0 == xs.len() }");
+    assert_eq!(
+        count_len_zero(&warnings),
+        1,
+        "operand order must not matter, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn len_zero_flags_ge_one_as_not_empty() {
+    let (_, warnings) = parse_and_check("fn f(xs: Vec<i64>) -> bool { xs.len() >= 1 }");
+    assert_eq!(
+        count_len_zero(&warnings),
+        1,
+        "len() >= 1 is a non-emptiness test, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn len_zero_not_flagged_for_eq_one() {
+    let (_, warnings) = parse_and_check("fn f(xs: Vec<i64>) -> bool { xs.len() == 1 }");
+    assert_eq!(
+        count_len_zero(&warnings),
+        0,
+        "len() == 1 is not an emptiness test, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn len_zero_not_flagged_for_gt_one() {
+    let (_, warnings) = parse_and_check("fn f(xs: Vec<i64>) -> bool { xs.len() > 1 }");
+    assert_eq!(
+        count_len_zero(&warnings),
+        0,
+        "len() > 1 is not an emptiness test, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn len_zero_not_flagged_for_len_field() {
+    // `len` is a record field here, not the collection method — the rewrite to
+    // `is_empty()` does not apply.
+    let (errors, warnings) =
+        parse_and_check("type Buf { len: i64 }\nfn f(b: Buf) -> bool { b.len == 0 }");
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check, got: {errors:?}"
+    );
+    assert_eq!(
+        count_len_zero(&warnings),
+        0,
+        "a `len` field access must not fire, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn len_zero_flags_string_with_stdlib() {
+    let (errors, warnings) =
+        parse_and_check_with_stdlib("fn f(s: string) -> bool { s.len() == 0 }");
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check, got: {errors:?}"
+    );
+    assert_eq!(
+        count_len_zero(&warnings),
+        1,
+        "string exposes is_empty, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn len_zero_deny_routes_to_errors() {
+    let out = check_with_lint_level(
+        "fn f(xs: Vec<i64>) -> bool { xs.len() == 0 }",
+        LintId::LenZeroComparison,
+        LintLevel::Deny,
+    );
+    assert_eq!(count_len_zero(&out.errors), 1, "errors: {:?}", out.errors);
+    assert_eq!(count_len_zero(&out.warnings), 0);
+}
+
+#[test]
+fn len_zero_suppressed_by_directive() {
+    const SOURCE: &str =
+        "fn f(xs: Vec<i64>) -> bool {\n    // hew:allow(len_zero_comparison)\n    xs.len() == 0\n}";
+    let out = check_with_lint_level(SOURCE, LintId::LenZeroComparison, LintLevel::Warn);
+    assert_eq!(
+        count_len_zero(&out.warnings),
+        0,
+        "a directive above the comparison must suppress, warnings: {:?}",
+        out.warnings
+    );
+}
+
+// ---- needless_bool ----
+
+fn count_needless_bool(diags: &[TypeError]) -> usize {
+    diags
+        .iter()
+        .filter(|d| d.kind == TypeErrorKind::Lint(LintId::NeedlessBool))
+        .count()
+}
+
+#[test]
+fn needless_bool_flags_true_false() {
+    let (errors, warnings) =
+        parse_and_check("fn f(c: bool) -> bool { if c { true } else { false } }");
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check, got: {errors:?}"
+    );
+    let hit = warnings
+        .iter()
+        .find(|w| w.kind == TypeErrorKind::Lint(LintId::NeedlessBool))
+        .expect("expected a needless_bool warning");
+    assert_eq!(hit.kind.as_kind_str(), "needless_bool");
+    assert!(
+        hit.suggestions.iter().any(|s| s.contains("condition")),
+        "suggestions: {:?}",
+        hit.suggestions
+    );
+}
+
+#[test]
+fn needless_bool_flags_false_true() {
+    let (_, warnings) = parse_and_check("fn f(c: bool) -> bool { if c { false } else { true } }");
+    let hit = warnings
+        .iter()
+        .find(|w| w.kind == TypeErrorKind::Lint(LintId::NeedlessBool))
+        .expect("inverted polarity should fire");
+    assert!(
+        hit.suggestions.iter().any(|s| s.contains("negated")),
+        "suggestions: {:?}",
+        hit.suggestions
+    );
+}
+
+#[test]
+fn needless_bool_not_flagged_for_same_polarity() {
+    let (_, warnings) = parse_and_check("fn f(c: bool) -> bool { if c { true } else { true } }");
+    assert_eq!(
+        count_needless_bool(&warnings),
+        0,
+        "matching branches are a constant, not needless_bool, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_bool_not_flagged_with_extra_statement() {
+    let (_, warnings) =
+        parse_and_check("fn f(c: bool) -> bool { if c { let _ = 1; true } else { false } }");
+    assert_eq!(
+        count_needless_bool(&warnings),
+        0,
+        "an extra statement in a branch disqualifies it, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_bool_not_flagged_for_non_bool_branches() {
+    let (_, warnings) = parse_and_check("fn f(c: bool) -> i64 { if c { 1 } else { 0 } }");
+    assert_eq!(
+        count_needless_bool(&warnings),
+        0,
+        "integer branches are not boolean literals, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_bool_not_flagged_for_else_if() {
+    // The outer `if`'s else is an `else if`, so the outer is never collapsed;
+    // the inner `if d { false } else { false }` is the same polarity, so it is
+    // not collapsed either. Net: an else-if chain produces no suggestion.
+    let (_, warnings) = parse_and_check(
+        "fn f(c: bool, d: bool) -> bool { if c { true } else if d { false } else { false } }",
+    );
+    assert_eq!(
+        count_needless_bool(&warnings),
+        0,
+        "an else-if chain is not the two-branch shape, warnings: {warnings:?}"
+    );
+}
+
+#[test]
+fn needless_bool_deny_routes_to_errors() {
+    let out = check_with_lint_level(
+        "fn f(c: bool) -> bool { if c { true } else { false } }",
+        LintId::NeedlessBool,
+        LintLevel::Deny,
+    );
+    assert_eq!(
+        count_needless_bool(&out.errors),
+        1,
+        "errors: {:?}",
+        out.errors
+    );
+    assert_eq!(count_needless_bool(&out.warnings), 0);
+}
+
+#[test]
+fn needless_bool_suppressed_by_directive() {
+    const SOURCE: &str =
+        "fn f(c: bool) -> bool {\n    // hew:allow(needless_bool)\n    if c { true } else { false }\n}";
+    let out = check_with_lint_level(SOURCE, LintId::NeedlessBool, LintLevel::Warn);
+    assert_eq!(
+        count_needless_bool(&out.warnings),
+        0,
+        "a directive above the `if` must suppress, warnings: {:?}",
+        out.warnings
+    );
+}
+
+// ---- migrated warnings: clone_on_copy ----
+
+fn count_clone_on_copy(diags: &[TypeError]) -> usize {
+    diags
+        .iter()
+        .filter(|d| d.kind == TypeErrorKind::Lint(LintId::CloneOnCopy))
+        .count()
+}
+
+#[test]
+fn clone_on_copy_warns_by_default() {
+    let (errors, warnings) = parse_and_check("fn f(x: i64) { let _ = x.clone(); }");
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check, got: {errors:?}"
+    );
+    let hit = warnings
+        .iter()
+        .find(|w| w.kind == TypeErrorKind::Lint(LintId::CloneOnCopy))
+        .expect("clone on a Copy type should warn by default");
+    assert_eq!(hit.kind.as_kind_str(), "clone_on_copy");
+    assert_eq!(hit.severity, crate::error::Severity::Warning);
+}
+
+#[test]
+fn clone_on_copy_suppressed_by_allow() {
+    let out = check_with_lint_level(
+        "fn f(x: i64) { let _ = x.clone(); }",
+        LintId::CloneOnCopy,
+        LintLevel::Allow,
+    );
+    assert_eq!(count_clone_on_copy(&out.warnings), 0);
+    assert_eq!(count_clone_on_copy(&out.errors), 0);
+}
+
+#[test]
+fn clone_on_copy_deny_routes_to_errors() {
+    let out = check_with_lint_level(
+        "fn f(x: i64) { let _ = x.clone(); }",
+        LintId::CloneOnCopy,
+        LintLevel::Deny,
+    );
+    assert_eq!(
+        count_clone_on_copy(&out.errors),
+        1,
+        "errors: {:?}",
+        out.errors
+    );
+    assert_eq!(count_clone_on_copy(&out.warnings), 0);
+}
+
+#[test]
+fn clone_on_copy_suppressed_by_directive() {
+    const SOURCE: &str =
+        "fn f(x: i64) {\n    // hew:allow(clone_on_copy)\n    let _ = x.clone();\n}";
+    let out = check_with_lint_level(SOURCE, LintId::CloneOnCopy, LintLevel::Warn);
+    assert_eq!(
+        count_clone_on_copy(&out.warnings),
+        0,
+        "a directive above the clone must suppress, warnings: {:?}",
+        out.warnings
+    );
+}
+
+// ---- migrated warnings: dead_code ----
+
+fn count_dead_code(diags: &[TypeError]) -> usize {
+    diags
+        .iter()
+        .filter(|d| d.kind == TypeErrorKind::Lint(LintId::DeadCode))
+        .count()
+}
+
+#[test]
+fn dead_code_deny_routes_to_errors() {
+    let out = check_with_lint_level(
+        "fn helper() {}\nfn main() {}",
+        LintId::DeadCode,
+        LintLevel::Deny,
+    );
+    assert_eq!(count_dead_code(&out.errors), 1, "errors: {:?}", out.errors);
+    assert_eq!(count_dead_code(&out.warnings), 0);
+}
+
+#[test]
+fn dead_code_suppressed_by_allow() {
+    let out = check_with_lint_level(
+        "fn helper() {}\nfn main() {}",
+        LintId::DeadCode,
+        LintLevel::Allow,
+    );
+    assert_eq!(count_dead_code(&out.warnings), 0);
+    assert_eq!(count_dead_code(&out.errors), 0);
+}
+
+#[test]
+fn dead_code_suppressed_by_directive() {
+    const SOURCE: &str = "// hew:allow(dead_code)\nfn helper() {}\nfn main() {}";
+    let out = check_with_lint_level(SOURCE, LintId::DeadCode, LintLevel::Warn);
+    assert_eq!(
+        count_dead_code(&out.warnings),
+        0,
+        "a directive above the dead function must suppress, warnings: {:?}",
+        out.warnings
+    );
+}
+
 #[test]
 fn unused_variable_has_correct_kind() {
     let (_, warnings) = parse_and_check("fn main() { let unused = 42; }");
@@ -7102,7 +7695,8 @@ fn warn_dead_code_unused_function() {
         output
             .warnings
             .iter()
-            .any(|w| w.kind == TypeErrorKind::DeadCode && w.message.contains("unused_helper")),
+            .any(|w| w.kind == TypeErrorKind::Lint(LintId::DeadCode)
+                && w.message.contains("unused_helper")),
         "expected dead code warning for unused_helper, got: {:?}",
         output.warnings
     );
@@ -7118,7 +7712,7 @@ fn no_warn_dead_code_main() {
         !output
             .warnings
             .iter()
-            .any(|w| w.kind == TypeErrorKind::DeadCode),
+            .any(|w| w.kind == TypeErrorKind::Lint(LintId::DeadCode)),
         "should not warn about main: {:?}",
         output.warnings
     );
@@ -7131,10 +7725,9 @@ fn no_warn_dead_code_called_function() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let output = checker.check_program(&result.program);
     assert!(
-        !output
-            .warnings
-            .iter()
-            .any(|w| w.kind == TypeErrorKind::DeadCode && w.message.contains("helper")),
+        !output.warnings.iter().any(
+            |w| w.kind == TypeErrorKind::Lint(LintId::DeadCode) && w.message.contains("helper")
+        ),
         "should not warn about called function: {:?}",
         output.warnings
     );
@@ -7150,7 +7743,7 @@ fn no_warn_dead_code_underscore_prefix() {
         !output
             .warnings
             .iter()
-            .any(|w| w.kind == TypeErrorKind::DeadCode),
+            .any(|w| w.kind == TypeErrorKind::Lint(LintId::DeadCode)),
         "should not warn for _ prefixed functions: {:?}",
         output.warnings
     );
@@ -7180,7 +7773,7 @@ w.compute(10);
         !output
             .warnings
             .iter()
-            .any(|w| w.kind == TypeErrorKind::DeadCode && w.message.contains("fib")),
+            .any(|w| w.kind == TypeErrorKind::Lint(LintId::DeadCode) && w.message.contains("fib")),
         "should not warn about function called from actor receive fn: {:?}",
         output.warnings
     );
@@ -8382,9 +8975,9 @@ fn no_warn_dead_code_function_referenced_as_value() {
     let (_, warnings) =
         parse_and_check("fn helper() -> i32 { 42 } fn main() { let f = helper; println(f); }");
     assert!(
-        !warnings
-            .iter()
-            .any(|w| w.kind == TypeErrorKind::DeadCode && w.message.contains("helper")),
+        !warnings.iter().any(
+            |w| w.kind == TypeErrorKind::Lint(LintId::DeadCode) && w.message.contains("helper")
+        ),
         "function referenced as value should not get dead code warning, got: {warnings:?}"
     );
 }
@@ -8396,7 +8989,7 @@ fn warn_dead_code_self_recursive_function() {
     assert!(
         warnings
             .iter()
-            .any(|w| w.kind == TypeErrorKind::DeadCode && w.message.contains("rec")),
+            .any(|w| w.kind == TypeErrorKind::Lint(LintId::DeadCode) && w.message.contains("rec")),
         "self-recursive unreachable function should get dead code warning, got: {warnings:?}"
     );
 }

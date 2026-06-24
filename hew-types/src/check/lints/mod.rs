@@ -34,14 +34,20 @@
 
 use std::collections::HashMap;
 
-use hew_parser::ast::{Block, Span};
+use hew_parser::ast::{
+    Block, CallArg, ElseBlock, Expr, MatchArm, SelectArm, Span, Stmt, StringPart,
+};
 
 use crate::error::{Severity, TypeError, TypeErrorKind};
 use crate::ty::{Substitution, Ty};
 
 use super::types::SpanKey;
 
+mod len_zero_comparison;
+mod needless_bool;
+mod needless_match_to_if_let;
 mod needless_range_loop;
+mod redundant_else_after_return;
 
 /// Stable identifier for a single compiler lint.
 ///
@@ -53,6 +59,36 @@ pub enum LintId {
     /// `for i in 0 .. xs.len()` where `i` is only ever used to index `xs` —
     /// the loop should iterate the collection directly.
     NeedlessRangeLoop,
+    /// An `if` whose then-branch unconditionally diverges (`return` / `break`
+    /// / `continue` / a `!`-typed call such as `panic`) yet still carries an
+    /// `else`; the `else` can be dropped and its body de-indented.
+    RedundantElseAfterReturn,
+    /// A two-arm `match` on an `Option` where one arm binds `Some(x)` and the
+    /// other is an empty `None => {}` — exactly an `if let Some(x) = …`.
+    NeedlessMatchToIfLet,
+    /// A `.len()` call compared against the integer literal `0` / `1` where the
+    /// receiver type has `is_empty()` — use `is_empty()` / `!is_empty()`.
+    LenZeroComparison,
+    /// `if c { true } else { false }` (or the inverted polarity) — the whole
+    /// `if` is just `c` (or `!c`).
+    NeedlessBool,
+    /// `.clone()` on a `Copy` type — the value is already duplicated, so the
+    /// `clone` is redundant. (Migrated from an ad-hoc style warning.)
+    CloneOnCopy,
+    /// A function that is defined but never reached from any entry point.
+    /// (Migrated from an ad-hoc whole-program dead-code warning.)
+    DeadCode,
+    /// A value assigned to a local is never read on any path before the local
+    /// is overwritten or goes out of scope — the store is dead. Emitted by the
+    /// MIR-stage liveness pass (`hew-mir`), not the HIR checker sweep.
+    DeadStore,
+    // NOTE: a `clean_counter` lint (a loop-carried accumulator that is
+    // incremented but never read after the loop) is deliberately NOT registered
+    // here. It has no emission code yet, and registering an un-emitted lint
+    // would make `-D/-W/-A clean_counter` and `// hew:allow(clean_counter)`
+    // silently no-op — a fail-open that defeats `from_name`'s fail-closed
+    // contract (an unknown lint must surface as a CLI error). Detecting it
+    // precisely needs faint-variable analysis; tracked in issue #2178.
 }
 
 impl LintId {
@@ -60,7 +96,16 @@ impl LintId {
     ///
     /// Used to seed [`LintLevels::from_defaults`] and to back
     /// [`LintId::from_name`] so the CLI flag parser stays in sync.
-    pub const ALL: &'static [LintId] = &[LintId::NeedlessRangeLoop];
+    pub const ALL: &'static [LintId] = &[
+        LintId::NeedlessRangeLoop,
+        LintId::RedundantElseAfterReturn,
+        LintId::NeedlessMatchToIfLet,
+        LintId::LenZeroComparison,
+        LintId::NeedlessBool,
+        LintId::CloneOnCopy,
+        LintId::DeadCode,
+        LintId::DeadStore,
+    ];
 
     /// The stable, lowercase string name for this lint.
     ///
@@ -71,6 +116,13 @@ impl LintId {
     pub fn as_str(self) -> &'static str {
         match self {
             LintId::NeedlessRangeLoop => "needless_range_loop",
+            LintId::RedundantElseAfterReturn => "redundant_else_after_return",
+            LintId::NeedlessMatchToIfLet => "needless_match_to_if_let",
+            LintId::LenZeroComparison => "len_zero_comparison",
+            LintId::NeedlessBool => "needless_bool",
+            LintId::CloneOnCopy => "clone_on_copy",
+            LintId::DeadCode => "dead_code",
+            LintId::DeadStore => "dead_store",
         }
     }
 
@@ -88,7 +140,14 @@ impl LintId {
     #[must_use]
     pub fn default_level(self) -> LintLevel {
         match self {
-            LintId::NeedlessRangeLoop => LintLevel::Warn,
+            LintId::NeedlessRangeLoop
+            | LintId::RedundantElseAfterReturn
+            | LintId::NeedlessMatchToIfLet
+            | LintId::LenZeroComparison
+            | LintId::NeedlessBool
+            | LintId::CloneOnCopy
+            | LintId::DeadCode
+            | LintId::DeadStore => LintLevel::Warn,
         }
     }
 }
@@ -274,7 +333,12 @@ impl LintCtx<'_> {
 /// covers `// hew:allow(needless_range_loop)` placed on the line above the loop
 /// and, for item-bodied constructs reached through only comments, the
 /// item-level form. `all` matches every lint.
-fn directive_suppresses(source: &str, span_start: usize, id: LintId) -> bool {
+///
+/// Exposed beyond the checker so MIR-stage lints surfaced through the CLI
+/// (`dead_store`) resolve `// hew:allow(...)` directives through the same path
+/// as the HIR sweep instead of re-implementing it.
+#[must_use]
+pub fn directive_suppresses(source: &str, span_start: usize, id: LintId) -> bool {
     let lines: Vec<&str> = source.lines().collect();
     if lines.is_empty() {
         return false;
@@ -345,4 +409,312 @@ pub(super) fn lint_block(
     out: &mut Vec<TypeError>,
 ) {
     needless_range_loop::check(ctx, levels, body, out);
+    redundant_else_after_return::check(ctx, levels, body, out);
+    needless_match_to_if_let::check(ctx, levels, body, out);
+    len_zero_comparison::check(ctx, levels, body, out);
+    needless_bool::check(ctx, levels, body, out);
+}
+
+// ── shared read-only body walker ─────────────────────────────────────
+
+/// Read-only pre-order visitor over a typed body.
+///
+/// A lint implements only the callbacks it needs; [`walk_body`] then drives the
+/// exhaustive descent so every lint shares one traversal instead of
+/// re-deriving its own block walker (the `needless_range_loop` module predates
+/// this helper and keeps its bespoke use-tracking walk).
+///
+/// - [`NodeVisitor::visit_block`] sees a [`Block`] with full positional
+///   context: its `stmts` are in statement position (value discarded) and its
+///   `trailing_expr` is in tail position (the block's value). The
+///   position-sensitive lints (`redundant_else_after_return`,
+///   `needless_match_to_if_let`) key off this so they only rewrite where the
+///   transform is sound.
+/// - [`NodeVisitor::visit_stmt`] / [`NodeVisitor::visit_expr`] fire for every
+///   node regardless of position, which the position-agnostic lints
+///   (`len_zero_comparison`, `needless_bool`) use.
+pub(super) trait NodeVisitor {
+    /// A block, visited before its contents are descended.
+    fn visit_block(&mut self, _block: &Block) {}
+    /// A statement, visited before its sub-nodes are descended.
+    fn visit_stmt(&mut self, _stmt: &Stmt, _span: &Span) {}
+    /// An expression, visited before its sub-expressions are descended.
+    fn visit_expr(&mut self, _expr: &Expr, _span: &Span) {}
+}
+
+/// Drive `visitor` over `body` and every node nested inside it.
+pub(super) fn walk_body<V: NodeVisitor>(body: &Block, visitor: &mut V) {
+    walk_block(body, visitor);
+}
+
+fn walk_block<V: NodeVisitor>(block: &Block, visitor: &mut V) {
+    visitor.visit_block(block);
+    for (stmt, span) in &block.stmts {
+        walk_stmt(stmt, span, visitor);
+    }
+    if let Some(trailing) = &block.trailing_expr {
+        walk_expr(&trailing.0, &trailing.1, visitor);
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    clippy::match_same_arms,
+    reason = "exhaustive statement visitor enumerates every Stmt shape so a new node forces a decision; per-variant arms are kept even when two walks coincide"
+)]
+fn walk_stmt<V: NodeVisitor>(stmt: &Stmt, span: &Span, visitor: &mut V) {
+    visitor.visit_stmt(stmt, span);
+    match stmt {
+        Stmt::Let {
+            value, else_block, ..
+        } => {
+            if let Some(v) = value {
+                walk_expr(&v.0, &v.1, visitor);
+            }
+            if let Some(eb) = else_block {
+                walk_block(eb, visitor);
+            }
+        }
+        Stmt::Var { value, .. } => {
+            if let Some(v) = value {
+                walk_expr(&v.0, &v.1, visitor);
+            }
+        }
+        Stmt::Assign { target, value, .. } => {
+            walk_expr(&target.0, &target.1, visitor);
+            walk_expr(&value.0, &value.1, visitor);
+        }
+        Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            walk_expr(&condition.0, &condition.1, visitor);
+            walk_block(then_block, visitor);
+            if let Some(eb) = else_block {
+                walk_else_block(eb, visitor);
+            }
+        }
+        Stmt::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            walk_expr(&expr.0, &expr.1, visitor);
+            walk_block(body, visitor);
+            if let Some(eb) = else_body {
+                walk_block(eb, visitor);
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            walk_expr(&scrutinee.0, &scrutinee.1, visitor);
+            for arm in arms {
+                walk_arm(arm, visitor);
+            }
+        }
+        Stmt::Loop { body, .. } => walk_block(body, visitor),
+        Stmt::For { iterable, body, .. } => {
+            walk_expr(&iterable.0, &iterable.1, visitor);
+            walk_block(body, visitor);
+        }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            walk_expr(&condition.0, &condition.1, visitor);
+            walk_block(body, visitor);
+        }
+        Stmt::WhileLet { expr, body, .. } => {
+            walk_expr(&expr.0, &expr.1, visitor);
+            walk_block(body, visitor);
+        }
+        Stmt::Break { value, .. } | Stmt::Return(value) => {
+            if let Some(v) = value {
+                walk_expr(&v.0, &v.1, visitor);
+            }
+        }
+        Stmt::Continue { .. } => {}
+        Stmt::Defer(expr) => walk_expr(&expr.0, &expr.1, visitor),
+        Stmt::Expression(expr) => walk_expr(&expr.0, &expr.1, visitor),
+    }
+}
+
+fn walk_else_block<V: NodeVisitor>(else_block: &ElseBlock, visitor: &mut V) {
+    if let Some(if_stmt) = &else_block.if_stmt {
+        walk_stmt(&if_stmt.0, &if_stmt.1, visitor);
+    }
+    if let Some(block) = &else_block.block {
+        walk_block(block, visitor);
+    }
+}
+
+fn walk_arm<V: NodeVisitor>(arm: &MatchArm, visitor: &mut V) {
+    if let Some(guard) = &arm.guard {
+        walk_expr(&guard.0, &guard.1, visitor);
+    }
+    walk_expr(&arm.body.0, &arm.body.1, visitor);
+}
+
+fn walk_select_arm<V: NodeVisitor>(arm: &SelectArm, visitor: &mut V) {
+    walk_expr(&arm.source.0, &arm.source.1, visitor);
+    walk_expr(&arm.body.0, &arm.body.1, visitor);
+}
+
+fn walk_call_args<V: NodeVisitor>(args: &[CallArg], visitor: &mut V) {
+    for arg in args {
+        let (expr, span) = arg.expr();
+        walk_expr(expr, span, visitor);
+    }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    clippy::match_same_arms,
+    reason = "exhaustive expression visitor enumerates every Expr shape so a new node forces a decision; per-variant arms are kept even when two walks coincide"
+)]
+fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
+    visitor.visit_expr(expr, span);
+    match expr {
+        Expr::Literal(_)
+        | Expr::Identifier(_)
+        | Expr::This
+        | Expr::RegexLiteral(_)
+        | Expr::ByteStringLiteral(_)
+        | Expr::ByteArrayLiteral(_) => {}
+        Expr::Binary { left, right, .. } => {
+            walk_expr(&left.0, &left.1, visitor);
+            walk_expr(&right.0, &right.1, visitor);
+        }
+        Expr::Unary { operand, .. } => walk_expr(&operand.0, &operand.1, visitor),
+        Expr::Clone(inner)
+        | Expr::Await(inner)
+        | Expr::PostfixTry(inner)
+        | Expr::Cast { expr: inner, .. }
+        | Expr::FieldAccess { object: inner, .. } => walk_expr(&inner.0, &inner.1, visitor),
+        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+            for item in items {
+                walk_expr(&item.0, &item.1, visitor);
+            }
+        }
+        Expr::ArrayRepeat { value, count } => {
+            walk_expr(&value.0, &value.1, visitor);
+            walk_expr(&count.0, &count.1, visitor);
+        }
+        Expr::MapLiteral { entries } => {
+            for (k, v) in entries {
+                walk_expr(&k.0, &k.1, visitor);
+                walk_expr(&v.0, &v.1, visitor);
+            }
+        }
+        Expr::Block(block)
+        | Expr::Scope { body: block }
+        | Expr::ForkBlock { body: block }
+        | Expr::GenBlock { body: block } => walk_block(block, visitor),
+        Expr::UnsafeBlock(block) => walk_block(block, visitor),
+        Expr::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            walk_expr(&condition.0, &condition.1, visitor);
+            walk_expr(&then_block.0, &then_block.1, visitor);
+            if let Some(eb) = else_block {
+                walk_expr(&eb.0, &eb.1, visitor);
+            }
+        }
+        Expr::IfLet {
+            expr,
+            body,
+            else_body,
+            ..
+        } => {
+            walk_expr(&expr.0, &expr.1, visitor);
+            walk_block(body, visitor);
+            if let Some(eb) = else_body {
+                walk_block(eb, visitor);
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            walk_expr(&scrutinee.0, &scrutinee.1, visitor);
+            for arm in arms {
+                walk_arm(arm, visitor);
+            }
+        }
+        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
+            walk_expr(&body.0, &body.1, visitor);
+        }
+        Expr::Spawn { target, args, .. } => {
+            walk_expr(&target.0, &target.1, visitor);
+            for (_, value) in args {
+                walk_expr(&value.0, &value.1, visitor);
+            }
+        }
+        Expr::ForkChild { expr, .. } => walk_expr(&expr.0, &expr.1, visitor),
+        Expr::ScopeDeadline { duration, body } => {
+            walk_expr(&duration.0, &duration.1, visitor);
+            walk_block(body, visitor);
+        }
+        Expr::InterpolatedString(parts) => {
+            for part in parts {
+                if let StringPart::Expr(inner) = part {
+                    walk_expr(&inner.0, &inner.1, visitor);
+                }
+            }
+        }
+        Expr::Call { function, args, .. } => {
+            walk_expr(&function.0, &function.1, visitor);
+            walk_call_args(args, visitor);
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            walk_expr(&receiver.0, &receiver.1, visitor);
+            walk_call_args(args, visitor);
+        }
+        Expr::StructInit { fields, base, .. } => {
+            for (_, value) in fields {
+                walk_expr(&value.0, &value.1, visitor);
+            }
+            if let Some(base) = base {
+                walk_expr(&base.0, &base.1, visitor);
+            }
+        }
+        Expr::Select { arms, timeout } => {
+            for arm in arms {
+                walk_select_arm(arm, visitor);
+            }
+            if let Some(timeout) = timeout {
+                walk_expr(&timeout.duration.0, &timeout.duration.1, visitor);
+                walk_expr(&timeout.body.0, &timeout.body.1, visitor);
+            }
+        }
+        Expr::Timeout { expr, duration } => {
+            walk_expr(&expr.0, &expr.1, visitor);
+            walk_expr(&duration.0, &duration.1, visitor);
+        }
+        Expr::Yield(value) | Expr::Return(value) => {
+            if let Some(v) = value {
+                walk_expr(&v.0, &v.1, visitor);
+            }
+        }
+        Expr::Index { object, index } => {
+            walk_expr(&object.0, &object.1, visitor);
+            walk_expr(&index.0, &index.1, visitor);
+        }
+        Expr::Range { start, end, .. } => {
+            if let Some(start) = start {
+                walk_expr(&start.0, &start.1, visitor);
+            }
+            if let Some(end) = end {
+                walk_expr(&end.0, &end.1, visitor);
+            }
+        }
+        Expr::Is { lhs, rhs } => {
+            walk_expr(&lhs.0, &lhs.1, visitor);
+            walk_expr(&rhs.0, &rhs.1, visitor);
+        }
+        Expr::MachineEmit { fields, .. } => {
+            for (_, value) in fields {
+                walk_expr(&value.0, &value.1, visitor);
+            }
+        }
+    }
 }

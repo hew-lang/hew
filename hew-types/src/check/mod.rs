@@ -33,7 +33,7 @@ mod expressions;
 mod generics;
 mod items;
 mod lints;
-pub use self::lints::{LintId, LintLevel, LintLevels, LintSources};
+pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintSources};
 mod methods;
 pub use self::methods::collection_dispatch_registry_for_tests;
 mod patterns;
@@ -811,6 +811,19 @@ impl Checker {
                 .and_then(|mg| mg.modules.get(mod_id))
             {
                 module_idx += 1;
+                // Builtin/standard-library modules (`std::`, `hew::`,
+                // `ecosystem::`) ship with the compiler rather than the user's
+                // project, so lint findings inside them are noise the user
+                // cannot act on. Skip them — but only AFTER advancing
+                // `module_idx`, so span tagging for later user modules stays
+                // aligned with the checker's module indexing. Mirrors
+                // `is_builtin_module` in `hew-compile`.
+                if matches!(
+                    mod_id.path.first().map(String::as_str),
+                    Some("std" | "hew" | "ecosystem")
+                ) {
+                    continue;
+                }
                 let module_name = mod_id.path.join(".");
                 for (item, _) in &module.items {
                     self.lint_item(item, module_idx, Some(&module_name), levels, out);
@@ -861,6 +874,51 @@ impl Checker {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Emit a finding from a *main-pass* lint — one that runs inline during body
+    /// checking rather than in the post-inference [`run_lints`] sweep — through
+    /// the same level/suppression machinery the sweep uses.
+    ///
+    /// `module` is the module owning `span`; it locates the source text for
+    /// `// hew:allow(...)` resolution and tags the diagnostic. An in-source
+    /// directive is honoured first (it wins even over `Deny`), then the finding
+    /// is routed by the configured [`LintLevel`]: `Allow` drops it, `Warn`
+    /// pushes a warning, `Deny` pushes an error. This keeps migrated warnings
+    /// (`clone_on_copy`, `dead_code`) configurable and suppressible without
+    /// changing their default-`Warn` behaviour.
+    fn emit_main_pass_lint(
+        &mut self,
+        id: LintId,
+        span: &Span,
+        module: Option<&str>,
+        message: String,
+        suggestion: String,
+    ) {
+        if let Some(source) = self.lint_sources.source_for(module) {
+            if lints::directive_suppresses(source, span.start, id) {
+                return;
+            }
+        }
+        let severity = match self.lint_levels.level(id) {
+            LintLevel::Allow => return,
+            LintLevel::Warn => crate::error::Severity::Warning,
+            LintLevel::Deny => crate::error::Severity::Error,
+        };
+        let diag = TypeError {
+            severity,
+            kind: TypeErrorKind::Lint(id),
+            span: span.clone(),
+            message,
+            notes: Vec::new(),
+            suggestions: vec![suggestion],
+            source_module: module.map(str::to_string),
+        };
+        if severity == crate::error::Severity::Error {
+            self.errors.push(diag);
+        } else {
+            self.warnings.push(diag);
         }
     }
 

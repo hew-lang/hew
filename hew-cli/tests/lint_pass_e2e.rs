@@ -1,8 +1,9 @@
-//! End-to-end coverage for the M1 compiler lint pass surfaced through
-//! `hew check`: the `needless_range_loop` lint renders as a warning by default,
-//! the `--allow` / `--warn` / `--deny` flags re-level it, an in-source
-//! `// hew:allow(...)` directive suppresses it, and an unknown lint name fails
-//! closed at the CLI boundary.
+//! End-to-end coverage for the compiler lint pass surfaced through `hew check`:
+//! lints render as warnings by default, the `--allow` / `--warn` / `--deny`
+//! flags re-level them, an in-source `// hew:allow(...)` directive suppresses
+//! them, and an unknown lint name fails closed at the CLI boundary. Covers the
+//! `needless_range_loop` and `len_zero_comparison` checker lints plus the
+//! `dead_code` warning now routed through the same registry.
 
 mod support;
 
@@ -154,5 +155,276 @@ fn unknown_lint_name_is_rejected() {
     assert!(
         stderr.contains("unknown lint `no_such_lint`"),
         "expected a clear unknown-lint error:\n{stderr}"
+    );
+}
+
+// ── checker-stage lint: len_zero_comparison ──────────────────────────
+
+/// A program whose only diagnostic is `len_zero_comparison`: `xs.len() == 0`
+/// is exactly `xs.is_empty()`.
+const LEN_ZERO: &str = "fn main() {\n\
+     let xs: Vec<i64> = Vec::new();\n\
+     let _ = xs.len() == 0;\n\
+     }\n";
+
+/// The same program with an in-source allow directive on the line above.
+const LEN_ZERO_SUPPRESSED: &str = "fn main() {\n\
+     let xs: Vec<i64> = Vec::new();\n\
+     // hew:allow(len_zero_comparison)\n\
+     let _ = xs.len() == 0;\n\
+     }\n";
+
+const LEN_ZERO_MESSAGE: &str = "is exactly `is_empty()`";
+
+#[test]
+fn len_zero_comparison_renders_by_default() {
+    let output = run_check(LEN_ZERO, &[]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "a lint warning must not fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("warning:") && stderr.contains(LEN_ZERO_MESSAGE),
+        "expected the len_zero_comparison warning to render:\n{stderr}"
+    );
+}
+
+#[test]
+fn len_zero_comparison_deny_promotes_to_error() {
+    let output = run_check(LEN_ZERO, &["-D", "len_zero_comparison"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        !output.status.success(),
+        "-D must fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("error:") && stderr.contains(LEN_ZERO_MESSAGE),
+        "-D must render the lint as an error:\n{stderr}"
+    );
+}
+
+#[test]
+fn len_zero_comparison_inline_directive_suppresses() {
+    let output = run_check(LEN_ZERO_SUPPRESSED, &[]);
+    let stderr = stderr_of(&output);
+    assert!(output.status.success(), "check should pass:\n{stderr}");
+    assert!(
+        !stderr.contains(LEN_ZERO_MESSAGE),
+        "an in-source `// hew:allow(...)` directive must suppress the lint:\n{stderr}"
+    );
+}
+
+// ── migrated warning: dead_code is now registry-controlled ───────────
+
+/// `helper` is never called, so the migrated `dead_code` lint flags it.
+const DEAD_CODE: &str = "fn helper() {}\nfn main() {}\n";
+
+const DEAD_CODE_MESSAGE: &str = "function `helper` is never called";
+
+#[test]
+fn dead_code_warns_by_default_but_is_allowable() {
+    // The migration preserves the default warning while making it suppressible
+    // through the same `--allow` path as every other registry lint.
+    let default = run_check(DEAD_CODE, &[]);
+    let default_stderr = stderr_of(&default);
+    assert!(
+        default_stderr.contains("warning:") && default_stderr.contains(DEAD_CODE_MESSAGE),
+        "dead_code must still warn by default:\n{default_stderr}"
+    );
+
+    let allowed = run_check(DEAD_CODE, &["--allow", "dead_code"]);
+    let allowed_stderr = stderr_of(&allowed);
+    assert!(
+        !allowed_stderr.contains(DEAD_CODE_MESSAGE),
+        "--allow dead_code must suppress the migrated warning:\n{allowed_stderr}"
+    );
+}
+
+#[test]
+fn dead_code_deny_promotes_to_error() {
+    let output = run_check(DEAD_CODE, &["-D", "dead_code"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        !output.status.success(),
+        "-D dead_code must fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("error:") && stderr.contains(DEAD_CODE_MESSAGE),
+        "-D must render the migrated lint as an error:\n{stderr}"
+    );
+}
+
+/// A `re"..."` literal triggers implicit injection of `import std::text::regex`,
+/// whose body compares `values.len() == 0` internally. The lint sweep runs over
+/// user-authored bodies only, so that standard-library comparison must NOT
+/// surface as a `len_zero_comparison` warning against the user's program. (The
+/// regex literal itself is not yet lowered past the frontend, so `hew check`
+/// still exits non-zero on the `E_NOT_YET_IMPLEMENTED` MIR gate — that error is
+/// the proof the module was pulled in; the lint leak is what we guard against.)
+const REGEX_LITERAL: &str = "fn main() -> i64 {\n    let _r = re\"hello\";\n    return 0;\n}\n";
+
+#[test]
+fn stdlib_lints_do_not_leak_through_implicit_import() {
+    let output = run_check(REGEX_LITERAL, &[]);
+    let stderr = stderr_of(&output);
+    // Sanity: the implicit `std::text::regex` import was actually resolved and
+    // compiled (otherwise this test would pass vacuously). The regex literal is
+    // not yet lowered, so its MIR gate error is the witness.
+    assert!(
+        stderr.contains("RegexLiteralRef") || stderr.contains("regex"),
+        "expected the implicit std::text::regex import to be exercised:\n{stderr}"
+    );
+    // The actual guard: no lint finding from the library's own source.
+    assert!(
+        !stderr.contains(LEN_ZERO_MESSAGE),
+        "a len_zero_comparison finding must not leak from stdlib bodies:\n{stderr}"
+    );
+}
+
+// ── MIR-stage lint: dead_store ───────────────────────────────────────
+//
+// `dead_store` is the first lint that rides the MIR liveness pass rather than
+// the HIR checker sweep, so it exercises the separate CLI surfacing seam
+// (`render_pipeline_mir_lints`). It must honour the exact same registry
+// controls — default warning, `-A/-W/-D`, and `// hew:allow(...)` — as every
+// checker-stage lint above.
+
+/// `x` is assigned `5`, then unconditionally overwritten by `6` before the
+/// first value is ever read: the `var x = 5` store is dead.
+const DEAD_STORE: &str = "fn f() -> i64 {\n\
+     var x = 5;\n\
+     x = 6;\n\
+     x\n\
+     }\n\
+     fn main() {\n\
+     let _ = f();\n\
+     }\n";
+
+/// The same program with an in-source allow directive on the line above the
+/// dead store.
+const DEAD_STORE_SUPPRESSED: &str = "fn f() -> i64 {\n\
+     // hew:allow(dead_store)\n\
+     var x = 5;\n\
+     x = 6;\n\
+     x\n\
+     }\n\
+     fn main() {\n\
+     let _ = f();\n\
+     }\n";
+
+/// A textbook `for i in 0..n` accumulator loop: `i` and `total` are both read
+/// normally, so the precision guards must keep `dead_store` silent. This is the
+/// regression that proves the loop-counter / accumulator machinery does not
+/// misfire.
+const FOR_RANGE_CLEAN: &str = "fn sum(n: i64) -> i64 {\n\
+     var total = 0;\n\
+     for i in 0..n {\n\
+     total = total + i;\n\
+     }\n\
+     total\n\
+     }\n\
+     fn main() {\n\
+     let _ = sum(5);\n\
+     }\n";
+
+const DEAD_STORE_MESSAGE: &str = "is never read before it is overwritten";
+
+#[test]
+fn dead_store_warns_by_default() {
+    let output = run_check(DEAD_STORE, &[]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "a dead_store warning must not fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("warning:") && stderr.contains(DEAD_STORE_MESSAGE),
+        "expected the dead_store warning to render by default:\n{stderr}"
+    );
+}
+
+#[test]
+fn dead_store_deny_promotes_to_error() {
+    let output = run_check(DEAD_STORE, &["-D", "dead_store"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        !output.status.success(),
+        "-D dead_store must fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("error:") && stderr.contains(DEAD_STORE_MESSAGE),
+        "-D must render the dead_store lint as an error:\n{stderr}"
+    );
+}
+
+#[test]
+fn dead_store_allow_suppresses() {
+    let output = run_check(DEAD_STORE, &["--allow", "dead_store"]);
+    let stderr = stderr_of(&output);
+    assert!(output.status.success(), "check should pass:\n{stderr}");
+    assert!(
+        !stderr.contains(DEAD_STORE_MESSAGE),
+        "--allow dead_store must suppress the lint:\n{stderr}"
+    );
+}
+
+#[test]
+fn dead_store_inline_directive_suppresses() {
+    let output = run_check(DEAD_STORE_SUPPRESSED, &[]);
+    let stderr = stderr_of(&output);
+    assert!(output.status.success(), "check should pass:\n{stderr}");
+    assert!(
+        !stderr.contains(DEAD_STORE_MESSAGE),
+        "an in-source `// hew:allow(dead_store)` directive must suppress the MIR lint:\n{stderr}"
+    );
+}
+
+#[test]
+fn dead_store_inline_directive_overrides_deny() {
+    // The in-source allow wins even over `-D`: parity with the checker lints.
+    let output = run_check(DEAD_STORE_SUPPRESSED, &["-D", "dead_store"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "an in-source allow must override -D for a MIR lint:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains(DEAD_STORE_MESSAGE),
+        "the suppressed MIR lint must not surface under -D:\n{stderr}"
+    );
+}
+
+#[test]
+fn for_range_loop_does_not_trip_dead_store() {
+    // The canonical precision guard: a normal counting loop with a read counter
+    // and a read accumulator must produce no dead_store finding, even under -D.
+    let output = run_check(FOR_RANGE_CLEAN, &["-D", "dead_store"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "`for i in 0..n` with used variables must not trip dead_store:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains(DEAD_STORE_MESSAGE),
+        "dead_store must not misfire on a normal counting loop:\n{stderr}"
+    );
+}
+
+#[test]
+fn clean_counter_is_unregistered_and_fails_closed() {
+    // `clean_counter` was deliberately NOT registered (it has no emission code
+    // yet). Selecting it must fail closed at the CLI boundary as an unknown
+    // lint — never silently no-op — so the registry's fail-closed contract
+    // holds. Mirrors `unknown_lint_name_is_rejected`.
+    let output = run_check(DEAD_STORE, &["-D", "clean_counter"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        !output.status.success(),
+        "-D clean_counter must fail closed (unregistered lint):\n{stderr}"
+    );
+    assert!(
+        stderr.contains("unknown lint `clean_counter`"),
+        "expected a clear unknown-lint error naming clean_counter:\n{stderr}"
     );
 }

@@ -2539,7 +2539,6 @@ machine Traffic {
             TypeErrorKind::UnusedImport,
             TypeErrorKind::UnreachableCode,
             TypeErrorKind::Shadowing,
-            TypeErrorKind::DeadCode,
             TypeErrorKind::OrphanImpl,
             TypeErrorKind::PlatformLimitation,
             TypeErrorKind::OnUpgradeNotYetWired,

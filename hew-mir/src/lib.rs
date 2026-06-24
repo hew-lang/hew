@@ -9,6 +9,7 @@ pub mod closure_env;
 pub mod dataflow;
 pub mod dump;
 pub mod dyn_vtable_registry;
+pub mod liveness;
 pub mod lower;
 pub mod model;
 pub mod runtime_call;
@@ -55,10 +56,10 @@ pub use model::{
     ElaboratedMirFunction, EnumLayout, ExitPath, ExternDecl, FieldOffset, FloatWidth,
     FunctionCallConv, Instr, IntArithOp, IntSignedness, IrPipeline, JoinBranch, LambdaActorShape,
     LambdaCapture, LambdaEnvFieldDrop, MachineLayout, MachineVariantLayout, MirCheck, MirConst,
-    MirConstValue, MirDiagnostic, MirDiagnosticKind, MirScope, MirStatement, Place, PointerWidth,
-    PolymorphicMirFunction, RawMirFunction, RecordLayout, RegexLiteral, RuntimeCall, SelectArm,
-    SelectArmKind, SendAliasMode, Strategy, SupervisorChildLayout, SupervisorLayout, SuspendKind,
-    Terminator, ThirFunction, TraitObjectStorage, TrapKind, WitnessOperand,
+    MirConstValue, MirDiagnostic, MirDiagnosticKind, MirLint, MirScope, MirStatement, Place,
+    PointerWidth, PolymorphicMirFunction, RawMirFunction, RecordLayout, RegexLiteral, RuntimeCall,
+    SelectArm, SelectArmKind, SendAliasMode, Strategy, SupervisorChildLayout, SupervisorLayout,
+    SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind, WitnessOperand,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use state_clone::{

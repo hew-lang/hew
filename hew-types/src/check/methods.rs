@@ -7760,22 +7760,19 @@ impl Checker {
                             | Ty::Char
                     );
                     if is_copy_ty {
-                        self.warnings.push(crate::error::TypeError {
-                            severity: crate::error::Severity::Warning,
-                            kind: TypeErrorKind::StyleSuggestion,
-                            span: span.clone(),
-                            message: format!(
+                        let module = self.current_module.clone();
+                        self.emit_main_pass_lint(
+                            LintId::CloneOnCopy,
+                            span,
+                            module.as_deref(),
+                            format!(
                                 "cloning a Copy type `{}` is redundant; \
                                  this is equivalent to a plain copy",
                                 resolved.user_facing()
                             ),
-                            notes: vec![],
-                            suggestions: vec![
-                                "remove the `clone` — Copy types are duplicated automatically"
-                                    .to_string(),
-                            ],
-                            source_module: self.current_module.clone(),
-                        });
+                            "remove the `clone` — Copy types are duplicated automatically"
+                                .to_string(),
+                        );
                         self.record_method_call_rewrite(span, MethodCallRewrite::CopyCloneNoop);
                         return resolved;
                     }

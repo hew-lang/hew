@@ -22,8 +22,12 @@
 //! - The other operand must be the integer literal `0` or `1` (with the
 //!   operator paired so the predicate is a genuine emptiness test — see the
 //!   table; `len() > 1`, `len() == 1`, … are not flagged).
-//! - The receiver's resolved type must expose `is_empty()` — `Vec`, `HashMap`,
-//!   `HashSet`, and `string` — verified through [`LintCtx::resolved_type_at`].
+//! - The receiver's resolved type must expose `is_empty()` — `Vec`, `HashSet`,
+//!   and `string` — verified through [`LintCtx::resolved_type_at`].
+//!   **`HashMap` is intentionally excluded**: it has a `len()` method but no
+//!   `is_empty()` in the dispatch registry or the `HashMapMethod` enum, so
+//!   suggesting `m.is_empty()` on a `HashMap` would produce a program that fails
+//!   at MIR lowering.
 
 use hew_parser::ast::{BinaryOp, Block, Expr, Literal, Span, Spanned};
 
@@ -174,14 +178,25 @@ fn flip(op: BinaryOp) -> Option<BinaryOp> {
     })
 }
 
-/// Builtin types that expose `len()` and `is_empty()` with `len() == 0`
-/// equivalent to `is_empty()`.
+/// Builtin types that expose both `len()` and a callable `is_empty()` with
+/// `len() == 0` equivalent to `is_empty()`.
+///
+/// Audit (origin/main ca310f0a):
+/// - `string`  — `is_empty` registered in the string method table ✓
+/// - `Vec<T>`  — `VecMethod::IsEmpty` in dispatch + registry ✓
+/// - `HashSet<T>` — `HashSetMethod::IsEmpty` in dispatch + registry ✓
+/// - `HashMap<K,V>` — **NOT included**: `HashMapMethod` has no `IsEmpty`
+///   variant and the `HashMap` method registry has no `is_empty` entry.  The
+///   descriptor table accepts the call for type-checking purposes, but
+///   `HashMap::is_empty` fails at MIR lowering because no runtime shim exists.
+///   Tracked as a stdlib gap (rc1 candidate); lint suppressed until the method
+///   is fully registered.
 fn type_has_is_empty(ty: &Ty) -> bool {
     matches!(ty, Ty::String)
         || matches!(
             ty,
             Ty::Named {
-                builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
+                builtin: Some(BuiltinType::Vec | BuiltinType::HashSet),
                 ..
             }
         )

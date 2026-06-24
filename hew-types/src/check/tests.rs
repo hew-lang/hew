@@ -6907,6 +6907,26 @@ fn redundant_else_not_flagged_for_else_if_chain() {
 }
 
 #[test]
+fn redundant_else_not_flagged_when_else_introduces_binding() {
+    // FP regression: the `else` block introduces `let y`, so de-indenting it
+    // would move `y` into the enclosing scope.  Any same-name `let y` that
+    // follows (as shown here) would then become a same-scope rebinding error.
+    // The lint must stay silent even though the then-branch always diverges.
+    let (errors, warnings) = parse_and_check(
+        "fn f(c: bool) -> i64 { if c { return 0; } else { let _y = 1; } let _y = 2; _y }",
+    );
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check cleanly, got: {errors:?}"
+    );
+    assert_eq!(
+        count_redundant_else(&warnings),
+        0,
+        "else body introduces `let _y` — de-indent would change scope, must not lint, warnings: {warnings:?}"
+    );
+}
+
+#[test]
 fn redundant_else_deny_routes_to_errors() {
     let out = check_with_lint_level(
         "fn f(c: bool) { if c { return; } else { let _ = 1; } }",
@@ -7175,6 +7195,25 @@ fn len_zero_suppressed_by_directive() {
         0,
         "a directive above the comparison must suppress, warnings: {:?}",
         out.warnings
+    );
+}
+
+#[test]
+fn len_zero_hashmap_len_not_flagged() {
+    // FP regression: HashMap has no `is_empty()` method in the dispatch
+    // registry (HashMapMethod has no IsEmpty variant), so the suggested
+    // `m.is_empty()` rewrite would fail at MIR lowering.  The lint must
+    // not fire on HashMap receivers.
+    let (errors, warnings) =
+        parse_and_check("fn f(m: HashMap<string, i64>) -> bool { m.len() == 0 }");
+    assert!(
+        errors.is_empty(),
+        "fixture should type-check cleanly, got: {errors:?}"
+    );
+    assert_eq!(
+        count_len_zero(&warnings),
+        0,
+        "HashMap has no is_empty() — lint must not fire, warnings: {warnings:?}"
     );
 }
 

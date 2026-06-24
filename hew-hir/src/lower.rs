@@ -1817,18 +1817,31 @@ pub fn lower_program_with_mono_cap(
         // redeclares `Some` or `Ok` will correctly mark the bare name as
         // ambiguous (qualified forms still resolve via `Option::Some`,
         // `Result::Ok`).
+        //
+        // Local-shadows-global: builtins are NOT pre-seeded any longer.
+        // Instead, after counting all user variants, builtin names are
+        // inserted with count 1 ONLY WHERE user count is 0 (via `or_insert`).
+        // A companion `user_declared_variant_names` set tracks which bare
+        // names the root program declared, so the builtin spec registration
+        // pass can skip the bare-form insertion for those names (preventing
+        // the last-write-wins overwrite of the user's registration).
         let mut bare_counts: HashMap<String, usize> = HashMap::new();
-        for name in BUILTIN_ENUM_VARIANT_BARE_NAMES {
-            *bare_counts.entry((*name).to_string()).or_insert(0) += 1;
-        }
+        // Accumulate user-declared variant names from root `program.items` so
+        // the builtin registration pass can honour local-shadows-global.
+        let mut user_declared_variant_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for (item, _) in &program.items {
             match item {
                 Item::Machine(md) => {
                     for state in &md.states {
                         *bare_counts.entry(state.name.clone()).or_insert(0) += 1;
+                        // Machine states shadow same-named builtins (local-shadows-global).
+                        user_declared_variant_names.insert(state.name.clone());
                     }
                     for event in &md.events {
                         *bare_counts.entry(event.name.clone()).or_insert(0) += 1;
+                        // Machine events shadow same-named builtins (local-shadows-global).
+                        user_declared_variant_names.insert(event.name.clone());
                     }
                 }
                 Item::TypeDecl(td) if td.kind == TypeDeclKind::Enum => {
@@ -1839,6 +1852,9 @@ pub fn lower_program_with_mono_cap(
                     for body_item in &td.body {
                         if let TypeBodyItem::Variant(v) = body_item {
                             *bare_counts.entry(v.name.clone()).or_insert(0) += 1;
+                            // Track root-program user variants for the
+                            // local-shadows-global builtin registration guard.
+                            user_declared_variant_names.insert(v.name.clone());
                         }
                     }
                 }
@@ -1914,6 +1930,16 @@ pub fn lower_program_with_mono_cap(
                     }
                 }
             }
+        }
+        // Post-user-scan: seed builtin enum variant names with count 1 where
+        // the user has not declared any variant with that name.  This preserves
+        // bare-form accessibility for pure-builtin names (e.g. `Ok`, `None`,
+        // `Full`) while preventing builtins from contributing a spurious "1"
+        // to names the user already declared.  Combined with the guard in the
+        // builtin spec registration pass below, this implements the
+        // local-shadows-global rule at the HIR bare-name layer.
+        for name in BUILTIN_ENUM_VARIANT_BARE_NAMES {
+            bare_counts.entry((*name).to_string()).or_insert(1);
         }
         for (item, _) in &program.items {
             match item {
@@ -2084,12 +2110,21 @@ pub fn lower_program_with_mono_cap(
         // user enums. Without these entries, `Ok(42)` would lower as an
         // unresolved identifier and `match r { Ok(n) => ... }` would emit
         // `match arm variant not registered in machine/enum ctor registry`.
+        //
+        // Local-shadows-global: skip the bare-form insertion for any builtin
+        // variant name that the root program has already declared.  The
+        // qualified form (`LookupError::NotFound`) is always registered so
+        // existing code that uses the fully-qualified path keeps working.
         for spec in builtin_enum_specs() {
             for (variant_idx, variant_name) in spec.variant_names.iter().enumerate() {
                 let qualified = format!("{}::{}", spec.type_name, variant_name);
                 ctx.machine_ctor_registry
                     .insert(qualified, (spec.type_name.to_string(), variant_idx));
-                if bare_counts.get(*variant_name).copied().unwrap_or(0) == 1 {
+                // Register the bare form only when count == 1 (unique) AND
+                // the user has not declared their own variant with this name.
+                if bare_counts.get(*variant_name).copied().unwrap_or(0) == 1
+                    && !user_declared_variant_names.contains(*variant_name)
+                {
                     ctx.machine_ctor_registry.insert(
                         (*variant_name).to_string(),
                         (spec.type_name.to_string(), variant_idx),

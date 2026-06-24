@@ -121,6 +121,93 @@ fn render_pipeline_mir_diagnostics(
     true
 }
 
+/// Surface the MIR-stage lint warnings recorded on `pipeline`, applying the
+/// user's lint levels and in-source `// hew:allow(...)` directives. Returns
+/// `true` if any lint was promoted to an error (`--deny`), which the caller must
+/// turn into a build failure.
+///
+/// MIR lints are level-configurable warnings, so they render through the
+/// warning / error diagnostic path — never the hard `E_MIR_CHECK` family that
+/// [`render_pipeline_mir_diagnostics`] uses for move/init check failures.
+///
+/// Surfaced through the CLI front end only: the LSP and wasm front ends stop at
+/// HIR and never lower to MIR, so they never reach this path. Editor / web
+/// surfacing of MIR lints is tracked in issue #2176.
+fn render_pipeline_mir_lints(
+    source: &str,
+    label: &str,
+    pipeline: &hew_mir::IrPipeline,
+    levels: &hew_types::LintLevels,
+) -> bool {
+    let mut had_error = false;
+    for warning in &pipeline.lint_warnings {
+        let span_start = warning.span.0 as usize;
+        let span_end = warning.span.1 as usize;
+        // The MIR lint span is a raw byte offset carrying no module identity
+        // (post-flatten HIR spans are module-anonymous). For the single-root
+        // case it indexes the root source directly; a span past the end is from
+        // an imported module we cannot faithfully render here, so skip it rather
+        // than point at the wrong line. Precise multi-module MIR-lint surfacing
+        // rides the same editor/web track as the front ends (issue #2176).
+        if span_end > source.len() {
+            continue;
+        }
+        // An in-source `// hew:allow(lint)` wins over any flag level — the same
+        // precedence the HIR-stage lints honour.
+        if hew_types::directive_suppresses(source, span_start, warning.lint) {
+            continue;
+        }
+        let range = span_start..span_end;
+        match levels.level(warning.lint) {
+            hew_types::LintLevel::Allow => {}
+            hew_types::LintLevel::Warn => {
+                if diagnostic_json::json_output_active() {
+                    diagnostic_json::push_json_diagnostic(diagnostic_json::from_mir_lint(
+                        source,
+                        label,
+                        &range,
+                        warning.lint.as_str(),
+                        &warning.message,
+                        false,
+                    ));
+                } else {
+                    diagnostic::render_warning_with_raw_notes(
+                        source,
+                        label,
+                        &range,
+                        &warning.message,
+                        &[],
+                        &[],
+                    );
+                }
+            }
+            hew_types::LintLevel::Deny => {
+                if diagnostic_json::json_output_active() {
+                    diagnostic_json::push_json_diagnostic(diagnostic_json::from_mir_lint(
+                        source,
+                        label,
+                        &range,
+                        warning.lint.as_str(),
+                        &warning.message,
+                        true,
+                    ));
+                } else {
+                    diagnostic::render_diagnostic_with_raw_notes(
+                        source,
+                        label,
+                        &range,
+                        &warning.message,
+                        &[],
+                        &[],
+                    );
+                }
+                had_error = true;
+            }
+        }
+    }
+    had_error
+}
+
 fn lower_file_to_mir(
     input_path: &Path,
     requested_target: Option<&str>,
@@ -191,6 +278,17 @@ fn lower_file_to_mir(
         &input,
         &lower_output.module,
         &pipeline.diagnostics,
+    ) {
+        return Err(());
+    }
+
+    // `hew compile` exposes no `-A/-W/-D` flags, so MIR lints surface at their
+    // default levels (`// hew:allow(...)` still suppresses).
+    if render_pipeline_mir_lints(
+        &state.source,
+        &input,
+        &pipeline,
+        &hew_types::LintLevels::default(),
     ) {
         return Err(());
     }
@@ -270,6 +368,10 @@ fn lower_file_to_mir_for_target(
         return Err(());
     }
 
+    if render_pipeline_mir_lints(&state.source, &input, &pipeline, &options.lint_levels) {
+        return Err(());
+    }
+
     let native_pkg_dirs = native_link::collect_import_pkg_dirs(&state.program);
     Ok((pipeline, native_pkg_dirs))
 }
@@ -314,6 +416,7 @@ fn run_check_deep_gates(
     input: &str,
     target: &target::TargetSpec,
     state: &hew_compile::FileFrontendState,
+    levels: &hew_types::LintLevels,
 ) -> Result<(), ()> {
     // `std/builtins.hew` is the compiler's embedded builtin-surface substrate:
     // it is consumed by the checker's builtins pre-registration (`include_str!`)
@@ -375,8 +478,17 @@ fn run_check_deep_gates(
         return Err(());
     }
 
+    // Surface MIR lint warnings before the codegen-front gate so they read in
+    // source order ahead of any hard error. A `--deny` lint fails the build, but
+    // only after the codegen-front gate has had its say.
+    let lint_denied = render_pipeline_mir_lints(&state.source, input, &pipeline, levels);
+
     if let Err(error) = hew_codegen_rs::validate_codegen_front(&pipeline) {
         diagnostic::render_codegen_front_diagnostic(&error);
+        return Err(());
+    }
+
+    if lint_denied {
         return Err(());
     }
 
@@ -607,6 +719,10 @@ pub(crate) fn compile_native_from_program(
         &lower_output.module,
         &pipeline.diagnostics,
     ) {
+        return Err(());
+    }
+
+    if render_pipeline_mir_lints(&state.source, source_label, &pipeline, &options.lint_levels) {
         return Err(());
     }
 
@@ -1383,7 +1499,7 @@ fn cmd_check(a: &args::CheckArgs) {
         }
     }
 
-    if run_check_deep_gates(&input, &target, &state).is_err() {
+    if run_check_deep_gates(&input, &target, &state, &options.lint_levels).is_err() {
         if json {
             diagnostic_json::flush_json_diagnostics();
         }

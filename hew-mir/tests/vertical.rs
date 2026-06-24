@@ -1368,7 +1368,7 @@ fn registered_fieldless_user_type_still_requires_codegen_readiness() {
 /// the mangled-key thunk (`Wrapper$$string`). Migrated forward from
 /// `non_bitcopy_user_record_instantiation_reports_precise_valueclass_diagnostic`,
 /// which pinned the now-reversed reject behaviour — the generic-instantiation
-/// owned-aggregate capability is the residual fail-closed witness this lane
+/// owned-aggregate capability is the residual fail-closed witness this fix
 /// closes. The W3.029 gate is retained for unregistered/unclassifiable shapes
 /// (see `generic_record_owned_aggregate_admission` unit tests in lower.rs).
 #[test]

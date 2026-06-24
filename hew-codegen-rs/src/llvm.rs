@@ -1,7 +1,7 @@
 //! Inkwell direct LLVM IR emitter for the out-of-process LLVM backend.
 //!
 //! Adopted from the §10 backend probe (Track C) at HEAD `e6c83faa` on
-//! `experiment/c1-backend-shootout-2026-05-13`. Both cross-ecosystem reviewers
+//! `experiment/c1-backend-shootout-2026-05-13`. Both independent reviewers
 //! signed accept on the probe; this module is the in-tree evolution of
 //! `experiments/c1-backend-shootout/src/bin/probe_c.rs` against the real MIR
 //! shapes in `hew-mir`.
@@ -242,7 +242,7 @@ pub(crate) type CodegenResult<T> = Result<T, CodegenError>;
 // codegen arms have exactly one obvious way to wrap an LLVM error, and
 // `llvm_err!` is the matching macro for direct (non-`?`) constructions.
 //
-// **Crate-private by design** (see lane plan §Design and §Risks #4):
+// **Crate-private by design** (see §Design and §Risks #4):
 //   - No `#[macro_export]`.
 //   - No public re-export from `lib.rs`.
 //   - Helpers only ever construct `CodegenError::Llvm` — they cannot, and
@@ -1372,7 +1372,7 @@ pub(crate) struct FnCtx<'a, 'ctx> {
     /// WHY this is a codegen special-case: it is the implicit safe floor for
     /// fire-and-forget actor message delivery. Without it, `main` returning
     /// races the OS killing scheduler worker threads before they drain.
-    /// WHEN obsolete: when the companion lane lands the explicit `drain {}` /
+    /// WHEN obsolete: when the companion change lands the explicit `drain {}` /
     /// `join {}` language surface and MIR lower emits `Terminator::Drain` at
     /// program exit; this flag and its emit block become dead and can be
     /// removed then.
@@ -5691,7 +5691,7 @@ fn emit_native_actor_metadata_registration<'ctx>(
 // ─── W2.002 Stage 2: state_clone / state_drop registration helpers ──────────
 //
 // Stage 2 emits CALLS to per-actor `__hew_state_clone_<Actor>` /
-// `__hew_state_drop_<Actor>` C-ABI fns. Stage 3 of this lane (deferred)
+// `__hew_state_drop_<Actor>` C-ABI fns. Stage 3 (deferred)
 // synthesises the function BODIES. To keep Stage 2 link-correct on its
 // own, the helpers below `get_function`-or-declare-extern the per-actor
 // symbol; if Stage 3 does not land the linker fails with a clear
@@ -6449,7 +6449,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     // wrapper and take its address; `None` → null (the actor has no lifecycle
     // hook, so the runtime fires nothing). Fail-closed when the symbol is
     // present but the wrapper cannot be emitted — a null here would silently
-    // skip init/on_start under supervision (the exact bug this lane fixes).
+    // skip init/on_start under supervision (the exact bug this change fixes).
     let lifecycle_ptr: BasicValueEnum<'ctx> = match &child.lifecycle_symbol {
         Some(_) => {
             let wrapper = emit_actor_lifecycle_wrapper(ctx, llvm_mod, &child.actor_name)?;
@@ -6707,7 +6707,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     // ── W2.002 Stage 2: register state_drop + state_clone fn pointers
     // against this child slot. Mirrors `__hew_actor_dispatch_<actor>`
     // resolution above: `child.actor_name` → per-actor synthesised symbol
-    // (Stage 3 of this lane defines bodies; Stage 2 declares externs so
+    // (Stage 3 defines bodies; Stage 2 declares externs so
     // a missing Stage 3 fails clearly at link time, not silently).
     //
     // The matching `ActorLayout` carries the symbol pair on
@@ -6803,7 +6803,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
 // - **Actor shutdown**: the wrapper that the actor holds (from direct-spawn
 //   byte-copy or from `hew_actor_spawn_opts_adopt` of a clone result) is
 //   owned by the actor. On shutdown the runtime invokes the registered
-//   `state_drop_fn` — this lane synthesises that body. Single-fire
+//   `state_drop_fn` — this impl synthesises that body. Single-fire
 //   protection via the runtime's `terminate_called` guard at
 //   `hew-runtime/src/actor.rs:786-791`; `state_drop_fn` is idempotent
 //   against null and is structurally callable from any of the three
@@ -19585,7 +19585,7 @@ fn lower_hashmap_index_trap_call(
 /// on a hit, writes a freshly retained/cloned owner into the `Some` payload
 /// slot, so the `Option` payload is never a borrow into the live buffer
 /// (`by-value-heap-params-are-borrows` P0 — the headline drop-safety invariant
-/// of this lane). On OOB the runtime returns `false` and we build `None`.
+/// of this change). On OOB the runtime returns `false` and we build `None`.
 fn lower_vec_get_clone_call(
     fn_ctx: &FnCtx<'_, '_>,
     args: &[Place],
@@ -24668,7 +24668,7 @@ fn lower_terminator<'ctx>(
             // Scoped to native actor-using programs only (`emit_drain_epilogue`
             // is false for non-actor programs and for WASM targets).
             // WHY this is a codegen special-case and not a MIR Terminator: this
-            // is the implicit safe floor; the companion lane adds the explicit
+            // is the implicit safe floor; the companion change adds the explicit
             // `drain`/`join{}` language surface and emits a MIR-level
             // `Terminator::Drain`, at which point this codegen arm becomes dead.
             if fn_ctx.emit_drain_epilogue {
@@ -26703,7 +26703,7 @@ fn lower_terminator<'ctx>(
 ///   `binding` (the per-arm reply slot for `ActorAsk` arms; `None`
 ///   for `AfterTimer`).
 /// - At most one `AfterTimer` arm is present (HIR enforces).
-/// - `StreamNext` / `TaskAwait` arms are not in scope for this lane
+/// - `StreamNext` / `TaskAwait` arms are not in scope for this change
 ///   and remain fail-closed below (defence-in-depth — the MIR
 ///   producer rejects them before this codegen runs).
 ///
@@ -33473,7 +33473,7 @@ fn emit_dyn_trait_drop_in_place_fns<'ctx>(
 ///   thunk_0_fn_ptr, ..., thunk_(N-1)_fn_ptr }`.
 ///
 /// **Layout (matches `hew-runtime/src/trait_object.rs::HewVtable` and
-/// the lane plan §1.5 vtable struct prefix entry).**
+/// §1.5 of the design notes (vtable struct prefix entry)).**
 /// - Slot 0: pointer to the `drop_in_place` fn named by
 ///   [`hew_mir::mangle_dyn_drop_in_place_symbol`] and synthesised by
 ///   `emit_dyn_trait_drop_in_place_fns` (must run first).

@@ -4,7 +4,7 @@
 // variant payload.  Both are heap-boxed (pointer-sized fields), so there is
 // no infinite-layout cycle — the pair must compile and produce correct output.
 //
-// This fixture reproduces the pattern from the cross-ecosystem review finding:
+// This fixture reproduces the pattern from the independent review finding:
 //   indirect enum A { ALeaf(i64); AWrap(B); }
 //   indirect enum B { BLeaf(i64); BWrap(A); }
 indirect enum A {

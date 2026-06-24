@@ -30,7 +30,7 @@ use hew_types::Checker;
 
 /// A fixture exercising shadowing, an enum with a struct payload, and a record
 /// with mixed-width fields (for the member bit-offset check). Mirrors the
-/// cross-eco probe that surfaced the three blocking defects.
+/// independent review probe that surfaced the three blocking defects.
 const FIXTURE: &str = "\
 record Point { x: i64, y: i64 }
 

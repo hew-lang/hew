@@ -1,6 +1,6 @@
 // W4.002 reject fixture: `.recv()` inside a machine transition body must
 // be rejected at HIR-lower time when compiling for wasm32, exercising the
-// Item::Machine arm of `check_wasm_blocking_recv_gate` added in this lane.
+// Item::Machine arm of `check_wasm_blocking_recv_gate` added in this change.
 //
 // The .recv() call is on a real `Receiver<i64>` obtained from
 // `channel.new(capacity)` so the type checker accepts the program; the

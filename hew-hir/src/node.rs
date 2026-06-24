@@ -896,7 +896,7 @@ pub struct HirVariant {
 ///
 /// MIR's `EnumLayout` builder flattens both `Tuple` and `Struct` into a single
 /// positional `field_tys` list — variant field NAMES are MIR-irrelevant (see
-/// D1 in the lane plan). Names are retained here for diagnostics and for the
+/// D1 in the design notes). Names are retained here for diagnostics and for the
 /// `Expr::StructInit` lowering path which validates source-declared field
 /// names against the variant's declared field set before emitting payload
 /// store instructions.

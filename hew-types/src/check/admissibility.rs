@@ -3465,7 +3465,7 @@ mod tests {
         );
     }
 
-    // ── Additional admissibility tests requested in cross-eco review ────────────
+    // ── Additional admissibility tests from independent review ────────────────
 
     #[test]
     fn hashmap_string_field_key_rejected() {

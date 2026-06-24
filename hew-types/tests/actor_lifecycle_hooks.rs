@@ -350,7 +350,7 @@ fn reject_crash_action_return_stmt_not_yet_wired() {
     // Reject twin (explicit `return` form): `return CrashAction::Restart;`
     // inside a `#[on(crash)]` hook body must also fail closed with
     // `CrashActionReturnNotYetWired` — same lowering gap, same diagnostic.
-    // The cross-eco review named this the `CrashActionReturnNotYetWired`
+    // The independent review named this the `CrashActionReturnNotYetWired`
     // case for explicit-return; it was missing from the original gate which
     // only checked the block tail-expression type.
     let source = r"

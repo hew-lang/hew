@@ -208,7 +208,7 @@ fn chatroom_shape_classifies_vec_of_string_and_vec_of_actor_ref() {
 
 #[test]
 fn user_type_named_connection_classifies_as_user_record_not_iohandle() {
-    // Cross-eco review regression: `ResolvedTy::Named { name }` does
+    // Independent review regression: `ResolvedTy::Named { name }` does
     // not preserve the checker's builtin discriminator. A user-declared
     // `type Connection { ... }` and the runtime builtin `net.Connection`
     // both reach the classifier as `Named { name: "Connection", args:

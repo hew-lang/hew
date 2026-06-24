@@ -1,7 +1,7 @@
 //! Awaiting a unit-returning child task inside an actor handler suspends the
 //! coroutine instead of blocking the worker on a condvar.
 //!
-//! Before this lane `await t` for a `Task<()>` lowered to
+//! Before this fix `await t` for a `Task<()>` lowered to
 //! `hew_task_await_blocking`, a `Condvar::wait_while` that pinned the OS worker
 //! until the child completed. The `SuspendingTaskAwait` carrier reroutes an
 //! execution-context unit `await t` onto the coro suspend point + the task

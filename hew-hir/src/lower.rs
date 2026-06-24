@@ -5069,7 +5069,7 @@ impl LowerCtx {
     /// handle-into-intrinsic calls. The narrower builtin-handle-moved-into-a-
     /// user-function case keeps the pre-existing borrowing `Read` lowering
     /// (fail-closed: a potential leak, never a new double-free) and is out of
-    /// this lane's scope.
+    /// this change's scope.
     ///
     /// ## Why this gates the call-argument intent
     ///
@@ -8667,7 +8667,7 @@ impl LowerCtx {
         // consumes the resulting `variants` vec to populate `EnumLayout`
         // including per-variant `field_tys`. The index assigned here matches
         // the order the ctor pre-pass walks `TypeBodyItem::Variant` entries,
-        // so the HIR registry key and MIR layout index agree (see lane plan
+        // so the HIR registry key and MIR layout index agree (see design notes
         // D2 — variant-index ordering is HIR-pre-pass authoritative).
         let mut variants: Vec<HirVariant> = Vec::new();
         if decl.kind == TypeDeclKind::Enum {
@@ -20951,7 +20951,7 @@ impl LowerCtx {
 
     /// Lower a surface `match` expression to `HirExprKind::Match`.
     ///
-    /// **Substrate scope (v0.5 match-expression slice)**: this lane lowers
+    /// **Substrate scope (v0.5 match-expression slice)**: this change lowers
     /// variant constructor arms (unit, tuple-payload, and struct-payload with
     /// plain binding / wildcard subpatterns), wildcard arms (`_`), plain
     /// binding arms (`x => ...`), literal arms (`0`, `"hello"`), or-pattern
@@ -23766,7 +23766,7 @@ fn check_wasm_blocking_recv_gate(ctx: &mut LowerCtx, program: &Program) {
             //   3. each transition's `guard` expression (if any)
             //   4. each transition's `body` expression (action)
             // Partial coverage (e.g. transitions but not states) is a BLOCK in
-            // cross-eco review.
+            // the independent review.
             Item::Machine(machine) => {
                 for state in &machine.states {
                     if let Some(entry) = &state.entry {
@@ -24125,7 +24125,7 @@ fn check_task_gates(ctx: &mut LowerCtx, program: &Program) {
             //   3. each transition's `guard` expression (if any)
             //   4. each transition's `body` expression (action)
             // Partial coverage (e.g. transitions but not states) is a BLOCK in
-            // cross-eco review.
+            // the independent review.
             Item::Machine(machine) => {
                 for state in &machine.states {
                     if let Some(entry) = &state.entry {
@@ -24259,7 +24259,7 @@ fn check_supervisor_spawn_gate(ctx: &mut LowerCtx, program: &Program) {
     // (b) reject `spawn Foo(args)` inside an imported module that happens
     // to share a name with a root-declared supervisor even though the
     // module's `Foo` is something else entirely (false-positive). Both
-    // failure modes are documented in the rev2 cross-eco finding.
+    // failure modes are documented in the rev2 independent review finding.
     if let Some(mg) = &program.module_graph {
         for (mod_id, module) in &mg.modules {
             if *mod_id == mg.root {
@@ -26037,7 +26037,7 @@ fn scan_item_for_supervisor_spawn(
         //   3. each transition's `guard` expression (if any)
         //   4. each transition's `body` expression (action)
         // Partial coverage (e.g. transitions but not states) is a BLOCK in
-        // cross-eco review (6th instance documented this session).
+        // the independent review.
         Item::Machine(machine) => {
             for state in &machine.states {
                 if let Some(entry) = &state.entry {
@@ -26567,7 +26567,7 @@ fn scan_expr_for_supervisor_spawn(
             // module-qualified path, which dispatches through the
             // `Expr::FieldAccess` arm below. Discharges A237 / LESSONS
             // `string-identifier-fragility-vs-structured-resolution` and
-            // the rev2 cross-eco finding on module-context threading.
+            // the rev2 independent review finding on module-context threading.
             let resolved: Option<&str> = match &target.0 {
                 Expr::Identifier(name) => {
                     let set = match current_module {

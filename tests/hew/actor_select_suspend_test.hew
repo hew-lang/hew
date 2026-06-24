@@ -1,7 +1,7 @@
 //! Cooperative `select{}` inside an actor handler suspends the coroutine on a
 //! readiness waitset instead of blocking the M:N worker in `hew_select_first`.
 //!
-//! Before this lane a `select{}` in an actor receive-fn called `hew_select_first`
+//! Before this fix a `select{}` in an actor receive-fn called `hew_select_first`
 //! — a busy-poll loop (`std::thread::sleep(1ms)`) over the per-arm readiness
 //! flags that PINNED the OS worker for the whole wait. The `SuspendingSelect`
 //! carrier reroutes an execution-context `select` onto the coro suspend point: a

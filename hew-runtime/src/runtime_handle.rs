@@ -1239,7 +1239,7 @@ mod tests {
 
     /// Deterministic proof that the [`LIFECYCLE`] lock serializes a teardown
     /// against a concurrent revive+release — the exact double-teardown /
-    /// revive-under-teardown race the cross-eco review found. Unlike the
+    /// revive-under-teardown race the independent review found. Unlike the
     /// probabilistic stress test, this forces the dangerous interleaving:
     ///
     /// 1. Main thread holds one owner (count 1) and installs a teardown gate.

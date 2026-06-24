@@ -2419,7 +2419,7 @@ mod tests {
     /// `<pkg_root>/template/template.hew` for `import hew::template`.  The LSP
     /// must do the same; if it only generates the full-path candidate
     /// `<pkg_root>/hew/template/template.hew` the import silently stays
-    /// unresolved while `hew check` accepts it — the lying-LSP class this lane
+    /// unresolved while `hew check` accepts it — the lying-LSP class this change
     /// exists to eliminate.
     ///
     /// Layout mirrors how `hew package add hew::template` would install into a

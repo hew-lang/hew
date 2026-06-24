@@ -186,7 +186,7 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // module doc in trait_object.rs for the convention. Companion
     // dispatch diagnostic `hew_vtable_dispatch_panic_on_oob` lives
     // further down this list under its own `hew_v*` block; the
-    // surfaces share a lane plan (W3.031 §1.7.3) but the allowlist
+    // surfaces share a design (W3.031 §1.7.3) but the allowlist
     // is sorted lex for binary-search correctness.
     "hew_dyn_box_alloc",
     "hew_dyn_box_free",
@@ -503,7 +503,7 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // (`hew-runtime/src/trait_object.rs`). Diagnostic trap codegen
     // wires on the unreachable arm of a vtable-slot match (LESSONS
     // P0 `exhaustive-coverage`: no wildcard fallthrough in dispatch).
-    // Also the wire target for a null-vtable fail-closed. Lane plan
+    // Also the wire target for a null-vtable fail-closed. Design notes
     // `runtime-trait-object-abi.md` design D-4 rejects routing the
     // *actual* dispatch through a runtime helper — codegen emits
     // GEP+load+call inline — so this is the only trait-object symbol

@@ -182,7 +182,7 @@ fn call_runtime_abi_fails_closed_with_symbol_in_message() {
 /// symbol) now has a real codegen lowering arm — the M2 lambda-actor
 /// lane wires `release` (and `send`/`ask`) as `CallRuntimeAbi`
 /// targets, joining `hew_duplex_send` on the happy-path codegen
-/// surface. This regression pins the lane's invariant:
+/// surface. This regression pins the invariant:
 /// `CallRuntimeAbi("hew_lambda_actor_release", [LambdaActorHandle(0)], None)`
 /// must reach the codegen consumer successfully (`Ok(_)`). The
 /// producer/codegen parity is held by `fn_type_for_symbol` declaring

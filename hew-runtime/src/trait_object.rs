@@ -4,7 +4,7 @@
 //! lowers against. It is intentionally narrow: two `#[repr(C)]` layout
 //! types and one diagnostic helper. The actual dispatch sequence
 //! (GEP into the vtable, load the slot, indirect-call) is emitted
-//! inline by codegen — see the lane plan `runtime-trait-object-abi.md`
+//! inline by codegen — see `runtime-trait-object-abi.md`
 //! design section **D-4**, which explicitly rejects routing dispatch
 //! through a runtime helper. Routing through a runtime helper would
 //! force argument boxing and break the producer-bridge invariant
@@ -212,7 +212,7 @@ pub extern "C" fn hew_vtable_dispatch_panic_on_oob(slot: u32, max: u32) -> ! {
 // Heap-box ABI for return-by-value `dyn Trait` values (W3.031 Stage 0)
 // ---------------------------------------------------------------------------
 //
-// Lane plan §1.7.3: a function returning `dyn Trait` cannot point its
+// §1.7.3 of the design: a function returning `dyn Trait` cannot point its
 // fat-pointer's `data` word at callee-frame storage (use-after-free at
 // the call boundary). The v0.5 design heap-allocates a buffer sized
 // from the concrete type's `(size_of, align_of)` (the vtable's prefix

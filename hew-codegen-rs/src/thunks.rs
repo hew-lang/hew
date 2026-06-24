@@ -2361,7 +2361,7 @@ pub(crate) fn emit_actor_dispatch_trampoline<'ctx>(
             // `handle` is suspended at that point. An immediate `hew_cont_resume`
             // would drive the body PAST the suspend into its reply-bind block
             // before the reply has arrived, re-blocking the worker on
-            // `hew_reply_wait` — the exact OS-thread block this lane removes
+            // `hew_reply_wait` — the exact OS-thread block this change removes
             // (R1). Instead POLL the just-parked handle: a Pending poll means the
             // body is waiting on a readiness source (the ask reply), so the
             // trampoline returns the handle and the scheduler parks it; the real

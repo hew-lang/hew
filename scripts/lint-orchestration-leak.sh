@@ -28,6 +28,19 @@
 #   T7  .tmp/(orchestration — orchestration path references inside string
 #         |plans|worktrees)   literals (comments that cite plan docs are
 #         in string literals  accepted; string literals are not)
+#   T8  orchestration vocab — framing phrases in *.rs/*.hew source only:
+#         cross-eco(system)   — "cross-eco review/finding", "cross-ecosystem
+#                               reviewers" — GPT/independent-review references
+#         this lane           — "this lane fixes/closes/removes/adds" framing
+#         lane plan           — "see lane plan §X" plan-document citations
+#         companion lane      — "companion lane adds" framing
+#         GPT                 — GPT reviewer mentions
+#         later-wave/waves    — "later-wave containers", "in later waves"
+#         lane's              — possessive "the lane's deliverable/invariant"
+#       Not flagged: "express lane", "SIMD lanes", "per-actor-pair lanes",
+#       "compilation phase", "wave of lints", Lane-A/Lane-B failure-class
+#       labels, QUIC "lane-kind" wire encoding.  Excludes examples/hew-orch/
+#       (orchestration-helper tool uses these terms intentionally).
 #
 # Accepted convention (not flagged):
 #   W### / R### work-item tags   — long-standing per-commit convention
@@ -179,6 +192,38 @@ if [[ "${1-}" == "--self-test" ]]; then
     assert_detects "T1 PCA_12 underscore sep"  "src/lib.rs"  '// PCA_12 note'
     assert_detects "T1 pca-12 lowercase"       "src/lib.rs"  '// pca-12 fix'
     assert_detects "T3 wireL2 no-hyphen camel" "src/lib.rs"  '// from wireL2'
+
+    # T8 — orchestration vocabulary in *.rs/*.hew source
+    assert_detects "T8 cross-eco in Rust comment"      "src/lib.rs" \
+        '// cross-eco review found the issue'
+    assert_detects "T8 cross-ecosystem in .hew"        "std/x.hew" \
+        '// cross-ecosystem review finding: module-qualified enum'
+    assert_detects "T8 this lane in Rust comment"      "src/lib.rs" \
+        '// before this lane the test always passed'
+    assert_detects "T8 lane plan in doc string"        "src/lib.rs" \
+        '/// see lane plan §3.1 for the full rationale'
+    assert_detects "T8 companion lane in comment"      "src/lib.rs" \
+        '// companion lane adds the explicit floor check'
+    assert_detects "T8 GPT in Rust comment"            "src/lib.rs" \
+        '// Both GPT reviewers flagged this ABI shape'
+    assert_detects "T8 later-wave in comment"          "src/lib.rs" \
+        '// the (later-wave) generic containers are built on this'
+    assert_detects "T8 later waves in .hew"            "std/x.hew" \
+        '//! in later waves this will be supported'
+    assert_detects "T8 lane-s possessive in doc"       "src/lib.rs" \
+        "/// the lane's deliverable — the shape that previously failed"
+
+    # T8 — negative controls (must NOT fire)
+    assert_clean "T8 NEG express lane"     "src/lib.rs" \
+        '// express lane in the skip-list, O(log n)'
+    assert_clean "T8 NEG compilation phase" "src/lib.rs" \
+        '// emitted during the compilation phase'
+    assert_clean "T8 NEG wave of lints"    "src/lib.rs" \
+        '// would surface a wave of unrelated pub clippy lints'
+    assert_clean "T8 NEG lanes plural"     "src/lib.rs" \
+        '// per-actor-pair lanes used for QUIC stream dispatch'
+    assert_clean "T8 NEG hew-orch excl"    "examples/hew-orch/x.rs" \
+        '// this lane fixes the orchestration gap'
 
     # ── Negative controls (must NOT fire) ────────────────────────────────────
 
@@ -460,17 +505,39 @@ record_hit "T7 .tmp/orch path in string literal" "$(
         2>/dev/null || true
 )"
 
+# T8 — orchestration vocabulary phrases in *.rs and *.hew source files only.
+# Targets framing that belongs only in orchestration context — GPT/independent
+# review references, "this lane" plan-framing, "lane plan" citations, and
+# possessive "lane's" — when they appear in source comments or test names.
+# Scoped to *.rs/*.hew (not .md/.toml/.yml) to avoid flagging prose documents
+# where these words have legitimate general meanings.
+# Excludes examples/hew-orch/ — the orchestration-helper tool uses these
+# phrases intentionally as its subject matter.
+# NOT flagged: "express lane", "SIMD lanes", "per-actor-pair lanes" (QUIC),
+# "compilation phase", "wave of lints", "Lane-A/Lane-B" failure-class labels.
+record_hit "T8 orchestration vocab in source" "$(
+    git grep -InP '(?i)\bcross[-\s]?eco|\bthis lane\b|\blane plan\b|\bcompanion lane\b|\bGPT\b|later[\s-]waves?\b|\blane\x27s\b' -- \
+        '*.rs' '*.hew' \
+        ':!examples/hew-orch/' \
+        ':!scripts/lint-orchestration-leak.sh' \
+        ':!LESSONS.md' \
+        ':!tests/leak-scan/' \
+        2>/dev/null || true
+)"
+
 # ── Report ────────────────────────────────────────────────────────────────────
 if (( hits > 0 )); then
     echo "lint-orchestration-leak: ${hits} pattern group(s) flagged" >&2
     echo "" >&2
     echo "$fail_lines" >&2
-    echo "Orchestration tokens (lane IDs, Q-tags, .tmp/ paths) must not appear in" >&2
-    echo "committed source. Remove them or replace with a plain description." >&2
+    echo "Orchestration tokens (lane IDs, Q-tags, .tmp/ paths, vocab phrases) must" >&2
+    echo "not appear in committed source. Remove them or replace with a plain description." >&2
     echo "" >&2
     echo "Accepted: W###/R### work-item tags, G-class labels (G1/G7/G12 …)," >&2
     echo "          L1–L6 layer labels, q### in .hew feature programs," >&2
-    echo "          .tmp/ references in // comments (plan citations)." >&2
+    echo "          .tmp/ references in // comments (plan citations)," >&2
+    echo "          'express lane', 'compilation phase', 'wave of lints'," >&2
+    echo "          Lane-A/Lane-B failure-class labels, QUIC lane-kind terms." >&2
     exit 1
 fi
 

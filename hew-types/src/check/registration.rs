@@ -6421,7 +6421,7 @@ impl Checker {
     /// impls via defining-identity"). The projection fix this method supports is
     /// unaffected: first-wins keeps the dispatched method signature and the
     /// applicability proof from the SAME (first) impl, so even an accepted
-    /// duplicate cannot cause the mis-projection fail-open this lane closes.
+    /// duplicate cannot cause the mis-projection fail-open this fix closes.
     pub(super) fn record_primitive_trait_impl_self_args(
         &mut self,
         canonical_key: String,

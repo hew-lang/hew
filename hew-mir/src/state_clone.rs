@@ -20,7 +20,7 @@
 //! classifier identifies which fields need a per-field clone helper and
 //! which fields are bit-copy-correct already.
 //!
-//! ## Builtin-vs-user-record name shadowing (cross-eco review fix)
+//! ## Builtin-vs-user-record name shadowing (independent review fix)
 //!
 //! `ResolvedTy::Named { name, args }` does not carry the checker's
 //! builtin-vs-user discriminator across the resolved-ty boundary. A
@@ -1071,7 +1071,7 @@ fn classify_named(
     // generator-binding release symbol), no dup helper, clone/restart fails
     // closed. Without this arm a tuple/record/enum carrying a generator handle
     // falls through to `classify_user_record` and fails as `MissingRecordLayout`,
-    // and (before this lane) the composite was mis-classified non-heap-owning so
+    // and (before this fix) the composite was mis-classified non-heap-owning so
     // its member-drop never ran — leaking the context + OS thread. A generator's
     // generic args (`i64`, `()`) never make the handle itself non-heap-owning, so
     // classification is by name alone, independent of `args`.

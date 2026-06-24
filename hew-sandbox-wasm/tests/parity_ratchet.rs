@@ -9,7 +9,7 @@
 //! interpreter mis-handles could silently diverge from native while the suite
 //! stayed green. The float-as-i64 bug (G1) is exactly this class: admitted,
 //! unparited, wrong. The compound-assignment hole (`x += 5` lowered as `x = 5`)
-//! was a second instance, found by this lane.
+//! was a second instance, found by this change.
 //!
 //! # The source of truth is `profile.rs`, not a hand-kept list
 //!
@@ -185,7 +185,7 @@ const CONSTRUCTS: &[Construct] = &[
     Construct {
         id: "unary integer negate (`-a`)",
         // The arithmetic_operators example carries the real `-a` line. Before
-        // this lane it only used `0 - a` (binary subtract), so `i64.neg` was
+        // this change it only used `0 - a` (binary subtract), so `i64.neg` was
         // never exercised by any parity case.
         probe: "fn main() {\n    let a = 17;\n    println(-a);\n}\n",
         coverage: Coverage::Parity("arithmetic_operators"),

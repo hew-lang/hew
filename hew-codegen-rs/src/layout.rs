@@ -597,7 +597,7 @@ pub(crate) fn build_tagged_union_layout<'ctx>(
         // `{e:?}`) to render the inkwell `LLVMString` as the LLVM diagnostic
         // text without quoting it. Migrating to `LlvmResultExt::llvm_ctx` would
         // silently switch to Debug projection (`{e:?}`) and change the
-        // user-visible error text. The lane plan §B4 deliberately leaves this
+        // user-visible error text. §B4 of the design deliberately leaves this
         // one Display call un-migrated; if a second Display site ever appears,
         // introduce a sibling `.llvm_ctx_display` helper.
         .map_err(|e| CodegenError::Llvm(format!("custom_width_int_type({element_bits}): {e}")))?;

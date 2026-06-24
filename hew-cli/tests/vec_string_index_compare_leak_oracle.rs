@@ -155,7 +155,7 @@ fn index_mixed_compare_source() -> String {
 }
 
 /// Owned array-repeat: `["hello"; N]` must produce N independent string clones
-/// and release every one at scope exit -- the lane's own leak-clean gate.
+/// and release every one at scope exit -- the leak-clean gate.
 /// Array-repeat CLONES the element, so each slot is an INDEPENDENT buffer even
 /// though every value is "hello"; a leaked index-into-compare retain is
 /// therefore a DISTINCT `leaks` node per slot. Comparing every slot makes the
@@ -353,7 +353,7 @@ fn vec_string_index_mixed_compare_no_constant_leak() {
 }
 
 /// Owned array-repeat `["hello"; 8]` must release every cloned element at
-/// scope exit -- the lane's leak-clean gate. Compared against the same
+/// scope exit -- the leak-clean gate. Compared against the same
 /// no-index control floor.
 #[test]
 fn array_repeat_string_clone_no_leak() {

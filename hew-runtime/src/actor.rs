@@ -6654,7 +6654,7 @@ mod tests {
     /// A non-reactor wake — in-flight link/monitor exit/down propagation (or a
     /// direct actor-to-actor send) for a crashing peer — must never enqueue an
     /// actor that `hew_actor_free` is about to untrack + free. This is the defect
-    /// the cross-ecosystem review reproduced and BLOCKED on: the reactor fix
+    /// the independent review reproduced and BLOCKED on: the reactor fix
     /// closed only the reactor wake; a non-reactor waker could still
     /// `CAS Idle->Runnable` + `sched_enqueue` in the window between free's
     /// post-detach `Idle` observation and `untrack_actor`, after which free freed

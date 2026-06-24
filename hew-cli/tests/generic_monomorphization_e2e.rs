@@ -166,7 +166,7 @@ fn turbofish_generic_call_lowers_and_runs() {
 /// type (`string`) is admitted as the generic owned-record drop spine: the
 /// `Box$$string` layout is discovered, its `string` field gets an in-place
 /// record drop thunk, and the value drops exactly once at scope exit. This pins
-/// the lane's deliverable — the shape that previously failed closed with
+/// the intended deliverable — the shape that previously failed closed with
 /// `UnsupportedUserRecordValueClass` now compiles and runs. The complementary
 /// fail-closed direction (clone-UNSUPPORTED opaque/IO-handle leaves) is pinned
 /// by the `hew-mir` admission unit tests

@@ -580,7 +580,7 @@ impl Checker {
                 }
                 Item::TypeAlias(type_alias) => {
                     // Fail closed only for user-written root `_` holes; nested holes
-                    // remain out of scope in this lane.
+                    // remain out of scope in this change.
                     if !matches!(type_alias.ty.0, TypeExpr::Infer) {
                         continue;
                     }

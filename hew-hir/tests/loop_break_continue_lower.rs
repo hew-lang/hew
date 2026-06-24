@@ -1,7 +1,7 @@
 //! HIR-shape regression for `break` / `continue` / bare `loop {}` lowering
 //! (Stage 1 of the break/continue completeness lane).
 //!
-//! Before this lane, `Stmt::Break` / `Stmt::Continue` / `Stmt::Loop` fell
+//! Before this change, `Stmt::Break` / `Stmt::Continue` / `Stmt::Loop` fell
 //! through the `lower_stmt` `_` catchall to `unsupported(..,"slice-2")`,
 //! producing `HirExprKind::Unsupported` plus a `NotYetImplemented`
 //! diagnostic. These tests pin that both unlabeled and labeled forms lower to
@@ -37,7 +37,7 @@ fn typecheck_and_lower(source: &str) -> hew_hir::LowerOutput {
 }
 
 /// Walk a block (statements + tail) and return `true` if any contained
-/// `HirExprKind` satisfies `pred`. Recurses into the loop bodies this lane
+/// `HirExprKind` satisfies `pred`. Recurses into the loop bodies this change
 /// introduces so nested `break`/`continue` are reachable.
 fn block_has_kind<F: Fn(&HirExprKind) -> bool + Copy>(block: &HirBlock, pred: F) -> bool {
     for stmt in &block.statements {

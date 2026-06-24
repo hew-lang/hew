@@ -44,7 +44,7 @@ fn parse_json_array(output: &std::process::Output) -> Vec<Value> {
         .clone()
 }
 
-/// `--format=json` must be rejected as unrecognized before this lane wired it
+/// `--format=json` must be rejected as unrecognized before this change wired it
 /// in — this test now asserts it is *accepted* (the inverse guard), so a
 /// regression that drops the flag fails loudly.
 #[test]

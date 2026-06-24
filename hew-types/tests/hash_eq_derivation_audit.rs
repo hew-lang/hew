@@ -38,7 +38,7 @@
 //! Any future divergence — e.g. someone adding a new K class to
 //! `hash_eligibility` without updating `implements_marker`, or
 //! vice-versa — flips an assertion here and blocks Stage A close.
-//! Per lane plan §7 risk #9.
+//! Per §7 risk #9 of the design notes.
 
 use hew_types::traits::{MarkerTrait, TraitRegistry};
 use hew_types::ty::Ty;

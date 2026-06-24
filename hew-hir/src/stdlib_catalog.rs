@@ -2295,7 +2295,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // ── W5.005 (F1b): memory-intrinsic floor (`mem.*`) ────────────────────
     //
     // The general-purpose heap allocator + typed-pointer primitives that back
-    // the (later-wave) generic containers.  These are compiler-internal-only
+    // the (upcoming) generic containers.  These are compiler-internal-only
     // (A605): declarable/callable ONLY from the `std.mem` floor module (gated
     // by `INTRINSIC_FLOOR_MODULES`), never from user surface.
     //

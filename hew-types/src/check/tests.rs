@@ -8741,7 +8741,7 @@ fn primitive_trait_dispatch_builtins_blanket_does_not_shadow_user_redeclare() {
     // `fmt` lookup must NOT silently satisfy a call to that user method
     // name on a primitive receiver — it should still diagnose "no method
     // on i64".  This guards the registration ordering risk called out in
-    // the lane plan: builtins.hew impls land in the side table only; they
+    // the design notes: builtins.hew impls land in the side table only; they
     // do not pollute `trait_defs` or hijack user names.
     let source = r"
         pub trait Display {

@@ -333,7 +333,7 @@ fn concrete_self_impl_projects_for_matching_receiver() {
 /// trait may be implemented at most once per type constructor. Without this
 /// rejection the dispatch side tables (self-args proof vs method signature)
 /// could be populated from different impls and drift, re-opening the
-/// over-application fail-open this lane closes.
+/// over-application fail-open this fix closes.
 #[test]
 fn overlapping_builtin_impls_rejected() {
     let output = typecheck(
@@ -382,10 +382,10 @@ fn overlapping_builtin_impls_rejected() {
 /// separate follow-up: "trait-impl coherence: reject duplicate same-(type,trait)
 /// impls via defining-identity".
 ///
-/// The projection fix this lane delivers is unaffected by the gap: first-wins
+/// The projection fix this change delivers is unaffected by the gap: first-wins
 /// keeps the dispatched method signature and the applicability proof from the
 /// SAME (first) impl, so an accepted duplicate cannot cause the mis-projection
-/// fail-open this lane closes. `#[ignore]` keeps the regression CI-visible
+/// fail-open this fix closes. `#[ignore]` keeps the regression CI-visible
 /// (`cargo test -- --ignored`) without failing the gate; remove `#[ignore]` when
 /// the follow-up lands.
 #[test]
@@ -421,7 +421,7 @@ fn duplicate_same_shape_builtin_impls_rejected() {
 /// user-defined record constructors — `impl<T> Acc for Box2<T>` AND
 /// `impl Acc for Box2<i64>` must be rejected (fail-closed), never silently
 /// accepted. User-record impls do NOT flow through the primitive/builtin side
-/// table (where this lane's drift fail-open lived), so they are rejected by the
+/// table (where this change's drift fail-open lived), so they are rejected by the
 /// pre-existing impl-coherence path rather than the new `ConflictingTraitImpl`
 /// primitive diagnostic. Either way the overlap must not type-check cleanly.
 #[test]

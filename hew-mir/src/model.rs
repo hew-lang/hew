@@ -3023,7 +3023,7 @@ pub enum Place {
     /// in the enum's `unit_variants` / `EnumLayout.variants`). `field_idx`
     /// is the zero-based field ordinal within that variant's payload.
     ///
-    /// This lane's substrate slice introduces the primitive but does not
+    /// This substrate slice introduces the primitive but does not
     /// emit loads through it — only unit-variant matching is supported
     /// here. Payload-bearing variant destructuring (e.g. `Some(x)`,
     /// `Ok(v)`) lands as a follow-on consumer of this primitive (Option<T>
@@ -5123,7 +5123,7 @@ pub enum MirDiagnosticKind {
     /// anonymous record whose bytes may carry heap pointers — bytes the
     /// cross-node codec is not seeded to serialize (the codec carries
     /// single-param message types only; packed-args seeding is the
-    /// cross-node payload serialization lane's positive path). A
+    /// cross-node payload serialization's positive path). A
     /// single-value remote payload delivered to a handler that unpacks
     /// the full packed record would read out of bounds on the receiving
     /// node, so the boundary fails closed at compile time instead.

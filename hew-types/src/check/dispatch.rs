@@ -27,7 +27,7 @@
 //! reviewer should rewrite it as
 //! `unreachable!("hew-types::dispatch invariant: resolved_calls is \
 //! populated by the unified resolver; no production reader exists at \
-//! this stage of the lane — adding one before the resolver lands \
+//! this stage of the implementation — adding one before the resolver lands \
 //! violates DI-003 fail-closed-by-absence")` rather than silently fall
 //! through.
 //!
@@ -54,7 +54,7 @@ use std::collections::{HashMap, HashSet};
 
 /// Opaque, checker-allocated identity of one impl in the registry.
 ///
-/// Numeric (not string-keyed) per `§7 risk #11` of the lane plan:
+/// Numeric (not string-keyed) per `§7 risk #11` of the design notes:
 /// string-tuple impl identity is a known fragility class (DI-001).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ImplId(pub u32);

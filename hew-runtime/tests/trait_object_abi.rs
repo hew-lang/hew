@@ -5,7 +5,7 @@
 //! call path codegen will emit, and the diagnostic OOB-panic helper.
 //!
 //! These tests exercise the substrate directly with hand-built
-//! vtables — no codegen, no checker, no MIR. Per the lane plan, that
+//! vtables — no codegen, no checker, no MIR. Per the design notes, that
 //! cross-component composition lands in TO-3 (MIR) and TO-4
 //! (codegen).
 

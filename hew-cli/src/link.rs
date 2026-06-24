@@ -317,7 +317,7 @@ pub fn link_executable(
     // archives. Native packages and stdlib staticlibs reference runtime symbols
     // (`hew_vec_*`, `hew_stream_*`, …) as *undefined* and resolve them against
     // libhew.a at the final link rather than bundling their own copy — bundling
-    // is the duplicate-symbol failure this lane fixes. A single-pass archive
+    // is the duplicate-symbol failure this change fixes. A single-pass archive
     // linker (GNU ld / ld.lld on ELF) only pulls an archive member to satisfy an
     // already-pending undefined symbol, so a consumer archive listed *after* the
     // first libhew.a needs libhew.a repeated here for its backward references to

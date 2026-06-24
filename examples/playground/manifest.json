@@ -518,5 +518,44 @@
       "sandbox": "runnable",
       "wasi": "runnable"
     }
+  },
+  {
+    "id": "types/vec_inclusive_slice",
+    "category": "types",
+    "name": "Vec Inclusive Range Slice",
+    "description": "`v[start..=end]` inclusive range slice \u2014 end element is",
+    "source_path": "types/vec_inclusive_slice.hew",
+    "expected_path": "types/vec_inclusive_slice.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "types/record_clone",
+    "category": "types",
+    "name": "Record Clone",
+    "description": "`rec.clone()` produces an independent deep copy \u2014 mutations to",
+    "source_path": "types/record_clone.hew",
+    "expected_path": "types/record_clone.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
+  },
+  {
+    "id": "types/fn_field_call",
+    "category": "types",
+    "name": "Fn-Field Call",
+    "description": "A record field of function type is callable via `(rec.f)(args)`,",
+    "source_path": "types/fn_field_call.hew",
+    "expected_path": "types/fn_field_call.expected",
+    "capabilities": {
+      "browser": "analysis-only",
+      "sandbox": "runnable",
+      "wasi": "runnable"
+    }
   }
 ]

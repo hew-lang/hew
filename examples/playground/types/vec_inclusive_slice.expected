@@ -1,0 +1,9 @@
+inclusive slice len: 3
+slice[0]: beta
+slice[1]: gamma
+slice[2]: delta
+num inclusive len: 3
+ns[0]: 10
+ns[2]: 30
+single-elem len: 1
+single-elem[0]: 30

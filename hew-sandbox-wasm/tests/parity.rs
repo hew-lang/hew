@@ -277,6 +277,33 @@ const PARITY_CASES: &[ParityCase] = &[
         accepted_divergences: &[],
     },
     ParityCase {
+        // v[start..=end] inclusive range slice. The emitter computes the
+        // exclusive end by adding 1 and delegates to the existing
+        // `vector.range_slice` opcode. Pins end-inclusive vs end-exclusive
+        // semantics against native `hew run`.
+        test_name: "vec_inclusive_slice",
+        source_rel: "examples/playground/types/vec_inclusive_slice.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // `rec.clone()` method on a user-defined record type. The emitter lowers
+        // it via `local.set` which calls `cloneValue` in the VM — a deep
+        // recursive copy — so the clone and the original are independent
+        // objects with no aliased fields, matching native structural copy semantics.
+        test_name: "record_clone",
+        source_rel: "examples/playground/types/record_clone.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        // `(rec.f)(args)` fn-field call. The emitter materialises the function
+        // value stored in the record field via `const.function` / `record.get`
+        // and invokes it via `call.indirect`. Pins the indirect-call routing
+        // against direct `call.direct` results for the same function.
+        test_name: "fn_field_call",
+        source_rel: "examples/playground/types/fn_field_call.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
         // Vec<f64>::contains with NaN and +-Infinity: the sandbox VM now routes
         // element equality through valuesEqual (which uses JS === for f64 pairs),
         // matching native fcmp-OEQ semantics.  Pre-fix the VM collapsed NaN and

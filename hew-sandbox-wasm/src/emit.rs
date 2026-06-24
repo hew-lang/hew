@@ -1809,6 +1809,21 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                         None,
                     );
                     Ok(dst)
+                } else if self.package.user_functions.contains(name) {
+                    // Function name used in value position (e.g. stored in a
+                    // record field of function type).  Emit `const.function` which
+                    // materialises a function-kind value in the VM; the value can
+                    // be retrieved via `record.get` and invoked via `call.indirect`.
+                    let ty = self.ty_for_expr(expr);
+                    let dst = self.temp_local(&ty, Some(span.clone()));
+                    self.emit_instruction(
+                        "const.function",
+                        Some(dst.clone()),
+                        vec![Operand::function(function_id(name))],
+                        Some(span.clone()),
+                        None,
+                    );
+                    Ok(dst)
                 } else {
                     self.emit_unsupported(Some(span.clone()));
                     Ok(self.emit_const_unit(Some(span.clone())))
@@ -2011,17 +2026,52 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     );
                     return Ok(dst);
                 }
-                // WASM-TODO(#2183): inclusive range slice `v[start..=end]` —
-                // deferred until `vector.range_slice_inclusive` is added to the VM.
-                if matches!(
-                    &index.0,
-                    Expr::Range {
-                        inclusive: true,
-                        ..
-                    }
-                ) {
-                    self.emit_unsupported(Some(span.clone()));
-                    return Ok(self.emit_const_unit(Some(span.clone())));
+                // `v[start..=end]` — inclusive range slice. Lower by computing the
+                // exclusive end (`end + 1`) and delegating to `vector.range_slice`,
+                // which already bounds-checks `end <= len`.  `i64.checked_add` traps
+                // on overflow (same as any checked integer path), so a callee with
+                // `end == I64_MAX` is a programming error that surfaces a trap rather
+                // than silent wrong output — matching the native out-of-bounds trap.
+                if let Expr::Range {
+                    start: Some(start),
+                    end: Some(end),
+                    inclusive: true,
+                } = &index.0
+                {
+                    let object_local = self.lower_expr(object)?;
+                    let start_local = self.lower_expr(start)?;
+                    let end_local = self.lower_expr(end)?;
+                    // exclusive_end = inclusive_end + 1
+                    let one_local = self.temp_local(&Ty::I64, Some(span.clone()));
+                    self.emit_instruction(
+                        "const.i64",
+                        Some(one_local.clone()),
+                        vec![Operand::literal(1u64)],
+                        Some(span.clone()),
+                        None,
+                    );
+                    let exclusive_end = self.temp_local(&Ty::I64, Some(span.clone()));
+                    self.emit_instruction(
+                        "i64.checked_add",
+                        Some(exclusive_end.clone()),
+                        vec![Operand::local(end_local), Operand::local(one_local)],
+                        Some(span.clone()),
+                        None,
+                    );
+                    let ty = self.ty_for_expr(expr);
+                    let dst = self.temp_local(&ty, Some(span.clone()));
+                    self.emit_instruction(
+                        "vector.range_slice",
+                        Some(dst.clone()),
+                        vec![
+                            Operand::local(object_local),
+                            Operand::local(start_local),
+                            Operand::local(exclusive_end),
+                        ],
+                        Some(span.clone()),
+                        None,
+                    );
+                    return Ok(dst);
                 }
                 let object_local = self.lower_expr(object)?;
                 let index_local = self.lower_expr(index)?;
@@ -2475,14 +2525,50 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                         return Ok(self.lower_vector_new(span));
                     }
                 }
-                // WASM-TODO(#2183): fn-field call `(rec.f)(args)` — the type-checker
-                // (ac0bc0ed) now admits calling a function-typed record field when
-                // the callee object is a value binding. The sandbox VM has
-                // `call.indirect` in its schema but marks it M4_DEFERRED; emit
-                // `unsupported` so the playground fails closed rather than silently
-                // producing wrong results.
-                self.emit_unsupported(Some(span.clone()));
-                Ok(self.emit_const_unit(Some(span)))
+                // `(rec.f)(args)` — fn-field call. The object is a record whose
+                // field `f` holds a function value (emitted as `const.function` when
+                // the function name appears in value position, stored via `record.new`
+                // and retrieved via `record.get`).  Emit `record.get` to load the
+                // function value, then `call.indirect` to invoke it.
+                let object_ty = self.ty_for_expr(object);
+                let object_local = self.lower_expr(object)?;
+                let field_index = match &object_ty {
+                    Ty::Named { name, .. } => self
+                        .package
+                        .record_field_indexes
+                        .get(name)
+                        .and_then(|indexes| indexes.get(field))
+                        .copied()
+                        .unwrap_or(0),
+                    _ => 0,
+                };
+                // Get the function-kind value out of the field.
+                let callee_ty = self.ty_for_span(&function.1);
+                let callee_local = self.temp_local(&callee_ty, Some(span.clone()));
+                self.emit_instruction(
+                    "record.get",
+                    Some(callee_local.clone()),
+                    vec![
+                        Operand::local(object_local),
+                        Operand::literal(field_index as u64),
+                    ],
+                    Some(span.clone()),
+                    None,
+                );
+                let result_ty = self.ty_for_span(&span);
+                let dst = self.temp_local(&result_ty, Some(span.clone()));
+                let mut operands = vec![Operand::local(callee_local)];
+                for arg in args {
+                    operands.push(Operand::local(self.lower_expr(arg.expr())?));
+                }
+                self.emit_instruction(
+                    "call.indirect",
+                    Some(dst.clone()),
+                    operands,
+                    Some(span),
+                    None,
+                );
+                Ok(dst)
             }
             _ => {
                 self.emit_unsupported(Some(span.clone()));
@@ -2974,6 +3060,24 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 };
                 let default_local = self.lower_expr(default_arg.expr())?;
                 Ok(self.lower_option_result_unwrap_or(receiver_local, default_local, span))
+            }
+            // `rec.clone()` produces an independent deep copy of any record
+            // value.  The sandbox VM's `local.set` unconditionally calls
+            // `cloneValue` (a deep recursive copy), so writing the receiver into
+            // a fresh temp via `local.set` is exactly what is needed: the result
+            // is a new record object with independently cloned fields — matching
+            // native `__hew_record_clone_inplace_<R>` ownership semantics.
+            "clone" => {
+                let ty = self.ty_for_expr(receiver);
+                let dst = self.temp_local(&ty, Some(span.clone()));
+                self.emit_instruction(
+                    "local.set",
+                    None,
+                    vec![Operand::local(dst.clone()), Operand::local(receiver_local)],
+                    Some(span),
+                    None,
+                );
+                Ok(dst)
             }
             // WASM-TODO(#1451): record `.clone()` lowers to a real deep-copy thunk on
             // the native path (`__hew_record_clone_inplace_<R>`), but the

@@ -1,0 +1,32 @@
+//! @name Fn-Field Call
+//! @description A record field of function type is callable via `(rec.f)(args)`,
+//! routing through `call.indirect` in the sandbox VM.
+
+type Transformer {
+    apply: fn(i64) -> i64;
+}
+
+type Formatter {
+    format: fn(i64) -> string;
+}
+
+fn double(x: i64) -> i64 {
+    x * 2
+}
+
+fn triple(x: i64) -> i64 {
+    x * 3
+}
+
+fn show(n: i64) -> string {
+    f"value={n}"
+}
+
+fn main() {
+    let t1 = Transformer { apply: double };
+    let t2 = Transformer { apply: triple };
+    println(f"double 5: {(t1.apply)(5)}");
+    println(f"triple 5: {(t2.apply)(5)}");
+    let fmt = Formatter { format: show };
+    println(f"format 42: {(fmt.format)(42)}");
+}

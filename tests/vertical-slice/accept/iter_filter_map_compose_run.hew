@@ -1,0 +1,140 @@
+//! Runnable end-to-end fixture for composed lazy adapters.
+//!
+//! Exercises `Map` composed with `Filter` (map-then-filter pipeline),
+//! proving that the Route-B inner-cursor write-back chains correctly
+//! across two adapter layers: Map advances the Countdown cursor, Filter
+//! advances the Map cursor.
+//!
+//! Inlined and fully monomorphised: cross-module generic instantiation
+//! of `std::iter` does not yet lower through MIR (a separate backend
+//! lane), so the adapter types are defined locally.
+//!
+//! Expected exit code: 18 — sum of items in Countdown{n:5} mapped
+//! through `x * 2` then filtered by `x > 6`: [10, 8]. Any internal
+//! mismatch returns a distinct diagnostic code (101/102) so a
+//! regression is legible.
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    /// Yield `n, n-1, …, 1` then `None`; advance the cursor in place.
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+type Map<I, A, B> {
+    iter: I;
+    f: fn(A) -> B;
+}
+
+impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
+    type Item = B;
+    /// Pump the inner iterator once and lift the item through `f`.
+    fn next(var self) -> Option<B> {
+        var inner = self.iter;
+        let result = match inner.next() {
+            Some(x) => Some((self.f)(x)),
+            None => None,
+        };
+        self.iter = inner;
+        result
+    }
+}
+
+type Filter<I, A> {
+    iter: I;
+    pred: fn(A) -> bool;
+}
+
+impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
+    type Item = A;
+    /// Multi-pump loop: advance inner until predicate accepts or exhaustion.
+    fn next(var self) -> Option<A> {
+        var inner = self.iter;
+        var found: Option<A> = None;
+        loop {
+            match inner.next() {
+                Some(x) => {
+                    if (self.pred)(x) {
+                        found = Some(x);
+                        break;
+                    }
+                    // x rejected; dropped here
+                },
+                None => {
+                    break;
+                },
+            }
+        }
+        self.iter = inner;
+        found
+    }
+}
+
+/// Construct a lazy `Map` adapter (mirrors `std::iter::map`).
+fn mk_map<I, A, B>(it: I, f: fn(A) -> B) -> Map<I, A, B>
+where
+    I: Iterator<Item = A>,
+{
+    Map { iter: it, f: f }
+}
+
+/// Construct a lazy `Filter` adapter (mirrors `std::iter::filter`).
+fn mk_filter<I, A>(it: I, pred: fn(A) -> bool) -> Filter<I, A>
+where
+    I: Iterator<Item = A>,
+{
+    Filter { iter: it, pred: pred }
+}
+
+/// Left-fold a fixed-`i64` iterator (mirrors `std::iter::fold`).
+fn fold_i64<I>(it: I, init: i64, f: fn(i64, i64) -> i64) -> i64
+where
+    I: Iterator<Item = i64>,
+{
+    var acc = init;
+    var iter = it;
+    loop {
+        match iter.next() {
+            Some(x) => {
+                acc = f(acc, x);
+            },
+            None => {
+                break;
+            },
+        }
+    }
+    acc
+}
+
+fn main() -> i64 {
+    // Countdown{n:5} → [5, 4, 3, 2, 1].
+    // Map (x * 2) → [10, 8, 6, 4, 2].
+    // Filter (x > 6) → [10, 8], sum = 18.
+    let mapped = mk_map(Countdown { n: 5 }, |x: i64| x * 2);
+    let filtered = mk_filter(mapped, |x: i64| x > 6);
+    let total = fold_i64(filtered, 0, |acc: i64, x: i64| acc + x);
+    if total != 18 {
+        return 101;
+    }
+
+    // Filter-then-fold without map: Countdown{n:5}, filter (x % 2 != 0) → odd
+    // items [5, 3, 1], sum = 9.
+    let filtered2 = mk_filter(Countdown { n: 5 }, |x: i64| x % 2 != 0);
+    let total2 = fold_i64(filtered2, 0, |acc: i64, x: i64| acc + x);
+    if total2 != 9 {
+        return 102;
+    }
+
+    total
+}

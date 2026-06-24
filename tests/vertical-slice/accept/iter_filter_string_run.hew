@@ -1,0 +1,118 @@
+//! Runnable end-to-end fixture for `Filter` with owned `string` items.
+//!
+//! Exercises the `by-value-heap-params-are-borrows` LESSONS invariant:
+//! `(self.pred)(x)` where `x: string` is a Read borrow — the predicate
+//! does NOT consume `x`. On the accept path `Some(x)` transfers
+//! ownership. On the reject path `x` falls out of scope and is dropped
+//! exactly once by RAII (`drop-allowset-from-value-flow`).
+//!
+//! Run under `MallocScribble=1` on macOS to assert no use-after-free on
+//! the discard path: double-free or use-after-free would manifest as an
+//! abort when scribbled bytes are re-read.
+//!
+//! Inlined and fully monomorphised: cross-module generic instantiation
+//! of `std::iter` does not yet lower through MIR (a separate backend
+//! lane), so the adapter types are defined locally.
+//!
+//! Expected exit code: 2 — count of strings passing the predicate
+//! `s != "skip_me"` from a three-element sequence ["keep", "keep2",
+//! "skip_me"]. Any internal mismatch returns a distinct diagnostic
+//! code (101) so a regression is legible.
+
+/// A fixed-size three-element string source iterator.
+///
+/// Yields three strings in sequence: "keep", "keep2", "skip_me".
+/// The predicate will accept "keep" and "keep2", reject "skip_me".
+type StringSeq {
+    idx: i64;
+}
+
+impl Iterator for StringSeq {
+    type Item = string;
+    /// Yield the next string in the fixed sequence; advance `idx`.
+    fn next(var self) -> Option<string> {
+        if self.idx == 0 {
+            self.idx = self.idx + 1;
+            Some("keep")
+        } else if self.idx == 1 {
+            self.idx = self.idx + 1;
+            Some("keep2")
+        } else if self.idx == 2 {
+            self.idx = self.idx + 1;
+            Some("skip_me")
+        } else {
+            None
+        }
+    }
+}
+
+type Filter<I, A> {
+    iter: I;
+    pred: fn(A) -> bool;
+}
+
+impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
+    type Item = A;
+    /// Multi-pump loop. On the reject path `x` (a `string`) falls out
+    /// of scope in the match arm body and is dropped exactly once.
+    fn next(var self) -> Option<A> {
+        var inner = self.iter;
+        var found: Option<A> = None;
+        loop {
+            match inner.next() {
+                Some(x) => {
+                    if (self.pred)(x) {
+                        found = Some(x);
+                        break;
+                    }
+                    // x rejected: string dropped here (RAII, exactly once)
+                },
+                None => {
+                    break;
+                },
+            }
+        }
+        self.iter = inner;
+        found
+    }
+}
+
+/// Construct a lazy `Filter` adapter (mirrors `std::iter::filter`).
+fn mk_filter<I, A>(it: I, pred: fn(A) -> bool) -> Filter<I, A>
+where
+    I: Iterator<Item = A>,
+{
+    Filter { iter: it, pred: pred }
+}
+
+/// Count items in a fixed-`string` iterator (mirrors `std::iter::count`).
+fn count_str<I>(it: I) -> i64
+where
+    I: Iterator<Item = string>,
+{
+    var n: i64 = 0;
+    var iter = it;
+    loop {
+        match iter.next() {
+            Some(_) => {
+                n = n + 1;
+            },
+            None => {
+                break;
+            },
+        }
+    }
+    n
+}
+
+fn main() -> i64 {
+    // StringSeq yields ["keep", "keep2", "skip_me"].
+    // Filter (s != "skip_me") → ["keep", "keep2"], count = 2.
+    let filtered = mk_filter(StringSeq { idx: 0 }, |s: string| s != "skip_me");
+    let n = count_str(filtered);
+    if n != 2 {
+        return 101;
+    }
+
+    n
+}

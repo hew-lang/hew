@@ -1,0 +1,110 @@
+//! Runnable end-to-end fixture for the lazy `Skip` adapter.
+//!
+//! Exercises the Route-B `Skip::next` body: burn-loop that discards
+//! the first `remaining` items from the inner stream, then yields
+//! the rest unchanged. On the first call the burn loop fires once;
+//! on subsequent calls `remaining == 0` so the loop exits immediately
+//! and the adapter is transparent to the inner stream.
+//!
+//! The fixture-local `Skip<I, A>` carries `A` as a direct type parameter
+//! (unlike `std/iter.hew`'s `Skip<I>`) so the monomorphisation site can
+//! pin `A = i64` directly. This is required by the current MIR substrate:
+//! a type parameter appearing ONLY in a where-clause projection cannot be
+//! pinned by the monomorphisation collector (mir-gap-where-clause-proj-
+//! monomorph). The body logic is identical to `std/iter.hew::Skip::next`.
+//!
+//! Inlined and fully monomorphised: cross-module generic instantiation
+//! of `std::iter` does not yet lower through MIR (a separate backend
+//! lane), so the adapter types are defined locally.
+//!
+//! Expected exit code: 6 — sum of items after skipping 2 from
+//! Countdown{n:5}: [3, 2, 1]. Any internal mismatch returns a
+//! distinct diagnostic code (101/102) so a regression is legible.
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    /// Yield `n, n-1, …, 1` then `None`; advance the cursor in place.
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+/// `Skip<I, A>` carries `A` as a direct type parameter so concrete call
+/// sites (e.g. `Skip<Countdown, i64>`) can pin the item type and satisfy
+/// associated-type bounds in generic helpers (`fold_i64`).
+type Skip<I, A> {
+    iter: I;
+    remaining: i64;
+}
+
+impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {
+    type Item = A;
+    /// Burn-loop then yield. On the first call (remaining > 0) the loop
+    /// discards leading items until `remaining == 0`, then falls through
+    /// to the yield pump. Subsequent calls find `remaining == 0` and skip
+    /// the loop entirely. The inner iterator is moved into a `var` local;
+    /// `self.iter` is written back on every exit path so `var self`'s
+    /// own write-back persists the cursor across calls.
+    fn next(var self) -> Option<A> {
+        var inner = self.iter;
+        loop {
+            if self.remaining <= 0 {
+                break;
+            }
+            match inner.next() {
+                Some(_) => {
+                    self.remaining = self.remaining - 1;
+                },
+                None => {
+                    self.iter = inner;
+                    return None;
+                },
+            }
+        }
+        let result = inner.next();
+        self.iter = inner;
+        result
+    }
+}
+
+/// Sum all items produced by a fixed-`i64` iterator.
+fn fold_i64<I>(it: I) -> i64 where I: Iterator<Item = i64> {
+    var acc: i64 = 0;
+    var iter = it;
+    loop {
+        match iter.next() {
+            Some(x) => { acc = acc + x; },
+            None => { break; },
+        }
+    }
+    acc
+}
+
+fn main() -> i64 {
+    // Countdown{n:5} yields [5, 4, 3, 2, 1].
+    // Skip(2) → discard [5, 4] → yield [3, 2, 1], sum = 6.
+    let skipped: Skip<Countdown, i64> = Skip { iter: Countdown { n: 5 }, remaining: 2 };
+    let total = fold_i64(skipped);
+    if total != 6 {
+        return 101;
+    }
+
+    // Skip(0) → no items discarded → full stream [3, 2, 1], sum = 6.
+    let skipped2: Skip<Countdown, i64> = Skip { iter: Countdown { n: 3 }, remaining: 0 };
+    let total2 = fold_i64(skipped2);
+    if total2 != 6 {
+        return 102;
+    }
+
+    total
+}

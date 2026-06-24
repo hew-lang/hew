@@ -18819,7 +18819,7 @@ impl Builder {
             "hew_actor_unlink" => self.lower_actor_unlink(hir_args, site, context),
             "hew_bytes_push" => self.lower_bytes_push(hir_args, site, context),
             "hew_vec_len" => self.lower_bytes_len(hir_args, site, context),
-            "hew_bytes_index" => self.lower_bytes_get_u8(hir_args, site, context),
+            "hew_bytes_get" => self.lower_bytes_get_option(hir_args, site, context, result_ty),
             "hew_string_char_count" => self.lower_string_char_count(hir_args, site, context),
             "hew_observe_read_u64"
             | "hew_observe_scrape"
@@ -18943,41 +18943,72 @@ impl Builder {
         dest
     }
 
-    /// Emit `hew_bytes_index(buf, index) -> u8` for `bytes.get(index)` calls.
+    /// Emit `bytes.get(index) -> Option<u8>`, the non-trapping byte accessor.
     ///
-    /// The `impl bytes` extern block in `std/io.hew` declares `get` with
-    /// `#[extern_symbol(hew_bytes_index)]`. A `bytes` value is a
-    /// `BytesTriple { ptr, offset, len }`, NOT a `*mut HewVec`, so it routes to
-    /// the dedicated `hew_bytes_index(ptr, offset, len, index) -> u8` runtime
-    /// entry (the same getter the `b[i]` indexing sugar uses) rather than the
-    /// Vec element getter `hew_vec_get_i32(*mut HewVec, i64)`. The runtime
-    /// bounds-checks and aborts on OOB (boundary-fail-closed). The dest place
-    /// is typed `u8` matching the catalog and runtime ABI return type.
-    fn lower_bytes_get_u8(
+    /// De-aliased from the trapping `b[i]` sugar (`hew_bytes_index`, which
+    /// aborts on OOB): `.get` returns `None` out of bounds instead of trapping.
+    /// Mirrors the Vec/HashMap `.get` shape — a single `Terminator::Call` to a
+    /// codegen-intercepted symbol (`hew_bytes_get`) that owns the bounds-check
+    /// CFG and the `Some`/`None` materialisation. The symbol carries no runtime
+    /// export (`builtin: None`, like `hew_vec_get_clone`): codegen does the
+    /// check over the stack-resident `BytesTriple` and an in-bounds typed load.
+    ///
+    /// The receiver is BORROWED, not consumed — `hew_bytes_get` is listed in
+    /// `is_collection_receiver_borrow_callee`, so `buf` keeps its scope-exit
+    /// drop. The `u8` element is a scalar (Copy): the `Some` payload is a
+    /// by-value load with no owned clone, so drop-safety is trivial.
+    fn lower_bytes_get_option(
         &mut self,
         hir_args: &[hew_hir::HirExpr],
         site: hew_hir::SiteId,
         context: RuntimeCallContext,
+        result_ty: Option<&ResolvedTy>,
     ) -> Option<Place> {
         if hir_args.len() != 2 {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: "runtime call `hew_bytes_index` arity".to_string(),
+                    construct: "runtime call `hew_bytes_get` arity".to_string(),
                     site,
                 },
                 note: format!(
-                    "`hew_bytes_index` (bytes.get) expects 2 arguments (receiver, index), got {}",
+                    "`hew_bytes_get` (bytes.get) expects 2 arguments (receiver, index), got {}",
                     hir_args.len()
                 ),
             });
             return None;
         }
+        // The checker types `b.get(i)` as `Option<u8>`; size the dest enum slot
+        // with that exact type so codegen resolves the registered Option layout
+        // (`checker-authority`: consume the recorded type, never re-infer it).
+        let Some(opt_ty) = result_ty else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "runtime call `hew_bytes_get` result type".to_string(),
+                    site,
+                },
+                note: "`hew_bytes_get` (bytes.get) needs the checker-recorded \
+                       `Option<u8>` result type to size its dest slot"
+                    .to_string(),
+            });
+            return None;
+        };
         let buf = self.lower_value(&hir_args[0])?;
         let idx = self.lower_value(&hir_args[1])?;
-        let dest =
-            (context == RuntimeCallContext::ValueNeeded).then(|| self.alloc_local(ResolvedTy::U8));
-        self.push_runtime_call("hew_bytes_index", vec![buf, idx], dest);
-        dest
+        // Always materialise the Option; the bounds-check CFG lives in codegen.
+        // A discarded result is a dead local the optimiser elides, but the Call
+        // terminator still needs a dest + a `next` block to continue into.
+        let result = self.alloc_local(opt_ty.clone());
+        let next = self.alloc_block();
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_bytes_get".to_string(),
+            builtin: None,
+            args: vec![buf, idx],
+            dest: Some(result),
+            next,
+        });
+        self.start_block(next);
+        let _ = context;
+        Some(result)
     }
 
     /// Emit `hew_string_char_count(s) -> i32`, widened to the Hew-facing `i64`.
@@ -31972,6 +32003,14 @@ fn is_collection_receiver_borrow_callee(callee: &str) -> bool {
         callee,
         "hew_hashmap_insert_layout"
             | "hew_hashmap_get_layout"
+            // The non-trapping `b.get(i)` / `s.get(i)` read (`Index::get`)
+            // choke: reads the byte/codepoint at `i` and materialises
+            // `Some(v)` / `None` without ever freeing the receiver (`buf`/`s`
+            // is borrowed in place). Same receiver-borrow contract as the
+            // hashmap getters; classified here so `.get` does not exclude the
+            // bytes/string handle from its scope-exit release.
+            | "hew_bytes_get"
+            | "hew_string_get"
             // The trapping `m[k]` read (`Index::at`) choke: reads the table and
             // clones the matched value into the caller's out-slot, never freeing
             // the map (`m: *const HewLayoutHashMap`). Same receiver-borrow

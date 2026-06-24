@@ -173,7 +173,8 @@ pub enum RuntimeCallFamily {
     AutoMutexLock,
     AutoMutexUnlock,
 
-    // --- Bytes value index/length/slice/push --------------------------------
+    // --- Bytes value get/index/length/slice/push ----------------------------
+    BytesGet,
     BytesIndex,
     BytesLen,
     BytesPush,
@@ -484,6 +485,7 @@ impl RuntimeCallFamily {
             Self::AutoMutexLock => "hew_auto_mutex_lock",
             Self::AutoMutexUnlock => "hew_auto_mutex_unlock",
             // Bytes
+            Self::BytesGet => "hew_bytes_get",
             Self::BytesIndex => "hew_bytes_index",
             Self::BytesLen => "hew_bytes_len",
             Self::BytesPush => "hew_bytes_push",
@@ -721,6 +723,7 @@ impl RuntimeCallFamily {
             "hew_auto_mutex_lock" => Self::AutoMutexLock,
             "hew_auto_mutex_unlock" => Self::AutoMutexUnlock,
             // Bytes
+            "hew_bytes_get" => Self::BytesGet,
             "hew_bytes_index" => Self::BytesIndex,
             "hew_bytes_len" => Self::BytesLen,
             "hew_bytes_push" => Self::BytesPush,
@@ -1017,6 +1020,7 @@ impl RuntimeCallFamily {
             | F::AutoMutexFree
             | F::AutoMutexLock
             | F::AutoMutexUnlock
+            | F::BytesGet
             | F::BytesIndex
             | F::BytesLen
             | F::BytesPush

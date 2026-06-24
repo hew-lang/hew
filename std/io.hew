@@ -64,9 +64,9 @@ impl bytes {
     fn len(buf: bytes) -> i64 {
         0
     }
-    #[extern_symbol(hew_bytes_index)]
-    fn get(buf: bytes, index: i64) -> u8 {
-        0
+    #[extern_symbol(hew_bytes_get)]
+    fn get(buf: bytes, index: i64) -> Option<u8> {
+        None
     }
     #[extern_symbol(hew_vec_set_i32)]
     fn set(buf: bytes, index: i64, byte: u8) {}

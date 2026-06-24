@@ -117,6 +117,13 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // compiler emits this immediately AFTER the access completes.
     "hew_auto_mutex_unlock",
     // --- Bytes value index/slice substrate (W3 collections-sugar S2) --------
+    // `hew_bytes_get` is the non-trapping `bytes.get(index) -> Option<u8>`
+    //   accessor (de-aliased from the trapping `b[i]` `hew_bytes_index`). It
+    //   carries no runtime export: codegen intercepts the `Terminator::Call`
+    //   callee, performs the bounds check over the stack triple, and
+    //   materialises `Some(byte)` / `None`. Listed here so the HIR method
+    //   rewrite routes through the `lower_runtime_call` producer.
+    "hew_bytes_get",
     // `hew_bytes_index(ptr, offset, len, index) -> u8`
     //   (`hew-runtime/src/bytes.rs`). O(1) byte load over a (ptr,offset,len)
     //   `BytesTriple`. Aborts on negative index or index >= len. Emitted by

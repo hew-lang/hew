@@ -26058,6 +26058,163 @@ fn foo(opt: Option<i64>) -> i64 {
             output.errors
         );
     }
+
+    // ── Struct-variant field position binders (#2116 closing sweep) ──────────
+
+    #[test]
+    fn struct_variant_field_uppercase_binder_compiles() {
+        // The concrete repro from issue #2116:
+        //   enum Packet { Data { value: i64 }; Empty }
+        //   match p { Packet::Data { value: MAX } => MAX, Empty => 0 }
+        //
+        // `MAX` does not resolve as a variant of `i64`, so it must be classified
+        // as a binder rather than a "nested constructor".  The old casing heuristic
+        // in `unsupported_payload_subpattern_label` caused a false
+        // `UnsupportedPayloadSubpattern` error for this shape.
+        let output = check_source(
+            r"
+enum Packet { Data { value: i64 }; Empty }
+fn f(p: Packet) -> i64 {
+    match p {
+        Packet::Data { value: MAX } => MAX,
+        Empty => 0,
+    }
+}",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "struct-variant field uppercase binder `MAX` must compile without errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn struct_variant_field_real_constructor_still_rejected() {
+        // Soundness guard: a bare identifier that DOES resolve as a variant of the
+        // field type is still a nested constructor and must be rejected.
+        // `Packet::Data { value: Red }` where `Red` is a unit variant of `Color`
+        // must remain an `UnsupportedPayloadSubpattern` error.
+        let output = check_source(
+            r"
+enum Color { Red; Blue }
+enum Packet { Data { value: Color }; Empty }
+fn f(p: Packet) -> i64 {
+    match p {
+        Packet::Data { value: Red } => 1,
+        Packet::Data { value: _ } => 2,
+        Empty => 0,
+    }
+}",
+        );
+        let has_unsupported = output.errors.iter().any(|e| {
+            matches!(
+                &e.kind,
+                crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
+                    kind_label,
+                    ..
+                } if kind_label == "nested constructor"
+            )
+        });
+        assert!(
+            has_unsupported,
+            "enum variant `Red` in struct field position must remain UnsupportedPayloadSubpattern; \
+             got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn struct_variant_field_qualified_binder_rejected() {
+        // A path-qualified identifier like `Packet::Empty` in struct field position
+        // is always a constructor path regardless of resolution.
+        let output = check_source(
+            r"
+enum Packet { Data { value: i64 }; Empty }
+fn f(p: Packet) -> i64 {
+    match p {
+        Packet::Data { value: Packet::Empty } => 0,
+        _ => 1,
+    }
+}",
+        );
+        let has_unsupported = output.errors.iter().any(|e| {
+            matches!(
+                &e.kind,
+                crate::error::TypeErrorKind::UnsupportedPayloadSubpattern { .. }
+            )
+        });
+        assert!(
+            has_unsupported,
+            "qualified identifier in struct-variant field position must be UnsupportedPayloadSubpattern; \
+             got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn record_field_uppercase_binder_compiles() {
+        // A plain record (not an enum struct-variant) with an uppercase binder in
+        // a field subpattern position must also be accepted after the casing fix.
+        let output = check_source(
+            r"
+type Point { x: i64; y: i64 }
+fn f(p: Point) -> i64 {
+    match p {
+        Point { x: MAX, y: _ } => MAX,
+    }
+}",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "plain record field uppercase binder `MAX` must compile without errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn tuple_pattern_uppercase_binder_compiles() {
+        // An uppercase binder in a tuple destructure element position must be
+        // accepted after the casing fix.
+        let output = check_source(
+            r"
+fn f(pair: (i64, i64)) -> i64 {
+    match pair {
+        (A, B) => A,
+    }
+}",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "tuple pattern uppercase binders `A`, `B` must compile without errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn struct_variant_non_exhaustive_still_errors() {
+        // Soundness guard: dropping a real variant arm must still produce a
+        // NonExhaustiveMatch error even after the casing-to-resolution migration.
+        // An uppercase binder must NOT make an otherwise non-exhaustive match pass.
+        let output = check_source(
+            r"
+enum Packet { Data { value: i64 }; Empty }
+fn f(p: Packet) -> i64 {
+    match p {
+        Packet::Data { value: MAX } => MAX,
+        // Empty arm intentionally omitted
+    }
+}",
+        );
+        let has_non_exhaustive = output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, crate::error::TypeErrorKind::NonExhaustiveMatch));
+        assert!(
+            has_non_exhaustive,
+            "match missing `Empty` arm must still emit NonExhaustiveMatch; got: {:#?}",
+            output.errors
+        );
+    }
 }
 
 // ── Unsupported payload subpatterns (fail-closed gate) ──────────────────────

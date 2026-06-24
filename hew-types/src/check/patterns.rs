@@ -7,6 +7,18 @@ use super::*;
 fn collect_pattern_bound_names(pattern: &Pattern) -> HashSet<String> {
     match pattern {
         Pattern::Wildcard | Pattern::Literal(_) | Pattern::Regex { .. } => HashSet::new(),
+        // JUSTIFIED casing: this free function has no scrutinee-type context, so it
+        // cannot call `resolve_variant_match`.  Threading `&Checker` + `&Ty` through
+        // every recursive arm is feasible but deferred; for now the heuristic is kept.
+        //
+        // Consequence of the heuristic:
+        //   false-miss — uppercase binder (`FOO | BAR`) is not counted; the branches
+        //     pass the equality check vacuously, and the left branch's binding wins.
+        //   false-hit — if removed, uppercase constructor (`Red | Green`) would be
+        //     counted as a binder, causing a spurious OrPatternBindingMismatch.
+        //
+        // The conservative choice (keep casing) avoids false-hit cascades.
+        // bind_pattern IS resolution-aware so arm-body types are always correct.
         Pattern::Identifier(name) => {
             let is_constructor_like =
                 name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
@@ -102,25 +114,20 @@ fn binding_name_for_pattern(pattern: &Pattern) -> Option<String> {
 /// Returns `Some(label)` for unsupported forms that must be rejected.
 fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static str> {
     match pattern {
-        // Plain binding, wildcard, literal predicates, and aggregate
-        // destructures are supported.
+        // Qualified identifier — always a constructor path in subpattern position.
+        // Bare identifiers (any casing) are resolved against the slot type by the
+        // CALL SITE via `resolve_variant_match` before this function is reached.
+        // Returning `None` here is the safe default for any call site that has not
+        // yet added the resolution guard (false-accept rather than false-reject).
+        Pattern::Identifier(name) if name.contains("::") => Some("nested constructor"),
+        // Plain binding (bare identifier), wildcard, literal predicates, and aggregate
+        // destructures are supported or deferred to the call site.
         Pattern::Wildcard
         | Pattern::Literal(_)
         | Pattern::Struct { .. }
         | Pattern::RecordShorthand { .. }
-        | Pattern::Tuple(_) => None,
-        Pattern::Identifier(name) => {
-            let is_constructor_like =
-                name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
-            if is_constructor_like {
-                // An uppercase/qualified name in payload position is a nested
-                // constructor (unit variant), e.g. `Shape::Line(Other::Foo)`.
-                Some("nested constructor")
-            } else {
-                // Plain lowercase identifier — a binding.  Supported.
-                None
-            }
-        }
+        | Pattern::Tuple(_)
+        | Pattern::Identifier(_) => None,
         Pattern::Constructor { .. } => Some("nested constructor"),
         Pattern::Or(_, _) => Some("or-pattern"),
         // Regex literals are only legal as top-level match-arm predicates
@@ -139,16 +146,13 @@ fn unsupported_payload_subpattern_label(pattern: &Pattern) -> Option<&'static st
 /// shapes fail-closed until project predicates grow nested comparisons.
 fn unsupported_project_subpattern_label(pattern: &Pattern) -> Option<&'static str> {
     match pattern {
-        Pattern::Wildcard => None,
-        Pattern::Identifier(name) => {
-            let is_constructor_like =
-                name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
-            if is_constructor_like {
-                Some("nested constructor")
-            } else {
-                None
-            }
-        }
+        // Qualified identifier — always a constructor path in project position.
+        // Bare identifiers are resolved against the slot type by the CALL SITE
+        // via `resolve_variant_match` before this function is reached; returning
+        // `None` here is the safe default for call sites that skip that guard.
+        Pattern::Identifier(name) if name.contains("::") => Some("nested constructor"),
+        // Wildcard and bare identifiers: allowed or deferred to call site.
+        Pattern::Wildcard | Pattern::Identifier(_) => None,
         Pattern::Tuple(pats) if pats.is_empty() => None,
         Pattern::Literal(lit) => Some(literal_pattern_label(lit)),
         Pattern::Constructor { .. } => Some("nested constructor"),
@@ -571,8 +575,17 @@ impl Checker {
                 }
             }
             Pattern::Identifier(name) => {
-                let is_constructor_like =
-                    name.contains("::") || name.chars().next().is_some_and(char::is_uppercase);
+                // Determine if this identifier names a constructor (unit variant) so we
+                // can gate `reject_machine_event_pattern_outside_transition`.  Use scope
+                // resolution rather than the old uppercase-first casing heuristic (#2116):
+                // a bare name is a constructor only if `resolve_variant_match` returns a
+                // match; otherwise it is a plain binding regardless of case.
+                let is_constructor_like = if name.contains("::") {
+                    true
+                } else {
+                    let short = name.rsplit("::").next().unwrap_or(name);
+                    self.resolve_variant_match(short, ty, name).is_some()
+                };
                 if is_constructor_like
                     && self.reject_machine_event_pattern_outside_transition(ty, span)
                 {
@@ -1291,6 +1304,45 @@ impl Checker {
                 if is_enum_variant {
                     for pf in fields {
                         if let Some((sub_pat, sub_span)) = &pf.pattern {
+                            // Resolve bare identifier subpatterns against the field type
+                            // (#2116): a bare name is a nested constructor only if it
+                            // resolves as a variant of the field type; otherwise it is a
+                            // binder and must be accepted.  Qualified names (containing
+                            // `::`) are always constructor paths and are rejected.
+                            if let Pattern::Identifier(n) = sub_pat {
+                                let is_nested_ctor = if n.contains("::") {
+                                    true
+                                } else {
+                                    let field_ty =
+                                        field_tys.get(&pf.name).cloned().unwrap_or(Ty::Error);
+                                    let resolved_field =
+                                        self.project_assoc_types(&self.subst.resolve(&field_ty));
+                                    self.resolve_variant_match(n, &resolved_field, n).is_some()
+                                };
+                                if is_nested_ctor {
+                                    self.report_error_with_note(
+                                        crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
+                                            variant_name: short_name.to_string(),
+                                            kind_label: "nested constructor".to_string(),
+                                        },
+                                        sub_span,
+                                        format!(
+                                            "payload subpattern `nested constructor` in `{short_name} {{ {} }}` is not yet supported",
+                                            pf.name
+                                        ),
+                                        pattern_span,
+                                        "v0.5 payload subpatterns must be a plain binding (`x`) or wildcard (`_`); \
+                                         and literal predicates; nested patterns are reserved for a future \
+                                         match-destructure stage"
+                                            .to_string(),
+                                    );
+                                    return;
+                                }
+                                // Bare name that does not resolve as a variant of the
+                                // field type — it is a binder.  Allowed; skip the
+                                // unsupported-label check below.
+                                continue;
+                            }
                             if let Some(label) = unsupported_payload_subpattern_label(sub_pat) {
                                 self.report_error_with_note(
                                     crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
@@ -1315,6 +1367,40 @@ impl Checker {
                 } else {
                     for pf in fields {
                         if let Some((sub_pat, sub_span)) = &pf.pattern {
+                            // Resolve bare identifier subpatterns against the field type
+                            // (#2116): a bare name is a nested constructor only if it
+                            // resolves as a variant of the field type; otherwise it is a
+                            // binder and must be accepted.
+                            if let Pattern::Identifier(n) = sub_pat {
+                                let is_nested_ctor = if n.contains("::") {
+                                    true
+                                } else {
+                                    let field_ty =
+                                        field_tys.get(&pf.name).cloned().unwrap_or(Ty::Error);
+                                    let resolved_field =
+                                        self.project_assoc_types(&self.subst.resolve(&field_ty));
+                                    self.resolve_variant_match(n, &resolved_field, n).is_some()
+                                };
+                                if is_nested_ctor {
+                                    self.report_error_with_note(
+                                        crate::error::TypeErrorKind::InvalidOperation,
+                                        sub_span,
+                                        format!(
+                                            "field subpattern `nested constructor` in `{name} {{ {} }}` is not yet supported",
+                                            pf.name
+                                        ),
+                                        pattern_span,
+                                        "v0.5 record match destructure supports field bindings (`x`), \
+                                         explicit binding aliases (`x: y`), and wildcards (`x: _`); \
+                                         nested/literal field predicates are reserved for a future \
+                                         match-destructure stage"
+                                            .to_string(),
+                                    );
+                                    return;
+                                }
+                                // Bare binder (any casing) — allowed; skip the label check.
+                                continue;
+                            }
                             if let Some(label) = unsupported_project_subpattern_label(sub_pat) {
                                 self.report_error_with_note(
                                     crate::error::TypeErrorKind::InvalidOperation,
@@ -1412,7 +1498,41 @@ impl Checker {
                 return;
             }
             Pattern::Tuple(pats) => {
-                for (sub_pat, sub_span) in pats {
+                // Compute element types before the subpattern validation loop so we can
+                // resolve bare identifier subpatterns against their slot types (#2116).
+                let elem_tys: Vec<Ty> = if let Ty::Tuple(tys) = scrutinee_ty {
+                    tys.clone()
+                } else {
+                    vec![Ty::Error; pats.len()]
+                };
+                for (idx, (sub_pat, sub_span)) in pats.iter().enumerate() {
+                    // Resolve bare identifier subpatterns against the element type (#2116).
+                    if let Pattern::Identifier(n) = sub_pat {
+                        let is_nested_ctor = if n.contains("::") {
+                            true
+                        } else {
+                            let elem_ty = elem_tys.get(idx).cloned().unwrap_or(Ty::Error);
+                            let resolved_elem =
+                                self.project_assoc_types(&self.subst.resolve(&elem_ty));
+                            self.resolve_variant_match(n, &resolved_elem, n).is_some()
+                        };
+                        if is_nested_ctor {
+                            self.report_error_with_note(
+                                crate::error::TypeErrorKind::InvalidOperation,
+                                sub_span,
+                                "tuple subpattern `nested constructor` in match destructure is not yet supported"
+                                    .to_string(),
+                                pattern_span,
+                                "v0.5 tuple match destructure supports element bindings (`x`), \
+                                 wildcards (`_`), and unit subpatterns (`()`); nested/literal \
+                                 element predicates are reserved for a future match-destructure stage"
+                                    .to_string(),
+                            );
+                            return;
+                        }
+                        // Bare binder (any casing) — allowed; skip the label check.
+                        continue;
+                    }
                     if let Some(label) = unsupported_project_subpattern_label(sub_pat) {
                         self.report_error_with_note(
                             crate::error::TypeErrorKind::InvalidOperation,
@@ -1429,11 +1549,6 @@ impl Checker {
                         return;
                     }
                 }
-                let elem_tys: Vec<Ty> = if let Ty::Tuple(tys) = scrutinee_ty {
-                    tys.clone()
-                } else {
-                    vec![Ty::Error; pats.len()]
-                };
                 let payload_bindings: Vec<PayloadBinding> = pats
                     .iter()
                     .zip(elem_tys.iter())

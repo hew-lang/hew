@@ -262,9 +262,25 @@ impl Checker {
                     let err_before = self.errors.len();
                     let warn_before = self.warnings.len();
 
+                    // Builtin/standard-library modules (`std::`, `hew::`,
+                    // `ecosystem::`) ship with the compiler; scope-level lints
+                    // inside them (UnusedVariable, UnusedMut) are implementation
+                    // details the user cannot act on.  Set the flag transiently
+                    // so `emit_scope_warnings` suppresses them for these bodies.
+                    // Mirrors the stdlib-skip guard already in `run_lints`.
+                    let saved_is_stdlib_source = self.is_stdlib_source;
+                    if matches!(
+                        mod_id.path.first().map(String::as_str),
+                        Some("std" | "hew" | "ecosystem")
+                    ) {
+                        self.is_stdlib_source = true;
+                    }
+
                     for (item, span) in &module.items {
                         self.check_item(item, span);
                     }
+
+                    self.is_stdlib_source = saved_is_stdlib_source;
 
                     // Tag diagnostics that were not already tagged (e.g. by a
                     // nested call that already knew the origin).

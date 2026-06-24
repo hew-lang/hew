@@ -860,15 +860,15 @@ fn stage_1_6_single_arg_dyn_dispatch_carries_substituted_signature() {
     );
 }
 
-/// (2) `dyn Index<Output = T>::at(int) -> T` — multi-arg style: the
-/// `index` is one arg, plus the associated-type projection
-/// `Self::Output -> int` must be substituted from the receiver's
-/// trait-object bound. This is the canonical multi-arg + substitution
-/// case for the slot-3 indirect dispatch.
+/// (2) `dyn Index<i32, Output = i32>::at(i32) -> i32` — multi-arg style: the
+/// `index` param is the trait type-parameter `Idx`, and the return is the
+/// associated-type projection `Self::Output`. Both must be substituted from
+/// the receiver's trait-object bound. This is the canonical multi-arg +
+/// substitution case for the slot-3 indirect dispatch.
 #[test]
 fn stage_1_6_multi_arg_dyn_dispatch_propagates_assoc_substitution() {
     let source = r"
-        fn first(idx: dyn Index<Output = i32>) -> i32 {
+        fn first(idx: dyn Index<i32, Output = i32>) -> i32 {
             idx[2]
         }
     ";
@@ -897,7 +897,7 @@ fn stage_1_6_multi_arg_dyn_dispatch_propagates_assoc_substitution() {
         "Index::at signature has one non-receiver param; got: {:?}",
         sig.params
     );
-    // The single index param is `Self::Key` which resolves to i32 here.
+    // The single index param is `Idx`, bound to i32 by the trait-object type.
     assert!(
         matches!(sig.params[0], hew_types::Ty::I32),
         "Index::at param[0] (index) must be i32 after assoc-binding substitution; got: {:?}",

@@ -82,16 +82,13 @@ pub enum LintId {
     /// is overwritten or goes out of scope — the store is dead. Emitted by the
     /// MIR-stage liveness pass (`hew-mir`), not the HIR checker sweep.
     DeadStore,
-    /// A loop-carried counter / accumulator that is incremented inside a loop
-    /// but whose value is never read after the loop — pure dead counting.
-    ///
-    /// Registered but NOT yet emitted: separating a dead accumulator from a
-    /// legitimate `for i in 0..n` counter needs faint-variable (strong-liveness)
-    /// analysis, and Hew's increments lower through *checked* arithmetic that can
-    /// trap, so the increment is not provably side-effect-free. Detecting this
-    /// precisely is tracked for a later milestone; the name is reserved here so
-    /// the CLI `--allow`/`--deny` surface and docs stay stable in the meantime.
-    CleanCounter,
+    // NOTE: a `clean_counter` lint (a loop-carried accumulator that is
+    // incremented but never read after the loop) is deliberately NOT registered
+    // here. It has no emission code yet, and registering an un-emitted lint
+    // would make `-D/-W/-A clean_counter` and `// hew:allow(clean_counter)`
+    // silently no-op — a fail-open that defeats `from_name`'s fail-closed
+    // contract (an unknown lint must surface as a CLI error). Detecting it
+    // precisely needs faint-variable analysis; tracked in issue #2178.
 }
 
 impl LintId {
@@ -108,7 +105,6 @@ impl LintId {
         LintId::CloneOnCopy,
         LintId::DeadCode,
         LintId::DeadStore,
-        LintId::CleanCounter,
     ];
 
     /// The stable, lowercase string name for this lint.
@@ -127,7 +123,6 @@ impl LintId {
             LintId::CloneOnCopy => "clone_on_copy",
             LintId::DeadCode => "dead_code",
             LintId::DeadStore => "dead_store",
-            LintId::CleanCounter => "clean_counter",
         }
     }
 
@@ -152,8 +147,7 @@ impl LintId {
             | LintId::NeedlessBool
             | LintId::CloneOnCopy
             | LintId::DeadCode
-            | LintId::DeadStore
-            | LintId::CleanCounter => LintLevel::Warn,
+            | LintId::DeadStore => LintLevel::Warn,
         }
     }
 }

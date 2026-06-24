@@ -12,9 +12,10 @@ ad-hoc warnings (`clone_on_copy`, `dead_code`) migrated onto the registry so
 they are now re-levelable and suppressible. M3 has landed too: a backward
 liveness dataflow pass in `hew-mir`, the `dead_store` MIR lint built on it, and
 the CLI plumbing that surfaces MIR-stage lints as level-controlled, suppressible
-warnings (see §10). `clean_counter` is registered but intentionally **not yet
-emitted** — the deferral and its reasoning are in §10. Editor/web surfacing of
-MIR lints is deferred to issue #2176.
+warnings (see §10). `clean_counter` is deferred and intentionally **not
+registered** — so `-D clean_counter` fails closed as an unknown lint rather than
+silently no-opping; the reasoning is in §10 (tracked in issue #2178). Editor/web
+surfacing of MIR lints is deferred to issue #2176.
 
 ## 1. Goal
 
@@ -252,23 +253,27 @@ the precise subset that is actually convertible.
     scope.* A normal `for i in 0..n` loop does **not** fire — the back-edge keeps the counter
     live-into the header, so the increment store is live and the guards exclude the synthetic counter
     regardless.
-  - **`clean_counter` — deferred (registered, not emitted).** Registered in the `LintId` registry at
-    `default_level() = Warn` but intentionally not yet emitted, for three compounding reasons.
-    (1) *Shape recovery:* a manual `c = c + 1` does not lower to a single self-update instruction — it
-    lowers through a temporary and a checked `IntArithChecked` followed by `Move c = temp`, so the
-    "increment" is not directly recognizable from one instruction. (2) *Liveness cannot separate the
-    two populations:* a dead accumulator `c` and a legitimate for-range counter `i` are *both*
-    "live throughout the loop, dead at the exit"; distinguishing "the counting itself is dead work"
-    from "a value genuinely consumed each iteration" needs faint-variable / strong-liveness analysis
-    (a second dataflow pass asking whether a variable's *value*, not merely its liveness, can ever
-    influence an observable) — out of scope for this milestone. (3) *Checked arithmetic defeats the
-    premise:* the increment's overflow flag feeds a trap branch, so `c` is *strongly* live — its value
-    decides whether the program traps — and removing `c = c + 1` would be semantics-changing exactly
-    where the lint looks most applicable, i.e. the naive lint would be unsound. Per the precision-first
-    bar that governs M1/M2 (one excellent lint beats two noisy overlapping ones), `dead_store` ships
-    alone; `clean_counter` is revisited once a faint-variable pass exists. It would also overlap
+  - **`clean_counter` — deferred and NOT registered.** Considered, but intentionally left out of the
+    `LintId` registry entirely, for three compounding reasons. (1) *Shape recovery:* a manual
+    `c = c + 1` does not lower to a single self-update instruction — it lowers through a temporary and
+    a checked `IntArithChecked` followed by `Move c = temp`, so the "increment" is not directly
+    recognizable from one instruction. (2) *Liveness cannot separate the two populations:* a dead
+    accumulator `c` and a legitimate for-range counter `i` are *both* "live throughout the loop, dead
+    at the exit"; distinguishing "the counting itself is dead work" from "a value genuinely consumed
+    each iteration" needs faint-variable / strong-liveness analysis (a second dataflow pass asking
+    whether a variable's *value*, not merely its liveness, can ever influence an observable) — out of
+    scope for this milestone. (3) *Checked arithmetic defeats the premise:* the increment's overflow
+    flag feeds a trap branch, so `c` is *strongly* live — its value decides whether the program traps
+    — and removing `c = c + 1` would be semantics-changing exactly where the lint looks most
+    applicable, i.e. the naive lint would be unsound. Per the precision-first bar that governs M1/M2
+    (one excellent lint beats two noisy overlapping ones), `dead_store` ships alone; `clean_counter`
+    is revisited once a faint-variable pass exists (tracked in issue #2178). It would also overlap
     `dead_store` on the straight-line `c = c + 1` case, so shipping both today would risk
-    double-firing.
+    double-firing. **It is deliberately not registered** rather than registered-but-unemitted: an
+    un-emitted registered lint would make `-D/-W/-A clean_counter` and `// hew:allow(clean_counter)`
+    silently no-op, a fail-open that defeats `LintId::from_name`'s fail-closed contract (an unknown
+    lint name must surface as a CLI error). With it unregistered, `hew check -D clean_counter` exits
+    non-zero with an "unknown lint" diagnostic — locked by a test in `lint_pass_e2e.rs`.
   - **Severity + surfacing.** MIR lints are level-agnostic in `hew-mir`: each finding is a
     `MirLint { lint, span, message }` pushed onto `IrPipeline.lint_warnings`, a channel kept separate
     from the hard-error `diagnostics` vector so the existing move/init checks stay errors. The CLI

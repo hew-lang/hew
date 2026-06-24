@@ -410,3 +410,21 @@ fn for_range_loop_does_not_trip_dead_store() {
         "dead_store must not misfire on a normal counting loop:\n{stderr}"
     );
 }
+
+#[test]
+fn clean_counter_is_unregistered_and_fails_closed() {
+    // `clean_counter` was deliberately NOT registered (it has no emission code
+    // yet). Selecting it must fail closed at the CLI boundary as an unknown
+    // lint — never silently no-op — so the registry's fail-closed contract
+    // holds. Mirrors `unknown_lint_name_is_rejected`.
+    let output = run_check(DEAD_STORE, &["-D", "clean_counter"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        !output.status.success(),
+        "-D clean_counter must fail closed (unregistered lint):\n{stderr}"
+    );
+    assert!(
+        stderr.contains("unknown lint `clean_counter`"),
+        "expected a clear unknown-lint error naming clean_counter:\n{stderr}"
+    );
+}

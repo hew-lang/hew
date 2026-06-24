@@ -304,10 +304,18 @@ impl Drop for SendPinGuard {
 /// 2. Calls `f(ptr)` with the lock fully released.
 /// 3. Decrements `send_pin_count` via a RAII guard on return **or panic**.
 ///
-/// The free path in `hew_actor_free_inner` treats `send_pin_count > 0` as
-/// non-quiescent and defers `untrack_actor` + `finalize` until all pins are
-/// released.  Because `LIVE_ACTORS` is not held across `f`, blocking mailbox
-/// operations (the `Block` overflow condvar wait) and eviction retire paths
+/// The free paths (`hew_actor_free_inner`, `drain_quiesced_actor`) call
+/// `untrack_actor` (or `take_actor_by_id`) FIRST — under `LIVE_ACTORS` — so no
+/// new pins can be taken after the map entry is removed.  They then spin until
+/// `send_pin_count` drops to 0 (draining any pins taken before the removal)
+/// before calling `finalize`.  Because the pin-increment and the map-removal
+/// both run under `LIVE_ACTORS`, the two are mutually exclusive: either this
+/// function pins before the freer removes the entry (freer waits for the pin to
+/// drain), or the freer removes the entry before this function's map lookup
+/// (lookup returns `None` → no pin, no use of a freed pointer).
+///
+/// Because `LIVE_ACTORS` is not held across `f`, blocking mailbox operations
+/// (the `Block` overflow condvar wait) and eviction retire paths
 /// (`DropOld` → `hew_msg_node_free` → `retire_orphaned_ask_sender_ref` →
 /// `scheduler::enqueue_resume` → `with_live_actor`) are both safe to call
 /// from `f` without deadlocking.

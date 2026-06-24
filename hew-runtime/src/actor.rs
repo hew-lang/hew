@@ -146,6 +146,38 @@ fn run_free_post_latch_hook(actor: *mut HewActor) {
     }
 }
 
+// ── cleanup_all_actors post-prepare rendezvous hook (test-only) ───────────
+//
+// Fires inside `cleanup_all_actors` for each actor, AFTER
+// `prepare_quiescent_actor_for_cleanup` runs and BEFORE the Idle→Stopped
+// wake-proofing latch. A test uses this point to simulate a concurrent
+// by-ID send that CAS-es `Idle→Runnable` in the latch window, proving that
+// the latch-fail path (actor skipped / leaked) fires instead of a UAF
+// finalize-under-queued-actor.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static CLEANUP_POST_PREPARE_HOOK: Mutex<Option<fn(*mut HewActor)>> = Mutex::new(None);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn set_cleanup_post_prepare_hook_for_test(hook: Option<fn(*mut HewActor)>) {
+    let mut guard = CLEANUP_POST_PREPARE_HOOK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = hook;
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn run_cleanup_post_prepare_hook(actor: *mut HewActor) {
+    let hook = {
+        let guard = CLEANUP_POST_PREPARE_HOOK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard
+    };
+    if let Some(hook) = hook {
+        hook(actor);
+    }
+}
+
 // ── Thread-local local ask error ────────────────────────────────────────
 
 thread_local! {
@@ -1406,7 +1438,11 @@ pub(crate) unsafe fn cleanup_all_actors() {
             continue;
         }
         // SAFETY: actor is valid (from LIVE_ACTORS); scheduler is shut down.
-        let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        let a = unsafe { &*actor };
+        // Load state BEFORE prepare so we pass the original value to finalize
+        // (the terminate-vs-skip decision must see Idle, not the latch-imposed
+        // Stopped).
+        let state = a.actor_state.load(Ordering::Acquire);
 
         // Cancel periodic timers, drop link/monitor entries, and unregister
         // named-node bindings BEFORE running terminate or freeing the
@@ -1428,20 +1464,63 @@ pub(crate) unsafe fn cleanup_all_actors() {
             crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor);
         }
 
-        // Drain send pins.  All worker threads are joined before this runs,
-        // so send_pin_count should be 0.  The spin is a safety net for
-        // unusual paths (e.g. a non-runtime thread that holds a pin during
-        // shutdown); on timeout we log and skip finalize for this actor
-        // (fail-closed: leak) to avoid freeing under an active pin.
+        // Test-only rendezvous: fires after prepare, before the latch. A test
+        // uses this to simulate a concurrent by-ID send CAS-ing Idle→Runnable
+        // in the wake-proofing window, verifying the latch-fail skip fires.
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        run_cleanup_post_prepare_hook(actor);
+
+        // Wake-proof still-Idle actors before draining send pins.
+        //
+        // A pinned by-ID sender (that incremented `send_pin_count` before
+        // `drain_all_for_cleanup` removed the map entry) can still be running
+        // its send closure, which may CAS `Idle→Runnable` to re-enqueue the
+        // actor.  Without this latch, the send drops its pin and the freer
+        // proceeds to finalize a still-queued actor → UAF (dangling scheduler
+        // pointer). `hew_actor_free_inner` applies the same Idle→Stopped latch
+        // for the same reason; this path mirrors it.
+        //
+        // Actors already in a terminal state (Stopped/Crashed) are already
+        // wake-proof: CAS `Idle→Runnable` cannot succeed on a non-Idle state.
+        // Skip the latch for those.
+        //
+        // Pass the ORIGINAL pre-latch `state` to finalize so the
+        // terminate-vs-skip decision sees Idle (= run terminate), not the
+        // latch-imposed Stopped.
+        if state == HewActorState::Idle as i32
+            && a.actor_state
+                .compare_exchange(
+                    HewActorState::Idle as i32,
+                    HewActorState::Stopped as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_err()
+        {
+            // A concurrent operation (e.g. a pinned send) won the CAS
+            // `Idle→Runnable` before we could latch `Idle→Stopped`.  The
+            // actor may now be queued in the scheduler; freeing it would
+            // be a UAF.  Leak it (fail-closed) and log.
+            eprintln!(
+                "hew: runtime error: actor {:#x} was re-enqueued during \
+                 shutdown cleanup (concurrent send beat the wake-proof latch); \
+                 actor leaked to avoid UAF",
+                a.id
+            );
+            continue;
+        }
+
+        // Drain send pins.  After drain_all_for_cleanup no new pins can be
+        // taken; after the Idle→Stopped latch above, any in-flight pin
+        // holder whose CAS Idle→Runnable is rejected (state=Stopped) cannot
+        // re-enqueue.  We still wait for existing pin holders to finish their
+        // send closures and drop the pin before finalizing.
         // SAFETY: LIVE_ACTORS is not held here; no deadlock risk.
         {
-            // SAFETY: actor came from LIVE_ACTORS (non-null check above);
-            // the scheduler is shut down, so no concurrent dispatch is possible.
-            let a = unsafe { &*actor };
             debug_assert_eq!(
                 a.send_pin_count.load(Ordering::Acquire),
                 0,
-                "send_pin_count must be 0 in cleanup_all_actors (single-threaded)"
+                "send_pin_count should be 0 in cleanup_all_actors (all workers joined)"
             );
             let pin_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             let mut pinned = false;
@@ -1452,7 +1531,7 @@ pub(crate) unsafe fn cleanup_all_actors() {
                 if std::time::Instant::now() >= pin_deadline {
                     eprintln!(
                         "hew: runtime error: actor {:#x} send pins did not drain \
-                     during shutdown cleanup; actor leaked to avoid UAF",
+                         during shutdown cleanup; actor leaked to avoid UAF",
                         a.id
                     );
                     pinned = true;
@@ -1472,8 +1551,9 @@ pub(crate) unsafe fn cleanup_all_actors() {
         // (still IDLE at process exit). Skip crashed actors — their state
         // may be corrupted. `finalize_quiescent_actor_cleanup` performs the
         // terminate-or-skip dance plus the resource free.
-        // SAFETY: actor is quiescent, no longer tracked, and all send pins
-        // have drained (verified above).
+        // Pass the original `state` (Idle) so finalize runs terminate.
+        // SAFETY: actor is quiescent, no longer tracked, wake-proofed, and
+        // all send pins have drained.
         unsafe { finalize_quiescent_actor_cleanup(actor, state) };
     }
 }
@@ -3407,11 +3487,15 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
     // LIVE_ACTORS is NOT held here, so pinned senders can freely re-acquire
     // it (e.g. via `enqueue_resume` → `with_live_actor`) without deadlock.
     // The `Release` in `SendPinGuard::drop` pairs with this `Acquire` load.
+    //
+    // Fresh deadline: the quiescence wait above may have consumed most of
+    // `deadline`; give the pin drain its own full budget.
+    let drain_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
         if a.send_pin_count.load(Ordering::Acquire) == 0 {
             break;
         }
-        if std::time::Instant::now() >= deadline {
+        if std::time::Instant::now() >= drain_deadline {
             crate::set_last_error("hew_actor_free: send pins did not drain after timeout");
             return -2;
         }
@@ -3459,6 +3543,18 @@ fn drain_backoff_duration(delay: std::time::Duration) -> std::time::Duration {
 /// — into one call site so both the inner loop and the post-deadline pass use
 /// the same ordering. Both call sites in `drain_actors` were already identical;
 /// this is a behaviour-equivalent extraction with no normalisation.
+///
+/// ## Wake-proof contract
+///
+/// Unlike `cleanup_all_actors`, this function does NOT need a separate
+/// `Idle→Stopped` latch before draining pins.  `drain_actors` calls
+/// `hew_actor_stop` on every actor BEFORE waiting for quiescence; `hew_actor_stop`
+/// closes the mailbox and performs `CAS Idle→Stopped` for any actor that is
+/// still `Idle` at stop time.  By the time `drain_quiesced_actor` is called the
+/// actor is already in a terminal state (Stopped or Crashed), so any concurrent
+/// `CAS Idle→Runnable` will fail (state is not `Idle`).  **Callers must uphold
+/// this stop-first contract; removing the stop call before drain would introduce
+/// the same re-enqueue UAF that the latch in `cleanup_all_actors` prevents.**
 ///
 /// # Safety
 ///
@@ -7011,6 +7107,106 @@ mod tests {
             "freed actor must no longer be tracked in LIVE_ACTORS"
         );
         drop(sched);
+    }
+
+    /// Forced-ordering regression for the `cleanup_all_actors` re-enqueue UAF
+    /// (cap-xeco3 / fourth review round).
+    ///
+    /// A pinned by-ID sender that incremented `send_pin_count` before
+    /// `drain_all_for_cleanup` removed the map entry can still be running its
+    /// send closure, which may CAS `Idle→Runnable` to re-enqueue the actor into
+    /// the scheduler.  Without the `Idle→Stopped` latch, `cleanup_all_actors`
+    /// would call `finalize` on a still-queued actor — a UAF.
+    ///
+    /// This test simulates that race with `CLEANUP_POST_PREPARE_HOOK`: the hook
+    /// fires after `prepare_quiescent_actor_for_cleanup` and before the latch,
+    /// performs `CAS Idle→Runnable` (as a concurrent sender would), and then
+    /// asserts that the latch-fail path skips finalize (the actor is leaked) and
+    /// does NOT free the allocation.
+    ///
+    /// **Before the fix**: `cleanup_all_actors` proceeded to finalize regardless
+    /// of state → the hook would observe state=Runnable post-finalize (freed
+    /// memory read → UB), and in practice the scheduler would later dereference
+    /// the queued dangling pointer.
+    ///
+    /// **After the fix**: `CAS Idle→Stopped` fails (state is already Runnable)
+    /// → the actor is logged + leaked.  Allocation still valid post-call.
+    static CLEANUP_REENQUEUE_CAS_SUCCEEDED: AtomicBool = AtomicBool::new(false);
+
+    fn reenqueue_for_cleanup_hook(actor: *mut HewActor) {
+        // SAFETY: actor is valid (from cleanup_all_actors iteration).
+        let a = unsafe { &*actor };
+        let ok = a
+            .actor_state
+            .compare_exchange(
+                HewActorState::Idle as i32,
+                HewActorState::Runnable as i32,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok();
+        CLEANUP_REENQUEUE_CAS_SUCCEEDED.store(ok, Ordering::Release);
+    }
+
+    #[test]
+    fn cleanup_skips_actor_reenqueued_during_latch_window() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = scheduler::NoWorkerSchedulerForTest::install();
+        let _tracing = crate::tracing::tracing_test_guard();
+
+        // SAFETY: null state + valid dispatch are valid spawn args.
+        let actor = unsafe { hew_actor_spawn(ptr::null_mut(), 0, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+
+        // Freshly spawned actors are Idle — the hook will win the
+        // CAS Idle→Runnable race before the latch can run.
+        // SAFETY: actor is valid (just spawned).
+        let spawned_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        assert_eq!(spawned_state, HewActorState::Idle as i32);
+
+        CLEANUP_REENQUEUE_CAS_SUCCEEDED.store(false, Ordering::Release);
+
+        set_cleanup_post_prepare_hook_for_test(Some(reenqueue_for_cleanup_hook));
+
+        // SAFETY: scheduler is stopped (NoWorkerSchedulerForTest installed);
+        // no dispatch is in progress.
+        unsafe { cleanup_all_actors() };
+
+        set_cleanup_post_prepare_hook_for_test(None);
+
+        // 1. Hook must have fired and the CAS must have succeeded (state was Idle
+        //    when the hook ran, before the latch attempt).
+        assert!(
+            CLEANUP_REENQUEUE_CAS_SUCCEEDED.load(Ordering::Acquire),
+            "hook must fire and CAS Idle→Runnable must succeed in the latch window"
+        );
+
+        // 2. The latch-fail path must have SKIPPED finalize: the allocation is
+        //    still valid and the state is Runnable (not freed/corrupted).
+        // SAFETY: actor was not freed (latch-fail → continue; allocation is valid).
+        let post_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        assert_eq!(
+            post_state,
+            HewActorState::Runnable as i32,
+            "actor must be Runnable (leaked, not freed) after cleanup latch-fail"
+        );
+
+        // 3. The actor must be untracked — drain_all_for_cleanup removed it.
+        assert!(
+            !live_actors::is_actor_live(actor),
+            "actor must be untracked even when cleanup skips finalize"
+        );
+
+        // Manual cleanup: cleanup_all_actors deliberately leaked this actor to
+        // avoid UAF.  Finalize it here to avoid a test memory leak.  The actor
+        // has no terminate_fn (noop_dispatch), so call_terminate_fn is a no-op.
+        // SAFETY: actor is valid, untracked, and no concurrent access is possible.
+        unsafe {
+            (*actor)
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            finalize_quiescent_actor_cleanup(actor, HewActorState::Stopped as i32);
+        }
     }
 
     #[test]

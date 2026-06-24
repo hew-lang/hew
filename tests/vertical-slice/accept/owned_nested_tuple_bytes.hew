@@ -13,8 +13,8 @@ fn main() {
     xs.push(((a, 11), true));
     xs.push(((b, 12), false));
     let ys = xs.clone();
-    let first = ys.get(0);
-    let second = ys.get(1);
+    let first = ys[0];
+    let second = ys[1];
     let (f_inner, f_flag) = first;
     let (f_b, f_n) = f_inner;
     let (s_inner, s_flag) = second;

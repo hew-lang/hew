@@ -8,8 +8,19 @@ fn main() {
     xs.push(((Rec { s: "bye" }, 22), false));
     let ys = xs.clone();
     xs.set(0, ((Rec { s: "changed" }, 99), true));
-    let first = ys.get(0);
-    let second = ys.get(1);
+    // `Vec<((Rec, i64), bool)>` is an owned element (the inner `Rec` owns a
+    // `string`). The bare `v[i]` `at` accessor does not yet model the
+    // tuple-wrapping-an-owned-record element class (tracked NYI), so read the
+    // clone-returning `get` choke point, which is descriptor-driven and hands
+    // back an independent owner — the stronger check for this clone fixture.
+    let first = match ys.get(0) {
+        Some(v) => v,
+        None => { println("oob"); return; }
+    };
+    let second = match ys.get(1) {
+        Some(v) => v,
+        None => { println("oob"); return; }
+    };
     let (f_inner, f_flag) = first;
     let (f_rec, f_n) = f_inner;
     let (s_inner, s_flag) = second;

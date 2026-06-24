@@ -4,12 +4,12 @@
 // were absent from stdlib_catalog.rs; all four resolved to "undefined
 // function".  This fixture exercises all four in a single end-to-end slice.
 //
-// Expected exit: 10  (v.contains(10) is true -> v.get(0) -> 10)
+// Expected exit: 10  (v.contains(10) is true -> v[0] -> 10)
 fn main() -> i64 {
     let v: Vec<i64> = Vec::new();
     v.push(10);
     v.push(20);
     v.push(30);
     v.pop();             // drops 30; len now 2
-    if v.contains(10) { v.get(0) } else { 0 }
+    if v.contains(10) { v[0] } else { 0 }
 }

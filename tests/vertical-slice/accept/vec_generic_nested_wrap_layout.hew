@@ -8,7 +8,7 @@ fn main() {
     values.push(Wrap { v: Wrap { v: 200 } });
     values.push(Wrap { v: Wrap { v: 300 } });
 
-    let first = values.get(0);
+    let first = values[0];
     let second = values[1];
     values.set(1, Wrap { v: Wrap { v: 400 } });
     let popped = values.pop();

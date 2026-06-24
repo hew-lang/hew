@@ -7703,7 +7703,7 @@ impl Builder {
         // and the push owned-upgrade at the `_FAMILY` consumer). The owned
         // authority subsumes the verdict table here, mirroring the concrete
         // path's precedence (owned-ness wins over the value-class token).
-        if self.is_owned_vec_element(elem) {
+        let per_element = if self.is_owned_vec_element(elem) {
             // The element ops are the only `vec_method` values that reach
             // here (guarded by the `matches!` above); the remaining variants
             // are monomorphic and never carry the `_FAMILY` placeholder.
@@ -7719,11 +7719,35 @@ impl Builder {
                      above admits only push/get/set/pop/contains"
                 ),
             };
-            return Some(owned_symbol.to_string());
+            Some(owned_symbol.to_string())
+        } else {
+            let elem_ty = elem.to_ty();
+            self.vec_generic_element_abi
+                .get(&elem_ty)
+                .copied()
+                .and_then(|token| {
+                    hew_types::stdlib::vec_element_op_symbol(method_name, token).map(str::to_string)
+                })
+        };
+        // `get` is the element-agnostic, drop-safe accessor: under the Index
+        // trait model EVERY admissible element class resolves to the SINGLE
+        // runtime choke point `hew_vec_get_clone`, which dispatches on the
+        // element descriptor at runtime and writes a FRESH OWNER into the
+        // `Option<T>` payload (`by-value-heap-params-are-borrows` P0). This
+        // mirrors the checker's concrete-path override in
+        // `resolve_vec_runtime_symbol`: the per-element resolution above is run
+        // ONLY as the admissibility gate for `get` (an element neither the
+        // owned authority nor the verdict table admits keeps failing closed —
+        // `None`), and the resolved symbol is then OVERRIDDEN to the choke
+        // point. Without this, a generic `Vec<T>.get` would re-resolve to the
+        // legacy per-element borrow getter (`hew_vec_get_i64` / the owned
+        // borrowing `hew_vec_get_owned`) that returns a bare `T`, mismatching
+        // the `Option<T>` dest the checker recorded and aliasing a borrowed
+        // slot into a `Some` (the GAP-2 owned drop-safety hole).
+        if matches!(vec_method, hew_types::VecMethod::Get) {
+            return per_element.map(|_| "hew_vec_get_clone".to_string());
         }
-        let elem_ty = elem.to_ty();
-        let token = self.vec_generic_element_abi.get(&elem_ty).copied()?;
-        hew_types::stdlib::vec_element_op_symbol(method_name, token).map(str::to_string)
+        per_element
     }
 
     /// User-facing rendering of a `Vec<T>` receiver's substituted element type,

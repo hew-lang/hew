@@ -1,34 +1,40 @@
-// #1929 Stage 2 dogfood proof: `Vec<T>.get(i)` for a NON-Copy record element
-// under a type parameter. `Name` owns a heap `string` field, so `Vec<Name>` is
-// constructed through the owned descriptor ABI and its element ops route to the
-// `hew_vec_*_owned` family. The generic per-monomorphisation re-resolution must
-// reach those same owned symbols so the getter returns the element with the
-// correct ownership.
-//
-// `first<T>(v: Vec<T>) -> T` is the minimal escape shape: `v.get(0)` borrows
-// the Vec's live slot, but RETURNING it makes the caller an independent owner.
-// The owned getter (`hew_vec_get_owned`), the interior-borrow leak taint, and
-// the scope-exit `hew_vec_free_owned` must agree so the returned record and the
-// freed Vec do not double-free the one heap string. Instantiated at the owned
-// record `Name`, at the scalar `i64`, and at the copy-on-write `string`, the
-// generic helper re-resolves each element ABI through the one entry point —
-// proving the owned arm coexists with the value-class verdict path.
+// #1929 Stage 2 dogfood proof, updated for the Index-trait `Vec<T>.get(i)`
+// model: `get` now returns `Option<T>` whose `Some` payload is an INDEPENDENT
+// drop-safe clone of the element (the `hew_vec_get_clone` choke point), not a
+// borrow into the live slot. `Name` owns a heap `string`, so `Vec<Name>` is
+// built through the owned descriptor ABI; the generic per-monomorphisation
+// re-resolution must reach the element-agnostic clone getter so the returned
+// `Some(elem)` owns a fresh copy. Because the returned value is a clone, the
+// caller and the Vec own disjoint heaps: the scope-exit `hew_vec_free_owned`
+// and the dropped `Some` payload each balance exactly one owner — no aliasing,
+// no interior-borrow taint required. Instantiated at the owned record `Name`,
+// the scalar `i64`, and the copy-on-write `string`, the generic helper
+// re-resolves each element ABI through the one entry point.
 type Name {
     label: string;
 }
 
-fn first<T>(v: Vec<T>) -> T {
+fn first<T>(v: Vec<T>) -> Option<T> {
     v.get(0)
 }
 
 fn main() {
     let vn: Vec<Name> = Vec::new();
     vn.push(Name { label: "owned-ok" });
-    println(first(vn).label);
+    match first(vn) {
+        Some(n) => println(n.label),
+        None => println("empty"),
+    }
     let vi: Vec<i64> = Vec::new();
     vi.push(42);
-    println(first(vi));
+    match first(vi) {
+        Some(x) => println(x),
+        None => println("empty"),
+    }
     let vs: Vec<string> = Vec::new();
     vs.push("ok");
-    println(first(vs));
+    match first(vs) {
+        Some(s) => println(s),
+        None => println("empty"),
+    }
 }

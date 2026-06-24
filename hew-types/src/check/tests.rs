@@ -15705,27 +15705,30 @@ fn index_dispatch_via_trait_for_vec() {
 }
 
 #[test]
-fn index_read_for_hashmap_string_key_yields_option() {
-    // `m["k"]` now reads through the HashMap get ABI and yields `Option<V>`
-    // (not the i32-keyed `Index` trait). A function returning `Option<i32>`
-    // accepts the index result directly.
-    let output = check_source(r#"fn f(m: HashMap<string, i32>) -> Option<i32> { m["k"] }"#);
+fn index_read_for_hashmap_string_key_yields_bare_value() {
+    // `m["k"]` is the trapping `Index::at` accessor and yields the BARE value
+    // `V` (a missing key aborts with IndexOutOfBounds — the map analogue of a
+    // `v[i]` out-of-bounds trap). A function returning the bare value type
+    // `i32` accepts the index result directly. The non-aborting outcome lives
+    // on `m.get("k") -> Option<V>`.
+    let output = check_source(r#"fn f(m: HashMap<string, i32>) -> i32 { m["k"] }"#);
     assert!(
         output.errors.is_empty(),
-        "HashMap<string, _> read indexing should type-check as Option<V>: {:?}",
+        "HashMap<string, _> read indexing should type-check as bare V: {:?}",
         output.errors
     );
 }
 
 #[test]
-fn index_read_for_hashmap_string_key_is_not_bare_value() {
-    // The read result is `Option<V>`, so a function annotated to return the
-    // bare value `i32` must be rejected — proving the surface is fail-closed
-    // (callers must handle the `None` case) rather than aborting on a miss.
-    let output = check_source(r#"fn f(m: HashMap<string, i32>) -> i32 { m["k"] }"#);
+fn index_read_for_hashmap_string_key_is_not_option() {
+    // The read result is the bare value `V` (trapping), so a function annotated
+    // to return `Option<V>` must be rejected — proving the surface inverted from
+    // the old `Option`-returning read. The non-aborting outcome is `m.get(k) ->
+    // Option<V>`, not the `m[k]` trapping accessor.
+    let output = check_source(r#"fn f(m: HashMap<string, i32>) -> Option<i32> { m["k"] }"#);
     assert!(
         !output.errors.is_empty(),
-        "HashMap read index returns Option<V>, so a bare-i32 return must mismatch: {:?}",
+        "HashMap read index returns bare V, so an Option<i32> return must mismatch: {:?}",
         output.errors
     );
 }

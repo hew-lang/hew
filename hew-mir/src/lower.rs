@@ -10051,6 +10051,15 @@ impl Builder {
                     ResolvedTy::Bytes => {
                         self.lower_bytes_index(container, index, &elem_ty, expr.site)
                     }
+                    // `m[k]` over `HashMap<K, V>` in READ position is the
+                    // trapping `Index::at` accessor: it clones the matched value
+                    // out through the `hew_hashmap_get_clone_layout` choke and
+                    // aborts with IndexOutOfBounds on a miss (the map analogue of
+                    // `v[i]` OOB). `m.get(k) -> Option<V>` is the non-aborting
+                    // form and takes the `ResolvedImplCall` get path.
+                    ResolvedTy::Named { name, .. } if name == "HashMap" => {
+                        self.lower_hashmap_index_trap(container, index, &elem_ty, expr.site)
+                    }
                     _ => self.lower_vec_index(container, index, &elem_ty, expr.site),
                 }
             }
@@ -16583,6 +16592,51 @@ impl Builder {
             .expect("hew_vec_get_T is an allowlisted runtime symbol"),
         ));
 
+        Some(result_place)
+    }
+
+    /// Lower `m[k]` over a `HashMap<K, V>` in READ position — the trapping
+    /// `Index::at` accessor, the map twin of `lower_vec_index`.
+    ///
+    /// Emits a single `Terminator::Call` to the `hew_hashmap_get_clone_layout`
+    /// choke with the BARE `V` dest (no `Option` round-trip). Codegen
+    /// (`lower_hashmap_index_trap_call`) synthesises the runtime out-pointer
+    /// from that dest, branches on the runtime's found-bit, and aborts with
+    /// `IndexOutOfBounds` on a miss (the map analogue of `lower_vec_index`'s OOB
+    /// trap). On a hit, the matched value is cloned into the dest through the
+    /// value descriptor's semantic clone (`clone_layout_value_blob`), so the
+    /// result is a FRESH, independently-droppable owner — never a borrow into
+    /// the live table (GAP-2 drop-safety; `by-value-heap-params-are-borrows`
+    /// P0). On a miss the dest is never written and codegen traps before the
+    /// `next` block, so the dest's scope-exit drop (scheduled on the through
+    /// path) never fires on the miss path.
+    ///
+    /// `m.get(k) -> Option<V>` is the non-aborting sibling; it routes through
+    /// the `ResolvedImplCall` get path to the same runtime choke.
+    fn lower_hashmap_index_trap(
+        &mut self,
+        container: &HirExpr,
+        index: &HirExpr,
+        elem_ty: &ResolvedTy,
+        _site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        let map_place = self.lower_value(container)?;
+        let key_place = self.lower_value(index)?;
+        let result_place = self.alloc_local(elem_ty.clone());
+        let next = self.alloc_block();
+        // The callee is the fresh-owner clone choke shared with `m.get` (codegen
+        // declares the `(ptr, ptr, ptr) -> i1` runtime). It is not in the typed
+        // `RuntimeCallFamily` catalog, so it carries `builtin: None` like
+        // `hew_vec_get_clone`; codegen dispatches on the symbol string and owns
+        // the trap-on-miss CFG.
+        self.finish_current_block(Terminator::Call {
+            callee: "hew_hashmap_get_clone_layout".to_string(),
+            builtin: None,
+            args: vec![map_place, key_place],
+            dest: Some(result_place),
+            next,
+        });
+        self.start_block(next);
         Some(result_place)
     }
 
@@ -31918,6 +31972,12 @@ fn is_collection_receiver_borrow_callee(callee: &str) -> bool {
         callee,
         "hew_hashmap_insert_layout"
             | "hew_hashmap_get_layout"
+            // The trapping `m[k]` read (`Index::at`) choke: reads the table and
+            // clones the matched value into the caller's out-slot, never freeing
+            // the map (`m: *const HewLayoutHashMap`). Same receiver-borrow
+            // contract as `hew_hashmap_get_layout`; classified here so `m[k]`
+            // does not exclude the handle from its scope-exit release.
+            | "hew_hashmap_get_clone_layout"
             | "hew_hashmap_remove_layout"
             | "hew_hashmap_contains_key_layout"
             | "hew_hashmap_len_layout"

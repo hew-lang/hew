@@ -425,6 +425,13 @@ run_accept_expect_trap "isize_shift_oob_traps"
 run_accept_expect_trap "vec_index_oob_traps"
 run_accept_expect_trap "vec_enum_index_oob_traps"
 
+# Indexed-accessor trap negatives for HashMap: `m[k]` on an absent key traps
+# (IndexOutOfBounds) for every value class — the trapping `at` half of the
+# `Index<Idx>` model and the m[k] INVERSION (the non-aborting outcome is now
+# `m.get(k) -> Option<V>`). Same arch-dependent trap signal (132/133).
+run_accept_expect_trap "hashmap_index_absent_traps"
+run_accept_expect_trap "hashmap_enum_index_absent_traps"
+
 # defer: basic (no effect on return), executes (exit override), LIFO, block scope
 run_accept_expect_status "defer_basic" 7
 run_accept_expect_status "defer_executes" 42

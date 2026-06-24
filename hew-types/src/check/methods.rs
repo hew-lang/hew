@@ -110,8 +110,6 @@ pub(super) enum RetTemplate {
     Unit,
     Bool,
     I64,
-    /// `Option<V>` (`HashMap` `get`).
-    OptionVal,
     /// The element type `elem` (Vec `pop`/`get`).
     Elem,
     /// `Vec<K>` (`HashMap` `keys`).
@@ -159,13 +157,16 @@ const fn desc(
 )]
 fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<CollectionMethodDesc> {
     use ArgTemplate::{Elem, Key, Receiver, Value, I64};
-    use RetTemplate::{
-        Bool, Elem as RetElem, OptionVal, SelfTy, Unit, VecOfKey, VecOfVal, I64 as RetI64,
-    };
+    use RetTemplate::{Bool, Elem as RetElem, SelfTy, Unit, VecOfKey, VecOfVal, I64 as RetI64};
     Some(match kind {
         CollectionKind::HashMap => match method {
             "insert" => desc(Some(2), &[Key, Value], Unit),
-            "get" => desc(Some(1), &[Key], OptionVal),
+            // `get` is intentionally ABSENT: it is routed through the
+            // `Index<K>` trait (`<HashMap<K, V> as Index>::get -> Option<V>`)
+            // so the accessor model is uniform with `Vec`. `check_hashmap_method`
+            // has an explicit `get` arm that records the `Index` primitive-trait
+            // dispatch and the `hew_hashmap_get_layout` resolved call; the bare
+            // `m[k]` read is the trapping `Index::at` (`-> V`).
             "remove" => desc(Some(1), &[Key], Bool),
             "contains_key" => desc(Some(1), &[Key], Bool),
             "keys" => desc(Some(0), &[], VecOfKey),
@@ -3946,7 +3947,6 @@ impl Checker {
             RetTemplate::Unit => Ty::Unit,
             RetTemplate::Bool => Ty::Bool,
             RetTemplate::I64 => Ty::I64,
-            RetTemplate::OptionVal => Ty::option(cx.val.clone()),
             RetTemplate::Elem => cx.elem.clone(),
             RetTemplate::VecOfKey => self.make_vec_type(cx.key.clone(), span),
             RetTemplate::VecOfVal => self.make_vec_type(cx.val.clone(), span),
@@ -4135,6 +4135,40 @@ impl Checker {
             .get(1)
             .cloned()
             .unwrap_or(Ty::Var(TypeVar::fresh()));
+        // Trait-routed `Index<K>` accessor: `<HashMap<K, V> as Index>::get
+        // -> Option<V>` — the map twin of `Vec::get`. Dispatch is marked as
+        // the `Index` primitive-trait impl and records the
+        // `hew_hashmap_get_layout` resolved call, which codegen rewrites to
+        // the SINGLE fresh-owner clone choke (`hew_hashmap_get_clone_layout`)
+        // that writes a retained/cloned owner into the `Option` payload
+        // (drop-safe; `by-value-heap-params-are-borrows` P0). `get` is
+        // intentionally NOT in `collection_method_desc`: this explicit arm
+        // keeps the accessor model uniform with `Vec`, while the trapping
+        // `m[k]` read is the sibling `Index::at` (`-> V`).
+        if method == "get" {
+            self.check_arity(args, 1, "`HashMap::get`", span);
+            if let Some(arg) = args.first() {
+                let (expr, sp) = arg.expr();
+                self.check_against(expr, sp, &key_ty);
+            }
+            // Enforce `K: Hash + Eq` and reject unsafe key/value element
+            // types — the same admission the table-driven path ran for
+            // `get` (fire-and-return on rejection).
+            if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
+                return Ty::Error;
+            }
+            self.record_method_call_receiver_kind(
+                span,
+                MethodCallReceiverKind::PrimitiveTraitImpl {
+                    trait_name: "Index".to_string(),
+                    canonical_receiver: "HashMap".to_string(),
+                },
+            );
+            // Records the `Map::get` resolved call. `<HashMap<K, V> as
+            // Index>::Output` is `V`, so the projected return is `Option<V>`.
+            self.record_resolved_hashmap_call("get", &key_ty, &val_ty, span);
+            return Ty::option(val_ty);
+        }
         let cx = CollectionTyCx::hashmap(key_ty, val_ty);
         self.check_collection_method(CollectionKind::HashMap, &cx, method, args, span)
     }
@@ -8800,7 +8834,10 @@ mod tests {
     #[test]
     fn descriptor_table_checked_arities() {
         assert_eq!(arity_of(CollectionKind::HashMap, "insert"), Some(2));
-        assert_eq!(arity_of(CollectionKind::HashMap, "get"), Some(1));
+        // HashMap `get` is no longer in the descriptor table: it is trait-routed
+        // (`<HashMap<K, V> as Index>::get -> Option<V>`) through the explicit
+        // `check_hashmap_method` arm, not the collection driver (mirrors Vec).
+        assert!(collection_method_desc(CollectionKind::HashMap, "get").is_none());
         assert_eq!(arity_of(CollectionKind::HashMap, "keys"), Some(0));
         assert_eq!(arity_of(CollectionKind::HashSet, "insert"), Some(1));
         assert_eq!(arity_of(CollectionKind::HashSet, "contains"), Some(1));
@@ -8823,9 +8860,10 @@ mod tests {
         );
         assert_eq!(hm_insert.ret, RetTemplate::Unit);
 
-        let hm_get = collection_method_desc(CollectionKind::HashMap, "get").unwrap();
-        assert_eq!(hm_get.arg_templates, &[ArgTemplate::Key]);
-        assert_eq!(hm_get.ret, RetTemplate::OptionVal);
+        // HashMap `get` is intentionally absent from the descriptor table: the
+        // accessor is trait-routed through `Index<K>` (see
+        // `descriptor_table_checked_arities`).
+        assert!(collection_method_desc(CollectionKind::HashMap, "get").is_none());
 
         let hm_keys = collection_method_desc(CollectionKind::HashMap, "keys").unwrap();
         assert_eq!(hm_keys.ret, RetTemplate::VecOfKey);

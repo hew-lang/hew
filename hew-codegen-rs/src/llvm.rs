@@ -19448,6 +19448,137 @@ fn lower_hashmap_get_layout_call(
     Ok(())
 }
 
+/// Lower the trapping `m[k]` (`HashMap` `Index::at`) read. The map twin of
+/// `lower_vec_get_clone_call`, and structurally `lower_hashmap_get_layout_call`
+/// with the `None` branch replaced by an `IndexOutOfBounds` trap and the dest
+/// narrowed from `Option<V>` to a BARE `V`.
+///
+/// Calls the fresh-owner clone choke `hew_hashmap_get_clone_layout(map, key,
+/// out) -> bool`: on a hit the runtime semantic-clones the stored value into
+/// `out` (the dest slot) through the value descriptor's `clone_fn` — a
+/// retained/independent owner, never a borrow into the live table
+/// (`by-value-heap-params-are-borrows` P0 drop-safety; the headline GAP-2
+/// invariant). The map keeps its own copy. On a miss the runtime
+/// returns `false` WITHOUT writing `out`, and we trap (`IndexOutOfBounds`)
+/// instead of materialising a value, so the dest is never observed and never
+/// dropped on the miss path (MIR schedules the dest's scope-exit drop only on
+/// the through path, which the trap pre-empts). `m.get(k) -> Option<V>` is the
+/// non-aborting sibling, lowered by `lower_hashmap_get_layout_call`.
+fn lower_hashmap_index_trap_call(
+    fn_ctx: &FnCtx<'_, '_>,
+    args: &[Place],
+    dest: Option<&Place>,
+    next: u32,
+) -> CodegenResult<()> {
+    if args.len() != 2 {
+        return Err(CodegenError::FailClosed(format!(
+            "hew_hashmap_get_clone_layout (m[k] trap) expects 2 source-level \
+             args (handle, key), got {}",
+            args.len()
+        )));
+    }
+    let dest_place = dest.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "m[k] (HashMap Index::at) yields a bare V; call must supply a dest".into(),
+        )
+    })?;
+
+    let map_ty = place_resolved_ty(fn_ctx, args[0])?.clone();
+    let val_resolved = match map_ty {
+        ResolvedTy::Named {
+            name,
+            args: ty_args,
+            ..
+        } if name == "HashMap" && ty_args.len() == 2 => ty_args[1].clone(),
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "hew_hashmap_get_clone_layout (m[k] trap) arg0 must be HashMap<K,V>, got {other:?}"
+            )));
+        }
+    };
+    // The dest is the BARE value `V` (not `Option<V>`): the trapping accessor
+    // never materialises an `Option`.
+    let dest_ty = place_resolved_ty(fn_ctx, *dest_place)?.clone();
+    if dest_ty != val_resolved {
+        return Err(CodegenError::FailClosed(format!(
+            "m[k] (HashMap Index::at) dest must be the bare value type \
+             {val_resolved:?}, got {dest_ty:?}"
+        )));
+    }
+
+    let val_llvm_ty = resolve_ty(fn_ctx.ctx, &val_resolved, fn_ctx.record_layouts)?;
+    let map_ptr = load_duplex_handle(
+        fn_ctx,
+        args[0],
+        "hew_hashmap_get_clone_layout (m[k] trap) arg0",
+    )?;
+    let (key_ptr, _key_ty) = place_pointer(fn_ctx, args[1])?;
+
+    // The matched value is cloned directly into the dest slot (the bare `V`), so
+    // the runtime out-pointer is the dest place's own address — not a
+    // `Some`-payload subplace (the `Option`-building sibling's distinction).
+    let (out_ptr, out_ty) = place_pointer(fn_ctx, *dest_place)?;
+    if out_ty != val_llvm_ty {
+        return Err(CodegenError::FailClosed(format!(
+            "m[k] (HashMap Index::at) dest slot type {out_ty:?} does not match \
+             HashMap value type {val_llvm_ty:?}"
+        )));
+    }
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::FailClosed(
+                "hew_hashmap_get_clone_layout (m[k] trap) has no parent fn".into(),
+            )
+        })?;
+    let trap_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "hashmap_index_absent_trap");
+    let next_bb = *fn_ctx
+        .blocks
+        .get(&next)
+        .ok_or_else(|| CodegenError::FailClosed(format!("Call next bb{next} missing")))?;
+
+    let fv = get_or_declare_layout_hashmap_runtime(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        "hew_hashmap_get_clone_layout",
+    )?;
+    let found = fn_ctx
+        .builder
+        .build_call(
+            fv,
+            &[map_ptr.into(), key_ptr.into(), out_ptr.into()],
+            "hashmap_index_trap_clone_call",
+        )
+        .llvm_ctx("hew_hashmap_get_clone_layout (m[k] trap) call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(
+                "hew_hashmap_get_clone_layout (m[k] trap) returned void".into(),
+            )
+        })?
+        .into_int_value();
+    // Hit → fall through to `next` with the cloned `V` already in the dest slot.
+    // Miss → trap (`IndexOutOfBounds`), mirroring `v[i]` OOB.
+    fn_ctx
+        .builder
+        .build_conditional_branch(found, next_bb, trap_bb)
+        .llvm_ctx("hew_hashmap_get_clone_layout (m[k] trap) condbr")?;
+
+    fn_ctx.builder.position_at_end(trap_bb);
+    emit_trap_with_code(
+        fn_ctx,
+        HEW_TRAP_INDEX_OUT_OF_BOUNDS as u64,
+        "hashmap_index_trap",
+    )?;
+    Ok(())
+}
+
 /// Lower the trait-routed `Vec::get` → `Option<T>` call (the Vec twin of
 /// `lower_hashmap_get_layout_call`). Calls the fresh-owner runtime choke point
 /// `hew_vec_get_clone(vec, index, out) -> bool`: the runtime bounds-checks and,
@@ -25107,6 +25238,10 @@ fn lower_terminator<'ctx>(
             }
             if callee == "hew_vec_get_clone" {
                 lower_vec_get_clone_call(fn_ctx, args, dest.as_ref(), *next)?;
+                return Ok(());
+            }
+            if callee == "hew_hashmap_get_clone_layout" {
+                lower_hashmap_index_trap_call(fn_ctx, args, dest.as_ref(), *next)?;
                 return Ok(());
             }
             if is_hashmap_constructor_symbol(callee) {

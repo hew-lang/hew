@@ -1,0 +1,15 @@
+// Indexed-accessor trap negative: `m[k]` on an absent key must trap
+// (IndexOutOfBounds) rather than read garbage or fall back to a default. This is
+// the trapping `at` half of the `Index<Idx>` model for HashMap, and the m[k]
+// INVERSION: `m[k]` is the BARE-`V` aborting accessor, while `m.get(k)` returns
+// `Option<V>` for the non-aborting outcome. The binary terminates via
+// `llvm.trap`: exit 132 (SIGILL, x86_64 Linux) or 133 (SIGTRAP, aarch64/macOS)
+// — run_accept_expect_trap accepts either.
+fn main() -> i64 {
+    let m: HashMap<string, i64> = HashMap::new();
+    m.insert("present", 42);
+    // "absent" was never inserted: the read must trap before yielding a value.
+    let x = m["absent"];
+    // Unreachable: the index trap fires above.
+    x
+}

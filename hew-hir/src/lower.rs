@@ -13203,51 +13203,27 @@ impl LowerCtx {
                         }
                     }
 
-                    // `m[k]` over a `HashMap<K, V>` reuses the `.get(k)` runtime
-                    // ABI in READ position. The checker recorded a `ResolvedCall`
-                    // to `hew_hashmap_get_layout` at this span (result type
-                    // `Option<V>`); emit the same `ResolvedImplCall` that
-                    // `m.get(k)` produces so MIR/codegen consume the existing
-                    // Option-projecting get path verbatim.
+                    // `m[k]` over a `HashMap<K, V>` in READ position is the
+                    // trapping `Index::at` accessor (`-> V`): a missing key
+                    // aborts with IndexOutOfBounds (the map analogue of `v[i]`
+                    // OOB), mirroring `Vec`. It falls through to the plain
+                    // `HirExprKind::Index` node below, which the MIR rvalue
+                    // `Index` match lowers to `lower_hashmap_index_trap`
+                    // (`hew_hashmap_get_clone_layout` + trap-on-miss). The
+                    // non-aborting `Option<V>` outcome is `m.get(k)`, which
+                    // takes the `ResolvedImplCall` get path above.
                     //
                     // An assignment target (`m[k] = v`, `IntentKind::Modify`)
-                    // must NOT take the read path — it falls through to the plain
-                    // `HirExprKind::Index` node below, which the MIR `assign`
-                    // arm recognises and lowers to `hew_hashmap_insert_layout`.
-                    if intent != IntentKind::Modify
-                        && matches!(&container.ty, ResolvedTy::Named { name, .. } if name == "HashMap")
-                    {
-                        if let Some(resolved) =
-                            self.resolved_calls.get(&self.mk_key(&span)).cloned()
-                        {
-                            // Register the `Option<V>` instantiation so the
-                            // module enum-layout table carries the matching key
-                            // (mirrors the `HashMap::get` method-call path).
-                            self.try_register_enum_instantiation(&span);
-                            return HirExpr {
-                                node: self.ids.node(),
-                                site,
-                                value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
-                                ty: result_ty.clone(),
-                                intent,
-                                kind: HirExprKind::ResolvedImplCall {
-                                    receiver: Box::new(container),
-                                    impl_id: resolved.impl_id,
-                                    method_name: resolved.method_name,
-                                    target_symbol: resolved.target.symbol_name,
-                                    target_family: resolved.target.family,
-                                    type_args: resolved.type_args,
-                                    args: vec![index_expr],
-                                    ret_ty: result_ty.clone(),
-                                },
-                                span: span.clone(),
-                            };
-                        }
-                    }
+                    // also falls through to the plain `Index` node, which the
+                    // MIR `assign` arm recognises and lowers to
+                    // `hew_hashmap_insert_layout`.
 
                     if let ResolvedTy::Named { name, .. } = &container.ty {
                         let callee_name = format!("{name}::at");
-                        if name != "Vec" && self.fn_registry.contains_key(&callee_name) {
+                        if name != "Vec"
+                            && name != "HashMap"
+                            && self.fn_registry.contains_key(&callee_name)
+                        {
                             let callee_ty = ResolvedTy::Function {
                                 params: vec![container.ty.clone(), index_expr.ty.clone()],
                                 ret: Box::new(result_ty.clone()),

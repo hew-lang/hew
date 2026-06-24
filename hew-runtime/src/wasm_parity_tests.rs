@@ -170,6 +170,7 @@ fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
         suspended_cancel_token: AtomicPtr::new(std::ptr::null_mut()),
         runtime_id: crate::runtime_id::RuntimeId::DEFAULT,
         runtime: std::ptr::null(),
+        send_pin_count: std::sync::atomic::AtomicU32::new(0),
     })
 }
 

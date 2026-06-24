@@ -281,3 +281,132 @@ fn stdlib_lints_do_not_leak_through_implicit_import() {
         "a len_zero_comparison finding must not leak from stdlib bodies:\n{stderr}"
     );
 }
+
+// ── MIR-stage lint: dead_store ───────────────────────────────────────
+//
+// `dead_store` is the first lint that rides the MIR liveness pass rather than
+// the HIR checker sweep, so it exercises the separate CLI surfacing seam
+// (`render_pipeline_mir_lints`). It must honour the exact same registry
+// controls — default warning, `-A/-W/-D`, and `// hew:allow(...)` — as every
+// checker-stage lint above.
+
+/// `x` is assigned `5`, then unconditionally overwritten by `6` before the
+/// first value is ever read: the `var x = 5` store is dead.
+const DEAD_STORE: &str = "fn f() -> i64 {\n\
+     var x = 5;\n\
+     x = 6;\n\
+     x\n\
+     }\n\
+     fn main() {\n\
+     let _ = f();\n\
+     }\n";
+
+/// The same program with an in-source allow directive on the line above the
+/// dead store.
+const DEAD_STORE_SUPPRESSED: &str = "fn f() -> i64 {\n\
+     // hew:allow(dead_store)\n\
+     var x = 5;\n\
+     x = 6;\n\
+     x\n\
+     }\n\
+     fn main() {\n\
+     let _ = f();\n\
+     }\n";
+
+/// A textbook `for i in 0..n` accumulator loop: `i` and `total` are both read
+/// normally, so the precision guards must keep `dead_store` silent. This is the
+/// regression that proves the loop-counter / accumulator machinery does not
+/// misfire.
+const FOR_RANGE_CLEAN: &str = "fn sum(n: i64) -> i64 {\n\
+     var total = 0;\n\
+     for i in 0..n {\n\
+     total = total + i;\n\
+     }\n\
+     total\n\
+     }\n\
+     fn main() {\n\
+     let _ = sum(5);\n\
+     }\n";
+
+const DEAD_STORE_MESSAGE: &str = "is never read before it is overwritten";
+
+#[test]
+fn dead_store_warns_by_default() {
+    let output = run_check(DEAD_STORE, &[]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "a dead_store warning must not fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("warning:") && stderr.contains(DEAD_STORE_MESSAGE),
+        "expected the dead_store warning to render by default:\n{stderr}"
+    );
+}
+
+#[test]
+fn dead_store_deny_promotes_to_error() {
+    let output = run_check(DEAD_STORE, &["-D", "dead_store"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        !output.status.success(),
+        "-D dead_store must fail the build:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("error:") && stderr.contains(DEAD_STORE_MESSAGE),
+        "-D must render the dead_store lint as an error:\n{stderr}"
+    );
+}
+
+#[test]
+fn dead_store_allow_suppresses() {
+    let output = run_check(DEAD_STORE, &["--allow", "dead_store"]);
+    let stderr = stderr_of(&output);
+    assert!(output.status.success(), "check should pass:\n{stderr}");
+    assert!(
+        !stderr.contains(DEAD_STORE_MESSAGE),
+        "--allow dead_store must suppress the lint:\n{stderr}"
+    );
+}
+
+#[test]
+fn dead_store_inline_directive_suppresses() {
+    let output = run_check(DEAD_STORE_SUPPRESSED, &[]);
+    let stderr = stderr_of(&output);
+    assert!(output.status.success(), "check should pass:\n{stderr}");
+    assert!(
+        !stderr.contains(DEAD_STORE_MESSAGE),
+        "an in-source `// hew:allow(dead_store)` directive must suppress the MIR lint:\n{stderr}"
+    );
+}
+
+#[test]
+fn dead_store_inline_directive_overrides_deny() {
+    // The in-source allow wins even over `-D`: parity with the checker lints.
+    let output = run_check(DEAD_STORE_SUPPRESSED, &["-D", "dead_store"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "an in-source allow must override -D for a MIR lint:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains(DEAD_STORE_MESSAGE),
+        "the suppressed MIR lint must not surface under -D:\n{stderr}"
+    );
+}
+
+#[test]
+fn for_range_loop_does_not_trip_dead_store() {
+    // The canonical precision guard: a normal counting loop with a read counter
+    // and a read accumulator must produce no dead_store finding, even under -D.
+    let output = run_check(FOR_RANGE_CLEAN, &["-D", "dead_store"]);
+    let stderr = stderr_of(&output);
+    assert!(
+        output.status.success(),
+        "`for i in 0..n` with used variables must not trip dead_store:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains(DEAD_STORE_MESSAGE),
+        "dead_store must not misfire on a normal counting loop:\n{stderr}"
+    );
+}

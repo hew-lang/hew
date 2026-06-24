@@ -2055,7 +2055,7 @@ pub struct FnSig {
     /// builtin variant, `fn_sigs` can only hold one entry for that bare
     /// name.  Marking the builtin entry lets the resolution pass prefer any
     /// locally-declared user variant that shadows it (local-shadows-global
-    /// rule — see rc1-reserved-names lane).
+    /// rule — local-shadows-global).
     ///
     /// Default `false` for every non-builtin-variant signature.
     pub is_builtin_variant: bool,

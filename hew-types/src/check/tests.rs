@@ -29318,7 +29318,7 @@ mod every_attribute {
     }
 }
 
-/// Tests for the local-shadows-global reserved-name fix (rc1-reserved-names lane).
+/// Tests for local-shadows-global reserved-name resolution.
 ///
 /// Four invariants:
 ///   1. A user payload variant shadows a builtin unit variant of the same name.

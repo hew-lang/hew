@@ -3081,7 +3081,7 @@ expect_check_fail_contains \
     "wire_cbor_vec_owned_compound_rejected"
 
 # ---------------------------------------------------------------------------
-# Reserved-name shadowing (rc1-reserved-names lane G).
+# Reserved-name shadowing.
 # A user-declared enum variant with the same bare name as a builtin variant
 # must shadow the builtin — the program must compile and run without arity
 # errors.
@@ -3102,3 +3102,4 @@ expect_check_fail_contains \
 # registered over the builtin LookupError::NotFound unit variant; the
 # program must compile and run without HIR shape-mismatch diagnostics.
 run_accept_expect_status "imported_shadow_variant_call" 0
+

@@ -1,6 +1,6 @@
 # Design: a compiler lint pass for Hew (semantic / dataflow idiom lints)
 
-Status: M1–M2 implemented · M3 planned · Audience: Hew compiler
+Status: M1–M3 implemented · Audience: Hew compiler
 maintainers · Companion to the ast-grep rule set
 
 M1 + M2 have landed: the lint infrastructure (`LintId` / `LintLevel` /
@@ -9,8 +9,12 @@ M1 + M2 have landed: the lint infrastructure (`LintId` / `LintLevel` /
 checker lints (`needless_range_loop`, `redundant_else_after_return`,
 `needless_match_to_if_let`, `len_zero_comparison`, `needless_bool`) and the two
 ad-hoc warnings (`clone_on_copy`, `dead_code`) migrated onto the registry so
-they are now re-levelable and suppressible. M3 (MIR liveness + dataflow lints)
-remains future work; see §10.
+they are now re-levelable and suppressible. M3 has landed too: a backward
+liveness dataflow pass in `hew-mir`, the `dead_store` MIR lint built on it, and
+the CLI plumbing that surfaces MIR-stage lints as level-controlled, suppressible
+warnings (see §10). `clean_counter` is registered but intentionally **not yet
+emitted** — the deferral and its reasoning are in §10. Editor/web surfacing of
+MIR lints is deferred to issue #2176.
 
 ## 1. Goal
 
@@ -135,11 +139,17 @@ AST/HIR — another reason `needless_range_loop` belongs in the checker, not MIR
   (`hew-types/src/check/types.rs`); the lint resolves the directive against the source line(s)
   preceding the diagnostic's span. A local `allow` wins even over a command-line `--deny`, mirroring
   the rustc/Clippy rule.
-- **Surfacing:** M1 (checker) lints are free on all three surfaces (§3). M3 (MIR) lints:
-  confirm the LSP/wasm analysis runs the MIR gates or extend `convert_diagnostics`
-  (`hew-wasm/src/lib.rs`) and the LSP analysis (`analysis.rs`) to include MIR-stage
-  diagnostics as **warnings** (note: HIR diagnostics are currently mapped as LSP *errors* — keep lints
-  out of that path).
+- **Surfacing:** M1/M2 (checker) lints are free on all three surfaces (§3). M3 (MIR) lints are
+  surfaced **through the CLI only**. They ride a dedicated `IrPipeline.lint_warnings` channel
+  (separate from the hard-error `diagnostics` vector) and are rendered by
+  `render_pipeline_mir_lints` (`hew-cli/src/main.rs`), which threads the resolved `LintLevels` into
+  every MIR-lowering seam (`hew check`, `build`/`run`, eval, `hew compile`), applies
+  `// hew:allow(...)` via `hew_types::directive_suppresses`, renders `Warn` as a warning and `Deny`
+  as a build error, drops `Allow`, and structures `--format json` output via `from_mir_lint`. The
+  LSP and wasm front ends deliberately stop at HIR and never lower to MIR, so they never reach this
+  channel; extending them to run the MIR gates and map MIR-stage diagnostics as LSP/web *warnings*
+  (note: HIR diagnostics are currently mapped as LSP *errors* — keep lints out of that path) is
+  **deferred to issue #2176**.
 
 ## 8. First lint, end-to-end: `needless_range_loop` (84 candidates)
 
@@ -210,8 +220,66 @@ the precise subset that is actually convertible.
     behaviour is unchanged (they still warn), but they are now re-levelable (`-A/-W/-D`) and
     suppressible (`// hew:allow`). The LSP keeps tagging migrated `dead_code` as
     `DiagnosticTag::UNNECESSARY`. Unused-import / unreachable-code were left un-migrated this pass.
-- **M3 — MIR liveness + dataflow lints.** Add liveness/reaching-defs to `hew-mir`; implement
-  `dead-store` and `clean-counter` (counter not read after the loop); wire MIR lints into LSP/wasm.
+- **M3 — MIR liveness + dataflow lints. (Implemented in this change.)** A backward liveness
+  dataflow pass in `hew-mir` plus the `dead_store` lint built on it, surfaced through the CLI.
+  - **Liveness pass (`hew-mir/src/liveness.rs`).** A backward "may-be-live" analysis over
+    `Place::Local(u32)`. It *reuses* the existing forward dataflow scaffolding rather than
+    reinventing CFG plumbing: `build_preds` / `successors` / `compute_rpo` and the worklist-fixpoint
+    shape from `dataflow.rs`, `instr_reads_writes` as the per-instruction gen/kill source, and
+    `terminator_source_places` for terminator reads. Direction: `live_out(b) = ⋃ live_in(s)` over
+    successors `s`; the per-block transfer applies the terminator first (its reads become live; its
+    writes are deliberately *not* killed — a conservative under-kill) and then the instructions in
+    reverse, each as `live = (live − full_defs) ∪ reads`. **Soundness is by over-approximation:** the
+    gen set is a superset of the true reads (every referenced place, via `place_local`) and the kill
+    set is a subset of the true kills (only a `Place::Local` *full* def via `full_def_local`; anything
+    we cannot prove is a total overwrite stays live). So whenever the pass reports a local as **not**
+    live-after a point, it is genuinely dead — there are no false "dead" verdicts. When liveness is
+    uncertain, the local is treated as **live**. Query API: `analyze_liveness(func) -> Liveness` with
+    `Liveness::{is_live_in, is_live_out, live_after}`.
+  - **`dead_store`.** Flags `Instr::Move { dest: Place::Local(N), .. }` whose written value is never
+    read on any path before being overwritten or going out of scope — i.e. `N` is not live-after the
+    move. *Guards (skip → no fire), tuned for precision over recall:* (1) skip parameters
+    (`N ≥ params.len()`); (2) user-named locals only (`local_names[N]` present and non-empty —
+    compiler-synthetic temporaries and the for-range counter machinery, which carries the sentinel
+    `SiteId(0)`, are excluded); (3) no-drop scalar locals only (integers / floats / `bool` / `char`
+    via `is_no_drop_scalar`) — this sidesteps drop semantics entirely: no `Drop` ever observes such a
+    value, so removing the store is always sound and the lint never fights the drop-safety invariant
+    (CLAUDE.md §1); (4) only the pure `Move` form is trapped, never checked arithmetic or any
+    instruction whose uses `instr_reads_writes` does not fully model (those are treated as a use). The
+    span is recovered from `instr_spans`, falling back to `local_decl_bytes`; findings are de-duped by
+    `(lint, span)` to collapse monomorphization duplicates, and synthetic / unreachable functions are
+    skipped. Message: *the value assigned to `x` is never read before it is overwritten or goes out of
+    scope.* A normal `for i in 0..n` loop does **not** fire — the back-edge keeps the counter
+    live-into the header, so the increment store is live and the guards exclude the synthetic counter
+    regardless.
+  - **`clean_counter` — deferred (registered, not emitted).** Registered in the `LintId` registry at
+    `default_level() = Warn` but intentionally not yet emitted, for three compounding reasons.
+    (1) *Shape recovery:* a manual `c = c + 1` does not lower to a single self-update instruction — it
+    lowers through a temporary and a checked `IntArithChecked` followed by `Move c = temp`, so the
+    "increment" is not directly recognizable from one instruction. (2) *Liveness cannot separate the
+    two populations:* a dead accumulator `c` and a legitimate for-range counter `i` are *both*
+    "live throughout the loop, dead at the exit"; distinguishing "the counting itself is dead work"
+    from "a value genuinely consumed each iteration" needs faint-variable / strong-liveness analysis
+    (a second dataflow pass asking whether a variable's *value*, not merely its liveness, can ever
+    influence an observable) — out of scope for this milestone. (3) *Checked arithmetic defeats the
+    premise:* the increment's overflow flag feeds a trap branch, so `c` is *strongly* live — its value
+    decides whether the program traps — and removing `c = c + 1` would be semantics-changing exactly
+    where the lint looks most applicable, i.e. the naive lint would be unsound. Per the precision-first
+    bar that governs M1/M2 (one excellent lint beats two noisy overlapping ones), `dead_store` ships
+    alone; `clean_counter` is revisited once a faint-variable pass exists. It would also overlap
+    `dead_store` on the straight-line `c = c + 1` case, so shipping both today would risk
+    double-firing.
+  - **Severity + surfacing.** MIR lints are level-agnostic in `hew-mir`: each finding is a
+    `MirLint { lint, span, message }` pushed onto `IrPipeline.lint_warnings`, a channel kept separate
+    from the hard-error `diagnostics` vector so the existing move/init checks stay errors. The CLI
+    owns policy (§7): `render_pipeline_mir_lints` applies the resolved `LintLevels` and
+    `// hew:allow(...)`, renders `Warn` as a warning / `Deny` as a build error / drops `Allow`, and is
+    threaded into all four MIR-lowering seams. `hew compile` exposes no lint flags, so it surfaces at
+    default levels. Surfacing is **CLI-only**; editor/web is issue #2176.
+  - **Tests.** Liveness unit + integration fixtures (`hew-mir/tests/liveness.rs`) pin the query API
+    and the over-approximation contract; `dead_store` positives and precision-guard negatives live
+    alongside them and in the CLI e2e suite (`hew-cli/tests/lint_pass_e2e.rs`), including the
+    `for i in 0..n` regression that must stay silent even under `-D dead_store`.
 
 ## 11. Division of labour with ast-grep
 

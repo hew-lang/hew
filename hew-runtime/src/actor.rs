@@ -1375,6 +1375,82 @@ unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
     }
 }
 
+/// Outcome of [`decide_finalize_by_latch`] — the canonical "is it safe to
+/// finalize this quiescent-but-possibly-re-enqueued actor?" decision.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+enum FinalizeDecision {
+    /// Safe to finalize. Carries the state to hand to
+    /// [`finalize_quiescent_actor_cleanup`]; that value drives only the
+    /// terminate-vs-skip choice (`Crashed` ⇒ skip terminate, every other value
+    /// ⇒ run terminate). It is NOT a stale liveness gate.
+    Finalize(i32),
+    /// The actor is neither `Idle` nor a quiescent terminal state. It is
+    /// `Runnable`/`Running` (re-enqueued or actively dispatching), `Suspended`
+    /// (a live continuation frame is parked against it), or another non-quiescent
+    /// state. A scheduler queue may hold its raw pointer, or a parked frame may
+    /// still own it, so freeing it would be a use-after-free or a frame leak. The
+    /// caller MUST skip/leak fail-closed.
+    Skip,
+}
+
+/// Decide whether a quiescent-but-possibly-re-enqueued actor is safe to
+/// finalize, using the CAS RESULT (the actual state at decision time) rather
+/// than any pre-loaded snapshot.
+///
+/// This is the single robust primitive shared by every bulk/terminal free path
+/// (`cleanup_all_actors`, `drain_quiesced_actor`, `actor_free_wasm_impl`).
+/// `hew_actor_free_inner` implements the same CAS-result discipline inline, but
+/// with retry-instead-of-skip semantics (a single explicit free can afford to
+/// wait the queued activation out and try again, whereas a bulk sweep leaks the
+/// straggler fail-closed).
+///
+/// Why a snapshot is unsafe: between loading `actor_state` and acting on it, a
+/// pinned by-ID sender can win `CAS Idle→Runnable` (+ `sched_enqueue`) and
+/// re-enqueue the actor. A decision that branches on the stale snapshot can then
+/// (a) believe the actor is still `Idle` and free it after a lost latch, or
+/// (b) observe the snapshot already `Runnable`,
+/// short-circuit the latch entirely, and finalize the queued actor. Both are
+/// use-after-frees. Latching and branching on the CAS result closes both:
+///
+/// - `Ok(_)`                       ⇒ we latched it out of `Idle` into the
+///   terminal `Stopped` state; every waker's `CAS Idle→Runnable` now fails, so
+///   nothing can enqueue it. Finalize and run terminate (`Finalize(Idle)` — the
+///   pre-latch identity, so finalize treats it as a clean stop, not a crash).
+/// - `Err(s)` with `actor_free_state_is_quiescent(s)` ⇒ already terminal and
+///   wake-proof (necessarily `Stopped`/`Crashed`, since the CAS proved `s` was
+///   not `Idle`). Finalize under the observed terminal state (preserves the
+///   `Crashed ⇒ skip-terminate` path). No CAS needed.
+/// - `Err(s)` otherwise (`Runnable`/`Running`/`Suspended`/…) ⇒ re-enqueued,
+///   actively dispatching, or holding a parked continuation frame; a scheduler
+///   queue may hold its raw pointer, or a parked frame still owns it. `Skip` —
+///   leak fail-closed; never free a queued/active/parked actor. Gating on the
+///   shared `actor_free_state_is_quiescent` predicate (rather than an ad-hoc
+///   `Stopped || Crashed` test) keeps this decision consistent with the sibling
+///   free paths and routes `Suspended` to the same fail-closed leak — closing a
+///   latent finalize-over-a-parked-frame on the cleanup path.
+fn decide_finalize_by_latch(a: &HewActor) -> FinalizeDecision {
+    match a.actor_state.compare_exchange(
+        HewActorState::Idle as i32,
+        HewActorState::Stopped as i32,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => FinalizeDecision::Finalize(HewActorState::Idle as i32),
+        // CAS failed: the actor was not `Idle`. Decide from the ACTUAL observed
+        // state `s` using the SAME `actor_free_state_is_quiescent` predicate the
+        // sibling free paths gate on (`hew_actor_free_inner`'s quiescence wait,
+        // `drain_actors`). A quiescent `s` (here necessarily `Stopped`/`Crashed`,
+        // since the CAS proved it was not `Idle`) is already terminal and
+        // wake-proof ⇒ finalize under it. Any non-quiescent `s` — `Runnable`/
+        // `Running` (re-enqueued or actively dispatching), or `Suspended` (a live
+        // continuation frame is parked) — must NOT be finalized: a scheduler
+        // queue may hold its raw pointer, or a parked frame still owns it. Leak
+        // fail-closed.
+        Err(s) if actor_free_state_is_quiescent(s) => FinalizeDecision::Finalize(s),
+        Err(_) => FinalizeDecision::Skip,
+    }
+}
+
 /// Finish the `hew_actor_free` cleanup path after the actor has been untracked.
 ///
 /// # Safety
@@ -1439,10 +1515,6 @@ pub(crate) unsafe fn cleanup_all_actors() {
         }
         // SAFETY: actor is valid (from LIVE_ACTORS); scheduler is shut down.
         let a = unsafe { &*actor };
-        // Load state BEFORE prepare so we pass the original value to finalize
-        // (the terminate-vs-skip decision must see Idle, not the latch-imposed
-        // Stopped).
-        let state = a.actor_state.load(Ordering::Acquire);
 
         // Cancel periodic timers, drop link/monitor entries, and unregister
         // named-node bindings BEFORE running terminate or freeing the
@@ -1464,57 +1536,56 @@ pub(crate) unsafe fn cleanup_all_actors() {
             crate::scheduler_wasm::cancel_actor_sleep_queue_entry(actor);
         }
 
-        // Test-only rendezvous: fires after prepare, before the latch. A test
-        // uses this to simulate a concurrent by-ID send CAS-ing Idle→Runnable
-        // in the wake-proofing window, verifying the latch-fail skip fires.
+        // Test-only rendezvous: fires after prepare, before the finalize
+        // decision. A test uses this to simulate a concurrent by-ID send
+        // CAS-ing Idle→Runnable in the wake-proofing window, verifying the
+        // skip fires.
         #[cfg(all(test, not(target_arch = "wasm32")))]
         run_cleanup_post_prepare_hook(actor);
 
-        // Wake-proof still-Idle actors before draining send pins.
+        // Wake-proof + finalize decision, by the CAS RESULT — never a stale
+        // snapshot (see `decide_finalize_by_latch`).
         //
         // A pinned by-ID sender (that incremented `send_pin_count` before
         // `drain_all_for_cleanup` removed the map entry) can still be running
-        // its send closure, which may CAS `Idle→Runnable` to re-enqueue the
-        // actor.  Without this latch, the send drops its pin and the freer
-        // proceeds to finalize a still-queued actor → UAF (dangling scheduler
-        // pointer). `hew_actor_free_inner` applies the same Idle→Stopped latch
-        // for the same reason; this path mirrors it.
+        // its send closure, which may CAS `Idle→Runnable` (+ `sched_enqueue`)
+        // to re-enqueue the actor. The latch `Idle→Stopped` wake-proofs a
+        // still-Idle actor (every waker's CAS then fails). If a waker already
+        // won — whether the wake landed BEFORE this sweep reached the actor
+        // (the snapshot-already-Runnable window) or AFTER, in the latch
+        // window — the CAS returns
+        // `Err(Runnable/Running/…)` and we leak fail-closed rather than
+        // finalize a queued actor (a dangling scheduler pointer → UAF). The
+        // decision uses the actual state at CAS time, so neither window can
+        // finalize a re-enqueued actor.
         //
-        // Actors already in a terminal state (Stopped/Crashed) are already
-        // wake-proof: CAS `Idle→Runnable` cannot succeed on a non-Idle state.
-        // Skip the latch for those.
-        //
-        // Pass the ORIGINAL pre-latch `state` to finalize so the
-        // terminate-vs-skip decision sees Idle (= run terminate), not the
-        // latch-imposed Stopped.
-        if state == HewActorState::Idle as i32
-            && a.actor_state
-                .compare_exchange(
-                    HewActorState::Idle as i32,
-                    HewActorState::Stopped as i32,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                )
-                .is_err()
-        {
-            // A concurrent operation (e.g. a pinned send) won the CAS
-            // `Idle→Runnable` before we could latch `Idle→Stopped`.  The
-            // actor may now be queued in the scheduler; freeing it would
-            // be a UAF.  Leak it (fail-closed) and log.
-            eprintln!(
-                "hew: runtime error: actor {:#x} was re-enqueued during \
-                 shutdown cleanup (concurrent send beat the wake-proof latch); \
-                 actor leaked to avoid UAF",
-                a.id
-            );
-            continue;
-        }
+        // The same quiescence gate routes a still-`Suspended` actor (one parked
+        // at a non-final `coro.suspend` with a live continuation frame) to the
+        // fail-closed leak: `actor_free_state_is_quiescent` excludes `Suspended`,
+        // so cleanup never finalizes a parked actor (which would free its box
+        // and leak the frame). Unlike `hew_actor_free_inner`, the shutdown sweep
+        // cannot block to destroy the parked frame (workers are joined), so it
+        // leaks-not-frees — the correct fail-closed shutdown behaviour.
+        let finalize_state = match decide_finalize_by_latch(a) {
+            FinalizeDecision::Finalize(state) => state,
+            FinalizeDecision::Skip => {
+                eprintln!(
+                    "hew: runtime error: actor {:#x} was non-quiescent at \
+                     shutdown cleanup (re-enqueued/active after a concurrent \
+                     send beat the wake-proof latch, or parked at a suspend \
+                     point); actor leaked to avoid UAF",
+                    a.id
+                );
+                continue;
+            }
+        };
 
         // Drain send pins.  After drain_all_for_cleanup no new pins can be
-        // taken; after the Idle→Stopped latch above, any in-flight pin
-        // holder whose CAS Idle→Runnable is rejected (state=Stopped) cannot
-        // re-enqueue.  We still wait for existing pin holders to finish their
-        // send closures and drop the pin before finalizing.
+        // taken; after the Idle→Stopped latch (a `Finalize` decision means the
+        // actor is now terminal), any in-flight pin holder whose CAS
+        // Idle→Runnable is rejected cannot re-enqueue.  We still wait for
+        // existing pin holders to finish their send closures and drop the pin
+        // before finalizing.
         // SAFETY: LIVE_ACTORS is not held here; no deadlock risk.
         {
             debug_assert_eq!(
@@ -1547,14 +1618,13 @@ pub(crate) unsafe fn cleanup_all_actors() {
             }
         }
 
-        // Run terminate for actors that never reached a terminal state
-        // (still IDLE at process exit). Skip crashed actors — their state
-        // may be corrupted. `finalize_quiescent_actor_cleanup` performs the
-        // terminate-or-skip dance plus the resource free.
-        // Pass the original `state` (Idle) so finalize runs terminate.
-        // SAFETY: actor is quiescent, no longer tracked, wake-proofed, and
-        // all send pins have drained.
-        unsafe { finalize_quiescent_actor_cleanup(actor, state) };
+        // Run terminate for actors that never reached a terminal state (still
+        // IDLE at process exit; `Finalize(Idle)`). Skip crashed actors — their
+        // state may be corrupted. `finalize_quiescent_actor_cleanup` performs
+        // the terminate-or-skip dance plus the resource free.
+        // SAFETY: actor is quiescent, no longer tracked, wake-proofed (latched
+        // out of Idle, or already terminal), and all send pins have drained.
+        unsafe { finalize_quiescent_actor_cleanup(actor, finalize_state) };
     }
 }
 
@@ -3419,6 +3489,16 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor, suppress_state_drop: bool) 
         unsafe { prepare_quiescent_actor_for_cleanup(actor) };
 
         // Step 3: re-load after cleanup, then latch the actor out of `Idle`.
+        //
+        // This is the inline, *retry*-on-loss variant of the shared
+        // `decide_finalize_by_latch` primitive (used by `cleanup_all_actors`,
+        // `drain_quiesced_actor`, and `actor_free_wasm_impl`): all four branch on
+        // the CAS RESULT, never on a pre-loaded snapshot. The bulk/terminal paths
+        // *skip* (leak fail-closed) when the latch loses to a waker; this explicit
+        // single-actor free instead *loops back* to wait the queued activation out
+        // and free cleanly, returning `-2` only at the deadline. Same decision
+        // table (`Ok⇒Stopped`, `Err(Stopped|Crashed)⇒that state`, else not-safe);
+        // different not-safe handling.
         let state = a.actor_state.load(Ordering::Acquire);
         if state == HewActorState::Idle as i32 {
             // Latch Idle->Stopped. This is the wake-proofing step: after it
@@ -3538,34 +3618,35 @@ fn drain_backoff_duration(delay: std::time::Duration) -> std::time::Duration {
 /// Quiesce and free an actor that has already reached a terminal state inside
 /// `drain_actors`.
 ///
-/// This consolidates the three-step sequence — cancel timers/links/monitors,
-/// take ownership from `LIVE_ACTORS`, and run `finalize_quiescent_actor_cleanup`
-/// — into one call site so both the inner loop and the post-deadline pass use
-/// the same ordering. Both call sites in `drain_actors` were already identical;
-/// this is a behaviour-equivalent extraction with no normalisation.
+/// This consolidates the sequence — cancel timers/links/monitors, wake-proof,
+/// take ownership from `LIVE_ACTORS`, drain pins, and run
+/// `finalize_quiescent_actor_cleanup` — into one call site so both the inner
+/// loop and the post-deadline pass use the same ordering.
 ///
-/// ## Wake-proof contract
+/// ## Finalize decision (CAS-result, never a snapshot)
 ///
-/// Unlike `cleanup_all_actors`, this function does NOT need a separate
-/// `Idle→Stopped` latch before draining pins.  `drain_actors` calls
-/// `hew_actor_stop` on every actor BEFORE waiting for quiescence; `hew_actor_stop`
-/// closes the mailbox and performs `CAS Idle→Stopped` for any actor that is
-/// still `Idle` at stop time.  By the time `drain_quiesced_actor` is called the
-/// actor is already in a terminal state (Stopped or Crashed), so any concurrent
-/// `CAS Idle→Runnable` will fail (state is not `Idle`).  **Callers must uphold
-/// this stop-first contract; removing the stop call before drain would introduce
-/// the same re-enqueue UAF that the latch in `cleanup_all_actors` prevents.**
+/// The finalize decision comes from [`decide_finalize_by_latch`] — the same
+/// CAS-result primitive `cleanup_all_actors` uses — applied BEFORE untracking,
+/// not from a state value the caller snapshotted earlier. `drain_actors` calls
+/// `hew_actor_stop` on every actor BEFORE waiting for quiescence, so by the time
+/// this runs the actor is already terminal (`Stopped`): the latch CAS returns
+/// `Err(Stopped)` ⇒ `Finalize(Stopped)`, the same finalize the previous
+/// snapshot-based code performed. The latch additionally HARDENS the path
+/// against stop-first contract drift: were a future caller to skip the stop, a
+/// re-enqueued (`Runnable`) actor now fails closed (`Skip` ⇒ leak) instead of
+/// being finalized while a scheduler queue still holds its pointer.
+///
+/// **Callers should still uphold the stop-first contract** so the common path
+/// finalizes cleanly rather than relying on the defensive `Skip` leak.
 ///
 /// # Safety
 ///
 /// `expected` must be a valid, quiescent actor pointer that is still tracked
-/// in `LIVE_ACTORS`. `state` must be the value loaded from `actor_state`
-/// immediately before this call.
+/// in `LIVE_ACTORS`.
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn drain_quiesced_actor(
     actor_id: ActorId,
     expected: *mut HewActor,
-    state: i32,
     deadline: std::time::Instant,
 ) {
     // SAFETY: caller guarantees `expected` is quiescent and still tracked in
@@ -3573,6 +3654,26 @@ unsafe fn drain_quiesced_actor(
     // untracking so that any in-flight timer callback or signal propagation
     // still observes the actor as live and bails out cooperatively.
     unsafe { prepare_quiescent_actor_for_cleanup(expected) };
+
+    // Wake-proof + finalize decision by the CAS RESULT, BEFORE untracking
+    // (mirrors `hew_actor_free_inner` / `cleanup_all_actors`). Under the
+    // stop-first contract this is `Err(Stopped) ⇒ Finalize(Stopped)`; a
+    // re-enqueued actor (contract drift) takes the fail-closed `Skip` leak.
+    // SAFETY: caller guarantees `expected` is valid.
+    let a = unsafe { &*expected };
+    let finalize_state = match decide_finalize_by_latch(a) {
+        FinalizeDecision::Finalize(state) => state,
+        FinalizeDecision::Skip => {
+            // Re-enqueued/active despite stop-first: leave it tracked so the
+            // shutdown sweep (`cleanup_all_actors`) reclaims it once it drains,
+            // and leak fail-closed here rather than free a queued actor.
+            crate::set_last_error(
+                "drain_quiesced_actor: actor re-enqueued during drain; leaked fail-closed",
+            );
+            return;
+        }
+    };
+
     if let Some(actor) = live_actors::take_actor_by_id(actor_id, expected) {
         // After take_actor_by_id the map entry is removed: no new send pins
         // can be taken.  Drain any in-flight pins before finalizing.
@@ -3592,9 +3693,9 @@ unsafe fn drain_quiesced_actor(
             }
             std::thread::yield_now();
         }
-        // SAFETY: the actor is quiescent, prepared for cleanup, no longer tracked,
-        // and all send pins have drained.
-        unsafe { finalize_quiescent_actor_cleanup(actor, state) };
+        // SAFETY: the actor is quiescent, prepared for cleanup, wake-proofed,
+        // no longer tracked, and all send pins have drained.
+        unsafe { finalize_quiescent_actor_cleanup(actor, finalize_state) };
     }
 }
 
@@ -3638,7 +3739,7 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
                 }
                 Some(state) if actor_free_state_is_quiescent(state) => {
                     // SAFETY: `expected` is quiescent and still tracked in LIVE_ACTORS.
-                    unsafe { drain_quiesced_actor(actor_id, expected, state, deadline) };
+                    unsafe { drain_quiesced_actor(actor_id, expected, deadline) };
                     pending.swap_remove(index);
                 }
                 Some(_) => {
@@ -3673,7 +3774,7 @@ pub fn drain_actors(ids: &[ActorId], deadline: std::time::Instant) -> DrainOutco
             Some(state) if state == HewActorState::Crashed as i32 => crashed.push(actor_id),
             Some(state) if actor_free_state_is_quiescent(state) => {
                 // SAFETY: `expected` is quiescent and still tracked in LIVE_ACTORS.
-                unsafe { drain_quiesced_actor(actor_id, expected, state, deadline) };
+                unsafe { drain_quiesced_actor(actor_id, expected, deadline) };
             }
             Some(_) => still_live.push(actor_id),
         }
@@ -5756,6 +5857,22 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
     // SAFETY: the wait loop above ensures the actor is quiescent and not dispatching.
     unsafe { prepare_quiescent_actor_for_cleanup(actor) };
 
+    // Wake-proof + finalize decision by the CAS RESULT — parity with the native
+    // bulk/terminal free paths (`cleanup_all_actors`, `drain_quiesced_actor`)
+    // and the same primitive `hew_actor_free_inner` applies inline. WASM is
+    // single-threaded, so the latch always observes the quiescent state the
+    // gate above checked: `Ok ⇒ Finalize(Idle)` or `Err(Stopped|Crashed) ⇒
+    // Finalize(s)`. The `Skip` arm is unreachable here (no concurrent waker) but
+    // fails closed — leaving the actor tracked and unfreed — if it ever fires.
+    // SAFETY: actor is valid and quiescent.
+    let finalize_state = match decide_finalize_by_latch(a) {
+        FinalizeDecision::Finalize(state) => state,
+        FinalizeDecision::Skip => {
+            crate::set_last_error("hew_actor_free: actor re-enqueued; leaked fail-closed");
+            return -2;
+        }
+    };
+
     if !live_actors::untrack_actor(actor) {
         crate::set_last_error("hew_actor_free: actor already freed or not tracked");
         return -1;
@@ -5769,8 +5886,9 @@ pub(crate) unsafe fn actor_free_wasm_impl(actor: *mut HewActor) -> c_int {
         "send_pin_count must be 0 before finalize in actor_free_wasm_impl"
     );
 
-    // SAFETY: actor is quiescent, no longer tracked, and not being dispatched.
-    unsafe { finalize_quiescent_actor_cleanup(actor, state) };
+    // SAFETY: actor is quiescent, wake-proofed, no longer tracked, and not
+    // being dispatched.
+    unsafe { finalize_quiescent_actor_cleanup(actor, finalize_state) };
     0
 }
 
@@ -6980,9 +7098,9 @@ mod tests {
     /// `post_latch_inject_send_pin` BEFORE it decrements `send_pin_count`.
     /// On the fixed code the freer spins until the pin drops, so the bg
     /// thread runs while the freer is blocked and `SEND_PIN_DRAIN_WAITED` is
-    /// `true` when the freer proceeds to finalize.  On 520ad161d (no drain
-    /// loop) the freer proceeds to finalize immediately (no spin); the bg
-    /// thread is still sleeping so `SEND_PIN_DRAIN_WAITED` is `false` when
+    /// `true` when the freer proceeds to finalize.  Without the post-untrack
+    /// pin-drain loop the freer proceeds to finalize immediately (no spin); the
+    /// bg thread is still sleeping so `SEND_PIN_DRAIN_WAITED` is `false` when
     /// `hew_actor_free` returns → assertion fails → test fails.
     static SEND_PIN_DRAIN_WAITED: AtomicBool = AtomicBool::new(false);
 
@@ -7015,8 +7133,8 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(60));
 
             // Check the cancel flag set by the test thread after free returns.
-            // On 520ad161d (no pin drain spin) free returns immediately and
-            // CANCEL is set before we wake — we must NOT do the fetch_sub on
+            // Without the post-untrack pin-drain spin, free returns immediately
+            // and CANCEL is set before we wake — we must NOT do the fetch_sub on
             // the now-freed box.
             if SEND_PIN_TEST_CANCEL.load(Ordering::Acquire) {
                 return;
@@ -7038,17 +7156,17 @@ mod tests {
     /// Verify that `hew_actor_free` drains all send pins **before** finalizing
     /// (calling terminate + freeing the box), not before the quiescence check.
     ///
-    /// **Why this test catches the TOCTOU bug in 520ad161d:**
+    /// **Why this test catches the post-untrack pin-drain TOCTOU bug:**
     ///
-    /// 520ad161d checked `send_pin_count == 0` inside the quiescence *wait
-    /// loop* (before the latch), not after `untrack_actor`.  The post-latch
-    /// hook fires AFTER the latch succeeds but BEFORE `untrack_actor`.  In
-    /// that window, `with_actor_send_by_id` can still find the actor in the
+    /// The pre-drain form checked `send_pin_count == 0` inside the quiescence
+    /// *wait loop* (before the latch), not after `untrack_actor`.  The
+    /// post-latch hook fires AFTER the latch succeeds but BEFORE `untrack_actor`.
+    /// In that window, `with_actor_send_by_id` can still find the actor in the
     /// map and increment the pin — the quiescence check that passed was
-    /// already stale.  520ad161d then proceeded to `untrack_actor` +
+    /// already stale.  That form then proceeded to `untrack_actor` +
     /// `finalize` without waiting → use-after-free.
     ///
-    /// **On 520ad161d (FAIL):** the hook increments `send_pin_count`; free
+    /// **Pre-drain form (FAIL):** the hook increments `send_pin_count`; free
     /// has no pin-drain loop after `untrack_actor` → proceeds to finalize
     /// immediately → returns in < 5 ms.  The bg thread wakes at 60 ms, finds
     /// `CANCEL == true` (set just after free returned), skips the `fetch_sub`
@@ -7085,7 +7203,7 @@ mod tests {
 
         set_free_post_latch_hook_for_test(None);
         // Signal the bg thread: if free returned before the bg thread ran
-        // (the 520ad161d regression path), the bg thread must not touch the
+        // (the pre-drain regression path), the bg thread must not touch the
         // freed box.
         SEND_PIN_TEST_CANCEL.store(true, Ordering::Release);
 
@@ -7094,7 +7212,7 @@ mod tests {
         // proceeded to finalize it observed WAITED = true, meaning all pins
         // were drained before finalize ran.
         //
-        // 520ad161d: free returned before the bg thread ran → WAITED = false.
+        // Pre-drain form: free returned before the bg thread ran → WAITED = false.
         assert!(
             SEND_PIN_DRAIN_WAITED.load(Ordering::Acquire),
             "hew_actor_free must drain all send pins before finalizing the actor \
@@ -7110,7 +7228,7 @@ mod tests {
     }
 
     /// Forced-ordering regression for the `cleanup_all_actors` re-enqueue UAF
-    /// (cap-xeco3 / fourth review round).
+    /// in the post-prepare latch window.
     ///
     /// A pinned by-ID sender that incremented `send_pin_count` before
     /// `drain_all_for_cleanup` removed the map entry can still be running its
@@ -7207,6 +7325,267 @@ mod tests {
                 .store(HewActorState::Stopped as i32, Ordering::Release);
             finalize_quiescent_actor_cleanup(actor, HewActorState::Stopped as i32);
         }
+    }
+
+    /// Deterministic free-vs-leak probe for the `cleanup_all_actors`
+    /// *snapshot-already-non-Idle* re-enqueue UAF.
+    ///
+    /// Set by [`cleanup_runnable_leak_state_drop_callback`] when (and only when)
+    /// `free_actor_resources` runs the codegen state-drop — i.e. when the actor
+    /// was *finalized* (freed).  A leaked (skipped) actor never reaches finalize,
+    /// so the counter stays 0.  Reading this global (not the actor box) keeps the
+    /// assertion well-defined on BOTH the buggy path (box freed) and the fixed
+    /// path (box leaked): no use-after-free read is needed to tell them apart.
+    static CLEANUP_RUNNABLE_LEAK_STATE_DROP_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    unsafe extern "C" fn cleanup_runnable_leak_state_drop_callback(_state: *mut c_void) {
+        CLEANUP_RUNNABLE_LEAK_STATE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Forced-ordering regression for the `cleanup_all_actors`
+    /// *snapshot-already-non-Idle* re-enqueue UAF.
+    ///
+    /// Companion to `cleanup_skips_actor_reenqueued_during_latch_window`, which
+    /// covers the window where the wake CAS lands AFTER cleanup loads the state.
+    /// This test covers the window a stale-snapshot decision MISSES: a pinned
+    /// by-ID sender wins `CAS Idle→Runnable` BEFORE cleanup reaches the actor, so
+    /// the actor is already `Runnable` (re-enqueued) when the finalize decision
+    /// runs.
+    ///
+    /// We reproduce that window deterministically and end-to-end: store
+    /// `Runnable` AND `sched_enqueue` the actor into the scheduler's global
+    /// queue BEFORE `cleanup_all_actors` runs — exactly the end-state of a
+    /// pinned by-ID sender that won `CAS Idle→Runnable` + `sched_enqueue` before
+    /// the sweep reached the actor. `drain_all_for_cleanup` untracks it, and the
+    /// per-actor finalize decision then observes `Runnable`. After cleanup we
+    /// DRAIN the queue (`pop_global`) and deref the popped pointer — the
+    /// "anything ever drains `global_queue` post-cleanup" scenario, where a
+    /// later consumer pops the queue — proving the leaked pointer still resolves
+    /// to a live actor (no UAF). On the buggy path that deref would hit freed
+    /// memory, but the counter assertion fails first, so the deref only runs once
+    /// the fix has proven the box was leaked, not freed.
+    ///
+    /// **Under a snapshot-gated decision (FAIL):** cleanup loads `state =
+    /// Runnable`, the `if state == Idle` short-circuits (no latch CAS, no
+    /// fail-closed `continue`), and `finalize_quiescent_actor_cleanup(actor,
+    /// Runnable)` frees the re-enqueued actor — state-drop runs → counter == 1 →
+    /// assertion fails. (A scheduler queue holding the now-dangling pointer is
+    /// the UAF.)
+    ///
+    /// **Under the CAS-result decision (PASS):** the finalize decision attempts
+    /// `CAS Idle→Stopped`, observes `Err(Runnable)`, and SKIPs (leaks
+    /// fail-closed) — finalize never runs → counter == 0 → assertion passes.
+    /// The leaked actor is reclaimed manually at the end so the test does not
+    /// leak.
+    #[test]
+    fn cleanup_skips_actor_already_runnable_before_finalize_decision() {
+        let _guard = crate::runtime_test_guard();
+        let scheduler = scheduler::NoWorkerSchedulerForTest::install();
+        let _tracing = crate::tracing::tracing_test_guard();
+
+        CLEANUP_RUNNABLE_LEAK_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+        // Spawn with a malloc'd source so `state` is non-null: the state-drop
+        // callback only fires when finalize runs over a non-null, non-crashed
+        // state — that is the "was freed" signal.
+        // SAFETY: malloc returns a valid 8-byte allocation or null.
+        let src = unsafe { libc::malloc(8) };
+        assert!(!src.is_null());
+        // SAFETY: spawn deep-copies the bytes; src is released immediately after.
+        let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: spawn copied the bytes; release the source allocation.
+        unsafe { libc::free(src) };
+
+        // SAFETY: actor is valid and not being dispatched.
+        unsafe {
+            hew_actor_set_state_drop(actor, cleanup_runnable_leak_state_drop_callback);
+            assert!(
+                !(*actor).state.is_null(),
+                "spawn must produce a non-null state for the state-drop signal"
+            );
+            // Simulate the end-state of a pinned by-ID sender that already won
+            // `CAS Idle→Runnable` (+ `sched_enqueue`) BEFORE the sweep loop
+            // observes this actor — the exact snapshot-already-non-Idle window.
+            (*actor)
+                .actor_state
+                .store(HewActorState::Runnable as i32, Ordering::Release);
+        }
+
+        // Genuinely enqueue the actor, so this is "Runnable AND queued" — the
+        // real shape of a won wake CAS, not just a state store. `sched_enqueue`
+        // pushes the raw pointer into the global queue and notifies a parker
+        // (no worker exists to deref it under NoWorkerSchedulerForTest).
+        scheduler::sched_enqueue(actor);
+
+        // SAFETY: scheduler is stopped (NoWorkerSchedulerForTest installed); no
+        // dispatch is in progress.
+        unsafe { cleanup_all_actors() };
+
+        // Load-bearing assertion: a `Runnable` (re-enqueued) actor must be
+        // SKIPPED, not finalized.  state-drop running means finalize ran means
+        // the queued actor was freed — the use-after-free.  Reads only the
+        // global counter, never the (possibly-freed) actor box.
+        assert_eq!(
+            CLEANUP_RUNNABLE_LEAK_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            0,
+            "cleanup_all_actors must SKIP (leak) an actor that is Runnable at the \
+             finalize decision; a non-zero count means it ran finalize over a \
+             re-enqueued actor (the snapshot-already-Runnable use-after-free)"
+        );
+
+        // Drain the scheduler queue exactly as a post-cleanup consumer would.
+        // The pointer cleanup left enqueued must still be VALID. On the buggy
+        // (snapshot-gated) path cleanup freed this box, so this pop would return
+        // a dangling pointer and the deref below would read freed memory — but
+        // the counter assertion above already failed before we reach here, so
+        // the deref only ever runs on the fixed (leaked-not-freed) path. This is
+        // the "anything ever drains global_queue post-cleanup" scenario, made
+        // observable.
+        let popped = scheduler.pop_global();
+        assert_eq!(
+            popped,
+            Some(actor),
+            "the enqueued actor must still be in the scheduler queue (cleanup \
+             leaked it rather than freeing a queued pointer)"
+        );
+        // SAFETY: reached only because the counter assertion passed, i.e. cleanup
+        // leaked (did not free) the actor — the queued pointer is still valid.
+        let queued_state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+        assert_eq!(
+            queued_state,
+            HewActorState::Runnable as i32,
+            "the queued pointer must still resolve to the live Runnable actor (no UAF)"
+        );
+
+        // The actor must be untracked (drain_all_for_cleanup removed it) even
+        // though cleanup skipped finalize.  Pointer-identity probe; no deref.
+        assert!(
+            !live_actors::is_actor_live(actor),
+            "actor must be untracked even when cleanup skips finalize"
+        );
+
+        // Manual reclaim: cleanup deliberately leaked this actor to avoid the
+        // UAF.  Finalize it here so the test itself does not leak.
+        // SAFETY: actor is valid, untracked, pin-free, no concurrent access.
+        unsafe {
+            (*actor)
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            finalize_quiescent_actor_cleanup(actor, HewActorState::Stopped as i32);
+        }
+        assert_eq!(
+            CLEANUP_RUNNABLE_LEAK_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            1,
+            "manual reclaim must run state-drop exactly once (no leak)"
+        );
+    }
+
+    /// Deterministic free-vs-leak probe for the bonus `cleanup_all_actors`
+    /// *Suspended*-finalize fix.  Set by
+    /// [`cleanup_suspended_leak_state_drop_callback`] only when finalize runs
+    /// over the actor (i.e. it was freed); a leaked (skipped) actor never reaches
+    /// finalize, so the counter stays 0.
+    static CLEANUP_SUSPENDED_LEAK_STATE_DROP_COUNT: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    unsafe extern "C" fn cleanup_suspended_leak_state_drop_callback(_state: *mut c_void) {
+        CLEANUP_SUSPENDED_LEAK_STATE_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Forced-ordering regression for the bonus `cleanup_all_actors`
+    /// *Suspended*-finalize leak that the quiescence gate also closes.
+    ///
+    /// A `Suspended` actor is parked at a non-final `coro.suspend` with a live
+    /// continuation frame (`suspended_cont`).  `actor_free_state_is_quiescent`
+    /// excludes `Suspended`, so it is never safe to finalize on the shutdown
+    /// sweep: `hew_actor_free_inner` destroys the parked frame first, but
+    /// `cleanup_all_actors` (workers joined) cannot block to do so — it must
+    /// leak-not-free.
+    ///
+    /// **Under a snapshot-gated decision (FAIL):** cleanup loads `state =
+    /// Suspended`, the `if state == Idle` short-circuits (no latch, no
+    /// fail-closed `continue`), and `finalize_quiescent_actor_cleanup(actor,
+    /// Suspended)` frees the parked actor — running its state-drop and leaking
+    /// the continuation frame → counter == 1 → assertion fails.
+    ///
+    /// **Under the quiescence gate (PASS):** the finalize decision attempts `CAS
+    /// Idle→Stopped`, observes `Err(Suspended)`, and — because `Suspended` is
+    /// not `actor_free_state_is_quiescent` — SKIPs (leaks fail-closed) → finalize
+    /// never runs → counter == 0 → assertion passes.
+    ///
+    /// The finalize decision reads only `actor_state`, so storing `Suspended` is
+    /// the faithful observable; no real parked frame is needed to exercise the
+    /// gate.
+    #[test]
+    fn cleanup_skips_suspended_actor_at_finalize_decision() {
+        let _guard = crate::runtime_test_guard();
+        let _scheduler = scheduler::NoWorkerSchedulerForTest::install();
+        let _tracing = crate::tracing::tracing_test_guard();
+
+        CLEANUP_SUSPENDED_LEAK_STATE_DROP_COUNT.store(0, Ordering::SeqCst);
+
+        // Non-null state so the state-drop callback is the "was finalized" signal.
+        // SAFETY: malloc returns a valid 8-byte allocation or null.
+        let src = unsafe { libc::malloc(8) };
+        assert!(!src.is_null());
+        // SAFETY: spawn deep-copies the bytes; src is released immediately after.
+        let actor = unsafe { hew_actor_spawn(src, 8, Some(noop_dispatch)) };
+        assert!(!actor.is_null());
+        // SAFETY: spawn copied the bytes; release the source allocation.
+        unsafe { libc::free(src) };
+
+        // SAFETY: actor is valid and not being dispatched.
+        unsafe {
+            hew_actor_set_state_drop(actor, cleanup_suspended_leak_state_drop_callback);
+            assert!(
+                !(*actor).state.is_null(),
+                "spawn must produce a non-null state for the state-drop signal"
+            );
+            // Park the actor at a suspend point (non-quiescent). The finalize
+            // decision reads only `actor_state`, so this state store is the
+            // faithful observable of a parked actor at shutdown.
+            (*actor)
+                .actor_state
+                .store(HewActorState::Suspended as i32, Ordering::Release);
+        }
+
+        // SAFETY: scheduler is stopped (NoWorkerSchedulerForTest installed); no
+        // dispatch is in progress.
+        unsafe { cleanup_all_actors() };
+
+        // A `Suspended` actor is non-quiescent: cleanup must SKIP (leak) it,
+        // never finalize a parked actor.  counter != 0 means it freed one
+        // (and leaked the continuation frame).  Reads only the global counter.
+        assert_eq!(
+            CLEANUP_SUSPENDED_LEAK_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            0,
+            "cleanup_all_actors must SKIP (leak) a Suspended actor; a non-zero \
+             count means it finalized a parked actor (freeing its box and leaking \
+             the continuation frame)"
+        );
+
+        // Untracked even though cleanup skipped finalize. Pointer-identity; no deref.
+        assert!(
+            !live_actors::is_actor_live(actor),
+            "actor must be untracked even when cleanup skips finalize"
+        );
+
+        // Manual reclaim so the test itself does not leak.  Drop to a terminal
+        // state first (no real frame was parked, so no destroy_parked needed).
+        // SAFETY: actor is valid, untracked, pin-free, no concurrent access.
+        unsafe {
+            (*actor)
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            finalize_quiescent_actor_cleanup(actor, HewActorState::Stopped as i32);
+        }
+        assert_eq!(
+            CLEANUP_SUSPENDED_LEAK_STATE_DROP_COUNT.load(Ordering::SeqCst),
+            1,
+            "manual reclaim must run state-drop exactly once (no leak)"
+        );
     }
 
     #[test]

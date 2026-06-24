@@ -1,0 +1,17 @@
+// Indexed-accessor trap negative: `s[i]` on an out-of-bounds index must trap
+// (IndexOutOfBounds) rather than read past the buffer or return garbage. This
+// is the trapping `at` half of the `Index<Idx>` model for `string`: `s[i]` traps
+// on OOB while `s.get(i)` returns `None`. string routes `s[i]` through the
+// `hew_string_index` runtime getter, which aborts via `libc::abort()` on OOB —
+// the binary terminates with exit 134 (SIGABRT+128); run.sh asserts that code.
+fn main() -> i64 {
+    let s = "abc";
+    // Index 10 is past the end of a 3-codepoint string: must trap before the read.
+    let c: char = s[10];
+    // Unreachable: the index trap fires above.
+    if c == 'z' {
+        1
+    } else {
+        0
+    }
+}

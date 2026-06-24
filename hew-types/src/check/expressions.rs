@@ -1458,22 +1458,24 @@ impl Checker {
                 }
                 args[0].clone()
             }
-            // `m[k]` over `HashMap<K, V>` reuses the existing `.get(k)` /
-            // `.insert(k, v)` runtime ABI rather than the `Index` trait.
+            // `m[k]` over `HashMap<K, V>` is the trait-routed `Index<K>`
+            // accessor (`<HashMap<K, V> as Index>::Output = V`), mirroring
+            // `v[i]` over `Vec<T>`.
             //
-            // Read context (`let x = m[k]`): result type is `Option<V>` — a
-            // missing key is a normal, non-aborting outcome for a map, so the
-            // surface is fail-closed by construction (the caller must match the
-            // `None`). The checker records a `ResolvedCall` to
-            // `hew_hashmap_get_layout` at this span; HIR routes the index node
-            // to the same `ResolvedImplCall` that `m.get(k)` produces.
+            // Read context (`let x = m[k]`): the TRAPPING accessor
+            // (`Index::at`) — result type is the BARE value `V`. A missing key
+            // aborts with `IndexOutOfBounds` (the map analogue of a `v[i]`
+            // out-of-bounds trap), so there is no `Option` round-trip. No
+            // resolved `.get` call is recorded here: the MIR `Index` node lowers
+            // directly to the `hew_hashmap_get_clone_layout` trap choke
+            // (`lower_hashmap_index_trap`). Callers who want the non-aborting
+            // outcome use `m.get(k) -> Option<V>` instead.
             //
             // Write context (`m[k] = v`): the assignment-target type is the
-            // bare value `V` (so the RHS checks against `V`, not `Option<V>`),
-            // and the checker records a `ResolvedCall` to
-            // `hew_hashmap_insert_layout` at this span. The key bound is the
-            // existing `K: Hash + Eq` admission contract — the same one every
-            // HashMap method call enforces.
+            // bare value `V` (so the RHS checks against `V`), and the checker
+            // records a `ResolvedCall` to `hew_hashmap_insert_layout` at this
+            // span. The key bound is the existing `K: Hash + Eq` admission
+            // contract — the same one every HashMap method call enforces.
             Ty::Named {
                 builtin: Some(BuiltinType::HashMap),
                 args,
@@ -1482,20 +1484,23 @@ impl Checker {
                 let key_ty = args[0].clone();
                 let val_ty = args[1].clone();
                 self.check_against(&index.0, &index.1, &key_ty);
-                let method = match ctx {
-                    IndexContext::Read => "get",
-                    IndexContext::AssignTarget => "insert",
-                };
-                // Enforce `K: Hash + Eq` and record the resolved runtime call
-                // (`hew_hashmap_get_layout` / `hew_hashmap_insert_layout`) at
-                // the index span, exactly as the method-call path does.
+                // Enforce `K: Hash + Eq` and reject unsafe key/value element
+                // types, exactly as the method-call path does — for both the
+                // read (trap) and the write (insert) surfaces.
                 if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
                     return Ty::Error;
                 }
-                self.record_resolved_hashmap_call(method, &key_ty, &val_ty, span);
                 match ctx {
-                    IndexContext::Read => Ty::option(val_ty),
-                    IndexContext::AssignTarget => val_ty,
+                    // Trapping bare-`V` read: no `.get` resolved call; MIR's
+                    // `Index` node owns the `hew_hashmap_get_clone_layout` trap
+                    // lowering.
+                    IndexContext::Read => val_ty,
+                    // Write target: record the `hew_hashmap_insert_layout` call
+                    // at the index span (the same one `m.insert(k, v)` emits).
+                    IndexContext::AssignTarget => {
+                        self.record_resolved_hashmap_call("insert", &key_ty, &val_ty, span);
+                        val_ty
+                    }
                 }
             }
             // W3 collections-sugar S2: `s[i]` over `string` returns a `char`

@@ -31837,6 +31837,7 @@ fn is_vec_receiver_borrow_symbol(callee: &str) -> bool {
             | "hew_vec_get_layout"
             | "hew_vec_get_ptr"
             | "hew_vec_get_owned"
+            | "hew_vec_get_clone"
             | "hew_vec_set_bool"
             | "hew_vec_set_i8"
             | "hew_vec_set_u8"

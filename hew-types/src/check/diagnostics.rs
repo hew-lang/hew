@@ -282,7 +282,7 @@ impl Checker {
         // reassigned) within a single accumulated fragment is expected, not a
         // defect. Suppress the per-binding lints for eval fragments.
         let scope_warnings = self.env.pop_scope_with_warnings();
-        if self.repl_fragment {
+        if self.repl_fragment || self.is_stdlib_source {
             return;
         }
         for w in scope_warnings {

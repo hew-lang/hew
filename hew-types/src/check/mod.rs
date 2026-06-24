@@ -262,9 +262,35 @@ impl Checker {
                     let err_before = self.errors.len();
                     let warn_before = self.warnings.len();
 
+                    // Builtin/standard-library modules (`std::`, `hew::`,
+                    // `ecosystem::`) ship with the compiler; scope-level lints
+                    // inside them (UnusedVariable, UnusedMut) are implementation
+                    // details the user cannot act on.  Set the flag transiently
+                    // so `emit_scope_warnings` suppresses them for these bodies.
+                    // Mirrors the stdlib-skip guard already in `run_lints`.
+                    //
+                    // Real stdlib modules are at least 2 path segments deep
+                    // (e.g. ["std", "iter"]).  A single-segment module named
+                    // ["std"] is a user file (std.hew) and must NOT be treated
+                    // as stdlib — it still needs its scope warnings.  This
+                    // matches `is_builtin_module` in hew-compile, which requires
+                    // "std::" / "hew::" / "ecosystem::" (the double-colon
+                    // guarantees 2+ segments).
+                    let saved_is_stdlib_source = self.is_stdlib_source;
+                    if mod_id.path.len() >= 2
+                        && matches!(
+                            mod_id.path.first().map(String::as_str),
+                            Some("std" | "hew" | "ecosystem")
+                        )
+                    {
+                        self.is_stdlib_source = true;
+                    }
+
                     for (item, span) in &module.items {
                         self.check_item(item, span);
                     }
+
+                    self.is_stdlib_source = saved_is_stdlib_source;
 
                     // Tag diagnostics that were not already tagged (e.g. by a
                     // nested call that already knew the origin).
@@ -818,10 +844,16 @@ impl Checker {
                 // `module_idx`, so span tagging for later user modules stays
                 // aligned with the checker's module indexing. Mirrors
                 // `is_builtin_module` in `hew-compile`.
-                if matches!(
-                    mod_id.path.first().map(String::as_str),
-                    Some("std" | "hew" | "ecosystem")
-                ) {
+                //
+                // Real stdlib modules are at least 2 path segments deep
+                // (e.g. ["std", "iter"]).  A single-segment module named
+                // ["std"] is a user file (std.hew) and must still be linted.
+                if mod_id.path.len() >= 2
+                    && matches!(
+                        mod_id.path.first().map(String::as_str),
+                        Some("std" | "hew" | "ecosystem")
+                    )
+                {
                     continue;
                 }
                 let module_name = mod_id.path.join(".");

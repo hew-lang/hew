@@ -948,6 +948,17 @@ fn render_instr(instr: &Instr) -> String {
             render_place(record),
             field_offset.0
         ),
+        Instr::RecordFieldDrop {
+            record,
+            field_offset,
+            ty,
+            drop_fn,
+        } => format!(
+            "drop_field {}.field[{}] ty={} fn={drop_fn:?}",
+            render_place(record),
+            field_offset.0,
+            ty.user_facing()
+        ),
         Instr::TupleFieldLoad {
             tuple,
             field_index,

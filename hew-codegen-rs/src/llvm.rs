@@ -13726,6 +13726,15 @@ fn lower_instruction(
             lower_record_field_load(fn_ctx, *record, *field_offset, *dest)?;
             let _ = ctx;
         }
+        Instr::RecordFieldDrop {
+            record,
+            field_offset,
+            ty,
+            drop_fn,
+        } => {
+            lower_record_field_drop(fn_ctx, *record, *field_offset, ty, drop_fn)?;
+            let _ = ctx;
+        }
         Instr::RecordFieldStore {
             record,
             field_offset,
@@ -14528,6 +14537,134 @@ fn lower_record_field_load(
         .builder
         .build_store(dest_ptr, field_val)
         .llvm_ctx_with(|| format!("RecordFieldLoad field {idx} store"))?;
+    Ok(())
+}
+
+/// Release an owned record field in-place without retaining it first.
+///
+/// Emits: GEP to the field slot → raw load (no `hew_string_clone` retain) →
+/// call `drop_fn` release symbol → null-store the field slot.
+///
+/// Unlike `lower_record_field_load`, which always retains `string`-typed fields
+/// via `hew_string_clone` (to avoid aliasing the parent record's buffer), this
+/// function loads the raw pointer directly.  That makes it correct for the
+/// functional-update pre-drop case: the field being dropped is the sole owner of
+/// its heap data (rc == 1), so calling the release symbol drives the refcount to
+/// zero and frees the allocation.
+///
+/// ## Safety precondition
+///
+/// The caller (MIR `RecordFieldDrop` emitter) is responsible for ensuring the
+/// record field is a sole owner at the instruction's execution point.  Dropping
+/// a shared field (rc > 1) via this path would incorrectly decrement the
+/// refcount below the expected floor.
+///
+/// ## Supported field types
+///
+/// Only `DropFnSpec::Release` COW-heap scalar fields (string, Vec, HashMap,
+/// HashSet, Generator) are handled here.  `bytes` fields use the
+/// `RecordFieldLoad` + `Instr::Drop` path (which doesn't retain for bytes)
+/// and are not dispatched to this function.  Arriving with an unsupported
+/// `drop_fn` variant fails closed.
+fn lower_record_field_drop(
+    fn_ctx: &FnCtx<'_, '_>,
+    record: Place,
+    field_offset: hew_mir::FieldOffset,
+    ty: &ResolvedTy,
+    drop_fn: &hew_mir::DropFnSpec,
+) -> CodegenResult<()> {
+    let hew_mir::DropFnSpec::Release(symbol) = drop_fn else {
+        return Err(CodegenError::FailClosed(format!(
+            "RecordFieldDrop only supports DropFnSpec::Release; got {drop_fn:?}. \
+             RecordFieldDrop is emitted exclusively by functional-update lowering \
+             for COW-heap scalar fields (LESSONS: boundary-fail-closed)"
+        )));
+    };
+    // Validate symbol/type congruence before emitting any call. If the MIR
+    // emitter drifted from the codegen table, fail loudly rather than silently
+    // calling an unrelated release function (LESSONS: boundary-fail-closed,
+    // dedup-semantic-boundary).
+    if cow_heap_release_symbol(fn_ctx, ty) != Some(symbol) {
+        return Err(CodegenError::FailClosed(format!(
+            "RecordFieldDrop @ field[{idx}]: drop_fn=Release({symbol:?}) is \
+             incongruent with field type {ty:?} (expected release symbol \
+             {expected:?}); refusing to emit (LESSONS: boundary-fail-closed)",
+            idx = field_offset.0,
+            expected = cow_heap_release_symbol(fn_ctx, ty),
+        )));
+    }
+    let (record_ptr, record_slot_ty) = place_pointer(fn_ctx, record)?;
+    let struct_ty = match record_slot_ty {
+        BasicTypeEnum::StructType(st) => st,
+        other => {
+            return Err(CodegenError::FailClosed(format!(
+                "RecordFieldDrop record place has non-struct slot type: {other:?}"
+            )));
+        }
+    };
+    let idx = field_offset.0;
+    let idx_usize = usize::try_from(idx).map_err(|_| {
+        CodegenError::FailClosed(format!(
+            "RecordFieldDrop field offset {idx} exceeds usize::MAX — impossible"
+        ))
+    })?;
+    let element_tys = struct_ty.get_field_types();
+    if idx_usize >= element_tys.len() {
+        return Err(CodegenError::FailClosed(format!(
+            "RecordFieldDrop field offset {idx} is out of bounds for struct with \
+             {} fields",
+            element_tys.len()
+        )));
+    }
+    // Field-slot-is-pointer guard. The raw load below reads the slot as a single
+    // pointer (`ptr_ty` → `into_pointer_value`) and hands it to a COW-heap
+    // release symbol. That is only valid when the field slot IS one pointer.
+    // The MIR emitter routes exactly the single-pointer COW types here
+    // (`field_override_uses_record_field_drop`: string / Vec / HashMap / HashSet
+    // / Generator) and keeps the fat `bytes` `{ptr,len,cap}` triple on the
+    // `RecordFieldLoad` + `Drop` path. If a future emitter change ever steered a
+    // non-pointer field (a BitCopy scalar, or the fat triple) into this op, the
+    // load would type-confuse the slot. Fail closed instead of mis-loading
+    // (LESSONS: boundary-fail-closed, dedup-semantic-boundary).
+    if !element_tys[idx_usize].is_pointer_type() {
+        return Err(CodegenError::FailClosed(format!(
+            "RecordFieldDrop @ field[{idx}]: slot type {slot:?} is not a single \
+             pointer; RecordFieldDrop is emitted only for single-pointer COW-heap \
+             fields (string / Vec / HashMap / HashSet / Generator). A fat or \
+             BitCopy field reached this op — refusing to load the slot as a \
+             pointer (LESSONS: boundary-fail-closed)",
+            slot = element_tys[idx_usize],
+        )));
+    }
+    let field_ptr = fn_ctx
+        .builder
+        .build_struct_gep(struct_ty, record_ptr, idx, &format!("rfd_{idx}_gep"))
+        .llvm_ctx_with(|| format!("RecordFieldDrop struct_gep field {idx}"))?;
+    // Raw load: NO hew_string_clone retain. This is intentional — the field is
+    // the sole owner (rc == 1) and we want to drive rc to zero via the release
+    // symbol. A retain here would produce a clone+immediate-drop no-op (the
+    // same bug we're fixing in RecordFieldLoad's string path).
+    let ptr_ty = fn_ctx.ctx.ptr_type(inkwell::AddressSpace::default());
+    let field_val = fn_ctx
+        .builder
+        .build_load(ptr_ty, field_ptr, &format!("rfd_{idx}_raw_load"))
+        .llvm_ctx_with(|| format!("RecordFieldDrop field {idx} raw load"))?
+        .into_pointer_value();
+    let helper =
+        get_or_declare_drop_helper(fn_ctx.ctx, fn_ctx.llvm_mod, &DropHelper { name: symbol });
+    fn_ctx
+        .builder
+        .build_call(helper, &[field_val.into()], &format!("{symbol}_rfd_call"))
+        .llvm_ctx_with(|| format!("RecordFieldDrop field {idx} {symbol} call"))?;
+    // Null-store the field slot so any structurally-reachable second drop fires
+    // `release_symbol(null)` — a no-op for all COW-heap release symbols
+    // (null-tolerant). Same idempotency posture as `emit_cow_heap_drop`
+    // (LESSONS: raii-null-after-move, lifecycle-symmetry).
+    let null_ptr = ptr_ty.const_null();
+    fn_ctx
+        .builder
+        .build_store(field_ptr, null_ptr)
+        .llvm_ctx_with(|| format!("RecordFieldDrop field {idx} post-drop null-store"))?;
     Ok(())
 }
 

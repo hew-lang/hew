@@ -158,13 +158,13 @@ fn assert_no_nyi(pl: &IrPipeline) {
 }
 
 // ---------------------------------------------------------------------------
-// Canary 1 — BOUND Vec<string> getter: `let y = xs.get(i); y.len()` → one drop.
+// Canary 1 — BOUND Vec<string> getter: `let y = xs[i]; y.len()` → one drop.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn canary1_bound_vec_get_releases_exactly_once() {
     let pl = pipeline_with_tc(
-        "fn c1(xs: Vec<string>) -> i64 {\n    let y = xs.get(0);\n    y.len() as i64\n}\n",
+        "fn c1(xs: Vec<string>) -> i64 {\n    let y = xs[0];\n    y.len() as i64\n}\n",
     );
     assert_no_nyi(&pl);
     // `y` is a fresh retained owner read only by `len` (a borrow): the BOUND
@@ -183,14 +183,14 @@ fn canary1_bound_vec_get_releases_exactly_once() {
 }
 
 // ---------------------------------------------------------------------------
-// Canary 2 — NESTED Vec<string> getter in a loop: `xs.get(i).len()` balances
+// Canary 2 — NESTED Vec<string> getter in a loop: `xs[i].len()` balances
 // the retained owner with exactly one inline drop per iteration.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn canary2_nested_vec_get_in_loop_balances() {
     let pl = pipeline_with_tc(
-        "fn c2(xs: Vec<string>, n: i64) -> i64 {\n    for i in 0..n {\n        xs.get(0).len();\n    }\n    0\n}\n",
+        "fn c2(xs: Vec<string>, n: i64) -> i64 {\n    for i in 0..n {\n        xs[0].len();\n    }\n    0\n}\n",
     );
     assert_no_nyi(&pl);
     // The bare `hew_vec_get_str` temp is borrowed by `len` then dead: the NESTED
@@ -295,7 +295,7 @@ fn canary4_escaping_and_consuming_shapes_do_not_drop() {
 #[test]
 fn canary5_discarded_producer_releases_once() {
     let pl = pipeline_with_tc(
-        "fn dconcat(a: string, b: string) {\n    a + b;\n}\nfn dvecget(xs: Vec<string>) {\n    xs.get(0);\n}\n",
+        "fn dconcat(a: string, b: string) {\n    a + b;\n}\nfn dvecget(xs: Vec<string>) {\n    xs[0];\n}\n",
     );
     assert_no_nyi(&pl);
     assert_eq!(

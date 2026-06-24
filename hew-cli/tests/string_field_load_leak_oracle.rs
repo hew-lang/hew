@@ -145,7 +145,7 @@ import std::string;\n\
 type Row { category: string; score: i64; }\n\
 fn parse_row(line: string, sc: i64) -> Row {\n\
 \x20   let parts: Vec<string> = line.split(\",\");\n\
-\x20   Row { category: parts.get(0), score: sc }\n\
+\x20   Row { category: parts[0], score: sc }\n\
 }\n\
 fn main() {\n\
 \x20   let lines: Vec<string> = Vec::new();\n\
@@ -153,12 +153,12 @@ fn main() {\n\
 \x20   lines.push(\"science,x\"); lines.push(\"math,x\"); lines.push(\"science,x\");\n\
 \x20   let rows: Vec<Row> = Vec::new();\n\
 \x20   let n = lines.len();\n\
-\x20   for i in 0 .. n { let line = lines.get(i); let row = parse_row(line, i); rows.push(row); }\n\
+\x20   for i in 0 .. n { let line = lines[i]; let row = parse_row(line, i); rows.push(row); }\n\
 \x20   let totals: HashMap<string, i64> = HashMap::new();\n\
 \x20   let counts: HashMap<string, i64> = HashMap::new();\n\
 \x20   let m = rows.len();\n\
 \x20   for i in 0 .. m {\n\
-\x20       let row = rows.get(i);\n\
+\x20       let row = rows[i];\n\
 \x20       totals.insert(row.category, row.score);\n\
 \x20       counts.insert(row.category, 1);\n\
 \x20   }\n\
@@ -173,7 +173,7 @@ const DUP_FIELD_READ_INTO_RETURN_SOURCE: &str = "\
 import std::string;\n\
 fn first_field(line: string) -> (string, i64) {\n\
 \x20   let parts: Vec<string> = line.split(\",\");\n\
-\x20   (parts.get(0), 1)\n\
+\x20   (parts[0], 1)\n\
 }\n\
 fn main() {\n\
 \x20   let lines: Vec<string> = Vec::new();\n\
@@ -183,7 +183,7 @@ fn main() {\n\
 \x20   let counts: HashMap<string, i64> = HashMap::new();\n\
 \x20   let n = lines.len();\n\
 \x20   for i in 0 .. n {\n\
-\x20       let p = first_field(lines.get(i));\n\
+\x20       let p = first_field(lines[i]);\n\
 \x20       totals.insert(p.0, p.1);\n\
 \x20       counts.insert(p.0, 1);\n\
 \x20   }\n\
@@ -281,7 +281,7 @@ fn field_load_into_consume_no_double_free() {
 }
 
 /// F1.1: a tuple `string` element read into two consume positions (the
-/// `scanner.next_line` shape, here `(parts.get(0), _).0` keyed into two maps).
+/// `scanner.next_line` shape, here `(parts[0], _).0` keyed into two maps).
 /// Pre-fix the same buffer was aliased into both inserts and double-freed.
 /// Post-fix each read is an independent retained `+1`.
 #[test]

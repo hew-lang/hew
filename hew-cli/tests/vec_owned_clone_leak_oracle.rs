@@ -94,7 +94,7 @@ fn owned_vec_clone_drop_loop_source(frames: usize) -> String {
          \x20       row.push(\"owned-clone-leak-oracle-cell-two\");\n\
          \x20       v.push(row);\n\
          \x20       let w = v.clone();\n\
-         \x20       total = total + v.len() + w.len() + v.get(0).len();\n\
+         \x20       total = total + v.len() + w.len() + v[0].len();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   total\n\
@@ -117,7 +117,7 @@ fn main() {\n\
 \x20   let extra: Vec<string> = [];\n\
 \x20   extra.push(\"clone-ccc\");\n\
 \x20   w.push(extra);\n\
-\x20   print(f\"v{v.len()}r{v.get(0).len()}c;w{w.len()}r;\");\n\
+\x20   print(f\"v{v.len()}r{v[0].len()}c;w{w.len()}r;\");\n\
 \x20   print(\"OK\");\n\
 }\n";
 

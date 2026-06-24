@@ -90,9 +90,9 @@ fn main() {\n\
 \x20   let rows = build_rows(3);\n\
 \x20   var out: string = \"\";\n\
 \x20   for r in 0 .. rows.len() {\n\
-\x20       let row = rows.get(r);\n\
+\x20       let row = rows[r];\n\
 \x20       for c in 0 .. row.len() {\n\
-\x20           out = out + row.get(c) + \"|\";\n\
+\x20           out = out + row[c] + \"|\";\n\
 \x20       }\n\
 \x20       out = out + \";\";\n\
 \x20   }\n\
@@ -121,7 +121,7 @@ fn main() {\n\
 \x20   }\n\
 \x20   var out: string = \"\";\n\
 \x20   for r in 0 .. rows.len() {\n\
-\x20       let row = rows.get(r);\n\
+\x20       let row = rows[r];\n\
 \x20       match row.get(key) {\n\
 \x20           Some(v) => { out = out + f\"{v}\" + \"|\"; },\n\
 \x20           None => { out = out + \"MISSING|\"; },\n\
@@ -153,7 +153,7 @@ fn vec_vec_string_drop_loop_source(frames: usize) -> String {
          \x20       cur.clear();\n\
          \x20       cur.push(\"per-iteration-row-element-three\");\n\
          \x20       rows.push(cur);\n\
-         \x20       total = total + rows.len() + rows.get(0).len();\n\
+         \x20       total = total + rows.len() + rows[0].len();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   total\n\

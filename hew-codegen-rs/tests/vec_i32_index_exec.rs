@@ -113,12 +113,12 @@ fn vec_i32_get_and_set_accept_i32_index_values() {
             offsets.push(20);
             offsets.push(30);
 
-            let u = queue.get(0);
-            let offset = offsets.get(u);
+            let u = queue[0];
+            let offset = offsets[u];
 
-            let set_index = queue.get(1);
+            let set_index = queue[1];
             offsets.set(set_index, 40);
-            let updated = offsets.get(set_index);
+            let updated = offsets[set_index];
 
             print(offset);
             if offset == 20 {

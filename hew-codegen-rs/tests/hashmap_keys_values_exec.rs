@@ -219,7 +219,7 @@ fn main() -> i64 {
     var m: HashMap<i64, Point> = HashMap::new();
     m.insert(1, Point { x: 10, y: 20 });
     let vs = m.values();
-    let got = vs.get(0);
+    let got = vs[0];
     got.x + got.y
 }
 "#,
@@ -249,7 +249,7 @@ fn main() -> i64 {
     var m: HashMap<Point, i64> = HashMap::new();
     m.insert(Point { x: 3, y: 7 }, 99);
     let ks = m.keys();
-    let got = ks.get(0);
+    let got = ks[0];
     got.x + got.y
 }
 "#,

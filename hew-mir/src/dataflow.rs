@@ -392,141 +392,11 @@ fn meet_predecessors(
 pub(crate) fn build_preds(blocks: &[BasicBlock]) -> HashMap<u32, Vec<u32>> {
     let mut preds: HashMap<u32, Vec<u32>> = HashMap::new();
     for block in blocks {
-        let mut emit_edge = |target: u32| preds.entry(target).or_default().push(block.id);
-        match &block.terminator {
-            Terminator::Return | Terminator::Trap { .. } => {}
-            Terminator::Goto { target } => emit_edge(*target),
-            Terminator::Branch {
-                then_target,
-                else_target,
-                ..
-            } => {
-                emit_edge(*then_target);
-                emit_edge(*else_target);
-            }
-            Terminator::Call { next, .. }
-            | Terminator::Yield { next, .. }
-            | Terminator::MakeGenerator { next, .. }
-            | Terminator::MakeLambdaActor { next, .. }
-            | Terminator::Send { next, .. }
-            | Terminator::Ask { next, .. }
-            | Terminator::RemoteAsk { next, .. }
-            | Terminator::Join { next, .. } => emit_edge(*next),
-            // The runtime dispatch jumps to exactly one winning arm's
-            // `body_block`; each body reaches `next` (the join) through its
-            // own `Goto`. Without the body edges the arm bodies are
-            // unreachable, their exit states are discarded by the
-            // reachable-only meet, and any aggregate arm binding whose uses
-            // span blocks inside a body trips a false `InitialisedBeforeUse`.
-            // The direct `next` edge is kept as the conservative no-arm path
-            // (`Join` has no body blocks — its branches converge in the
-            // terminator itself).
-            Terminator::Select { arms, next } => {
-                for arm in arms {
-                    emit_edge(arm.body_block);
-                }
-                emit_edge(*next);
-            }
-            // The suspending select's resume edge dispatches to exactly one
-            // winning arm `body_block` (each body reaches `resume` — the join —
-            // through its own `Goto`); cleanup is the abandon teardown edge. The
-            // default suspend-return edge exits the function. Mirror the
-            // `Select` arm-body edges plus the suspend resume/cleanup edges, or
-            // the arm bodies are dead and an aggregate arm binding trips a false
-            // `InitialisedBeforeUse`.
-            Terminator::SuspendingSelect {
-                arms,
-                resume,
-                cleanup,
-            } => {
-                for arm in arms {
-                    emit_edge(arm.body_block);
-                }
-                emit_edge(*resume);
-                emit_edge(*cleanup);
-            }
-            // Suspend's default edge exits the function (returns to the
-            // executor); resume + cleanup are the in-CFG successor edges. The ten
-            // collapsed suspension carriers all lower to this bare `Suspend`
-            // (their distinguishing payload lives in the SuspendKind side-table,
-            // which carries no CFG edge).
-            Terminator::Suspend {
-                resume, cleanup, ..
-            } => {
-                emit_edge(*resume);
-                emit_edge(*cleanup);
-            }
-            Terminator::SuspendingScopeDeadline {
-                timeout_body_block,
-                resume,
-                cleanup,
-                ..
-            } => {
-                emit_edge(*timeout_body_block);
-                emit_edge(*resume);
-                emit_edge(*cleanup);
-            }
+        for succ in block.successors() {
+            preds.entry(succ).or_default().push(block.id);
         }
     }
     preds
-}
-
-pub(crate) fn successors(block: &BasicBlock) -> Vec<u32> {
-    match &block.terminator {
-        Terminator::Return | Terminator::Trap { .. } => Vec::new(),
-        Terminator::Goto { target } => vec![*target],
-        Terminator::Branch {
-            then_target,
-            else_target,
-            ..
-        } => vec![*then_target, *else_target],
-        Terminator::Call { next, .. }
-        | Terminator::Yield { next, .. }
-        | Terminator::MakeGenerator { next, .. }
-        | Terminator::MakeLambdaActor { next, .. }
-        | Terminator::Send { next, .. }
-        | Terminator::Ask { next, .. }
-        | Terminator::RemoteAsk { next, .. }
-        | Terminator::Join { next, .. } => vec![*next],
-        // Arm body blocks are real runtime successors (the dispatch jumps to
-        // the winning arm); `next` is kept as the conservative no-arm path.
-        // Must mirror `build_preds` exactly or the worklist and the meet
-        // disagree about the CFG.
-        Terminator::Select { arms, next } => {
-            let mut succs: Vec<u32> = arms.iter().map(|arm| arm.body_block).collect();
-            succs.push(*next);
-            succs
-        }
-        // Mirror `Select` (arm bodies are real runtime successors of the resume
-        // dispatch) plus the suspend resume/cleanup edges. Must mirror
-        // `build_preds` exactly or the worklist and the meet disagree.
-        Terminator::SuspendingSelect {
-            arms,
-            resume,
-            cleanup,
-        } => {
-            let mut succs: Vec<u32> = arms.iter().map(|arm| arm.body_block).collect();
-            succs.push(*resume);
-            succs.push(*cleanup);
-            succs
-        }
-        // Suspend's default edge exits the function; resume + cleanup are the
-        // in-CFG successors. The ten collapsed suspension carriers all lower to
-        // this bare `Suspend` (their payload lives in the SuspendKind side-table,
-        // which carries no CFG edge).
-        Terminator::Suspend {
-            resume, cleanup, ..
-        } => vec![*resume, *cleanup],
-        // The scope-deadline ramp's timeout-body block (deadline edge) is a real
-        // runtime successor alongside resume (join + body convergence) and
-        // cleanup; mirror `build_preds` exactly.
-        Terminator::SuspendingScopeDeadline {
-            timeout_body_block,
-            resume,
-            cleanup,
-            ..
-        } => vec![*timeout_body_block, *resume, *cleanup],
-    }
 }
 
 /// Compute the reverse post-order (RPO) of blocks reachable from block 0.
@@ -553,7 +423,7 @@ pub(crate) fn reachable_from_entry(blocks: &[BasicBlock]) -> HashSet<u32> {
     }
     while let Some(cur) = stack.pop() {
         if let Some(block) = by_id.get(&cur) {
-            for s in successors(block) {
+            for s in block.successors() {
                 if visited.insert(s) {
                     stack.push(s);
                 }
@@ -580,7 +450,7 @@ pub(crate) fn compute_rpo(blocks: &[BasicBlock]) -> Vec<u32> {
             stack.pop();
             continue;
         };
-        let succs = successors(block);
+        let succs = block.successors();
         if *succ_idx < succs.len() {
             let next = succs[*succ_idx];
             *succ_idx += 1;
@@ -859,7 +729,7 @@ fn check_context_flow(blocks: &[BasicBlock]) -> Vec<MirCheck> {
         let changed = exit_states.get(&cur_id) != Some(&exit);
         exit_states.insert(cur_id, exit.clone());
         if changed {
-            for succ in successors(block) {
+            for succ in block.successors() {
                 let next = entry_states
                     .get(&succ)
                     .map_or_else(|| exit.clone(), |prev| prev.meet(&exit));
@@ -1009,7 +879,7 @@ pub fn analyze(
             .is_none_or(|prev| *prev != new_exit);
         exit_states.insert(cur_id, new_exit);
         if changed {
-            for succ in successors(block) {
+            for succ in block.successors() {
                 worklist.push_back(succ);
             }
         }

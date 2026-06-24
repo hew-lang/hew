@@ -9,8 +9,12 @@
 
 use hew_hir::{lower_program, verify_hir, ResolutionCtx};
 use hew_mir::liveness::analyze_liveness;
-use hew_mir::{lower_hir_module, Instr, IrPipeline, MirLint, Place, RawMirFunction};
-use hew_types::{module_registry::ModuleRegistry, Checker, LintId};
+use hew_mir::{
+    lower_hir_module, BasicBlock, FunctionCallConv, Instr, IrPipeline, MirLint, Place,
+    RawMirFunction, SelectArm, SelectArmKind, Terminator,
+};
+use hew_types::{module_registry::ModuleRegistry, Checker, LintId, ResolvedTy};
+use std::collections::{BTreeMap, HashMap};
 
 /// Full type-checked lowering — `dead_store` is type-sensitive (it only targets
 /// no-drop scalars), so the locals must carry resolved types.
@@ -214,5 +218,237 @@ fn clean_program_has_no_findings() {
         p.lint_warnings.is_empty(),
         "clean program must have no MIR lint warnings: {:?}",
         p.lint_warnings
+    );
+}
+
+// ── Select-arm successor soundness ──────────────────────────────────
+//
+// These tests verify that `analyze_liveness` correctly includes `Select` arm
+// body blocks as successors when computing `live_out`.  Before the canonical
+// `BasicBlock::successors()` fix (NEW-A / vestigial-r2), `block.successors()`
+// returned only `[next]` for a `Select` block, which made arm bodies invisible
+// to every CFG pass.  The liveness module now routes through the fixed canonical
+// API.  If arm bodies were again dropped from successors:
+//
+//   live_out(select_block) = live_in(join) only → join reads nothing → {}
+//   → the store in the select block becomes live_after = {} → dead_store fires
+//     on a value that IS actually read in an arm body (false positive / unsound).
+//
+// The two tests below pin that this cannot happen.
+
+/// A local written before a `Select` and read in both arm bodies must be live
+/// immediately after its defining store.  The synthetic CFG is:
+///
+/// ```text
+///   Block 0: x = 42; Select { arms: [AfterTimer(dur), AfterTimer(dur)], next=3 }
+///   Block 1: sink = x;  Goto { target: 3 }
+///   Block 2: sink = x;  Goto { target: 3 }
+///   Block 3: Return
+/// ```
+///
+/// `Local(0) = x`, `Local(1) = dur` (timer duration — independent of x),
+/// `Local(2) = sink`.  The `Select` terminator reads `dur`, NOT `x`, so x's
+/// liveness at the store depends entirely on whether arm bodies 1 and 2 are
+/// enumerated as CFG successors of block 0.  Before the `BasicBlock::successors()`
+/// fix, only `[next=3]` was returned → arm bodies invisible → x not live at
+/// the store → false-positive `dead_store`.  After the fix:
+///
+/// ```text
+///   live_in(1) = {x}, live_in(2) = {x}
+///   live_out(0) = live_in(1) ∪ live_in(2) ∪ live_in(3) ⊇ {x}
+///   live_after(block0, instr0, x) = true  →  no dead_store
+/// ```
+#[test]
+fn select_arm_read_keeps_predecessor_store_live() {
+    // Local layout:
+    //   Local(0) = x   (i64, user-named — the subject under test)
+    //   Local(1) = dur (i64, anonymous  — consumed by AfterTimer arms, not x)
+    //   Local(2) = sink(i64, anonymous  — written by arm bodies when they read x)
+    let dur = Place::Local(1);
+    let blocks = vec![
+        BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::ConstI64 {
+                dest: Place::Local(0),
+                value: 42,
+            }],
+            terminator: Terminator::Select {
+                arms: vec![
+                    SelectArm {
+                        body_block: 1,
+                        kind: SelectArmKind::AfterTimer { duration: dur },
+                        binding: None,
+                    },
+                    SelectArm {
+                        body_block: 2,
+                        kind: SelectArmKind::AfterTimer { duration: dur },
+                        binding: None,
+                    },
+                ],
+                next: 3,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![Instr::Move {
+                dest: Place::Local(2),
+                src: Place::Local(0),
+            }],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![Instr::Move {
+                dest: Place::Local(2),
+                src: Place::Local(0),
+            }],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
+    let func = RawMirFunction {
+        name: "select_arm_liveness_probe".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![ResolvedTy::I64, ResolvedTy::I64, ResolvedTy::I64],
+        local_names: vec![Some("x".to_string()), None, None],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
+        blocks,
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: HashMap::new(),
+        suspend_kinds: HashMap::new(),
+        lambda_actor_user_param_locals: vec![],
+        span: None,
+        instr_spans: BTreeMap::new(),
+    };
+
+    let liveness = analyze_liveness(&func);
+    let x = 0u32; // Local(0) = "x"
+
+    // The store `x = 42` is instruction 0 of block 0.
+    // Arm bodies 1 and 2 read x → they are visible as successors → x is live.
+    assert!(
+        liveness.live_after(&func, 0, 0, x),
+        "x must be live after `x = 42` in block 0: arm bodies 1 and 2 both read it"
+    );
+
+    // Arm bodies must have x live on entry (they read it).
+    assert!(
+        liveness.is_live_in(1, x),
+        "x must be live-in to arm body block 1"
+    );
+    assert!(
+        liveness.is_live_in(2, x),
+        "x must be live-in to arm body block 2"
+    );
+
+    // Join block does not read x — x must NOT be live-in there.
+    assert!(
+        !liveness.is_live_in(3, x),
+        "x must not be live-in to the join block (no reads after the select)"
+    );
+}
+
+/// Complement: a local written before a `Select` and NEVER read anywhere — not
+/// in arm bodies, not after the join — must be dead-after-store.  This guards
+/// the precision side: we must not suppress `dead_store` everywhere on Select
+/// programs, only where an arm body actually reads the value.
+///
+/// `Local(0) = x` is the subject.  `Local(1) = dur` is an independent timer
+/// duration local that the `AfterTimer` arms consume; using a separate slot
+/// keeps the arm-kind reads from making `x` spuriously live.
+#[test]
+fn select_arm_no_read_leaves_store_dead() {
+    // Block 0: x = 42; Select { arms: [AfterTimer(dur), AfterTimer(dur)], next=3 }
+    //          (arm kinds read Local(1) = dur, NOT Local(0) = x)
+    // Block 1: nop; Goto 3
+    // Block 2: nop; Goto 3
+    // Block 3: Return
+    //
+    // Nobody reads x anywhere — the store is provably dead.
+    // Local(0) = x (i64, user-named), Local(1) = dur (i64, anonymous)
+    let dur = Place::Local(1); // arm kind reads this, not x
+    let blocks = vec![
+        BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![Instr::ConstI64 {
+                dest: Place::Local(0),
+                value: 42,
+            }],
+            terminator: Terminator::Select {
+                arms: vec![
+                    SelectArm {
+                        body_block: 1,
+                        kind: SelectArmKind::AfterTimer { duration: dur },
+                        binding: None,
+                    },
+                    SelectArm {
+                        body_block: 2,
+                        kind: SelectArmKind::AfterTimer { duration: dur },
+                        binding: None,
+                    },
+                ],
+                next: 3,
+            },
+        },
+        BasicBlock {
+            id: 1,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 2,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Goto { target: 3 },
+        },
+        BasicBlock {
+            id: 3,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        },
+    ];
+    let func = RawMirFunction {
+        name: "select_arm_dead_probe".to_string(),
+        return_ty: ResolvedTy::Unit,
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![ResolvedTy::I64, ResolvedTy::I64],
+        local_names: vec![Some("x".to_string()), None],
+        local_scopes: vec![],
+        local_decl_bytes: vec![],
+        scope_table: vec![],
+        blocks,
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: HashMap::new(),
+        suspend_kinds: HashMap::new(),
+        lambda_actor_user_param_locals: vec![],
+        span: None,
+        instr_spans: BTreeMap::new(),
+    };
+
+    let liveness = analyze_liveness(&func);
+    let x = 0u32;
+
+    // Nobody reads x anywhere — the store is provably dead.
+    assert!(
+        !liveness.live_after(&func, 0, 0, x),
+        "x must be dead after `x = 42` when no arm body or successor reads it"
     );
 }

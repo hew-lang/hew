@@ -2323,8 +2323,21 @@ impl BasicBlock {
             | Terminator::Send { next, .. }
             | Terminator::Ask { next, .. }
             | Terminator::RemoteAsk { next, .. }
-            | Terminator::Select { next, .. }
             | Terminator::Join { next, .. } => vec![*next],
+            // The runtime dispatch jumps to exactly one winning arm's `body_block`;
+            // each body reaches `next` (the join) through its own `Goto`. Without
+            // the arm body edges, arm bodies are unreachable; any move or split
+            // that spans a body (e.g. a DuplexHandle consumed inside an arm) is
+            // invisible to every CFG pass that walks `successors()` — including
+            // liveness, dominators, and the duplex-split cross-block checker —
+            // producing false-safe results. The direct `next` edge is kept as
+            // the conservative no-arm path so the join block always has a
+            // predecessor entry (`Join` has no body blocks of its own).
+            Terminator::Select { arms, next } => {
+                let mut succs: Vec<u32> = arms.iter().map(|arm| arm.body_block).collect();
+                succs.push(*next);
+                succs
+            }
             // The default suspend-return edge exits the function (returns to the
             // executor, like a `Return`); only the resume + cleanup arms are
             // in-CFG successors. The ten pure-{resume,cleanup} suspension carriers
@@ -2354,8 +2367,7 @@ impl BasicBlock {
             // `Terminator::Select`'s are; without them the arm bodies are
             // unreachable and an aggregate arm binding spanning a body trips a
             // false `InitialisedBeforeUse`. `cleanup` (abandon) is the suspend
-            // teardown edge. Mirror `dataflow::build_preds` / `dataflow::successors`
-            // exactly (body blocks + resume + cleanup).
+            // teardown edge.
             Terminator::SuspendingSelect {
                 arms,
                 resume,
@@ -2632,16 +2644,16 @@ pub enum Terminator {
     },
     /// Sealed `select{}` construct. The terminator carries the per-arm
     /// discriminator and per-arm body block ids; the runtime substrate
-    /// that decides the winner and runs loser-cleanup is supplied by
-    /// codegen + runtime entries that are not yet wired. Declared here
-    /// so the construct's MIR shape is forward-compatible with the
-    /// runtime substrate; codegen rejects this terminator with a
-    /// `FailClosed` error today.
+    /// is `hew_select_first` (blocking poll) for non-suspendable callers
+    /// and the `SuspendingSelect` coroutine path for callers that carry
+    /// an execution context (actor handlers, tasks). Codegen emits this
+    /// terminator via `emit_select_terminator` for non-suspendable callers.
     ///
     /// The arm vector is non-empty (HIR enforces) and contains at most
     /// one `AfterTimer` arm (HIR enforces). The `next` slot is the
     /// block reached after the winning arm body completes — the join
-    /// edge that converges the per-arm bodies.
+    /// edge that converges the per-arm bodies. The arm `body_block`s
+    /// are real CFG successors (see `BasicBlock::successors`).
     Select { arms: Vec<SelectArm>, next: u32 },
     /// Sealed `select{}` from a SUSPENDABLE caller (cut-select-waitset).
     /// The coro-suspend sibling of [`Terminator::Select`]: instead of the
@@ -5855,5 +5867,80 @@ mod suspend_terminator_tests {
         // A bare `Suspend` with NO side-table entry (a generator / synthetic
         // suspend) reads nothing across the block edge.
         assert!(crate::lower::terminator_source_places(&term, None).is_empty());
+    }
+
+    // ── `Terminator::Select` CFG-successor contract ──────────────────────────
+    //
+    // The canonical `BasicBlock::successors()` must return every arm `body_block`
+    // plus `next` for a `Select` terminator. Before the fix it returned only
+    // `next`, which made every arm body unreachable to any pass that walks the
+    // canonical successor API — including liveness, dataflow, and the
+    // duplex-split cross-block checker (the fail-open soundness bug).
+
+    fn select_arm(body_block: u32) -> SelectArm {
+        SelectArm {
+            body_block,
+            kind: SelectArmKind::AfterTimer {
+                duration: Place::Local(0),
+            },
+            binding: None,
+        }
+    }
+
+    fn select_block(id: u32, arm_body_blocks: &[u32], next: u32) -> BasicBlock {
+        BasicBlock {
+            id,
+            statements: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Select {
+                arms: arm_body_blocks.iter().copied().map(select_arm).collect(),
+                next,
+            },
+        }
+    }
+
+    /// A two-arm `Select` must include BOTH arm body blocks plus `next` in
+    /// its successor set. The pre-fix code returned only `[next]`, which was
+    /// the root cause of the duplex double-consume fail-open.
+    #[test]
+    fn select_successors_include_arm_bodies_and_next() {
+        let block = select_block(0, &[1, 2], 3);
+        let succs = block.successors();
+        assert!(
+            succs.contains(&1),
+            "arm body 1 must be a successor; got {succs:?}"
+        );
+        assert!(
+            succs.contains(&2),
+            "arm body 2 must be a successor; got {succs:?}"
+        );
+        assert!(
+            succs.contains(&3),
+            "next (join) block 3 must be a successor; got {succs:?}"
+        );
+        assert_eq!(succs.len(), 3, "exactly arm_0, arm_1, next; got {succs:?}");
+    }
+
+    /// A single-arm `Select` must include the arm body plus `next`.
+    #[test]
+    fn select_single_arm_includes_body_and_next() {
+        let block = select_block(0, &[5], 9);
+        let succs = block.successors();
+        assert_eq!(succs, vec![5, 9]);
+    }
+
+    /// Regression pin: BEFORE the fix the old arm returned only `[next]` —
+    /// arm bodies were absent. This test would have FAILED pre-fix, proving
+    /// the fix is non-trivial (not vacuously true).
+    #[test]
+    fn select_successors_do_not_collapse_to_next_only() {
+        let block = select_block(0, &[10, 11], 20);
+        let succs = block.successors();
+        // The pre-fix code returned `vec![20]` — this assertion was false.
+        assert_ne!(
+            succs,
+            vec![20],
+            "successors must NOT collapse to [next] only (pre-fix regression)"
+        );
     }
 }

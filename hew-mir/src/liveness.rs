@@ -8,7 +8,7 @@
 //! Liveness is a backward "may" analysis: a local is *live* at a program point
 //! when some path from that point reads it before overwriting it. We compute it
 //! by reusing the forward move-checker's CFG plumbing — [`build_preds`],
-//! [`successors`], [`compute_rpo`] — with a backward worklist and a
+//! [`BasicBlock::successors`], [`compute_rpo`] — with a backward worklist and a
 //! meet-over-successors confluence (`live_out(b) = ⋃ live_in(succ)`).
 //!
 //! The gen/kill sets come from the backend-authority `Instr` stream
@@ -44,9 +44,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use hew_types::{LintId, ResolvedTy};
 
-use crate::dataflow::{
-    build_preds, compute_rpo, instr_reads_writes, reachable_from_entry, successors,
-};
+use crate::dataflow::{build_preds, compute_rpo, instr_reads_writes, reachable_from_entry};
 use crate::lower::terminator_source_places;
 use crate::model::{BasicBlock, Instr, MirLint, Place, RawMirFunction, SuspendKind};
 
@@ -150,7 +148,7 @@ fn apply_instr_backward(instr: &Instr, live: &mut HashSet<u32>) {
 /// `live_out(block) = ⋃ live_in(successor)` under the current `live_in` map.
 fn block_live_out(block: &BasicBlock, live_in: &HashMap<u32, HashSet<u32>>) -> HashSet<u32> {
     let mut live = HashSet::new();
-    for succ in successors(block) {
+    for succ in block.successors() {
         if let Some(succ_in) = live_in.get(&succ) {
             live.extend(succ_in.iter().copied());
         }

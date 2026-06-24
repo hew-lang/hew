@@ -35,8 +35,8 @@ The `--` separator is mandatory when passing program arguments — everything be
 - **`var` for mutable bindings, `let` for immutable.** Hew does not have `let mut` — use `var` whenever you need to reassign a name or mutate a scalar field. `let` bindings are immutable (but `let` collections have interior mutability).
 - Dispatch with `match`, not if/else chains — `match` on a closed enum enforces exhaustiveness.
 - Iterate counts with `for i in 0..n` (exclusive) or `0..=n` (inclusive); the binding must be a named identifier.
-- Read collection elements with `.get(i)` — universal across element types. `v[i]` works for scalars, strings, records, and tuples.
-- `Vec<string>` supports `v[i]` (returns a fresh owned `string`; the Vec stays usable), `.get(i)`, range-slices, and for-in. For `Vec<enum>`, prefer `.get(i)`.
+- Read collection elements with `v[i]` (returns `T`, traps on out-of-bounds) or `.get(i)` (returns `Option<T>`, never traps) — both universal across element types.
+- `Vec<string>` supports `v[i]` (returns a fresh owned `string`; the Vec stays usable), `.get(i)`, range-slices, and for-in. Both accessors work for `Vec<enum>` too.
 - Build maps/sets with `::new()` + `.insert()`; bind with `let` (interior mutability, not reassignment).
 - Look up `HashMap`/`Option`/`Result` with `match`, not subscript or `.unwrap()`.
 - **Enum variants use `;` separators; record fields also use `;` in type definitions but `,` in construction literals.** These are different — `type T { a: i64; b: i64; }` defines, `T { a: 1, b: 2 }` constructs.
@@ -287,7 +287,7 @@ fn main() {
 }
 ```
 
-`for x in collection` binds each element value. Index Vec elements with `.get(i)`, not `v[i]`.
+`for x in collection` binds each element value. Index Vec elements with `v[i]` (traps on out-of-bounds) or `.get(i)` (returns `Option<T>`).
 
 ### while loop
 
@@ -358,27 +358,13 @@ fn main() {
     v.push(20);
     v.push(30);
     println(v.len());   // 3
-    println(v.get(0));  // 10
+    println(v[0]);      // 10
 }
 ```
 
 Annotate the binding type so the element type is inferred. `.len()` returns `i64`.
 
-### .get(i) — universal element accessor
-
-```hew
-fn main() {
-    let v: Vec<string> = Vec::new();
-    v.push("a");
-    v.push("b");
-    println(v.get(0));  // a
-    println(v.get(1));  // b
-}
-```
-
-`.get(i)` is the default accessor — it works for every element type including `Vec<string>` and `Vec<enum>`. Returns `T` directly; out-of-bounds panics. Guard with `i < v.len()` if the index may be invalid.
-
-### v[i] indexing (scalar / string / record / tuple)
+### v[i] — trapping element accessor
 
 ```hew
 type Point { x: i64; y: i64; }
@@ -398,11 +384,34 @@ fn main() {
     names.push("alan");
     let who = names[1];        // fresh owned string (a clone)
     println(who);              // alan
-    println(names.get(0));     // ada — names is still usable
+    println(names[0]);         // ada — names is still usable
 }
 ```
 
-Use `v[i]` for scalars, strings, records, and tuples where it reads cleanest; it returns the value. A `Vec<string>` index returns a fresh owned `string` (an element clone, not a move-out), so the Vec stays fully usable afterward. For `Vec<enum>`, prefer `.get(i)`.
+`v[i]` returns the element value `T` directly and works for every element type
+— scalars, strings, records, tuples, and enums. It **traps** (aborts) on an
+out-of-bounds index, so reach for it when the index is known valid (e.g. `i <
+v.len()` already holds). A `Vec<string>` index returns a fresh owned `string`
+(an element clone, not a move-out), so the Vec stays fully usable afterward.
+
+### .get(i) — safe Option accessor
+
+```hew
+fn main() {
+    let v: Vec<string> = Vec::new();
+    v.push("a");
+    v.push("b");
+    match v.get(0) {
+        Some(s) => println(s),   // a
+        None => println("oob"),
+    }
+}
+```
+
+`.get(i)` returns `Option<T>` for every element type, including `Vec<string>`
+and `Vec<enum>`. It never traps: an out-of-bounds index yields `None`. Consume
+it with `match` (or guard `i < v.len()` and index with `v[i]` when you only need
+the trapping read). Use `.get(i)` whenever the index may be invalid.
 
 ### Range-slice v[a..b] returns a new Vec
 
@@ -412,13 +421,16 @@ fn main() {
     v.push(10); v.push(20); v.push(30); v.push(40);
     let s = v[1..3];
     println(s.len());    // 2
-    println(s.get(0));   // 20
+    println(s[0]);       // 20
 }
 ```
 
-`v[a..b]` yields a fresh `Vec<T>` (half-open, `b` exclusive) with its own `.len()`/`.get()`/for-in, for every element type including `Vec<string>`. (Single elements come straight from `v[i]`; the older `v[i..i+1]` slice is no longer required for that.)
+`v[a..b]` yields a fresh `Vec<T>` (half-open, `b` exclusive) with its own
+`.len()`/`.get()`/for-in, for every element type including `Vec<string>`.
+(Single elements come straight from `v[i]`; the older `v[i..i+1]` slice is no
+longer required for that.)
 
-### for-in over Vec (scalars / strings / records / tuples)
+### for-in over Vec
 
 ```hew
 fn main() {
@@ -431,9 +443,10 @@ fn main() {
 }
 ```
 
-Prefer for-in for read-only traversal of scalar/string/record/tuple Vecs. For `Vec<enum>`, loop by index with `.get(i)` instead.
+Prefer for-in for read-only traversal of any element type, including
+`Vec<enum>`.
 
-### Index-loop for Vec<enum> and uncertain element types
+### Index-loop with v[i] or .get(i)
 
 ```hew
 enum Colour { Red; Green; Blue; }
@@ -441,7 +454,7 @@ fn main() {
     let v: Vec<Colour> = Vec::new();
     v.push(Colour::Red);
     v.push(Colour::Blue);
-    let c = v.get(1);
+    let c = v[1];
     match c {
         Colour::Red => println("red"),
         Colour::Green => println("green"),
@@ -450,7 +463,10 @@ fn main() {
 }
 ```
 
-For `Vec<enum>` traverse with `for i in 0 .. v.len()` and `v.get(i)` — the only accessor that does not trap on enum elements. Hoist `let n = v.len()` before the loop.
+When you index by a computed offset, `v[i]` returns the element and traps if the
+offset is out of range; `v.get(i)` returns `Option<T>` and yields `None`
+instead. Both work for every element type, enums included. Hoist `let n =
+v.len()` before a `for i in 0 .. n` loop.
 
 ### Out-of-bounds and .pop()
 
@@ -464,7 +480,9 @@ fn main() {
 }
 ```
 
-`.get(i)`, `v[i]`, and `.pop()` all return `T` directly (no `Option`) and trap on a bad index or empty vec; guard with `i < v.len()` (and check `.len()` before `.pop()`) for safe access.
+`v[i]` and `.pop()` return `T` directly and trap on a bad index or empty vec;
+`.get(i)` returns `Option<T>` and never traps. Guard with `i < v.len()` (and
+check `.len()` before `.pop()`), or use `.get(i)` for the non-trapping read.
 
 ### .set(i, v) — write by index
 
@@ -473,9 +491,9 @@ fn main() {
     let v: Vec<i64> = Vec::new();
     v.push(10); v.push(20); v.push(30);
     v.set(1, 99);
-    println(v.get(0));   // 10
-    println(v.get(1));   // 99
-    println(v.get(2));   // 30
+    println(v[0]);   // 10
+    println(v[1]);   // 99
+    println(v[2]);   // 30
 }
 ```
 
@@ -518,12 +536,12 @@ fn main() {
     matrix.push(row1);
 
     println(matrix.len());            // 2
-    let r = matrix.get(1);
-    println(r.get(2));                // 6
+    let r = matrix[1];
+    println(r[2]);                    // 6
 }
 ```
 
-`Vec<Vec<T>>` works for any element type, including other `Vec<T>` and `HashMap<K,V>`. Use `.get(i)` to retrieve the inner Vec, then chain further operations.
+`Vec<Vec<T>>` works for any element type, including other `Vec<T>` and `HashMap<K,V>`. Use `v[i]` to retrieve the inner Vec, then chain further operations.
 
 ## Collections — HashMap and HashSet
 
@@ -642,7 +660,7 @@ fn main() {
 }
 ```
 
-`.keys()` returns a `Vec<string>` snapshot of every key; `.values()` returns a `Vec<V>` snapshot of the corresponding values. Order is unspecified but both snapshots use the same internal order, so `keys().get(i)` maps to `values().get(i)`. Both return new Vecs — safe to iterate or pass to other functions.
+`.keys()` returns a `Vec<string>` snapshot of every key; `.values()` returns a `Vec<V>` snapshot of the corresponding values. Order is unspecified but both snapshots use the same internal order, so `keys()[i]` maps to `values()[i]`. Both return new Vecs — safe to iterate or pass to other functions.
 
 ### Create and use a HashSet
 
@@ -746,7 +764,7 @@ To have a helper build a collection, pass it and mutate in place — the caller 
 fn total(v: Vec<i64>) -> i64 {
     var sum: i64 = 0;
     let n = v.len();
-    for i in 0 .. n { sum = sum + v.get(i); }
+    for i in 0 .. n { sum = sum + v[i]; }
     sum
 }
 fn main() {
@@ -1345,13 +1363,13 @@ fn main() {
         Empty => println("empty"),
         Filled { items } => {
             println(f"count={items.len()}");   // count=2
-            println(f"first={items.get(0)}");  // first=10
+            println(f"first={items[0]}");  // first=10
         },
     }
 }
 ```
 
-Read the prior vec out of `self.items`, push, and rebuild the variant. Access elements with `.get(i)` and `.len()`.
+Read the prior vec out of `self.items`, push, and rebuild the variant. Access elements with `v[i]` and `.len()`.
 
 ### Event payload access
 
@@ -1510,7 +1528,7 @@ fn main() {
 }
 ```
 
-Accept `Vec<T>` in a generic function and use `.len()`/`.get(i)`.
+Accept `Vec<T>` in a generic function and use `.len()`/`v[i]`.
 
 ### Vec of a concrete enum (including string payload)
 
@@ -1534,13 +1552,13 @@ fn main() {
     let v: Vec<Point> = Vec::new();
     v.push(Point { x: 1, y: 2 });
     v.push(Point { x: 3, y: 4 });
-    let got = v.get(1);
+    let got = v[1];
     println(got.x);   // 3
     println(got.y);   // 4
 }
 ```
 
-Store concrete records in a Vec and bind the element with `let got = v.get(i)` before reading fields.
+Store concrete records in a Vec and bind the element with `let got = v[i]` before reading fields.
 
 ### Turbofish — explicit type argument on a call
 
@@ -1735,13 +1753,13 @@ fn main() {
     let parts = "a,b,c".split(",");
     println(f"count={parts.len()}");
     for i in 0 .. parts.len() {
-        let p = parts.get(i);
+        let p = parts[i];
         println(p);
     }
 }
 ```
 
-Read elements with `.get(i)` or `parts[i]` and iterate by index — both clone the element and leave `parts` usable. (`for p in parts` also works but consumes the Vec, so use the indexed loop when you need `parts` again afterward.)
+Read elements with `parts[i]` (or `.get(i)` for an `Option`) and iterate by index — the index read clones the element and leaves `parts` usable. (`for p in parts` also works but consumes the Vec, so use the indexed loop when you need `parts` again afterward.)
 
 ### .trim()
 
@@ -2015,18 +2033,18 @@ fn main() {
     nums.push(3); nums.push(1); nums.push(4); nums.push(1); nums.push(5);
     let sorted   = sort.sort_ints(nums);       // returns new Vec — original unchanged
     let reversed = sort.reverse_ints(sorted);
-    println(sorted.get(0));    // 1
-    println(reversed.get(0));  // 5
+    println(sorted[0]);    // 1
+    println(reversed[0]);  // 5
 
     let words: Vec<string> = Vec::new();
     words.push("banana"); words.push("apple"); words.push("cherry");
     let sw = sort.sort_strings(words);
-    println(sw.get(0));        // apple
+    println(sw[0]);        // apple
 
     let floats: Vec<f64> = Vec::new();
     floats.push(3.14); floats.push(1.41); floats.push(2.72);
     let sf = sort.sort_floats(floats);
-    println(sf.get(0));        // 1.41
+    println(sf[0]);        // 1.41
 }
 ```
 
@@ -2045,7 +2063,7 @@ fn main() {
     let v: Vec<i64> = Vec::new();
     v.push(10); v.push(20); v.push(30);
     random.shuffle(v);                 // in-place Fisher-Yates shuffle
-    println(v.get(0));                 // non-deterministic (seeded above)
+    println(v[0]);                     // non-deterministic (seeded above)
 }
 ```
 
@@ -2354,8 +2372,7 @@ fn main() {
     let s = "Aé!";
     println(f"runes={unicode.rune_count(s)} bytes={s.len()}");   // runes=3 bytes=4
     let runes = unicode.runes(s);
-    for i in 0..runes.len() {
-        let cp = runes.get(i);
+    for cp in runes {
         let up = unicode.is_upper(cp);
         println(f"cp={cp} upper={up} width={unicode.rune_len(cp)}");
     }

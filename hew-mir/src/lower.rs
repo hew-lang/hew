@@ -25318,94 +25318,17 @@ fn validate_cross_block_split_consume(
     let mut exit_states: HashMap<u32, BTreeMap<u32, DuplexSplitState>> = HashMap::new();
     let by_id: HashMap<u32, &BasicBlock> = blocks.iter().map(|b| (b.id, b)).collect();
 
-    // Predecessor edges for the meet step.
+    // Predecessor edges for the meet step. Route through the canonical
+    // `BasicBlock::successors()` so Select arm bodies (and all other real
+    // CFG successors) are not silently dropped. The predecessor map is the
+    // inverse of the successor relation: for each block B and each S in
+    // B.successors(), B is a predecessor of S.
     let mut preds: HashMap<u32, Vec<u32>> = HashMap::new();
     for block in blocks {
-        let mut emit = |target: u32| preds.entry(target).or_default().push(block.id);
-        match &block.terminator {
-            Terminator::Return | Terminator::Trap { .. } => {}
-            Terminator::Goto { target } => emit(*target),
-            Terminator::Branch {
-                then_target,
-                else_target,
-                ..
-            } => {
-                emit(*then_target);
-                emit(*else_target);
-            }
-            Terminator::Call { next, .. }
-            | Terminator::Yield { next, .. }
-            | Terminator::MakeGenerator { next, .. }
-            | Terminator::MakeLambdaActor { next, .. }
-            | Terminator::Send { next, .. }
-            | Terminator::Ask { next, .. }
-            | Terminator::RemoteAsk { next, .. }
-            | Terminator::Select { next, .. }
-            | Terminator::Join { next, .. } => emit(*next),
-            // Suspend's default edge exits the function; resume + cleanup are
-            // the in-CFG successor edges. The ten collapsed suspension carriers
-            // all lower to this bare `Suspend` (payload in the SuspendKind
-            // side-table, which carries no CFG edge). The suspending select's
-            // default suspend-return edge likewise exits; resume (winner-scan
-            // join) + cleanup (abandon) are its in-CFG edges.
-            Terminator::Suspend {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingSelect {
-                resume, cleanup, ..
-            } => {
-                emit(*resume);
-                emit(*cleanup);
-            }
-            Terminator::SuspendingScopeDeadline {
-                timeout_body_block,
-                resume,
-                cleanup,
-                ..
-            } => {
-                emit(*timeout_body_block);
-                emit(*resume);
-                emit(*cleanup);
-            }
+        for succ in block.successors() {
+            preds.entry(succ).or_default().push(block.id);
         }
     }
-
-    let successors = |block: &BasicBlock| -> Vec<u32> {
-        match &block.terminator {
-            Terminator::Return | Terminator::Trap { .. } => Vec::new(),
-            Terminator::Goto { target } => vec![*target],
-            Terminator::Branch {
-                then_target,
-                else_target,
-                ..
-            } => vec![*then_target, *else_target],
-            Terminator::Call { next, .. }
-            | Terminator::Yield { next, .. }
-            | Terminator::MakeGenerator { next, .. }
-            | Terminator::MakeLambdaActor { next, .. }
-            | Terminator::Send { next, .. }
-            | Terminator::Ask { next, .. }
-            | Terminator::RemoteAsk { next, .. }
-            | Terminator::Select { next, .. }
-            | Terminator::Join { next, .. } => vec![*next],
-            // Suspend's default edge exits the function; resume + cleanup are
-            // the in-CFG successors. The ten collapsed suspension carriers all
-            // lower to this bare `Suspend`; the suspending select shares the
-            // resume/cleanup edge shape.
-            Terminator::Suspend {
-                resume, cleanup, ..
-            }
-            | Terminator::SuspendingSelect {
-                resume, cleanup, ..
-            } => vec![*resume, *cleanup],
-            Terminator::SuspendingScopeDeadline {
-                timeout_body_block,
-                resume,
-                cleanup,
-                ..
-            } => vec![*timeout_body_block, *resume, *cleanup],
-        }
-    };
 
     // Forward fixpoint. The entry block is id 0 by construction.
     let entry_id = 0;
@@ -25442,7 +25365,7 @@ fn validate_cross_block_split_consume(
         let changed = exit_states.get(&bb_id).is_none_or(|prev| *prev != new_exit);
         exit_states.insert(bb_id, new_exit);
         if changed {
-            for succ in successors(block) {
+            for succ in block.successors() {
                 worklist.push_back(succ);
             }
         }
@@ -34159,6 +34082,319 @@ mod slice35_cross_block_proptests {
             prop_assert_eq!(on_block_1, 1, "block 1 (split path) must reject the unified drop");
             prop_assert_eq!(on_block_2, 0, "block 2 (no-split path) must accept the unified drop");
         }
+    }
+}
+
+// ============================================================================
+// CFG Select-arm correctness — cross-block split-consume via `Terminator::Select`
+//
+// These are the LOAD-BEARING negative-regression tests for the
+// `BasicBlock::successors()` Select-arm fix (NEW-A/vestigial-r2).
+//
+// Before the fix, `successors()` returned only `[next]` for a Select block,
+// making every arm body unreachable in the predecessor / worklist computation.
+// The `validate_cross_block_split_consume` checker could therefore not see any
+// splits that occurred inside an arm body → a DuplexHandle consumed in BOTH
+// arm bodies AND still present in the join block's drop plan was ADMITTED
+// (fail-open).  After the fix the arm bodies are real successors → the checker
+// visits them → the stale unified-handle drop is rejected (fail-closed).
+//
+// Test structure:
+//  Block 0: `Terminator::Select { arms: [{body: 1}, {body: 2}], next: 3 }`
+//  Block 1 (arm 0 body): splits DuplexHandle(p) → SendHalf(p); `Goto { target: 3 }`
+//  Block 2 (arm 1 body): splits DuplexHandle(p) → RecvHalf(p); `Goto { target: 3 }`
+//  Block 3 (join / next): `Return`, drop plan = [DuplexHandle(p)]
+//
+// Because exactly one arm executes at runtime, at block 3 the handle is in
+// state MaybeConsumed (some-but-not-all paths consumed it) when viewed from
+// the conservative no-arm Select→next edge — that alone is enough for
+// fail-closed.  The checker reports DropPlanUndetermined.
+// ============================================================================
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod select_arm_split_consume_tests {
+    use super::*;
+
+    fn duplex_ty() -> ResolvedTy {
+        ResolvedTy::named_user("Duplex", vec![ResolvedTy::I64, ResolvedTy::I64])
+    }
+
+    fn select_arm_with_body(body_block: u32) -> SelectArm {
+        SelectArm {
+            body_block,
+            kind: SelectArmKind::AfterTimer {
+                duration: Place::Local(99),
+            },
+            binding: None,
+        }
+    }
+
+    /// Build the four-block CFG:
+    ///   0: Select { arms: [body=1, body=2], next: 3 }
+    ///   1: split DuplexHandle(parent) → SendHalf(parent); Goto 3
+    ///   2: split DuplexHandle(parent) → RecvHalf(parent); Goto 3
+    ///   3: Return (drop plan has DuplexHandle(parent) — stale after either arm)
+    fn build_select_double_split_cfg(parent: u32) -> (Vec<BasicBlock>, ElaboratedMirFunction) {
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Select {
+                    arms: vec![select_arm_with_body(1), select_arm_with_body(2)],
+                    next: 3,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![Instr::Move {
+                    dest: Place::SendHalf(parent),
+                    src: Place::DuplexHandle(parent),
+                }],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            BasicBlock {
+                id: 2,
+                statements: vec![],
+                instructions: vec![Instr::Move {
+                    dest: Place::RecvHalf(parent),
+                    src: Place::DuplexHandle(parent),
+                }],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            BasicBlock {
+                id: 3,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ];
+        let elab = ElaboratedMirFunction {
+            name: "f".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: (0u32..=3)
+                .map(|id| ElabBlock {
+                    id,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                })
+                .collect(),
+            drop_plans: vec![(
+                ExitPath::Return { block: 3 },
+                DropPlan {
+                    drops: vec![ElabDrop {
+                        place: Place::DuplexHandle(parent),
+                        ty: duplex_ty(),
+                        drop_fn: None,
+                        kind: DropKind::DuplexClose,
+                        guard: None,
+                    }],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        (blocks, elab)
+    }
+
+    /// **Negative regression (fail-open → fail-closed):**
+    ///
+    /// A `Select` where BOTH arm bodies split the same `DuplexHandle` must
+    /// produce a `DropPlanUndetermined` for the drop plan at the join block.
+    ///
+    /// Pre-fix: `successors()` returned only `[next]` for the Select block,
+    /// so arm bodies 1 and 2 were never visited → checker saw `DuplexHandle`
+    /// as `Live` at block 3 → NO finding → **fail-open** (admitted).
+    ///
+    /// Post-fix: arm bodies are real successors → checker processes them →
+    /// MaybeConsumed(1) at block 3 → `DropPlanUndetermined` → **fail-closed**.
+    #[test]
+    fn select_arm_double_split_is_rejected_post_fix() {
+        let (blocks, elab) = build_select_double_split_cfg(0);
+        let findings = validate_cross_block_split_consume(&blocks, &elab);
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f, MirCheck::DropPlanUndetermined { .. })),
+            "FAIL-OPEN regression: DuplexHandle(0) split in both Select arms must produce \
+             DropPlanUndetermined at the join block; got {findings:?}"
+        );
+    }
+
+    /// Same as above but with a different parent index — confirms the check is
+    /// parametric on the parent local.
+    #[test]
+    fn select_arm_double_split_rejected_for_any_parent() {
+        for parent in 0u32..4 {
+            let (blocks, elab) = build_select_double_split_cfg(parent);
+            let findings = validate_cross_block_split_consume(&blocks, &elab);
+            assert!(
+                findings
+                    .iter()
+                    .any(|f| matches!(f, MirCheck::DropPlanUndetermined { .. })),
+                "parent={parent}: double-split across Select arms must be rejected; \
+                 got {findings:?}"
+            );
+        }
+    }
+
+    /// **Positive control:** a legal `Select` where only ONE arm splits the
+    /// `DuplexHandle` must still be caught (the split arm path is Consumed →
+    /// join block is `MaybeConsumed` from the conservative Select→next edge).
+    ///
+    /// This is NOT the same as "a legal single-arm use" — any split followed by
+    /// a stale unified-handle drop is wrong even on one path. We verify the
+    /// checker is still fail-closed for single-arm splits (not accidentally
+    /// widened to "only reject if both arms split").
+    #[test]
+    fn select_single_arm_split_still_rejected_at_join() {
+        let parent = 0u32;
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Select {
+                    arms: vec![select_arm_with_body(1), select_arm_with_body(2)],
+                    next: 3,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                // Only arm 0 splits.
+                instructions: vec![Instr::Move {
+                    dest: Place::SendHalf(parent),
+                    src: Place::DuplexHandle(parent),
+                }],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            BasicBlock {
+                id: 2,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            BasicBlock {
+                id: 3,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ];
+        let elab = ElaboratedMirFunction {
+            name: "f".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: (0u32..=3)
+                .map(|id| ElabBlock {
+                    id,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                })
+                .collect(),
+            drop_plans: vec![(
+                ExitPath::Return { block: 3 },
+                DropPlan {
+                    drops: vec![ElabDrop {
+                        place: Place::DuplexHandle(parent),
+                        ty: duplex_ty(),
+                        drop_fn: None,
+                        kind: DropKind::DuplexClose,
+                        guard: None,
+                    }],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let findings = validate_cross_block_split_consume(&blocks, &elab);
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f, MirCheck::DropPlanUndetermined { .. })),
+            "single-arm split followed by stale unified-handle drop must still be rejected; \
+             got {findings:?}"
+        );
+    }
+
+    /// **True positive control:** a `Select` where NEITHER arm splits the
+    /// `DuplexHandle` must accept the unified-handle drop at the join block
+    /// (handle was never consumed; the drop is valid).
+    ///
+    /// This confirms the fix is not over-broad: a non-split Select must not
+    /// generate spurious `DropPlanUndetermined` findings.
+    #[test]
+    fn select_no_split_accepts_unified_handle_drop() {
+        let parent = 0u32;
+        let blocks = vec![
+            BasicBlock {
+                id: 0,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Select {
+                    arms: vec![select_arm_with_body(1), select_arm_with_body(2)],
+                    next: 3,
+                },
+            },
+            BasicBlock {
+                id: 1,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            BasicBlock {
+                id: 2,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Goto { target: 3 },
+            },
+            BasicBlock {
+                id: 3,
+                statements: vec![],
+                instructions: vec![],
+                terminator: Terminator::Return,
+            },
+        ];
+        let elab = ElaboratedMirFunction {
+            name: "f".to_string(),
+            return_ty: ResolvedTy::Unit,
+            statements: vec![],
+            decisions: vec![],
+            blocks: (0u32..=3)
+                .map(|id| ElabBlock {
+                    id,
+                    kind: BlockKind::Normal,
+                    drops: vec![],
+                    successor: None,
+                })
+                .collect(),
+            drop_plans: vec![(
+                ExitPath::Return { block: 3 },
+                DropPlan {
+                    drops: vec![ElabDrop {
+                        place: Place::DuplexHandle(parent),
+                        ty: duplex_ty(),
+                        drop_fn: None,
+                        kind: DropKind::DuplexClose,
+                        guard: None,
+                    }],
+                },
+            )],
+            coroutine: None,
+            lambda_captures: vec![],
+        };
+        let findings = validate_cross_block_split_consume(&blocks, &elab);
+        assert!(
+            findings.is_empty(),
+            "no-split Select must not generate spurious DropPlanUndetermined; \
+             got {findings:?}"
+        );
     }
 }
 

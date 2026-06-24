@@ -195,6 +195,24 @@ pub struct TraitRegistry {
     /// user/stdlib `#[resource]` declarations keyed by name. Both are owned by
     /// the registry so the checker no longer keeps a parallel allowlist.
     resource_types: HashSet<String>,
+    /// Declared type-parameter names for generic user types.
+    ///
+    /// Maps a type's declared (bare) name to the ordered list of its type
+    /// parameter names as they appear in the declaration
+    /// (`type Pair<A, B> { … }` → `"Pair"` → `["A", "B"]`).
+    ///
+    /// Used by `is_type_param_placeholder` to authoritative distinguish a
+    /// genuine type-param placeholder field (e.g. `A` or `B` in `Pair<A, B>`)
+    /// from a concrete user-defined type whose bare name happens to look like a
+    /// single-letter param. Without this table the placeholder detector falls
+    /// back to a heuristic (absence from `type_fields` + absence from
+    /// `negative_impls`); with it, placeholder classification is deterministic
+    /// and fail-closed: only names that appear in the declared param list are
+    /// skipped during the concrete-field pass.
+    ///
+    /// Populated by `register_type_params`, called alongside `register_type` at
+    /// every type / record / machine declaration site.
+    type_params: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,6 +282,9 @@ impl TraitRegistry {
         }
         if self.drop_types.contains(bare) {
             self.drop_types.insert(qualified.to_string());
+        }
+        if let Some(params) = self.type_params.get(bare).cloned() {
+            self.type_params.insert(qualified.to_string(), params);
         }
     }
 
@@ -556,6 +577,33 @@ impl TraitRegistry {
     /// `is_resource` is the only query path.
     pub fn register_resource_type(&mut self, name: String) {
         self.resource_types.insert(name);
+    }
+
+    /// Register the declared type-parameter names for a generic type.
+    ///
+    /// Call immediately after `register_type` for every type, record, or
+    /// machine declaration that carries type parameters. Non-generic types
+    /// (empty `params`) may call this with an empty list, which is a no-op but
+    /// keeps call sites uniform. Subsequent calls for the same `name` are
+    /// idempotent (first-write wins, matching the first-write-wins policy on
+    /// `type_fields`).
+    ///
+    /// After registration, `is_type_param_placeholder` resolves field names
+    /// against this list rather than the absence-based heuristic, making
+    /// placeholder classification deterministic and fail-closed:
+    /// only declared param names are treated as placeholders; every other
+    /// field name is checked as a concrete type even if it lacks a
+    /// `type_fields` entry.
+    pub fn register_type_params(&mut self, name: String, params: Vec<String>) {
+        // Skip empty registrations — non-generic types carry no param list and
+        // recording an empty Vec would shadow a valid prior registration.
+        if params.is_empty() {
+            return;
+        }
+        // First-write wins: a second registration for the same name is either
+        // the same declaration reprocessed or a shadowed import; neither may
+        // override the first authoritative registration.
+        self.type_params.entry(name).or_insert(params);
     }
 
     /// Report whether `name` is a `#[resource]` type.
@@ -976,11 +1024,11 @@ impl TraitRegistry {
                         // `&mut visiting` recursion below.
                         _ => {
                             let fields = self.type_fields.get(name).cloned().unwrap_or_default();
-                            self.check_structural_fields(&fields, args, marker, visiting)
+                            self.check_structural_fields(name, &fields, args, marker, visiting)
                         }
                     }
                 } else if let Some(fields) = self.type_fields.get(name).cloned() {
-                    self.check_structural_fields(&fields, args, marker, visiting)
+                    self.check_structural_fields(name, &fields, args, marker, visiting)
                 } else {
                     false // Unknown type — conservatively fail
                 };
@@ -1105,11 +1153,11 @@ impl TraitRegistry {
     ///   themselves generic instantiations). These are checked recursively as
     ///   before; the existing `visiting` guard prevents infinite recursion.
     ///
-    /// * **Type-param placeholder fields** — bare `Ty::Named` entries with no
-    ///   builtin tag, no type arguments, and no entry in the structural member
-    ///   registry (see [`Self::is_type_param_placeholder`]). These arise because
-    ///   `register_type` stores the generic declaration's field types verbatim;
-    ///   `T` in `type Box<T> { v: T }` is stored as `Ty::Named { name: "T" }`.
+    /// * **Type-param placeholder fields** — bare `Ty::Named` entries whose name
+    ///   appears in the declared type-parameter list for `parent_name` (see
+    ///   [`Self::is_type_param_placeholder`]). These arise because `register_type`
+    ///   stores the generic declaration's field types verbatim; `T` in
+    ///   `type Box<T> { v: T }` is stored as `Ty::Named { name: "T" }`.
     ///   Placeholder fields are skipped in the direct check and are instead
     ///   covered by the **type-args sweep** below.
     ///
@@ -1126,6 +1174,7 @@ impl TraitRegistry {
     /// non-Send type arg is correctly rejected.
     fn check_structural_fields(
         &self,
+        parent_name: &str,
         fields: &[Ty],
         args: &[Ty],
         marker: MarkerTrait,
@@ -1135,7 +1184,7 @@ impl TraitRegistry {
         // placeholder. For non-generic types all fields are concrete and this
         // is the only pass.
         let concrete_ok = fields.iter().all(|f| {
-            if !args.is_empty() && self.is_type_param_placeholder(f, marker) {
+            if !args.is_empty() && self.is_type_param_placeholder(parent_name, f, marker) {
                 // Placeholder covered by the type-args sweep; vacuously ok here.
                 true
             } else {
@@ -1152,37 +1201,51 @@ impl TraitRegistry {
             .all(|a| self.implements_marker_guarded(a, marker, visiting))
     }
 
-    /// Returns `true` for a bare unknown-named type that looks like a type
-    /// parameter placeholder.
+    /// Returns `true` when `ty` is a bare type-parameter placeholder in the
+    /// context of `parent_name`'s declaration.
     ///
-    /// A type-param placeholder is a `Ty::Named` with:
-    /// - no builtin tag (`builtin: None`),
-    /// - no type arguments of its own (`args` is empty),
-    /// - no entry in the structural `type_fields` registry, and
-    /// - no registered negative marker fact for `marker`.
+    /// **Primary path — explicit params (fail-closed, deterministic):**
+    /// If `register_type_params` was called for `parent_name`, a field is a
+    /// placeholder iff its bare name appears in that declared list. Anything
+    /// not in the declared list is a concrete type and is checked directly —
+    /// even if it has no `type_fields` entry and no negative impl.
     ///
-    /// These arise when `register_type` stores the field types of a generic
-    /// declaration verbatim: `T` in `type Box<T> { v: T }` ends up as
-    /// `Ty::Named { name: "T", args: [], builtin: None }` with no registry
-    /// entry, because `T` is the type parameter, not a concrete type.
+    /// **Fallback path — heuristic (for types without explicit param registration):**
+    /// A bare `Ty::Named` with no builtin tag, no type arguments, no `type_fields`
+    /// entry, and no registered negative marker fact is treated as a placeholder.
+    /// This covers test fixtures and any pre-existing path that does not call
+    /// `register_type_params`.
     ///
-    /// `type_fields.contains_key` correctly excludes:
-    /// - types registered with an empty field list (concrete zero-field types)
-    /// - any type that happens to share a single-letter name with a param
-    ///
-    /// The `negative_impls` guard is the soundness seal: a type registered via
-    /// `register_negative_impl` is a KNOWN concrete type, not a generic param.
-    /// Without this guard a field like `NoSend` (explicitly not-Send, but not
-    /// in `type_fields`) would be misclassified as a placeholder and skipped in
-    /// the concrete-field pass, allowing a `Wrapper<i64>` that holds a `NoSend`
-    /// field to be granted Send — a data-race / UAF soundness hole.
-    fn is_type_param_placeholder(&self, ty: &Ty, marker: MarkerTrait) -> bool {
-        matches!(ty, Ty::Named { builtin: None, args, name }
-            if args.is_empty()
-                && !self.type_fields.contains_key(name.as_str())
-                && !self.negative_impls
-                    .get(name.as_str())
-                    .is_some_and(|s| s.contains(&marker)))
+    /// The `negative_impls` guard in the fallback path is the soundness seal:
+    /// a type registered via `register_negative_impl` is a KNOWN concrete type,
+    /// not a generic param. Without this guard a field like `NoSend` (explicitly
+    /// not-Send, but not in `type_fields`) would be misclassified as a
+    /// placeholder and skipped in the concrete-field pass, allowing a
+    /// `Wrapper<i64>` that holds a `NoSend` field to be granted Send — a
+    /// data-race / UAF soundness hole.
+    fn is_type_param_placeholder(&self, parent_name: &str, ty: &Ty, marker: MarkerTrait) -> bool {
+        let Ty::Named {
+            builtin: None,
+            args,
+            name: field_name,
+        } = ty
+        else {
+            return false;
+        };
+        if !args.is_empty() {
+            return false;
+        }
+        // Primary path: authoritative declared-param list.
+        if let Some(params) = self.type_params.get(parent_name) {
+            return params.iter().any(|p| p == field_name);
+        }
+        // Fallback heuristic: treat as placeholder iff no concrete evidence
+        // exists (no type_fields entry, no negative impl for this marker).
+        !self.type_fields.contains_key(field_name.as_str())
+            && !self
+                .negative_impls
+                .get(field_name.as_str())
+                .is_some_and(|s| s.contains(&marker))
     }
 }
 
@@ -2179,6 +2242,126 @@ mod tests {
         assert!(
             !registry.implements_marker(&container_i64, MarkerTrait::Sync),
             "Container<i64> must NOT be Sync: BadSync field has negative Sync fact"
+        );
+    }
+
+    // =========================================================================
+    // A1 — register_type_params: authoritative placeholder detection
+    // =========================================================================
+
+    /// POSITIVE: `Envelope<T> { id: i64; payload: T }` with `T = String` IS Send.
+    ///
+    /// Uses `register_type_params` so the placeholder check takes the
+    /// authoritative path (declared-param list) rather than the heuristic.
+    /// The concrete field `i64` must be checked directly; the type-param field
+    /// `T` is deferred to the args sweep which checks `String` → Send.
+    #[test]
+    fn register_type_params_positive_all_send_fields() {
+        let mut registry = TraitRegistry::new();
+        let t_param = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        // type Envelope<T> { id: i64; payload: T }
+        registry.register_type("Envelope".to_string(), vec![Ty::I64, t_param]);
+        registry.register_type_params("Envelope".to_string(), vec!["T".to_string()]);
+
+        let env_string = Ty::Named {
+            builtin: None,
+            name: "Envelope".to_string(),
+            args: vec![Ty::String],
+        };
+        assert!(
+            registry.is_send(&env_string),
+            "Envelope<String> must be Send: i64 and String are both Send"
+        );
+    }
+
+    /// NEGATIVE GUARD: `Envelope<T> { id: i64; payload: T }` with `T = Rc<i64>`
+    /// must NOT be Send.
+    ///
+    /// With `register_type_params` registered, the placeholder check uses the
+    /// authoritative param list. `T` is a placeholder (deferred to args sweep);
+    /// the args sweep checks `Rc<i64>` → NOT Send → whole type is NOT Send.
+    #[test]
+    fn register_type_params_negative_non_send_arg() {
+        let mut registry = TraitRegistry::new();
+        let t_param = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        registry.register_type("Envelope".to_string(), vec![Ty::I64, t_param]);
+        registry.register_type_params("Envelope".to_string(), vec!["T".to_string()]);
+
+        let rc_i64 = Ty::Named {
+            builtin: Some(BuiltinType::Rc),
+            name: "Rc".to_string(),
+            args: vec![Ty::I64],
+        };
+        let env_rc = Ty::Named {
+            builtin: None,
+            name: "Envelope".to_string(),
+            args: vec![rc_i64],
+        };
+        assert!(
+            !registry.is_send(&env_rc),
+            "Envelope<Rc<i64>> must NOT be Send: Rc is not Send"
+        );
+    }
+
+    /// NEGATIVE GUARD (fail-closed): with `register_type_params`, a concrete
+    /// field whose name is NOT in the declared param list must be checked
+    /// directly, NOT skipped as a placeholder.
+    ///
+    /// Setup:
+    ///   - `ConcreteBad` is a REAL type registered with a non-Send field (`Rc<i64>`).
+    ///   - `Wrapper<T>` has `ConcreteBad` as a field alongside type param `T`.
+    ///   - `ConcreteBad` does NOT appear in the declared param list for `Wrapper`.
+    ///
+    /// Without `register_type_params`, `ConcreteBad` would pass the heuristic
+    /// placeholder check (no `type_fields` entry at the time of check — if e.g.
+    /// registration order is reversed) and be skipped. With the authoritative
+    /// param list, `ConcreteBad` is correctly identified as concrete and checked
+    /// directly, firing the non-Send derivation.
+    #[test]
+    fn register_type_params_concrete_field_not_skipped_as_placeholder() {
+        let mut registry = TraitRegistry::new();
+
+        // ConcreteBad has a Rc<i64> field — NOT Send.
+        registry.register_type(
+            "ConcreteBad".to_string(),
+            vec![Ty::Named {
+                builtin: Some(BuiltinType::Rc),
+                name: "Rc".to_string(),
+                args: vec![Ty::I64],
+            }],
+        );
+
+        let t_param = Ty::Named {
+            builtin: None,
+            name: "T".to_string(),
+            args: vec![],
+        };
+        let concrete_bad = Ty::Named {
+            builtin: None,
+            name: "ConcreteBad".to_string(),
+            args: vec![],
+        };
+        // type Wrapper<T> { bad: ConcreteBad; item: T }
+        registry.register_type("Wrapper".to_string(), vec![concrete_bad, t_param]);
+        // Declare T as the only type parameter; ConcreteBad is NOT a param.
+        registry.register_type_params("Wrapper".to_string(), vec!["T".to_string()]);
+
+        let wrapper_i64 = Ty::Named {
+            builtin: None,
+            name: "Wrapper".to_string(),
+            args: vec![Ty::I64],
+        };
+        assert!(
+            !registry.is_send(&wrapper_i64),
+            "Wrapper<i64> must NOT be Send: ConcreteBad field holds Rc<i64> (not Send)"
         );
     }
 }

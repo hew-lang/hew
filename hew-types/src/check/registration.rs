@@ -1672,6 +1672,8 @@ impl Checker {
             type_def.fields.values().cloned().collect()
         };
         self.registry.register_type(td.name.clone(), field_types);
+        self.registry
+            .register_type_params(td.name.clone(), type_def.type_params.clone());
         if td.wire.is_some() || kind == TypeDefKind::Enum {
             self.register_serializable_members_for_type(&td.name, &type_def);
         }
@@ -1941,6 +1943,8 @@ impl Checker {
                 .all(|f| self.registry.implements_marker(f, MarkerTrait::Encode));
 
         self.registry.register_type(td.name.clone(), field_types);
+        self.registry
+            .register_type_params(td.name.clone(), type_param_names.clone());
         if td.wire.is_some() || kind == TypeDefKind::Enum {
             self.register_serializable_members_for_type(&td.name, &type_def);
         }
@@ -2072,6 +2076,8 @@ impl Checker {
         };
         self.registry
             .register_type(rd.name.clone(), field_types.clone());
+        self.registry
+            .register_type_params(rd.name.clone(), type_param_names.clone());
         // Mark this as a record type so implements_marker applies the correct
         // value-type semantics (Resource always false; all other markers field-driven).
         self.registry.register_record_type(rd.name.clone());
@@ -2576,6 +2582,8 @@ impl Checker {
         }
         self.registry
             .register_type(md.name.clone(), all_field_types);
+        self.registry
+            .register_type_params(md.name.clone(), type_param_names.clone());
         self.register_rcfree_members_for_type(&md.name, &type_def);
 
         self.type_defs.insert(md.name.clone(), type_def);

@@ -2268,6 +2268,7 @@ mod tests {
                 doc_comment: None,
                 extern_symbol: None,
                 requires_mutable_receiver: false,
+                is_builtin_variant: false,
             },
         )]);
         let mut type_defs = HashMap::new(); // "T" is not a user-defined type

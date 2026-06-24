@@ -43117,6 +43117,7 @@ mod tests {
                 doc_comment: None,
                 extern_symbol: None,
                 requires_mutable_receiver: false,
+                is_builtin_variant: false,
             },
         }];
         // Declare the drop-in-place fn so we make it past arm (a).

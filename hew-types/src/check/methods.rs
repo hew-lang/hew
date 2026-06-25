@@ -78,6 +78,13 @@ pub(super) enum RecordCloneAdmissibility {
     OpaqueField { opaque_name: String },
     /// The record has un-substituted generic type parameters; not yet supported.
     GenericRecord,
+    /// The receiver is a bare type parameter (`x: T`) carrying a `Clone` bound
+    /// (`fn f<T: Clone>(x: T)`). The clone is admitted and deferred to
+    /// monomorphization: MIR re-lowers the body per concrete instantiation,
+    /// `subst_ty(T)` resolves the concrete leaf, and the per-value-class clone
+    /// dispatch (`lower.rs` `RecordCloneCall`) emits the matching copy path.
+    /// No bare-name thunk is seeded — `T` names no monomorphic layout.
+    AbstractParamClone,
     /// The named type is not a clone-eligible record kind (actor, machine, enum).
     NotARecord,
 }
@@ -2482,6 +2489,22 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
+                    RecordCloneAdmissibility::AbstractParamClone => {
+                        // Bare type param `x: T` with `T: Clone`. Record the
+                        // clone rewrite but DO NOT seed `user_clone_record_seeds`
+                        // — `T` names no monomorphic record layout; codegen
+                        // would synthesise a dead `__hew_record_clone_inplace_T`.
+                        // The concrete copy path is selected per-mono in MIR
+                        // (`subst_ty(T)` → value-class dispatch).
+                        let param_ty = receiver_ty.clone();
+                        self.record_method_call_rewrite(
+                            span,
+                            MethodCallRewrite::RecordCloneInplace {
+                                record_name: name.clone(),
+                            },
+                        );
+                        return param_ty;
+                    }
                     RecordCloneAdmissibility::NotARecord => {
                         // Fall through to `UndefinedMethod` below for non-record Named types
                         // (actors, machines, enums, etc.).
@@ -2614,6 +2637,18 @@ impl Checker {
     ) -> RecordCloneAdmissibility {
         use TypeDefKind::{Record, Struct};
         let Some(type_def) = self.type_defs.get(name) else {
+            // A bare type parameter (`x: T`) has no `type_defs` entry. When it
+            // carries a `Clone` bound in scope (`fn f<T: Clone>(x: T)`), admit
+            // the clone and defer the concrete copy path to monomorphization
+            // (`AbstractParamClone`). This is the abstract-`T: Clone` spine
+            // (mirrors `type_param_has_marker_bound` as used by abstract-key
+            // HashMap dispatch). Without the bound, fall through to `NotARecord`
+            // → `UndefinedMethod` (fail closed — `admit-only-what-you-lower`).
+            if self.is_type_param_in_scope(name)
+                && self.type_param_has_marker_bound(name, MarkerTrait::Clone)
+            {
+                return RecordCloneAdmissibility::AbstractParamClone;
+            }
             return RecordCloneAdmissibility::NotARecord;
         };
         // Only Record and Struct (value-type) kinds are clone-eligible.
@@ -7967,6 +8002,18 @@ impl Checker {
                                     ),
                                 );
                                 return Ty::Error;
+                            }
+                            RecordCloneAdmissibility::AbstractParamClone => {
+                                // Bare type param `x: T` with `T: Clone`; defer
+                                // the concrete copy path to monomorphization. No
+                                // seed: `T` names no monomorphic record layout.
+                                self.record_method_call_rewrite(
+                                    span,
+                                    MethodCallRewrite::RecordCloneInplace {
+                                        record_name: name.clone(),
+                                    },
+                                );
+                                return resolved;
                             }
                             RecordCloneAdmissibility::NotARecord => {
                                 // Fall through to UndefinedMethod below.

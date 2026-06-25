@@ -1,0 +1,65 @@
+//! Behavioural tests for cloning a BARE TYPE PARAMETER inside a generic
+//! function: `fn dup<T: Clone>(x: T) -> T { x.clone() }`.
+//!
+//! Before this lane the body was rejected at check time ("no method clone on
+//! `T`") even though every concrete instantiation has a clone path — the
+//! abstract-`T: Clone` clone gap. The checker now admits the clone through the
+//! `Clone` marker bound (the same `type_param_has_marker_bound` spine the
+//! abstract `K: Hash + Eq` dispatch uses), and MIR dispatches each concrete
+//! monomorphisation by value class: a `BitCopy` scalar duplicates on use; a
+//! `string` is cloned with `hew_string_clone` (a `+1` owner) and dropped with
+//! the symmetric `hew_string_drop`.
+//!
+//! Each test asserts EXACT cloned values; the scalar test mutates the source
+//! after cloning to prove the clone is an independent value, not an alias
+//! (a behavioural-green `exit 0` is non-evidence).
+//!
+//! Instantiation is limited to the value classes a `T: Clone` call site admits
+//! today (scalars and `string`). A record / `Vec` argument is rejected at the
+//! call site by the pre-existing marker-bound satisfaction check (`type … does
+//! not implement trait Clone required by T`), identically to a `T: Send` bound;
+//! that is an orthogonal generic-marker-satisfaction gap, not a clone gap.
+
+import std::testing;
+
+fn dup<T: Clone>(x: T) -> T { x.clone() }
+
+// Scalar `T = i64`: clone is a `BitCopy` duplicate. Mutate the source after
+// cloning and assert the clone keeps its own value (a copy, not an alias).
+#[test]
+fn test_generic_param_clone_scalar_independence() {
+    var n = 10;
+    let c = dup(n);
+    n = 99;
+    testing.assert_eq(c, 10);
+    testing.assert_eq(n, 99);
+}
+
+// Scalar `T = bool`.
+#[test]
+fn test_generic_param_clone_bool() {
+    testing.assert_true(dup(true));
+    testing.assert_false(dup(false));
+}
+
+// `T = string`: clone is a `hew_string_clone` `+1` owner. The source stays
+// live and usable after the clone; both are dropped exactly once (verified
+// drop-balanced — no double-free under the ratchet sanitiser).
+#[test]
+fn test_generic_param_clone_string() {
+    let s = "hello";
+    let t = dup(s);
+    testing.assert_eq_str(t, "hello");
+    testing.assert_eq_str(s, "hello");
+}
+
+// Two distinct instantiations of the same generic clone in one program
+// (`dup$$i64` and `dup$$string`) must monomorphise to distinct dispatch arms
+// with no symbol collision.
+#[test]
+fn test_generic_param_clone_multi_instantiation() {
+    let a = dup(7);
+    let b = dup("world");
+    testing.assert_eq(a, 7);
+    testing.assert_eq_str(b, "world");
+}

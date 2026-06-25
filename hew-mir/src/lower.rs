@@ -12820,6 +12820,91 @@ impl Builder {
             } => {
                 let src_place = self.lower_value(src)?;
                 let record_ty = self.subst_ty(&expr.ty);
+                // A2-a: a clone of a bare type parameter
+                // (`fn f<T: Clone>(x: T) -> T { x.clone() }`) is admitted by the
+                // checker through the record-clone rewrite, but after
+                // monomorphisation the concrete `T` is frequently a NON-record
+                // value. The record-thunk protocol below only lowers user
+                // structs, so the concrete non-record monomorphisations are
+                // dispatched here by value class. Concrete user records and the
+                // abstract origin bucket — where `record_ty` is
+                // `ResolvedTy::TypeParam`, value-class `Unknown` — fall through
+                // to the byte-identical thunk path, so existing behaviour is
+                // unchanged.
+                //
+                // RecordCloneCall is only produced for a `Named { builtin: None }`
+                // receiver (a user record or a bare type parameter), so a
+                // concrete `string`/`Vec`/tuple `clone` never reaches these arms
+                // — only a type-parameter monomorphisation does.
+                //
+                // A `BitCopy` value (`i64`/`bool`/…, a `#[copy]` record)
+                // duplicates on every use, so the clone is the source place
+                // itself, exactly what the concrete scalar `CopyCloneNoop` path
+                // yields. No new owner is created, so no drop is owed.
+                if ValueClass::of_ty(&record_ty, &self.type_classes) == ValueClass::BitCopy {
+                    return Some(src_place);
+                }
+                // A `string` is a refcounted copy-on-write owner. `clone`
+                // produces an independent `+1` owner via `hew_string_clone` (a
+                // header-aware refcount bump). Emitting it as a `Terminator::Call`
+                // — the `hew_hashmap_get_clone_layout` pattern — seeds the dest as
+                // a `fresh_string_producer_term_dest`, so drop-elaboration adds
+                // the symmetric `hew_string_drop` in all three exit contexts
+                // (sync return, async cancel, actor shutdown). A plain read would
+                // alias the source at rc==1 and double-free when both are dropped
+                // (`by-value-heap-params-are-borrows` P0), so the explicit clone
+                // is load-bearing here.
+                if is_string_const_ty(&record_ty) {
+                    let dest = self.alloc_local(record_ty);
+                    let next = self.alloc_block();
+                    self.finish_current_block(Terminator::Call {
+                        callee: "hew_string_clone".to_string(),
+                        builtin: None,
+                        args: vec![src_place],
+                        dest: Some(dest),
+                        next,
+                    });
+                    self.start_block(next);
+                    return Some(dest);
+                }
+                // A type parameter that monomorphises to a builtin heap value
+                // (`Vec`/`HashMap`/`HashSet`/`bytes`/tuple/array) needs the
+                // owned-clone + element-drop machinery the concrete `clone` path
+                // drives from the checker. Synthesising it from a bare type
+                // parameter here would risk an unbalanced retain/drop, so fail
+                // closed loudly rather than admit a clone we cannot yet lower
+                // safely (`admit-only-what-you-lower`,
+                // `unclonable-leaf-fails-closed-transitively`). The generic
+                // `Vec<T>`-field surface is tracked separately (A2-b); generic
+                // enum clone is A2-c.
+                if matches!(
+                    record_ty,
+                    ResolvedTy::Bytes
+                        | ResolvedTy::Tuple(_)
+                        | ResolvedTy::Array(_, _)
+                        | ResolvedTy::Named {
+                            builtin: Some(
+                                BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet
+                            ),
+                            ..
+                        }
+                ) {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!(
+                                "clone of a generic type parameter monomorphised to `{record_ty}` \
+                                 is not yet lowered; clone of a `Clone`-bound type parameter \
+                                 currently supports scalar, `string`, and user-record \
+                                 instantiations"
+                            ),
+                            site: expr.site,
+                        },
+                        note: "a type parameter that resolves to a Vec/HashMap/HashSet/bytes/\
+                               tuple/array clone is not yet synthesised from a bare parameter"
+                            .to_string(),
+                    });
+                    return None;
+                }
                 // Key the clone thunk by the MONOMORPHISED record layout: a
                 // generic instantiation (`clone Pair<i64, i64>`) must resolve
                 // `__hew_record_clone_inplace_Pair$$i64$i64`, not the bare

@@ -1572,3 +1572,51 @@ fn main() {
         "expected the fail-closed carry diagnostic; got:\n{out}"
     );
 }
+
+/// A functional update that CARRIES a `Vec<closure>`-element field while
+/// OVERRIDING a sibling single-pointer COW field must emit the clean
+/// `E_NOT_YET_IMPLEMENTED` diagnostic in BOTH debug and release builds — never
+/// an internal compiler panic.
+///
+/// The carried `Vec<fn() -> string>` has a single-pointer inline-drop symbol
+/// (`hew_vec_free_closure_pairs`), so the per-field carry gate admits it in
+/// isolation. But the WHOLE record is not a consume-markable owned-aggregate
+/// (its `Vec`-of-closure element fails `supports_value_class_drop_spine`), so
+/// the base was never consume-marked. Releasing the overridden `churn` field in
+/// place on a non-consume-marked base previously tripped the debug coupling
+/// assertion (an ICE) before the downstream W3.029 value-class gate rejected the
+/// record in release. The whole-record consume-markability pre-flight now fails
+/// closed with the clean diagnostic at the same point in both profiles.
+#[test]
+fn reject_carry_vec_closure_field_clean_no_panic() {
+    let source = r#"
+import std::string;
+record P { keep: Vec<fn() -> string>, churn: string }
+fn main() {
+    let v: Vec<fn() -> string> = Vec::new();
+    v.push(|| -> string { string.repeat("k", 8) });
+    let b = P { keep: v, churn: string.repeat("a", 8) };
+    let u = P { churn: string.repeat("b", 8), ..b };
+    println(u.keep.len());
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "Vec<closure>-carry + single-pointer override must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("E_NOT_YET_IMPLEMENTED"),
+        "expected the clean fail-closed NYI diagnostic; got:\n{out}"
+    );
+    // The whole point of the fix: the debug build must NOT panic. A surviving
+    // `debug_assert!` would surface as a panic / RUST_BACKTRACE message rather
+    // than the clean diagnostic above.
+    assert!(
+        !out.contains("panicked")
+            && !out.contains("NOT consume-marked")
+            && !out.contains("RUST_BACKTRACE")
+            && !out.contains("internal error"),
+        "compiler must not panic on this input; got:\n{out}"
+    );
+}

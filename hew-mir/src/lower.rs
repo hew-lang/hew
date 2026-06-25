@@ -10996,6 +10996,73 @@ impl Builder {
                 // binders escaping via RecordInit.  No owned field of `base` is
                 // ever dropped twice.
                 //
+                // Fail-closed WHOLE-RECORD pre-flight: both the override-drop and
+                // the shallow carry below are sound ONLY when the base record is
+                // CONSUME-MARKED — `alias_moved_owned_operand` emits the
+                // `AggregateAlias` iff `aggregate_ingress_moves_binding_ty` admits
+                // the WHOLE record. The override-drop's debug coupling assertion
+                // (B) assumes exactly that precondition. But the per-field carry /
+                // override gates below admit a field IN ISOLATION when it has a
+                // single-pointer inline-drop symbol (`project_field_inline_drop_-
+                // symbol`), and a `Vec<closure>` / `Vec<opaque>` element DOES have
+                // one (`hew_vec_free_closure_pairs` / `hew_vec_free`) even though
+                // the whole record is NOT a consume-markable owned-aggregate
+                // (`is_owned_aggregate_record_ty` is false — its element fails
+                // `supports_value_class_drop_spine`). That record is never
+                // consume-marked, yet an override-drop on a sibling single-pointer
+                // COW field would still fire, tripping the coupling assertion in
+                // debug BEFORE the downstream W3.029 value-class gate
+                // (`UnsupportedUserRecordValueClass`) rejects it in release.
+                //
+                // Close the divergence at its source: when the base carries an
+                // owned heap field (so an override-drop / shallow carry would run)
+                // but the whole record is not consume-markable as an owned
+                // aggregate, fail closed HERE with the same clean
+                // `E_NOT_YET_IMPLEMENTED` the release build already emits — never
+                // panic. This mirrors the fail-closed posture the per-field gates
+                // already take for closure / tuple / `Option` fields.
+                if base_place.is_some() {
+                    if let Some(base_expr) = base.as_deref() {
+                        let base_ty = self.subst_ty(&base_expr.ty);
+                        let record_has_owned_heap_field = field_order.iter().any(|(_, fty)| {
+                            let subst_fty = self.subst_ty(fty);
+                            !matches!(
+                                ValueClass::of_ty(&subst_fty, &self.type_classes),
+                                ValueClass::BitCopy | ValueClass::View
+                            )
+                        });
+                        if record_has_owned_heap_field
+                            && !self.aggregate_ingress_moves_binding_ty(&base_ty)
+                        {
+                            // Walk every sub-expression for checker-stream coverage
+                            // before bailing, mirroring the gates above.
+                            for (_, fe) in fields {
+                                let _ = self.lower_value(fe);
+                            }
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: "functional-update over a record whose value class \
+                                                MIR cannot lower yet"
+                                        .to_string(),
+                                    site: expr.site,
+                                },
+                                note: format!(
+                                    "the `..base` of `{name}` carries or overrides an owned heap \
+                                     field, but `{ty}` is not a consume-markable owned-aggregate \
+                                     record: at least one field has a value class MIR cannot lower \
+                                     yet (for example a `Vec` of closures or of opaque handles). \
+                                     Without the whole-record consume mark the functional-update \
+                                     in-place field release has no sound base, so it is rejected \
+                                     here rather than emitted. Set the affected fields explicitly \
+                                     in a plain constructor instead of carrying them through \
+                                     `..base`.",
+                                    ty = base_ty.user_facing(),
+                                ),
+                            });
+                            return None;
+                        }
+                    }
+                }
                 // Fail-closed pre-flight: owned-aggregate field overrides (record /
                 // tuple / enum) have no single-ptr leaf release symbol and surface
                 // a NotYetImplemented diagnostic rather than leaking silently.

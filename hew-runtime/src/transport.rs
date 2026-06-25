@@ -2022,10 +2022,13 @@ mod tests {
                 // value we read after the failing write is the write's own.
                 let _ = hew_cabi::sink::take_last_errno();
 
-                // 8 MiB payload: larger than default loopback socket buffers, so
-                // the kernel cannot absorb it while the peer never drains. The
-                // write blocks until the 100 ms timeout, then fails.
-                let payload = vec![b'x'; 8 * 1024 * 1024];
+                // 16 MiB payload: exceeds the autotuned loopback send buffer on
+                // all supported platforms (Linux, macOS, Windows). 8 MiB was
+                // enough on Linux/macOS but Windows' TCP autotuning absorbs 8 MiB
+                // within the 100 ms timeout. 16 MiB is the cross-platform floor
+                // documented in the loopback-backpressure-payload lesson.
+                // The write blocks until the 100 ms timeout, then fails.
+                let payload = vec![b'x'; 16 * 1024 * 1024];
                 // SAFETY: `payload` is valid for `payload.len()` bytes.
                 let bytes = unsafe {
                     crate::bytes::hew_bytes_from_static(

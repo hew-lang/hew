@@ -891,8 +891,38 @@ run_accept_expect_status "link_monitor_discarded" 0
 run_accept_expect_status "link_monitor_value_monitor" 0
 
 # Value-needed link(): MIR/codegen construct Result<(), LinkError> from the void
-# hew_actor_link return (Ok, no payload). Pattern-matched; Err arm calls exit(1).
+# hew_actor_link return (Ok, no payload). Pattern-matched on the named LinkError
+# variants (AlreadyLinked / TargetDead) — proves the LinkError builtin-enum
+# catalog resolves them. hew_actor_link is infallible, so the Err arms never fire.
 run_accept_expect_status "link_monitor_value_result" 0
+
+# Drop-safety: value-needed monitor() INSIDE an actor receive handler. The handler
+# gets a FunctionEntry cooperate site whose cancel branch leaves the prologue
+# BEFORE the MonitorRef is constructed, so the cancel-exit drop set must EXCLUDE
+# the not-yet-live MonitorRef — demonitoring an uninitialised slot could cancel an
+# unrelated monitor (fail-open). Run (exit 0) AND inspect the dispatch IR: the
+# handler's `cancel_exit` block must carry NO hew_actor_demonitor call (the
+# demonitor appears only on the normal return path, after construction).
+run_accept_expect_status "link_monitor_value_monitor_in_actor" 0
+# Extract the Watcher__recv__watch function's cancel_exit basic block from the
+# emitted LLVM IR and assert it contains no demonitor of the not-yet-live ref.
+watch_ll="${ROOT}/.tmp/compile-out/link_monitor_value_monitor_in_actor.ll"
+watch_cancel_block="$(awk '
+  /^define .*@Watcher__recv__watch\(/ { in_fn = 1 }
+  in_fn && /^cancel_exit:/            { in_cancel = 1 }
+  in_cancel                            { print }
+  in_cancel && /^[[:space:]]*ret /     { exit }
+' "${watch_ll}")"
+if [[ -z "${watch_cancel_block}" ]]; then
+  echo "drop-safety: could not find Watcher__recv__watch cancel_exit block in IR" >&2
+  echo "${watch_ll}" >&2
+  exit 1
+fi
+if grep -q 'hew_actor_demonitor' <<<"${watch_cancel_block}"; then
+  echo "drop-safety REGRESSION: handler cancel_exit demonitors a not-yet-live MonitorRef" >&2
+  echo "${watch_cancel_block}" >&2
+  exit 1
+fi
 
 # on(crash) handler attachment: Crasher actor declares #[on(crash)]; codegen emits
 # a non-null on_crash fn-pointer in HewChildSpec; supervisor boots and main returns 42.

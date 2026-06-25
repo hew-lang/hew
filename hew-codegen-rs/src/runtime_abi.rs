@@ -1211,11 +1211,16 @@ pub(crate) fn lower_call_runtime_abi(
             let _ = (i32_ty, ptr_ty);
         }
         // hew_actor_demonitor(ref_id: i64) -> void. Cancels a previously-registered
-        // monitor. Called from user Hew source via a lower_simple_void_runtime_call
-        // MIR arm (the canonical drop path — MonitorRef::close — goes through
-        // lower_drop_runtime in llvm.rs with struct-field extraction, bypassing
-        // this arm). This arm handles the case where user code calls the symbol
-        // directly inside a user-authored close method (e.g. wrapping type test).
+        // monitor. The auto-drop path for a MonitorRef VALUE (scope-exit, the
+        // common case) goes through RuntimeDropDescriptor::MonitorRefClose →
+        // lower_drop_runtime in llvm.rs (struct-field GEP + load), bypassing this
+        // arm. This `CallRuntimeAbi` arm lowers the DIRECT call in the body of the
+        // stdlib `impl MonitorRef { fn close(self) { hew_actor_demonitor(self.ref_id) } }`
+        // (std/link_monitor.hew): a program that `import std::link_monitor`s lowers
+        // that inherent close body, whose `unsafe` block calls the symbol with a
+        // plain i64 ref_id and reaches here. (It is absent from the checked-MIR
+        // corpus — see the `hew_actor_demonitor` EXPECTED_UNCOVERED pin — because
+        // no corpus fixture imports std::link_monitor and lowers close.)
         F::ActorDemonitor => {
             if args.len() != 1 {
                 return Err(CodegenError::FailClosed(format!(
@@ -1234,8 +1239,7 @@ pub(crate) fn lower_call_runtime_abi(
                 "hew_actor_demonitor_call",
                 "hew_actor_demonitor call",
             )?;
-            // void return; dest is always None (lower_simple_void_runtime_call
-            // never emits a dest).
+            // void return; dest is always None (the close body is a void call).
             let _ = (i32_ty, ptr_ty, dest);
         }
         // hew_actor_self() -> *mut HewActor (`hew-runtime/src/actor.rs`). Reads

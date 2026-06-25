@@ -24884,16 +24884,21 @@ pub(crate) fn emit_result_err(
 ///
 /// This helper is the substrate face of the existing `lower_record_init`
 /// inlined codegen path (`llvm.rs:5052`); it intentionally mirrors that
-/// shape so Stage 2 (per the W2.004 plan) can refactor the inline path
-/// to call this helper. Until then, the helper's first consumer is the
-/// composite-return spine: Cluster-2 surfaces (`link()` / `monitor()`)
-/// build `MonitorRef { ref_id }` literals through this substrate.
+/// shape so a later refactor can route the inline path through this helper.
+///
+/// It has NO production consumer today (only the unit test below). The
+/// `monitor()` composite-return spine does NOT go through here: `monitor()`
+/// builds `MonitorRef { ref_id }` via the MIR producer's `Instr::RecordInit`,
+/// which codegen lowers through `lower_record_init` directly — the same
+/// underlying path this helper delegates to, reached without this wrapper.
+/// The `#[allow(dead_code)]` is therefore load-bearing until a consumer
+/// adopts the wrapper.
 ///
 /// `dest`'s resolved type must be `ResolvedTy::Named { name, .. }`
 /// keyed to a registered `RecordLayout`; the struct's field order is
 /// authoritative — `field_offset.0` indexes directly into the LLVM
 /// struct.
-#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
+#[allow(dead_code)] // substrate wrapper over lower_record_init; no production consumer yet
 fn emit_struct_literal(
     fn_ctx: &FnCtx<'_, '_>,
     dest: Place,

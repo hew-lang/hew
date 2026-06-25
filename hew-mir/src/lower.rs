@@ -20580,12 +20580,15 @@ impl Builder {
                 self.lower_actor_link_or_monitor(symbol, hir_args, site, context, result_ty)
             }
             // `hew_actor_demonitor(ref_id: i64) -> void`: cancels a monitor.
-            // The canonical call path is MonitorRef::close → RuntimeDropDescriptor::MonitorRefClose
-            // → lower_drop_runtime (struct-field extraction); this arm handles
-            // the rare case where user Hew source calls the symbol directly
-            // (e.g. a `#[resource]` type wrapping the ref in a user-authored
-            // close method — as in the MIR vertical test). Returns void; a
-            // value-needed context is fail-closed.
+            // The auto-drop path for a MonitorRef value (scope-exit, the common
+            // case) goes through RuntimeDropDescriptor::MonitorRefClose →
+            // lower_drop_runtime (struct-field extraction in llvm.rs), NOT this
+            // arm. This arm lowers the DIRECT call in the body of
+            // `impl MonitorRef { fn close(self) { hew_actor_demonitor(self.ref_id) } }`
+            // (std/link_monitor.hew): a program that `import std::link_monitor`s
+            // lowers that inherent `close` body, whose `unsafe` block calls the
+            // symbol directly with a plain i64 `ref_id`. Returns void; a
+            // value-needed context is fail-closed in the helper.
             "hew_actor_demonitor" => {
                 self.lower_simple_void_runtime_call(symbol, hir_args, site, context)
             }
@@ -21284,9 +21287,11 @@ impl Builder {
     }
 
     /// Pass-through handler for void-returning runtime symbols that carry no
-    /// MIR-level composite-return semantics. Used for symbols such as
-    /// `hew_actor_demonitor` that users may call directly from a user-authored
-    /// close method, where the caller is responsible for lowering args correctly.
+    /// MIR-level composite-return semantics. The sole consumer today is
+    /// `hew_actor_demonitor`, called directly from the body of the stdlib
+    /// `impl MonitorRef { fn close(self) }` inherent method (lowered when a
+    /// program imports `std::link_monitor`); the caller is responsible for
+    /// lowering args correctly.
     ///
     /// Returns `None` (unit) in both statement and value-needed position — a
     /// void call appearing as the last expression in a block is valid Hew; the
@@ -27057,6 +27062,7 @@ fn elaborate(
         &checked.blocks,
         &lifo_drops,
         &dataflow_result.exit_states,
+        &dataflow_result.entry_states,
         &builder.binding_locals,
         &checked
             .cooperate_sites
@@ -34376,10 +34382,22 @@ fn is_vec_copy_in_element_store_symbol(callee: &str) -> bool {
               with per-arm payload construction; the line count is the \
               variant count, not deep nesting"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct producer-supplied input the per-exit \
+              drop planner reads independently (the LIFO template, the exit- and \
+              entry-state dataflow maps, the binding→Place / binding→scope tables, \
+              the cancellation + loop-back-edge block sets); bundling them into a \
+              struct would add indirection without clarifying the data flow"
+)]
 fn enumerate_exits(
     blocks: &[BasicBlock],
     lifo: &[ElabDrop],
     exit_states: &std::collections::HashMap<
+        u32,
+        std::collections::BTreeMap<hew_hir::BindingId, dataflow::BindingState>,
+    >,
+    entry_states: &std::collections::HashMap<
         u32,
         std::collections::BTreeMap<hew_hir::BindingId, dataflow::BindingState>,
     >,
@@ -34416,13 +34434,16 @@ fn enumerate_exits(
         .map(|(binding, place)| (*place, *binding))
         .collect();
 
-    let drops_for_exit = |block_id: u32| -> Vec<ElabDrop> {
-        let Some(state_map) = exit_states.get(&block_id) else {
-            // No dataflow result for this block (defensive — every
-            // reachable block has an exit_state entry after
-            // analyze). Fall back to the function-wide LIFO.
-            return drops_template.clone();
-        };
+    // Narrow the function-wide LIFO to the drops whose owning binding is
+    // live (`Live` / `MaybeConsumed` / `AliasedIntoAggregate`) in `state_map`.
+    // A binding `Consumed` (moved out) or `Uninit` (not yet, or never,
+    // constructed) on the reaching path is excluded — firing its drop would
+    // double-free a moved value or free/demonitor an uninitialised slot.
+    let filter_drops_by_state = |state_map: &std::collections::BTreeMap<
+        hew_hir::BindingId,
+        dataflow::BindingState,
+    >|
+     -> Vec<ElabDrop> {
         drops_template
             .iter()
             .filter(|drop| match place_to_binding.get(&drop.place) {
@@ -34444,6 +34465,34 @@ fn enumerate_exits(
             })
             .cloned()
             .collect()
+    };
+
+    let drops_for_exit = |block_id: u32| -> Vec<ElabDrop> {
+        let Some(state_map) = exit_states.get(&block_id) else {
+            // No dataflow result for this block (defensive — every
+            // reachable block has an exit_state entry after
+            // analyze). Fall back to the function-wide LIFO.
+            return drops_template.clone();
+        };
+        filter_drops_by_state(state_map)
+    };
+
+    // Drop set for a `CooperateKind::FunctionEntry` cancel exit. The cancel
+    // branch leaves the function prologue BEFORE the entry block's own `Bind`
+    // statements run, so the live set is the block's ENTRY (in-) state, not
+    // its exit state. Using the exit state would over-include locals that the
+    // entry block constructs after the cooperate site — for a struct-shaped
+    // resource (`MonitorRef`) that means demonitoring an uninitialised stack
+    // slot (fail-open: a garbage `ref_id` could cancel an unrelated monitor).
+    // For a no-parameter function the entry state is empty, so the cancel exit
+    // drops nothing — matching the established baseline for every other
+    // resource. A by-value resource PARAMETER is `Live` at entry and is
+    // correctly retained. LESSONS: cleanup-all-exits (P0), raii-null-after-move.
+    let drops_for_entry_cancel = |block_id: u32| -> Vec<ElabDrop> {
+        let Some(state_map) = entry_states.get(&block_id) else {
+            return drops_template.clone();
+        };
+        filter_drops_by_state(state_map)
     };
 
     // Per-iteration drops for a loop-body back-edge `Goto`. Restricts
@@ -34742,16 +34791,31 @@ fn enumerate_exits(
         };
         plans.push(plan);
         if cancellation_blocks.contains(&block_id) {
-            plans.push((
-                ExitPath::Cancel { block: block_id },
-                DropPlan {
-                    drops: drops_for_exit(block_id),
-                },
-            ));
+            // The drop set depends on WHERE the cooperate-cancel branch leaves
+            // the function (see `CooperateKind`). A `FunctionEntry` site (always
+            // the entry block, id 0 — both `dataflow::analyze` and
+            // `compute_cooperate_sites` pin the entry block to 0) fires in the
+            // prologue, BEFORE this block's `Bind` statements run, so its live
+            // set is the block ENTRY state. A `LoopBackEdge` site fires after the
+            // back-edge block body, so its live set is the block EXIT state — the
+            // established loop-cancel posture, unchanged here.
+            let drops = if block_id == ENTRY_BLOCK_ID {
+                drops_for_entry_cancel(block_id)
+            } else {
+                drops_for_exit(block_id)
+            };
+            plans.push((ExitPath::Cancel { block: block_id }, DropPlan { drops }));
         }
     }
     (elab_blocks, plans)
 }
+
+/// The function entry block id. `dataflow::analyze` seeds parameter live-state
+/// at block 0 and `dataflow::compute_cooperate_sites` pins the `FunctionEntry`
+/// cooperate site to block 0; the MIR builder's `finalize_blocks` constructs the
+/// entry block as id 0. This single constant keeps the elaborator's
+/// FunctionEntry-cancel handling aligned with those producers.
+const ENTRY_BLOCK_ID: u32 = 0;
 
 // ============================================================================
 // Slice 3 (M2 substrate) drop-plan invariant tests.
@@ -35993,7 +36057,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
 
             // Exactly one Return plan for the single block.
             prop_assert_eq!(plans.len(), 1);
@@ -36048,7 +36112,7 @@ mod slice3_narrowing_proptests {
             let lifo = build_lifo(n);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
             let (_, plan) = &plans[0];
 
             // Expected: every binding NOT Consumed survives in the drop
@@ -36087,8 +36151,8 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
-            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
 
             prop_assert_eq!(b1.len(), b2.len());
             prop_assert_eq!(p1.len(), p2.len());
@@ -36114,7 +36178,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
             let (_, plan) = &plans[0];
 
             for d in &plan.drops {

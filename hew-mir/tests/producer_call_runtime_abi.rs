@@ -450,11 +450,17 @@ fn value_needed_monitor_emits_call_runtime_abi_with_i64_dest_and_record_init() {
     // monitor() in value position: the MIR producer must emit hew_actor_monitor
     // with dest=Some(Place::Local(N: i64)) for the raw ref_id, then a RecordInit
     // that assembles MonitorRef{ref_id} from that local. No NYI diagnostic.
+    //
+    // The MonitorRef is consumed with `let _ = m;` (move-to-wildcard), which
+    // routes through the real auto-drop path (RuntimeDropDescriptor::MonitorRefClose
+    // → lower_drop_runtime). It is deliberately NOT consumed via `m.close()`:
+    // `.close()` does not resolve as a method on `MonitorRef` from real source,
+    // so a `.close()` here would exercise a path no user program can reach.
     let source = link_monitor_source(
         r"
         let p = spawn Probe;
         let m = monitor(p);
-        m.close();
+        let _ = m;
         return 0;
         ",
     );

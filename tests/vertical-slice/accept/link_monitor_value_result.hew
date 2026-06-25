@@ -25,10 +25,19 @@ fn main() -> i64 {
     // hew_actor_link is void/infallible; the synthesised Ok(()) tag must be
     // variant 0 — the Err arm must not fire.
     let r = link(child);
+    // Name the LinkError variants explicitly (not a bare `Err(_)`): this
+    // exercises variant resolution against the LinkError builtin-enum catalog
+    // (hew_actor_link is void/infallible today, so neither Err arm fires, but
+    // they must RESOLVE). A missing LinkError entry in the HIR
+    // `builtin_enum_specs()` catalog would surface here as
+    // "variant `LinkError::AlreadyLinked` is not a member of `LinkError`".
     match r {
         Ok(()) => {},
-        Err(_) => {
-            exit(1);
+        Err(LinkError::AlreadyLinked) => {
+            exit(2);
+        },
+        Err(LinkError::TargetDead) => {
+            exit(3);
         },
     }
     // monitor() in value position: constructs MonitorRef { ref_id: i64 }.

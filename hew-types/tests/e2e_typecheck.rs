@@ -1325,6 +1325,14 @@ fn lambda_actor_non_send_param_rejected() {
 
 #[test]
 fn actor_ref_send_method_requires_send_payload() {
+    // Previously this test asserted `InvalidSend` for a non-Send `Rc<i64>`
+    // payload.  After the anonymous-payload send surface was formally retired
+    // (issue #2122), `sink.send(rc)` is rejected *earlier* — at the
+    // `UndefinedMethod` gate that fires when the actor has no `receive fn send`
+    // handler — so the `InvalidSend` check never runs.  The payload-Send bound
+    // no longer matters for this shape; the whole call is rejected.  Confirm
+    // that the call is indeed rejected with `UndefinedMethod` (actionable
+    // diagnostic: "add `receive fn send(...)` or use a named handler").
     let output = typecheck_inline(
         r"
         actor Sink {
@@ -1342,8 +1350,10 @@ fn actor_ref_send_method_requires_send_payload() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::InvalidSend),
-        "ActorRef.send() must reject non-Send payloads, got: {:#?}",
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::UndefinedMethod),
+        "anonymous `.send()` on an actor without `receive fn send` must produce \
+         UndefinedMethod (not InvalidSend) — the call is rejected at the handler \
+         gate before Send-ness is checked. got: {:#?}",
         output.errors
     );
 }

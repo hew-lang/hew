@@ -592,14 +592,22 @@ expect_check_fail_contains \
     "actor_let_field_assign"
 
 # Reject: `ref.send(msg)` on a named actor with NO `receive fn send` handler is
-# NYI (the builtin fire-and-forget `LocalPid.send` path is not yet lowered).
-# Confirms the compiler fails closed with a diagnostic, not a silent wrong output.
-# This is the complement of `actor_receive_fn_named_send`: with a user handler the
-# call succeeds; without one it still fails closed cleanly.
+# rejected at the type-checker with an actionable UndefinedMethod diagnostic.
+# The anonymous-payload path has no lowerable mailbox slot; the checker now
+# surfaces a clear error (not a confusing HIR MethodCallNoRewrite) pointing the
+# user at `receive fn send` or a named handler.
+# Complement of `actor_receive_fn_named_send`: with a user `receive fn send`
+# handler the call dispatches correctly.
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
 expect_check_fail_contains \
     "${ROOT}/tests/vertical-slice/reject/actor_builtin_send_no_handler.hew" \
-    'no checker-produced rewrite entry for this method call' \
+    'has no `receive fn send` handler' \
     "actor_builtin_send_no_handler"
+
+# Accept: the recommended alternative — a named `receive fn` dispatched by
+# name is the correct shape that replaces the retired anonymous-payload
+# `.send()` surface. add(10) + add(32) = 42.
+run_accept_expect_status "actor_named_handler_send_alt" 42
 
 # Actor field mutability accept side: a `let` field set at spawn time is
 # readable from handlers while the `var` field takes the writes.

@@ -680,7 +680,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
             "SupervisorPoolChildAccessorUnsupported"
         }
         K::NestedSupervisorAccessorUnsupported { .. } => "NestedSupervisorAccessorUnsupported",
-        K::ActorSendRequiresUnitHandler { .. } => "ActorSendRequiresUnitHandler",
         K::BinaryOperatorUnsupportedInMir { .. } => "BinaryOperatorUnsupportedInMir",
         K::UnaryOperatorUnsupportedInMir { .. } => "UnaryOperatorUnsupportedInMir",
         K::CallableUnsupportedInMir { .. } => "CallableUnsupportedInMir",

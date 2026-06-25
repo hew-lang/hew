@@ -1,0 +1,24 @@
+// Accept: the recommended alternative when you want a fire-and-forget send to
+// a named actor — use a named `receive fn` and call it by name. This is the
+// correct shape that replaces the retired anonymous-payload `.send()` surface.
+//
+// Adder.add accumulates n into count; main calls add(10) + add(32) = 42 → 42.
+actor Adder {
+    var count: i64;
+    receive fn add(n: i64) {
+        count = count + n;
+    }
+    receive fn get() -> i64 {
+        count
+    }
+}
+
+fn main() -> i64 {
+    let a = spawn Adder(count: 0);
+    a.add(10);
+    a.add(32);
+    match await a.get() {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
+}

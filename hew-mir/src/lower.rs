@@ -20217,18 +20217,10 @@ impl Builder {
         site: hew_hir::SiteId,
     ) -> Option<Place> {
         let info = self.actor_method_info(&receiver.ty, method_id, site)?;
-        if info.return_ty != ResolvedTy::Unit {
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!(
-                        "fire-and-forget actor send to non-unit handler `{method_id}`"
-                    ),
-                    site,
-                },
-                note: "ActorSend requires a unit-returning receive handler".to_string(),
-            });
-            return None;
-        }
+        // `ActorMethodKind::Fire` is only produced by `record_actor_method_dispatch`
+        // when `reply_ty == Ty::Unit`, so every `ActorSend` HIR node refers to a
+        // unit-returning handler by construction.  The arity check below is the
+        // remaining structural guard.
         if info.param_tys.len() != args.len() {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {

@@ -27,7 +27,7 @@ fn main() {
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
     reader.go(0);
     let client = listener.accept();
-    client.write_string("hello-from-server");
+    let _ = client.write_string("hello-from-server");
     sleep_ms(500);
     let _ = client.close();
     println("server-done");

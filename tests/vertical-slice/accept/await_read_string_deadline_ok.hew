@@ -31,7 +31,7 @@ fn main() {
     let reader = spawn Reader(port: port);
     reader.go();
     let client = listener.accept();
-    client.write_string("hello-from-server");
+    let _ = client.write_string("hello-from-server");
     sleep_ms(500);
     let _ = client.close();
     exit(99);

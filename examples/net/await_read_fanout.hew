@@ -38,7 +38,7 @@ fn main() {
     var accepted = 0;
     while accepted < READER_COUNT {
         let client = listener.accept();
-        client.write_string(f"payload-{accepted}");
+        let _ = client.write_string(f"payload-{accepted}");
         accepted = accepted + 1;
     }
     sleep_ms(800);

@@ -68,7 +68,18 @@ pub struct TlsShared {
     /// outlive the actor/runtime at teardown (#1963 reader-lifetime class).
     /// `hew_tls_close` joins this handle before returning so the reader is
     /// deterministically reaped — mirroring `websocket.rs::join_reader`.
+    ///
+    /// ATOMICITY: the check-then-store in `hew_tls_attach` holds this lock
+    /// across both operations so two concurrent callers cannot both pass the
+    /// `is_some()` guard and both spawn a reader.
     reader: Mutex<Option<JoinHandle<()>>>,
+    /// Set to `true` (Release) by the reader thread just before it exits.
+    ///
+    /// WHY: `hew_tls_close` joins the reader, so this flag is guaranteed to be
+    /// `true` the instant `hew_tls_close` returns — but only if `join.join()` is
+    /// called (not `drop(join)`). Tests assert this flag immediately after
+    /// `hew_tls_close` to prove the join happened rather than a silent detach.
+    reader_exited: AtomicBool,
 }
 
 impl std::fmt::Debug for TlsShared {
@@ -106,6 +117,7 @@ impl HewTlsStream {
                 stream: Mutex::new(Some(stream)),
                 closed: AtomicBool::new(false),
                 reader: Mutex::new(None),
+                reader_exited: AtomicBool::new(false),
             }),
         }))
     }
@@ -154,6 +166,7 @@ fn connect_tls(host: &str, port: u16) -> Result<HewTlsStream, BoxError> {
             stream: Mutex::new(Some(stream)),
             closed: AtomicBool::new(false),
             reader: Mutex::new(None),
+            reader_exited: AtomicBool::new(false),
         }),
     })
 }
@@ -533,9 +546,14 @@ fn take_tls_reader(inner: &TlsShared) -> Option<JoinHandle<()>> {
 /// most `TLS_READER_TIMEOUT` (the underlying socket read timeout). Joining here
 /// guarantees the reader has stopped calling into the runtime before
 /// `hew_tls_close` returns — mirroring `websocket.rs::join_reader`.
-fn join_tls_reader(inner: &TlsShared) {
+///
+/// Returns `true` if a reader was attached (and joined), `false` if none was.
+fn join_tls_reader(inner: &TlsShared) -> bool {
     if let Some(join) = take_tls_reader(inner) {
         let _ = join.join();
+        true
+    } else {
+        false
     }
 }
 
@@ -565,13 +583,22 @@ pub unsafe extern "C" fn hew_tls_close(stream: *mut HewTlsStream) {
     // Reap the reader BEFORE freeing the connection: once `closed` is set the
     // reader exits within `TLS_READER_TIMEOUT`, and joining it here ensures it
     // is no longer touching the runtime when this returns.
-    join_tls_reader(&inner);
-    // Drop the inner stream to close the TCP socket. The reader has already
-    // exited (joined above); if it had not yet been attached, this is the
-    // sole closer.
-    let _ = inner.stream.lock().map(|mut g| {
-        *g = None;
-    });
+    //
+    // The reader drops the inner stream on exit (`reader_exited` is set first,
+    // then the stream is dropped — see `spawn_tls_attach_reader`). If no reader
+    // was attached, close is the sole closer and must drop the stream here.
+    let had_reader = join_tls_reader(&inner);
+    if !had_reader {
+        // No reader; we are the sole closer — drop the stream to shut the socket.
+        let _ = inner.stream.lock().map(|mut g| {
+            *g = None;
+        });
+    }
+    // If a reader was attached: it dropped the stream on exit (joined above).
+    // close does NOT re-acquire the stream lock, so there is no race between
+    // close's stream-drop and the reader's reader_exited store. This guarantees
+    // that reader_exited is observable (via the join's happens-before) the
+    // instant hew_tls_close returns.
 }
 
 // ── TLS Attach (Erlang-style active mode) ────────────────────────────────────
@@ -767,9 +794,19 @@ fn spawn_tls_attach_reader(
         }
 
         // Drop the inner stream to close the underlying socket on reader exit.
+        // `hew_tls_close` does NOT re-acquire the stream lock when a reader was
+        // attached (it relies on this drop), so there is no competing lock here.
         if let Ok(mut guard) = inner.stream.lock() {
             *guard = None;
         }
+
+        // Signal that the reader has fully exited. This is the last write the
+        // reader performs; `hew_tls_close` calls `join.join()` before returning,
+        // so the join's happens-before guarantees this store is visible (Acquire)
+        // the instant `hew_tls_close` returns — but ONLY if `join.join()` was
+        // called (not `drop(join)`). The test asserts this flag immediately after
+        // `hew_tls_close` to prove the join happened.
+        inner.reader_exited.store(true, Ordering::Release);
     })
 }
 
@@ -809,26 +846,24 @@ pub unsafe extern "C" fn hew_tls_attach(
     let s = unsafe { &*stream };
     // Refuse a second attach: the stored handle would otherwise be overwritten
     // (leaking the first reader) and two readers would race the stream mutex.
-    {
-        let reader = s
-            .inner
-            .reader
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if reader.is_some() {
-            eprintln!("[tls-attach] reader already attached for stream={stream:p}");
-            return;
-        }
+    // Hold the reader lock across check + spawn + store so two concurrent
+    // callers cannot both pass the `is_some()` guard and both spawn a reader
+    // (a TOCTOU race if we drop and re-acquire the lock between the two steps).
+    let mut reader_guard = s
+        .inner
+        .reader
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if reader_guard.is_some() {
+        eprintln!("[tls-attach] reader already attached for stream={stream:p}");
+        return;
     }
     // SAFETY: `actor` points to a valid HewActorRef for the duration of this
     // call; we snapshot the ref by value so the reader owns its own copy.
     let actor_ref = unsafe { std::ptr::read(actor.cast::<TlsActorRef>()) };
     let join =
         spawn_tls_attach_reader(Arc::clone(&s.inner), actor_ref, on_data_type, on_close_type);
-    *s.inner
-        .reader
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = Some(join);
+    *reader_guard = Some(join);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1360,6 +1395,7 @@ mod tests {
             stream: Mutex::new(None),
             closed: AtomicBool::new(false),
             reader: Mutex::new(None),
+            reader_exited: AtomicBool::new(false),
         });
         let boxed = Box::new(HewTlsStream {
             inner: Arc::clone(&shared),
@@ -1378,6 +1414,7 @@ mod tests {
             stream: Mutex::new(None),
             closed: AtomicBool::new(true),
             reader: Mutex::new(None),
+            reader_exited: AtomicBool::new(false),
         });
         // The stream is None and closed — a reader would exit immediately.
         let guard = shared.stream.lock().unwrap();
@@ -1693,6 +1730,11 @@ mod tests {
             other => panic!("expected no event on a silent connection, got {other:?}"),
         }
 
+        // Clone the inner Arc BEFORE close so we can inspect `reader_exited`
+        // after `hew_tls_close` frees the outer HewTlsStream.
+        // SAFETY: `stream_ptr` is live at this point; we read (not move) the Arc.
+        let inner_arc = Arc::clone(unsafe { &(*stream_ptr).inner });
+
         // The reap proof: closing a live, blocked reader returns promptly.
         let close_start = Instant::now();
         // SAFETY: `stream_ptr` was produced by `from_stream` and not yet freed.
@@ -1701,6 +1743,19 @@ mod tests {
         assert!(
             close_elapsed < Duration::from_secs(2),
             "hew_tls_close must reap a live reader within the read-timeout bound, took {close_elapsed:?}"
+        );
+
+        // JOIN-PROOF: `reader_exited` is set (Release) by the reader immediately
+        // before it returns. `hew_tls_close` calls `join.join()` before returning,
+        // so the join synchronises this write — meaning the flag MUST be true the
+        // instant `hew_tls_close` returns. If `join.join()` is replaced with
+        // `drop(join)` (detaching the reader), `hew_tls_close` can return before
+        // the reader sets the flag and this assertion fails.
+        assert!(
+            inner_arc.reader_exited.load(Ordering::Acquire),
+            "reader_exited must be set immediately after hew_tls_close — \
+             this can only be true if hew_tls_close called join.join(), \
+             not drop(join); a detached reader would not yet have set this flag"
         );
 
         let _ = done_tx.send(());

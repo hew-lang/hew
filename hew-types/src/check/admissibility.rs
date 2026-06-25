@@ -3615,8 +3615,11 @@ mod tests {
     // ── Additional admissibility tests from independent review ────────────────
 
     #[test]
-    fn hashmap_string_field_key_rejected() {
-        // record K { s: string } — string field makes K ineligible (IneligibleManaged)
+    fn hashmap_string_field_key_admitted() {
+        // record K { s: string } — a string field is structurally hashable, so
+        // K is admitted as a layout key (string field hashed by descent, owned
+        // key dropped via the per-record key drop thunk). A layout fact is
+        // produced and no diagnostic is emitted.
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 1..10;
         let mut td = make_record("K", vec![("s", Ty::String)]);
@@ -3634,19 +3637,13 @@ mod tests {
         );
         checker.finalize_hashmap_admission();
         assert!(
-            !checker.errors.is_empty(),
-            "string-field key must be rejected; errors: {:?}",
+            checker.errors.is_empty(),
+            "string-field key must be admitted; errors: {:?}",
             checker.errors
         );
         assert!(
-            checker.hashmap_layout_facts.is_empty(),
-            "no layout fact must be produced for string-field key"
-        );
-        // Diagnostic must name the field or type clearly
-        let msg = &checker.errors[0].message;
-        assert!(
-            msg.contains('K') || msg.contains("string"),
-            "error must reference the type or field kind; got: {msg:?}"
+            !checker.hashmap_layout_facts.is_empty(),
+            "a layout fact must be produced for an admitted string-field key"
         );
     }
 

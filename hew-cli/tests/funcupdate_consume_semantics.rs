@@ -1226,7 +1226,7 @@ fn main() {
 // SIGSEGVs / double-frees under Guard Malloc when admitted (empirically
 // reproduced); all must fail `check` fail-closed.
 
-/// 6th hole, unbound: `..id_inner(o.inner)` where `fn id_inner(p) { p }` returns
+/// Unbound: `..id_inner(o.inner)` where `fn id_inner(p) { p }` returns
 /// the borrowed parameter verbatim. The override-drop frees the live
 /// `o.inner.label`.
 #[test]
@@ -1255,7 +1255,7 @@ fn main() {
     );
 }
 
-/// 6th hole, bound: `let b = id_inner(o.inner); ..b`. Binding the laundered
+/// Bound: `let b = id_inner(o.inner); ..b`. Binding the laundered
 /// call result does not change provenance — the prescan classifies `b`'s
 /// definition (a non-fresh call) as not materialised.
 #[test]
@@ -1285,7 +1285,7 @@ fn main() {
     );
 }
 
-/// 7th hole, inline: a `..Wrap { s: p }` base that constructs a record EMBEDDING
+/// Inline: a `..Wrap { s: p }` base that constructs a record EMBEDDING
 /// a whole by-value parameter. The constructor stores the param operand without
 /// a refcount bump, so the constructed base interior-aliases the caller's
 /// argument; the override-drop then frees the live `str0`.
@@ -1316,7 +1316,7 @@ fn main() {
     );
 }
 
-/// 7th hole, bound: `let b = Wrap { s: p, n: 0 }; ..b`. Binding the
+/// Bound: `let b = Wrap { s: p, n: 0 }; ..b`. Binding the
 /// param-embedding constructor first does not launder it — the prescan sees the
 /// `StructInit` definition embeds a whole parameter and rejects.
 #[test]
@@ -1347,7 +1347,7 @@ fn main() {
     );
 }
 
-/// 7th hole, through a call return: `..wrap(o.inner).inner` where `fn wrap(p) {
+/// Through a call return: `..wrap(o.inner).inner` where `fn wrap(p) {
 /// Outer { inner: p, tag: 0 } }` returns a constructor EMBEDDING the borrowed
 /// parameter. The freshness summary classifies `wrap` not-fresh because its
 /// return embeds a parameter, so the projection of its result is not a
@@ -1409,5 +1409,166 @@ fn main() {
     assert!(
         out.contains(&"b".repeat(32)) && out.contains('1') && out.contains(&"q".repeat(4)),
         "interprocedural-fresh base should override label, carry n=1, leave seed live; got:\n{out}"
+    );
+}
+
+// ── reject: hole-8 — closure-capture-return launders a borrowed param ──────
+
+/// A zero-argument closure call returns a by-value heap parameter the closure
+/// CAPTURED (`fn f(p) { let g = || -> Inner { p }; g() }`). The freshness
+/// summary's call channel only saw EXPLICIT arguments, so `..f(o.inner)` — a
+/// call with no visible args — was mistaken for a fresh owner and admitted,
+/// double-freeing `o.inner.label` (Guard-Malloc 3/3). A call whose callee is
+/// not a statically-resolved Item (a closure / fn-value / indirect dispatch)
+/// is now treated as may-alias regardless of args, so the base fails closed.
+#[test]
+fn reject_funcupdate_base_closure_capture_return() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn capture_return(p: Inner) -> Inner { let f = || -> Inner { p }; f() }
+fn main() {
+    let o = Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 };
+    let u = Inner { label: string.repeat("b", 32), ..capture_return(o.inner) };
+    println(u.label);
+    println(o.inner.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "closure-capture-return base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not provably the unique owner") || out.contains("E_NOT_YET_IMPLEMENTED"),
+        "expected the fail-closed funcupdate base diagnostic; got:\n{out}"
+    );
+}
+
+// ── carry axis: nested owned-record field carried ──────────────────────────
+
+/// Carrying a NON-overridden nested owned-record field (`Outer { tag: new, ..b }`
+/// where `b.inner: Inner` is carried) must `check` and `run` cleanly. Before the
+/// binder-detection fix the carried record's heap leaves were freed twice — once
+/// by the consumed base's in-place drop, once by the result's drop (SIGSEGV,
+/// Guard-Malloc 3/3). `ty_contains_heap_owning` is record-layout blind, so a
+/// nested record was not recognised as a heap-owning binder and the base was
+/// not excluded from its composite drop; unioning `is_owned_aggregate_record_ty`
+/// into the binder predicate closes it. This is the headline correct-carry.
+#[test]
+fn accept_carry_nested_record_field_runs_clean() {
+    require_codegen();
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: string }
+fn mk() -> Outer {
+    let b = Outer { inner: Inner { label: string.repeat("i", 32), n: 1 }, tag: string.repeat("x", 32) };
+    Outer { tag: string.repeat("y", 32), ..b }
+}
+fn main() {
+    let r = mk();
+    println(r.tag);
+    println(r.inner.label);
+    println(r.inner.n);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(ok, "nested-record carry must run cleanly; got:\n{out}");
+    assert!(
+        out.contains(&"y".repeat(32)) && out.contains(&"i".repeat(32)) && out.contains('1'),
+        "carry must override tag, preserve the carried record's label and n; got:\n{out}"
+    );
+}
+
+// ── carry axis: fail-closed for owned field types without a sound shallow carry
+
+/// Carrying a closure / `fn`-typed field (`Boxx { tag: new, ..b }` where
+/// `b.cb: fn() -> string` is carried) must FAIL `hew check` fail-closed. The
+/// closure pair is a heap-boxed capture env with no retain/release carry spine,
+/// so the consumed base's drop and the result's drop both released it — a
+/// double-free at teardown even when the closure captured a FRESH local
+/// (Guard-Malloc 3/3). Fail-closed is the floor until the env carry spine lands.
+#[test]
+fn reject_carry_closure_field() {
+    let source = r#"
+import std::string;
+record Boxx { tag: string, cb: fn() -> string }
+fn upd(p: string) -> Boxx {
+    let b = Boxx { tag: string.repeat("x", 32), cb: || -> string { p } };
+    Boxx { tag: string.repeat("y", 32), ..b }
+}
+fn main() {
+    let s = string.repeat("a", 32);
+    let r = upd(s);
+    println(r.tag);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "closure-field carry must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("carry of owned non-record field") || out.contains("E_NOT_YET_IMPLEMENTED"),
+        "expected the fail-closed carry diagnostic; got:\n{out}"
+    );
+}
+
+/// Carrying a tuple-of-owned field must FAIL `hew check` fail-closed: a
+/// `(string, i64)` tuple has no single inline-drop leaf symbol and is not an
+/// owned user record, so the shallow carry has no proven-sound transfer path.
+#[test]
+fn reject_carry_tuple_of_owned_field() {
+    let source = r#"
+import std::string;
+record T { pair: (string, i64), tag: string }
+fn mk() -> T {
+    let b = T { pair: (string.repeat("k", 32), 7), tag: string.repeat("x", 32) };
+    T { tag: string.repeat("y", 32), ..b }
+}
+fn main() {
+    let r = mk();
+    println(r.tag);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "tuple-of-owned carry must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("carry of owned non-record field") || out.contains("E_NOT_YET_IMPLEMENTED"),
+        "expected the fail-closed carry diagnostic; got:\n{out}"
+    );
+}
+
+/// Carrying an `Option<owned-record>` field must FAIL `hew check` fail-closed:
+/// an enum-shaped owned composite has no single inline-drop leaf symbol and is
+/// not a bare owned user record, so the shallow carry fails closed.
+#[test]
+fn reject_carry_option_of_owned_field() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record O { maybe: Option<Inner>, tag: string }
+fn mk() -> O {
+    let b = O { maybe: Some(Inner { label: string.repeat("k", 32), n: 1 }), tag: string.repeat("x", 32) };
+    O { tag: string.repeat("y", 32), ..b }
+}
+fn main() {
+    let r = mk();
+    println(r.tag);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "Option-of-owned carry must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("carry of owned non-record field") || out.contains("E_NOT_YET_IMPLEMENTED"),
+        "expected the fail-closed carry diagnostic; got:\n{out}"
     );
 }

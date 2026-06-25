@@ -5163,8 +5163,13 @@ fn collect_binding_defs_in_expr<'f>(
 /// or a `Call` to an ALREADY-proven-fresh function. A return that is (or
 /// projects, or is laundered through a call to) a parameter or a bare local
 /// binding, a method call (which can return borrowed `self`/param), or a call to
-/// an unproven / external / mutually-recursive callee fails the function closed.
-/// Methods, extern fns, and builtins are absent from `fns` and read as `false`.
+/// an unproven / mutually-recursive callee fails the function closed. A return
+/// whose value is produced by a closure / function-pointer / indirect call also
+/// fails closed (the closure can hand back a captured parameter — see the
+/// `callee_is_resolved_item` guard in `return_value_may_alias_borrow`). User
+/// functions read their analyzed `fns` entry; a resolved Item with no body in
+/// this module (an extern / runtime primitive / aggregate constructor) is fresh
+/// by the owned-return ABI (`callee_returns_fresh_owner` → `true`).
 ///
 /// Conservative by construction: a helper that returns a let-bound local
 /// (`fn make() { let x = Inner { .. }; x }`) is classified non-fresh — sound
@@ -5304,16 +5309,28 @@ fn return_value_may_alias_borrow(expr: &HirExpr, fresh: &HashMap<hew_hir::ItemId
                 .iter()
                 .any(|(_, v)| return_value_may_alias_borrow(v, fresh))
         }),
-        // A free-function call aliases a parameter iff the callee is NOT proven
-        // to return a fresh owner AND some argument itself aliases a parameter
-        // (the callee could forward that argument out). A proven-fresh callee
-        // never aliases regardless of arguments; a non-fresh callee with only
-        // non-aliasing arguments (`string.repeat("a", 32)`) cannot alias the
-        // ENCLOSING function's parameters. Param-flow, composed through the
-        // fixpoint.
+        // A call that is NOT to a statically-resolved Item — a closure value, a
+        // function-pointer parameter, or any indirect/dynamic dispatch — can hand
+        // back a CAPTURED by-value heap parameter through its environment, a
+        // HIDDEN argument the explicit-arg flow below cannot see:
+        // `fn f(p) { let g = || -> Inner { p }; g() }` returns `p` with ZERO
+        // explicit arguments, so an `args`-only test would conclude "no args ⇒ no
+        // alias ⇒ fresh" and admit `..f(o.inner)` — the closure-capture-return
+        // use-after-free. Trust ONLY a resolved Item (a free function whose body
+        // the fixpoint analyzed, or an owned-return-ABI extern / constructor);
+        // every other callee may-alias regardless of arguments. Fail closed.
         HirExprKind::Call { callee, args } => {
-            !callee_returns_fresh_owner(callee, fresh)
-                && args.iter().any(|a| return_value_may_alias_borrow(a, fresh))
+            !callee_is_resolved_item(callee)
+                // A resolved free-function / owned-ABI extern / constructor call
+                // aliases a parameter iff the callee is NOT proven to return a
+                // fresh owner AND some argument itself aliases a parameter (the
+                // callee could forward that argument out). A proven-fresh callee
+                // never aliases regardless of arguments; a non-fresh callee with
+                // only non-aliasing arguments (`string.repeat("a", 32)`) cannot
+                // alias the ENCLOSING function's parameters. Param-flow, composed
+                // through the fixpoint.
+                || (!callee_returns_fresh_owner(callee, fresh)
+                    && args.iter().any(|a| return_value_may_alias_borrow(a, fresh)))
         }
         // A projection aliases a parameter iff its object chain does: `p.inner`
         // / `t.0` bottoms out at a bare parameter (`_ => true`) and carries that
@@ -5359,6 +5376,24 @@ fn callee_returns_fresh_owner(callee: &HirExpr, fresh: &HashMap<hew_hir::ItemId,
     } else {
         false
     }
+}
+
+/// True when `callee` names a statically-resolved Item — a free function (whose
+/// body the freshness fixpoint analyzed), an extern / runtime primitive, or an
+/// aggregate constructor. False for a closure value, a function-pointer
+/// parameter, a method receiver, or any indirect/dynamic dispatch, whose return
+/// the summary cannot prove fresh because the called body (and any environment
+/// it captures) is not statically in hand. This is the gate that stops a
+/// zero-argument closure call (`g()`) from being mistaken for a fresh owner when
+/// `g` captures a by-value heap parameter.
+fn callee_is_resolved_item(callee: &HirExpr) -> bool {
+    matches!(
+        &callee.kind,
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Item(_),
+            ..
+        }
+    )
 }
 
 /// Collect every explicit `return <expr>` value in `block` (statement form),
@@ -6944,6 +6979,17 @@ struct Builder {
     /// than the direct `Instr::CallClosure`. A non-suspending closure is never
     /// inserted, keeping it on the direct path (no spurious coroutine driving).
     suspending_closure_bindings: HashSet<BindingId>,
+    /// `let` bindings whose initializer failed to lower (returned `None`) AND
+    /// emitted at least one diagnostic of its own. A later `BindingRef` to such
+    /// a binding has no `binding_locals` Place, which would otherwise raise a
+    /// follow-on `UnresolvedPlace` ("could not resolve binding `u`") — pure
+    /// cascade noise stacked on the root error the user must actually fix (e.g.
+    /// a fail-closed functional-update base/carry reject on `let u = { ..base }`).
+    /// The `BindingRef` resolver consults this set and returns `None` silently
+    /// for a poisoned binding, so only the root diagnostic surfaces. Guarded on
+    /// "a diagnostic was emitted" so a genuinely-unresolved binding (a real bug
+    /// with no prior error) still reports.
+    poisoned_let_bindings: HashSet<BindingId>,
     /// Transient: set by `lower_closure_literal` to the just-lowered closure's
     /// body-suspends verdict (derived from its shim's MIR carriers) so the `Let`
     /// handler can attribute it to the bound binding. Reset around each closure
@@ -9074,7 +9120,17 @@ impl Builder {
                 };
                 self.pending_closure_literal_suspends = None;
                 self.pending_closure_literal_heap = None;
+                let diag_len_before_value = self.diagnostics.len();
                 let value_place = self.lower_value(value);
+                // Cascade suppression: a `let` whose initializer failed to lower
+                // (`None`) AFTER emitting its own diagnostic poisons the binding,
+                // so a later `BindingRef` to it stays silent instead of stacking
+                // an `UnresolvedPlace` follow-on on the root error. Guarded on a
+                // diagnostic actually having been emitted, so a silent-`None`
+                // producer (a real defect with no prior error) still surfaces.
+                if value_place.is_none() && self.diagnostics.len() > diag_len_before_value {
+                    self.poisoned_let_bindings.insert(binding.id);
+                }
                 if pending {
                     self.pending_lambda_actor_handle = None;
                 }
@@ -10064,6 +10120,13 @@ impl Builder {
                 }
                 let place = self.binding_locals.get(id).copied();
                 if place.is_none() {
+                    if self.poisoned_let_bindings.contains(id) {
+                        // The binding's `let` initializer already failed to lower
+                        // and reported the root error; this read is pure cascade.
+                        // Stay silent (the compile already fails) instead of
+                        // stacking an `UnresolvedPlace` follow-on.
+                        return None;
+                    }
                     // Function parameters and other bindings without a
                     // backend slot are out of Cluster 1's spine. Without a
                     // Place, the emitter would silently load an
@@ -10976,6 +11039,75 @@ impl Builder {
                             });
                             return None;
                         }
+                    }
+                }
+                // Fail-closed CARRY pre-flight (complement of the override
+                // pre-flight above). A NON-overridden owned field is CARRIED out
+                // of the consumed base into the new record by a shallow
+                // `RecordFieldLoad`, with the base excluded from its composite
+                // `RecordInPlace` drop (`derive_owned_record_drop_allowed`). That
+                // shallow move soundly transfers ownership ONLY for field types
+                // whose whole value is one pointer / handle (or a record of such):
+                //   * `BitCopy` / `View` — no heap ownership; nothing to transfer
+                //     or to double-free.
+                //   * single-pointer COW / handle leaves (string, bytes, `Vec`,
+                //     `HashMap`, `HashSet`, `Generator`) — `project_field_inline_-
+                //     drop_symbol` is `Some`; the binder-escape exclusion hands the
+                //     one allocation to the result, freed exactly once.
+                //   * owned user records — `is_owned_aggregate_record_ty`; the
+                //     nested record's heap leaves transfer with the base excluded
+                //     (the binder-detection fix that also recognises nested records
+                //     as heap-owning binders).
+                // Every OTHER owned field type has NO sound shallow carry and
+                // would be released twice — once by the base's in-place drop and
+                // once by the result's drop (a double-free / use-after-free at
+                // teardown):
+                //   * a closure / `fn` / trait-object value (`PersistentShare`) is
+                //     a heap-boxed capture env with no retain/release carry spine;
+                //   * an `@resource` / `CancellationToken` / `Task` handle is a
+                //     single-release affine/linear value the inline-drop authority
+                //     does not cover here;
+                //   * an owned composite the leaf authority does not cover
+                //     (tuple-of-owned, `Option<owned>`, enum-with-heap, or any
+                //     `Unknown`-class owned Named type).
+                // Fail closed with an NYI diagnostic mirroring the override
+                // pre-flight rather than emit the double-free. Lifting a specific
+                // type's carry is tracked in hew-lang/hew#2207 (closure/`fn` env
+                // carry needs the env retain/release spine that clone also lacks).
+                if base_place.is_some() {
+                    for (fname, fty) in &field_order {
+                        if explicit.contains_key(fname.as_str()) {
+                            continue; // Overridden — handled by the override path.
+                        }
+                        let subst_fty = self.subst_ty(fty);
+                        let vc = ValueClass::of_ty(&subst_fty, &self.type_classes);
+                        let sound_carry = matches!(vc, ValueClass::BitCopy | ValueClass::View)
+                            || self.project_field_inline_drop_symbol(&subst_fty).is_some()
+                            || self.is_owned_aggregate_record_ty(&subst_fty);
+                        if sound_carry {
+                            continue;
+                        }
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "functional-update carry of owned non-record field"
+                                    .to_string(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "field `{fname}` of `{name}` has owned type `{ty}` whose \
+                                 ownership cannot be transferred by the functional-update's \
+                                 shallow field carry: a closure / `fn` / trait-object capture \
+                                 env, an `@resource` / cancellation-token / task handle, or an \
+                                 owned composite (tuple / `Option` / enum) with heap fields. \
+                                 The `..base` consumes the base, so the base's scope-exit drop \
+                                 and the new record's drop would both release this carried field \
+                                 — a double-free. Set `{fname}` explicitly to a fresh value in \
+                                 the update instead of carrying it through `..base`, or clone \
+                                 the base into a fresh owned value first.",
+                                ty = subst_fty.user_facing(),
+                            ),
+                        });
+                        return None;
                     }
                 }
                 let mut field_pairs: Vec<(FieldOffset, Place)> = Vec::new();
@@ -29881,10 +30013,25 @@ fn derive_owned_record_drop_allowed(
     // A local carries a heap-owning value iff its registered type says so. Used
     // to decide whether a `RecordFieldLoad` dest is an owned-field binder (a
     // BitCopy field load is harmless to alias out).
+    //
+    // `ty_contains_heap_owning` is record-layout BLIND — it recurses into enum
+    // variant payloads, tuple/array elements, and generic type arguments, but a
+    // bare nested user-record type (`Inner { label: string, n: i64 }`) is a
+    // `Named` that is neither a builtin nor an enum layout, so it answers
+    // `false`. A nested-record field loaded out of the base record and then
+    // ESCAPED into an owning sink (the functional-update result's `RecordInit`,
+    // a `return b.inner`, …) must mark its binder so the base root is excluded
+    // from its composite `RecordInPlace` drop — otherwise the base frees the
+    // nested record's heap leaves while the escapee still owns them
+    // (use-after-free / double-free). `is_owned_record` consults the record
+    // layout (`is_owned_aggregate_record_ty`) and answers `true` for any user
+    // record with an owned field, closing that blindness without widening
+    // `ty_contains_heap_owning`'s 50-plus call sites. The two are unioned: a
+    // field is a heap-owning binder iff EITHER authority says so.
     let local_is_heap_owning = |local: u32| -> bool {
-        local_tys
-            .get(local as usize)
-            .is_some_and(|ty| crate::model::ty_contains_heap_owning(ty, enum_layouts))
+        local_tys.get(local as usize).is_some_and(|ty| {
+            crate::model::ty_contains_heap_owning(ty, enum_layouts) || is_owned_record(ty)
+        })
     };
 
     // Candidate record locals: base locals of owned-aggregate-record bindings.

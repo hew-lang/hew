@@ -244,6 +244,159 @@ fn multi_field_source(frames: usize) -> String {
     )
 }
 
+// ── carry-axis sources ─────────────────────────────────────────────────────
+//
+// Every override source above CARRIES only a BitCopy (`count` / `tag` / `id`)
+// field — the coverage gap that let the carried-record SIGSEGV and the
+// carried-closure double-free ship while the prior suites passed. These
+// sources invert the axis: each OVERRIDES a churn `string` and CARRIES the
+// owned field under test every frame, so a per-frame leak in the carry path
+// (the consumed base's field not transferred, or transferred without the base
+// excluded from its composite drop) shows as slope. Slope-0 confirms the
+// carried field is moved exactly once per frame.
+
+/// Carry a nested owned-RECORD field while churning a `string`.
+fn carry_record_field_source(frames: usize) -> String {
+    format!(
+        "import std::string;\n\
+         \n\
+         record Inner {{\n\
+         \x20   label: string,\n\
+         \x20   n: i64,\n\
+         }}\n\
+         record Pair {{\n\
+         \x20   keep: Inner,\n\
+         \x20   churn: string,\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var p = Pair {{ keep: Inner {{ label: string.repeat(\"k\", 32), n: 1 }}, churn: string.repeat(\"a\", 32) }};\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       p = Pair {{ churn: string.repeat(\"b\", 32), ..p }};\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   p.keep.n\n\
+         }}\n"
+    )
+}
+
+/// Carry a `string` field while churning a different `string` field.
+fn carry_string_field_source(frames: usize) -> String {
+    format!(
+        "import std::string;\n\
+         \n\
+         record Pair {{\n\
+         \x20   keep: string,\n\
+         \x20   churn: string,\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var p = Pair {{ keep: string.repeat(\"k\", 32), churn: string.repeat(\"a\", 32) }};\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       p = Pair {{ churn: string.repeat(\"b\", 32), ..p }};\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   p.keep.len()\n\
+         }}\n"
+    )
+}
+
+/// Carry a `Vec<string>` (owned-element) field while churning a `string`.
+fn carry_vec_field_source(frames: usize) -> String {
+    format!(
+        "import std::string;\n\
+         \n\
+         record Pair {{\n\
+         \x20   keep: Vec<string>,\n\
+         \x20   churn: string,\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   let v: Vec<string> = Vec::new();\n\
+         \x20   v.push(string.repeat(\"k\", 32));\n\
+         \x20   var p = Pair {{ keep: v, churn: string.repeat(\"a\", 32) }};\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       p = Pair {{ churn: string.repeat(\"b\", 32), ..p }};\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   p.keep.len()\n\
+         }}\n"
+    )
+}
+
+/// Carry a `HashMap<string,string>` field while churning a `string`.
+fn carry_hashmap_field_source(frames: usize) -> String {
+    format!(
+        "import std::string;\n\
+         \n\
+         record Pair {{\n\
+         \x20   keep: HashMap<string, string>,\n\
+         \x20   churn: string,\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   let m: HashMap<string, string> = HashMap::new();\n\
+         \x20   m.insert(string.repeat(\"k\", 32), string.repeat(\"v\", 32));\n\
+         \x20   var p = Pair {{ keep: m, churn: string.repeat(\"a\", 32) }};\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       p = Pair {{ churn: string.repeat(\"b\", 32), ..p }};\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   p.keep.len()\n\
+         }}\n"
+    )
+}
+
+/// Carry a `HashSet<string>` field while churning a `string`.
+fn carry_hashset_field_source(frames: usize) -> String {
+    format!(
+        "import std::string;\n\
+         \n\
+         record Pair {{\n\
+         \x20   keep: HashSet<string>,\n\
+         \x20   churn: string,\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   let s: HashSet<string> = HashSet::new();\n\
+         \x20   s.insert(string.repeat(\"k\", 32));\n\
+         \x20   var p = Pair {{ keep: s, churn: string.repeat(\"a\", 32) }};\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       p = Pair {{ churn: string.repeat(\"b\", 32), ..p }};\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   p.keep.len()\n\
+         }}\n"
+    )
+}
+
+/// Carry a `bytes` field while churning a `string`.
+fn carry_bytes_field_source(frames: usize) -> String {
+    format!(
+        "import std::string;\n\
+         \n\
+         record Pair {{\n\
+         \x20   keep: bytes,\n\
+         \x20   churn: string,\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   var p = Pair {{ keep: string.repeat(\"k\", 32).to_bytes(), churn: string.repeat(\"a\", 32) }};\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       p = Pair {{ churn: string.repeat(\"b\", 32), ..p }};\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   p.keep.len()\n\
+         }}\n"
+    )
+}
+
 // ── plumbing (same shape as bytes_drop_leak_oracle) ───────────────────────
 
 /// Compile `source` to a native binary via `hew compile --emit-dir` and
@@ -437,4 +590,53 @@ fn funcupdate_hashset_field_no_per_frame_leak_slope() {
 #[test]
 fn funcupdate_multi_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_multi_field", multi_field_source);
+}
+
+// ── carry-axis oracles (coverage-gap closure) ──────────────────────────────
+
+/// Carried nested owned-RECORD field: pre-fix this SIGSEGV'd on the
+/// double-freed carried record; post-fix the carry transfers it once per
+/// frame — slope 0.
+#[test]
+fn funcupdate_carry_record_field_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance("funcupdate_carry_record_field", carry_record_field_source);
+}
+
+/// Carried `string` field (the retain-vs-exclude question): the
+/// carried string is moved once per frame, not retained-without-release —
+/// slope 0.
+#[test]
+fn funcupdate_carry_string_field_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance("funcupdate_carry_string_field", carry_string_field_source);
+}
+
+/// Carried `Vec<string>` (owned-element) field: moved once per frame, slope 0.
+#[test]
+fn funcupdate_carry_vec_field_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance("funcupdate_carry_vec_field", carry_vec_field_source);
+}
+
+/// Carried `HashMap<string,string>` field: moved once per frame, slope 0.
+#[test]
+fn funcupdate_carry_hashmap_field_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "funcupdate_carry_hashmap_field",
+        carry_hashmap_field_source,
+    );
+}
+
+/// Carried `HashSet<string>` field: moved once per frame, slope 0.
+#[test]
+fn funcupdate_carry_hashset_field_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance(
+        "funcupdate_carry_hashset_field",
+        carry_hashset_field_source,
+    );
+}
+
+/// Carried `bytes` field: the fat `{ptr,len,cap}` triple is moved once per
+/// frame, slope 0.
+#[test]
+fn funcupdate_carry_bytes_field_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance("funcupdate_carry_bytes_field", carry_bytes_field_source);
 }

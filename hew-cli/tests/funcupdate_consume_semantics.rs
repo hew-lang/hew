@@ -1141,29 +1141,43 @@ fn main() {
     );
 }
 
-/// A by-value parameter base (`fn upd(p: Cfg) -> Cfg { { ..p, name: new } }`):
-/// the caller moved `p` in, so the handler is its unique owner — the idiomatic
-/// "update one field of an owned argument" shape. The prescan seeds by-value
-/// params as proven owners. Must `check` and `run` cleanly.
+/// A by-value parameter base (`fn upd(p: Cfg) -> Cfg { Cfg { name: new, ..p } }`)
+/// must be REJECTED. A by-value heap parameter is a BORROW
+/// (LESSONS `by-value-heap-params-are-borrows`), and the funcupdate gate sees
+/// only the callee body, never the call site. The same `upd` is sound for
+/// `upd(moved_in_local)` but a use-after-free for `upd(o.cfg)` while the
+/// caller's `o` stays live — the in-place override-drop frees `o.cfg.name`
+/// under the still-live owner. Empirically (Guard Malloc, `MallocScribble`):
+/// admitting `..p` lets `upd(o.cfg)` reach run and SIGSEGV on the live
+/// `o.cfg.name` read (scribble-poisoned freed memory). Indistinguishable at the
+/// definition, so `..p` fails closed. This intentionally diverges from an
+/// earlier "param base is the unique owner" assumption: the moved-in call is a
+/// special case the gate cannot confirm, and the projection-of-live call is a
+/// real hole. Clone the base (`Cfg { ..p.clone(), name: new }`) to update an
+/// owned argument.
 #[test]
-fn accept_param_base_runs_clean() {
-    require_codegen();
+fn reject_by_value_param_base() {
     let source = r#"
 import std::string;
 record Cfg { name: string, k: i64 }
+record Wrap { cfg: Cfg, tag: i64 }
 fn upd(p: Cfg) -> Cfg { Cfg { name: string.repeat("z", 16), ..p } }
 fn main() {
-    let c = Cfg { name: string.repeat("a", 16), k: 3 };
-    let r = upd(c);
+    let o = Wrap { cfg: Cfg { name: string.repeat("a", 16), k: 3 }, tag: 9 };
+    let r = upd(o.cfg);
     println(r.name);
-    println(r.k);
+    println(o.cfg.name);
 }
 "#;
-    let (ok, out) = hew_run(source);
-    assert!(ok, "by-value parameter base must run cleanly; got:\n{out}");
+    let (ok, out) = hew_check(source);
     assert!(
-        out.contains(&"z".repeat(16)) && out.contains('3'),
-        "param base should apply the name override and carry k=3; got:\n{out}"
+        !ok,
+        "by-value parameter base must fail check (it admits the upd(o.cfg) UAF); got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value")
+            && out.contains("not provably the unique owner"),
+        "expected the fail-closed funcupdate allowlist diagnostic; got:\n{out}"
     );
 }
 
@@ -1198,5 +1212,202 @@ fn main() {
     assert!(
         out.contains(&"z".repeat(8)) && out.contains('1'),
         "closure base should apply the override and carry n=1; got:\n{out}"
+    );
+}
+
+// ── reject: a call result that LAUNDERS a borrowed parameter ────────────────
+//
+// The call-returns-borrowed-param use-after-free class. A by-value heap
+// parameter is a BORROW (LESSONS `by-value-heap-params-are-borrows`); a callee
+// can hand that borrow straight back (or embedded in a construction) WITHOUT a
+// refcount bump, so a `..f(live_projection)` base interior-aliases the caller's
+// still-live storage. The interprocedural freshness summary classifies such a
+// callee NOT-fresh, so the funcupdate gate rejects the base. Each shape below
+// SIGSEGVs / double-frees under Guard Malloc when admitted (empirically
+// reproduced); all must fail `check` fail-closed.
+
+/// 6th hole, unbound: `..id_inner(o.inner)` where `fn id_inner(p) { p }` returns
+/// the borrowed parameter verbatim. The override-drop frees the live
+/// `o.inner.label`.
+#[test]
+fn reject_call_returns_borrowed_param_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn id_inner(p: Inner) -> Inner { p }
+fn main() {
+    let o = Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 };
+    let u = Inner { label: string.repeat("b", 32), ..id_inner(o.inner) };
+    println(u.label);
+    println(o.inner.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "call-returns-borrowed-param base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value")
+            && out.contains("not provably the unique owner"),
+        "expected the fail-closed funcupdate allowlist diagnostic; got:\n{out}"
+    );
+}
+
+/// 6th hole, bound: `let b = id_inner(o.inner); ..b`. Binding the laundered
+/// call result does not change provenance — the prescan classifies `b`'s
+/// definition (a non-fresh call) as not materialised.
+#[test]
+fn reject_call_returns_borrowed_param_base_bound() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn id_inner(p: Inner) -> Inner { p }
+fn main() {
+    let o = Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 };
+    let b = id_inner(o.inner);
+    let u = Inner { label: string.repeat("b", 32), ..b };
+    println(u.label);
+    println(o.inner.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "bound call-returns-borrowed-param base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value")
+            && out.contains("not provably the unique owner"),
+        "expected the fail-closed funcupdate allowlist diagnostic; got:\n{out}"
+    );
+}
+
+/// 7th hole, inline: a `..Wrap { s: p }` base that constructs a record EMBEDDING
+/// a whole by-value parameter. The constructor stores the param operand without
+/// a refcount bump, so the constructed base interior-aliases the caller's
+/// argument; the override-drop then frees the live `str0`.
+#[test]
+fn reject_struct_init_embeds_param_base() {
+    let source = r#"
+import std::string;
+record Wrap { s: string, n: i64 }
+fn leak(p: string) -> Wrap {
+    Wrap { s: string.repeat("new", 8), ..Wrap { s: p, n: 0 } }
+}
+fn main() {
+    let str0 = string.repeat("a", 32);
+    let r = leak(str0);
+    println(r.s);
+    println(str0);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "struct-init-embeds-param base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value")
+            && out.contains("not provably the unique owner"),
+        "expected the fail-closed funcupdate allowlist diagnostic; got:\n{out}"
+    );
+}
+
+/// 7th hole, bound: `let b = Wrap { s: p, n: 0 }; ..b`. Binding the
+/// param-embedding constructor first does not launder it — the prescan sees the
+/// `StructInit` definition embeds a whole parameter and rejects.
+#[test]
+fn reject_bound_struct_init_embeds_param_base() {
+    let source = r#"
+import std::string;
+record Wrap { s: string, n: i64 }
+fn leak(p: string) -> Wrap {
+    let b = Wrap { s: p, n: 0 };
+    Wrap { s: string.repeat("new", 8), ..b }
+}
+fn main() {
+    let str0 = string.repeat("a", 32);
+    let r = leak(str0);
+    println(r.s);
+    println(str0);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "bound struct-init-embeds-param base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value")
+            && out.contains("not provably the unique owner"),
+        "expected the fail-closed funcupdate allowlist diagnostic; got:\n{out}"
+    );
+}
+
+/// 7th hole, through a call return: `..wrap(o.inner).inner` where `fn wrap(p) {
+/// Outer { inner: p, tag: 0 } }` returns a constructor EMBEDDING the borrowed
+/// parameter. The freshness summary classifies `wrap` not-fresh because its
+/// return embeds a parameter, so the projection of its result is not a
+/// materialised owner.
+#[test]
+fn reject_call_embeds_param_in_return_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn wrap(p: Inner) -> Outer { Outer { inner: p, tag: 0 } }
+fn main() {
+    let o = Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 };
+    let u = Inner { label: string.repeat("b", 32), ..wrap(o.inner).inner };
+    println(u.label);
+    println(o.inner.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "call-embeds-param-in-return base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value")
+            && out.contains("not provably the unique owner"),
+        "expected the fail-closed funcupdate allowlist diagnostic; got:\n{out}"
+    );
+}
+
+/// accept (interprocedural-fresh): `..makeInner(seed)` where
+/// `fn makeInner(s) { Inner { label: string.repeat(s, 16), n: 1 } }` FORWARDS
+/// its parameter into a fresh-allocating runtime primitive (`string.repeat`).
+/// The result is a freshly-owned record that does not alias `seed`, so the base
+/// is admitted. This is the interprocedural-completeness counterpart of the
+/// rejected `id_inner`/`wrap` shapes: a callee whose only use of a parameter is
+/// to feed an owned-returning primitive stays fresh. Must `check` and `run`
+/// cleanly with `seed` still readable afterwards.
+#[test]
+fn accept_call_forwards_param_through_fresh_builtin_base() {
+    require_codegen();
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+fn makeInner(s: string) -> Inner { Inner { label: string.repeat(s, 16), n: 1 } }
+fn main() {
+    let seed = string.repeat("q", 4);
+    let u = Inner { label: string.repeat("b", 32), ..makeInner(seed) };
+    println(u.label);
+    println(u.n);
+    println(seed);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(
+        ok,
+        "interprocedural-fresh call base must run cleanly; got:\n{out}"
+    );
+    assert!(
+        out.contains(&"b".repeat(32)) && out.contains('1') && out.contains(&"q".repeat(4)),
+        "interprocedural-fresh base should override label, carry n=1, leave seed live; got:\n{out}"
     );
 }

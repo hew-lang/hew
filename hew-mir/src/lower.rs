@@ -1933,6 +1933,14 @@ pub fn lower_hir_module_with_facts(
         }
     }
 
+    // Module-global interprocedural freshness summary, computed ONCE over every
+    // function item (a least-fixpoint). Threaded into every body-lowering
+    // builder so the destructive-funcupdate base gate can admit a `..f(args)`
+    // base ONLY when `f` provably returns a fresh owner — closing the
+    // call-returns-borrowed-param use-after-free. `Rc` so child builders share
+    // it without re-cloning the map.
+    let funcupdate_fn_returns_fresh: Rc<HashMap<hew_hir::ItemId, bool>> =
+        Rc::new(compute_fn_returns_fresh_owner(&origin_fns));
     for item in &module.items {
         match item {
             HirItem::Function(func) => {
@@ -1972,6 +1980,7 @@ pub fn lower_hir_module_with_facts(
                         None,
                         &module_fn_names,
                         &module_generic_fn_names,
+                        &funcupdate_fn_returns_fresh,
                         &trait_impl_index,
                         &module.call_site_type_args,
                         Some(&module.vec_generic_element_abi),
@@ -2021,6 +2030,7 @@ pub fn lower_hir_module_with_facts(
                     None,
                     &module_fn_names,
                     &module_generic_fn_names,
+                    &funcupdate_fn_returns_fresh,
                     &trait_impl_index,
                     &module.call_site_type_args,
                     Some(&module.vec_generic_element_abi),
@@ -2061,6 +2071,7 @@ pub fn lower_hir_module_with_facts(
                     &opaque_handle_names,
                     &module_fn_names,
                     &module_generic_fn_names,
+                    &funcupdate_fn_returns_fresh,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     actor_send_aliasing,
@@ -2103,6 +2114,7 @@ pub fn lower_hir_module_with_facts(
                     &opaque_handle_names,
                     &module_fn_names,
                     &module_generic_fn_names,
+                    &funcupdate_fn_returns_fresh,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     actor_send_aliasing,
@@ -2176,6 +2188,7 @@ pub fn lower_hir_module_with_facts(
                     &classification_enum_layouts,
                     &module_fn_names,
                     &module_generic_fn_names,
+                    &funcupdate_fn_returns_fresh,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     actor_send_aliasing,
@@ -2240,6 +2253,7 @@ pub fn lower_hir_module_with_facts(
             None,
             &module_fn_names,
             &module_generic_fn_names,
+            &funcupdate_fn_returns_fresh,
             &trait_impl_index,
             &module.call_site_type_args,
             Some(&module.vec_generic_element_abi),
@@ -2403,6 +2417,7 @@ fn lower_actor_receive_handlers(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
@@ -2500,6 +2515,7 @@ fn lower_actor_receive_handlers(
             Some(actor.qualified_name().as_str()),
             module_fn_names,
             module_generic_fn_names,
+            funcupdate_fn_returns_fresh,
             &HashMap::new(),
             call_site_type_args,
             None,
@@ -2528,6 +2544,7 @@ fn lower_actor_body_handlers(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
@@ -2549,6 +2566,7 @@ fn lower_actor_body_handlers(
             opaque_handle_names,
             module_fn_names,
             module_generic_fn_names,
+            funcupdate_fn_returns_fresh,
             call_site_type_args,
             supervisor_child_slots,
             actor_send_aliasing,
@@ -2570,6 +2588,7 @@ fn lower_actor_body_handlers(
         opaque_handle_names,
         module_fn_names,
         module_generic_fn_names,
+        funcupdate_fn_returns_fresh,
         call_site_type_args,
         supervisor_child_slots,
         actor_send_aliasing,
@@ -2588,6 +2607,7 @@ fn lower_actor_body_handlers(
         opaque_handle_names,
         module_fn_names,
         module_generic_fn_names,
+        funcupdate_fn_returns_fresh,
         call_site_type_args,
         supervisor_child_slots,
         actor_send_aliasing,
@@ -2614,6 +2634,7 @@ fn lower_actor_init_handler(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
@@ -2664,6 +2685,7 @@ fn lower_actor_init_handler(
         Some(&actor.name),
         module_fn_names,
         module_generic_fn_names,
+        funcupdate_fn_returns_fresh,
         &HashMap::new(),
         call_site_type_args,
         None,
@@ -2693,6 +2715,7 @@ fn lower_actor_lifecycle_handlers(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
@@ -2748,6 +2771,7 @@ fn lower_actor_lifecycle_handlers(
                     Some(actor.qualified_name().as_str()),
                     module_fn_names,
                     module_generic_fn_names,
+                    funcupdate_fn_returns_fresh,
                     &HashMap::new(),
                     call_site_type_args,
                     None,
@@ -2796,6 +2820,7 @@ fn lower_actor_lifecycle_handlers(
                     Some(actor.qualified_name().as_str()),
                     module_fn_names,
                     module_generic_fn_names,
+                    funcupdate_fn_returns_fresh,
                     &HashMap::new(),
                     call_site_type_args,
                     None,
@@ -2982,6 +3007,7 @@ fn lower_actor_lifecycle_handlers(
                     Some(actor.qualified_name().as_str()),
                     module_fn_names,
                     module_generic_fn_names,
+                    funcupdate_fn_returns_fresh,
                     &HashMap::new(),
                     call_site_type_args,
                     None,
@@ -3163,6 +3189,7 @@ fn synthesize_machine_step_fn(
     enum_layouts: &[crate::model::EnumLayout],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
@@ -3211,6 +3238,7 @@ fn synthesize_machine_step_fn(
         enum_layouts: enum_layouts.to_vec(),
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
+        funcupdate_fn_returns_fresh: funcupdate_fn_returns_fresh.clone(),
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
         actor_send_aliasing: actor_send_aliasing.clone(),
@@ -3999,6 +4027,7 @@ fn lower_supervisor_bootstrap(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
@@ -4246,6 +4275,7 @@ fn lower_supervisor_bootstrap(
         None,
         module_fn_names,
         module_generic_fn_names,
+        funcupdate_fn_returns_fresh,
         &HashMap::new(),
         call_site_type_args,
         None,
@@ -4675,7 +4705,10 @@ fn collect_unknown_self_fields_in_expr(
 /// makeThing() } { ..c, f }` is unsafe on the `p == false` path). The reassign-
 /// loop idiom (`var c = Record { .. }; while .. { c = Record { ..c, f } }`) stays
 /// admitted because every definition is a record literal / funcupdate result.
-fn compute_funcupdate_base_provenance(func: &HirFn) -> HashMap<BindingId, bool> {
+fn compute_funcupdate_base_provenance<'f>(
+    func: &'f HirFn,
+    fresh: &'f HashMap<hew_hir::ItemId, bool>,
+) -> HashMap<BindingId, bool> {
     let mut defs: HashMap<BindingId, Vec<&HirExpr>> = HashMap::new();
     let mut let_or_param: HashSet<BindingId> = HashSet::new();
     let mut params: HashSet<BindingId> = HashSet::new();
@@ -4690,6 +4723,7 @@ fn compute_funcupdate_base_provenance(func: &HirFn) -> HashMap<BindingId, bool> 
         let_or_param,
         params,
         memo: HashMap::new(),
+        fresh,
     };
     let ids: Vec<BindingId> = resolver.let_or_param.iter().copied().collect();
     for id in ids {
@@ -4702,12 +4736,15 @@ fn compute_funcupdate_base_provenance(func: &HirFn) -> HashMap<BindingId, bool> 
 /// Memoised resolver for `compute_funcupdate_base_provenance`. `defs` maps each
 /// binding to every initialiser/reassignment expression that defines it;
 /// `let_or_param` is the set of bindings introduced by a `let` or a parameter
-/// (any other origin is unproven); `params` is the by-value parameter subset.
+/// (any other origin is unproven); `params` is the by-value parameter subset;
+/// `fresh` is the module interprocedural freshness summary
+/// (`compute_fn_returns_fresh_owner`) consulted when a definition is a call.
 struct BaseOwnerResolver<'f> {
     defs: HashMap<BindingId, Vec<&'f HirExpr>>,
     let_or_param: HashSet<BindingId>,
     params: HashSet<BindingId>,
     memo: HashMap<BindingId, bool>,
+    fresh: &'f HashMap<hew_hir::ItemId, bool>,
 }
 
 impl<'f> BaseOwnerResolver<'f> {
@@ -4732,13 +4769,28 @@ impl<'f> BaseOwnerResolver<'f> {
         // Clone out the def references (cheap: each is a pointer) so the borrow
         // of `self.defs` is released before the recursive `init_proves` calls.
         let inits: Vec<&'f HirExpr> = self.defs.get(&binding).cloned().unwrap_or_default();
-        let result = if !is_param && inits.is_empty() {
+        let result = if is_param {
+            // A by-value heap parameter is a BORROW, not a move (LESSONS
+            // `by-value-heap-params-are-borrows`): the caller retains ownership,
+            // so the parameter's incoming value is NEVER a proven unique owner.
+            // Flow-insensitively the borrowed origin reaches every use that a
+            // reassignment does not provably dominate (`fn f(mut p) { if c { p =
+            // makeInner() } { ..p, x } }` aliases the caller's argument on the
+            // `!c` path), so a parameter-introduced base fails closed regardless
+            // of any reassignment. The gate sees only the callee body, never the
+            // call site: `fn upd(p: Cfg) -> Cfg { Cfg { name: .., ..p } }` is
+            // sound for `upd(moved_in_local)` but a use-after-free for
+            // `upd(o.cfg)` where the caller's `o` stays live — the override-drop
+            // frees `o.cfg.name` under the live owner (empirically: SIGSEGV /
+            // scribble-poison read under Guard Malloc). Indistinguishable here,
+            // so reject.
+            false
+        } else if inits.is_empty() {
             // A `let x;` with no initialiser and no reassignment is
             // uninitialised (the move-checker rejects a read) — not an owner.
             false
         } else {
-            // A by-value parameter origin is itself a unique owner (the caller
-            // moved the value in); every recorded definition must also prove.
+            // Every recorded definition must prove a materialised owner.
             inits.iter().all(|init| self.init_proves(init, visiting))
         };
         visiting.remove(&binding);
@@ -4759,10 +4811,13 @@ impl<'f> BaseOwnerResolver<'f> {
                 ..
             } => self.resolve(*source, visiting),
             // Every other initialiser must be a materialised owner directly (a
-            // call / clone / record-or-tuple literal / funcupdate result / Vec
-            // element, or a projection rooted at one). A projection of a live
-            // binding (`o.inner`, `t.0`) is NOT materialised and fails here.
-            _ => Builder::expr_is_materialized_owner(init),
+            // call to a proven-fresh fn / clone / record-or-tuple literal /
+            // funcupdate result / Vec element, or a projection rooted at one). A
+            // projection of a live binding (`o.inner`, `t.0`) is NOT materialised
+            // and fails here; a call is checked against the freshness summary; a
+            // construction embedding a whole by-value parameter is rejected via
+            // the prescan's `params` set.
+            _ => Builder::expr_is_materialized_owner(init, self.fresh, &self.params),
         }
     }
 }
@@ -5086,6 +5141,523 @@ fn collect_binding_defs_in_expr<'f>(
     }
 }
 
+/// Per-function summary for the destructive-funcupdate base gate: does function
+/// `f` provably return a FRESH MATERIALISED owner on EVERY return path — a value
+/// in its own storage that does NOT originate from a by-value heap parameter?
+///
+/// A by-value heap parameter is a BORROW, not a move (LESSONS
+/// `by-value-heap-params-are-borrows`): the caller retains ownership, so a
+/// function that hands one of its params back — directly (`fn id(p) { p }`), as
+/// a projection (`fn g(p) { p.inner }`), or laundered through another such call
+/// (`fn h(p) { id(p) }`) — returns a value that ALIASES the caller's still-live
+/// argument WITHOUT a refcount bump. Using that result as a `{ ..base, f: new }`
+/// base then frees the caller's live storage at the override-drop: the
+/// call-returns-borrowed-param use-after-free. This summary lets
+/// `expr_is_materialized_owner` admit a `..f(args)` base ONLY when `f` cannot
+/// leak a borrowed argument through its return — for ANY arguments, since the
+/// call site cannot know whether a given argument is itself live elsewhere.
+///
+/// Least-fixpoint from all-false (a function earns `true` only by positive
+/// proof). `fresh[f] == true` iff every return path of `f` is a construction /
+/// `.clone()` / `Vec` element / funcupdate result, a projection rooted at one,
+/// or a `Call` to an ALREADY-proven-fresh function. A return that is (or
+/// projects, or is laundered through a call to) a parameter or a bare local
+/// binding, a method call (which can return borrowed `self`/param), or a call to
+/// an unproven / external / mutually-recursive callee fails the function closed.
+/// Methods, extern fns, and builtins are absent from `fns` and read as `false`.
+///
+/// Conservative by construction: a helper that returns a let-bound local
+/// (`fn make() { let x = Inner { .. }; x }`) is classified non-fresh — sound
+/// (fail-closed), at the cost of over-rejecting that idiom as a funcupdate base.
+fn compute_fn_returns_fresh_owner(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+) -> HashMap<hew_hir::ItemId, bool> {
+    let mut fresh: HashMap<hew_hir::ItemId, bool> = fns.keys().map(|&id| (id, false)).collect();
+    // Monotone least-fixpoint: a pass only ever flips false→true, and a flip
+    // requires every return path fresh under the CURRENT table, so iteration
+    // converges in at most (longest fresh call chain) passes.
+    loop {
+        let mut changed = false;
+        for (&id, &f) in fns {
+            if fresh[&id] {
+                continue;
+            }
+            if fn_body_returns_fresh_owner(f, &fresh) {
+                fresh.insert(id, true);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    fresh
+}
+
+/// True when EVERY value-bearing return path of `f` — every `return <expr>`
+/// anywhere in the body that is not inside a nested closure, plus the
+/// fall-through tail when it yields a value — is a fresh materialised owner
+/// under the current `fresh` table. A body with no value-bearing return path is
+/// not a fresh owner (fail closed).
+fn fn_body_returns_fresh_owner(f: &HirFn, fresh: &HashMap<hew_hir::ItemId, bool>) -> bool {
+    // Every explicit `return <expr>` value (statement and expression forms, at
+    // any depth, NOT descending into closures whose `return` exits the closure
+    // rather than `f`).
+    let mut return_values: Vec<&HirExpr> = Vec::new();
+    collect_return_values_in_block(&f.body, &mut return_values);
+    // The fall-through tail is the remaining return path — but only when it
+    // actually produces a value. A unit-/never-typed tail (`if c { return x }
+    // else { return y }`, or a block ending in a `return`) is a diverging
+    // continuation, not a value the function hands back, so it does not gate
+    // freshness.
+    if let Some(tail) = &f.body.tail {
+        if !matches!(tail.ty, ResolvedTy::Unit | ResolvedTy::Never) {
+            return_values.push(tail);
+        }
+    }
+    if return_values.is_empty() {
+        return false;
+    }
+    // Fresh iff NO return path aliases a by-value parameter (directly, via a
+    // projection, embedded in a construction, or laundered through a call that
+    // forwards a parameter). The aliasing question is param-INDEPENDENT — it
+    // composes through nested calls without arg-flow tracking — so a single
+    // module-global fixpoint suffices.
+    return_values
+        .iter()
+        .all(|e| !return_value_may_alias_borrow(e, fresh))
+}
+
+/// True when `expr`, used as a function's return value, MAY alias a by-value
+/// heap parameter of that function — i.e. the returned value is (or transitively
+/// embeds / projects / launders) a borrow the caller still owns. The negation is
+/// "provably a fresh owner". This is the leaf of the module freshness fixpoint.
+///
+/// WHY a dedicated may-alias predicate and not "is the operand itself fresh":
+/// a constructor operand like `string.repeat("a", 32)` is a `Call` to a callee
+/// the summary cannot prove fresh (its body bottoms out in a runtime method),
+/// yet its result CANNOT alias the enclosing function's parameters because every
+/// argument is a literal. Asking "is the operand fresh" would reject it (and
+/// collapse every `Record { f: string.repeat(..) }` helper); asking "does the
+/// operand alias a parameter" admits it. A `Call(g, args)` aliases a parameter
+/// ONLY when `g` is not proven fresh AND some argument itself aliases a
+/// parameter — the param-flow that composes interprocedurally.
+///
+/// EXHAUSTIVE and fail-closed: every form that is not provably non-aliasing
+/// (a bare binding, a method call, a deref, any unmodelled form) returns `true`.
+fn return_value_may_alias_borrow(expr: &HirExpr, fresh: &HashMap<hew_hir::ItemId, bool>) -> bool {
+    match &expr.kind {
+        // Value-passthrough wrappers: the value flows from the tail / both
+        // branches / every arm — aliasing iff ANY reachable value aliases.
+        HirExprKind::Block(block) => block
+            .tail
+            .as_deref()
+            .is_none_or(|t| return_value_may_alias_borrow(t, fresh)),
+        HirExprKind::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            return_value_may_alias_borrow(then_expr, fresh)
+                || else_expr
+                    .as_deref()
+                    .is_none_or(|e| return_value_may_alias_borrow(e, fresh))
+        }
+        HirExprKind::Match { arms, .. } => {
+            arms.is_empty()
+                || arms
+                    .iter()
+                    .any(|arm| return_value_may_alias_borrow(&arm.body, fresh))
+        }
+        // A nested `return <e>` in value position (`... else { return p }`)
+        // contributes its own value; it aliases iff that value does.
+        HirExprKind::Return { value } => value
+            .as_deref()
+            .is_none_or(|v| return_value_may_alias_borrow(v, fresh)),
+        // Fresh leaves — NEVER an alias of a caller-owned value. A `.clone()` is
+        // a deep copy; a `Vec<T>` element load / slice is an independent heap
+        // element (push-clone + refcount); a literal owns nothing borrowed.
+        HirExprKind::RecordCloneCall { .. }
+        | HirExprKind::Index { .. }
+        | HirExprKind::Slice { .. }
+        | HirExprKind::Literal(_) => false,
+        // A construction aliases a parameter iff one of its owned operands does.
+        // Storing a managed operand into a field/element refcount-bumps or
+        // COW-copies a PROJECTION/temporary, but a WHOLE by-value parameter is
+        // moved without a bump (`Outer { inner: p }` returns a value whose
+        // `inner` aliases the caller's argument — the call-returns-a-constructor-
+        // embedding-a-borrow use-after-free). The recursion bottoms a bare
+        // parameter operand out at the `_ => true` arm, so it is caught.
+        HirExprKind::StructInit { fields, base, .. } => {
+            fields
+                .iter()
+                .any(|(_, v)| return_value_may_alias_borrow(v, fresh))
+                || base
+                    .as_deref()
+                    .is_some_and(|b| return_value_may_alias_borrow(b, fresh))
+        }
+        HirExprKind::TupleLiteral { elements } => elements
+            .iter()
+            .any(|e| return_value_may_alias_borrow(e, fresh)),
+        HirExprKind::MachineVariantCtor { payload, .. } => payload.as_ref().is_some_and(|fields| {
+            fields
+                .iter()
+                .any(|(_, v)| return_value_may_alias_borrow(v, fresh))
+        }),
+        // A free-function call aliases a parameter iff the callee is NOT proven
+        // to return a fresh owner AND some argument itself aliases a parameter
+        // (the callee could forward that argument out). A proven-fresh callee
+        // never aliases regardless of arguments; a non-fresh callee with only
+        // non-aliasing arguments (`string.repeat("a", 32)`) cannot alias the
+        // ENCLOSING function's parameters. Param-flow, composed through the
+        // fixpoint.
+        HirExprKind::Call { callee, args } => {
+            !callee_returns_fresh_owner(callee, fresh)
+                && args.iter().any(|a| return_value_may_alias_borrow(a, fresh))
+        }
+        // A projection aliases a parameter iff its object chain does: `p.inner`
+        // / `t.0` bottoms out at a bare parameter (`_ => true`) and carries that
+        // up; `makeOuter().inner` bottoms out at a fresh `Call` and does not.
+        HirExprKind::FieldAccess { object, .. } => return_value_may_alias_borrow(object, fresh),
+        HirExprKind::TupleIndex { tuple, .. } => return_value_may_alias_borrow(tuple, fresh),
+        // A by-value parameter is a BORROW; a bare local may itself hold a
+        // borrow (`let x = p; x`); a method call can return borrowed `self` /
+        // a parameter; a deref and every other form are not provably fresh.
+        // Fail closed: assume the value MAY alias.
+        _ => true,
+    }
+}
+
+/// Resolve a `Call` callee to its freshness fact.
+///
+/// - A statically-resolved item callee (`BindingRef { resolved: Item(id) }`)
+///   that names a function body IN THIS MODULE reads that body's summary entry
+///   (the analyzed `fresh` verdict — a HEW function that forwards a by-value
+///   parameter is `false`, caught by the interprocedural fixpoint).
+/// - A resolved item callee with NO body in this module is an extern / runtime
+///   primitive (`hew_string_repeat`, `hew_vec_*`, …) or an aggregate
+///   constructor. Both return a freshly-owned value by the cross-ABI
+///   owned-return contract: a callee returning a heap type hands back a value
+///   the caller owns and must free, so it cannot be a borrowed alias of an
+///   argument (an extern that returned an un-retained borrow would double-free
+///   in EVERY caller that frees the result, not just funcupdate — that is an
+///   ABI violation at the extern boundary, the same trust the `RecordCloneCall`
+///   / `Index` / `Slice` arms already extend to the `hew_*_clone` /
+///   `hew_*_get_clone` primitives they lower to). Classified fresh.
+/// - Any other callee shape (an unresolved name, a value-typed fn pointer, an
+///   indirect/closure call) is not statically resolvable and fails closed.
+fn callee_returns_fresh_owner(callee: &HirExpr, fresh: &HashMap<hew_hir::ItemId, bool>) -> bool {
+    if let HirExprKind::BindingRef {
+        resolved: ResolvedRef::Item(item_id),
+        ..
+    } = &callee.kind
+    {
+        // `Some(f)` — a module function body the summary analyzed; trust its
+        // verdict. `None` — a resolved item with no analyzable body here
+        // (extern primitive or constructor); fresh by the owned-return ABI.
+        fresh.get(item_id).copied().unwrap_or(true)
+    } else {
+        false
+    }
+}
+
+/// Collect every explicit `return <expr>` value in `block` (statement form),
+/// recursing into nested control flow but NOT into closures. Exhaustive over
+/// `HirStmtKind`: a missed return statement would let a borrowed-param return
+/// escape the freshness summary (a use-after-free), so every form is handled.
+fn collect_return_values_in_block<'f>(block: &'f HirBlock, out: &mut Vec<&'f HirExpr>) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(_, init) => {
+                if let Some(init) = init {
+                    collect_return_values_in_expr(init, out);
+                }
+            }
+            HirStmtKind::Assign { target, value } => {
+                collect_return_values_in_expr(target, out);
+                collect_return_values_in_expr(value, out);
+            }
+            HirStmtKind::Expr(expr) => collect_return_values_in_expr(expr, out),
+            HirStmtKind::Return(Some(expr)) => {
+                out.push(expr);
+                collect_return_values_in_expr(expr, out);
+            }
+            HirStmtKind::Return(None) => {}
+            HirStmtKind::Defer { body, .. } => collect_return_values_in_expr(body, out),
+            HirStmtKind::LetElse {
+                scrutinee,
+                success_prelude,
+                else_body,
+                ..
+            } => {
+                collect_return_values_in_expr(scrutinee, out);
+                for prelude_stmt in success_prelude {
+                    if let HirStmtKind::Let(_, Some(value)) = &prelude_stmt.kind {
+                        collect_return_values_in_expr(value, out);
+                    }
+                }
+                collect_return_values_in_block(else_body, out);
+            }
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_return_values_in_expr(tail, out);
+    }
+}
+
+/// Collect every explicit `return <expr>` value reachable from `expr` (the
+/// `HirExprKind::Return` expression form plus any buried in sub-expressions and
+/// nested blocks), recursing into all sub-expressions EXCEPT closure /
+/// lambda-actor bodies (whose `return` exits the closure, not the enclosing
+/// function). Exhaustive over the sealed `HirExprKind` surface (mirrors
+/// `collect_binding_defs_in_expr`) so no buried return is missed.
+#[allow(
+    clippy::too_many_lines,
+    clippy::match_same_arms,
+    reason = "visitor mirrors the sealed HirExprKind surface so return-value collection is exhaustive; the closure/lambda-actor arm is kept separate from the leaf no-op arm to document the do-NOT-descend invariant (a `return` inside a closure exits the closure, not the enclosing function)"
+)]
+fn collect_return_values_in_expr<'f>(expr: &'f HirExpr, out: &mut Vec<&'f HirExpr>) {
+    match &expr.kind {
+        HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
+        | HirExprKind::BindingRef { .. }
+        | HirExprKind::AwaitTask { .. }
+        | HirExprKind::ContextReader { .. }
+        | HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::MachineEventFieldAccess { .. }
+        | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
+        | HirExprKind::Unsupported(_) => {}
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+            collect_return_values_in_expr(left, out);
+            collect_return_values_in_expr(right, out);
+        }
+        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
+            collect_return_values_in_expr(operand, out);
+        }
+        HirExprKind::ConnAwaitRead { conn, .. } => collect_return_values_in_expr(conn, out),
+        HirExprKind::ListenerAwaitAccept { listener, .. } => {
+            collect_return_values_in_expr(listener, out);
+        }
+        HirExprKind::StreamRecvAwait { stream, .. } => {
+            collect_return_values_in_expr(stream, out);
+        }
+        HirExprKind::NumericCast { value, .. }
+        | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_return_values_in_expr(value, out);
+        }
+        HirExprKind::TupleLiteral { elements } => {
+            for elem in elements {
+                collect_return_values_in_expr(elem, out);
+            }
+        }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            collect_return_values_in_expr(receiver, out);
+            collect_return_values_in_expr(arg, out);
+        }
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            collect_return_values_in_expr(callee, out);
+            for arg in args {
+                collect_return_values_in_expr(arg, out);
+            }
+        }
+        HirExprKind::Spawn { args, .. } => {
+            for (_, arg) in args {
+                collect_return_values_in_expr(arg, out);
+            }
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
+        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
+            collect_return_values_in_expr(receiver, out);
+            for arg in args {
+                collect_return_values_in_expr(arg, out);
+            }
+        }
+        HirExprKind::RemoteActorAsk {
+            receiver,
+            msg,
+            timeout_ms,
+            ..
+        } => {
+            collect_return_values_in_expr(receiver, out);
+            collect_return_values_in_expr(msg, out);
+            collect_return_values_in_expr(timeout_ms, out);
+        }
+        HirExprKind::Block(block)
+        | HirExprKind::Scope { body: block }
+        | HirExprKind::ForkBlock { body: block, .. }
+        | HirExprKind::GenBlock { body: block, .. } => {
+            collect_return_values_in_block(block, out);
+        }
+        // `return <e>` — the value escapes the FUNCTION; collect it and recurse
+        // for nested returns inside `e`. `yield`/`break` carry values out of a
+        // generator/loop, NOT the function, so recurse but do not collect.
+        HirExprKind::Return { value } => {
+            if let Some(value) = value {
+                out.push(value);
+                collect_return_values_in_expr(value, out);
+            }
+        }
+        HirExprKind::Yield { value, .. } | HirExprKind::Break { value, .. } => {
+            if let Some(value) = value {
+                collect_return_values_in_expr(value, out);
+            }
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_return_values_in_expr(condition, out);
+            collect_return_values_in_expr(then_expr, out);
+            if let Some(else_expr) = else_expr {
+                collect_return_values_in_expr(else_expr, out);
+            }
+        }
+        HirExprKind::StructInit { fields, base, .. } => {
+            for (_, field_expr) in fields {
+                collect_return_values_in_expr(field_expr, out);
+            }
+            if let Some(base) = base {
+                collect_return_values_in_expr(base, out);
+            }
+        }
+        HirExprKind::FieldAccess { object, .. } => collect_return_values_in_expr(object, out),
+        HirExprKind::ScopeDeadline { duration, body } => {
+            collect_return_values_in_expr(duration, out);
+            collect_return_values_in_block(body, out);
+        }
+        HirExprKind::Select(select) => {
+            for arm in &select.arms {
+                match &arm.kind {
+                    hew_hir::HirSelectArmKind::StreamNext { stream } => {
+                        collect_return_values_in_expr(stream, out);
+                    }
+                    hew_hir::HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                        collect_return_values_in_expr(actor, out);
+                        for arg in args {
+                            collect_return_values_in_expr(arg, out);
+                        }
+                    }
+                    hew_hir::HirSelectArmKind::TaskAwait { task } => {
+                        collect_return_values_in_expr(task, out);
+                    }
+                    hew_hir::HirSelectArmKind::ChannelRecv { receiver, .. } => {
+                        collect_return_values_in_expr(receiver, out);
+                    }
+                    hew_hir::HirSelectArmKind::AfterTimer { duration } => {
+                        collect_return_values_in_expr(duration, out);
+                    }
+                }
+                collect_return_values_in_expr(&arm.body, out);
+            }
+        }
+        HirExprKind::Join(join) => {
+            for branch in &join.branches {
+                collect_return_values_in_expr(&branch.actor, out);
+                for arg in &branch.args {
+                    collect_return_values_in_expr(arg, out);
+                }
+            }
+        }
+        // Closure / lambda-actor bodies: a `return` inside exits the CLOSURE,
+        // not the enclosing function, so do NOT descend.
+        HirExprKind::SpawnLambdaActor { .. } | HirExprKind::Closure { .. } => {}
+        HirExprKind::TupleIndex { tuple, .. } => collect_return_values_in_expr(tuple, out),
+        HirExprKind::Index { container, index } => {
+            collect_return_values_in_expr(container, out);
+            collect_return_values_in_expr(index, out);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            ..
+        } => {
+            collect_return_values_in_expr(container, out);
+            if let Some(start) = start {
+                collect_return_values_in_expr(start, out);
+            }
+            if let Some(end) = end {
+                collect_return_values_in_expr(end, out);
+            }
+        }
+        HirExprKind::MachineEmit { fields, .. } => {
+            for (_, field_val) in fields {
+                collect_return_values_in_expr(field_val, out);
+            }
+        }
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            collect_return_values_in_expr(receiver, out);
+            collect_return_values_in_expr(event, out);
+        }
+        HirExprKind::ChannelRecvAwait { receiver, .. }
+        | HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. }
+        | HirExprKind::MachineStateName { receiver, .. }
+        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+            collect_return_values_in_expr(receiver, out);
+        }
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            if let Some(fields) = payload {
+                for (_, val) in fields {
+                    collect_return_values_in_expr(val, out);
+                }
+            }
+        }
+        HirExprKind::While {
+            condition, body, ..
+        } => {
+            collect_return_values_in_expr(condition, out);
+            collect_return_values_in_block(body, out);
+        }
+        HirExprKind::ForRange {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            collect_return_values_in_expr(start, out);
+            collect_return_values_in_expr(end, out);
+            collect_return_values_in_expr(step, out);
+            collect_return_values_in_block(body, out);
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            collect_return_values_in_expr(scrutinee, out);
+            for arm in arms {
+                collect_return_values_in_expr(&arm.body, out);
+            }
+        }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => {
+            collect_return_values_in_expr(scrutinee, out);
+            collect_return_values_in_block(body, out);
+        }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_return_values_in_expr(scrutinee, out);
+            collect_return_values_in_block(body, out);
+            if let Some(eb) = else_body {
+                collect_return_values_in_block(eb, out);
+            }
+        }
+        HirExprKind::Loop { body, .. } => collect_return_values_in_block(body, out),
+    }
+}
+
 #[derive(Debug)]
 struct LoweredFunction {
     thir: ThirFunction,
@@ -5141,6 +5713,7 @@ fn lower_function(
     current_actor_name: Option<&str>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     trait_impl_index: &HashMap<
         hew_hir::dispatch::TraitImplKey,
         hew_hir::dispatch::TraitImplMethodEntry,
@@ -5186,6 +5759,7 @@ fn lower_function(
             .unwrap_or_default(),
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
+        funcupdate_fn_returns_fresh: funcupdate_fn_returns_fresh.clone(),
         trait_impl_index: trait_impl_index.clone(),
         subst,
         call_site_type_args: call_site_type_args.clone(),
@@ -5208,7 +5782,8 @@ fn lower_function(
     // Codegen emits a parameter-prologue that stores each LLVM function
     // argument into the corresponding alloca slot before the first instruction.
     builder.lower_params(func);
-    builder.funcupdate_base_proven = compute_funcupdate_base_provenance(func);
+    builder.funcupdate_base_proven =
+        compute_funcupdate_base_provenance(func, funcupdate_fn_returns_fresh);
     builder.function_body(func);
 
     // Effective return type after type-parameter substitution.
@@ -5971,6 +6546,27 @@ struct Builder {
     /// (match-arm payload, let-else, loop var), is ABSENT or `false` — the gate
     /// then fails closed. See `base_is_safe_for_destructive_funcupdate`.
     funcupdate_base_proven: HashMap<BindingId, bool>,
+    /// Module-global interprocedural freshness summary: maps each free-function
+    /// `ItemId` to whether it provably returns a FRESH MATERIALISED owner on
+    /// every return path (`compute_fn_returns_fresh_owner`). Consulted by
+    /// `expr_is_materialized_owner` so a `..f(args)` funcupdate base is admitted
+    /// ONLY when `f` cannot launder a borrowed by-value parameter through its
+    /// return (the call-returns-borrowed-param use-after-free). `Rc` so child
+    /// builders share it cheaply; the empty default fails every call-base
+    /// closed, which is sound. See `compute_fn_returns_fresh_owner`.
+    funcupdate_fn_returns_fresh: Rc<HashMap<hew_hir::ItemId, bool>>,
+    /// Binding ids of the CURRENT function's by-value parameters, captured in
+    /// `lower_params`. A funcupdate base that is (or embeds in a construction) a
+    /// WHOLE by-value parameter is NOT a unique owner — the parameter is a
+    /// borrow (LESSONS `by-value-heap-params-are-borrows`) stored without a
+    /// refcount bump (`{ ..Wrap { s: p, .. }, s: new }` frees the caller's `p`
+    /// at the override-drop). Consulted by `expr_is_materialized_owner` to reject
+    /// such bases. `Rc` so child builders (closures) inherit the enclosing
+    /// parameters cheaply; the empty default is sound (admits nothing extra).
+    /// Projections of a parameter (`p.inner`) and bare locals are NOT listed —
+    /// a field read refcount-bumps and a local move consumes, both empirically
+    /// owner-preserving.
+    funcupdate_param_ids: Rc<HashSet<BindingId>>,
     /// F-04 fungible supervisor-child reference table. Maps the handle local id
     /// produced by `lower_supervisor_child_get` (`Place::ActorHandle(N)`) to the
     /// stable `(supervisor, slot)` reference it stands for.
@@ -7249,6 +7845,11 @@ impl Builder {
     /// produce indices ≥ `params.len()`, maintaining the invariant documented
     /// on `RawMirFunction.params`.
     fn lower_params(&mut self, func: &HirFn) {
+        // Record the by-value parameter binding ids for the destructive-
+        // funcupdate base gate: a base that embeds a WHOLE parameter is a borrow,
+        // not a unique owner. Captured here so every entry point that lowers a
+        // parameterised body through `lower_params` participates.
+        self.funcupdate_param_ids = Rc::new(func.params.iter().map(|p| p.id).collect());
         for param in &func.params {
             let slot = self.alloc_local(param.ty.clone());
             self.binding_locals.insert(param.id, slot);
@@ -18696,6 +19297,7 @@ impl Builder {
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
+            funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -22886,6 +23488,7 @@ impl Builder {
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
+            funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -22902,6 +23505,10 @@ impl Builder {
             // a `{ ..base, f }` inside a closure is gated by the same proof
             // instead of failing closed for want of the map.
             funcupdate_base_proven: self.funcupdate_base_proven.clone(),
+            // Same rationale: the enclosing function's by-value parameters are
+            // globally-unique bindings a closure can capture and embed in a
+            // funcupdate base, so the child must see them to reject the borrow.
+            funcupdate_param_ids: self.funcupdate_param_ids.clone(),
             ..Builder::default()
         }
     }
@@ -23081,6 +23688,7 @@ impl Builder {
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
+            funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -24160,6 +24768,7 @@ impl Builder {
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
+            funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -24988,7 +25597,11 @@ impl Builder {
         }
         // (b) Every other base — INCLUDING every wrapper — is safe only if
         //     every reachable value is a materialised owner with no live alias.
-        Self::expr_is_materialized_owner(base)
+        Self::expr_is_materialized_owner(
+            base,
+            &self.funcupdate_fn_returns_fresh,
+            &self.funcupdate_param_ids,
+        )
     }
 
     /// True when `expr` evaluates to a freshly MATERIALISED owner — a value in
@@ -25006,9 +25619,17 @@ impl Builder {
     /// rejected because a reachable value aliases the live `o`.
     ///
     /// Materialised leaves:
-    ///   * a call / method / `.clone()` result — a fresh value written into its
-    ///     own return slot (`Call`, the four method-call variants,
-    ///     `RecordCloneCall`);
+    ///   * a `.clone()` result (`RecordCloneCall`) — a fresh deep copy;
+    ///   * a free-function `Call` whose callee is PROVEN to return a fresh owner
+    ///     by the module interprocedural summary (`compute_fn_returns_fresh_-
+    ///     owner`, threaded as `fresh`). A call is NOT blanket-fresh: a function
+    ///     can launder a by-value heap parameter (a BORROW — LESSONS
+    ///     `by-value-heap-params-are-borrows`) through its return without a
+    ///     refcount bump (`fn id(p: Inner) -> Inner { p }`), so `..id(o.inner)`
+    ///     would free the caller's live `o.inner` at the override-drop. Method
+    ///     calls (`CallDynMethod`/`CallTraitMethodStatic`/`VarSelfMethodCall`/
+    ///     `ResolvedImplCall`) can likewise return borrowed `self`/params and are
+    ///     NOT summarised, so they fail closed;
     ///   * a `Vec<T>` element load (`v[i]`) or slice (`v[a..b]`). The element
     ///     is independent of any live binding: `hew_vec_push_owned` deep-clones
     ///     each element on insert (`clone_fn`) and the buffer carries its own
@@ -25027,16 +25648,20 @@ impl Builder {
     /// EVERY other form — a `BindingRef` (live local, `Const`, or `Item`), a
     /// `MachineFieldAccess` (`self.field`), a deref, a loop-break value, or any
     /// expression form added later — returns false (fail closed).
-    // The owned-rvalue arm and the `Index`/`Slice` arm both yield `true` but
-    // are kept separate: they admit a leaf for DIFFERENT safety reasons (a
-    // call result is a fresh return-slot value; a `Vec` element is heap-
-    // independent via push-clone + refcount). Merging them would erase that
-    // distinction in a security-critical allowlist.
+    // The `RecordCloneCall`/`Call` arm and the `Index`/`Slice` arm both can
+    // yield `true` but are kept separate: they admit a leaf for DIFFERENT safety
+    // reasons (a clone / proven-fresh call is a fresh return-slot value; a `Vec`
+    // element is heap-independent via push-clone + refcount). Merging them would
+    // erase that distinction in a security-critical allowlist.
     #[allow(
         clippy::match_same_arms,
         reason = "distinct safety rationales per arm in a security-critical allowlist"
     )]
-    fn expr_is_materialized_owner(expr: &HirExpr) -> bool {
+    fn expr_is_materialized_owner(
+        expr: &HirExpr,
+        fresh: &HashMap<hew_hir::ItemId, bool>,
+        params: &HashSet<BindingId>,
+    ) -> bool {
         match &expr.kind {
             // ---- value-passthrough wrappers: ALL reachable values must be
             //      materialised (look THROUGH; reject any bare-binding leaf) ----
@@ -25045,7 +25670,7 @@ impl Builder {
             HirExprKind::Block(block) => block
                 .tail
                 .as_deref()
-                .is_some_and(Self::expr_is_materialized_owner),
+                .is_some_and(|t| Self::expr_is_materialized_owner(t, fresh, params)),
             // BOTH `if` branches must be materialised. A missing `else` cannot
             // produce an owned-record value, so it fails closed.
             HirExprKind::If {
@@ -25053,10 +25678,10 @@ impl Builder {
                 else_expr,
                 ..
             } => {
-                Self::expr_is_materialized_owner(then_expr)
+                Self::expr_is_materialized_owner(then_expr, fresh, params)
                     && else_expr
                         .as_deref()
-                        .is_some_and(Self::expr_is_materialized_owner)
+                        .is_some_and(|e| Self::expr_is_materialized_owner(e, fresh, params))
             }
             // EVERY `match` arm body must be materialised (an arm body that is a
             // bare payload binding aliases the scrutinee and fails closed).
@@ -25064,42 +25689,96 @@ impl Builder {
                 !arms.is_empty()
                     && arms
                         .iter()
-                        .all(|arm| Self::expr_is_materialized_owner(&arm.body))
+                        .all(|arm| Self::expr_is_materialized_owner(&arm.body, fresh, params))
             }
             // ---- materialised leaves ----
-            // Owned rvalues: a call / method / clone result is a fresh value
-            // materialised into its own slot. Conservatively limited to the
-            // call-like variants whose result is an owned value; any unlisted
-            // form fails closed.
-            HirExprKind::Call { .. }
-            | HirExprKind::CallDynMethod { .. }
-            | HirExprKind::CallTraitMethodStatic { .. }
-            | HirExprKind::VarSelfMethodCall { .. }
-            | HirExprKind::ResolvedImplCall { .. }
-            | HirExprKind::RecordCloneCall { .. } => true,
+            // A `.clone()` result is a fresh deep copy materialised into its own
+            // slot — unconditionally an owner.
+            HirExprKind::RecordCloneCall { .. } => true,
+            // A free-function call is a materialised owner ONLY when the module
+            // interprocedural summary proves the callee returns a fresh owner on
+            // every path. A blanket `Call => true` is UNSOUND: a function can
+            // launder a by-value heap parameter (a BORROW) through its return
+            // without a refcount bump (`fn id(p: Inner) -> Inner { p }`), so
+            // `..id(o.inner)` would free the caller's live `o.inner` at the
+            // override-drop (the call-returns-borrowed-param use-after-free).
+            // Method-call variants can likewise return borrowed `self`/params
+            // and are not summarised — they fall to the fail-closed `_` arm.
+            HirExprKind::Call { callee, .. } => callee_returns_fresh_owner(callee, fresh),
             // A `Vec<T>` element load / slice — an independent heap element
             // (see the push-clone + refcount note above), not an interior alias
             // of a surviving named binding.
             HirExprKind::Index { .. } | HirExprKind::Slice { .. } => true,
             // A record/tuple/enum literal AND a functional-update result
             // (`Record { f: .. }`, `Record { ..base, f: new }`) — construction
-            // writes a FRESH record into its own storage. Each owned field
-            // operand is stored with value semantics (a field read like
-            // `o.inner.label` is COW-copied / refcount-bumped into the new
-            // slot, NOT shallow-aliased — empirically a destructive funcupdate
-            // over `let b = Record { label: o.inner.label, .. }` does not
-            // dangle `o`), so the constructed record uniquely owns its fields.
-            // A `..base` funcupdate result is likewise fresh; that inner base's
-            // own safety is enforced when IT lowers, independently of this
-            // classification. This is the leaf that keeps `let base = Record {
-            // .. }; { ..base, f }` (and the reassign-loop) admitted.
-            HirExprKind::StructInit { .. } => true,
+            // writes a FRESH record into its own storage. A field operand that is
+            // a PROJECTION (`o.inner.label`), a bare LOCAL (moved-in), a CALL
+            // result, or a `.clone()` is refcount-bumped / COW-copied / consumed
+            // into the new slot — empirically owner-preserving (a destructive
+            // funcupdate over such a record does not dangle the source). The ONE
+            // exception is a WHOLE by-value PARAMETER operand: a parameter is a
+            // borrow stored WITHOUT a refcount bump, so `{ ..Wrap { s: p, .. },
+            // s: new }` frees the caller's `p` at the override-drop. Reject a
+            // construction that embeds (directly or through nested constructions)
+            // a whole parameter; admit every other construction. A nested `..base`
+            // is checked too — its own embedded parameters dangle identically.
+            HirExprKind::StructInit { fields, base, .. } => {
+                !fields
+                    .iter()
+                    .any(|(_, v)| Self::expr_embeds_whole_param(v, params))
+                    && base
+                        .as_deref()
+                        .is_none_or(|b| !Self::expr_embeds_whole_param(b, params))
+            }
             // A projection is materialised iff its object chain is.
-            HirExprKind::FieldAccess { object, .. } => Self::expr_is_materialized_owner(object),
-            HirExprKind::TupleIndex { tuple, .. } => Self::expr_is_materialized_owner(tuple),
-            // Bare/`Const` binding ref, machine-state field projection, deref,
-            // or any future expression form — not provably a materialised
-            // owner. Fail closed.
+            HirExprKind::FieldAccess { object, .. } => {
+                Self::expr_is_materialized_owner(object, fresh, params)
+            }
+            HirExprKind::TupleIndex { tuple, .. } => {
+                Self::expr_is_materialized_owner(tuple, fresh, params)
+            }
+            // Bare/`Const` binding ref, machine-state field projection, deref, a
+            // method call (can return borrowed `self`/param), or any future
+            // expression form — not provably a materialised owner. Fail closed.
+            _ => false,
+        }
+    }
+
+    /// True when `expr` is, or embeds through a construction, a WHOLE by-value
+    /// parameter — the borrow that a constructor stores without a refcount bump.
+    ///
+    /// Recurses only through constructions (struct / tuple / machine-variant
+    /// literals), which embed operands by value. A PROJECTION (`p.inner`), a
+    /// CALL, a `.clone()`, a `Vec` element, and a literal are NOT embeds of a
+    /// whole parameter — a field read bumps, a call/clone materialises a fresh
+    /// value — so they stop the recursion (return `false`). A bare parameter
+    /// binding is the borrow this catches; a bare LOCAL is move-consumed into the
+    /// construction and stays an owner, so only `params` membership returns
+    /// `true`.
+    fn expr_embeds_whole_param(expr: &HirExpr, params: &HashSet<BindingId>) -> bool {
+        match &expr.kind {
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } => params.contains(id),
+            HirExprKind::StructInit { fields, base, .. } => {
+                fields
+                    .iter()
+                    .any(|(_, v)| Self::expr_embeds_whole_param(v, params))
+                    || base
+                        .as_deref()
+                        .is_some_and(|b| Self::expr_embeds_whole_param(b, params))
+            }
+            HirExprKind::TupleLiteral { elements } => elements
+                .iter()
+                .any(|e| Self::expr_embeds_whole_param(e, params)),
+            HirExprKind::MachineVariantCtor { payload, .. } => {
+                payload.as_ref().is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .any(|(_, v)| Self::expr_embeds_whole_param(v, params))
+                })
+            }
             _ => false,
         }
     }
@@ -33781,6 +34460,7 @@ mod slice3_invariants {
                 None,
                 &HashSet::new(),
                 &HashSet::new(),
+                &std::rc::Rc::new(std::collections::HashMap::new()),
                 &HashMap::new(),
                 &HashMap::new(),
                 None,

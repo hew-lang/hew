@@ -379,6 +379,24 @@ run_accept_expect_status "hashmap_for_in_call" 66
 # MallocGuardEdges) alongside the other owned for-in fixtures.
 run_accept_expect_status "hashset_for_in_field_owned" 9
 
+# Generic HashMap<K, V> over a record key with a `string` field. The key is
+# hashed by descending into the string payload (not the pointer word), compared
+# by the structural eq thunk, and dropped exactly once on remove/free via the
+# per-record key drop thunk (LayoutManaged ownership). Each fixture's exit code
+# encodes a value oracle; 0 means every assertion held.
+# Insert / get / overwrite / remove / distinct-vs-collision oracle.
+run_accept_expect_status "hashmap_managed_record_key" 0
+# HashSet over a record element with a string field: dedupe + membership oracle.
+run_accept_expect_status "hashset_managed_record_elem" 0
+# Owned-key drop ratchet: insert/overwrite/remove/free churn of owned string
+# keys. Verified clean under the guard allocator (MallocScribble / GuardEdges).
+run_accept_expect_status "hashmap_managed_key_drop" 0
+# Boundary: a record key with an owned Vec<T> field stays rejected fail-closed.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/hashmap_key_owned_vec_field.hew" \
+  "is not a fixed-size Copy type" \
+  "hashmap_key_owned_vec_field"
+
 # Reject: spawned closures must not capture non-Send values. This fixture uses
 # a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR
 # diagnostic rather than unrelated Rc construction or lowering diagnostics.

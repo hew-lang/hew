@@ -1,0 +1,18 @@
+// Reject fixture: a `break` in a `while` CONDITION must mark the enclosing
+// loop breakable.
+//
+// A loop-header expression (the `while` condition) is evaluated in the
+// enclosing scope, so a bare break there targets the OUTER loop, not the inner
+// `while`.  The walker must recurse into the condition at the enclosing depth.
+// Missing it types the outer loop Never and the `i64` vs `()` mismatch below is
+// silently accepted.
+fn f(c: bool, stop: bool) -> i64 {
+    let x: i64 = if c { 5 } else {
+        loop { while { if stop { break; } true } {} }
+    };
+    x
+}
+
+fn main() {
+    println(f(true, false));
+}

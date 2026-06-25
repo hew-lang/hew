@@ -7913,6 +7913,17 @@ impl Checker {
                         self.known_types.insert(binding_name.clone());
                         let source_identity = format!("{module_short}.{}", td.name);
                         self.record_published_bare_type(&binding_name, &source_identity);
+                        // When the importer chose an alias (`T as U`), record
+                        // the mapping so HIR `lower_type` can canonicalise the
+                        // alias name in type-annotation position.  Key by
+                        // (importer_module, alias) so aliases from different
+                        // modules cannot overwrite each other.
+                        if binding_name != td.name {
+                            self.import_type_name_aliases.insert(
+                                (self.current_module.clone(), binding_name.clone()),
+                                source_identity.clone(),
+                            );
+                        }
                         self.unqualified_to_module.insert(
                             (self.current_module.clone(), binding_name),
                             module_short.to_string(),

@@ -1,0 +1,18 @@
+// Accept fixture: an import alias declared and used INSIDE a package module
+// (whose dotted path `hew.deepalias` has depth ≥ 2) resolves correctly through
+// HIR lowering.
+//
+// `hew::deepalias` does `import hew::aliassrc::{ Color as Hue, Payload as Tag }`
+// and uses `Hue` in type + variant position and `Tag` in type position. The
+// checker keys the per-module alias map by the importer's FULL dotted path; HIR
+// must use the same key. If HIR keyed by the short last segment, the depth-2
+// importer's aliases would be missed during lowering and `score()` would fail
+// to resolve `Hue` / `Tag` (UnresolvedSymbol).
+//
+// `score()` = match Hue::Blue(42) -> 42, plus code_of(Tag { code: 8 }) -> 8.
+// Output "50" proves the aliases resolved end-to-end through codegen.
+import hew::deepalias;
+
+fn main() {
+    println(deepalias.score());
+}

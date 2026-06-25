@@ -1,0 +1,25 @@
+// Aliased import alias resolves in function-parameter type-annotation position.
+//
+// `hew::aliassrc` exports a record `Payload`. The importer opts it in under
+// the alias `Tag` (`import hew::aliassrc::{ Payload as Tag }`) and then writes
+// a function with the alias as its parameter type: `fn process(item: Tag)`.
+//
+// Before this fix, `lower_type` in HIR lowering did not consult
+// `import_type_name_aliases`, so the annotation `Tag` could not be resolved
+// to the source identity `aliassrc.Payload` and the function was rejected.
+//
+// Reading the field back through the typed-by-alias parameter proves
+// end-to-end that the alias resolves in parameter-type position.
+//
+// Harness verb: hew run
+// Expected: code value passed through the aliased-type parameter is returned.
+import hew::aliassrc::{ Payload as Tag };
+
+fn get_code(item: Tag) -> i64 {
+    item.code
+}
+
+fn main() {
+    let t = Tag { code: 55 };
+    println(get_code(t));
+}

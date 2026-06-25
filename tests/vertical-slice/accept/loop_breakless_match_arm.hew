@@ -1,0 +1,19 @@
+// Accept fixture: a break-less `loop {}` in a match arm must not force the
+// whole `match` expression to `Unit` when the other arm yields a value.
+//
+// A break-less loop has type `Never`; the match expression's type is the
+// non-`Never` arm's type.  Before this fix, the loop was typed `Unit`,
+// the match result was forced to `Unit`, and the `let y: i64` annotation
+// caused a type mismatch.  The loop is wrapped in a block `{ loop {} }` —
+// `loop` is a statement form in Hew and cannot appear as a bare match arm.
+//
+// Expected exit status: 3 (the `Some(3)` arm value), proving the match
+// resolved to the payload of the non-loop arm.
+fn main() -> i64 {
+    let opt: Option<i64> = Some(3);
+    let y: i64 = match opt {
+        Some(n) => n,
+        None => { loop {} },
+    };
+    y
+}

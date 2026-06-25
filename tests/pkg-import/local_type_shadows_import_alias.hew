@@ -1,0 +1,32 @@
+// Accept fixture: a local type declaration shadows an import alias of the same
+// bare name (local-shadows-imported rule).
+//
+// `hew::aliassrc` exports `Payload` (field: `code: i64`).  The importer opts
+// it in under the alias `U` (`import hew::aliassrc::{ Payload as U }`).
+// Simultaneously, the importer declares its own `type U { local: i64 }`.
+//
+// The type checker resolves bare `U` to the LOCAL declaration first
+// (local_type_defs wins over published_bare).  HIR `resolve_named_type_ref`
+// must apply the alias ONLY as a fallback — after the `record_registry` check
+// declines the name — so the local `type U` takes precedence.
+//
+// If the alias is applied FIRST (the pre-fix bug), `U` would be rewritten to
+// `aliassrc.Payload`, which has no `local` field, and the field read would
+// fail with a type error or at runtime.
+//
+// Proof: construct `U { local: 7 }` and print `local`.  Output "7" proves
+// the local type was used, not the aliassrc.Payload.
+import hew::aliassrc::{ Payload as U };
+
+type U {
+    local: i64;
+}
+
+fn get_local(x: U) -> i64 {
+    x.local
+}
+
+fn main() {
+    let v = U { local: 7 };
+    println(get_local(v));
+}

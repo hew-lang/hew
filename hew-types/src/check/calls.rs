@@ -28,7 +28,7 @@ impl Checker {
         if let Some(pos) = func_name.rfind("::") {
             let type_prefix = &func_name[..pos];
             let variant_name = &func_name[pos + 2..];
-            self.type_defs.get(type_prefix).and_then(|td| {
+            let direct = self.type_defs.get(type_prefix).and_then(|td| {
                 if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
                     return None;
                 }
@@ -39,6 +39,30 @@ impl Checker {
                         VariantDef::Struct(_) => return None,
                     };
                     Some((type_prefix.to_string(), params, td.type_params.clone()))
+                })
+            });
+            if direct.is_some() {
+                return direct;
+            }
+            // Import-alias fallback: `Geo::Box` where "Geo" was bound as an
+            // alias for "shapes.Shape".  Resolve through `import_type_name_aliases`
+            // and retry the variant lookup under the canonical qualified name.
+            let canonical = self
+                .import_type_name_aliases
+                .get(&(self.current_module.clone(), type_prefix.to_string()))?;
+            self.type_defs.get(canonical.as_str()).and_then(|td| {
+                if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
+                    return None;
+                }
+                td.variants.get(variant_name).and_then(|variant| {
+                    let params = match variant {
+                        VariantDef::Unit => Vec::new(),
+                        VariantDef::Tuple(p) => p.clone(),
+                        VariantDef::Struct(_) => return None,
+                    };
+                    // Return the canonical type name so HIR lowering resolves
+                    // the constructor against the right registered type.
+                    Some((canonical.clone(), params, td.type_params.clone()))
                 })
             })
         } else {

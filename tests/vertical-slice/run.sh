@@ -3117,3 +3117,67 @@ expect_check_fail_contains \
 # program must compile and run without HIR shape-mismatch diagnostics.
 run_accept_expect_status "imported_shadow_variant_call" 0
 
+# ---------------------------------------------------------------------------
+# Break-less loop typing (issue #2112)
+# A `loop {}` with no `break` statement has type `Never` (it never returns a
+# value).  In if/match branch position, the `Never`-typed branch is elided so
+# the expression takes the other branch's type.  Before this fix, all loops
+# were typed `Unit`, forcing the whole if/match to `Unit` and breaking the
+# `let x: i64 = if cond { value } else { loop {} }` pattern.
+# ---------------------------------------------------------------------------
+
+# Accept: `if good { 5 } else { loop {} }` must compile and the `5` branch
+# value must be usable as `i64`.  Exit status 6 (5 + 1) proves it.
+run_accept_expect_status "loop_breakless_if_branch" 6
+
+# Accept: `match opt { Some(n) => n, None => loop {} }` must compile and
+# the `Some(3)` arm must produce `3` as the match result type.  Exit 3.
+run_accept_expect_status "loop_breakless_match_arm" 3
+
+# Reject: loops that contain a reachable `break` must NOT be typed Never.
+# Three cases exercise previously-missed forms in the break-detection walker:
+#   (1) break inside `unsafe { … }` block
+#   (2) break inside an explicit `if` inside the loop body
+#   (3) plain bare `break`
+# Each case pairs `if c { 5 }` (i64) with the breakable loop; the type
+# mismatch (i64 vs Unit) must be detected and rejected.
+if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/loop_breakable_not_never.hew" >"${reject_output}" 2>&1; then
+  echo "expected loop_breakable_not_never to fail (breakable loop must not be typed Never)" >&2
+  exit 1
+fi
+grep -qF "type mismatch" "${reject_output}"
+echo "PASS loop_breakable_not_never (reject)"
+
+# Reject: a `break` reachable from a loop-header, scrutinee, or iterable
+# sub-expression must mark the enclosing loop breakable too.  These cover the
+# sub-expression fields the walker previously skipped (recursing only into
+# bodies/arms): `if`/`while` conditions, `for` iterables, and `match`/`if let`
+# scrutinees.  Each is a standalone file so a regression in one position can
+# never be masked by another position still rejecting.  A loop-header break
+# (`while` condition, `for` iterable) targets the OUTER loop because the header
+# is evaluated in the enclosing scope.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/loop_break_in_if_condition.hew" \
+  "type mismatch" "loop_break_in_if_condition"
+echo "PASS loop_break_in_if_condition (reject)"
+
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/loop_break_in_while_condition.hew" \
+  "type mismatch" "loop_break_in_while_condition"
+echo "PASS loop_break_in_while_condition (reject)"
+
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/loop_break_in_for_iterable.hew" \
+  "type mismatch" "loop_break_in_for_iterable"
+echo "PASS loop_break_in_for_iterable (reject)"
+
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/loop_break_in_match_scrutinee.hew" \
+  "type mismatch" "loop_break_in_match_scrutinee"
+echo "PASS loop_break_in_match_scrutinee (reject)"
+
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/loop_break_in_iflet_scrutinee.hew" \
+  "type mismatch" "loop_break_in_iflet_scrutinee"
+echo "PASS loop_break_in_iflet_scrutinee (reject)"
+

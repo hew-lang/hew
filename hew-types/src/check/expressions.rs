@@ -1388,6 +1388,46 @@ impl Checker {
                         }
                     }
                 }
+                // Import-alias fallback: `Geo::Unit` where "Geo" is an alias for
+                // "shapes.Shape".  Resolve through `import_type_name_aliases` and
+                // retry the unit-variant lookup under the canonical qualified name.
+                if found.is_none() {
+                    if let Some(canonical) = self
+                        .import_type_name_aliases
+                        .get(&(self.current_module.clone(), type_prefix.to_string()))
+                        .cloned()
+                    {
+                        if let Some(td) = self.type_defs.get(canonical.as_str()) {
+                            if let Some(variant) = td.variants.get(variant_name) {
+                                if matches!(variant, VariantDef::Unit) {
+                                    let ty = if let Some(sig) =
+                                        self.fn_sigs.get(variant_name).cloned()
+                                    {
+                                        let sig_names_correct_enum =
+                                            sig.return_type.type_name().is_some_and(|n| {
+                                                Ty::names_match_qualified(n, &canonical)
+                                            });
+                                        if sig_names_correct_enum {
+                                            let mut ret = sig.return_type.clone();
+                                            for tp in &sig.type_params {
+                                                ret = ret.substitute_named_param(
+                                                    tp,
+                                                    &Ty::Var(TypeVar::fresh()),
+                                                );
+                                            }
+                                            ret
+                                        } else {
+                                            Ty::normalize_named(canonical.clone(), vec![])
+                                        }
+                                    } else {
+                                        Ty::normalize_named(canonical.clone(), vec![])
+                                    };
+                                    found = Some(ty);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         if let Some(ty) = found {

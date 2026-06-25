@@ -1,0 +1,17 @@
+// Reject fixture: a `break` in a `for` ITERABLE must mark the enclosing loop
+// breakable.
+//
+// Like the `while` condition, the `for` iterable is a loop-header expression
+// evaluated in the enclosing scope; a break there targets the OUTER loop.  The
+// walker must recurse into the iterable at the enclosing depth.  Missing it
+// types the outer loop Never and the `i64` vs `()` mismatch below is accepted.
+fn f(c: bool, stop: bool) -> i64 {
+    let x: i64 = if c { 5 } else {
+        loop { for _i in { if stop { break; } [1] } {} }
+    };
+    x
+}
+
+fn main() {
+    println(f(true, false));
+}

@@ -682,6 +682,7 @@ impl Checker {
             // See `check::dispatch` module docs and
             // `TypeCheckOutput::resolved_calls`.
             resolved_calls: std::mem::take(&mut self.resolved_calls),
+            import_type_name_aliases: std::mem::take(&mut self.import_type_name_aliases),
             numeric_method_lowerings: std::mem::take(&mut self.numeric_method_lowerings),
             width_cast_lowerings: std::mem::take(&mut self.width_cast_lowerings),
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),

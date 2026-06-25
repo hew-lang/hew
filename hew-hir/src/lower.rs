@@ -2680,10 +2680,34 @@ pub fn lower_program_with_mono_cap(
     // rewrites, expr types) to resolve to the checker's facts. Genuine root
     // items stay at index 0. See `file_import_item_module_indices`.
     let file_import_module_idx = file_import_item_module_indices(program);
+    // Companion table: module_idx (1-based topo order) → FULL dotted module name
+    // (e.g. "subpkg.helper"). Used alongside `file_import_module_idx` to set
+    // `current_module_name` when lowering file-import items, mirroring the
+    // checker's `Checker::current_module` (`mod_id.path.join(".")`). Keying by
+    // the full path — not the short last segment — is what lets HIR's
+    // `import_type_name_aliases` lookups hit the keys the checker wrote for
+    // depth-≥2 importers.
+    let module_idx_to_name: HashMap<u32, String> = {
+        let mut m = HashMap::new();
+        if let Some(mg) = &program.module_graph {
+            let mut idx: u32 = 0;
+            for mod_id in &mg.topo_order {
+                if *mod_id == mg.root {
+                    continue;
+                }
+                if mg.modules.contains_key(mod_id) {
+                    idx += 1;
+                    m.insert(idx, mod_id.path.join("."));
+                }
+            }
+        }
+        m
+    };
     let mut items: Vec<HirItem> = Vec::new();
     let mut const_fold_module_idx = 0;
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
         ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
+        ctx.current_module_name = module_idx_to_name.get(&ctx.current_module_idx).cloned();
         if ctx.current_module_idx != const_fold_module_idx {
             ctx.folded_integer_consts.clear();
             const_fold_module_idx = ctx.current_module_idx;
@@ -2832,6 +2856,7 @@ pub fn lower_program_with_mono_cap(
     // subsequent root-context reads default to 0 before the module-graph walk
     // re-assigns it per non-root module.
     ctx.current_module_idx = 0;
+    ctx.current_module_name = None;
 
     // Fourth pass: lower pub fn bodies from non-root modules under their
     // qualified, native-symbol-safe names (e.g. `greeting$hello`).
@@ -2898,6 +2923,11 @@ pub fn lower_program_with_mono_cap(
                 module_idx += 1;
                 ctx.current_module_idx = module_idx;
                 let source_module = mod_id.path.join(".");
+                // Match the checker's `current_module` key (full dotted path,
+                // `mod_id.path.join(".")`) so `import_type_name_aliases` lookups
+                // resolve for depth-≥2 modules (e.g. "subpkg.helper"); the short
+                // last segment would miss the checker-written alias key.
+                ctx.current_module_name = Some(source_module.clone());
                 let diag_start = ctx.diagnostics.len();
                 let item_start = items.len();
                 let module_short = mod_id.path.last().map_or("", String::as_str);
@@ -3361,6 +3391,7 @@ pub fn lower_program_with_mono_cap(
         // Restore to 0 so any subsequent root-level expression lowering (e.g.
         // `check_await_task_result`) uses module_idx=0 matching the checker.
         ctx.current_module_idx = 0;
+        ctx.current_module_name = None;
     }
 
     // Inject the std builtins.hew receiver impls through the same lowering path
@@ -4842,6 +4873,28 @@ struct LowerCtx {
     /// the checker's module-scoped inserts, preventing byte-offset collisions
     /// across stdlib files (L23 defect root cause).
     current_module_idx: u32,
+    /// Full dotted path of the module currently being lowered (e.g.
+    /// `"subpkg.helper"`): `None` for root items, `Some(path.join("."))` for
+    /// imported package/file modules.  Mirrors the checker's
+    /// `Checker::current_module` EXACTLY (same `mod_id.path.join(".")`
+    /// derivation) so the per-module alias map key in `resolve_named_type_ref`
+    /// and sibling alias lookups agrees with the checker's inserts for depth-≥2
+    /// importers; the short last segment would diverge and miss.
+    current_module_name: Option<String>,
+    /// Import type alias resolution table: maps `(importer_module, alias)` →
+    /// canonical qualified source identity, for every `import m::{ T as U }`.
+    ///
+    /// Sourced from [`hew_types::check::TypeCheckOutput::import_type_name_aliases`]
+    /// at `LowerCtx::new` time and consulted as a **fallback** (after local /
+    /// builtin / record-registry lookups) in:
+    /// - `resolve_named_type_ref`: type-annotation position (`fn f(x: Tag)`).
+    /// - `lookup_variant_ctor`: `Tag::Variant` enum-constructor paths.
+    ///
+    /// Per-module keying prevents a same-named alias from a different imported
+    /// module from hijacking the lookup (last-write-wins flat map defect).
+    /// The fallback position ensures a local `type U` shadows an import alias
+    /// `import m::{ Payload as U }` (local-shadows-imported rule).
+    import_type_name_aliases: HashMap<(Option<String>, String), String>,
 }
 
 /// True when `ty` is — or transitively carries through generic args, tuples,
@@ -4963,6 +5016,8 @@ impl LowerCtx {
             opaque_type_short_names: HashSet::new(),
             non_opaque_type_short_names: HashSet::new(),
             current_module_idx: 0,
+            current_module_name: None,
+            import_type_name_aliases: tc_output.import_type_name_aliases.clone(),
         }
     }
 
@@ -11442,11 +11497,24 @@ impl LowerCtx {
                 // Bare `loop { body }` — lowered to a HIR `Loop` expression so
                 // MIR can build the body/exit CFG shape with an unconditional
                 // back-edge and a `break`-targeted exit block.
+                //
+                // Type rule: if no `break` statement can reach this loop's exit
+                // (break-less infinite loop), the expression never produces a
+                // value — its type is `Never`.  If at least one `break` exists,
+                // control can exit normally and the type is `Unit`.  This allows
+                // a break-less loop in if/match branch position to unify with
+                // the other branch's type instead of forcing the whole
+                // expression to `Unit`.
+                let loop_ty = if hew_parser::loop_body_has_break(body, label.as_deref()) {
+                    ResolvedTy::Unit
+                } else {
+                    ResolvedTy::Never
+                };
                 let body_block = self.lower_block(body, &ResolvedTy::Unit);
                 let loop_expr = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
-                    ty: ResolvedTy::Unit,
+                    ty: loop_ty,
                     value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
                     kind: HirExprKind::Loop {
@@ -16491,6 +16559,32 @@ impl LowerCtx {
                 .as_deref()
                 .and_then(|q| self.machine_ctor_registry.get(q).cloned())
         });
+        // Import-alias fallback: `Hue::Red` where "Hue" is an alias for
+        // "aliassrc.Color".  Resolve the prefix through `import_type_name_aliases`
+        // and retry with the canonical qualified key ("aliassrc.Color::Red").
+        let registry_hit = if registry_hit.is_none() {
+            if let Some(sep) = name.rfind("::") {
+                let prefix = &name[..sep];
+                let variant_part = &name[sep + 2..];
+                let canonical = self
+                    .import_type_name_aliases
+                    .get(&(self.current_module_name.clone(), prefix.to_string()))
+                    .cloned();
+                if let Some(canonical) = canonical {
+                    let canonical_key = format!("{canonical}::{variant_part}");
+                    self.machine_ctor_registry
+                        .get(&canonical_key)
+                        .cloned()
+                        .or(registry_hit)
+                } else {
+                    registry_hit
+                }
+            } else {
+                registry_hit
+            }
+        } else {
+            registry_hit
+        };
         if let Some((tagged_union_name, variant_idx)) = registry_hit {
             let checker_agrees = match self.expr_types.get(&key) {
                 None => true,
@@ -16772,6 +16866,19 @@ impl LowerCtx {
             // over the bare last-write-wins entry once MIR keys by it. A bare
             // reference (single-module program) keeps its short name unchanged.
             ResolvedTy::named_user(name.to_string(), args)
+        } else if let Some(canonical) = self
+            .import_type_name_aliases
+            .get(&(self.current_module_name.clone(), name.to_string()))
+            .cloned()
+        {
+            // Import-alias fallback: `Tag` from `import aliassrc::{ Payload as Tag }`
+            // resolves to `aliassrc.Payload`.  Applied AFTER all local /
+            // builtin / record-registry / source-type lookups so a locally-
+            // declared `type Tag` shadows the alias (local-shadows-imported rule).
+            // The canonical name (e.g., "aliassrc.Payload") contains a dot, so
+            // the recursive call takes the module-qualified branch above and
+            // produces the right `ResolvedTy::Named { name: "aliassrc.Payload" }`.
+            self.resolve_named_type_ref(&canonical, args)
         } else {
             ResolvedTy::named_user(type_name.to_string(), args)
         }
@@ -19460,10 +19567,32 @@ impl LowerCtx {
     /// an enum which somehow has no recorded variant at that index (should
     /// never happen — same-source ordering invariant).
     fn lookup_variant_ctor(&self, name: &str) -> Option<(String, usize, &HirVariantKind)> {
-        let (type_name, idx) = self.machine_ctor_registry.get(name)?;
-        let variants = self.enum_variants_by_name.get(type_name)?;
-        let variant = variants.get(*idx)?;
-        Some((type_name.clone(), *idx, &variant.kind))
+        // Direct lookup first.
+        if let Some((type_name, idx)) = self.machine_ctor_registry.get(name) {
+            let variants = self.enum_variants_by_name.get(type_name)?;
+            let variant = variants.get(*idx)?;
+            return Some((type_name.clone(), *idx, &variant.kind));
+        }
+        // Import-alias fallback: `Geo::Box` where "Geo" is an alias for
+        // "shapes.Shape".  The `machine_ctor_registry` has "shapes.Shape::Box"
+        // but not "Geo::Box".  Resolve the prefix through the alias table and
+        // retry with the canonical qualified key.
+        if let Some(sep) = name.find("::") {
+            let prefix = &name[..sep];
+            let variant_suffix = &name[sep..]; // includes the "::"
+            if let Some(canonical_prefix) = self
+                .import_type_name_aliases
+                .get(&(self.current_module_name.clone(), prefix.to_string()))
+            {
+                let canonical_key = format!("{canonical_prefix}{variant_suffix}");
+                if let Some((type_name, idx)) = self.machine_ctor_registry.get(&canonical_key) {
+                    let variants = self.enum_variants_by_name.get(type_name)?;
+                    let variant = variants.get(*idx)?;
+                    return Some((type_name.clone(), *idx, &variant.kind));
+                }
+            }
+        }
+        None
     }
 
     fn resolved_option_inner(ty: &ResolvedTy) -> Option<&ResolvedTy> {

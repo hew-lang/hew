@@ -1,0 +1,34 @@
+// Reject fixture: a loop with a reachable `break` is NOT Never-typed.
+//
+// B1 soundness check.  A sound break-detection walker must return `true`
+// (has break) for every loop that contains a reachable break, regardless of
+// how deeply the break is nested inside block-bearing expression forms.  If
+// any form is missed (e.g. `unsafe { break; }` falling through to `_ => false`)
+// the loop is falsely typed Never, causing the surrounding if/match to elide
+// the loop branch and accept an i64/Unit type mismatch without a diagnostic.
+//
+// Each case pairs `if c { 5 }` (i64) with a loop that HAS a reachable break.
+// Because the loop is Unit (not Never), the if branches diverge in type and
+// compilation must fail.
+
+// Case 1: break inside `unsafe { }` block — the primary B1 repro.
+fn case_unsafe(c: bool) -> i64 {
+    let x: i64 = if c { 5 } else { loop { unsafe { break; } } };
+    x
+}
+
+// Case 2: break inside an explicit if-branch inside the loop.
+fn case_if_break(c: bool) -> i64 {
+    let x: i64 = if c { 5 } else { loop { if c { break; } } };
+    x
+}
+
+// Case 3: plain break — simplest breakable loop.
+fn case_plain_break(c: bool) -> i64 {
+    let x: i64 = if c { 5 } else { loop { break; } };
+    x
+}
+
+fn main() {
+    println(case_unsafe(true));
+}

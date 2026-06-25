@@ -1,0 +1,25 @@
+// Aliased import alias resolves in type-decl MEMBER positions used INSIDE a
+// depth-2 package module (#2202) -- the regression guard for the per-module
+// alias-key agreement between the checker and HIR member-lowering.
+//
+// `hew::aliasmember` (dotted path `hew.aliasmember`, depth >= 2) does
+// `import hew::aliassrc::{ Payload as Tag }` and uses `Tag` as a record field
+// (`DeepBoxed { item: Tag }`) and an enum-variant payload (`DeepWrap::Has(Tag)`).
+// Its `member_score()` constructs and reads both.
+//
+// The checker keys the per-module alias map by the importer's FULL dotted path
+// (`hew.aliasmember`); HIR member-lowering must use the SAME key. If HIR keyed
+// by the short last segment (`aliasmember`), the depth-2 importer's aliased
+// members would be missed during lowering and freeze as the bare `Tag`, then
+// fail closed at the MIR boundary (`unknown type Tag`). A depth-1 importer
+// cannot catch this -- short and full keys coincide at the root.
+//
+// `member_score()` = DeepBoxed.item.code (20) + DeepWrap::Has payload (13) = 33.
+//
+// Harness verb: hew run
+// Expected: 33 -- both depth-2 member positions resolved end-to-end.
+import hew::aliasmember;
+
+fn main() {
+    println(aliasmember.member_score());
+}

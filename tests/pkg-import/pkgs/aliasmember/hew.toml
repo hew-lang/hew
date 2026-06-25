@@ -1,0 +1,6 @@
+[package]
+name = "hew::aliasmember"
+version = "0.1.0"
+description = "Depth-2 importer that uses an imported type alias in type-decl MEMBER positions (record field, enum-variant payload, machine state field), exercising the per-module alias key agreement for member lowering (#2202)"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

@@ -1,0 +1,54 @@
+// Aliased import alias resolves in a type-declaration MACHINE-STATE-FIELD member
+// position (#2202).
+//
+// `hew::aliassrc` exports a record `Payload`. The importer opts it in under the
+// alias `Tag` (`import hew::aliassrc::{ Payload as Tag }`) and uses the alias as
+// a machine state's field type: `state Full { item: Tag }`.
+//
+// Machine state-field types are resolved in Pass 1 (`collect_types`), before
+// imports are processed, so the bare alias `Tag` used to freeze unresolved while
+// transition bodies constructing `Full { item: Tag { code: 40 } }` resolved to
+// `aliassrc.Payload`. The machine's state-variant table is re-resolved after
+// imports so:
+//   * the transition body reads the aliased field (`self.item.code + 2`), which
+//     only type-checks if `item` is `aliassrc.Payload` (it has `.code`), and
+//   * matching the machine value externally binds the payload
+//     (`Holder::Full { item } => item.code`) and reads it back.
+//
+// Harness verb: hew run
+// Expected: the code carried in the aliased state field after two steps.
+import hew::aliassrc::{ Payload as Tag };
+
+machine Holder {
+    events {
+        Fill;
+        Bump;
+    }
+
+    state Vacant;
+    state Full { item: Tag; }
+
+    on Fill: Vacant => Full {
+        Full { item: Tag { code: 40 } }
+    }
+    on Bump: Full => Full reenter {
+        Full { item: Tag { code: self.item.code + 2 } }
+    }
+    on Fill: Full => Full reenter {
+        Full { item: Tag { code: self.item.code } }
+    }
+    on Bump: Vacant => Vacant reenter {
+        Vacant
+    }
+}
+
+fn main() {
+    var h = Holder::Vacant;
+    h.step(Fill);
+    h.step(Bump);
+    let code = match h {
+        Holder::Full { item } => item.code,
+        Holder::Vacant => 0,
+    };
+    println(code);
+}

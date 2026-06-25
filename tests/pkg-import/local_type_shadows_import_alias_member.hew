@@ -1,0 +1,31 @@
+// Control: a LOCAL type shadows an import alias of the same bare name in a
+// type-decl MEMBER position (#2202 must preserve the project shadowing rule:
+// an unqualified name binds the user's LOCAL type, not the imported one).
+//
+// `import hew::aliassrc::{ Payload as Tag }` brings the alias `Tag` ->
+// `aliassrc.Payload` (whose field is `code`). A LOCAL `type Tag { local: i64 }`
+// is then declared. The unqualified member type in `type Boxed { item: Tag }`
+// must bind the LOCAL `Tag` (field `local`), NOT the imported alias.
+//
+// The re-resolution pass seeds each scope's OWN type names before consulting
+// the import alias map, and `published_bare_type_qualified` returns None when
+// the name is locally defined -- so the local `Tag` shadows the alias. If the
+// pass wrongly upgraded the member to `aliassrc.Payload`, then `Tag { local: 9 }`
+// would be rejected (no field `local`) and `b.item.local` would not resolve.
+//
+// Harness verb: hew run
+// Expected: 9 -- the local `Tag` (field `local`) wins over the import alias.
+import hew::aliassrc::{ Payload as Tag };
+
+type Tag {
+    local: i64;
+}
+
+type Boxed {
+    item: Tag;
+}
+
+fn main() {
+    let b = Boxed { item: Tag { local: 9 } };
+    println(b.item.local);
+}

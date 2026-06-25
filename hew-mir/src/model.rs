@@ -3449,6 +3449,33 @@ pub enum Instr {
         src: Place,
         record_name: String,
     },
+    /// Deep-clone a user enum via `__hew_enum_clone_inplace_<E>`.
+    ///
+    /// The enum twin of [`Instr::RecordCloneInplace`]. `dest` is the
+    /// freshly-alloc'd destination Place (same tagged-union type as `src`).
+    /// Codegen emits the identical three-step protocol, differing only in the
+    /// synthesised helper symbol:
+    ///   1. `memcpy(dst_ptr, src_ptr, sizeof(E))` — copies the tag and the
+    ///      inactive/`BitCopy` payload bytes; owned-heap payload pointers in
+    ///      the active variant are byte-aliased.
+    ///   2. `i32 rc = __hew_enum_clone_inplace_<E>(src_ptr, dst_ptr)` —
+    ///      tag-dispatches and overwrites only the active variant's owned-heap
+    ///      payload fields in `dst` with deep clones; on failure rolls back.
+    ///   3. Trap on `rc != 0` (fail-closed; no partial clone surviving).
+    ///
+    /// `enum_name` is the monomorphised tagged-union layout key (the bare name
+    /// for a monomorphic enum, the mangled `Maybe$$i64` for a generic
+    /// instantiation), used to build the thunk symbol and index the layout. The
+    /// matching `__hew_enum_drop_inplace_<E>` is synthesised as a unit with the
+    /// clone helper (clone/drop seeded together per key), so the scope-exit drop
+    /// of `dest` stays symmetric with the clone — no leak, no double-free.
+    ///
+    /// WASM-TODO(#2050): not yet lowered in sandbox emitter (as `RecordCloneInplace`).
+    EnumCloneInplace {
+        dest: Place,
+        src: Place,
+        enum_name: String,
+    },
     /// `dest = <src>` — load `src`, store into `dest`.
     Move { dest: Place, src: Place },
     /// Explicit checker-admitted numeric `as` cast.

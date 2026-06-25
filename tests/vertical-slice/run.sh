@@ -2991,6 +2991,17 @@ if "${HEW}" check \
 fi
 grep -q 'contains an opaque field' "${reject_output}"
 
+# Enum twin: `clone <enum>` on an enum whose variant payload is an opaque handle
+# must be rejected too — the admissibility opaque walk recurses into enum
+# variant payloads (`unclonable-leaf-fails-closed-transitively`).
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/enum_clone_unclonable_payload.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected enum_clone_unclonable_payload fixture to fail" >&2
+  exit 1
+fi
+grep -q 'contains an opaque field' "${reject_output}"
+
 # ---------------------------------------------------------------------------
 # let-destructure: record/struct product-type irrefutable patterns
 # ---------------------------------------------------------------------------

@@ -5,6 +5,10 @@ fn allocation_workload(iterations: usize) -> usize {
     let mut total = 0;
     for i in 0..iterations {
         let mut v = Vec::with_capacity(32);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "bench uses wrapping byte pattern; truncation is intentional"
+        )]
         v.push(i as u8);
         total += v.len();
     }

@@ -529,6 +529,7 @@ stable = [
   "hew_string_equals",
   "hew_string_find",
   "hew_string_from_char",
+  "hew_string_hash_fnv1a",
   "hew_string_index",
   "hew_string_index_of",
   "hew_string_index_of_start",

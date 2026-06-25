@@ -1,0 +1,22 @@
+// Accept fixture: HashSet of a record with a `string` field.
+//
+// A HashSet over a managed record element shares the same key eligibility and
+// the same structural hash + owned-key drop discipline as a HashMap key. This
+// pins dedupe (equal-by-fields elements collapse to one slot) and membership
+// (contains is true for an equal-by-value probe, false for a distinct one).
+
+record Tag { name: string, kind: i64 }
+
+fn main() -> i64 {
+    let s: HashSet<Tag> = HashSet::new();
+    s.insert(Tag { name: "red", kind: 1 });
+    s.insert(Tag { name: "red", kind: 1 });   // duplicate => no new slot
+    s.insert(Tag { name: "blue", kind: 2 });
+    s.insert(Tag { name: "red", kind: 9 });   // same name, different kind => distinct
+
+    if s.len() != 3 { return 30; }
+    if !s.contains(Tag { name: "red", kind: 1 }) { return 31; }
+    if !s.contains(Tag { name: "red", kind: 9 }) { return 32; }
+    if s.contains(Tag { name: "green", kind: 1 }) { return 33; }
+    0
+}

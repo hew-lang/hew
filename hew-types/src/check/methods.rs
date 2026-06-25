@@ -272,9 +272,10 @@ impl CollectionTyCx {
 }
 
 impl Checker {
-    /// Stdlib modules that have no wasm32 runtime support.  Any call
-    /// expression or value-position reference to a function in one of these
-    /// modules is rejected with a `PlatformLimitation` diagnostic when
+    /// Stdlib modules that have no wasm32 runtime support, together with the
+    /// [`WasmUnsupportedFeature`] variant used in the rejection diagnostic.
+    /// Any call expression or value-position reference to a function in one of
+    /// these modules is rejected with a `PlatformLimitation` error when
     /// targeting wasm32.
     ///
     /// `crypto.random_bytes` is handled separately (it is a single function
@@ -282,9 +283,15 @@ impl Checker {
     /// this table.
     ///
     /// Both the call-form guard (`check_method_call`) and the value-position
-    /// guard (`check_field_access`) iterate this slice via
-    /// `Self::NATIVE_ONLY_WASM_MODULE_REJECTIONS` so the two paths cannot
-    /// drift out of sync.
+    /// guard (`check_field_access`) iterate this slice, so neither path can
+    /// silently miss a module the other rejects.
+    ///
+    /// **The module short-names in this table must exactly match
+    /// [`crate::NATIVE_ONLY_WASM_MODULES`]** (the public API const consumed by
+    /// `hew-sandbox-wasm`'s profile gate).  The test
+    /// `wasm_rejects::native_only_wasm_modules_const_matches_rejection_table`
+    /// enforces parity between the two at test time; update both together when
+    /// the native-only module set changes.
     pub(super) const NATIVE_ONLY_WASM_MODULE_REJECTIONS: &'static [(
         &'static str,
         WasmUnsupportedFeature,

@@ -704,7 +704,52 @@ impl<'a> ProfileChecker<'a> {
                     }
                 }
             }
-            Expr::FieldAccess { object, .. } => self.check_expr(object),
+            Expr::FieldAccess { object, field } => {
+                // Value-position references to native-only stdlib functions must
+                // produce a named PlatformLimitation rejection — the same diagnostic
+                // the call form emits (Expr::MethodCall above).
+                //
+                // Guard: a FieldAccess fires on a *module name* only when the
+                // type checker did NOT record a type for the object expression.
+                // The type checker's check_field_access early-returns for module
+                // identifiers without calling synthesize(object), so their spans
+                // are absent from expr_types.  For local let-bindings and function
+                // parameters (even ones whose name collides with a native-only
+                // module short-name such as `net` or `stream`), synthesize(object)
+                // IS called and the type IS recorded — so ty_for_expr returns Some
+                // and this guard does not fire.  This is the correct scoping that
+                // prevents the over-reject bug.
+                if let Expr::Identifier(name) = &object.0 {
+                    if self.ty_for_expr(object).is_none() {
+                        // crypto.random_bytes: native-only secure-entropy source.
+                        if name == "crypto" && field == "random_bytes" {
+                            self.reject(
+                                span.clone(),
+                                "PlatformLimitation",
+                                "`crypto.random_bytes` is not available in the browser sandbox: \
+                                 secure entropy requires a native entropy source absent from the \
+                                 wasm32 link set",
+                            );
+                            return;
+                        }
+                        // Native-only stdlib modules: any value-position field access
+                        // on these module short-names must fail-closed.  Module set is
+                        // the single authoritative constant from hew_types — no drift.
+                        if hew_types::NATIVE_ONLY_WASM_MODULES.contains(&name.as_str()) {
+                            self.reject(
+                                span.clone(),
+                                "PlatformLimitation",
+                                format!(
+                                    "`{name}` is a native-only stdlib module that is not \
+                                     available in the browser sandbox"
+                                ),
+                            );
+                            return;
+                        }
+                    }
+                }
+                self.check_expr(object);
+            }
             Expr::Index { object, index } => {
                 self.check_expr(object);
                 self.check_expr(index);

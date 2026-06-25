@@ -2485,6 +2485,13 @@ expect_check_fail_contains \
   "no map value clone_fn" \
   "hashmap_get_unclonable_opaque_value"
 
+# `m.clone()` deep-clones every value blob, so a value with no map value
+# clone_fn must fail closed at the same admission seam as `get`.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/hashmap_clone_unclonable_opaque_value.hew" \
+  "no map value clone_fn" \
+  "hashmap_clone_unclonable_opaque_value"
+
 # ---------------------------------------------------------------------------
 # NEW-6b — `await … | after d` deadlines on suspendable actor asks
 # ---------------------------------------------------------------------------
@@ -2987,6 +2994,17 @@ if "${HEW}" check \
     "${ROOT}/tests/vertical-slice/reject/generic_record_clone_opaque_leaf.hew" \
     >"${reject_output}" 2>&1; then
   echo "expected generic_record_clone_opaque_leaf fixture to fail" >&2
+  exit 1
+fi
+grep -q 'contains an opaque field' "${reject_output}"
+
+# Enum twin: `clone <enum>` on an enum whose variant payload is an opaque handle
+# must be rejected too — the admissibility opaque walk recurses into enum
+# variant payloads (`unclonable-leaf-fails-closed-transitively`).
+if "${HEW}" check \
+    "${ROOT}/tests/vertical-slice/reject/enum_clone_unclonable_payload.hew" \
+    >"${reject_output}" 2>&1; then
+  echo "expected enum_clone_unclonable_payload fixture to fail" >&2
   exit 1
 fi
 grep -q 'contains an opaque field' "${reject_output}"

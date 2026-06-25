@@ -1,0 +1,34 @@
+// Reject fixture: enum_clone_unclonable_payload — an enum whose variant
+// payload is an `#[opaque]` runtime handle must fail closed when cloned.
+//
+// The enum twin of record_clone_unclonable_field. Opaque handles are
+// pointer-width values managed by the runtime; a shallow copy would alias the
+// original handle so both the source and the clone point at the same runtime
+// resource, and freeing one dangles the other. The checker's admissibility
+// walk recurses into enum variant payloads, so `clone` on any enum whose
+// variants (or their transitive payloads) include an opaque handle is refused
+// (`unclonable-leaf-fails-closed-transitively`).
+//
+// Harness verb: hew check
+// Expected: rejected with an error mentioning the opaque payload type name
+// ("contains an opaque field").
+
+#[opaque]
+type Handle {}
+
+extern "C" {
+    fn hew_handle_create() -> Handle;
+    fn hew_handle_free(h: Handle);
+}
+
+enum Resource {
+    Live(Handle);
+    Dead
+}
+
+fn main() -> i64 {
+    let r = Resource::Live(unsafe { hew_handle_create() });
+    let _ = clone r;
+    unsafe { hew_handle_free(hew_handle_create()) };
+    0
+}

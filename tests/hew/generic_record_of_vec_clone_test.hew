@@ -1,11 +1,16 @@
-//! FAILABLE (tracked NYI): cloning a generic record whose field is `Vec<T>` is
-//! blocked by an ORTHOGONAL, pre-existing gap — the element type `T` has no
-//! known ValueClass at the MIR boundary (`E_MIR: unknown type T`). This is
-//! independent of the per-mono clone/drop synthesis for generic records (a generic
-//! record with scalar / string / nested-record fields clones correctly); it is
-//! the generic-record `Vec<T>`-field surface, tracked as a follow-on. Registered
-//! in scripts/hew-suite-expected-failures.txt; the ratchet flips to an
-//! unexpected-pass the instant the MIR-boundary gap is closed.
+//! Cloning a generic record whose field is `Vec<T>` — regression guard.
+//!
+//! `Bag { items: Vec::new() }` constructs a generic record whose `items` field
+//! type (`Vec<T>`) CONTAINS the type parameter without being the bare parameter.
+//! Inference now seeds that parameter from the field initializer, so the
+//! construction monomorphises to `Bag<i64>` (previously the initializer kept the
+//! raw `Vec<T>` and tripped `E_MIR: unknown type T` at the MIR boundary). The
+//! deep clone of the monomorphised record duplicates the `Vec` field into an
+//! INDEPENDENT buffer: mutating the source after the clone leaves the clone
+//! untouched, and both owners drop their buffer without a double-free.
+//!
+//! Was a tracked NYI; promoted to a positive guard when generic record-literal
+//! inference for contained type parameters landed.
 
 import std::testing;
 
@@ -15,6 +20,25 @@ type Bag<T> { items: Vec<T>; }
 fn test_generic_record_of_vec_clone() {
     let b = Bag { items: Vec::new() };
     b.items.push(7);
+    b.items.push(8);
     let c = clone b;
-    testing.assert_eq(c.items.len(), 1);
+    // Mutate the source AFTER cloning: a shallow (aliased) clone would observe
+    // this push. The clone must keep its own two-element buffer.
+    b.items.push(9);
+    testing.assert_eq(c.items.len(), 2);
+    testing.assert_eq(b.items.len(), 3);
 }
+
+#[test]
+fn test_generic_record_of_vec_clone_owned_payload() {
+    // Owned-heap element type (`string`): the clone retains INDEPENDENT element
+    // buffers. Both the source and the clone drop their strings at scope exit;
+    // an aliased buffer would double-free under a strict allocator.
+    let b = Bag { items: Vec::new() };
+    b.items.push("a heap allocated payload string xxxxxxxx");
+    let c = clone b;
+    b.items.push("second element yyyyyyyyyyyyyyyyyyyy");
+    testing.assert_eq(c.items.len(), 1);
+    testing.assert_eq(b.items.len(), 2);
+}
+

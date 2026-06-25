@@ -8443,6 +8443,33 @@ impl Builder {
             .map(|layout| layout.name.clone())
     }
 
+    /// Resolve the monomorphised tagged-union layout key for an enum `clone`
+    /// site, covering BOTH fieldless and payload-carrying enums (clone applies
+    /// to every enum kind, unlike the eq helpers which split the two). Mirrors
+    /// `payload_enum_layout_key_for_eq`'s key resolution but without the
+    /// payload filter: a generic instantiation (`Maybe<i64>`) resolves the
+    /// mangled `Maybe$$i64`, a monomorphic enum keeps its bare declared name.
+    /// `None` when `ty` is not a registered enum — the caller then falls
+    /// through to the record path (the two layout registries are disjoint, so a
+    /// `Some` here is authoritative).
+    fn enum_clone_layout_key(&self, ty: &ResolvedTy) -> Option<String> {
+        let ResolvedTy::Named { name, args, .. } = ty else {
+            return None;
+        };
+        let short = short_name(name);
+        let key = if args.is_empty() {
+            name.clone()
+        } else {
+            mangle_layout_key(short, args)
+        };
+        self.enum_layouts
+            .iter()
+            .find(|layout| {
+                layout.name == key || layout.name == *name || short_name(&layout.name) == short
+            })
+            .map(|layout| layout.name.clone())
+    }
+
     fn is_structural_eq_comparison(&self, lhs_ty: &ResolvedTy, rhs_ty: &ResolvedTy) -> bool {
         if let (Some(lhs_key), Some(rhs_key)) = (
             self.record_layout_key_for_eq(lhs_ty),
@@ -12820,6 +12847,115 @@ impl Builder {
             } => {
                 let src_place = self.lower_value(src)?;
                 let record_ty = self.subst_ty(&expr.ty);
+                // A clone of a bare type parameter
+                // (`fn f<T: Clone>(x: T) -> T { x.clone() }`) is admitted by the
+                // checker through the record-clone rewrite, but after
+                // monomorphisation the concrete `T` is frequently a NON-record
+                // value. The record-thunk protocol below only lowers user
+                // structs, so the concrete non-record monomorphisations are
+                // dispatched here by value class. Concrete user records and the
+                // abstract origin bucket — where `record_ty` is
+                // `ResolvedTy::TypeParam`, value-class `Unknown` — fall through
+                // to the byte-identical thunk path, so existing behaviour is
+                // unchanged.
+                //
+                // RecordCloneCall is only produced for a `Named { builtin: None }`
+                // receiver (a user record or a bare type parameter), so a
+                // concrete `string`/`Vec`/tuple `clone` never reaches these arms
+                // — only a type-parameter monomorphisation does.
+                //
+                // A `BitCopy` value (`i64`/`bool`/…, a `#[copy]` record)
+                // duplicates on every use, so the clone is the source place
+                // itself, exactly what the concrete scalar `CopyCloneNoop` path
+                // yields. No new owner is created, so no drop is owed.
+                if ValueClass::of_ty(&record_ty, &self.type_classes) == ValueClass::BitCopy {
+                    return Some(src_place);
+                }
+                // A `string` is a refcounted copy-on-write owner. `clone`
+                // produces an independent `+1` owner via `hew_string_clone` (a
+                // header-aware refcount bump). Emitting it as a `Terminator::Call`
+                // — the `hew_hashmap_get_clone_layout` pattern — seeds the dest as
+                // a `fresh_string_producer_term_dest`, so drop-elaboration adds
+                // the symmetric `hew_string_drop` in all three exit contexts
+                // (sync return, async cancel, actor shutdown). A plain read would
+                // alias the source at rc==1 and double-free when both are dropped
+                // (`by-value-heap-params-are-borrows` P0), so the explicit clone
+                // is load-bearing here.
+                if is_string_const_ty(&record_ty) {
+                    let dest = self.alloc_local(record_ty);
+                    let next = self.alloc_block();
+                    self.finish_current_block(Terminator::Call {
+                        callee: "hew_string_clone".to_string(),
+                        builtin: None,
+                        args: vec![src_place],
+                        dest: Some(dest),
+                        next,
+                    });
+                    self.start_block(next);
+                    return Some(dest);
+                }
+                // A type parameter that monomorphises to a builtin heap value
+                // (`Vec`/`HashMap`/`HashSet`/`bytes`/tuple/array) needs the
+                // owned-clone + element-drop machinery the concrete `clone` path
+                // drives from the checker. Synthesising it from a bare type
+                // parameter here would risk an unbalanced retain/drop, so fail
+                // closed loudly rather than admit a clone we cannot yet lower
+                // safely (`admit-only-what-you-lower`,
+                // `unclonable-leaf-fails-closed-transitively`). The generic
+                // record-of-`Vec` field surface is tracked under its own issue;
+                // generic enum clone is handled by the `EnumCloneInplace` arm
+                // below.
+                if matches!(
+                    record_ty,
+                    ResolvedTy::Bytes
+                        | ResolvedTy::Tuple(_)
+                        | ResolvedTy::Array(_, _)
+                        | ResolvedTy::Named {
+                            builtin: Some(
+                                BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet
+                            ),
+                            ..
+                        }
+                ) {
+                    self.diagnostics.push(MirDiagnostic {
+                        kind: MirDiagnosticKind::NotYetImplemented {
+                            construct: format!(
+                                "clone of a generic type parameter monomorphised to `{record_ty}` \
+                                 is not yet lowered; clone of a `Clone`-bound type parameter \
+                                 currently supports scalar, `string`, and user-record \
+                                 instantiations"
+                            ),
+                            site: expr.site,
+                        },
+                        note: "a type parameter that resolves to a Vec/HashMap/HashSet/bytes/\
+                               tuple/array clone is not yet synthesised from a bare parameter"
+                            .to_string(),
+                    });
+                    return None;
+                }
+                // An enum monomorphisation routes to the enum twin of the
+                // record thunk. `clone <enum>` — a top-level enum, or (defence
+                // in depth) a `Clone`-bound type parameter that monomorphises to
+                // one — lowers to `EnumCloneInplace`, keyed by the SAME
+                // monomorphised tagged-union layout the drop side keys
+                // (`Maybe$$i64` for a generic instantiation, the bare name for a
+                // monomorphic enum). Codegen emits the memcpy +
+                // `__hew_enum_clone_inplace_<E>` + trap protocol and seeds the
+                // clone/drop helper PAIR together, so the scope-exit drop of
+                // `dest` stays symmetric (no leak, no double-free).
+                // `enum_clone_layout_key` returns `Some` only for a registered
+                // enum; the record and enum layout registries are disjoint, so
+                // this never shadows a record clone, and a `TypeParam` (the
+                // abstract origin bucket) is not `Named` so it falls through.
+                if let Some(enum_key) = self.enum_clone_layout_key(&record_ty) {
+                    let dest = self.alloc_local(record_ty);
+                    self.instructions.push(Instr::EnumCloneInplace {
+                        dest,
+                        src: src_place,
+                        enum_name: enum_key,
+                    });
+                    return Some(dest);
+                }
                 // Key the clone thunk by the MONOMORPHISED record layout: a
                 // generic instantiation (`clone Pair<i64, i64>`) must resolve
                 // `__hew_record_clone_inplace_Pair$$i64$i64`, not the bare
@@ -27646,6 +27782,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
         Instr::GeneratorNext { dest, ctx, .. } => vec![*dest, *ctx],
         Instr::WireCodec { dest, operand, .. } => vec![*dest, *operand],
         Instr::RecordCloneInplace { dest, src, .. } => vec![*dest, *src],
+        Instr::EnumCloneInplace { dest, src, .. } => vec![*dest, *src],
         Instr::IntArithChecked {
             dest,
             lhs,
@@ -27958,6 +28095,8 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         // `RecordCloneInplace` reads `src` (borrows it; does not consume).
         // The original `src` binding stays live after the clone.
         Instr::RecordCloneInplace { src, .. } => vec![*src],
+        // `EnumCloneInplace` likewise borrows `src` (non-consuming read).
+        Instr::EnumCloneInplace { src, .. } => vec![*src],
         Instr::BoolNot { operand, .. }
         | Instr::FloatNeg { operand, .. }
         | Instr::IntBitNot { operand, .. }
@@ -28359,7 +28498,9 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::MachineStateName { .. }
         // RecordCloneInplace borrows src (non-consuming read); it does not
         // transfer ownership of any local out of the frame.
-        | Instr::RecordCloneInplace { .. } => false,
+        | Instr::RecordCloneInplace { .. }
+        // EnumCloneInplace has the same non-consuming-read semantics.
+        | Instr::EnumCloneInplace { .. } => false,
     }
 }
 
@@ -28611,7 +28752,10 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         // RecordCloneInplace allocates a fresh clone — its dest does NOT alias
         // the src or any parent aggregate field (the thunk overwrites heap
         // pointer fields in dst with independently-owned clones).
-        | Instr::RecordCloneInplace { .. } => None,
+        | Instr::RecordCloneInplace { .. }
+        // EnumCloneInplace allocates a fresh enum clone with the same
+        // non-aliasing guarantee (tag-dispatched payload deep-clone).
+        | Instr::EnumCloneInplace { .. } => None,
     }
 }
 

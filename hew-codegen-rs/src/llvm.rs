@@ -9051,6 +9051,51 @@ fn collect_record_clone_inplace_seeds(
     seeds
 }
 
+/// Collect the monomorphised tagged-union layout key of every `EnumCloneInplace`
+/// instruction in raw MIR so its `__hew_enum_clone_inplace_<key>` /
+/// `__hew_enum_drop_inplace_<key>` thunk PAIR is synthesised by
+/// `emit_state_clone_drop_synthesis`. The enum twin of
+/// `collect_record_clone_inplace_seeds`.
+///
+/// `clone <enum>` lowers to `EnumCloneInplace { enum_name, .. }`, where
+/// `enum_name` is the monomorphised layout key (the bare name for a monomorphic
+/// enum, the mangled `Maybe$$i64` for a generic instantiation — see
+/// `enum_clone_layout_key` in hew-mir). A generic enum whose every variant
+/// payload is `BitCopy` (`Maybe<i64>`) is cloned but never earns an
+/// `EnumInPlace` drop, so the drop-side seed (`collect_enum_inplace_drop_seeds`)
+/// does NOT cover it; seeding the clone site directly closes that gap. Because
+/// the synthesis loop emits the clone AND drop body together per key, the thunk
+/// pair stays symmetric — there is no clone without its matching drop (the leak
+/// / double-free hazard on unwind).
+///
+/// A seed is registered only when `enum_name` names a registered layout, so the
+/// key the synthesis pass emits a body under is exactly the key the clone call
+/// resolves; a `enum_name` with no registered layout is left unseeded and fails
+/// closed loudly at LLVM verify rather than silently aliasing.
+fn collect_enum_clone_inplace_seeds(
+    raw_mir: &[RawMirFunction],
+    enum_layouts: &[EnumLayout],
+) -> Vec<String> {
+    let mut seeds: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for func in raw_mir {
+        for block in &func.blocks {
+            for instr in &block.instructions {
+                let Instr::EnumCloneInplace { enum_name, .. } = instr else {
+                    continue;
+                };
+                if !enum_layouts.iter().any(|el| el.name == *enum_name) {
+                    continue;
+                }
+                if seen.insert(enum_name.clone()) {
+                    seeds.push(enum_name.clone());
+                }
+            }
+        }
+    }
+    seeds
+}
+
 /// D2 / W3.031 — collect the record/enum layout keys of every type that
 /// appears as a `dyn Trait` CONCRETE so its
 /// `__hew_{record,enum}_drop_inplace_<key>` body is synthesised before
@@ -12023,6 +12068,13 @@ fn lower_instruction(
             record_name,
         } => {
             lower_record_clone_inplace_instr(fn_ctx, *dest, *src, record_name)?;
+        }
+        Instr::EnumCloneInplace {
+            dest,
+            src,
+            enum_name,
+        } => {
+            lower_enum_clone_inplace_instr(fn_ctx, *dest, *src, enum_name)?;
         }
         Instr::ContextField { dest, offset } => {
             lower_context_field(fn_ctx, *dest, *offset)?;
@@ -15638,6 +15690,108 @@ fn lower_record_clone_inplace_instr<'ctx>(
     Ok(())
 }
 
+/// Lower `Instr::EnumCloneInplace { dest, src, enum_name }` — the enum twin of
+/// [`lower_record_clone_inplace_instr`]. Identical three-step protocol, differing
+/// only in the synthesised helper symbol (`__hew_enum_clone_inplace_<E>`):
+///   1. `memcpy(dest_ptr, src_ptr, abi_sizeof(E))` — copies the tag and the
+///      inactive/`BitCopy` payload bytes and byte-aliases the active variant's
+///      owned-heap payload pointers into `dest`.
+///   2. `i32 rc = __hew_enum_clone_inplace_<E>(src_ptr, dest_ptr)` — the
+///      synthesised thunk tag-dispatches and overwrites only the active
+///      variant's owned-heap payload fields in `dest` with independent deep
+///      clones; on partial failure it rolls back and returns non-zero.
+///   3. Trap (`llvm.trap`) on `rc != 0` — fail-closed; no partial clone survives.
+///
+/// `src` is the already-lowered source Place; `dest` is a freshly-alloc'd Place
+/// of the same enum tagged-union type. Both are stack pointers in the current
+/// function frame.
+fn lower_enum_clone_inplace_instr<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    dest: Place,
+    src: Place,
+    enum_name: &str,
+) -> CodegenResult<()> {
+    let ctx = fn_ctx.ctx;
+    let builder = &fn_ctx.builder;
+    let (src_ptr, src_ty) = place_pointer(fn_ctx, src)?;
+    let (dest_ptr, _) = place_pointer(fn_ctx, dest)?;
+
+    // Step 1: wholesale bitwise copy into dest.
+    // The ABI size gives the exact byte count including tagged-union padding.
+    let size_bytes = match src_ty {
+        BasicTypeEnum::StructType(st) => fn_ctx.target_data.get_abi_size(&st),
+        _ => {
+            return Err(CodegenError::FailClosed(format!(
+                "EnumCloneInplace: src place for enum `{enum_name}` has non-struct LLVM \
+                 type {src_ty:?}; expected the tagged-union StructType"
+            )));
+        }
+    };
+    let align = match src_ty {
+        BasicTypeEnum::StructType(st) => fn_ctx.target_data.get_abi_alignment(&st),
+        _ => unreachable!("checked above"),
+    };
+    let size_i64 = ctx.i64_type().const_int(size_bytes, false);
+    builder
+        .build_memcpy(dest_ptr, align, src_ptr, align, size_i64)
+        .llvm_ctx_with(|| format!("enum_clone_inplace memcpy {enum_name}"))?;
+
+    // Step 2: call the synthesised in-place clone thunk.
+    let clone_fn = get_or_declare_enum_clone_inplace(ctx, fn_ctx.llvm_mod, enum_name);
+    let call_site = builder
+        .build_call(
+            clone_fn,
+            &[src_ptr.into(), dest_ptr.into()],
+            &format!("enum_clone_{enum_name}"),
+        )
+        .llvm_ctx_with(|| format!("enum_clone_inplace call {enum_name}"))?;
+    let rc = call_site
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "EnumCloneInplace: clone thunk for `{enum_name}` returned void"
+            ))
+        })?
+        .into_int_value();
+
+    // Step 3: trap on non-zero return (fail-closed; the thunk already rolled back).
+    let i32_ty = ctx.i32_type();
+    let zero = i32_ty.const_int(0, false);
+    let failed = builder
+        .build_int_compare(
+            inkwell::IntPredicate::NE,
+            rc,
+            zero,
+            &format!("enum_clone_{enum_name}_failed"),
+        )
+        .llvm_ctx_with(|| format!("enum_clone_inplace NE cmp {enum_name}"))?;
+    let ok_bb = ctx.append_basic_block(
+        builder.get_insert_block().unwrap().get_parent().unwrap(),
+        "clone_ok",
+    );
+    let trap_bb = ctx.append_basic_block(
+        builder.get_insert_block().unwrap().get_parent().unwrap(),
+        "clone_trap",
+    );
+    builder
+        .build_conditional_branch(failed, trap_bb, ok_bb)
+        .llvm_ctx_with(|| format!("enum_clone_inplace branch {enum_name}"))?;
+    builder.position_at_end(trap_bb);
+    let trap_fn = inkwell::intrinsics::Intrinsic::find("llvm.trap")
+        .ok_or_else(|| CodegenError::FailClosed("llvm.trap intrinsic not found".into()))?
+        .get_declaration(fn_ctx.llvm_mod, &[])
+        .ok_or_else(|| CodegenError::FailClosed("llvm.trap declaration failed".into()))?;
+    builder
+        .build_call(trap_fn, &[], "trap")
+        .llvm_ctx_with(|| format!("enum_clone_inplace trap {enum_name}"))?;
+    builder
+        .build_unreachable()
+        .llvm_ctx_with(|| format!("enum_clone_inplace unreachable {enum_name}"))?;
+    builder.position_at_end(ok_bb);
+    Ok(())
+}
+
 /// pointer sits immediately BEFORE the address stored in the closure pair
 /// (`env_ptr - 8`), so `ClosureEnvFieldLoad` capture offsets are identical
 /// for stack and heap envs, and any drop site can recover the per-closure
@@ -17733,11 +17887,13 @@ fn is_hashmap_layout_runtime_symbol(symbol: &str) -> bool {
             | "hew_hashmap_len_layout"
             | "hew_hashmap_keys_layout"
             | "hew_hashmap_values_layout"
+            | "hew_hashmap_clone_layout"
             | "hew_hashset_insert_layout"
             | "hew_hashset_contains_layout"
             | "hew_hashset_remove_layout"
             | "hew_hashset_len_layout"
             | "hew_hashset_is_empty_layout"
+            | "hew_hashset_clone_layout"
     )
 }
 
@@ -17907,6 +18063,8 @@ fn layout_hashmap_fn_type<'ctx>(
         "hew_hashmap_keys_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // `*mut HewVec hew_hashmap_values_layout(map)`
         "hew_hashmap_values_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
+        // `*mut HewLayoutHashMap hew_hashmap_clone_layout(map)`
+        "hew_hashmap_clone_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // `bool hew_hashset_insert_layout(set, elem_ptr)`
         "hew_hashset_insert_layout" => Ok(i1_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
         // `bool hew_hashset_contains_layout(set, elem_ptr)`
@@ -17917,6 +18075,8 @@ fn layout_hashmap_fn_type<'ctx>(
         "hew_hashset_len_layout" => Ok(i64_ty.fn_type(&[ptr_ty.into()], false)),
         // `bool hew_hashset_is_empty_layout(set)`
         "hew_hashset_is_empty_layout" => Ok(i1_ty.fn_type(&[ptr_ty.into()], false)),
+        // `*mut HewLayoutHashSet hew_hashset_clone_layout(set)`
+        "hew_hashset_clone_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         _ => Err(CodegenError::FailClosed(format!(
             "not a layout HashMap/HashSet runtime symbol: {symbol}"
         ))),
@@ -19139,11 +19299,15 @@ fn lower_hashmap_layout_direct_call(
     let expected_arity: usize = match callee {
         "hew_hashmap_insert_layout" => 3,
         "hew_hashmap_contains_key_layout" | "hew_hashmap_remove_layout" => 2,
-        "hew_hashmap_len_layout" | "hew_hashmap_keys_layout" | "hew_hashmap_values_layout" => 1,
+        "hew_hashmap_len_layout"
+        | "hew_hashmap_keys_layout"
+        | "hew_hashmap_values_layout"
+        | "hew_hashmap_clone_layout" => 1,
         "hew_hashset_insert_layout"
         | "hew_hashset_contains_layout"
         | "hew_hashset_remove_layout" => 2,
         "hew_hashset_len_layout" | "hew_hashset_is_empty_layout" => 1,
+        "hew_hashset_clone_layout" => 1,
         _ => {
             return Err(CodegenError::FailClosed(format!(
                 "lower_hashmap_layout_direct_call called with non-layout symbol `{callee}`"
@@ -19318,6 +19482,31 @@ fn lower_hashmap_layout_direct_call(
                 .build_store(dest_ptr, vec_ptr)
                 .llvm_ctx("hew_hashmap_values_layout store")?;
         }
+        "hew_hashmap_clone_layout" => {
+            // `*mut HewLayoutHashMap hew_hashmap_clone_layout(map)` — returns a
+            // deep-cloned map; caller is the sole owner. The runtime duplicates
+            // every owned key/value blob via the descriptor clone discipline and
+            // fails closed on a missing clone thunk, so the result is an
+            // independent map that the dest's type-driven scope-exit drop frees
+            // exactly once (the `HASHMAP_FREE_LAYOUT_SYMBOL` half of the pair).
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_hashmap_clone_layout returns *mut map; call must supply a dest".into(),
+                )
+            })?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[map_ptr.into()], "hew_hashmap_clone_layout_call")
+                .llvm_ctx("hew_hashmap_clone_layout call")?;
+            let cloned_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_hashmap_clone_layout returned void".into())
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, cloned_ptr)
+                .llvm_ctx("hew_hashmap_clone_layout store")?;
+        }
         "hew_hashset_insert_layout" => {
             // `bool hew_hashset_insert_layout(set, elem_ptr)`.
             let (elem_ptr, _elem_ty) = place_pointer(fn_ctx, args[1])?;
@@ -19450,6 +19639,31 @@ fn lower_hashmap_layout_direct_call(
                 .builder
                 .build_store(dest_ptr, widened)
                 .llvm_ctx("hew_hashset_is_empty_layout store")?;
+        }
+        "hew_hashset_clone_layout" => {
+            // `*mut HewLayoutHashSet hew_hashset_clone_layout(set)` — returns a
+            // deep-cloned set (delegates to the map clone for the inner storage);
+            // caller is the sole owner. Elements are constrained to Plain/string
+            // by the same Hash+Eq admission as map keys, so the runtime's
+            // layout-managed abort is unreachable; the dest's type-driven
+            // scope-exit drop frees it once via `HASHSET_FREE_LAYOUT_SYMBOL`.
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_hashset_clone_layout returns *mut set; call must supply a dest".into(),
+                )
+            })?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[map_ptr.into()], "hew_hashset_clone_layout_call")
+                .llvm_ctx("hew_hashset_clone_layout call")?;
+            let cloned_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_hashset_clone_layout returned void".into())
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, cloned_ptr)
+                .llvm_ctx("hew_hashset_clone_layout store")?;
         }
         _ => unreachable!("matched above"),
     }
@@ -33053,6 +33267,18 @@ fn build_module_for_target<'ctx>(
     for seed in collect_record_clone_inplace_seeds(&pipeline.raw_mir, &pipeline.record_layouts) {
         if !vec_owned_record_seeds.contains(&seed) {
             vec_owned_record_seeds.push(seed);
+        }
+    }
+    // Generic/top-level enum-clone instantiations: `clone Maybe<i64>` lowers to
+    // an `EnumCloneInplace` keyed by the monomorphised tagged-union layout
+    // (`Maybe$$i64`). An all-`BitCopy`-payload enum is cloned but never earns an
+    // `EnumInPlace` drop, so the drop-side `collect_enum_inplace_drop_seeds`
+    // above does not cover it. Seed the clone site directly so the per-key
+    // clone/drop thunk PAIR is synthesised together (the enum twin of the
+    // record clone-site seed loop directly above).
+    for seed in collect_enum_clone_inplace_seeds(&pipeline.raw_mir, &pipeline.enum_layouts) {
+        if !enum_inplace_drop_seeds.contains(&seed) {
+            enum_inplace_drop_seeds.push(seed);
         }
     }
     emit_state_clone_drop_synthesis(

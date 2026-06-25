@@ -78,7 +78,19 @@ pub(super) enum RecordCloneAdmissibility {
     OpaqueField { opaque_name: String },
     /// The record has un-substituted generic type parameters; not yet supported.
     GenericRecord,
-    /// The named type is not a clone-eligible record kind (actor, machine, enum).
+    /// The receiver is a bare type parameter (`x: T`) carrying a `Clone` bound
+    /// (`fn f<T: Clone>(x: T)`). The clone is admitted and deferred to
+    /// monomorphization: MIR re-lowers the body per concrete instantiation,
+    /// `subst_ty(T)` resolves the concrete leaf, and the per-value-class clone
+    /// dispatch (`lower.rs` `RecordCloneCall`) emits the matching copy path.
+    /// No bare-name thunk is seeded — `T` names no monomorphic layout.
+    AbstractParamClone,
+    /// The receiver is a user enum, clone-eligible via the enum twin of the
+    /// record thunk (`__hew_enum_clone_inplace_<E>`). `enum_name` is the bare
+    /// declared name; MIR keys the synthesised helper by the monomorphised
+    /// tagged-union layout (`Maybe$$i64` for a generic instantiation).
+    EnumClone { enum_name: String },
+    /// The named type is not a clone-eligible record kind (actor, machine).
     NotARecord,
 }
 
@@ -2465,7 +2477,7 @@ impl Checker {
                             TypeErrorKind::UndefinedMethod,
                             span,
                             format!(
-                                "record `{name}` contains an opaque field `{opaque_name}` \
+                                "type `{name}` contains an opaque field `{opaque_name}` \
                                  and cannot be cloned"
                             ),
                         );
@@ -2482,9 +2494,45 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
+                    RecordCloneAdmissibility::AbstractParamClone => {
+                        // Bare type param `x: T` with `T: Clone`. Record the
+                        // clone rewrite but DO NOT seed `user_clone_record_seeds`
+                        // — `T` names no monomorphic record layout; codegen
+                        // would synthesise a dead `__hew_record_clone_inplace_T`.
+                        // The concrete copy path is selected per-mono in MIR
+                        // (`subst_ty(T)` → value-class dispatch).
+                        let param_ty = receiver_ty.clone();
+                        self.record_method_call_rewrite(
+                            span,
+                            MethodCallRewrite::RecordCloneInplace {
+                                record_name: name.clone(),
+                            },
+                        );
+                        return param_ty;
+                    }
+                    RecordCloneAdmissibility::EnumClone { enum_name } => {
+                        // A user enum routes through the SAME rewrite + HIR node
+                        // as a record clone; MIR demuxes record-vs-enum by the
+                        // resolved monomorphised layout (`enum_clone_layout_key`)
+                        // and emits `EnumCloneInplace`, lowered to
+                        // `__hew_enum_clone_inplace_<E>`. No bare-name seed: the
+                        // enum clone-site is seeded from the `EnumCloneInplace`
+                        // walk in codegen (`collect_enum_clone_inplace_seeds`),
+                        // keyed by the monomorphised layout, so a generic
+                        // instantiation never registers a dead bare key.
+                        let enum_ty = receiver_ty.clone();
+                        self.record_method_call_rewrite(
+                            span,
+                            MethodCallRewrite::RecordCloneInplace {
+                                record_name: enum_name,
+                            },
+                        );
+                        return enum_ty;
+                    }
                     RecordCloneAdmissibility::NotARecord => {
-                        // Fall through to `UndefinedMethod` below for non-record Named types
-                        // (actors, machines, enums, etc.).
+                        // Fall through to `UndefinedMethod` below for non-record
+                        // Named types (actors, machines, etc.); enums are
+                        // handled by the `EnumClone` arm above.
                     }
                 }
             }
@@ -2593,7 +2641,7 @@ impl Checker {
     }
 
     /// Decide whether a user-defined `Ty::Named` record type is admissible for
-    /// `clone`. Returns one of four outcomes:
+    /// `clone`. Returns one of the following outcomes:
     ///
     /// - `Admissible`: the record can be cloned end-to-end via the synthesised
     ///   `__hew_record_clone_inplace_<R>` thunk.
@@ -2601,8 +2649,10 @@ impl Checker {
     ///   field) contains an opaque handle — fail closed with a named diagnostic.
     /// - `GenericRecord`: the record has un-substituted generic type parameters
     ///   — not yet supported; fail closed with an NYI diagnostic.
-    /// - `NotARecord`: not a clone-eligible named type (actor, machine, enum,
-    ///   etc.) — fall through to `UndefinedMethod`.
+    /// - `EnumClone { enum_name }`: the receiver is a user enum — clone via the
+    ///   enum twin `__hew_enum_clone_inplace_<E>` (tag-dispatched payload clone).
+    /// - `NotARecord`: not a clone-eligible named type (actor, machine, etc.) —
+    ///   fall through to `UndefinedMethod`.
     ///
     /// LESSONS: `checker-authority` (sole authority for clone admissibility),
     /// `unclonable-leaf-fails-closed-transitively`, `admit-only-what-you-lower`.
@@ -2612,10 +2662,49 @@ impl Checker {
         type_args: &[Ty],
         _span: &Span,
     ) -> RecordCloneAdmissibility {
-        use TypeDefKind::{Record, Struct};
+        use TypeDefKind::{Enum, Record, Struct};
         let Some(type_def) = self.type_defs.get(name) else {
+            // A bare type parameter (`x: T`) has no `type_defs` entry. When it
+            // carries a `Clone` bound in scope (`fn f<T: Clone>(x: T)`), admit
+            // the clone and defer the concrete copy path to monomorphization
+            // (`AbstractParamClone`). This is the abstract-`T: Clone` spine
+            // (mirrors `type_param_has_marker_bound` as used by abstract-key
+            // HashMap dispatch). Without the bound, fall through to `NotARecord`
+            // → `UndefinedMethod` (fail closed — `admit-only-what-you-lower`).
+            if self.is_type_param_in_scope(name)
+                && self.type_param_has_marker_bound(name, MarkerTrait::Clone)
+            {
+                return RecordCloneAdmissibility::AbstractParamClone;
+            }
             return RecordCloneAdmissibility::NotARecord;
         };
+        // An enum is clone-eligible via the enum twin of the record thunk. It is
+        // checked BEFORE the Record/Struct gate because the two paths diverge:
+        // an enum's owned leaves live in variant payloads, not declared fields.
+        if matches!(type_def.kind, Enum) {
+            // A generic enum with still-unresolved type params (`Maybe<_>`) is
+            // not yet monomorphisable here — fail closed (NYI). A concrete
+            // instantiation (`Maybe<i64>`, args = [i64]) carries no `Ty::Var`
+            // and proceeds, exactly as the record arm below.
+            if !type_def.type_params.is_empty() && type_args.iter().any(|a| matches!(a, Ty::Var(_)))
+            {
+                return RecordCloneAdmissibility::GenericRecord;
+            }
+            // Fail closed on a transitively-reachable opaque payload — an
+            // unclonable leaf inside an enum variant must reject the whole
+            // clone, never silently shallow-copy a handle
+            // (`unclonable-leaf-fails-closed-transitively`).
+            if let Some(opaque_name) = self.enum_variant_contains_opaque(
+                name,
+                type_args,
+                &mut std::collections::HashSet::new(),
+            ) {
+                return RecordCloneAdmissibility::OpaqueField { opaque_name };
+            }
+            return RecordCloneAdmissibility::EnumClone {
+                enum_name: name.to_string(),
+            };
+        }
         // Only Record and Struct (value-type) kinds are clone-eligible.
         if !matches!(type_def.kind, Record | Struct) {
             return RecordCloneAdmissibility::NotARecord;
@@ -2676,6 +2765,50 @@ impl Checker {
         found
     }
 
+    /// Transitive, substitution-aware walk of a (possibly generic) enum's
+    /// variant payloads looking for an opaque-handle leaf — the enum twin of
+    /// [`Self::record_field_contains_opaque`]. Each variant payload type
+    /// (`Tuple` positional, `Struct` named) is instantiated with the concrete
+    /// clone-site `type_args` before recursing, so `Maybe<Handle>` resolves its
+    /// `Some(T)` payload to `Some(Handle)` and the opaque leaf is detected. A
+    /// monomorphic enum passes `type_args = []` (a no-op substitution). Returns
+    /// the first opaque payload-type name found, or `None` if clean. Shares the
+    /// `ty_field_contains_opaque` leaf classifier with the record walk, so the
+    /// two stay in lockstep.
+    fn enum_variant_contains_opaque(
+        &self,
+        name: &str,
+        type_args: &[Ty],
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> Option<String> {
+        if !visiting.insert(name.to_string()) {
+            return None; // cycle protection
+        }
+        let mut found = None;
+        if let Some(type_def) = self.type_defs.get(name) {
+            'variants: for variant in type_def.variants.values() {
+                let payload_tys: Vec<Ty> = match variant {
+                    VariantDef::Unit => Vec::new(),
+                    VariantDef::Tuple(tys) => tys.clone(),
+                    VariantDef::Struct(fields) => fields.iter().map(|(_, ty)| ty.clone()).collect(),
+                };
+                for payload_ty in &payload_tys {
+                    let payload_ty = Self::instantiate_type_def_member(
+                        payload_ty,
+                        &type_def.type_params,
+                        type_args,
+                    );
+                    if let Some(opaque) = self.ty_field_contains_opaque(&payload_ty, visiting) {
+                        found = Some(opaque);
+                        break 'variants;
+                    }
+                }
+            }
+        }
+        visiting.remove(name);
+        found
+    }
+
     fn ty_field_contains_opaque(
         &self,
         ty: &Ty,
@@ -2702,6 +2835,15 @@ impl Checker {
                 // Recurse into the type def's fields, substituting the def's
                 // params with the concrete `args` at this use site.
                 if let Some(n) = self.record_field_contains_opaque(name, args, visiting) {
+                    return Some(n);
+                }
+                // Recurse into enum variant payloads too — a nested enum with a
+                // hard-coded opaque payload (`enum Inner { B(Handle) }`) is
+                // reachable from neither the type-arg walk nor the record-field
+                // walk, so without this an outer clone would admit an
+                // unclonable leaf. (`record_field_contains_opaque` is a no-op
+                // for an enum, and vice-versa, so both calls are kind-safe.)
+                if let Some(n) = self.enum_variant_contains_opaque(name, args, visiting) {
                     return Some(n);
                 }
                 None
@@ -4028,7 +4170,14 @@ impl Checker {
                 }
                 if matches!(
                     method,
-                    "insert" | "get" | "remove" | "contains_key" | "len" | "keys" | "values"
+                    "insert"
+                        | "get"
+                        | "remove"
+                        | "contains_key"
+                        | "len"
+                        | "keys"
+                        | "values"
+                        | "clone"
                 ) {
                     self.record_resolved_hashmap_call(method, &cx.key, &cx.val, span);
                 }
@@ -4047,7 +4196,7 @@ impl Checker {
                 self.record_hashset_lowering_fact(span, &cx.elem);
                 if matches!(
                     method,
-                    "insert" | "contains" | "remove" | "len" | "is_empty"
+                    "insert" | "contains" | "remove" | "len" | "is_empty" | "clone"
                 ) {
                     self.record_resolved_hashset_call(method, &cx.elem, span);
                 }
@@ -7951,7 +8100,7 @@ impl Checker {
                                     TypeErrorKind::UndefinedMethod,
                                     span,
                                     format!(
-                                        "record `{name}` contains an opaque field \
+                                        "type `{name}` contains an opaque field \
                                          `{opaque_name}` and cannot be cloned"
                                     ),
                                 );
@@ -7967,6 +8116,32 @@ impl Checker {
                                     ),
                                 );
                                 return Ty::Error;
+                            }
+                            RecordCloneAdmissibility::AbstractParamClone => {
+                                // Bare type param `x: T` with `T: Clone`; defer
+                                // the concrete copy path to monomorphization. No
+                                // seed: `T` names no monomorphic record layout.
+                                self.record_method_call_rewrite(
+                                    span,
+                                    MethodCallRewrite::RecordCloneInplace {
+                                        record_name: name.clone(),
+                                    },
+                                );
+                                return resolved;
+                            }
+                            RecordCloneAdmissibility::EnumClone { enum_name } => {
+                                // User enum: same rewrite + HIR node as a record
+                                // clone; MIR demuxes by the resolved layout and
+                                // emits `EnumCloneInplace`. No bare-name seed —
+                                // codegen's `collect_enum_clone_inplace_seeds`
+                                // keys the per-mono helper.
+                                self.record_method_call_rewrite(
+                                    span,
+                                    MethodCallRewrite::RecordCloneInplace {
+                                        record_name: enum_name,
+                                    },
+                                );
+                                return resolved;
                             }
                             RecordCloneAdmissibility::NotARecord => {
                                 // Fall through to UndefinedMethod below.
@@ -8318,6 +8493,16 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                     consumes_receiver: false,
                 },
             ),
+            (
+                "clone".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashmap_clone_layout".to_string(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::Clone),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
         ],
     });
     registry.register(ImplDef {
@@ -8382,6 +8567,16 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 MethodTarget {
                     symbol_name: "hew_hashset_is_empty_layout".to_string(),
                     family: MethodTargetFamily::HashSet(HashSetMethod::IsEmpty),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
+                "clone".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashset_clone_layout".to_string(),
+                    family: MethodTargetFamily::HashSet(HashSetMethod::Clone),
                     abi: RuntimeAbi::ByRef,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,

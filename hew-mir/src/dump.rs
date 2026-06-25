@@ -705,6 +705,16 @@ fn render_instr(instr: &Instr) -> String {
             render_place(src),
             record_name
         ),
+        Instr::EnumCloneInplace {
+            dest,
+            src,
+            enum_name,
+        } => format!(
+            "{} = enum_clone {} enum={}",
+            render_place(dest),
+            render_place(src),
+            enum_name
+        ),
 
         // Data movement
         Instr::Move { dest, src } => {

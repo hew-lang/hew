@@ -195,6 +195,126 @@ fn main() {
     );
 }
 
+/// Every narrow and unsigned integer width is seeded width-exact: i8, i16,
+/// u8, u16, u32, u64 fields packed in reversed declaration order must each
+/// carry the correct value at runtime.
+///
+/// This is the regression test for NYI #4 (narrow/unsigned init-arg widths).
+/// Before the fix, the MIR post-loop pass emitted `NotYetImplemented` for any
+/// integer literal against a sub-i32 or unsigned field. The values are chosen
+/// to use the high bit of each width (u8=200, u16=60000, u32=4000000000,
+/// u64=18000000000) so a wrong-width store, or a sign-extension instead of a
+/// zero-extension, would corrupt the value or clobber an adjacent field.
+///
+/// The actor compares each field against its expected value and prints a
+/// match-count: narrow integer widths are not `Display`-printable directly, so
+/// an equality oracle is the width-exact assertion (each `==` is evaluated at
+/// the field's own width). `ok=6` means every field round-tripped exactly.
+///
+/// Green condition: exit 0 AND stdout contains "ok=6".
+#[test]
+fn supervisor_child_narrow_and_unsigned_widths_reversed_arg_order() {
+    require_codegen();
+
+    let source = r#"actor Worker {
+    let a: i8;
+    let b: i16;
+    let c: u8;
+    let d: u16;
+    let e: u32;
+    let f: u64;
+    receive fn report() {
+        var ok: i64 = 0;
+        if a == 120 { ok = ok + 1; }
+        if b == 30000 { ok = ok + 1; }
+        if c == 200 { ok = ok + 1; }
+        if d == 60000 { ok = ok + 1; }
+        if e == 4000000000 { ok = ok + 1; }
+        if f == 18000000000 { ok = ok + 1; }
+        print("ok="); println(ok);
+    }
+}
+supervisor Pool {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(f: 18000000000, e: 4000000000, d: 60000, c: 200, b: 30000, a: 120);
+}
+fn main() {
+    let sup = spawn Pool;
+    sleep_ms(30);
+    let w = sup.w;
+    w.report();
+    sleep_ms(50);
+}
+"#;
+
+    let (_dir, path) = write_fixture(source);
+
+    let output = Command::new(hew_binary())
+        .args(["run", path.to_str().unwrap()])
+        .output()
+        .expect("hew binary must run");
+
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+
+    assert!(
+        output.status.success(),
+        "narrow/unsigned width init-args oracle must exit 0; stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("ok=6"),
+        "every narrow/unsigned init arg must be seeded width-exact (ok=6); \
+         got stdout: {stdout}"
+    );
+}
+
+/// An init-arg literal that overflows its declared narrow field is a compile
+/// error, not a silent truncation: u8 cannot hold 300.
+///
+/// Green condition: `hew check` exits non-zero.
+#[test]
+fn supervisor_child_narrow_width_overflow_is_compile_error() {
+    require_codegen();
+
+    let source = r#"actor Worker {
+    let a: u8;
+    receive fn report() { print("a="); println(a); }
+}
+supervisor Pool {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child w: Worker(a: 300);
+}
+fn main() {
+    let sup = spawn Pool;
+    sleep_ms(30);
+    let w = sup.w;
+    w.report();
+    sleep_ms(50);
+}
+"#;
+
+    let (_dir, path) = write_fixture(source);
+
+    let output = Command::new(hew_binary())
+        .args(["check", path.to_str().unwrap()])
+        .output()
+        .expect("hew binary must run");
+
+    assert!(
+        !output.status.success(),
+        "an init-arg literal that overflows its declared narrow field (u8 = 300) \
+         must be a compile error, not a silent truncation"
+    );
+
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(
+        stderr.contains("does not fit in `u8`"),
+        "the overflow diagnostic must name the field width; stderr: {stderr}"
+    );
+}
+
 /// A supervisor with a stateful child actor but no init args must fail at
 /// compile time (`CodegenError::FailClosed`), not at runtime with a SIGSEGV.
 ///

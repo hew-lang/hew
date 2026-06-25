@@ -1689,61 +1689,117 @@ pub fn lower_hir_module_with_facts(
                         // adjacent field and writes past the end of the struct.
                         let init_arg = match &source_expr.kind {
                             HirExprKind::Literal(HirLiteral::Integer(n)) => {
+                                // Materialise the literal at the declared field's
+                                // exact width. Each integer width gets its own
+                                // `ChildInitArg` variant so codegen emits a store
+                                // of exactly `sizeof(field_ty)` bytes — a wider
+                                // store would clobber the adjacent field and run
+                                // past the end of the state template. The literal
+                                // is range-checked against the field's bounds so an
+                                // out-of-range constant is a compile error rather
+                                // than a silent truncation. An unresolved field type
+                                // (`None`) falls back to I64, preserving the prior
+                                // behaviour when the field type is unavailable.
+                                //
+                                // The literal carrier is `i64`, so a negative value
+                                // can never satisfy an unsigned field's `try_from`,
+                                // and a value beyond `i64::MAX` cannot be expressed
+                                // as a literal at all; `u64` therefore widens from
+                                // the non-negative `i64` range only.
+                                let overflow = |target: &str| MirDiagnostic {
+                                    kind: MirDiagnosticKind::NotYetImplemented {
+                                        construct: format!(
+                                            "supervisor `{}` child `{}` field `{field_name}` \
+                                             value {n} does not fit in `{target}`",
+                                            sup_layout.name, child.name
+                                        ),
+                                        site: source_expr.site,
+                                    },
+                                    note: "integer literal must fit in the declared field type"
+                                        .to_string(),
+                                };
                                 match field_ty {
-                                    // 32-bit signed: use I32 so codegen emits a
-                                    // 4-byte store that doesn't clobber the
-                                    // adjacent field.  Range-check the literal so
-                                    // an out-of-range constant is a compile error
-                                    // rather than a silent truncation.
+                                    Some(ResolvedTy::I8) => {
+                                        let Ok(v) = i8::try_from(*n) else {
+                                            diagnostics.push(overflow("i8"));
+                                            all_ok = false;
+                                            continue 'fields;
+                                        };
+                                        crate::model::ChildInitArg::I8(v)
+                                    }
+                                    Some(ResolvedTy::I16) => {
+                                        let Ok(v) = i16::try_from(*n) else {
+                                            diagnostics.push(overflow("i16"));
+                                            all_ok = false;
+                                            continue 'fields;
+                                        };
+                                        crate::model::ChildInitArg::I16(v)
+                                    }
                                     Some(ResolvedTy::I32) => {
                                         let Ok(v) = i32::try_from(*n) else {
-                                            diagnostics.push(MirDiagnostic {
-                                                kind: MirDiagnosticKind::NotYetImplemented {
-                                                    construct: format!(
-                                                        "supervisor `{}` child `{}` field \
-                                                         `{field_name}` value {n} overflows i32",
-                                                        sup_layout.name, child.name
-                                                    ),
-                                                    site: source_expr.site,
-                                                },
-                                                note: "integer literal must fit in the declared \
-                                                       field type"
-                                                    .to_string(),
-                                            });
+                                            diagnostics.push(overflow("i32"));
                                             all_ok = false;
                                             continue 'fields;
                                         };
                                         crate::model::ChildInitArg::I32(v)
                                     }
-                                    // 64-bit signed (or unresolved — fail-open to
+                                    Some(ResolvedTy::U8) => {
+                                        let Ok(v) = u8::try_from(*n) else {
+                                            diagnostics.push(overflow("u8"));
+                                            all_ok = false;
+                                            continue 'fields;
+                                        };
+                                        crate::model::ChildInitArg::U8(v)
+                                    }
+                                    Some(ResolvedTy::U16) => {
+                                        let Ok(v) = u16::try_from(*n) else {
+                                            diagnostics.push(overflow("u16"));
+                                            all_ok = false;
+                                            continue 'fields;
+                                        };
+                                        crate::model::ChildInitArg::U16(v)
+                                    }
+                                    Some(ResolvedTy::U32) => {
+                                        let Ok(v) = u32::try_from(*n) else {
+                                            diagnostics.push(overflow("u32"));
+                                            all_ok = false;
+                                            continue 'fields;
+                                        };
+                                        crate::model::ChildInitArg::U32(v)
+                                    }
+                                    Some(ResolvedTy::U64) => {
+                                        let Ok(v) = u64::try_from(*n) else {
+                                            diagnostics.push(overflow("u64"));
+                                            all_ok = false;
+                                            continue 'fields;
+                                        };
+                                        crate::model::ChildInitArg::U64(v)
+                                    }
+                                    // 64-bit signed (or unresolved — fall back to
                                     // I64 preserving the original behaviour when
                                     // the field type is unavailable).
                                     Some(ResolvedTy::I64) | None => {
                                         crate::model::ChildInitArg::I64(*n)
                                     }
-                                    // Sub-i32 widths and unsigned integers are not
-                                    // yet represented in ChildInitArg.  Emit NYI
-                                    // rather than silently widening to I64, which
-                                    // would clobber adjacent fields.
-                                    //
-                                    // WHY: ChildInitArg lacks I8/I16/U* variants.
-                                    // WHEN: obsolete once those variants are added.
-                                    // WHAT: add ChildInitArg::I8/I16/U8/U16/U32/U64
-                                    //       and matching codegen arms.
+                                    // Non-integer field types are handled by the
+                                    // bool/float arms below or rejected by the
+                                    // checker before reaching MIR; an integer
+                                    // literal against a non-integer field is a
+                                    // type error the checker already caught, so
+                                    // fail closed here.
                                     Some(other_ty) => {
                                         diagnostics.push(MirDiagnostic {
                                             kind: MirDiagnosticKind::NotYetImplemented {
                                                 construct: format!(
                                                     "supervisor `{}` child `{}` field \
-                                                     `{field_name}` has type `{other_ty}` which \
-                                                     is not yet supported as a child init arg \
-                                                     (only i32 and i64 are supported in this slice)",
+                                                     `{field_name}` has integer literal value \
+                                                     {n} for non-integer type `{other_ty}`",
                                                     sup_layout.name, child.name
                                                 ),
                                                 site: source_expr.site,
                                             },
-                                            note: "add ChildInitArg variants for the required \
-                                                   integer width"
+                                            note: "integer literal supplied for a non-integer \
+                                                   child init field"
                                                 .to_string(),
                                         });
                                         all_ok = false;

@@ -910,11 +910,21 @@ pub struct SupervisorChildLayout {
 /// A self-contained literal value for a supervisor child init arg.
 ///
 /// Kept separate from MIR instructions so codegen can read these directly
-/// without a running `FnCtx`. Only covers POD types in the first slice.
+/// without a running `FnCtx`. Covers every scalar `BitCopy` primitive width
+/// (signed/unsigned 8/16/32/64-bit integers, `bool`, `f64`). Each width gets
+/// its own variant so codegen materialises a value of exactly the field's
+/// allocated width — a wider store would clobber the adjacent field and write
+/// past the end of the state template.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChildInitArg {
-    I64(i64),
+    I8(i8),
+    I16(i16),
     I32(i32),
+    I64(i64),
+    U8(u8),
+    U16(u16),
+    U32(u32),
+    U64(u64),
     Bool(bool),
     F64(f64),
 }

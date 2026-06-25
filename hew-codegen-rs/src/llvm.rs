@@ -6563,9 +6563,23 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
                         ))
                     })?;
 
+                // Materialise each init arg at the field's exact width. LLVM
+                // integer types are sign-agnostic — the const's bit pattern
+                // carries the value — so the unsigned variants share the same
+                // `iN` type as their signed siblings; `build_store` then writes
+                // exactly N/8 bytes into the field slot. The signed widths
+                // sign-extend the literal into the const (`true`); the unsigned
+                // widths zero-extend (`false`), so a value that uses the high
+                // bit (e.g. `u8` 200) keeps its bit pattern.
                 let field_val: BasicValueEnum<'ctx> = match init_arg {
-                    ChildInitArg::I64(n) => i64_ty.const_int(*n as u64, true).into(),
+                    ChildInitArg::I8(n) => ctx.i8_type().const_int(*n as u64, true).into(),
+                    ChildInitArg::I16(n) => ctx.i16_type().const_int(*n as u64, true).into(),
                     ChildInitArg::I32(n) => i32_ty.const_int(*n as u64, true).into(),
+                    ChildInitArg::I64(n) => i64_ty.const_int(*n as u64, true).into(),
+                    ChildInitArg::U8(n) => ctx.i8_type().const_int(u64::from(*n), false).into(),
+                    ChildInitArg::U16(n) => ctx.i16_type().const_int(u64::from(*n), false).into(),
+                    ChildInitArg::U32(n) => i32_ty.const_int(u64::from(*n), false).into(),
+                    ChildInitArg::U64(n) => i64_ty.const_int(*n, false).into(),
                     ChildInitArg::Bool(b) => ctx
                         .bool_type()
                         .const_int(if *b { 1 } else { 0 }, false)

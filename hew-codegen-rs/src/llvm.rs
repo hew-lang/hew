@@ -922,6 +922,8 @@ fn wasm_excluded_drop_symbol(spec: &hew_mir::DropFnSpec) -> Option<String> {
     match spec {
         hew_mir::DropFnSpec::Runtime(d) => match d {
             D::DuplexClose | D::SendHalfClose | D::RecvHalfClose => Some(d.c_symbol().to_string()),
+            // `hew_actor_demonitor` is native-only (actors are not supported on wasm32).
+            D::MonitorRefClose => Some(d.c_symbol().to_string()),
             D::StreamClose
             | D::SinkClose
             | D::SenderClose
@@ -2144,6 +2146,11 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // null inputs. Actor handles are opaque ptrs. The u64 is wrapped into
         // MonitorRef { ref_id } in Cluster 2.
         "hew_actor_monitor" => i64_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_actor_demonitor(ref_id: u64) -> void
+        // (`hew-runtime/src/monitor.rs:281`). Cancels a monitor by ref_id.
+        // Called from the MonitorRef::close drop ritual (RuntimeDropDescriptor::MonitorRefClose).
+        // Native-only: actors are not supported on wasm32.
+        "hew_actor_demonitor" => ctx.void_type().fn_type(&[i64_ty.into()], false),
         // hew_actor_send_by_id(actor_id: u64, msg_type: i32, data: *mut c_void,
         //                      size: usize) -> c_int (`hew-runtime/src/actor.rs:2489`).
         // `size` is `usize`/`size_t` → target-correct width (i32 on wasm32).
@@ -20951,6 +20958,40 @@ pub(crate) fn lower_drop_runtime(
     place: Place,
     symbol: &'static str,
 ) -> CodegenResult<()> {
+    // `hew_actor_demonitor(ref_id: u64)` — MonitorRef drop is struct-shaped,
+    // not pointer-shaped. Extract `ref_id` (field 0, i64) from the MonitorRef
+    // alloca, call demonitor, then zero the struct slot.
+    if symbol == "hew_actor_demonitor" {
+        let (struct_ptr, struct_ty) = place_pointer(fn_ctx, place)?;
+        let i64_ty = fn_ctx.ctx.i64_type();
+        let ref_id_ptr = fn_ctx
+            .builder
+            .build_struct_gep(struct_ty, struct_ptr, 0, "monitor_ref_id_ptr")
+            .llvm_ctx("hew_actor_demonitor: gep MonitorRef.ref_id")?;
+        let ref_id = fn_ctx
+            .builder
+            .build_load(i64_ty, ref_id_ptr, "monitor_ref_id")
+            .llvm_ctx("hew_actor_demonitor: load ref_id")?;
+        let fv = intern_runtime_decl(
+            fn_ctx.ctx,
+            fn_ctx.llvm_mod,
+            &mut fn_ctx.runtime_decls.borrow_mut(),
+            symbol,
+        )?;
+        let llvm_args: [BasicMetadataValueEnum; 1] = [ref_id.into()];
+        fn_ctx
+            .builder
+            .build_call(fv, &llvm_args, "hew_actor_demonitor_call")
+            .llvm_ctx("hew_actor_demonitor call")?;
+        // Zero the MonitorRef struct alloca (raii-null-after-move).
+        let zero_val = fn_ctx.ctx.i64_type().const_int(0, false);
+        fn_ctx
+            .builder
+            .build_store(ref_id_ptr, zero_val)
+            .llvm_ctx("post-hew_actor_demonitor ref_id zero-store")?;
+        return Ok(());
+    }
+
     // Load the handle pointer from the place's alloca. `load_duplex_handle`
     // resolves both `Place::Local(N)` and `Place::DuplexHandle(N)` to the
     // same ptr-typed alloca, which is what all ptr-arg close symbols expect.
@@ -24699,7 +24740,6 @@ pub(crate) fn emit_node_lookup_call<'ctx>(
 /// precedents enforce (`llvm.rs:~7395, ~7700`). `Place::ReturnSlot`
 /// composites are constructed via a temporary local + a final `Move`,
 /// not directly — keeping the projection arithmetic uniform.
-#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
 pub(crate) fn composite_dest_local(dest: Place, helper: &str) -> CodegenResult<u32> {
     match dest {
         Place::Local(id) => Ok(id),
@@ -24715,7 +24755,6 @@ pub(crate) fn composite_dest_local(dest: Place, helper: &str) -> CodegenResult<u
 /// via `place_pointer`. Fail-closed if the tag projection does not
 /// resolve to an integer type (a structural invariant of
 /// `build_tagged_union_layout`).
-#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
 pub(crate) fn store_composite_tag(
     fn_ctx: &FnCtx<'_, '_>,
     dest_local: u32,
@@ -24744,7 +24783,6 @@ pub(crate) fn store_composite_tag(
 /// `Place::MachineVariant { local: dest_local, variant_idx, field_idx }`.
 /// Source and destination LLVM types must match exactly — composites are
 /// not implicitly coerced (matching `lower_record_init`'s shape check).
-#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
 fn copy_into_variant_field(
     fn_ctx: &FnCtx<'_, '_>,
     src: Place,
@@ -24801,7 +24839,6 @@ fn copy_into_variant_field(
 /// whose internal fields the caller has already populated before
 /// passing the source local here). This matches the audit's enumeration
 /// of every `Result<_, _>` shape registered at the base commit.
-#[allow(dead_code)] // W2.004 Stage 1 substrate; consumers in Stage 2/3 + W2.005
 pub(crate) fn emit_result_ok(
     fn_ctx: &FnCtx<'_, '_>,
     dest: Place,

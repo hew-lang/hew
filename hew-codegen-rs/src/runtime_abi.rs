@@ -1135,27 +1135,23 @@ pub(crate) fn lower_call_runtime_abi(
         }
         // Actor link/monitor builtins.
         //
-        // SHIM(B3→Cluster2): `link()` returns `Result<(), LinkError>` and
-        // `monitor()` returns `MonitorRef { ref_id: i64 }`. Both require
-        // composite-type construction (enum variant / struct literal) in the
-        // LLVM IR, which the Cluster 1 spine does not yet support.
+        // hew_actor_link(parent, child) -> void
+        //   Statement-position (dest=None): emit the void call, done.
+        //   Value-needed   (dest=Some(result_local: Result<(),LinkError>)):
+        //     call void → `emit_result_ok(dest, None)` writes tag=0 (Ok, no
+        //     payload). hew_actor_link is infallible at the runtime today, so
+        //     Ok(()) is the only shape. Err arms belong to DIST-6/DIST-7.
         //
-        // WHY this shim exists: the producer (MIR lower.rs) calls
-        // `lower_runtime_call("hew_actor_link", ...)` off the HIR
-        // `ResolvedRef::Builtin(ActorLink)` resolution.  Codegen must not
-        // silently discard the call, but also cannot construct the
-        // composite return today.
-        // The FFI call is emitted; return wrapping is deferred.
+        // hew_actor_monitor(watcher, target) -> i64 (ref_id)
+        //   Statement-position (dest=None): emit the call, discard i64 return.
+        //   Value-needed   (dest=Some(ref_id_local: i64)):
+        //     call i64 → store into the i64 dest. A subsequent MIR RecordInit
+        //     (emitted by the MIR producer) assembles MonitorRef{ref_id} from
+        //     the raw i64 local.  This handler only stores the primitive.
         //
-        // WHEN obsolete: when the Cluster 2 spine lands enum-variant and
-        // struct-literal construction in `hew-codegen-rs`.  At that point,
-        // `hew_actor_link` wraps the void return as `Ok(())`, and
-        // `hew_actor_monitor` wraps the u64 ref_id as `MonitorRef { ref_id }`.
-        //
-        // WHAT the real solution looks like:
-        //   hew_actor_link:   call void → alloca Result<(),LinkError> → store
-        //                     discriminant 0 (Ok), zero-length payload.
-        //   hew_actor_monitor: call i64 → alloca MonitorRef → store ref_id.
+        // boundary-fail-closed (P0): both shapes are BitCopy — they do not
+        // reach the heap-owning composite spine. Arity violations are
+        // fail-closed with a diagnostic naming the symbol.
         F::ActorLink => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
@@ -1175,16 +1171,10 @@ pub(crate) fn lower_call_runtime_abi(
                 "hew_actor_link_call",
                 "hew_actor_link call",
             )?;
-            // SHIM(B3→Cluster2): `link()` returns Result<(), LinkError>.
-            // Composite-type construction is not yet available in the Cluster 1
-            // spine. Until the Cluster 2 spine lands, producers must not wire a
-            // dest slot for this call — fail-closed if they do.
+            // Value-needed: synthesise Ok(()) into the Result<(),LinkError> dest.
+            // hew_actor_link is void/infallible; tag=0, no payload.
             if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_actor_link Result<(),LinkError> return synthesis requires \
-                     Cluster 2 composite-type spine; producer must not supply \
-                     dest={d:?} until that lands"
-                )));
+                emit_result_ok(fn_ctx, d, None)?;
             }
             let _ = (i32_ty, ptr_ty);
         }
@@ -1201,21 +1191,22 @@ pub(crate) fn lower_call_runtime_abi(
             // arg1: target actor handle (opaque ptr).
             let target = load_duplex_handle(fn_ctx, args[1], "monitor_target")?;
             let llvm_args: [BasicMetadataValueEnum; 2] = [watcher.into(), target.into()];
-            fn_ctx.call_runtime_void(
+            // Call hew_actor_monitor → i64 ref_id. In statement position (dest=None)
+            // the return is discarded. In value position (dest=Some(ref_id_local))
+            // the i64 is stored directly into the i64-typed dest; the subsequent
+            // MIR RecordInit assembles MonitorRef{ref_id} from that local.
+            let ref_id = fn_ctx.call_runtime_int(
                 symbol,
                 &llvm_args,
                 "hew_actor_monitor_call",
                 "hew_actor_monitor call",
             )?;
-            // SHIM(B3→Cluster2): `monitor()` returns MonitorRef { ref_id: i64 }.
-            // Struct-literal construction requires the Cluster 2 spine.
-            // Producers must not wire a dest until that lands.
             if let Some(d) = dest {
-                return Err(CodegenError::FailClosed(format!(
-                    "hew_actor_monitor MonitorRef{{ref_id}} struct synthesis requires \
-                     Cluster 2 composite-type spine; producer must not supply \
-                     dest={d:?} until that lands"
-                )));
+                let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, d)?;
+                fn_ctx
+                    .builder
+                    .build_store(dest_ptr, ref_id)
+                    .llvm_ctx("hew_actor_monitor store ref_id")?;
             }
             let _ = (i32_ty, ptr_ty);
         }

@@ -1,0 +1,40 @@
+// link() and monitor() in value position — composite return construction.
+//
+// Proving gate for the hew_actor_link / hew_actor_monitor composite-return path:
+//   link(child)    -> Result<(), LinkError>  (Ok(()) because hew_actor_link is
+//                     void/infallible at the runtime today)
+//   monitor(child) -> MonitorRef             (constructs the struct from the u64
+//                     ref_id returned by hew_actor_monitor)
+//
+// The actor-context gate ("only valid in actor context") is wired in a later
+// lane; calling link/monitor from main with a null self is an interim window.
+// CLAUDE.md §"Assertions must distinguish correct from garbage":
+//   - link: match arms are exhaustive; the Err branch calls exit(1) so a
+//     mismatch in the synthesised tag (not Ok) surfaces as a non-zero exit.
+//   - monitor: m is a move-only #[resource] value; its mere construction and
+//     drop without abort proves MonitorRef was built.  ref_id boundary
+//     assertion (0 for null-self context) requires actor-context field access,
+//     which is covered in the later actor-context fixture (DIST-6 lane).
+actor Child {
+    receive fn ping() {}
+}
+
+fn main() -> i64 {
+    let child = spawn Child;
+    // link() in value position: constructs Result<(), LinkError>.
+    // hew_actor_link is void/infallible; the synthesised Ok(()) tag must be
+    // variant 0 — the Err arm must not fire.
+    let r = link(child);
+    match r {
+        Ok(()) => {},
+        Err(_) => {
+            exit(1);
+        },
+    }
+    // monitor() in value position: constructs MonitorRef { ref_id: i64 }.
+    // The value is move-only (#[resource]); constructing it without NYI and
+    // letting it drop proves the MonitorRef struct was assembled correctly.
+    // MonitorRef.close() (hew_actor_demonitor) runs at scope exit.
+    let _m = monitor(child);
+    0
+}

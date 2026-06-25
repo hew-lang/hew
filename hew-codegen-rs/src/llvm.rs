@@ -1764,6 +1764,11 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         // hew_string_equals(a: *const c_char, b: *const c_char) -> i32
         // (`hew-runtime/src/string.rs`). Returns 1 when equal, 0 otherwise.
         "hew_string_equals" => i32_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
+        // hew_string_hash_fnv1a(s: *const c_char) -> i64
+        // (`hew-runtime/src/string.rs`). FNV-1a-64 over the NUL-terminated
+        // payload — the hash twin of `hew_string_equals`. Called by the
+        // per-record hash thunk when descending into a `string` key field.
+        "hew_string_hash_fnv1a" => i64_ty.fn_type(&[ptr_ty.into()], false),
         // hew_string_compare(a: *const c_char, b: *const c_char) -> i32
         // (`hew-runtime/src/string.rs`). strcmp-style: negative when a < b,
         // 0 when equal, positive when a > b.  Used by string ordering (`<`,
@@ -9403,6 +9408,15 @@ fn collect_vec_owned_element_seeds(
                         on_vec_elem(elem);
                     }
                 } else if name == "HashMap" || short_name(name) == "HashMap" {
+                    // Seed BOTH the value (heap-owning V drop thunk) AND the key
+                    // (managed-record-key drop thunk). A `string`-bearing record
+                    // key is owned by the map and dropped via its per-record
+                    // `__hew_record_drop_inplace_<R>` body; without seeding the
+                    // key, that body would be declared-but-undefined and LLVM
+                    // verify would reject the module.
+                    if let Some(key) = args.first() {
+                        on_vec_elem(key);
+                    }
                     if let Some(value) = args.get(1) {
                         on_vec_elem(value);
                     }
@@ -17376,7 +17390,43 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
     }
     let (size, align) = abi_size_align(elem_ty, Some(fn_ctx.target_data))?;
     let key = crate::thunks::eq_thunk_struct_key(elem_ty);
-    let global_name = format!("__hew_map_key_layout_{size}_{align}_{key}_plain");
+
+    // A record key whose every field is hash-eligible-or-`string` is admitted by
+    // the checker (`ty_is_hash_eligible`) with a heap leaf. Such a key is owned
+    // by the map: insert MOVEs the key blob into the slot (the caller's key is
+    // consumed), and remove/free drop the slot key exactly once via a per-record
+    // drop thunk (`__hew_record_drop_inplace_<R>`, whose body is seeded into the
+    // clone/drop synthesis through `collect_vec_owned_element_seeds`'s HashMap
+    // key arm). Map-clone and `.keys()` over a layout-managed key remain
+    // fail-closed in the runtime (out of scope here). `ownership_kind` is
+    // `LayoutManaged` (2) so the runtime's drop discipline fires; a Copy record
+    // (no heap leaf) keeps Plain (0) and a null drop_fn.
+    let key_drop_fn = if resolved_ty
+        .is_some_and(|rty| resolved_ty_contains_heap_leaf(fn_ctx, rty, &mut HashSet::new()))
+    {
+        let rty = resolved_ty.expect("heap-leaf check requires a resolved type");
+        match crate::thunks::owned_elem_thunk_key(fn_ctx, rty) {
+            Some((OwnedElemThunkKind::Record, record_key)) => Some(
+                get_or_declare_record_drop_inplace(fn_ctx.ctx, fn_ctx.llvm_mod, &record_key),
+            ),
+            _ => {
+                return Err(CodegenError::FailClosed(format!(
+                    "managed HashMap key `{rty:?}` admitted by the checker but has no \
+                     per-record drop thunk path; only string-bearing record keys are \
+                     supported as layout-managed keys"
+                )));
+            }
+        }
+    } else {
+        None
+    };
+
+    let ownership_suffix = if key_drop_fn.is_some() {
+        "managed"
+    } else {
+        "plain"
+    };
+    let global_name = format!("__hew_map_key_layout_{size}_{align}_{key}_{ownership_suffix}");
     if let Some(g) = fn_ctx.llvm_mod.get_global(&global_name) {
         return Ok(g.as_pointer_value());
     }
@@ -17407,15 +17457,21 @@ fn hashmap_key_layout_descriptor_ptr<'ctx>(
     let hash_fn = crate::thunks::get_or_emit_hash_thunk(fn_ctx, elem_ty, resolved_ty)?;
     let eq_fn = crate::thunks::get_or_emit_eq_thunk(fn_ctx, elem_ty, resolved_ty)?;
 
+    // ownership_kind: Plain (0) for Copy keys, LayoutManaged (2) for keys with
+    // an owned (string) leaf. The drop_fn slot carries the per-record drop
+    // thunk for managed keys; null for Plain. The runtime's `validate_key_layout`
+    // requires drop_fn = Some for LayoutManaged ownership.
+    let (ownership_kind, drop_fn_value) = match key_drop_fn {
+        Some(drop_fn) => (2u64, drop_fn.as_global_value().as_pointer_value().into()),
+        None => (0u64, ptr_ty.const_null().into()),
+    };
     let init = layout_ty.const_named_struct(&[
         usize_ty.const_int(size, false).into(),
         usize_ty.const_int(u64::from(align), false).into(),
-        i8_ty.const_zero().into(),
+        i8_ty.const_int(ownership_kind, false).into(),
         hash_fn.as_global_value().as_pointer_value().into(),
         eq_fn.as_global_value().as_pointer_value().into(),
-        // drop_fn = None (Plain ownership; W4.001 Stage C0a). Represented as
-        // a null function pointer per the Option<extern "C" fn> niche layout.
-        ptr_ty.const_null().into(),
+        drop_fn_value,
     ]);
     let g = fn_ctx.llvm_mod.add_global(layout_ty, None, &global_name);
     g.set_constant(true);

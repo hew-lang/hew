@@ -147,6 +147,111 @@ pub(crate) fn compute_copy_record_layout(
     Some((total_size, max_align))
 }
 
+/// Slot-blob size/alignment of a hash-key leaf, admitting `string` as a single
+/// owned pointer in addition to the fixed-size Copy primitives.
+///
+/// This is the hash-key counterpart of [`primitive_copy_layout`] and must NOT be
+/// confused with it: `primitive_copy_layout` is the **Copy authority** (`None`
+/// for `string`) consulted by `vec_element_has_copy_layout` and the by-value
+/// aggregate-param check, where a `string` field makes a type non-Copy. Here we
+/// answer a different question — "what is the byte layout of this leaf when it
+/// sits in a `HashMap` key slot?" — for which a `string` is a pointer-width blob
+/// (its heap payload is hashed by descent and freed by the per-record key drop
+/// thunk). Eligibility (`ty_is_hash_eligible`) gates which leaves reach this
+/// sizer; this only computes the layout of an already-admitted key.
+fn primitive_hash_key_layout(
+    ty: &Ty,
+    type_defs: &HashMap<String, TypeDef>,
+) -> Option<(usize, usize)> {
+    match ty {
+        // String slot blob: a single owned `*const c_char` (pointer-width /
+        // pointer-aligned; 8/8 on the 64-bit targets this sizer serves).
+        Ty::String => Some((8, 8)),
+        Ty::Array(elem, count) => {
+            let (elem_size, elem_align) = primitive_hash_key_layout(elem, type_defs)?;
+            let count = usize::try_from(*count).ok()?;
+            Some((elem_size.checked_mul(count)?, elem_align))
+        }
+        Ty::Named { name, args, .. } => {
+            let type_def = type_defs.get(name.as_str()).or_else(|| {
+                name.split_once('.')
+                    .and_then(|(_, local)| type_defs.get(local))
+            })?;
+            if args.is_empty() {
+                hash_key_record_layout(type_def, type_defs)
+            } else {
+                if type_def.type_params.len() != args.len() {
+                    return None;
+                }
+                let subst: HashMap<String, Ty> = type_def
+                    .type_params
+                    .iter()
+                    .zip(args.iter())
+                    .map(|(param, arg)| (param.clone(), arg.clone()))
+                    .collect();
+                let mut instantiated = type_def.clone();
+                instantiated.fields = type_def
+                    .fields
+                    .iter()
+                    .map(|(field, ty)| (field.clone(), ty.substitute_named_params_parallel(&subst)))
+                    .collect();
+                hash_key_record_layout(&instantiated, type_defs)
+            }
+        }
+        // All other leaves: defer to the Copy sizer (fixed-size primitives /
+        // nested Copy records). A non-Copy, non-string leaf returns `None`,
+        // matching `ty_is_hash_eligible`'s fail-closed conjunction.
+        _ => primitive_copy_layout(ty, type_defs),
+    }
+}
+
+/// `(total_size, max_align)` for a hash-key record whose fields are each
+/// hash-eligible-or-`string`. The hash-key counterpart of
+/// [`compute_copy_record_layout`]: identical field-walk and padding rules, but
+/// it sizes a `string` field as a pointer blob via [`primitive_hash_key_layout`]
+/// rather than rejecting it. Used only at the HashMap/HashSet key/element
+/// admission sites; never as a Copy-ness decision.
+pub(crate) fn hash_key_record_layout(
+    type_def: &TypeDef,
+    type_defs: &HashMap<String, TypeDef>,
+) -> Option<(usize, usize)> {
+    if type_def.fields.is_empty() {
+        return None;
+    }
+
+    let mut offset: usize = 0;
+    let mut max_align: usize = 1;
+
+    let ordered_names: Vec<&String>;
+    let mut alpha_sorted: Vec<&String>;
+    let field_names: &[&String] = if type_def.field_order.is_empty() {
+        alpha_sorted = type_def.fields.keys().collect();
+        alpha_sorted.sort();
+        &alpha_sorted
+    } else {
+        ordered_names = type_def.field_order.iter().collect();
+        &ordered_names
+    };
+
+    for name in field_names {
+        let field_ty = type_def.fields.get(*name)?;
+        let (field_size, field_align) = primitive_hash_key_layout(field_ty, type_defs)?;
+
+        offset = align_up(offset, field_align);
+        offset = offset.checked_add(field_size)?;
+        if field_align > max_align {
+            max_align = field_align;
+        }
+    }
+
+    let total_size = align_up(offset, max_align);
+    if total_size == 0 {
+        return None;
+    }
+
+    Some((total_size, max_align))
+}
+
 /// Enforce the fail-closed output contract for `lowering_facts` after
 /// [`Checker::finalize_lowering_facts`] has run.
 ///
@@ -2960,8 +3065,50 @@ mod tests {
 
     #[test]
     fn primitive_copy_layout_string_returns_none() {
-        // String is heap-managed; not a fixed-layout Copy type.
+        // String is heap-managed; not a fixed-layout Copy type. The hash-key
+        // sizer (`primitive_hash_key_layout`) admits it separately as a pointer
+        // blob — `primitive_copy_layout` stays the Copy authority.
         assert_eq!(primitive_copy_layout(&Ty::String, &HashMap::new()), None);
+    }
+
+    #[test]
+    fn primitive_hash_key_layout_string_is_pointer_width() {
+        // The hash-key sizer admits a `string` leaf as a single owned pointer
+        // (the heap payload lives elsewhere and is hashed/dropped by descent).
+        assert_eq!(
+            primitive_hash_key_layout(&Ty::String, &HashMap::new()),
+            Some((8, 8))
+        );
+    }
+
+    #[test]
+    fn hash_key_record_layout_admits_string_field() {
+        // A record key with a string field has a well-defined slot layout: the
+        // string is a pointer-width blob, sized after the i64 field.
+        let mut tds = HashMap::new();
+        tds.insert(
+            "Person".to_string(),
+            TypeDef {
+                kind: TypeDefKind::Record,
+                name: "Person".to_string(),
+                type_params: vec![],
+                bounds: HashMap::new(),
+                fields: [
+                    ("name".to_string(), Ty::String),
+                    ("age".to_string(), Ty::I64),
+                ]
+                .into_iter()
+                .collect(),
+                field_order: vec!["name".to_string(), "age".to_string()],
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+        let td = tds.get("Person").unwrap().clone();
+        // name (8/8 pointer) + age (8/8) => 16 bytes, align 8.
+        assert_eq!(hash_key_record_layout(&td, &tds), Some((16, 8)));
     }
 
     #[test]
@@ -3468,8 +3615,11 @@ mod tests {
     // ── Additional admissibility tests from independent review ────────────────
 
     #[test]
-    fn hashmap_string_field_key_rejected() {
-        // record K { s: string } — string field makes K ineligible (IneligibleManaged)
+    fn hashmap_string_field_key_admitted() {
+        // record K { s: string } — a string field is structurally hashable, so
+        // K is admitted as a layout key (string field hashed by descent, owned
+        // key dropped via the per-record key drop thunk). A layout fact is
+        // produced and no diagnostic is emitted.
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 1..10;
         let mut td = make_record("K", vec![("s", Ty::String)]);
@@ -3487,19 +3637,13 @@ mod tests {
         );
         checker.finalize_hashmap_admission();
         assert!(
-            !checker.errors.is_empty(),
-            "string-field key must be rejected; errors: {:?}",
+            checker.errors.is_empty(),
+            "string-field key must be admitted; errors: {:?}",
             checker.errors
         );
         assert!(
-            checker.hashmap_layout_facts.is_empty(),
-            "no layout fact must be produced for string-field key"
-        );
-        // Diagnostic must name the field or type clearly
-        let msg = &checker.errors[0].message;
-        assert!(
-            msg.contains('K') || msg.contains("string"),
-            "error must reference the type or field kind; got: {msg:?}"
+            !checker.hashmap_layout_facts.is_empty(),
+            "a layout fact must be produced for an admitted string-field key"
         );
     }
 

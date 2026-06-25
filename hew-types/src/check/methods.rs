@@ -4,7 +4,7 @@
 )]
 use super::*;
 use crate::builtin_names::BuiltinNamedType;
-use crate::check::admissibility::compute_copy_record_layout;
+use crate::check::admissibility::{compute_copy_record_layout, hash_key_record_layout};
 use crate::check::calls::SignatureArgApplication;
 use crate::check::dispatch::resolve_method_call;
 use crate::check::types::BareActorResolution;
@@ -433,8 +433,11 @@ impl Checker {
                         match ty_is_hash_eligible(&resolved_ty, &type_defs_snapshot) {
                             HashEligibility::Eligible => {
                                 if let Some(ref td) = self.lookup_type_def(name) {
+                                    // hash-key sizer: admits string-bearing
+                                    // records (string field => pointer blob),
+                                    // unlike the Copy sizer.
                                     if let Some((elem_size, elem_align)) =
-                                        compute_copy_record_layout(td, &type_defs_snapshot)
+                                        hash_key_record_layout(td, &type_defs_snapshot)
                                     {
                                         let fact = hashset_layout_fact(
                                             name.clone(),
@@ -668,7 +671,10 @@ impl Checker {
                         let key_type_def = self.lookup_type_def(key_name);
                         match key_type_def {
                             Some(ref td) => {
-                                match compute_copy_record_layout(td, &type_defs_snapshot) {
+                                // hash-key sizer: admits a string-bearing record
+                                // key (string field => pointer-width slot blob),
+                                // unlike the Copy sizer used for values.
+                                match hash_key_record_layout(td, &type_defs_snapshot) {
                                     Some((key_size, key_align)) => {
                                         // Determine value type routing.
                                         match HashMapValueType::from_ty(&resolved_val) {

@@ -1765,12 +1765,45 @@ fn emit_hash_thunk_body<'ctx>(
         BasicTypeEnum::FloatType(_) => Err(CodegenError::FailClosed(
             "hash_thunk: float field reached codegen — checker eligibility gate bypassed".into(),
         )),
-        BasicTypeEnum::PointerType(_)
-        | BasicTypeEnum::VectorType(_)
-        | BasicTypeEnum::ScalableVectorType(_) => Err(CodegenError::FailClosed(format!(
-            "hash_thunk: unsupported field shape {ty:?} — checker eligibility \
-             gate should have rejected this field type"
-        ))),
+        BasicTypeEnum::PointerType(_) => match resolved_ty {
+            // A `string` field inside a hash key: load the owned `*const c_char`
+            // and hash its NUL-terminated payload via `hew_string_hash_fnv1a`
+            // (the hash twin of the eq thunk's `hew_string_equals`). Hashing the
+            // payload — not the pointer word — keeps distinct-but-equal record
+            // keys in the same bucket and equal-by-value keys colliding, exactly
+            // as the equality witness compares them.
+            Some(ResolvedTy::String) => {
+                let str_ptr = fn_ctx
+                    .builder
+                    .build_load(ty, base_ptr, "hash_string_load")
+                    .llvm_ctx("hash_thunk string load")?
+                    .into_pointer_value();
+                let hash = fn_ctx.call_runtime_int(
+                    "hew_string_hash_fnv1a",
+                    &[str_ptr.into()],
+                    "hash_string_fnv1a",
+                    "hash_thunk string hash",
+                )?;
+                mix_into_hash_acc(fn_ctx, acc_slot, hash)?;
+                Ok(())
+            }
+            // No fail-open pointer-hash fallback: any other pointer-shaped field
+            // means the checker eligibility gate was bypassed. Refuse loudly
+            // rather than mix the raw pointer word (which would silently break
+            // hash/eq agreement). LESSONS: no-fail-open-fallback-after-authority.
+            Some(other) => Err(CodegenError::FailClosed(format!(
+                "hash_thunk: pointer field of type `{other:?}` has no structural hash path"
+            ))),
+            None => Err(CodegenError::FailClosed(
+                "hash_thunk: pointer field reached hash thunk without resolved Hew type".into(),
+            )),
+        },
+        BasicTypeEnum::VectorType(_) | BasicTypeEnum::ScalableVectorType(_) => {
+            Err(CodegenError::FailClosed(format!(
+                "hash_thunk: unsupported field shape {ty:?} — checker eligibility \
+                 gate should have rejected this field type"
+            )))
+        }
     }
 }
 

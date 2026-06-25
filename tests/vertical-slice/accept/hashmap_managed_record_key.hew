@@ -1,0 +1,37 @@
+// Accept fixture: HashMap keyed by a record with a `string` field.
+//
+// Exercises the structural hash + owned-key drop discipline for a managed
+// record key end to end: distinct-but-equal keys (same name, different age)
+// land in distinct slots; equal-by-fields keys collide and overwrite; get on
+// an absent key returns None; remove drops the owned slot key exactly once.
+//
+// Exit code encodes the verification: each failed assertion returns a distinct
+// non-zero code, so a green run (exit 0) means every value-oracle held.
+
+record Person { name: string, age: i64 }
+
+fn main() -> i64 {
+    let m: HashMap<Person, i64> = HashMap::new();
+    m.insert(Person { name: "alice", age: 30 }, 1);
+    m.insert(Person { name: "bob", age: 25 }, 2);
+    // Distinct: same name, different age => a different slot.
+    m.insert(Person { name: "alice", age: 31 }, 3);
+    // Collision: equal by every field => overwrite the existing slot's value.
+    m.insert(Person { name: "bob", age: 25 }, 99);
+
+    let a30 = match m.get(Person { name: "alice", age: 30 }) { Some(v) => v, None => -1 };
+    let a31 = match m.get(Person { name: "alice", age: 31 }) { Some(v) => v, None => -1 };
+    let b = match m.get(Person { name: "bob", age: 25 }) { Some(v) => v, None => -1 };
+    let missing = match m.get(Person { name: "carol", age: 0 }) { Some(v) => v, None => -1 };
+
+    if a30 != 1 { return 10; }
+    if a31 != 3 { return 11; }
+    if b != 99 { return 12; }
+    if missing != -1 { return 13; }
+    if m.len() != 3 { return 14; }
+
+    // Remove drops the owned slot key exactly once; the key is then absent.
+    if !m.remove(Person { name: "alice", age: 30 }) { return 20; }
+    if m.len() != 2 { return 21; }
+    match m.get(Person { name: "alice", age: 30 }) { Some(_) => 22, None => 0 }
+}

@@ -6465,13 +6465,16 @@ impl Checker {
             // fn_sigs as `"LocalPid::{method}"`.  Actor receive-fn dispatch
             // (e.g. `pid.greet(arg)`) remains the local actor-dispatch path.
             (resolved, _) if resolved.as_local_pid().is_some() => {
-                // `.send(payload)` is the legacy fire-and-forget surface; enforce
-                // the Send bound on the payload.
-                //
-                // If the actor declares a `receive fn send(...)`, that user-defined
-                // handler takes precedence — skip the legacy early-return and fall
-                // through to the receive-fn dispatch path below. The builtin fire-
-                // and-forget is only the fallback when no such handler exists.
+                // `.send(payload)` on a named actor: if the actor declares a
+                // `receive fn send(...)` that user-defined handler takes
+                // precedence and falls through to the receive-fn dispatch path
+                // below.  When no such handler exists the anonymous-payload
+                // surface is not lowerable — there is no mailbox slot to
+                // receive an untyped envelope — so reject it here with an
+                // actionable diagnostic pointing the caller at the correct
+                // named-handler alternative.  Failing here (type-checker) is
+                // cleaner than accepting and failing closed in HIR with a
+                // confusing `MethodCallNoRewrite`.
                 let has_user_send_handler = if method == "send" {
                     resolved.as_local_pid().and_then(|inner| {
                         if let Ty::Named { name, .. } = inner {
@@ -6490,12 +6493,33 @@ impl Checker {
                     false
                 };
                 if method == "send" && !has_user_send_handler {
+                    // Synthesize args so downstream bindings resolve cleanly
+                    // even though we are about to reject this call.
                     for arg in args {
                         let (expr, sp) = arg.expr();
-                        let ty = self.synthesize(expr, sp);
-                        self.enforce_actor_boundary_send(expr, sp, sp, &ty);
+                        self.synthesize(expr, sp);
                     }
-                    return Ty::Unit;
+                    let actor_hint = resolved
+                        .as_local_pid()
+                        .and_then(|inner| {
+                            if let Ty::Named { name, .. } = inner {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| "this actor".to_string());
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "actor `{actor_hint}` has no `receive fn send` handler; \
+                             anonymous-payload `.send()` is not supported — \
+                             add `receive fn send(payload: T) {{ ... }}` to the actor, \
+                             or dispatch through a named handler: `ref.method_name(payload)`"
+                        ),
+                    );
+                    return Ty::Error;
                 }
                 // Try LocalPid's own methods first.
                 if let Ty::Named {
@@ -6702,9 +6726,10 @@ impl Checker {
             (resolved, _) if resolved.as_actor_ref().is_some() => {
                 let inner = resolved.as_actor_ref().unwrap();
                 // A user-defined `receive fn send(...)` takes precedence over the
-                // builtin fire-and-forget path. Check for such a handler before
-                // routing to the legacy early-return; fall through to the receive-fn
-                // dispatch block when one exists.
+                // builtin fire-and-forget path.  When no such handler exists the
+                // anonymous-payload surface is not lowerable — reject it here with
+                // an actionable diagnostic rather than accepting and failing closed
+                // in HIR with `MethodCallNoRewrite`.
                 let has_user_send_handler = method == "send" && {
                     if let Ty::Named {
                         name: ref actor_name,
@@ -6717,12 +6742,27 @@ impl Checker {
                     }
                 };
                 if method == "send" && !has_user_send_handler {
+                    // Synthesize args so downstream bindings resolve cleanly.
                     for arg in args {
                         let (expr, sp) = arg.expr();
-                        let ty = self.synthesize(expr, sp);
-                        self.enforce_actor_boundary_send(expr, sp, sp, &ty);
+                        self.synthesize(expr, sp);
                     }
-                    Ty::Unit
+                    let actor_hint = if let Ty::Named { name, .. } = inner {
+                        name.clone()
+                    } else {
+                        "this actor".to_string()
+                    };
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "actor `{actor_hint}` has no `receive fn send` handler; \
+                             anonymous-payload `.send()` is not supported — \
+                             add `receive fn send(payload: T) {{ ... }}` to the actor, \
+                             or dispatch through a named handler: `ref.method_name(payload)`"
+                        ),
+                    );
+                    Ty::Error
                 } else {
                     // Try to dispatch to the actor's receive methods
                     if let Ty::Named {

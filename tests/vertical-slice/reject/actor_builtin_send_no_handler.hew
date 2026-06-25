@@ -1,7 +1,12 @@
 // Reject: `ref.send(msg)` on a named actor that has no `receive fn send`
-// handler is not yet supported. The builtin fire-and-forget path on LocalPid
-// is NYI. This fixture confirms the compiler fails closed with a clear
-// diagnostic rather than silently misbehaving.
+// handler is permanently rejected at the type-checker with an actionable
+// UndefinedMethod diagnostic. The anonymous-payload `.send()` surface has no
+// lowerable mailbox slot — actors only receive messages through named
+// `receive fn` handlers. This fixture confirms the compiler surfaces the error
+// at check time (not deep in HIR lowering) with guidance on the fix.
+//
+// Distinct from `actor_receive_fn_named_send.hew` (accept): when the actor
+// DOES declare `receive fn send(...)` the call dispatches correctly.
 actor Adder {
     var count: i64;
     receive fn increment(n: i64) {

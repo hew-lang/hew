@@ -34,10 +34,7 @@ fn main -> i64
     call[bb0 link -> bb1] ->
       (none)
     cancel[bb0] ->
-      drop actor3 ty=LocalPid<Probe> kind=resource
-      drop actor2 ty=LocalPid<Probe> kind=resource
-      drop actor1 ty=LocalPid<Probe> kind=resource
-      drop actor0 ty=LocalPid<Probe> kind=resource
+      (none)
     call[bb1 monitor -> bb2] ->
       (none)
     return[bb2] ->

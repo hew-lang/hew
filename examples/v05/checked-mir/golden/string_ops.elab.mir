@@ -24,7 +24,7 @@ fn main -> i64
     call[bb0 println_str -> bb1] ->
       (none)
     cancel[bb0] ->
-      drop _8 ty=string kind=cow_heap(hew_string_drop)
+      (none)
     call[bb1 println_str -> bb2] ->
       (none)
     call[bb2 hew_string_length -> bb3] ->

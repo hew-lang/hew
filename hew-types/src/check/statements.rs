@@ -78,6 +78,20 @@ impl Checker {
         }
     }
 
+    /// The synthetic span the `for (k, v) in m` desugar uses for the `values()`
+    /// projection call.
+    ///
+    /// `resolved_calls` (and `expr_types`) are keyed by span, so the `keys()`
+    /// and `values()` projections this for-in synthesizes cannot share one
+    /// span. `keys()` is recorded at the iterable span; `values()` at this
+    /// zero-width span anchored at the iterable's end offset — distinct from
+    /// every real expression span yet deterministic, so the checker (recording
+    /// the facts) and HIR (emitting the synthetic calls) agree byte-for-byte.
+    /// Both layers call this single helper; do not inline the derivation.
+    pub(super) fn hashmap_for_in_values_span(iterable: &Span) -> Span {
+        iterable.end..iterable.end
+    }
+
     fn for_await_actor_method_name(&mut self, iterable: &Expr) -> Option<String> {
         let Expr::MethodCall {
             receiver, method, ..
@@ -1288,7 +1302,43 @@ impl Checker {
                                     .to_string(),
                             );
                         }
-                        Ty::Tuple(vec![args[0].clone(), args[1].clone()])
+                        // `for (k, v) in m` desugars (in HIR) to a `HashMapIter`
+                        // cursor built from `m.keys()` and `m.values()`. Both
+                        // projections must be lowerable for the key/value types,
+                        // and the resolved-call facts (plus matching expr_types,
+                        // the HIR boundary's totality contract) must exist where
+                        // the HIR synthesis emits the two calls. `resolved_calls`
+                        // is keyed by span, so the two projections cannot share a
+                        // span: `keys` is recorded at the iterable span; `values`
+                        // at a synthetic zero-width span anchored at the iterable
+                        // end (distinct from every real expression span, and
+                        // reproduced byte-for-byte by the HIR desugar via
+                        // `Self::hashmap_for_in_values_span`).
+                        let key_ty = args[0].clone();
+                        let val_ty = args[1].clone();
+                        let keys_span = iterable.1.clone();
+                        let values_span = Self::hashmap_for_in_values_span(&iterable.1);
+                        if self.validate_hashmap_projection_element_types(
+                            &key_ty, &val_ty, "keys", &keys_span,
+                        ) && self.validate_hashmap_projection_element_types(
+                            &key_ty,
+                            &val_ty,
+                            "values",
+                            &values_span,
+                        ) {
+                            let key_vec = self.make_vec_type(key_ty.clone(), &keys_span);
+                            let val_vec = self.make_vec_type(val_ty.clone(), &values_span);
+                            self.record_type(&keys_span, &key_vec);
+                            self.record_type(&values_span, &val_vec);
+                            self.record_resolved_hashmap_call("keys", &key_ty, &val_ty, &keys_span);
+                            self.record_resolved_hashmap_call(
+                                "values",
+                                &key_ty,
+                                &val_ty,
+                                &values_span,
+                            );
+                        }
+                        Ty::Tuple(vec![key_ty, val_ty])
                     }
                     Ty::Named {
                         builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),

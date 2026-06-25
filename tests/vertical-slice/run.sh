@@ -341,13 +341,15 @@ expect_check_fail_contains \
   "MIR lowering for function call is not implemented yet" \
   "mir_gap_where_clause_proj_mono"
 
-# g12-A: `for (k, v) in m` over a HashMap is not yet lowered — the for-in
-# desugar only admits Vec/VecIter and user-nominal concrete IntoIterator impls.
-# Closing this (impl IntoIterator for HashMap) enables `hashmap_for_in_sum`.
-expect_check_fail_contains \
-  "${ROOT}/tests/vertical-slice/reject/mir_gap_hashmap_for_in.hew" \
-  "for-in over non-Range iterable \`HashMap<i64, i64>\`" \
-  "mir_gap_hashmap_for_in"
+# g12-A (CLOSED): `for (k, v) in m` over a HashMap lowers through a HashMapIter
+# cursor built from the map's keys()/values() projections. The former
+# mir_gap_hashmap_for_in ratchet flipped to these accept fixtures.
+# Scalar keys+values: 3 entries (keys sum 6 + values sum 60) → exit 66.
+run_accept_expect_status "hashmap_for_in_sum" 66
+# Owned (string) key yield, scalar value: key lens 6 + values 6 → exit 12.
+run_accept_expect_status "hashmap_for_in_string_key" 12
+# Owned key AND owned value: key lens 6 + value lens 29 → exit 35.
+run_accept_expect_status "hashmap_for_in_owned" 35
 
 # Reject: spawned closures must not capture non-Send values. This fixture uses
 # a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR

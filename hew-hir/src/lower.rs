@@ -313,6 +313,11 @@ const SYNTHETIC_SEND_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1001);
 /// `machine_ctor_registry`. One variant: Timeout=0, no payload.
 const SYNTHETIC_TIMEOUT_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1005);
 pub(crate) const SYNTHETIC_VEC_ITER_ITEM: ItemId = ItemId(u32::MAX - 1002);
+/// Sentinel `ItemId` for the synthetic `HashMapIter<K, V>` record — the
+/// `for (k, v) in m` desugar target. Like `VecIter`, it is declared in
+/// `std/builtins.hew` but never emitted as a HIR `Record`/`TypeDecl` item, so
+/// `layout_mono` seeds its decl from `hashmap_iter_field_shape`.
+pub(crate) const SYNTHETIC_HASHMAP_ITER_ITEM: ItemId = ItemId(u32::MAX - 1006);
 const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
 
 /// Field shape of the synthetic `VecIter<elem>` record — `{ vec: Vec<elem>,
@@ -330,6 +335,22 @@ pub(crate) fn vec_iter_field_shape(elem_ty: &ResolvedTy) -> Vec<(String, Resolve
             "vec".to_string(),
             LowerCtx::resolved_vec_ty(elem_ty.clone()),
         ),
+        ("idx".to_string(), ResolvedTy::I64),
+    ]
+}
+
+/// The single field-order/type authority for `HashMapIter<K, V>`, shared by the
+/// `std/builtins.hew` declaration, the for-in desugar's `StructInit`, and
+/// `layout_mono`'s synthetic-decl seeding so the three can never disagree. The
+/// `for (k, v) in m` desugar constructs the literal with exactly these fields in
+/// this order: parallel key/value snapshot `Vec`s plus the cursor index.
+pub(crate) fn hashmap_iter_field_shape(
+    key_ty: &ResolvedTy,
+    val_ty: &ResolvedTy,
+) -> Vec<(String, ResolvedTy)> {
+    vec![
+        ("ks".to_string(), LowerCtx::resolved_vec_ty(key_ty.clone())),
+        ("vs".to_string(), LowerCtx::resolved_vec_ty(val_ty.clone())),
         ("idx".to_string(), ResolvedTy::I64),
     ]
 }
@@ -1159,7 +1180,7 @@ fn is_builtin_vec_iterator_impl(item: &Item) -> bool {
     };
     matches!(
         (trait_name, name.as_str()),
-        ("Iterator", "VecIter") | ("IntoIterator", "Vec")
+        ("Iterator", "VecIter" | "HashMapIter") | ("IntoIterator", "Vec")
     )
 }
 
@@ -17132,6 +17153,45 @@ impl LowerCtx {
         self.register_option_layout(operand_ty, span, "checked numeric method");
     }
 
+    /// Register the concrete `HashMapIter$$<K, V>` record layout for a for-in
+    /// site, mirroring `register_vec_iter_layout`. Skips abstract instantiations
+    /// (a type param leaks `Vec<K>`/`Vec<V>` to the MIR boundary as
+    /// `UnknownType`); the concrete layout for each instantiation is registered
+    /// here once the enclosing fn is substituted, and `layout_mono` seeds the
+    /// decl so the substituted walk also discovers it. Field shape comes from
+    /// the single `hashmap_iter_field_shape` authority.
+    fn register_hashmap_iter_layout(
+        &mut self,
+        key_ty: &ResolvedTy,
+        val_ty: &ResolvedTy,
+        span: &Span,
+    ) {
+        if self.contains_abstract_type_param(key_ty) || self.contains_abstract_type_param(val_ty) {
+            return;
+        }
+        let key = RecordMonoKey {
+            origin: SYNTHETIC_HASHMAP_ITER_ITEM,
+            origin_name: "HashMapIter".to_string(),
+            type_args: vec![key_ty.clone(), val_ty.clone()],
+        };
+        let fields = hashmap_iter_field_shape(key_ty, val_ty);
+        if self
+            .record_layout_registry
+            .insert(key, fields, span.clone())
+            .is_err()
+            && !self.record_layout_cap_diag_emitted
+        {
+            self.record_layout_cap_diag_emitted = true;
+            let cap = self.record_layout_registry.cap();
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::RecordLayoutCapExceeded { cap },
+                span.clone(),
+                "too many distinct HashMapIter<K, V> instantiations; the compiler refuses to \
+                 monomorphise beyond the configured record-layout cap",
+            ));
+        }
+    }
+
     fn register_vec_iter_layout(&mut self, elem_ty: &ResolvedTy, span: &Span) {
         // #1929 Stage 2: under a generic body the element is a declared type
         // parameter, so registering an ABSTRACT `VecIter$$<T>` layout here would
@@ -17582,6 +17642,96 @@ impl LowerCtx {
         )
     }
 
+    /// Build the for-in shape for `for (k, v) in m` over a `HashMap<K, V>`.
+    ///
+    /// Synthesizes a `HashMapIter<K, V> { ks: m.keys(), vs: m.values(), idx: 0 }`
+    /// constructor as AST and lowers it through the normal `StructInit` path so
+    /// the cursor's per-`(K, V)` layout monomorphises exactly like any user
+    /// record. The `keys()` call is spanned at the iterable; the `values()` call
+    /// at the pattern — the two distinct spans the checker recorded the
+    /// `keys`/`values` resolved-call facts at (`resolved_calls` is keyed by
+    /// span, so the two projections must not share one). Iteration then drives
+    /// `HashMapIter::next` via the same `VarSelf` direct-call shape user
+    /// iterator types use.
+    fn lower_hashmap_for_in_init(
+        &mut self,
+        iterable: &Spanned<Expr>,
+        key_ty: ResolvedTy,
+        val_ty: ResolvedTy,
+    ) -> (HirExpr, ResolvedTy, ResolvedTy, ForIterNextCall) {
+        let iterable_span = &iterable.1;
+        let elem_ty = ResolvedTy::Tuple(vec![key_ty.clone(), val_ty.clone()]);
+        let iter_ty = ResolvedTy::Named {
+            name: "HashMapIter".to_string(),
+            args: vec![key_ty.clone(), val_ty.clone()],
+            builtin: None,
+            is_opaque: false,
+        };
+        // Register the concrete cursor layout and the `Option<(K, V)>` next
+        // payload layout so MIR's field-order + value-class lookups resolve.
+        self.register_hashmap_iter_layout(&key_ty, &val_ty, iterable_span);
+        self.register_option_layout(&elem_ty, iterable_span, "HashMapIter::next");
+        // `m.keys()` at the iterable span; `m.values()` at the synthetic
+        // zero-width span the checker recorded its `values` resolved-call fact
+        // at. The derivation MUST match `Checker::hashmap_for_in_values_span`
+        // (hew-types) byte-for-byte: `resolved_calls`/`expr_types` are
+        // span-keyed, so a drift here would miss the checker's facts and trip
+        // the HIR boundary's totality contract. Each projection is lowered as a
+        // real `MethodCall` so it picks up the checker's `keys`/`values`
+        // resolved-call fact (→ the `hew_hashmap_keys_layout`/`values_layout`
+        // runtime symbols and their clone-on-read discipline).
+        let values_span = iterable_span.end..iterable_span.end;
+        let keys_call = (
+            Expr::MethodCall {
+                receiver: Box::new(iterable.clone()),
+                method: "keys".to_string(),
+                args: Vec::new(),
+            },
+            iterable_span.clone(),
+        );
+        let values_call = (
+            Expr::MethodCall {
+                receiver: Box::new(iterable.clone()),
+                method: "values".to_string(),
+                args: Vec::new(),
+            },
+            values_span,
+        );
+        // The projections produce fresh owned Vecs; the StructInit consumes
+        // them into the cursor.
+        let keys_hir = self.lower_expr(&keys_call, IntentKind::Consume);
+        let values_hir = self.lower_expr(&values_call, IntentKind::Consume);
+        let idx = self.make_i64_literal(0, iterable_span.clone());
+        // Build the `HashMapIter<K, V>` StructInit HIR directly (carrying its
+        // `type_args` so MIR mangles the concrete layout), mirroring
+        // `make_vec_iter_init`; the layout + Option payload were registered
+        // above.
+        let iter_init = self.make_expr(
+            HirExprKind::StructInit {
+                name: "HashMapIter".to_string(),
+                type_args: vec![key_ty, val_ty],
+                fields: vec![
+                    ("ks".to_string(), keys_hir),
+                    ("vs".to_string(), values_hir),
+                    ("idx".to_string(), idx),
+                ],
+                base: None,
+            },
+            iter_ty.clone(),
+            IntentKind::Read,
+            iterable_span.clone(),
+        );
+        let next_call = self
+            .generic_iterator_next_shape(&iter_ty, iterable_span)
+            .map_or(
+                ForIterNextCall::VarSelf(HirVarSelfMethodTarget::Direct {
+                    callee: crate::node::HirImplBlock::method_symbol("HashMapIter", "next"),
+                }),
+                |(_elem, target)| ForIterNextCall::VarSelf(target),
+            );
+        (iter_init, iter_ty, elem_ty, next_call)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "synthetic VecIter::next expansion must build the full caller-side state machine in HIR"
@@ -18010,6 +18160,26 @@ impl LowerCtx {
                 )
             }
             ResolvedTy::Named {
+                args,
+                builtin: Some(BuiltinType::HashMap),
+                ..
+            } if args.len() >= 2 => {
+                // `for (k, v) in m` over a HashMap builds a `HashMapIter`
+                // cursor at this concrete site from the map's `keys()` and
+                // `values()` projections (the checker recorded the resolved
+                // calls at the iterable span and the pattern span — see the
+                // HashMap arm in `check.rs` Stmt::For). The map is a refcounted
+                // handle; like Vec for-in, sharing it (Capture) leaves the
+                // source binding Live after the loop, and the projections each
+                // clone every key/value into a fresh owned `Vec`, so every
+                // yielded `(K, V)` is independently droppable and the cursor
+                // never co-owns a yielded pair with the source map.
+                lowered_iterable.intent = IntentKind::Capture;
+                let key_ty = args[0].clone();
+                let val_ty = args[1].clone();
+                self.lower_hashmap_for_in_init(iterable, key_ty, val_ty)
+            }
+            ResolvedTy::Named {
                 name,
                 args,
                 builtin: None,
@@ -18174,10 +18344,10 @@ impl LowerCtx {
                 );
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
                 self.register_option_layout(&elem_ty, &iterable.1, "generic Iterator::next");
-                self.make_expr(
+                let next_expr = self.make_expr(
                     HirExprKind::VarSelfMethodCall {
                         receiver: Box::new(receiver),
-                        target,
+                        target: target.clone(),
                         args: Vec::new(),
                         ret_ty: option_ty.clone(),
                         receiver_ty: iter_binding.ty.clone(),
@@ -18185,7 +18355,22 @@ impl LowerCtx {
                     option_ty,
                     IntentKind::Read,
                     iterable.1.clone(),
-                )
+                );
+                // Register the cursor's `<Iter>::next` monomorphisation at this
+                // call site so MIR finds a concrete body (the generic
+                // `into_iter` path does the same for its into_iter callee). The
+                // synthetic-cursor for-in paths (`HashMapIter`) reach MIR only
+                // through this VarSelf shape, so without the mono the next-call
+                // dispatch fails closed with "no MIR body in module_fn_names".
+                if let HirVarSelfMethodTarget::Direct { callee } = &target {
+                    self.record_var_self_direct_monomorphisation(
+                        callee,
+                        &iter_binding.ty,
+                        &iterable.1,
+                        next_expr.site,
+                    );
+                }
+                next_expr
             }
             ForIterNextCall::ChannelRecv => {
                 // Borrow the receiver binding (Read) so the loop binding remains

@@ -9739,63 +9739,67 @@ impl Builder {
                     }
                 }
 
-                // (1b) Projection-of-a-live-binding base reject (fail-closed).
-                // A `..base` that PROJECTS a field of a live binding
-                // (`{ ..o.inner, f: new }`) interior-aliases that binding's
-                // storage. Unlike a bare-binding base, the projection does NOT
-                // consume the root binding (`alias_moved_owned_operand` only
-                // marks a bare `BindingRef`, so `o` stays live) and the root is
-                // NOT excluded from its scope-exit drop. The OVERRIDDEN owned
-                // field is still destructively released at the construction site
-                // below — so the freed storage is reachable through
-                // `o.inner.<field>` (use-after-free) and is freed a second time
-                // when `o` drops (double-free).
+                // (1b) Fail-closed ALLOWLIST gate for the destructive base.
+                // The override-drop below frees an overridden owned field of
+                // `base` IN PLACE, and the non-overridden owned fields escape
+                // via shallow `RecordFieldLoad`. Both are sound ONLY when the
+                // base does not interior-alias storage that stays live after the
+                // update. Rather than denylist the unsafe projection shapes (a
+                // list that has repeatedly missed cases — `FieldAccess`, then
+                // `Index`, then `TupleIndex` — each a fresh use-after-free), the
+                // base must POSITIVELY prove safe via
+                // `base_is_safe_for_destructive_funcupdate`: a bare consume-
+                // marked binding, or a materialised owner with no live alias
+                // (call / `.clone()` result, `Vec` element `v[i]`, or a
+                // projection rooted at one). Any other base — a projection of a
+                // LIVE binding (`o.inner`, `t.0`, `o.pair.0`, nested), a
+                // machine-state field (`self.field`), a `Const`/`Item` ref, a
+                // deref, or any future expression form — is rejected. This is
+                // complete by construction: no base shape can slip the gate.
                 //
-                // Only OWNED-aggregate projection bases reach the override-drop
-                // path, so the reject is gated on `aggregate_ingress_moves_-
-                // binding_ty`: a `BitCopy` projection base bit-copies and stays
-                // valid. Bases that are NOT a projection of a live binding are
-                // unaffected: a bare-binding base is consumed (handled above);
-                // an owned rvalue / temporary base (`makeInner()`,
-                // `makeOuter().inner` — rooted at a call, not a binding) has no
-                // surviving named alias; an indexed base (`v[i]`) materialises an
-                // independent element value rather than an interior alias. Until
-                // the deep field-move (COW) value model lands, reject with
-                // clone / bind-first guidance — the fail-closed safe outcome,
-                // matching the self-aliasing-override reject above.
+                // Only OWNED-aggregate bases reach the override-drop / shallow-
+                // carry path, so the gate is type-fenced by
+                // `aggregate_ingress_moves_binding_ty`: a `BitCopy` base
+                // bit-copies and stays valid regardless of shape.
                 if let Some(base_expr) = base.as_deref() {
-                    if Self::functional_update_base_projects_live_binding(base_expr) {
-                        let base_ty = self.subst_ty(&base_expr.ty);
-                        if self.aggregate_ingress_moves_binding_ty(&base_ty) {
-                            // Walk every sub-expression for checker-stream
-                            // coverage before bailing, mirroring the paths above.
-                            for (_, fe) in fields {
-                                let _ = self.lower_value(fe);
-                            }
-                            let _ = self.lower_value(base_expr);
-                            self.diagnostics.push(MirDiagnostic {
-                                kind: MirDiagnosticKind::NotYetImplemented {
-                                    construct: "functional-update base projecting a live binding"
-                                        .to_string(),
-                                    site: expr.site,
-                                },
-                                note: format!(
-                                    "the `..base` of `{name}` projects a field of a live binding \
-                                     (`<binding>.<field>`) whose owned record would be consumed \
-                                     in place by the update: an overridden owned field is released \
-                                     at the construction site while the binding stays live, so a \
-                                     later read (`<binding>.<field>...`) or the binding's \
-                                     scope-exit drop would touch freed memory. Bind the projection \
-                                     into its own variable first \
-                                     (`let b = <binding>.<field>; {name} {{ ..b, <field>: new }}`) \
-                                     or clone the overridden field; a bare-binding base \
-                                     (`{name} {{ ..base, <field>: new }}`) is consumed safely. \
-                                     (The COW value model that keeps the source live after an \
-                                     update is not yet implemented.)"
-                                ),
-                            });
-                            return None;
+                    let base_ty = self.subst_ty(&base_expr.ty);
+                    if self.aggregate_ingress_moves_binding_ty(&base_ty)
+                        && !Self::base_is_safe_for_destructive_funcupdate(base_expr)
+                    {
+                        // Walk every sub-expression for checker-stream
+                        // coverage before bailing, mirroring the paths above.
+                        for (_, fe) in fields {
+                            let _ = self.lower_value(fe);
                         }
+                        let _ = self.lower_value(base_expr);
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct:
+                                    "functional-update base that is not a binding or owned value"
+                                        .to_string(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "the `..base` of `{name}` is neither a bare binding (consumed \
+                                 in place by the update) nor a freshly-owned value, so it \
+                                 interior-aliases storage that stays live after the update — a \
+                                 field projection of a live binding (`b.field`, `b.0`, \
+                                 `t.0.field`), a machine-state field (`self.field`), or another \
+                                 aliasing shape. The update's in-place release of an overridden \
+                                 owned field (and the shallow carry of the non-overridden owned \
+                                 fields) would then free memory the live owner still references \
+                                 — a use-after-free, and a double-free at its scope-exit drop. \
+                                 Clone the base into a fresh owned value \
+                                 (`{name} {{ ..<base>.clone(), <field>: new }}`), or clone the \
+                                 overridden field. (Binding the projection first — \
+                                 `let b = <base>` — does NOT help: it re-aliases the same \
+                                 storage. Accepted as-is: a bare owned-binding base (`..base`), \
+                                 and an owned-rvalue base — a call result or a `Vec` element \
+                                 `v[i]`.) The COW value model that keeps a projected source live \
+                                 after an update is not yet implemented."
+                            ),
+                        });
+                        return None;
                     }
                 }
 
@@ -9926,19 +9930,24 @@ impl Builder {
                 // reader:
                 //   * a bare-binding base is consume-marked (`AggregateAlias`),
                 //     so the move-checker rejects any later read of it;
-                //   * a projection of a live binding is REJECTED above
-                //     (fail-closed); and
-                //   * a temporary / rvalue base has no surviving named alias.
-                // Assert the first arm explicitly: if an owned-aggregate base
-                // BINDING reaches an override-drop WITHOUT a consume mark, some
-                // future change (e.g. admitting an opaque-handle record as
-                // `CowValue`, which would make `alias_moved_owned_operand`
-                // skip it) has silently reopened the use-after-free. The base
-                // consume and the override-drop are coupled invariants and must
-                // ship together.
+                //   * a materialised owner (call / `.clone()` result, `Vec`
+                //     element) has no surviving named alias; and
+                //   * any other base shape is REJECTED by the allowlist gate
+                //     (1b) above (fail-closed).
+                // Assert BOTH coupled invariants at EVERY override-drop site:
+                //   (A) the base passed `base_is_safe_for_destructive_funcupdate`
+                //       — reaching an override-drop with an unsafe base means the
+                //       (1b) allowlist gate was bypassed (a new expr form, a
+                //       refactor) and the UAF is reopened; and
+                //   (B) for the bare-binding sub-case, the consume mark actually
+                //       fired — the allowlist returns true for ANY binding shape,
+                //       but that arm's safety depends on `alias_moved_owned_-
+                //       operand` having emitted the `AggregateAlias` (a record
+                //       newly admitted as `CowValue` would be skipped, silently
+                //       reopening the UAF — the predicate-coupling guard).
                 #[cfg(debug_assertions)]
                 if base_place.is_some() {
-                    if let Some(base_id) = base_binding {
+                    if let Some(base_expr) = base.as_deref() {
                         let emits_override_drop = field_order.iter().any(|(fname, fty)| {
                             explicit.contains_key(fname.as_str())
                                 && self
@@ -9946,22 +9955,34 @@ impl Builder {
                                     .is_some()
                         });
                         if emits_override_drop {
-                            let consume_marked = self.statements.iter().any(|stmt| {
-                                matches!(
-                                    stmt,
-                                    MirStatement::AggregateAlias { binding, .. }
-                                        if *binding == base_id
-                                )
-                            });
+                            // (A) Allowlist backstop — fires for every base shape.
                             debug_assert!(
-                                consume_marked,
-                                "functional-update override-drop on base binding {base_id:?} that \
-                                 was NOT consume-marked: the in-place field release would be a \
-                                 use-after-free. The base consume (`alias_moved_owned_operand`) \
-                                 and the override-drop are coupled invariants — a change that \
-                                 admits an owned-aggregate base without the `AggregateAlias` mark \
-                                 has reopened the UAF."
+                                Self::base_is_safe_for_destructive_funcupdate(base_expr),
+                                "functional-update override-drop on a base that did NOT pass \
+                                 `base_is_safe_for_destructive_funcupdate`: the in-place field \
+                                 release would be a use-after-free. The allowlist gate (1b) and \
+                                 the override-drop are coupled invariants — a change that admits \
+                                 an unsafe base shape has reopened the UAF."
                             );
+                            // (B) Bare-binding sub-case: assert the consume fired.
+                            if let Some(base_id) = base_binding {
+                                let consume_marked = self.statements.iter().any(|stmt| {
+                                    matches!(
+                                        stmt,
+                                        MirStatement::AggregateAlias { binding, .. }
+                                            if *binding == base_id
+                                    )
+                                });
+                                debug_assert!(
+                                    consume_marked,
+                                    "functional-update override-drop on base binding {base_id:?} \
+                                     that was NOT consume-marked: the in-place field release would \
+                                     be a use-after-free. The base consume \
+                                     (`alias_moved_owned_operand`) and the override-drop are \
+                                     coupled invariants — a change that admits an owned-aggregate \
+                                     base without the `AggregateAlias` mark has reopened the UAF."
+                                );
+                            }
                         }
                     }
                 }
@@ -24436,48 +24457,114 @@ impl Builder {
         }
     }
 
-    /// True when a functional-update base, peeled of transparent tail-only
-    /// blocks, is a field PROJECTION whose object chain bottoms out at a live
-    /// local binding (`o.inner`, `o.a.b`) — as opposed to a temporary, call,
-    /// or indexed value.
+    /// Fail-closed ALLOWLIST for the destructive functional-update base.
     ///
-    /// Such a base interior-aliases the binding's storage: the binding stays
-    /// live (a projection is not consume-marked by `alias_moved_owned_operand`,
-    /// which only marks a bare `BindingRef`) yet the update's override-drop
-    /// would destructively free a field the binding still owns. The caller
-    /// rejects these bases (fail-closed) when the projected type is an owned
-    /// aggregate. A base rooted at a CALL (`makeOuter().inner`) is a consumed
-    /// temporary with no surviving named alias and is NOT flagged; an INDEXED
-    /// base (`v[i]`) materialises an independent element value, also not an
-    /// interior alias of a surviving binding.
-    fn functional_update_base_projects_live_binding(base: &HirExpr) -> bool {
+    /// An owned-record `..base` consumes the base in place: its non-overridden
+    /// owned fields escape via shallow `RecordFieldLoad` into the new record,
+    /// and its OVERRIDDEN owned fields are destructively released at the
+    /// construction site (the override-drop). Both operations are sound ONLY
+    /// when the base does not interior-alias storage that stays live after the
+    /// update. Rather than enumerate the unsafe shapes (a denylist that has
+    /// repeatedly missed cases — `FieldAccess`, then `Index`, then `TupleIndex`
+    /// — each a fresh use-after-free), this admits a base ONLY when it is
+    /// PROVABLY safe and rejects everything else, so no projection shape — now
+    /// or as new expression forms are added — can silently reopen the UAF.
+    ///
+    /// A base is provably safe in exactly two ways:
+    ///   (a) a bare live `BindingRef` — `alias_moved_owned_operand` consume-
+    ///       marks it, so the move-checker rejects any later read and the
+    ///       binding is excluded from its scope-exit drop: its fields are dead
+    ///       after the update; or
+    ///   (b) a materialised owner with no live named alias — a call/method/
+    ///       clone result (`makeInner()`, `o.inner.clone()`), a `Vec<T>`
+    ///       element load (`v[i]`) or slice, or a projection whose object chain
+    ///       bottoms out at one of those (`makeOuter().inner`,
+    ///       `o.items[0].inner`). See `expr_is_materialized_owner`.
+    ///
+    /// ANY other base — a projection of a LIVE binding (`o.inner`, `t.0`,
+    /// `o.pair.0`, `t.0.inner`, nested), a machine-state field (`self.field`),
+    /// a `Const`/`Item` ref, a deref, an `if`/`match` value, or any future
+    /// expression form — is NOT provably safe and is rejected fail-closed.
+    fn base_is_safe_for_destructive_funcupdate(base: &HirExpr) -> bool {
         match &base.kind {
-            // Peel a transparent tail-only block wrapper (`{ o.inner }`).
+            // Peel a transparent tail-only block wrapper (`{ ..; b }`).
             HirExprKind::Block(block) if block.statements.is_empty() => block
                 .tail
                 .as_deref()
-                .is_some_and(Self::functional_update_base_projects_live_binding),
-            // A field projection whose object chain roots at a live binding.
-            HirExprKind::FieldAccess { object, .. } => {
-                Self::projection_object_roots_at_live_binding(object)
-            }
-            _ => false,
-        }
-    }
-
-    /// Recurse through a projection's object chain (peeling only further
-    /// `FieldAccess`) to decide whether it bottoms out at a bare live
-    /// `BindingRef`. An `Index`, call, or any other root short-circuits to
-    /// false — those are not interior aliases of a surviving named binding.
-    fn projection_object_roots_at_live_binding(object: &HirExpr) -> bool {
-        match &object.kind {
+                .is_some_and(Self::base_is_safe_for_destructive_funcupdate),
+            // (a) Bare live binding — consume-marked, fields dead after update.
             HirExprKind::BindingRef {
                 resolved: ResolvedRef::Binding(_),
                 ..
             } => true,
-            HirExprKind::FieldAccess { object, .. } => {
-                Self::projection_object_roots_at_live_binding(object)
-            }
+            // (b) Materialised owner / temporary with no live named alias.
+            _ => Self::expr_is_materialized_owner(base),
+        }
+    }
+
+    /// True when `expr` evaluates to a freshly MATERIALISED owner — a value in
+    /// its own storage that does not alias any surviving named binding's inline
+    /// fields. Used for the `(b)` arm of the funcupdate base allowlist and to
+    /// recurse a projection's object chain.
+    ///
+    /// Materialised owners:
+    ///   * a call / method / `.clone()` result — a fresh value written into its
+    ///     own return slot (`Call`, the four method-call variants,
+    ///     `RecordCloneCall`);
+    ///   * a `Vec<T>` element load (`v[i]`) or slice (`v[a..b]`). The element
+    ///     is independent of any live binding: `hew_vec_push_owned` deep-clones
+    ///     each element on insert (`clone_fn`) and the buffer carries its own
+    ///     refcount, so the override-drop's in-place release of an element
+    ///     field decrements a shared count rather than freeing storage a live
+    ///     binding still references. (NOTE: `hew_vec_get_owned` itself returns a
+    ///     BORROW into the buffer, not a clone — the safety comes from the
+    ///     push-time deep clone + refcount, not from a materialising getter.
+    ///     `Index` is checker-restricted to `Vec<T>`; a future aliasing
+    ///     container would need re-evaluation here.)
+    ///
+    /// A projection (`expr.field`, `expr.0`) is materialised ONLY when its
+    /// object chain bottoms out at a materialised owner — `makeOuter().inner`
+    /// is safe, `o.inner` (rooted at a live binding) is not.
+    ///
+    /// EVERY other form — a `BindingRef` (live local, `Const`, or `Item`), a
+    /// `MachineFieldAccess` (`self.field`), a deref, an `if`/`match`, or any
+    /// expression form added later — returns false (fail closed).
+    // The owned-rvalue arm and the `Index`/`Slice` arm both yield `true` but
+    // are kept separate: they admit a base for DIFFERENT safety reasons (a
+    // call result is a fresh return-slot value; a `Vec` element is heap-
+    // independent via push-clone + refcount). Merging them would erase that
+    // distinction in a security-critical allowlist.
+    #[allow(
+        clippy::match_same_arms,
+        reason = "distinct safety rationales per arm in a security-critical allowlist"
+    )]
+    fn expr_is_materialized_owner(expr: &HirExpr) -> bool {
+        match &expr.kind {
+            // Peel a transparent tail-only block wrapper.
+            HirExprKind::Block(block) if block.statements.is_empty() => block
+                .tail
+                .as_deref()
+                .is_some_and(Self::expr_is_materialized_owner),
+            // Owned rvalues: a call / method / clone result is a fresh value
+            // materialised into its own slot. Conservatively limited to the
+            // call-like variants whose result is an owned value; any unlisted
+            // form fails closed.
+            HirExprKind::Call { .. }
+            | HirExprKind::CallDynMethod { .. }
+            | HirExprKind::CallTraitMethodStatic { .. }
+            | HirExprKind::VarSelfMethodCall { .. }
+            | HirExprKind::ResolvedImplCall { .. }
+            | HirExprKind::RecordCloneCall { .. } => true,
+            // A `Vec<T>` element load / slice — an independent heap element
+            // (see the push-clone + refcount note above), not an interior alias
+            // of a surviving named binding.
+            HirExprKind::Index { .. } | HirExprKind::Slice { .. } => true,
+            // A projection is materialised iff its object chain is.
+            HirExprKind::FieldAccess { object, .. } => Self::expr_is_materialized_owner(object),
+            HirExprKind::TupleIndex { tuple, .. } => Self::expr_is_materialized_owner(tuple),
+            // Bare/`Const` binding ref, machine-state field projection, deref,
+            // `if`/`match`, or any future expression form — not provably a
+            // materialised owner. Fail closed.
             _ => false,
         }
     }

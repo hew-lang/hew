@@ -30,18 +30,31 @@
 //! miscompiled; turning them into compile errors is the fix's headline
 //! observable.
 //!
-//! ## Base-shape fixtures (projection / temporary / index / rvalue)
+//! ## Base-shape fixtures — fail-closed ALLOWLIST (projection / index / rvalue)
 //!
-//! A `..base` whose base is a PROJECTION of a live binding (`{ ..o.inner,
-//! f: new }`) interior-aliases that binding's storage: the binding stays live
-//! (a projection is not consume-marked), yet the overridden owned field is
-//! released in place — a use-after-free of `o.inner.<field>` and a double-free
-//! at `o`'s scope-exit drop. That shape is rejected fail-closed
-//! (`NotYetImplemented`). The base shapes that are NOT interior aliases of a
-//! surviving binding stay legal and run clean: an owned rvalue base
-//! (`{ ..makeInner(), f: new }`), a projection of a TEMPORARY
-//! (`{ ..makeOuter().inner, f: new }` — rooted at a call), and an INDEXED base
-//! (`{ ..v[i], f: new }` — materialises an independent element).
+//! The destructive base is gated by a fail-closed ALLOWLIST
+//! (`base_is_safe_for_destructive_funcupdate`): the override-drop and the
+//! shallow carry proceed ONLY when the base is PROVABLY safe — a bare
+//! consume-marked binding, or a materialised owner with no live alias (a
+//! call / `.clone()` result, a `Vec` element `v[i]`, or a projection rooted at
+//! one). EVERY other base is rejected `NotYetImplemented`. This replaced an
+//! earlier denylist that enumerated unsafe projection shapes and repeatedly
+//! missed cases: `FieldAccess` (`..o.inner`), then `Index`, then `TupleIndex`
+//! (`..t.0`, which lowers to an aliasing `TupleFieldLoad`) — each a fresh
+//! use-after-free of the projected field plus a double-free at the live
+//! binding's scope-exit drop. The allowlist is complete by construction: no
+//! projection shape — field, tuple-index, nested, machine-state (`self.field`),
+//! or any future expr form — can slip.
+//!
+//! Rejected (interior-alias a live binding): `..o.inner`, `..t.0`,
+//! `..o.pair.0`, `..t.0.inner`, and a machine-state `..self.payload`. Accepted
+//! (consumed binding or materialised owner): a bare base (`..base`), an owned
+//! rvalue (`..makeInner()`), a projection of a temporary (`..makeOuter().inner`
+//! — rooted at a call), an indexed base (`..v[i]`), a projection through an
+//! index (`..o.items[0].inner`), and the `.clone()` escape hatch
+//! (`..o.inner.clone()`). The authoritative memory-safety oracle is the
+//! external Guard-Malloc + `MallocScribble` repro matrix (the in-suite `run`
+//! fixtures use plain malloc).
 //!
 //! ## Owned-aggregate override + closure-pair / Generator inline-drop
 //!
@@ -254,9 +267,9 @@ fn main() {
         "projection-of-live-binding base must fail check; got success:\n{out}"
     );
     assert!(
-        out.contains("projecting a live binding")
-            || out.contains("projects a field of a live binding"),
-        "expected the projection-of-live-binding NotYetImplemented; got:\n{out}"
+        out.contains("not a binding or owned value")
+            && out.contains("field projection of a live binding"),
+        "expected the fail-closed allowlist NotYetImplemented; got:\n{out}"
     );
 }
 
@@ -287,9 +300,173 @@ fn main() {
         "projection-of-live-binding carry-only base must fail check; got success:\n{out}"
     );
     assert!(
-        out.contains("projecting a live binding")
-            || out.contains("projects a field of a live binding"),
-        "expected the projection-of-live-binding NotYetImplemented; got:\n{out}"
+        out.contains("not a binding or owned value")
+            && out.contains("field projection of a live binding"),
+        "expected the fail-closed allowlist NotYetImplemented; got:\n{out}"
+    );
+}
+
+// ── reject: TupleIndex / nested / machine-state projection bases ────────────
+//
+// These pin the STRUCTURAL fix: the destructive base allowlist
+// (`base_is_safe_for_destructive_funcupdate`). The prior denylist enumerated
+// only `FieldAccess` projections, so a base that projects an owned record out
+// of a live binding through a `TupleIndex` (`..t.0`) — which lowers to an
+// aliasing `TupleFieldLoad`, not a materialising clone — slipped through and
+// reopened the use-after-free. The allowlist admits a base ONLY when it is a
+// bare consume-marked binding or a materialised owner, so EVERY projection of
+// a live binding (field, tuple-index, nested, machine-state) is rejected by
+// construction.
+
+/// `..t.0` override: a `TupleIndex` projection of a live tuple binding. The
+/// overridden owned `label` would be released in place on `t.0` while `t`
+/// stays live — a use-after-free of `t.0.label` and a double-free at `t`'s
+/// scope-exit drop. (The `TupleIndex` use-after-free this fix closes.)
+#[test]
+fn reject_tuple_index_of_live_binding_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+fn main() {
+    let t = (Inner { label: string.repeat("a", 32), n: 1 }, 7);
+    let u = Inner { label: string.repeat("b", 32), ..t.0 };
+    println(u.label);
+    println(t.0.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "tuple-index-of-live-binding base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value"),
+        "expected the fail-closed allowlist NotYetImplemented; got:\n{out}"
+    );
+}
+
+/// `..t.0` carry-only: overrides only the `BitCopy` `n`, CARRIES the owned
+/// `label`. The carry is a shallow `RecordFieldLoad` aliasing `t.0.label`
+/// while `t` stays live — `u` and `t.0` share one buffer, double-freed at
+/// scope exit. Rejected on the base TYPE (owned aggregate), not the overridden
+/// field.
+#[test]
+fn reject_tuple_index_of_live_binding_base_carry_only() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+fn main() {
+    let t = (Inner { label: string.repeat("a", 32), n: 1 }, 7);
+    let u = Inner { n: 5, ..t.0 };
+    println(u.label);
+    println(t.0.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "tuple-index carry-only base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value"),
+        "expected the fail-closed allowlist NotYetImplemented; got:\n{out}"
+    );
+}
+
+/// `..o.pair.0`: a `TupleIndex` reached THROUGH a `FieldAccess` of a live
+/// binding. The projection chain bottoms out at the live `o`, so it aliases
+/// `o.pair.0`'s storage. Rejected fail-closed.
+#[test]
+fn reject_tuple_index_through_field_of_live_binding_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { pair: (Inner, i64), tag: i64 }
+fn main() {
+    let o = Outer { pair: (Inner { label: string.repeat("a", 32), n: 1 }, 7), tag: 9 };
+    let u = Inner { label: string.repeat("b", 32), ..o.pair.0 };
+    println(u.label);
+    println(o.pair.0.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "tuple-index-through-field base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value"),
+        "expected the fail-closed allowlist NotYetImplemented; got:\n{out}"
+    );
+}
+
+/// `..t.0.inner`: a `FieldAccess` reached THROUGH a `TupleIndex` of a live
+/// binding. The chain bottoms out at the live `t`, so it aliases
+/// `t.0.inner`'s storage. Rejected fail-closed.
+#[test]
+fn reject_field_through_tuple_index_of_live_binding_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Mid { inner: Inner, k: i64 }
+fn main() {
+    let t = (Mid { inner: Inner { label: string.repeat("a", 32), n: 1 }, k: 3 }, 7);
+    let u = Inner { label: string.repeat("b", 32), ..t.0.inner };
+    println(u.label);
+    println(t.0.inner.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "field-through-tuple-index base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value"),
+        "expected the fail-closed allowlist NotYetImplemented; got:\n{out}"
+    );
+}
+
+/// `..self.payload`: a machine-state field projection (`MachineFieldAccess`)
+/// inside a reenter transition, where `payload` is an owned record. This is a
+/// SECOND shape the old `FieldAccess`-only denylist missed (`MachineFieldAccess`
+/// is a distinct HIR variant). The projection aliases the live machine state's
+/// payload storage; the override-drop would free it in place. Rejected
+/// fail-closed by the allowlist (which admits only bindings / materialised
+/// owners). A `BitCopy` payload base is exempt (no override-drop) and is NOT
+/// rejected — the destructive base allowlist is type-fenced on the base being
+/// an owned aggregate.
+#[test]
+fn reject_machine_state_field_projection_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+machine Holder {
+    events { Bump; }
+    state Empty;
+    state Full { payload: Inner; }
+    on Bump: Empty => Full {
+        Full { payload: Inner { label: string.repeat("a", 32), n: 1 } }
+    }
+    on Bump: Full => Full reenter {
+        Full { payload: Inner { label: string.repeat("b", 32), ..self.payload } }
+    }
+}
+fn main() {
+    var m = Empty;
+    m.step(Bump);
+    m.step(Bump);
+    println(m.state_name());
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "machine-state field projection base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value") && out.contains("self.field"),
+        "expected the fail-closed allowlist NotYetImplemented naming self.field; got:\n{out}"
     );
 }
 
@@ -376,10 +553,14 @@ fn main() {
     );
 }
 
-/// An INDEXED base (`{ ..v[0], f: new }`): indexing materialises an
-/// independent element value, so the overridden field released in the new
-/// record does not dangle `v[0]`. Must `check` and `run` cleanly, and the
-/// source element stays intact.
+/// An INDEXED base (`{ ..v[0], f: new }`): a `Vec<T>` element load. The
+/// element is independent of any live binding — `hew_vec_push_owned`
+/// deep-clones on insert and the buffer carries its own refcount, so the
+/// override-drop's in-place release decrements a shared count rather than
+/// freeing storage `v[0]` still references. Must `check` and `run` cleanly
+/// with the source element's OWNED `label` left intact (not just the `BitCopy`
+/// `n`). (The external Guard-Malloc matrix is the authoritative oracle; this
+/// reads the owned field under plain malloc as a coarse in-suite check.)
 #[test]
 fn accept_index_of_live_binding_base_runs_clean() {
     require_codegen();
@@ -390,15 +571,80 @@ fn main() {
     let v: Vec<Inner> = Vec::new();
     v.push(Inner { label: string.repeat("a", 32), n: 7 });
     let u = Inner { label: string.repeat("b", 32), ..v[0] };
-    println(u.n);
+    println(u.label);
+    println(v[0].label);
     println(v[0].n);
 }
 "#;
     let (ok, out) = hew_run(source);
     assert!(ok, "indexed base must run cleanly; got:\n{out}");
     assert!(
-        out.matches('7').count() >= 2,
-        "indexed base should carry n=7 and leave v[0] intact; got:\n{out}"
+        out.contains(&"b".repeat(32)),
+        "indexed base should apply the override label; got:\n{out}"
+    );
+    assert!(
+        out.contains(&"a".repeat(32)),
+        "indexed base should leave v[0]'s owned label intact; got:\n{out}"
+    );
+    assert!(
+        out.contains('7'),
+        "indexed base should carry n=7; got:\n{out}"
+    );
+}
+
+/// A projection THROUGH an index (`{ ..o.items[0].inner, f: new }`): the chain
+/// bottoms out at a `Vec` element load, which materialises an independent
+/// owner — NOT an alias of the live binding `o`. Must `check` and `run`
+/// cleanly (the allowlist recurses the projection to the `Index` root).
+#[test]
+fn accept_field_through_index_base_runs_clean() {
+    require_codegen();
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Mid { inner: Inner, k: i64 }
+record Outer { items: Vec<Mid>, tag: i64 }
+fn main() {
+    let v: Vec<Mid> = Vec::new();
+    v.push(Mid { inner: Inner { label: string.repeat("a", 32), n: 7 }, k: 3 });
+    let o = Outer { items: v, tag: 9 };
+    let u = Inner { label: string.repeat("b", 32), ..o.items[0].inner };
+    println(u.label);
+    println(o.items[0].inner.label);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(ok, "field-through-index base must run cleanly; got:\n{out}");
+    assert!(
+        out.contains(&"a".repeat(32)) && out.contains(&"b".repeat(32)),
+        "field-through-index base should apply override and leave source intact; got:\n{out}"
+    );
+}
+
+/// The `.clone()` escape hatch the reject diagnostic recommends: cloning a
+/// projection of a live binding (`..o.inner.clone()`) materialises a fresh
+/// owned value (`RecordCloneCall`), which the allowlist admits. Must `check`
+/// and `run` cleanly with the source binding left intact — this is the
+/// sanctioned rewrite for the rejected `..o.inner` shape.
+#[test]
+fn accept_clone_of_projection_base_runs_clean() {
+    require_codegen();
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn main() {
+    let o = Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 };
+    let u = Inner { label: string.repeat("b", 32), ..o.inner.clone() };
+    println(u.label);
+    println(o.inner.label);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(ok, "clone-of-projection base must run cleanly; got:\n{out}");
+    assert!(
+        out.contains(&"a".repeat(32)) && out.contains(&"b".repeat(32)),
+        "clone-of-projection base should apply override and leave source intact; got:\n{out}"
     );
 }
 

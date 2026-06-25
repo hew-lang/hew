@@ -1,0 +1,16 @@
+// Vertical slice: split("café", "") → ["c", "a", "f", "é"].
+//
+// "café" is 5 bytes but 4 Unicode codepoints. The empty-separator split must
+// yield 4 elements, with "é" (U+00E9, two UTF-8 bytes) as a single element —
+// never split into its raw bytes. Each element must be a well-formed UTF-8
+// string; the test asserts both count and exact element values.
+import std::string;
+
+fn main() {
+    let parts = string.split("café", "");
+    assert_eq(parts.len(), 4);
+    assert_eq(parts[0], "c");
+    assert_eq(parts[1], "a");
+    assert_eq(parts[2], "f");
+    assert_eq(parts[3], "é");
+}

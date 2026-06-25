@@ -1,0 +1,10 @@
+// Vertical slice: split("", "") → empty Vec.
+//
+// Splitting the empty string with an empty separator produces no elements.
+// This is the consistent degenerate case: no codepoints to iterate over.
+import std::string;
+
+fn main() {
+    let parts = string.split("", "");
+    assert_eq(parts.len(), 0);
+}

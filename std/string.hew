@@ -556,9 +556,9 @@ pub fn replace(s: string, old: string, new_val: string) -> string {
 
 /// Split a string by `sep` into a list of substrings.
 ///
-/// An empty separator returns a single-element list containing the
-/// original string unchanged (mirrors the FFI behaviour).
-/// A trailing delimiter produces a trailing empty element.
+/// An empty separator splits the string into its individual Unicode characters
+/// (one element per codepoint). Empty input with an empty separator returns an
+/// empty list. A trailing delimiter produces a trailing empty element.
 ///
 /// # Examples
 ///
@@ -567,14 +567,22 @@ pub fn replace(s: string, old: string, new_val: string) -> string {
 ///
 /// let parts = string.split("a,b,c", ",");  // ["a", "b", "c"]
 /// let trail = string.split("a,b,", ",");   // ["a", "b", ""]
-/// let empty = string.split("x", "");       // ["x"]
+/// let chars = string.split("café", "");    // ["c", "a", "f", "é"]
+/// let empty = string.split("", "");        // []
 /// ```
 pub fn split(s: string, sep: string) -> Vec<string> {
     let result: Vec<string> = Vec::new();
     let slen = s.len();
     let dlen = sep.len();
     if dlen == 0 {
-        result.push(s);
+        // Split into individual Unicode codepoints.
+        // char_count_utf8 returns the number of Unicode scalar values; for ASCII
+        // strings this equals len(). codepoint_at_utf8(i) returns the i-th scalar.
+        let nchars = s.char_count_utf8();
+        for i in 0 .. nchars {
+            let cp = s.codepoint_at_utf8(i);
+            result.push(from_char(cp));
+        }
         return result;
     }
     var start = 0;

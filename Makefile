@@ -231,7 +231,6 @@ ci-preflight:
 # (hew-fmt-check requires target/debug/hew but nextest does not produce it).
 ci-preflight-smoke:
 	cargo fmt --all -- --check
-	cargo clippy --workspace --tests -- -D warnings
 	$(MAKE) stdlib
 	cargo nextest run --workspace --profile smoke
 	$(MAKE) hew

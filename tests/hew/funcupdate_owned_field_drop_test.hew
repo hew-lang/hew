@@ -1,16 +1,19 @@
 //! Regression tests: functional-update syntax `{ ..base, field: new }` must
 //! drop the old owned value of the overridden field, not leak it.
 //!
-//! Before the fix (`hew-mir/src/lower.rs` NYI #14), overriding a `string`,
-//! `bytes`, or `Vec<T>` field in a functional-update expression never called
-//! `hew_string_drop` / `hew_bytes_drop` / `hew_vec_free*` for the REPLACED
-//! value. The new record owned the replacement; the old allocation leaked
-//! permanently — one heap node per loop iteration.
+//! Before the fix (the functional-update overridden-owned-field leak in
+//! `hew-mir/src/lower.rs`), overriding a `string`, `bytes`, or `Vec<T>`
+//! field in a functional-update expression never called `hew_string_drop`
+//! / `hew_bytes_drop` / `hew_vec_free*` for the REPLACED value. The new
+//! record owned the replacement; the old allocation leaked permanently —
+//! one heap node per loop iteration.
 //!
 //! After the fix, `lower_value`'s `HirExprKind::StructInit { base: Some(_) }`
-//! arm emits a `RecordFieldLoad` + inline `Instr::Drop` for each overridden
-//! field whose type has a known leaf release symbol, before the `RecordInit`
-//! that builds the new record.
+//! arm releases each overridden owned field's OLD value before the
+//! `RecordInit` that builds the new record: a single-pointer COW field
+//! (`string` / `Vec<T>` / `HashMap` / `HashSet`) via `Instr::RecordFieldDrop`,
+//! the fat `bytes` triple via `RecordFieldLoad` + inline `Instr::Drop`. The
+//! release is sound because `..base` consumes the base.
 //!
 //! These tests verify correctness (not just non-crash): the new field value
 //! is the replacement, the non-overridden fields carry over intact, and the
@@ -29,6 +32,16 @@ record FlatConfig {
 record VecHolder {
     items: Vec<i64>,
     tag: string,
+}
+
+record MapHolder {
+    m: HashMap<string, i64>,
+    tag: i64,
+}
+
+record SetHolder {
+    s: HashSet<i64>,
+    tag: i64,
 }
 
 /// Overriding a `string` field replaces the heap buffer each iteration.
@@ -95,4 +108,43 @@ fn test_funcupdate_multi_field_override_drops_old() {
     }
     testing.assert_eq(s.items.len(), 1);
     testing.assert_eq_str(s.tag, string.repeat("y", 8));
+}
+
+/// Overriding a `HashMap` field releases the old map (single-pointer COW
+/// handle) via `RecordFieldDrop` (`hew_hashmap_free_layout`) each iteration.
+/// The non-overridden `tag` carries over from the base.
+#[test]
+fn test_funcupdate_hashmap_field_override_drops_old() {
+    let init: HashMap<string, i64> = HashMap::new();
+    init.insert("seed", 1);
+    var h = MapHolder { m: init, tag: 42 };
+    var i = 0;
+    while i < 12 {
+        let next: HashMap<string, i64> = HashMap::new();
+        next.insert("k", i);
+        h = MapHolder { m: next, ..h };
+        i = i + 1;
+    }
+    // Non-overridden `tag` carries over from base each iteration.
+    testing.assert_eq(h.tag, 42);
+    // Final map has the last iteration's single entry.
+    testing.assert_eq(h.m.len(), 1);
+}
+
+/// Overriding a `HashSet` field releases the old set (single-pointer COW
+/// handle) via `RecordFieldDrop` (`hew_hashset_free_layout`) each iteration.
+#[test]
+fn test_funcupdate_hashset_field_override_drops_old() {
+    let init: HashSet<i64> = HashSet::<i64>::new();
+    init.insert(99);
+    var h = SetHolder { s: init, tag: 7 };
+    var i = 0;
+    while i < 12 {
+        let next: HashSet<i64> = HashSet::<i64>::new();
+        next.insert(i);
+        h = SetHolder { s: next, ..h };
+        i = i + 1;
+    }
+    testing.assert_eq(h.tag, 7);
+    testing.assert_eq(h.s.len(), 1);
 }

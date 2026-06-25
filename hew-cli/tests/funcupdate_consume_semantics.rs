@@ -29,6 +29,32 @@
 //! The two reject fixtures are the empirical P0 repros that originally
 //! miscompiled; turning them into compile errors is the fix's headline
 //! observable.
+//!
+//! ## Base-shape fixtures (projection / temporary / index / rvalue)
+//!
+//! A `..base` whose base is a PROJECTION of a live binding (`{ ..o.inner,
+//! f: new }`) interior-aliases that binding's storage: the binding stays live
+//! (a projection is not consume-marked), yet the overridden owned field is
+//! released in place — a use-after-free of `o.inner.<field>` and a double-free
+//! at `o`'s scope-exit drop. That shape is rejected fail-closed
+//! (`NotYetImplemented`). The base shapes that are NOT interior aliases of a
+//! surviving binding stay legal and run clean: an owned rvalue base
+//! (`{ ..makeInner(), f: new }`), a projection of a TEMPORARY
+//! (`{ ..makeOuter().inner, f: new }` — rooted at a call), and an INDEXED base
+//! (`{ ..v[i], f: new }` — materialises an independent element).
+//!
+//! ## Owned-aggregate override + closure-pair / Generator inline-drop
+//!
+//! Overriding an owned-AGGREGATE field (record / tuple / enum) is a
+//! fail-closed `NotYetImplemented` (the in-place aggregate drop kinds are
+//! function-scope, not inline `Instr::Drop` targets). Separately, the
+//! single-pointer COW leaf-release authority `project_field_inline_drop_symbol`
+//! — shared by the functional-update override-drop AND the match-destructure
+//! wildcard inline-drop — must agree with codegen's `cow_heap_release_symbol`
+//! for EVERY type, including a closure-pair `Vec<fn>` (release symbol
+//! `hew_vec_free_closure_pairs`, not `hew_vec_free`) and a `Generator`
+//! (`hew_gen_coro_destroy`). A tuple wildcard-destructure over those element
+//! types exercises the shared authority end-to-end and must run clean.
 
 #![cfg(unix)]
 
@@ -197,5 +223,241 @@ fn main() {
     assert!(
         out.contains('1'),
         "clone-override should yield a 1-element vec; got:\n{out}"
+    );
+}
+
+// ── reject: projection of a LIVE binding base (the residual P0 UAF) ─────────
+
+/// `{ ..o.inner, label: new }` projects a field of the live binding `o`. The
+/// projection is NOT consume-marked (`o` stays live), but the overridden owned
+/// `label` is released in place — so a later `o.inner.label` read is a
+/// use-after-free and `o`'s scope-exit drop double-frees it. Empirically this
+/// compiled clean and corrupted memory (a `free_cstring` double-free abort;
+/// a crash on the freed read under Guard Malloc). It must now FAIL `hew check`
+/// fail-closed (`NotYetImplemented`); the compile error is the safe outcome.
+#[test]
+fn reject_projection_of_live_binding_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn main() {
+    let o = Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 };
+    let u = Inner { label: string.repeat("b", 32), ..o.inner };
+    println(u.label);
+    println(o.inner.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "projection-of-live-binding base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("projecting a live binding")
+            || out.contains("projects a field of a live binding"),
+        "expected the projection-of-live-binding NotYetImplemented; got:\n{out}"
+    );
+}
+
+/// Carry variant: `{ ..o.inner, n: 5 }` overrides only the `BitCopy` `n` and
+/// CARRIES the owned `label` from the live projection. No override-drop fires,
+/// but the carried owned field is raw-loaded (aliased) into the new record
+/// while `o` stays live — so `u` and `o.inner` share one `label` buffer and
+/// `o`'s scope-exit drop double-frees it. The reject is therefore gated on the
+/// base TYPE being an owned aggregate (not on the overridden field being
+/// owned): a bare-binding carry is safe only because `..base` consumes the
+/// base, which a live projection never does.
+#[test]
+fn reject_projection_of_live_binding_base_carry_only() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn main() {
+    let o = Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 };
+    let u = Inner { n: 5, ..o.inner };
+    println(u.label);
+    println(o.inner.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "projection-of-live-binding carry-only base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("projecting a live binding")
+            || out.contains("projects a field of a live binding"),
+        "expected the projection-of-live-binding NotYetImplemented; got:\n{out}"
+    );
+}
+
+// ── reject: overriding an owned-AGGREGATE field ────────────────────────────
+
+/// Overriding a record/tuple/enum field (`inner: Inner` here) in a
+/// functional-update has no single-pointer leaf release symbol — the in-place
+/// aggregate drop kinds (`RecordInPlace` / `TupleInPlace` / `EnumInPlace`) are
+/// function-scope drops, not inline `Instr::Drop` targets. Fail-closed
+/// `NotYetImplemented` rather than emit a leak / wrong-ABI free.
+#[test]
+fn reject_owned_aggregate_field_override() {
+    let source = r#"
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn main() {
+    let init = Outer { inner: Inner { label: "x", n: 1 }, tag: 0 };
+    let updated = Outer { inner: Inner { label: "y", n: 2 }, ..init };
+    println(updated.tag);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "owned-aggregate field override must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("override of owned-aggregate field") || out.contains("owned-aggregate type"),
+        "expected the owned-aggregate override NotYetImplemented; got:\n{out}"
+    );
+}
+
+// ── accept: base shapes that are NOT interior aliases of a live binding ─────
+
+/// An owned rvalue base (`{ ..makeInner(), f: new }`): the call result is a
+/// consumed temporary with no surviving named alias. The overridden owned
+/// `label` of the temporary is released, the temporary's other fields move
+/// into the new record. Must `check` and `run` cleanly (no false reject).
+#[test]
+fn accept_owned_rvalue_base_runs_clean() {
+    require_codegen();
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+fn makeInner() -> Inner { Inner { label: string.repeat("a", 32), n: 1 } }
+fn main() {
+    let u = Inner { label: string.repeat("b", 32), ..makeInner() };
+    println(u.n);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(ok, "owned-rvalue base must run cleanly; got:\n{out}");
+    assert!(
+        out.contains('1'),
+        "owned-rvalue base should carry n=1 from the temporary; got:\n{out}"
+    );
+}
+
+/// A projection of a TEMPORARY (`{ ..makeOuter().inner, f: new }`): the base
+/// is rooted at a call, not a live binding, so there is no surviving alias of
+/// the released field. Must `check` and `run` cleanly (not caught by the
+/// projection-of-live-binding reject).
+#[test]
+fn accept_projection_of_temporary_base_runs_clean() {
+    require_codegen();
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn makeOuter() -> Outer { Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 } }
+fn main() {
+    let u = Inner { label: string.repeat("b", 32), ..makeOuter().inner };
+    println(u.n);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(
+        ok,
+        "projection-of-temporary base must run cleanly; got:\n{out}"
+    );
+    assert!(
+        out.contains('1'),
+        "projection-of-temporary base should carry n=1; got:\n{out}"
+    );
+}
+
+/// An INDEXED base (`{ ..v[0], f: new }`): indexing materialises an
+/// independent element value, so the overridden field released in the new
+/// record does not dangle `v[0]`. Must `check` and `run` cleanly, and the
+/// source element stays intact.
+#[test]
+fn accept_index_of_live_binding_base_runs_clean() {
+    require_codegen();
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+fn main() {
+    let v: Vec<Inner> = Vec::new();
+    v.push(Inner { label: string.repeat("a", 32), n: 7 });
+    let u = Inner { label: string.repeat("b", 32), ..v[0] };
+    println(u.n);
+    println(v[0].n);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(ok, "indexed base must run cleanly; got:\n{out}");
+    assert!(
+        out.matches('7').count() >= 2,
+        "indexed base should carry n=7 and leave v[0] intact; got:\n{out}"
+    );
+}
+
+// ── accept: closure-pair Vec / Generator inline-drop release-symbol parity ──
+
+/// A tuple `(Vec<fn(...)>, i64)` wildcard-destructure releases the discarded
+/// `Vec<fn>` field via the shared `project_field_inline_drop_symbol` authority.
+/// Its release symbol is `hew_vec_free_closure_pairs` (the per-element env
+/// thunk + pair-box walk), NOT `hew_vec_free`. Before the parity fix the MIR
+/// authority emitted `hew_vec_free`, which codegen rejected as incongruent
+/// with the field type (a hard fail-closed). It must now `check` and `run`
+/// cleanly.
+#[test]
+fn accept_closure_pair_vec_tuple_wildcard_runs_clean() {
+    require_codegen();
+    let source = r"
+fn double(x: i64) -> i64 { x * 2 }
+fn main() {
+    let t: (Vec<fn(i64) -> i64>, i64) = ([double], 5);
+    match t {
+        (_, n) => println(n),
+    }
+}
+";
+    let (ok, out) = hew_run(source);
+    assert!(
+        ok,
+        "closure-pair Vec tuple wildcard-destructure must run cleanly; got:\n{out}"
+    );
+    assert!(
+        out.contains('5'),
+        "wildcard destructure should bind n=5; got:\n{out}"
+    );
+}
+
+/// A tuple `(Generator<Y, R>, i64)` wildcard-destructure releases the
+/// discarded `Generator` field via `hew_gen_coro_destroy` (the coro-frame
+/// teardown). Exercises the `Generator` arm of the shared inline-drop
+/// authority end-to-end (the funcupdate override path cannot reach it — a
+/// record carrying a `Generator` field is blocked earlier at the record-clone
+/// front-stop, since the pointer-backed handle has no dup symbol).
+#[test]
+fn accept_generator_tuple_wildcard_runs_clean() {
+    require_codegen();
+    let source = r"
+fn main() {
+    let t: (Generator<i64, ()>, i64) = (gen { yield 1; yield 2; }, 5);
+    match t {
+        (_, n) => println(n),
+    }
+}
+";
+    let (ok, out) = hew_run(source);
+    assert!(
+        ok,
+        "Generator tuple wildcard-destructure must run cleanly; got:\n{out}"
+    );
+    assert!(
+        out.contains('5'),
+        "wildcard destructure should bind n=5; got:\n{out}"
     );
 }

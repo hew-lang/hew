@@ -4537,13 +4537,14 @@ pub(crate) fn primitive_to_llvm<'ctx>(
                 Some(hew_types::BuiltinType::Generator | hew_types::BuiltinType::AsyncGenerator),
             ..
         } => {
-            // A `Generator<Yield, Return>` value is the thread-based generator
-            // context handle `*mut HewGenCtx`, returned by `hew_gen_ctx_create`
-            // and released by `hew_gen_free`. Codegen materialises the slot as a
+            // A `Generator<Yield, Return>` value is the heap companion of an
+            // `llvm.coro` switched-resume coroutine — `{ handle, env,
+            // out_drop_thunk, started, pending, out }` — released by
+            // `hew_gen_coro_destroy`. Codegen materialises the slot as a
             // bare opaque `ptr`, the same representation used for every other
             // runtime handle (Duplex, Vec, HewTask, CancellationToken). The
-            // construction site stores the `hew_gen_ctx_create` result here;
-            // `.next()` loads it to drive `hew_gen_next`.
+            // construction site stores the companion pointer here; `.next()`
+            // loads it to drive the coroutine (`hew_cont_resume` / `hew_cont_poll`).
             //
             // Dispatched on the `builtin` discriminant, NOT the `name` string: a
             // user-declared `type Generator { ... }` resolves to
@@ -42120,6 +42121,63 @@ mod tests {
         assert_eq!(
             cow_heap_release_symbol(&fn_ctx, &owned_vec),
             Some("hew_vec_free_owned")
+        );
+    }
+
+    /// A `Vec` whose element is a `fn` / closure releases via
+    /// `hew_vec_free_closure_pairs` (each slot owns a heap pair-box + env box),
+    /// checked BEFORE the owned-element and plain arms. This must match the MIR
+    /// authority `project_field_inline_drop_symbol`: when the two disagreed,
+    /// the closure-pair Vec routed to a `RecordFieldDrop` whose `drop_fn`
+    /// (`hew_vec_free`) failed the codegen congruence assert
+    /// (`cow_heap_release_symbol` expected `hew_vec_free_closure_pairs`) — a
+    /// fail-closed hard error on a previously-leaking shape. Pin both the
+    /// dispatch and that the symbol is in the permitted closed set.
+    #[test]
+    fn cow_heap_release_symbol_routes_closure_pair_vec() {
+        let ctx = Context::create();
+        let llvm_mod = ctx.create_module("cow_heap_release_closure_pair_test");
+        let harness = build_harness(&ctx, &[], &[]);
+        let fn_ctx = make_test_fn_ctx(&ctx, &llvm_mod, &harness, "cow_heap_closure_pair_probe");
+
+        // `Vec<fn() -> ()>` — a bare function element.
+        let vec_of_fn = ResolvedTy::Named {
+            name: "Vec".to_string(),
+            args: vec![ResolvedTy::Function {
+                params: vec![],
+                ret: Box::new(ResolvedTy::Unit),
+            }],
+            builtin: Some(hew_types::BuiltinType::Vec),
+            is_opaque: false,
+        };
+        assert_eq!(
+            cow_heap_release_symbol(&fn_ctx, &vec_of_fn),
+            Some("hew_vec_free_closure_pairs"),
+            "a `Vec<fn>` element must release via the closure-pair ABI"
+        );
+
+        // `Vec<closure>` — a capturing closure element.
+        let vec_of_closure = ResolvedTy::Named {
+            name: "Vec".to_string(),
+            args: vec![ResolvedTy::Closure {
+                params: vec![ResolvedTy::I64],
+                ret: Box::new(ResolvedTy::I64),
+                captures: vec![ResolvedTy::String],
+            }],
+            builtin: Some(hew_types::BuiltinType::Vec),
+            is_opaque: false,
+        };
+        assert_eq!(
+            cow_heap_release_symbol(&fn_ctx, &vec_of_closure),
+            Some("hew_vec_free_closure_pairs"),
+            "a `Vec<closure>` element must release via the closure-pair ABI"
+        );
+
+        // The closure-pair symbol must be admitted by the closed congruence set
+        // codegen validates RecordFieldDrop / inline-Drop symbols against.
+        assert!(
+            is_known_cow_heap_drop_symbol("hew_vec_free_closure_pairs"),
+            "hew_vec_free_closure_pairs must be in the permitted CowHeap release set"
         );
     }
 

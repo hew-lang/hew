@@ -1,11 +1,10 @@
 //! Functional-update owned-field drop leak oracle.
 //!
 //! Exercises `{ ..base, field: new_value }` where `field` is an owned
-//! heap type (`string`, `bytes`, `Vec<T>`).
+//! heap type (`string`, `bytes`, `Vec<T>`, `HashMap`, `HashSet`).
 //!
 //! Before the fix (the functional-update overridden-owned-field leak in
-//! `hew-mir/src/lower.rs` — NOT GitHub issue #14, which is unrelated), every
-//! iteration of a
+//! `hew-mir/src/lower.rs`), every iteration of a
 //! `{ ..base, label: new_string }` loop that overrides a heap-owning field
 //! leaked exactly ONE allocation node (the old value of `label` from
 //! `base` was never released — the new record owned the replacement, the
@@ -15,10 +14,18 @@
 //! After the fix, the functional-update arm emits, before the `RecordInit`:
 //!
 //! 1. `RecordFieldDrop { record: base, field_offset: N, … }` for every
-//!    single-pointer COW field (`string`, `Vec<T>`, `HashMap`, `HashSet`,
-//!    `Generator`): raw load → release → null-store.
+//!    single-pointer COW field (`string`, `Vec<T>`, `HashMap`, `HashSet`):
+//!    raw load → release → null-store.
 //! 2. `RecordFieldLoad + Instr::Drop` for the fat `bytes` `{ptr,len,cap}`
 //!    triple, whose destructor takes the whole by-value value.
+//!
+//! `Generator` is also a single-pointer COW field handled by
+//! `RecordFieldDrop`, but a *functional update* can never reach one: a record
+//! carrying a `Generator` field is front-stopped before this lowering by
+//! record-clone-thunk synthesis (the coroutine handle has no per-field `dup`
+//! symbol). The `hew_gen_coro_destroy` override-drop arm is therefore
+//! exercised out of band (via tuple/enum match-destructure), not by this
+//! oracle, and is deliberately NOT claimed here.
 //!
 //! …so every replaced owned value is released at the construction site on
 //! every execution path. The release is sound because `..base` consumes the
@@ -33,6 +40,10 @@
 //!   the `hew_bytes_drop` inline-drop arm is correctly selected.
 //! * **Vec<i64> field** — override a plain `Vec<i64>` field (no owned
 //!   elements); exercises `hew_vec_free`.
+//! * **`HashMap` field** — override a `HashMap<string,i64>` field; exercises
+//!   the `hew_hashmap_free_layout` single-pointer COW release.
+//! * **`HashSet` field** — override a `HashSet<i64>` field; exercises the
+//!   `hew_hashset_free_layout` single-pointer COW release.
 //! * **multi-field** — override a `string` AND a `Vec<i64>` in the same
 //!   update expression; each must be independently released.
 //!
@@ -140,6 +151,62 @@ fn vec_field_source(frames: usize) -> String {
          \x20       let next: Vec<i64> = Vec::new();\n\
          \x20       next.push(i);\n\
          \x20       h = VecHolder {{ items: next, ..h }};\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   h.tag\n\
+         }}\n"
+    )
+}
+
+/// Functional update overriding a `HashMap<string,i64>` field in a loop.
+///
+/// Each iteration replaces `m` with a fresh map allocation.
+/// Pre-fix: one leaked HashMap-control node per iteration.
+/// Post-fix: the old `m` is released via `hew_hashmap_free_layout`.
+fn hashmap_field_source(frames: usize) -> String {
+    format!(
+        "record MapHolder {{\n\
+         \x20   m: HashMap<string, i64>,\n\
+         \x20   tag: i64,\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   let init: HashMap<string, i64> = HashMap::new();\n\
+         \x20   init.insert(\"seed\", 1);\n\
+         \x20   var h = MapHolder {{ m: init, tag: 0 }};\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let next: HashMap<string, i64> = HashMap::new();\n\
+         \x20       next.insert(\"k\", i);\n\
+         \x20       h = MapHolder {{ m: next, ..h }};\n\
+         \x20       i = i + 1;\n\
+         \x20   }}\n\
+         \x20   h.tag\n\
+         }}\n"
+    )
+}
+
+/// Functional update overriding a `HashSet<i64>` field in a loop.
+///
+/// Each iteration replaces `s` with a fresh set allocation.
+/// Pre-fix: one leaked HashSet-control node per iteration.
+/// Post-fix: the old `s` is released via `hew_hashset_free_layout`.
+fn hashset_field_source(frames: usize) -> String {
+    format!(
+        "record SetHolder {{\n\
+         \x20   s: HashSet<i64>,\n\
+         \x20   tag: i64,\n\
+         }}\n\
+         \n\
+         fn main() -> i64 {{\n\
+         \x20   let init: HashSet<i64> = HashSet::<i64>::new();\n\
+         \x20   init.insert(99);\n\
+         \x20   var h = SetHolder {{ s: init, tag: 0 }};\n\
+         \x20   var i: i64 = 0;\n\
+         \x20   while i < {frames} {{\n\
+         \x20       let next: HashSet<i64> = HashSet::<i64>::new();\n\
+         \x20       next.insert(i);\n\
+         \x20       h = SetHolder {{ s: next, ..h }};\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   h.tag\n\
@@ -349,6 +416,20 @@ fn funcupdate_bytes_field_no_per_frame_leak_slope() {
 #[test]
 fn funcupdate_vec_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance("funcupdate_vec_field", vec_field_source);
+}
+
+/// `HashMap<string,i64>` field override: pre-fix slope ~1.0 node/frame
+/// (one leaked map-control node per iteration); post-fix slope 0.
+#[test]
+fn funcupdate_hashmap_field_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance("funcupdate_hashmap_field", hashmap_field_source);
+}
+
+/// `HashSet<i64>` field override: pre-fix slope ~1.0 node/frame (one
+/// leaked set-control node per iteration); post-fix slope 0.
+#[test]
+fn funcupdate_hashset_field_no_per_frame_leak_slope() {
+    assert_frame_slope_below_tolerance("funcupdate_hashset_field", hashset_field_source);
 }
 
 /// Multi-field override (`string` + `Vec<i64>`): pre-fix slope ~2.0

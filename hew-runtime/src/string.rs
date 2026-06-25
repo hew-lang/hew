@@ -586,6 +586,39 @@ pub unsafe extern "C" fn hew_string_equals(a: *const c_char, b: *const c_char) -
     i32::from(unsafe { libc::strcmp(a, b) } == 0)
 }
 
+/// FNV-1a-64 hash of a C string's NUL-terminated payload bytes.
+///
+/// This is the hash twin of [`hew_string_equals`]: it hashes exactly the byte
+/// range `strcmp` compares (`s[0..strlen(s)]`), so two strings that compare
+/// equal hash equal. The codegen per-record hash thunk calls this when it
+/// reaches a `string` field of a layout `HashMap` key — loading the field's
+/// `*const c_char` and hashing the payload it points at, rather than mixing the
+/// pointer word (which would make distinct-but-equal record keys collide-or-miss
+/// against the equality witness). A null pointer hashes to the FNV offset basis
+/// (consistent with hashing the empty byte range).
+///
+/// # Safety
+///
+/// `s` must be a valid NUL-terminated C string, or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_string_hash_fnv1a(s: *const c_char) -> u64 {
+    const FNV_OFFSET_64: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME_64: u64 = 0x0000_0100_0000_01b3;
+    let mut h = FNV_OFFSET_64;
+    if s.is_null() {
+        return h;
+    }
+    // SAFETY: `s` is a valid NUL-terminated C string per caller contract.
+    let len = unsafe { libc::strlen(s) };
+    // SAFETY: `s[0..len]` are valid bytes (the payload up to the NUL).
+    let slice = unsafe { core::slice::from_raw_parts(s.cast::<u8>(), len) };
+    for &b in slice {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(FNV_PRIME_64);
+    }
+    h
+}
+
 /// Split a string by `delim` into a `HewVec` of strings. Caller must free
 /// the returned vec with [`crate::vec::hew_vec_free`].
 ///

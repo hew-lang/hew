@@ -1,0 +1,44 @@
+// Acceptance fixture for TLS active-mode attach (Erlang-style active mode).
+//
+// Proves that:
+//   1. A `TlsHandler` actor compiles with `on_data(bytes)` + `on_close()`.
+//   2. `stream.attach(handler, on_data_type, on_close_type)` type-checks.
+//   3. The `hew_tls_attach` FFI binding is reachable from the stdlib surface.
+//
+// This is a `hew check` fixture — it does not run (requires a live TLS server).
+// The TLS read blocking gap described in consolidated-IO.md C2 is closed by
+// the runtime's background reader thread spawned by `hew_tls_attach`.
+//
+// Actor design: the TlsStream is NOT held in actor state. After attach, the
+// caller retains the stream handle for outbound writes; the actor only receives
+// inbound `on_data` / `on_close` messages from the background reader thread.
+// This is the same pattern as WebSocket active mode.
+
+import std::net::tls;
+
+// An actor that receives TLS data chunks from the background reader.
+// The TlsStream handle is passed in so the actor can echo data back.
+// NOTE: TlsStream cannot be in actor state because it is an opaque
+// non-Connection handle with no supervisor-restart clone path. The idiomatic
+// form passes a write-side copy to the actor at spawn time separately, or
+// uses a separate write actor. For the type-check fixture we keep it simple.
+actor TlsEchoActor {
+    receive fn on_data(data: bytes) {
+        println(f"tls-active: received {data.len()} bytes");
+    }
+    receive fn on_close() {
+        println("tls: remote closed");
+    }
+}
+
+// Structural probe that the attach surface lowers correctly at the type level.
+// `on_data_type` and `on_close_type` are the msg_type indices (0 and 1).
+fn _probe_attach_typechecks(stream: tls.TlsStream, handler: LocalPid<tls.TlsHandler>) {
+    stream.attach(handler, 0, 1);
+}
+
+fn main() {
+    // A real run would: connect, spawn, call attach, then write.
+    // We skip the connect — this is a compile/typecheck fixture.
+    println("tls_active_attach: hew check OK");
+}

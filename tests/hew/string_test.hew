@@ -242,3 +242,28 @@ fn test_join_inserts_separator_between_elements() {
     parts.push("blue");
     testing.assert_eq_str(string.join(parts, "|"), "red|green|blue");
 }
+
+// ── is_ascii boundary tests (regression lock for #2082 / PR #2081 fix) ──────
+
+#[test]
+fn test_is_ascii_accepts_del_127_and_below() {
+    // Empty string and pure-ASCII strings are accepted.
+    testing.assert_true(string.is_ascii(""));
+    testing.assert_true(string.is_ascii("hello"));
+    // NUL (0) is within the ASCII range.
+    testing.assert_true(string.is_ascii(string.from_char(0)));
+    // Tilde (126) is the last printable ASCII character.
+    testing.assert_true(string.is_ascii(string.from_char(126)));
+    // DEL (127) is the last 7-bit ASCII codepoint; must be accepted.
+    // Before PR #2081 the condition was `ch > 126`, which wrongly rejected
+    // DEL.  This assertion locks that fix in place.
+    testing.assert_true(string.is_ascii(string.from_char(127)));
+}
+
+#[test]
+fn test_is_ascii_rejects_128_and_above() {
+    // 128 (0x80) is the first codepoint outside the 7-bit ASCII range.
+    testing.assert_false(string.is_ascii(string.from_char(128)));
+    // A string containing a non-ASCII multibyte sequence is also rejected.
+    testing.assert_false(string.is_ascii("héllo"));
+}

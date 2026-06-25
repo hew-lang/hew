@@ -20577,7 +20577,7 @@ impl Builder {
             "hew_duplex_close" => self.lower_duplex_close(hir_args, site, context, result_ty),
             "hew_supervisor_stop" => self.lower_supervisor_stop(hir_args, site),
             "hew_actor_link" | "hew_actor_monitor" => {
-                self.lower_actor_link_or_monitor(symbol, hir_args, site, context)
+                self.lower_actor_link_or_monitor(symbol, hir_args, site, context, result_ty)
             }
             "hew_actor_unlink" => self.lower_actor_unlink(hir_args, site, context),
             "hew_bytes_push" => self.lower_bytes_push(hir_args, site, context),
@@ -21092,18 +21092,41 @@ impl Builder {
         dest
     }
 
-    /// Emit `Instr::CallRuntimeAbi` for discarded `link` / `monitor` calls.
+    /// Lower `link(target)` / `monitor(target)` to `Instr::CallRuntimeAbi`,
+    /// constructing the composite return value (`Result<(), LinkError>` or
+    /// `MonitorRef`) when the call is in value-needed context.
     ///
-    /// Statement-position calls are authorised by `HirStmtKind::Expr` before
-    /// `lower_value` is entered. Value-needed calls still fail closed because
-    /// the current codegen spine cannot construct `Result<(), LinkError>` or
-    /// `MonitorRef`.
+    /// **Statement-position** (`context == Discarded`): emit the ABI call with
+    /// `dest = None`. The codegen handler calls `hew_actor_link` / discards the
+    /// `hew_actor_monitor` u64 return — no composite needed.
+    ///
+    /// **Value-needed** (`context == ValueNeeded`): two shapes:
+    ///
+    /// - `link` (void runtime ABI): allocate a `Result<(), LinkError>` dest
+    ///   local from the checker-authoritative `result_ty`, emit the ABI call
+    ///   with `dest = Some(result_local)`. The codegen handler (`runtime_abi.rs`
+    ///   `ActorLink` arm) detects the dest and calls `emit_result_ok(dest, None)`
+    ///   to write `tag = 0` (Ok, no payload) — the only shape because
+    ///   `hew_actor_link` is void/infallible at the runtime today.
+    ///
+    /// - `monitor` (i64 runtime ABI → `MonitorRef` struct): allocate a raw `i64`
+    ///   dest for the runtime return, emit the ABI call storing the `ref_id` into
+    ///   it, then emit `Instr::RecordInit` to assemble `MonitorRef { ref_id }`
+    ///   into a freshly-allocated `MonitorRef` local from `result_ty`. Returns
+    ///   the `MonitorRef` local.
+    ///
+    /// **Null-self window (INTERIM):** `hew_actor_self()` returns null outside an
+    /// actor dispatch context. The "only valid in actor context" fail-closed gate
+    /// belongs to the actor-messaging lane and is not installed here. Calls from
+    /// `main` / free functions are an out-of-context window; the runtime handles
+    /// null self gracefully (`hew_actor_monitor` returns `ref_id = 0`).
     fn lower_actor_link_or_monitor(
         &mut self,
         symbol: &str,
         hir_args: &[hew_hir::HirExpr],
         site: hew_hir::SiteId,
         context: RuntimeCallContext,
+        result_ty: Option<&ResolvedTy>,
     ) -> Option<Place> {
         // ARITY: the user-facing surface is 1-arg — `link(target)` /
         // `monitor(target)`. The linking/monitoring subject is the implicit
@@ -21112,12 +21135,6 @@ impl Builder {
         // (`hew_actor_link(parent, child)` / `hew_actor_monitor(watcher,
         // target)`) is satisfied by synthesizing `hew_actor_self()` as arg0
         // and the user target as arg1.
-        //
-        // INTERIM (out-of-context window): `hew_actor_self()` returns null
-        // when called outside an actor dispatch context. The companion
-        // "only valid in actor context" fail-closed gate is deferred (it
-        // belongs to the actor-messaging lane); until it lands, calling
-        // link/monitor outside an actor is an interim out-of-context window.
         if hir_args.len() != 1 {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
@@ -21132,26 +21149,6 @@ impl Builder {
             return None;
         }
 
-        if context == RuntimeCallContext::ValueNeeded {
-            let return_shape = match symbol {
-                "hew_actor_link" => "Result<(), LinkError>",
-                "hew_actor_monitor" => "MonitorRef",
-                _ => unreachable!("only link/monitor symbols reach this helper"),
-            };
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!("runtime call `{symbol}` value result"),
-                    site,
-                },
-                note: format!(
-                    "`{symbol}` requires {return_shape} construction in value-needed \
-                     context; discarded statement-position calls are wired with dest=None, \
-                     but composite return construction remains fail-closed"
-                ),
-            });
-            return None;
-        }
-
         // arg1: the user-provided target handle. Lower it first so a failure
         // to lower the target is reported before we emit the self-handle call.
         let target = self.lower_value(&hir_args[0])?;
@@ -21159,8 +21156,68 @@ impl Builder {
         // arg0: synthesize the implicit `self` subject via `hew_actor_self()`.
         let self_handle = self.emit_actor_self_handle();
 
-        self.push_runtime_call(symbol, vec![self_handle, target], None);
-        None
+        if context != RuntimeCallContext::ValueNeeded {
+            // Statement-position (Discarded): emit with dest=None. The codegen
+            // handler calls the C ABI and ignores the return.
+            self.push_runtime_call(symbol, vec![self_handle, target], None);
+            return None;
+        }
+
+        // Value-needed: construct the composite return.
+        // `result_ty` carries the checker-authoritative return type:
+        //   hew_actor_link   → Result<(), LinkError>
+        //   hew_actor_monitor → MonitorRef
+        // Fail closed if the checker did not record a return type — a
+        // checker-boundary violation that the HIR→MIR handoff must not
+        // propagate silently.
+        let composite_ty = if let Some(ty) = result_ty {
+            ty.clone()
+        } else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("runtime call `{symbol}` value result"),
+                    site,
+                },
+                note: format!(
+                    "`{symbol}` value-needed path requires a checker-authoritative \
+                     result type; result_ty was None (checker did not record a type \
+                     for this call site — boundary violation)"
+                ),
+            });
+            return None;
+        };
+
+        match symbol {
+            "hew_actor_link" => {
+                // hew_actor_link is void/infallible. Allocate the
+                // Result<(), LinkError> dest and pass it to the ABI call.
+                // The codegen ActorLink handler sees the dest and emits
+                // `emit_result_ok(dest, None)` to write tag=0 (Ok, no payload).
+                let result_local = self.alloc_local(composite_ty);
+                self.push_runtime_call(symbol, vec![self_handle, target], Some(result_local));
+                Some(result_local)
+            }
+            "hew_actor_monitor" => {
+                // hew_actor_monitor returns a u64 ref_id. Store the raw i64
+                // into a temp local, then assemble MonitorRef { ref_id } via
+                // RecordInit. The codegen ActorMonitor handler stores the i64
+                // call result into the raw dest; RecordInit copies it into the
+                // struct field.
+                let ref_id_local = self.alloc_local(ResolvedTy::I64);
+                self.push_runtime_call(symbol, vec![self_handle, target], Some(ref_id_local));
+                // Assemble MonitorRef { ref_id: i64 } from the raw ref_id.
+                // FieldOffset(0) is the declaration-order index of `ref_id`
+                // in `MonitorRef { ref_id: i64 }`.
+                let monitor_ref_local = self.alloc_local(composite_ty.clone());
+                self.push_instr(Instr::RecordInit {
+                    ty: composite_ty,
+                    fields: vec![(FieldOffset(0), ref_id_local)],
+                    dest: monitor_ref_local,
+                });
+                Some(monitor_ref_local)
+            }
+            _ => unreachable!("only hew_actor_link / hew_actor_monitor reach this helper"),
+        }
     }
 
     /// Emit `Instr::CallRuntimeAbi` for discarded `unlink` calls.

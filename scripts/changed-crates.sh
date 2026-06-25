@@ -23,6 +23,8 @@
 #
 # Output format: space-separated package names, one line, or empty string.
 # Exit 0 always.
+#
+# Requires: bash 3.2+ (macOS system bash compatible), git.
 
 set -euo pipefail
 
@@ -53,37 +55,36 @@ if [[ -z "$BASE_REF" ]]; then
 fi
 
 # ── Collect changed paths ─────────────────────────────────────────────────────
-declare -a CHANGED_FILES=()
+# Accumulate paths as a newline-delimited string; sort -u to deduplicate.
+ALL_PATHS=""
 
-collect_from_cmd() {
-    local line
-    while IFS= read -r line; do
-        [[ -n "$line" ]] && CHANGED_FILES+=("$line")
-    done < <(eval "$1" 2>/dev/null || true)
+append_paths() {
+    local out
+    out="$(eval "$1" 2>/dev/null || true)"
+    if [[ -n "$out" ]]; then
+        ALL_PATHS="${ALL_PATHS}${out}"$'\n'
+    fi
 }
 
 if [[ -n "$BASE_REF" ]]; then
     # Paths changed since the merge base (the branch's own delta).
-    collect_from_cmd "git -C '$REPO_ROOT' diff --name-only '$BASE_REF' HEAD"
+    append_paths "git -C '$REPO_ROOT' diff --name-only '$BASE_REF' HEAD"
 fi
 
 # Staged and unstaged changes on top of HEAD.
-collect_from_cmd "git -C '$REPO_ROOT' diff --name-only HEAD"
+append_paths "git -C '$REPO_ROOT' diff --name-only HEAD"
 # Untracked files (new source files not yet committed).
-collect_from_cmd "git -C '$REPO_ROOT' ls-files --others --exclude-standard '$REPO_ROOT'"
+append_paths "git -C '$REPO_ROOT' ls-files --others --exclude-standard"
 
-# Deduplicate.
-declare -A SEEN_FILES=()
-declare -a UNIQUE_FILES=()
-for f in "${CHANGED_FILES[@]:-}"; do
-    if [[ -z "${SEEN_FILES[$f]+set}" ]]; then
-        SEEN_FILES[$f]=1
-        UNIQUE_FILES+=("$f")
-    fi
-done
-
-if [[ "${#UNIQUE_FILES[@]}" -eq 0 ]]; then
+if [[ -z "$ALL_PATHS" ]]; then
     # No changed files detected — caller falls back to full workspace.
+    exit 0
+fi
+
+# Deduplicated sorted paths.
+UNIQUE_FILES="$(printf '%s' "$ALL_PATHS" | sort -u | grep -v '^$' || true)"
+
+if [[ -z "$UNIQUE_FILES" ]]; then
     exit 0
 fi
 
@@ -91,61 +92,96 @@ fi
 # Mirror the dispatcher's is_*_path() case patterns but output the Cargo
 # package name for use in nextest's -E 'rdeps(...)' expressions.
 # Each crate directory prefix maps to its Cargo package name (they match
-# directory name except hew-wasm = "hew-wasm" and hew-std = "hew-std").
+# the directory name for this workspace).
+#
+# Returns: space-separated crate names, or the sentinel "__workspace__"
+# when a workspace-wide file is detected (signals fallback to full run).
 
-declare -A CRATES_FOUND=()
+WORKSPACE_WIDE=0
+# Use a plain string accumulator (bash 3.2 has no assoc arrays).
+CRATES_FOUND=""
 
-path_to_crate() {
-    local p="$1"
-    case "$p" in
-        hew-parser/*|hew-lexer/*)               echo "hew-parser hew-lexer" ;;
-        hew-types/*)                             echo "hew-types" ;;
-        hew-hir/*)                               echo "hew-hir" ;;
-        hew-mir/*)                               echo "hew-mir" ;;
-        hew-codegen-rs/*)                        echo "hew-codegen-rs" ;;
-        hew-compile/*)                           echo "hew-compile" ;;
-        hew-cabi/*)                              echo "hew-cabi" ;;
-        hew-capability-gen/*)                    echo "hew-capability-gen" ;;
-        hew-cli/*)                               echo "hew-cli" ;;
-        adze-cli/*)                              echo "adze-cli" ;;
-        hew-runtime/*)                           echo "hew-runtime" ;;
-        hew-runtime-testkit/*)                   echo "hew-runtime-testkit" ;;
-        hew-observe/*)                           echo "hew-observe" ;;
-        hew-analysis/*)                          echo "hew-analysis" ;;
-        hew-lib/*)                               echo "hew-lib" ;;
-        hew-lsp/*)                               echo "hew-lsp" ;;
-        hew-testutil/*)                          echo "hew-testutil" ;;
-        hew-std/*)                               echo "hew-std" ;;
-        hew-wasm/*)                              echo "hew-wasm" ;;
-        hew-sandbox-vm/*)                        echo "hew-sandbox-vm" ;;
-        hew-sandbox-wasm/*)                      echo "hew-sandbox-wasm" ;;
-        # Shared source or config touched multiple crates — treat as workspace-wide.
-        Cargo.toml|Cargo.lock|.config/*|.cargo/*|Makefile|scripts/*)
-            echo "__workspace__" ;;
-        # Hew stdlib sources — checked by hew-cli and hew-codegen-rs.
-        std/*|tests/hew/*)
-            echo "hew-cli hew-codegen-rs" ;;
-        # Test fixtures — touched by hew-cli.
-        tests/*)
-            echo "hew-cli" ;;
+add_crate() {
+    local c="$1"
+    # Append only if not already present (substring check).
+    case " $CRATES_FOUND " in
+        *" $c "*) ;;  # already present
+        *) CRATES_FOUND="${CRATES_FOUND:+$CRATES_FOUND }$c" ;;
     esac
 }
 
-for f in "${UNIQUE_FILES[@]}"; do
-    crate_names="$(path_to_crate "$f")"
-    for c in $crate_names; do
-        CRATES_FOUND[$c]=1
-    done
-done
+while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    case "$f" in
+        hew-parser/*|hew-lexer/*)
+            add_crate "hew-parser"; add_crate "hew-lexer" ;;
+        hew-types/*)
+            add_crate "hew-types" ;;
+        hew-hir/*)
+            add_crate "hew-hir" ;;
+        hew-mir/*)
+            add_crate "hew-mir" ;;
+        hew-codegen-rs/*)
+            add_crate "hew-codegen-rs" ;;
+        hew-compile/*)
+            add_crate "hew-compile" ;;
+        hew-cabi/*)
+            add_crate "hew-cabi" ;;
+        hew-capability-gen/*)
+            add_crate "hew-capability-gen" ;;
+        hew-cli/*)
+            add_crate "hew-cli" ;;
+        adze-cli/*)
+            add_crate "adze-cli" ;;
+        hew-runtime/*)
+            add_crate "hew-runtime" ;;
+        hew-runtime-testkit/*)
+            add_crate "hew-runtime-testkit" ;;
+        hew-observe/*)
+            add_crate "hew-observe" ;;
+        hew-analysis/*)
+            add_crate "hew-analysis" ;;
+        hew-lib/*)
+            add_crate "hew-lib" ;;
+        hew-lsp/*)
+            add_crate "hew-lsp" ;;
+        hew-testutil/*)
+            add_crate "hew-testutil" ;;
+        hew-std/*)
+            add_crate "hew-std" ;;
+        hew-wasm/*)
+            add_crate "hew-wasm" ;;
+        hew-sandbox-vm/*)
+            add_crate "hew-sandbox-vm" ;;
+        hew-sandbox-wasm/*)
+            add_crate "hew-sandbox-wasm" ;;
+        # Shared source or config that could affect all crates — treat as workspace-wide.
+        Cargo.toml|Cargo.lock|.config/*|.cargo/*|Makefile)
+            WORKSPACE_WIDE=1 ;;
+        scripts/*)
+            # Script changes don't affect Rust tests — skip silently.
+            ;;
+        # Hew stdlib sources — exercised by hew-cli and hew-codegen-rs.
+        std/*)
+            add_crate "hew-cli"; add_crate "hew-codegen-rs" ;;
+        tests/hew/*)
+            add_crate "hew-cli"; add_crate "hew-codegen-rs" ;;
+        # Other test fixtures — exercised by hew-cli.
+        tests/*)
+            add_crate "hew-cli" ;;
+        # Anything else is treated as workspace-wide.
+        *)
+            WORKSPACE_WIDE=1 ;;
+    esac
+done <<< "$UNIQUE_FILES"
 
 # If a workspace-wide file changed, signal fallback by printing nothing.
-if [[ -n "${CRATES_FOUND[__workspace__]+set}" ]]; then
+if [[ "$WORKSPACE_WIDE" -eq 1 ]]; then
     exit 0
 fi
 
-if [[ "${#CRATES_FOUND[@]}" -eq 0 ]]; then
+if [[ -z "$CRATES_FOUND" ]]; then
     exit 0
 fi
 
-# Emit space-separated crate names.
-printf '%s' "${!CRATES_FOUND[*]}"
+printf '%s' "$CRATES_FOUND"

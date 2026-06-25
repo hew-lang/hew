@@ -1,25 +1,23 @@
 # ── Linux linker (x86_64) ─────────────────────────────────────────────────────
-# Use mold on Linux x86_64 for faster incremental link times.  mold reduces
-# link time for hew-cli from ~5-10 s to ~0.5-1 s per incremental cycle.
+# mold is not forced globally here because it requires a running mold install
+# AND a compatible driver.  Not every Linux workflow or runner has mold; forcing
+# it via .cargo/config.toml breaks release-gate, coverage-nightly, and sanitizer
+# jobs that run on bare ubuntu runners without mold installed.
 #
-# WHY: per-incremental link cost dominates iteration time for CLI-touching
-# changes; mold is a drop-in ld replacement that completes in milliseconds.
-# WHEN obsolete: if a future Cargo version supports a fallback-linker chain
-# or the default system linker reaches mold-level speed.
-# WHAT the real solution looks like: this entry, exactly as written, with
-# mold installed on every CI/CD Linux runner (see ci.yml "Install mold").
+# CI opt-in: ci.yml's build-and-test job sets
+#   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=mold
+# using gcc's -fuse-ld= flag (no clang dependency) after apt-installing mold.
 #
-# GATE: this block is ignored on macOS, Windows, and non-x86_64 Linux.
-# Linux x86_64 users without mold can override for their session:
-#   export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc
-# or install mold: apt install mold / dnf install mold
+# Dev opt-in: for local Linux x86_64 development with mold installed,
+# add to your shell profile:
+#   export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
 #
-# CI installs mold unconditionally (ci.yml "Install build tools" step)
-# so the build never breaks on CI.  See LESSONS.md or the commit that
-# introduced this block for the cost evidence.
-[target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=--ld-path=mold"]
+# WHY opt-in not forced: forcing clang + --ld-path=mold here breaks every
+# CI workflow that lacks both clang-as-linker-driver AND mold.  gcc's
+# -fuse-ld=mold is cleaner but still requires mold installed; an env var
+# scoped to the job that installs mold is the correct isolation boundary.
+# WHEN obsolete: if every CI runner provisions mold unconditionally and
+# the project drops non-mold Linux workflows.
 
 # Windows uses the LLVM linker from the same provisioned LLVM 22 toolchain that
 # supplies clang.exe for `hew build` and llvm-config for llvm-sys.  Keep this

@@ -260,6 +260,14 @@ jobs:
     name: Build & test (Linux)
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      # mold is installed by the "Install build tools" step below.
+      # Use gcc's -fuse-ld=mold flag (no clang-as-driver dependency) to
+      # activate mold for all Rust compilations in this job.  Scoped here
+      # rather than .cargo/config.toml so other workflows (release-gate,
+      # coverage-nightly, sanitizers) that run on runners without mold are
+      # unaffected.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 

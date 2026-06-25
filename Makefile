@@ -692,9 +692,15 @@ test-lane-all:
 # to a full workspace lane run when no crates are detected (e.g. first commit,
 # workspace-wide file change, or no diff vs origin).
 #
+# Multi-crate case: changed-crates.sh may return several space-separated names.
+# A single rdeps(hew-types hew-parser) is not valid nextest syntax — it matches
+# no package.  Instead each crate gets its own rdeps() term, joined with `|`:
+#   rdeps(hew-types) | rdeps(hew-parser)
+# The workspace fallback only fires when the crate list is empty.
+#
 # Usage:
-#   make test-fast             # auto-derive scope from git diff
-#   make test-fast CRATE=hew-types  # pin to one crate (skips diff derivation)
+#   make test-fast                    # auto-derive scope from git diff
+#   make test-fast CRATE=hew-types    # pin to one crate (skips diff derivation)
 #
 # This target replaces hand-curated -p lists for interactive iteration.
 # The exec/e2e corpus is still excluded (profile.lane).  Acceptance gates
@@ -703,7 +709,8 @@ test-fast:
 	@crates=$$(CRATE="$(CRATE)" scripts/changed-crates.sh); \
 	if [ -n "$$crates" ]; then \
 	  echo "==> fast tier — affected: $$crates"; \
-	  cargo nextest run --profile lane -E "rdeps($$crates)"; \
+	  expr=$$(printf 'rdeps(%s) | ' $$crates); expr=$${expr% | }; \
+	  cargo nextest run --profile lane -E "$$expr"; \
 	else \
 	  echo "==> fast tier — full workspace (no crate-specific diff detected)"; \
 	  cargo nextest run --workspace --profile lane; \

@@ -47,7 +47,9 @@ impl Checker {
             // Import-alias fallback: `Geo::Box` where "Geo" was bound as an
             // alias for "shapes.Shape".  Resolve through `import_type_name_aliases`
             // and retry the variant lookup under the canonical qualified name.
-            let canonical = self.import_type_name_aliases.get(type_prefix)?;
+            let canonical = self
+                .import_type_name_aliases
+                .get(&(self.current_module.clone(), type_prefix.to_string()))?;
             self.type_defs.get(canonical.as_str()).and_then(|td| {
                 if td.kind != TypeDefKind::Enum && td.kind != TypeDefKind::Struct {
                     return None;

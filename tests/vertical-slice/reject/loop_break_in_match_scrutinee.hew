@@ -1,0 +1,16 @@
+// Reject fixture: a `break` in a `match` SCRUTINEE must mark the enclosing loop
+// breakable.
+//
+// The walker must recurse into the scrutinee sub-expression of a `match`, not
+// just its arm bodies and guards.  Missing it types the loop Never and the
+// `i64` vs `()` mismatch below is silently accepted.
+fn f(c: bool, stop: bool) -> i64 {
+    let x: i64 = if c { 5 } else {
+        loop { match { if stop { break; } 1 } { _ => {} } }
+    };
+    x
+}
+
+fn main() {
+    println(f(true, false));
+}

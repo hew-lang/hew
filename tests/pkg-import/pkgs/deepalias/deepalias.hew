@@ -1,0 +1,37 @@
+//! Depth-2 aliased-import fixture (the importer is a PACKAGE module, not the
+//! root program).
+//!
+//! This module's dotted path is `hew.deepalias` — depth ≥ 2 — so its
+//! `path.join(".")` ("hew.deepalias") differs from `path.last()`
+//! ("deepalias"). The type checker keys its per-module import-alias map by the
+//! FULL dotted path; HIR lowering must use the SAME key. If HIR keyed by the
+//! short last segment, the alias written by the checker under "hew.deepalias"
+//! would be missed during lowering and `Hue` / `Tag` below would fail to
+//! resolve (UnresolvedSymbol) even though the checker accepted them.
+//!
+//! Root-importer fixtures (path depth 1) cannot catch this: short and full keys
+//! coincide there. Only an alias declared and used INSIDE a package module
+//! exercises the per-module key agreement.
+import hew::aliassrc::{ Color as Hue, Payload as Tag };
+
+/// `Hue` used in TYPE-ANNOTATION position (return type) and VARIANT-PATH
+/// position (`Hue::Blue`).
+pub fn make() -> Hue {
+    Hue::Blue(42)
+}
+
+/// `Tag` (record alias) used in type-annotation position (parameter) plus a
+/// field read.
+pub fn code_of(t: Tag) -> i64 {
+    t.code
+}
+
+pub fn score() -> i64 {
+    let c: Hue = make();
+    let n: i64 = match c {
+        Hue::Blue(v) => v,
+        _ => 0,
+    };
+    let t: Tag = Tag { code: 8 };
+    n + code_of(t)
+}

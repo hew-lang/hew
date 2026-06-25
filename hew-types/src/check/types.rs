@@ -497,14 +497,22 @@ pub struct TypeCheckOutput {
     ///
     /// Maps each bare alias name to its canonical qualified source identity for
     /// every `import m::{ T as U }` where the alias binding (`U`) differs from
-    /// the original exported name (`T`).  Example:
-    ///   `import hew::aliassrc::{ Payload as Tag }` → `"Tag" → "aliassrc.Payload"`.
+    /// Import type alias map: maps `(module, alias-binding)` → canonical
+    /// qualified source identity, for every `import m::{ T as U }` where the
+    /// binding name (`U`) differs from the original name (`T`).
     ///
-    /// HIR `lower_type` consults this table in `resolve_named_type_ref` to
-    /// canonicalise a type-annotation alias before the normal registry lookups,
-    /// so `fn f(x: Tag)` and `let x: Tag = …` resolve correctly.
-    /// HIR `lookup_variant_ctor` uses it similarly for `Tag::Variant` paths.
-    pub import_type_name_aliases: HashMap<String, String>,
+    /// Example: `import hew::aliassrc::{ Payload as Tag }` in module `None`
+    /// (root program) → `(None, "Tag") → "aliassrc.Payload"`.
+    ///
+    /// Keyed by `(Option<String>, String)` — `(importer_module, alias)` — so
+    /// an alias introduced in one module cannot overwrite a same-named alias
+    /// from another module (the flat-string approach caused last-write-wins
+    /// cross-module pollution).
+    ///
+    /// HIR `lower_type` consults this table in `resolve_named_type_ref` as a
+    /// **fallback** (after local / builtin / record-registry lookups), so a
+    /// local `type U` in the same module as `import m::{ Payload as U }` wins.
+    pub import_type_name_aliases: HashMap<(Option<String>, String), String>,
 }
 
 /// Wire layout metadata for a single field, carried from AST through the
@@ -2865,16 +2873,15 @@ pub struct Checker {
     /// [`Checker::set_lint_sources`] before [`Checker::check_program`] so the
     /// lint sweep can resolve `// hew:allow(...)` directives.
     pub(super) lint_sources: super::LintSources,
-    /// Import type aliases: maps the bare ALIAS binding name to the canonical
+    /// Import type aliases: maps `(importer_module, alias)` → canonical
     /// qualified source identity, for every `import m::{ T as U }` where the
     /// binding name (`U`) differs from the original name (`T`).
     ///
-    /// For example, `import hew::aliassrc::{ Payload as Tag }` produces
-    /// `"Tag" → "aliassrc.Payload"`.  Moved into
-    /// [`TypeCheckOutput::import_type_name_aliases`] at `check_program` exit
-    /// so HIR `lower_type` can resolve alias names in type-annotation position
-    /// without re-discovering the source identity from the raw AST.
-    pub(super) import_type_name_aliases: HashMap<String, String>,
+    /// Keyed per-module so aliases from different modules cannot collide
+    /// (flat-string keying caused last-write-wins cross-module pollution).
+    /// Moved into [`TypeCheckOutput::import_type_name_aliases`] at
+    /// `check_program` exit.
+    pub(super) import_type_name_aliases: HashMap<(Option<String>, String), String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

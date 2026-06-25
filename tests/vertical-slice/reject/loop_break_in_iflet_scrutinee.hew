@@ -1,0 +1,16 @@
+// Reject fixture: a `break` in an `if let` SCRUTINEE must mark the enclosing
+// loop breakable.
+//
+// The walker must recurse into the scrutinee sub-expression of an `if let`, not
+// just its body and else branch.  Missing it types the loop Never and the
+// `i64` vs `()` mismatch below is silently accepted.
+fn f(c: bool, stop: bool) -> i64 {
+    let x: i64 = if c { 5 } else {
+        loop { if let 1 = { if stop { break; } 1 } {} }
+    };
+    x
+}
+
+fn main() {
+    println(f(true, false));
+}

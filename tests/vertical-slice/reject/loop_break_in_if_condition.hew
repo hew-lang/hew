@@ -1,0 +1,21 @@
+// Reject fixture: a `break` hidden in an `if` CONDITION must still mark the
+// enclosing loop breakable, so the loop is Unit-typed (not Never).
+//
+// The break-detection walker must recurse into the condition sub-expression of
+// an `if`, not just its then/else blocks.  If the condition is skipped, the
+// loop is falsely typed Never, the surrounding `if`/`else` elides the loop
+// branch, and the `i64` vs `()` mismatch is accepted with no diagnostic.
+//
+// `if c { 5 }` (i64) is paired with a loop whose only break sits inside the
+// block-expr condition of an inner `if`.  Compilation must fail with a type
+// mismatch.
+fn f(c: bool, stop: bool) -> i64 {
+    let x: i64 = if c { 5 } else {
+        loop { if { if stop { break; } true } {} }
+    };
+    x
+}
+
+fn main() {
+    println(f(true, false));
+}

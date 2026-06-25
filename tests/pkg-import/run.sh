@@ -110,6 +110,23 @@ fixtures=(
   # `lookup_variant_constructor`, and the HIR `lookup_variant_ctor` missed the
   # aliased path `Hue::Blue` → `aliassrc.Color::Blue`.
   aliased_import_enum_variant
+  # The SAME aliased import (`Color as Hue`, `Payload as Tag`) but declared and
+  # used INSIDE a package module (`hew::deepalias`) whose dotted path has depth
+  # ≥ 2.  The checker keys the per-module import-alias map by the importer's
+  # FULL dotted path (`hew.deepalias`); HIR lowering must use the SAME key
+  # rather than the short last segment (`deepalias`), or the depth-2 importer's
+  # aliases are missed and `Hue`/`Tag` fail to resolve (UnresolvedSymbol).
+  # Root-importer fixtures (depth 1) cannot catch this — short and full keys
+  # coincide there.  Output "50" proves the aliases resolved end-to-end.
+  package_module_type_alias
+  # A LOCAL type declaration shadows an import alias of the SAME bare name
+  # (local-shadows-imported rule, B3 fix).  `import hew::aliassrc::{ Payload
+  # as U }` brings in the alias `U` → `aliassrc.Payload`, but the program
+  # ALSO declares `type U { local: i64 }`.  HIR `resolve_named_type_ref` must
+  # apply the alias ONLY as a fallback (after the record-registry check for `U`
+  # succeeds), so the construction `U { local: 7 }` and field read `.local`
+  # resolve against the LOCAL type.  Output "7" proves the local type was used.
+  local_type_shadows_import_alias
   # An ALIASED trait opt-in (`import hew::closableerr::{ Closable as C }`) impls
   # the trait under its alias (`impl C for MonitorRef`) returning the error type
   # through its CORRECT module-qualified spelling (`closableerr.CloseError`). The

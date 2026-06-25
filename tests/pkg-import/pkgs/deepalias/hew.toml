@@ -1,0 +1,6 @@
+[package]
+name = "hew::deepalias"
+version = "0.1.0"
+description = "Depth-2 importer that aliases an imported type and uses it in type + variant position, exercising the per-module alias key agreement between checker and HIR"
+authors = ["Hew Contributors"]
+license = "MIT OR Apache-2.0"

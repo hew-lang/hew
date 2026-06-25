@@ -1392,7 +1392,10 @@ impl Checker {
                 // "shapes.Shape".  Resolve through `import_type_name_aliases` and
                 // retry the unit-variant lookup under the canonical qualified name.
                 if found.is_none() {
-                    if let Some(canonical) = self.import_type_name_aliases.get(type_prefix).cloned()
+                    if let Some(canonical) = self
+                        .import_type_name_aliases
+                        .get(&(self.current_module.clone(), type_prefix.to_string()))
+                        .cloned()
                     {
                         if let Some(td) = self.type_defs.get(canonical.as_str()) {
                             if let Some(variant) = td.variants.get(variant_name) {

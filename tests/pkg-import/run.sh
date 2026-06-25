@@ -127,6 +127,49 @@ fixtures=(
   # succeeds), so the construction `U { local: 7 }` and field read `.local`
   # resolve against the LOCAL type.  Output "7" proves the local type was used.
   local_type_shadows_import_alias
+  # --- #2202: import alias used in a type-declaration MEMBER position ---
+  # An import alias resolves in a type-decl RECORD-FIELD member position (the
+  # canonical #2202 repro). `import hew::aliassrc::{ Payload as Tag }` then
+  # `type Boxed { item: Tag }`. The checker resolves member types in Pass 1
+  # (`collect_types`) BEFORE imports are processed in Pass 2, so the bare alias
+  # `Tag` used to freeze as unresolved `Named("Tag")` while its construction
+  # (Pass 3) resolved to `aliassrc.Payload` -- a spurious `expected \`Tag\`,
+  # found \`aliassrc.Payload\``. The member-type re-resolution pass (run AFTER
+  # imports) upgrades the frozen member; HIR member-lowering stamps the same
+  # source identity so the field read lowers. Output "50".
+  aliased_import_record_field_member
+  # The same alias in an ENUM-VARIANT-PAYLOAD member position: `enum Wrap {
+  # Has(Tag) }`. The variant constructor `fn_sig` is re-keyed by the
+  # re-resolution pass so the payload binds `aliassrc.Payload`; the match arm
+  # `Wrap::Has(t) => t.code` reads it back. Output "42".
+  aliased_import_enum_payload_member
+  # The same alias in a MACHINE-STATE-FIELD member position: `state Full { item:
+  # Tag }`. The state-variant table is re-resolved after imports so a transition
+  # body reading the aliased field (`self.item.code + 2`) type-checks (only
+  # `aliassrc.Payload` has `.code`) and an external match on the machine value
+  # (`Holder::Full { item } => item.code`) reads it back. Output "42".
+  aliased_import_machine_state_member
+  # The member positions used INSIDE a depth-2 package module
+  # (`hew::aliasmember`, dotted `hew.aliasmember`): a record field
+  # (`DeepBoxed { item: Tag }`) and an enum payload (`DeepWrap::Has(Tag)`). The
+  # checker keys the per-module alias map by the FULL dotted path; HIR
+  # member-lowering must use the SAME key, or the depth-2 importer's members
+  # freeze as bare `Tag` and fail closed at the MIR boundary
+  # (`unknown type Tag`). Root importers (depth 1) cannot catch this -- short
+  # and full keys coincide there. `member_score()` = 20 + 13 = "33".
+  aliased_import_member_depth2
+  # Control: a QUALIFIED member type (`type Boxed { item: aliassrc.Payload }`)
+  # already resolved correctly in Pass 1; the re-resolution pass must treat it as
+  # unchanged (no new diagnostics) and the field read must still lower. The fix
+  # must not regress the already-working qualified path. Output "50".
+  aliased_import_qualified_field_control
+  # Control: a LOCAL `type Tag { local: i64 }` shadows the import alias `Tag` in
+  # a member position (`type Boxed { item: Tag }`). The re-resolution pass seeds
+  # each scope's OWN type names before consulting the import alias map, so the
+  # unqualified member binds the LOCAL `Tag` (field `local`), not the imported
+  # `aliassrc.Payload` (field `code`). Preserves the local-shadows-imported
+  # rule. Output "9".
+  local_type_shadows_import_alias_member
   # An ALIASED trait opt-in (`import hew::closableerr::{ Closable as C }`) impls
   # the trait under its alias (`impl C for MonitorRef`) returning the error type
   # through its CORRECT module-qualified spelling (`closableerr.CloseError`). The

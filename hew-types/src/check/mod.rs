@@ -173,6 +173,18 @@ impl Checker {
         self.collect_types(program);
         self.collect_functions(program);
 
+        // Pass 1.5 (#2202): re-resolve type-declaration MEMBER types now that
+        // import-alias maps are live. `collect_types` resolves record/struct
+        // fields, enum payloads, and machine state/event fields BEFORE
+        // `collect_functions` processes imports, so a bare import alias in member
+        // position froze unresolved while its construction (Pass 3) resolved to
+        // the canonical qualified identity. This upgrade-only pass re-resolves
+        // members under each owning module's context and re-runs the member-
+        // derived marker/codec facts. It must run after `collect_functions` (so
+        // alias maps exist) and before body checking + descriptor building (so
+        // every member-derived consumer sees the corrected types).
+        self.reresolve_member_types_after_imports(program);
+
         // Build the actor protocol descriptor side-table BEFORE body checking.
         //
         // The descriptor maps each `receive fn` to its stable, hash-derived

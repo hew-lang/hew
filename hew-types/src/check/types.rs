@@ -1999,7 +1999,7 @@ pub(super) struct ImplAliasEntry {
     pub(super) resolving: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VariantDef {
     Unit,
     Tuple(Vec<Ty>),

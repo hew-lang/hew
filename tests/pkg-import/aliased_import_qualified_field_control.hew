@@ -1,0 +1,22 @@
+// Control: a QUALIFIED member type still resolves after the member-type
+// re-resolution pass (#2202 must not regress the already-working path).
+//
+// Instead of an alias, this importer references the source type by its
+// module-qualified name in a `type` field: `type Boxed { item: aliassrc.Payload }`.
+// Qualified member types already resolved correctly in Pass 1 (no import-alias
+// indirection), so the re-resolution pass must treat them as unchanged and emit
+// nothing new -- the field read must still lower and return the stored code.
+//
+// Harness verb: hew run
+// Expected: 50 -- the qualified-member control is unaffected by the fix.
+import hew::aliassrc;
+
+type Boxed {
+    item: aliassrc.Payload;
+}
+
+fn main() {
+    let p: aliassrc.Payload = Payload { code: 50 };
+    let b = Boxed { item: p };
+    println(b.item.code);
+}

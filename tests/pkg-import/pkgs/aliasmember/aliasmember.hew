@@ -1,0 +1,48 @@
+//! Depth-2 type-decl MEMBER-position alias fixture (#2202).
+//!
+//! This module's dotted path is `hew.aliasmember` (depth >= 2), so its
+//! `path.join(".")` ("hew.aliasmember") differs from `path.last()`
+//! ("aliasmember"). It imports `hew::aliassrc::{ Payload as Tag }` and uses the
+//! alias `Tag` in type-declaration member positions:
+//!
+//!   * a record/`type` field   -- `DeepBoxed { item: Tag }`
+//!   * an enum-variant payload  -- `DeepWrap::Has(Tag)`
+//!
+//! (The machine state-field member position is covered at depth-1 by
+//! `aliased_import_machine_state_member`; a machine declared *inside* a depth-2
+//! package hits a separate, pre-existing MIR-boundary limitation -- "unknown
+//! type" for the machine's own ValueClass -- that is unrelated to alias
+//! resolution, so it is intentionally excluded here.)
+//!
+//! The checker resolves a type-decl member's type in Pass 1 (`collect_types`),
+//! BEFORE imports are processed in Pass 2; the re-resolution pass upgrades the
+//! frozen bare alias `Tag` to its canonical source identity `aliassrc.Payload`.
+//! The checker keys the per-module alias map by the FULL dotted path
+//! (`hew.aliasmember`), and HIR member-lowering must use the SAME key -- keying
+//! by the short last segment (`aliasmember`) would miss the alias and the
+//! member would freeze as the bare `Tag`, which then fails closed at the MIR
+//! boundary (`unknown type Tag`). A depth-1 (root) importer cannot catch this:
+//! short and full keys coincide there.
+import hew::aliassrc::{ Payload as Tag };
+
+/// Type-decl member: a struct field typed by this module's own import alias.
+pub type DeepBoxed {
+    item: Tag;
+}
+
+/// Type-decl member: an enum-variant payload typed by the import alias.
+pub enum DeepWrap {
+    Has(Tag);
+}
+
+/// Exercise both member positions end-to-end. The aliased members must resolve
+/// to `aliassrc.Payload` so construction, field read, and match-payload binding
+/// all type-check and lower through the depth-2 module's own alias map.
+pub fn member_score() -> i64 {
+    let boxed: DeepBoxed = DeepBoxed { item: Tag { code: 20 } };
+    let wrapped: DeepWrap = DeepWrap::Has(Tag { code: 13 });
+    let from_enum: i64 = match wrapped {
+        DeepWrap::Has(t) => t.code,
+    };
+    boxed.item.code + from_enum
+}

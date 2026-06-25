@@ -1,0 +1,28 @@
+// Aliased import alias resolves in a type-declaration RECORD-FIELD member
+// position (the canonical #2202 repro).
+//
+// `hew::aliassrc` exports a record `Payload`. The importer opts it in under the
+// alias `Tag` (`import hew::aliassrc::{ Payload as Tag }`) and uses the alias as
+// a `type` field's declared type: `type Boxed { item: Tag }`.
+//
+// The checker resolves type-decl member types in Pass 1 (`collect_types`),
+// BEFORE imports are processed in Pass 2, so the bare alias `Tag` used to freeze
+// as an unresolved `Named("Tag")` while its construction (Pass 3) resolved to
+// the canonical `aliassrc.Payload` -- yielding a spurious
+// `type mismatch: expected \`Tag\`, found \`aliassrc.Payload\``. The
+// member-type re-resolution pass (run after imports are processed) upgrades the
+// frozen member to the source identity, and HIR member-lowering stamps the same
+// identity so the field read lowers end-to-end.
+//
+// Harness verb: hew run
+// Expected: the code stored through the aliased-type field is read back.
+import hew::aliassrc::{ Payload as Tag };
+
+type Boxed {
+    item: Tag;
+}
+
+fn main() {
+    let b = Boxed { item: Tag { code: 50 } };
+    println(b.item.code);
+}

@@ -1,0 +1,31 @@
+// Aliased import alias resolves in a type-declaration ENUM-VARIANT-PAYLOAD
+// member position (#2202).
+//
+// `hew::aliassrc` exports a record `Payload`. The importer opts it in under the
+// alias `Tag` (`import hew::aliassrc::{ Payload as Tag }`) and uses the alias as
+// an enum variant's payload type: `enum Wrap { Has(Tag) }`.
+//
+// Enum-variant payload types are resolved in Pass 1 (`collect_types`), before
+// imports are processed, so the bare alias `Tag` used to freeze unresolved
+// while the construction `Wrap::Has(Tag { code: 42 })` resolved to
+// `aliassrc.Payload`. The variant constructor's `fn_sig` is re-keyed by the
+// re-resolution pass so the payload binds the source identity; reading `t.code`
+// out of the matched payload proves it end-to-end.
+//
+// Harness verb: hew run
+// Expected: the code carried by the aliased-type variant payload is read back.
+import hew::aliassrc::{ Payload as Tag };
+
+enum Wrap {
+    Has(Tag);
+    Empty;
+}
+
+fn main() {
+    let w = Wrap::Has(Tag { code: 42 });
+    let code = match w {
+        Wrap::Has(t) => t.code,
+        Wrap::Empty => 0,
+    };
+    println(code);
+}

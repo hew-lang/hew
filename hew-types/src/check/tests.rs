@@ -10999,6 +10999,223 @@ fn import_alias_multiple_names() {
     );
 }
 
+// -- #2202: import alias in type-declaration MEMBER position --
+//
+// A bare import alias used as a record/struct field type or an enum-variant
+// payload type is resolved in Pass 1 (`collect_types`) BEFORE imports are
+// processed in Pass 2 (`collect_functions`). The Pass 1.5 re-resolution
+// (`reresolve_member_types_after_imports`) upgrades the frozen bare alias to its
+// canonical source identity once the alias maps are live, so the stored member
+// type matches what the construction site (Pass 3) resolves it to.
+
+/// Build a single-field public struct whose field has the given Named type.
+fn make_struct_with_field_ty(name: &str, field: &str, field_type: &str) -> TypeDecl {
+    TypeDecl {
+        visibility: Visibility::Pub,
+        kind: TypeDeclKind::Struct,
+        name: name.to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![TypeBodyItem::Field {
+            name: field.to_string(),
+            ty: (
+                TypeExpr::Named {
+                    name: field_type.to_string(),
+                    type_args: None,
+                },
+                0..0,
+            ),
+            attributes: Vec::new(),
+            doc_comment: None,
+            span: 0..0,
+        }],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
+        consuming_methods: Vec::new(),
+    }
+}
+
+/// The canonical `Ty` an aliased member must upgrade to.
+fn named_ty(name: &str) -> Ty {
+    Ty::Named {
+        builtin: None,
+        name: name.to_string(),
+        args: vec![],
+    }
+}
+
+#[test]
+fn import_alias_in_record_field_resolves_to_source_identity() {
+    // mod_a exports `pub type Payload { code: i64 }`; root imports it as `Tag`
+    // and declares `pub type Boxed { item: Tag }`. The stored field type must be
+    // the canonical `mod_a.Payload`, not the frozen bare alias `Tag` — otherwise
+    // the field freezes mismatched against the construction site (#2202).
+    let payload = make_pub_struct("Payload", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Payload".to_string(),
+            alias: Some("Tag".to_string()),
+        }])),
+        vec![(Item::TypeDecl(payload), 0..0)],
+    );
+    let boxed = make_struct_with_field_ty("Boxed", "item", "Tag");
+    let output = check_items(vec![
+        (Item::Import(import), 0..0),
+        (Item::TypeDecl(boxed), 0..0),
+    ]);
+
+    let boxed_def = output
+        .type_defs
+        .get("Boxed")
+        .expect("`Boxed` must be registered");
+    assert_eq!(
+        boxed_def.fields.get("item"),
+        Some(&named_ty("mod_a.Payload")),
+        "field `item: Tag` must resolve to the canonical source identity \
+         `mod_a.Payload`, not the frozen bare alias `Tag`"
+    );
+}
+
+#[test]
+fn import_alias_in_enum_payload_resolves_to_source_identity() {
+    // Root declares `pub enum Wrap { Has(Tag) }`; the variant payload AND its
+    // constructor `fn_sig` must both upgrade to the canonical `mod_a.Payload`.
+    let payload = make_pub_struct("Payload", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Payload".to_string(),
+            alias: Some("Tag".to_string()),
+        }])),
+        vec![(Item::TypeDecl(payload), 0..0)],
+    );
+    let wrap = TypeDecl {
+        visibility: Visibility::Pub,
+        kind: TypeDeclKind::Enum,
+        name: "Wrap".to_string(),
+        type_params: None,
+        where_clause: None,
+        body: vec![TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
+            name: "Has".to_string(),
+            kind: VariantKind::Tuple(vec![(
+                TypeExpr::Named {
+                    name: "Tag".to_string(),
+                    type_args: None,
+                },
+                0..0,
+            )]),
+            doc_comment: None,
+            span: 0..0,
+        })],
+        doc_comment: None,
+        wire: None,
+        is_indirect: false,
+        resource_marker: hew_parser::ast::ResourceMarker::None,
+        is_opaque: false,
+        consuming_methods: Vec::new(),
+    };
+    let output = check_items(vec![
+        (Item::Import(import), 0..0),
+        (Item::TypeDecl(wrap), 0..0),
+    ]);
+
+    let wrap_def = output
+        .type_defs
+        .get("Wrap")
+        .expect("`Wrap` must be registered");
+    assert_eq!(
+        wrap_def.variants.get("Has"),
+        Some(&VariantDef::Tuple(vec![named_ty("mod_a.Payload")])),
+        "enum variant payload `Has(Tag)` must resolve to `mod_a.Payload`"
+    );
+    assert_eq!(
+        output.fn_sigs.get("Has").map(|sig| sig.params.clone()),
+        Some(vec![named_ty("mod_a.Payload")]),
+        "the variant constructor `Has` must be re-keyed to take `mod_a.Payload`"
+    );
+}
+
+#[test]
+fn local_type_shadows_import_alias_in_member_position() {
+    // Root declares BOTH a local `type Tag { code: i64 }` and imports
+    // `Payload as Tag`. The unqualified `Tag` in member position must bind the
+    // LOCAL type (local-shadows-imported), never the import's `mod_a.Payload`.
+    let payload = make_pub_struct("Payload", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Payload".to_string(),
+            alias: Some("Tag".to_string()),
+        }])),
+        vec![(Item::TypeDecl(payload), 0..0)],
+    );
+    let local_tag = make_pub_struct("Tag", "code");
+    let boxed = make_struct_with_field_ty("Boxed", "item", "Tag");
+    let output = check_items(vec![
+        (Item::Import(import), 0..0),
+        (Item::TypeDecl(local_tag), 0..0),
+        (Item::TypeDecl(boxed), 0..0),
+    ]);
+
+    let boxed_def = output
+        .type_defs
+        .get("Boxed")
+        .expect("`Boxed` must be registered");
+    assert_eq!(
+        boxed_def.fields.get("item"),
+        Some(&named_ty("Tag")),
+        "a local `type Tag` must shadow the import alias `Tag` in member position; \
+         the field must NOT upgrade to `mod_a.Payload`"
+    );
+}
+
+#[test]
+fn aliased_member_matches_qualified_member_type() {
+    // The aliased member (`item: Tag`) and the qualified member
+    // (`item: mod_a.Payload`) must resolve to the SAME stored field type, so
+    // every member-derived fact (Send/Copy/Frozen markers, serializable set) is
+    // identical regardless of which spelling the user wrote (Risk #1).
+    let payload = make_pub_struct("Payload", "code");
+    let import = make_user_import(
+        &["myapp", "mod_a"],
+        Some(ImportSpec::Names(vec![ImportName {
+            name: "Payload".to_string(),
+            alias: Some("Tag".to_string()),
+        }])),
+        vec![(Item::TypeDecl(payload), 0..0)],
+    );
+    let aliased = make_struct_with_field_ty("AliasedBox", "item", "Tag");
+    let qualified = make_struct_with_field_ty("QualifiedBox", "item", "mod_a.Payload");
+    let output = check_items(vec![
+        (Item::Import(import), 0..0),
+        (Item::TypeDecl(aliased), 0..0),
+        (Item::TypeDecl(qualified), 0..0),
+    ]);
+
+    let aliased_field = output
+        .type_defs
+        .get("AliasedBox")
+        .and_then(|d| d.fields.get("item"));
+    let qualified_field = output
+        .type_defs
+        .get("QualifiedBox")
+        .and_then(|d| d.fields.get("item"));
+    assert_eq!(
+        aliased_field,
+        Some(&named_ty("mod_a.Payload")),
+        "the aliased member must resolve to the canonical `mod_a.Payload`"
+    );
+    assert_eq!(
+        aliased_field, qualified_field,
+        "aliased member `Tag` and qualified member `mod_a.Payload` must resolve to \
+         the identical stored field type"
+    );
+}
+
 // -- Trait import from module --
 
 #[test]

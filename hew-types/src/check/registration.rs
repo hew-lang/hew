@@ -1493,6 +1493,442 @@ impl Checker {
         }
     }
 
+    /// Pass 1.5 — re-resolve type-declaration MEMBER types after import
+    /// processing (#2202).
+    ///
+    /// `collect_types` (Pass 1) resolves record/struct field types, enum-variant
+    /// payload types, and machine state/event field types BEFORE
+    /// `collect_functions` (Pass 2) processes imports and populates the
+    /// import-alias maps (`published_bare_type_owners` / `import_type_name_aliases`).
+    /// A bare import alias used in member position therefore froze as an
+    /// unresolved `Named("Tag")` while its construction (Pass 3) resolves to the
+    /// canonical `aliassrc.Payload`, producing a spurious mismatch.
+    ///
+    /// This pass runs immediately after `collect_functions`, when every module's
+    /// alias maps are live, and re-resolves each type declaration's member types
+    /// under the OWNING module's context. A member that upgrades from a bare
+    /// alias to its canonical qualified identity is committed back into
+    /// `type_defs` (bare + module-qualified keys) and the member-derived facts
+    /// are re-run over the canonical types: the structural marker set
+    /// (`register_type` — Send/Copy/Frozen/Clone/Encode), the
+    /// `Serializable`/`RcFree` member sets, the per-module qualified marker
+    /// mirror (the ask-reply Send-gate anti-clobber), the variant-constructor
+    /// `fn_sigs`, the wire codec layout, and the `Encode`-driven JSON/YAML/TOML
+    /// methods. Members that did not change are left untouched, so the common
+    /// (alias-free) path is a no-op and no derivation is re-run.
+    ///
+    /// The local-shadow rule is preserved: a local `type U` shadowing an import
+    /// alias keeps `local_type_defs`/`source_type_defs` populated for the owning
+    /// module, so `published_bare_type_qualified` returns `None` and the member
+    /// stays bound to the local definition. Diagnostics emitted while
+    /// re-resolving are dropped by this driver: Pass 1 already emitted for
+    /// genuinely-unresolvable members and the value/use sites (Pass 3) re-emit,
+    /// so this upgrade-only pass must never be the sole emitter.
+    pub(super) fn reresolve_member_types_after_imports(&mut self, program: &Program) {
+        let errors_before = self.errors.len();
+        let warnings_before = self.warnings.len();
+
+        if let Some(ref mg) = program.module_graph {
+            for mod_id in &mg.topo_order {
+                if *mod_id == mg.root {
+                    continue;
+                }
+                let Some(module) = mg.modules.get(mod_id) else {
+                    continue;
+                };
+                self.current_module = Some(mod_id.path.join("."));
+                let saved_local_type_defs = self.local_type_defs.clone();
+                let saved_source_type_defs = self.source_type_defs.clone();
+                self.seed_member_reresolution_scope(&module.items);
+                for (item, _) in &module.items {
+                    self.reresolve_item_member_types(item);
+                }
+                self.local_type_defs = saved_local_type_defs;
+                self.source_type_defs = saved_source_type_defs;
+            }
+        }
+
+        self.current_module = None;
+        let saved_local_type_defs = self.local_type_defs.clone();
+        let saved_source_type_defs = self.source_type_defs.clone();
+        self.seed_member_reresolution_scope(&program.items);
+        for (item, _) in &program.items {
+            self.reresolve_item_member_types(item);
+        }
+        self.local_type_defs = saved_local_type_defs;
+        self.source_type_defs = saved_source_type_defs;
+
+        self.errors.truncate(errors_before);
+        self.warnings.truncate(warnings_before);
+    }
+
+    /// Seed `local_type_defs`/`source_type_defs` with the current scope's own
+    /// type names so member re-resolution (a) treats them as locally-defined
+    /// (no fresh-var injection) and (b) shadows any same-named import alias —
+    /// the local-shadow rule. Mirrors the seeding `collect_types` performs.
+    fn seed_member_reresolution_scope(&mut self, items: &[Spanned<Item>]) {
+        for (item, _) in items {
+            match item {
+                Item::TypeDecl(td) => {
+                    self.local_type_defs.insert(td.name.clone());
+                    self.source_type_defs.insert(td.name.clone());
+                }
+                Item::Record(rd) => {
+                    self.local_type_defs.insert(rd.name.clone());
+                    self.source_type_defs.insert(rd.name.clone());
+                }
+                Item::Machine(md) => {
+                    self.local_type_defs.insert(md.name.clone());
+                    self.source_type_defs.insert(md.name.clone());
+                    let event_type_name = format!("{}Event", md.name);
+                    self.local_type_defs.insert(event_type_name.clone());
+                    self.source_type_defs.insert(event_type_name);
+                }
+                Item::Actor(ad) => {
+                    self.source_type_defs.insert(ad.name.clone());
+                }
+                Item::TypeAlias(ta) => {
+                    self.source_type_defs.insert(ta.name.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn reresolve_item_member_types(&mut self, item: &Item) {
+        match item {
+            Item::TypeDecl(td) => self.reresolve_type_decl_members(td),
+            Item::Record(rd) => self.reresolve_record_members(rd),
+            Item::Machine(md) => self.reresolve_machine_members(md),
+            _ => {}
+        }
+    }
+
+    /// The collision-free key under which this scope's `TypeDef` is stored: the
+    /// module-qualified `{module_short}.{name}` for a non-root module (when it
+    /// exists), else the bare `name` for the root program.
+    fn authoritative_type_def_key(&self, bare_name: &str) -> String {
+        if let Some(module_short) = self.current_module_short() {
+            let qualified = format!("{module_short}.{bare_name}");
+            if self.type_defs.contains_key(&qualified) {
+                return qualified;
+            }
+        }
+        bare_name.to_string()
+    }
+
+    /// Commit a re-resolved `TypeDef`: insert the bare entry (last-write-wins
+    /// across modules) and, for a non-root module, copy it to the
+    /// collision-free `{module_short}.{name}` qualified key while mirroring the
+    /// marker tables — exactly the bare+qualified pairing `pre_register_type_decl`
+    /// and `register_qualified_type_alias` establish during normal registration.
+    fn commit_reresolved_type_def(&mut self, name: &str, type_def: TypeDef) {
+        self.type_defs.insert(name.to_string(), type_def);
+        if let Some(module_short) = self.current_module_short().map(str::to_string) {
+            self.register_qualified_type_alias(&module_short, name);
+        }
+        self.handle_bearing_dirty = true;
+    }
+
+    /// Re-resolve a `type`/`enum` declaration's member types under the now-live
+    /// import-alias maps; on a member upgrade, patch `type_defs` and re-run every
+    /// member-derived fact. Mirrors `register_type_decl`'s member resolution and
+    /// derivation tail. No-op when no member changed.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "mirrors register_type_decl's member resolution and derivation tail"
+    )]
+    fn reresolve_type_decl_members(&mut self, td: &TypeDecl) {
+        let kind = match td.kind {
+            TypeDeclKind::Struct => TypeDefKind::Struct,
+            TypeDeclKind::Enum => TypeDefKind::Enum,
+        };
+        let type_param_names: Vec<String> = td.type_params.as_ref().map_or(vec![], |params| {
+            params.iter().map(|p| p.name.clone()).collect()
+        });
+
+        let mut fields = HashMap::new();
+        let mut field_order: Vec<String> = Vec::new();
+        let mut variants = HashMap::new();
+        let mut hole_vars = Vec::new();
+        for item in &td.body {
+            match item {
+                TypeBodyItem::Field { name, ty, .. } => {
+                    let field_ty = self.resolve_registered_annotation_ty(ty, &mut hole_vars);
+                    field_order.push(name.clone());
+                    fields.insert(name.clone(), field_ty);
+                }
+                TypeBodyItem::Variant(variant) => match &variant.kind {
+                    VariantKind::Unit => {
+                        variants.insert(variant.name.clone(), VariantDef::Unit);
+                    }
+                    VariantKind::Tuple(tuple_fields) => {
+                        let variant_tys: Vec<Ty> = tuple_fields
+                            .iter()
+                            .map(|f| self.resolve_registered_annotation_ty(f, &mut hole_vars))
+                            .collect();
+                        variants.insert(variant.name.clone(), VariantDef::Tuple(variant_tys));
+                    }
+                    VariantKind::Struct(struct_fields) => {
+                        let variant_fields: Vec<(String, Ty)> = struct_fields
+                            .iter()
+                            .map(|(n, f)| {
+                                (
+                                    n.clone(),
+                                    self.resolve_registered_annotation_ty(f, &mut hole_vars),
+                                )
+                            })
+                            .collect();
+                        variants.insert(variant.name.clone(), VariantDef::Struct(variant_fields));
+                    }
+                },
+                TypeBodyItem::Method(_) => {}
+            }
+        }
+
+        let stored_key = self.authoritative_type_def_key(&td.name);
+        let Some(stored) = self.type_defs.get(&stored_key) else {
+            return;
+        };
+        if stored.fields == fields && stored.variants == variants {
+            return;
+        }
+
+        let type_def = TypeDef {
+            kind,
+            name: td.name.clone(),
+            type_params: type_param_names.clone(),
+            bounds: stored.bounds.clone(),
+            fields,
+            field_order,
+            variants,
+            methods: stored.methods.clone(),
+            doc_comment: td.doc_comment.clone(),
+            is_indirect: td.is_indirect,
+        };
+
+        // Re-key tuple variant constructors over the canonical payload types.
+        // Unit/struct variants carry no member-dependent constructor signature.
+        for (variant_name, variant_def) in &type_def.variants {
+            if let VariantDef::Tuple(variant_tys) = variant_def {
+                if let Some(sig) = self.fn_sigs.get_mut(variant_name) {
+                    sig.params.clone_from(variant_tys);
+                }
+            }
+        }
+
+        // Re-derive member-dependent facts (all replace-semantics).
+        let field_types: Vec<Ty> = if kind == TypeDefKind::Enum {
+            Self::structural_member_types_for_type(&type_def)
+        } else {
+            type_def.fields.values().cloned().collect()
+        };
+        let all_fields_encodable = td.wire.is_none()
+            && kind == TypeDefKind::Struct
+            && field_types
+                .iter()
+                .all(|f| self.registry.implements_marker(f, MarkerTrait::Encode));
+        self.registry.register_type(td.name.clone(), field_types);
+        if td.wire.is_some() || kind == TypeDefKind::Enum {
+            self.register_serializable_members_for_type(&td.name, &type_def);
+        }
+        self.register_rcfree_members_for_type(&td.name, &type_def);
+        self.seed_qualified_type_markers_for_current_module(&td.name);
+        self.commit_reresolved_type_def(&td.name, type_def);
+
+        if let Some(ref wire) = td.wire {
+            let variant_order: Vec<String> = td
+                .body
+                .iter()
+                .filter_map(|i| match i {
+                    TypeBodyItem::Variant(v) => Some(v.name.clone()),
+                    _ => None,
+                })
+                .collect();
+            self.register_wire_methods(&td.name, wire, &variant_order);
+        }
+        if all_fields_encodable {
+            self.register_encode_methods(&td.name);
+        }
+    }
+
+    /// Re-resolve a `record` declaration's member types. Mirrors
+    /// `register_record_decl`'s named/tuple split and derivation tail. No-op when
+    /// no member changed. Records are root-only, so there is no qualified key.
+    fn reresolve_record_members(&mut self, rd: &RecordDecl) {
+        let type_param_names: Vec<String> = rd.type_params.as_ref().map_or(vec![], |params| {
+            params.iter().map(|p| p.name.clone()).collect()
+        });
+        let mut hole_vars = Vec::new();
+
+        match &rd.kind {
+            RecordKind::Named(record_fields) => {
+                let mut fields: HashMap<String, Ty> = HashMap::new();
+                let mut field_order: Vec<String> = Vec::new();
+                for rf in record_fields {
+                    let field_ty = self.resolve_registered_annotation_ty(&rf.ty, &mut hole_vars);
+                    field_order.push(rf.name.clone());
+                    fields.insert(rf.name.clone(), field_ty);
+                }
+
+                let stored_key = self.authoritative_type_def_key(&rd.name);
+                let Some(stored) = self.type_defs.get(&stored_key) else {
+                    return;
+                };
+                if stored.fields == fields {
+                    return;
+                }
+
+                let type_def = TypeDef {
+                    kind: TypeDefKind::Record,
+                    name: rd.name.clone(),
+                    type_params: type_param_names,
+                    bounds: stored.bounds.clone(),
+                    fields,
+                    field_order,
+                    variants: HashMap::new(),
+                    methods: stored.methods.clone(),
+                    doc_comment: rd.doc_comment.clone(),
+                    is_indirect: false,
+                };
+                let field_types: Vec<Ty> = type_def.fields.values().cloned().collect();
+                self.registry
+                    .register_type(rd.name.clone(), field_types.clone());
+                self.registry
+                    .register_serializable_type(rd.name.clone(), field_types);
+                self.register_rcfree_members_for_type(&rd.name, &type_def);
+                self.commit_reresolved_type_def(&rd.name, type_def);
+            }
+            RecordKind::Tuple(positional_types) => {
+                let param_tys: Vec<Ty> = positional_types
+                    .iter()
+                    .map(|te| self.resolve_registered_annotation_ty(te, &mut hole_vars))
+                    .collect();
+                // Tuple records store no fields (`.0`/`.1` access is forbidden);
+                // the positional types live only in the constructor `fn_sig`.
+                let unchanged = self
+                    .fn_sigs
+                    .get(&rd.name)
+                    .is_some_and(|sig| sig.params == param_tys);
+                if unchanged {
+                    return;
+                }
+                if let Some(sig) = self.fn_sigs.get_mut(&rd.name) {
+                    sig.params.clone_from(&param_tys);
+                }
+                self.registry
+                    .register_type(rd.name.clone(), param_tys.clone());
+                self.registry
+                    .register_serializable_type(rd.name.clone(), param_tys);
+                if let Some(module_short) = self.current_module_short().map(str::to_string) {
+                    self.registry
+                        .alias_type_markers(&rd.name, &format!("{module_short}.{}", rd.name));
+                }
+                self.handle_bearing_dirty = true;
+            }
+        }
+    }
+
+    /// Re-resolve a `machine` declaration's state and event field types. Mirrors
+    /// `register_machine_decl`'s state-variant / event-companion resolution and
+    /// marker derivation. State and event companions are patched independently.
+    fn reresolve_machine_members(&mut self, md: &MachineDecl) {
+        // --- State fields → machine `type_def` variants ---
+        let mut variants = HashMap::new();
+        let mut machine_hole_vars = Vec::new();
+        for state in &md.states {
+            if state.fields.is_empty() {
+                variants.insert(state.name.clone(), VariantDef::Unit);
+            } else {
+                let variant_fields: Vec<(String, Ty)> = state
+                    .fields
+                    .iter()
+                    .map(|(name, spanned_te)| {
+                        (
+                            name.clone(),
+                            self.resolve_registered_annotation_ty(
+                                spanned_te,
+                                &mut machine_hole_vars,
+                            ),
+                        )
+                    })
+                    .collect();
+                variants.insert(state.name.clone(), VariantDef::Struct(variant_fields));
+            }
+        }
+
+        let machine_key = self.authoritative_type_def_key(&md.name);
+        if let Some(stored) = self.type_defs.get(&machine_key) {
+            if stored.variants != variants {
+                let type_def = TypeDef {
+                    kind: TypeDefKind::Machine,
+                    name: md.name.clone(),
+                    type_params: stored.type_params.clone(),
+                    bounds: stored.bounds.clone(),
+                    fields: HashMap::new(),
+                    field_order: vec![],
+                    variants,
+                    methods: stored.methods.clone(),
+                    doc_comment: stored.doc_comment.clone(),
+                    is_indirect: stored.is_indirect,
+                };
+                // Register field types for Send/Frozen derivation (mirrors the
+                // `resolve_type_expr` flatten at the registration site).
+                let mut all_field_types = Vec::new();
+                for state in &md.states {
+                    for (_, spanned_te) in &state.fields {
+                        all_field_types.push(self.resolve_type_expr(spanned_te));
+                    }
+                }
+                self.registry
+                    .register_type(md.name.clone(), all_field_types);
+                self.register_rcfree_members_for_type(&md.name, &type_def);
+                self.commit_reresolved_type_def(&md.name, type_def);
+            }
+        }
+
+        // --- Event fields → `{Name}Event` companion enum ---
+        let event_type_name = format!("{}Event", md.name);
+        let mut event_variants = HashMap::new();
+        let mut event_hole_vars = Vec::new();
+        for event in &md.events {
+            if event.fields.is_empty() {
+                event_variants.insert(event.name.clone(), VariantDef::Unit);
+            } else {
+                let variant_fields: Vec<(String, Ty)> = event
+                    .fields
+                    .iter()
+                    .map(|(name, spanned_te)| {
+                        (
+                            name.clone(),
+                            self.resolve_registered_annotation_ty(spanned_te, &mut event_hole_vars),
+                        )
+                    })
+                    .collect();
+                event_variants.insert(event.name.clone(), VariantDef::Struct(variant_fields));
+            }
+        }
+        let event_key = self.authoritative_type_def_key(&event_type_name);
+        if let Some(stored) = self.type_defs.get(&event_key) {
+            if stored.variants != event_variants {
+                let event_type_def = TypeDef {
+                    kind: TypeDefKind::Enum,
+                    name: event_type_name.clone(),
+                    type_params: stored.type_params.clone(),
+                    bounds: stored.bounds.clone(),
+                    fields: HashMap::new(),
+                    field_order: vec![],
+                    variants: event_variants,
+                    methods: stored.methods.clone(),
+                    doc_comment: stored.doc_comment.clone(),
+                    is_indirect: stored.is_indirect,
+                };
+                self.register_rcfree_members_for_type(&event_type_name, &event_type_def);
+                self.commit_reresolved_type_def(&event_type_name, event_type_def);
+            }
+        }
+    }
+
     /// Populate `type_defs` with a full `TypeDef` for a non-root module's
     /// `TypeDecl`, including resolved fields and variant constructors.
     ///

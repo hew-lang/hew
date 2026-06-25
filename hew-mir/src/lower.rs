@@ -20579,6 +20579,16 @@ impl Builder {
             "hew_actor_link" | "hew_actor_monitor" => {
                 self.lower_actor_link_or_monitor(symbol, hir_args, site, context, result_ty)
             }
+            // `hew_actor_demonitor(ref_id: i64) -> void`: cancels a monitor.
+            // The canonical call path is MonitorRef::close → RuntimeDropDescriptor::MonitorRefClose
+            // → lower_drop_runtime (struct-field extraction); this arm handles
+            // the rare case where user Hew source calls the symbol directly
+            // (e.g. a `#[resource]` type wrapping the ref in a user-authored
+            // close method — as in the MIR vertical test). Returns void; a
+            // value-needed context is fail-closed.
+            "hew_actor_demonitor" => {
+                self.lower_simple_void_runtime_call(symbol, hir_args, site, context)
+            }
             "hew_actor_unlink" => self.lower_actor_unlink(hir_args, site, context),
             "hew_bytes_push" => self.lower_bytes_push(hir_args, site, context),
             "hew_vec_len" => self.lower_bytes_len(hir_args, site, context),
@@ -21270,6 +21280,31 @@ impl Builder {
         let self_handle = self.emit_actor_self_handle();
 
         self.push_runtime_call("hew_actor_unlink", vec![self_handle, target], None);
+        None
+    }
+
+    /// Pass-through handler for void-returning runtime symbols that carry no
+    /// MIR-level composite-return semantics. Used for symbols such as
+    /// `hew_actor_demonitor` that users may call directly from a user-authored
+    /// close method, where the caller is responsible for lowering args correctly.
+    ///
+    /// Returns `None` (unit) in both statement and value-needed position — a
+    /// void call appearing as the last expression in a block is valid Hew; the
+    /// block yields unit. The `context` parameter is accepted but unused
+    /// because the void→unit semantics are uniform across both positions.
+    fn lower_simple_void_runtime_call(
+        &mut self,
+        symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        _site: hew_hir::SiteId,
+        _context: RuntimeCallContext,
+    ) -> Option<Place> {
+        let mut arg_places = Vec::with_capacity(hir_args.len());
+        for arg in hir_args {
+            let p = self.lower_value(arg)?;
+            arg_places.push(p);
+        }
+        self.push_runtime_call(symbol, arg_places, None);
         None
     }
 
@@ -36893,6 +36928,7 @@ mod enum_layout_tests {
                     && l.name != "SendError"
                     && l.name != "AskError"
                     && l.name != "TimeoutError"
+                    && l.name != "LinkError"
             })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Shape");
@@ -36950,6 +36986,7 @@ mod enum_layout_tests {
                     && l.name != "SendError"
                     && l.name != "AskError"
                     && l.name != "TimeoutError"
+                    && l.name != "LinkError"
             })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Colour");
@@ -37151,6 +37188,7 @@ mod enum_layout_tests {
                     && l.name != "SendError"
                     && l.name != "AskError"
                     && l.name != "TimeoutError"
+                    && l.name != "LinkError"
             })
             .collect();
         assert_eq!(

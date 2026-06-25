@@ -160,6 +160,12 @@ pub enum RuntimeCallFamily {
     ActorAsk,
     ActorAskWithChannel,
     ActorCooperate,
+    /// `MonitorRef::close` → `hew_actor_demonitor(ref_id: u64) -> void`.
+    /// In the drop path, codegen extracts `ref_id` from the struct alloca
+    /// via `build_struct_gep` + `build_load` and passes it directly.
+    /// Present as a `RuntimeCallFamily` variant for allowlist parity only;
+    /// the canonical path is `RuntimeDropDescriptor::MonitorRefClose`.
+    ActorDemonitor,
     ActorLink,
     ActorMonitor,
     ActorSelf,
@@ -474,6 +480,7 @@ impl RuntimeCallFamily {
             Self::ActorAsk => "hew_actor_ask",
             Self::ActorAskWithChannel => "hew_actor_ask_with_channel",
             Self::ActorCooperate => "hew_actor_cooperate",
+            Self::ActorDemonitor => "hew_actor_demonitor",
             Self::ActorLink => "hew_actor_link",
             Self::ActorMonitor => "hew_actor_monitor",
             Self::ActorSelf => "hew_actor_self",
@@ -713,6 +720,7 @@ impl RuntimeCallFamily {
             "hew_actor_ask" => Self::ActorAsk,
             "hew_actor_ask_with_channel" => Self::ActorAskWithChannel,
             "hew_actor_cooperate" => Self::ActorCooperate,
+            "hew_actor_demonitor" => Self::ActorDemonitor,
             "hew_actor_link" => Self::ActorLink,
             "hew_actor_monitor" => Self::ActorMonitor,
             "hew_actor_self" => Self::ActorSelf,
@@ -1013,6 +1021,7 @@ impl RuntimeCallFamily {
             | F::ActorAsk
             | F::ActorAskWithChannel
             | F::ActorCooperate
+            | F::ActorDemonitor
             | F::ActorLink
             | F::ActorMonitor
             | F::ActorSelf
@@ -1796,6 +1805,7 @@ mod tests {
             ("SendHalf::close", "hew_duplex_close_half"),
             ("RecvHalf::close", "hew_duplex_close_half"),
             ("CancellationToken::release", "hew_cancel_token_release"),
+            ("MonitorRef::close", "hew_actor_demonitor"),
         ];
         let mut by_name: HashMap<&'static str, RuntimeDropDescriptor> = HashMap::new();
         for d in all_runtime_drop_descriptors() {

@@ -981,6 +981,7 @@ fn wasm_excluded_call_family(family: hew_types::runtime_call::RuntimeCallFamily)
         F::ActorAsk
         | F::ActorAskWithChannel
         | F::ActorCooperate
+        | F::ActorDemonitor
         | F::ActorLink
         | F::ActorMonitor
         | F::ActorSelf

@@ -1210,6 +1210,34 @@ pub(crate) fn lower_call_runtime_abi(
             }
             let _ = (i32_ty, ptr_ty);
         }
+        // hew_actor_demonitor(ref_id: i64) -> void. Cancels a previously-registered
+        // monitor. Called from user Hew source via a lower_simple_void_runtime_call
+        // MIR arm (the canonical drop path — MonitorRef::close — goes through
+        // lower_drop_runtime in llvm.rs with struct-field extraction, bypassing
+        // this arm). This arm handles the case where user code calls the symbol
+        // directly inside a user-authored close method (e.g. wrapping type test).
+        F::ActorDemonitor => {
+            if args.len() != 1 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_actor_demonitor): expected 1 arg \
+                     (ref_id: i64), got {}",
+                    args.len()
+                )));
+            }
+            // arg0: ref_id (i64). Loaded from the alloca the MIR lowerer
+            // allocated for the plain i64 value expression.
+            let ref_id = load_int_arg(fn_ctx, args[0], i64_ty, "demonitor_ref_id")?;
+            let llvm_args: [BasicMetadataValueEnum; 1] = [ref_id.into()];
+            fn_ctx.call_runtime_void(
+                symbol,
+                &llvm_args,
+                "hew_actor_demonitor_call",
+                "hew_actor_demonitor call",
+            )?;
+            // void return; dest is always None (lower_simple_void_runtime_call
+            // never emits a dest).
+            let _ = (i32_ty, ptr_ty, dest);
+        }
         // hew_actor_self() -> *mut HewActor (`hew-runtime/src/actor.rs`). Reads
         // the live actor from the per-dispatch thread-local — the borrowed
         // handle the current `receive fn` runs on. Emitted for `this` used as a

@@ -368,10 +368,15 @@ impl Checker {
                 // cover its variant; `variant_covered` recurses into nested
                 // payload patterns so a jointly-exhaustive set of nested arms
                 // still counts.
+                //
+                // Use the resolution-aware `is_catch_all_for_scrutinee` so
+                // that a bare unqualified identifier (even uppercase) that does
+                // not resolve as a variant of the scrutinee type is treated as
+                // a binding catch-all rather than a failed constructor.
                 let leaves = Self::unguarded_leaf_patterns(arms);
                 if leaves
                     .iter()
-                    .any(|p| super::patterns::pattern_is_catch_all(p))
+                    .any(|p| self.is_catch_all_for_scrutinee(p, scrutinee_ty))
                 {
                     return;
                 }

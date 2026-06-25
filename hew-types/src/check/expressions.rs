@@ -4209,11 +4209,12 @@ impl Checker {
             }
             // Aggregate escapes: enum-variant constructors like Some(r), Ok(r),
             // Err(r) embed an Rc param in a container, transferring the borrowed
-            // pointer without a clone.  Only check calls whose callee looks like
-            // a constructor (uppercase-initial identifier or Type::Variant path)
-            // — regular lowercase function calls are borrows under call-boundary
-            // ownership and are safe.
-            Expr::Call { function, args, .. } if Self::looks_like_constructor(&function.0) => {
+            // pointer without a clone.  Only check calls whose callee constructs
+            // an aggregate (variant constructor or `Type::assoc` path) — regular
+            // function calls are borrows under call-boundary ownership and safe.
+            Expr::Call { function, args, .. }
+                if self.callee_is_aggregate_constructor(&function.0) =>
+            {
                 for arg in args {
                     let (e, s) = arg.expr();
                     self.check_expr_is_rc_param_return(e, s, scopes);
@@ -4252,7 +4253,7 @@ impl Checker {
                 ..
             } => {
                 let mut then_scopes = scopes.to_vec();
-                Self::shadow_pattern_bindings(&pattern.0, &mut then_scopes);
+                self.shadow_pattern_bindings(&pattern.1, &mut then_scopes);
                 self.scan_block_for_rc_param_return(body, &mut then_scopes);
                 if let Some(else_blk) = else_body {
                     let mut else_scopes = scopes.to_vec();
@@ -4262,7 +4263,7 @@ impl Checker {
             Expr::Match { arms, .. } => {
                 for arm in arms {
                     let mut arm_scopes = scopes.to_vec();
-                    Self::shadow_pattern_bindings(&arm.pattern.0, &mut arm_scopes);
+                    self.shadow_pattern_bindings(&arm.pattern.1, &mut arm_scopes);
                     self.check_expr_is_rc_param_return(&arm.body.0, &arm.body.1, &arm_scopes);
                 }
             }
@@ -4270,21 +4271,40 @@ impl Checker {
         }
     }
 
-    /// Returns `true` when the callee expression looks like a value constructor
-    /// (enum variant or type-associated constructor like `Rc::new`).
+    /// Returns `true` when a call's callee constructs an aggregate that may embed
+    /// the argument into its result — an enum/struct variant constructor, or a
+    /// `Type::assoc` path such as `Rc::new`.  Such a result, when returned,
+    /// aliases the embedded argument, so the borrowed-param escape analysis must
+    /// descend into the call's arguments.  Regular function calls pass arguments
+    /// as borrows under call-boundary ownership (the callee owns the escape
+    /// question), so they are NOT descended into.
     ///
-    /// Heuristic: an uppercase-initial bare identifier (`Some`, `Ok`, `Err`,
-    /// user-defined variants) or a `Type::method` / field-access path where
-    /// the receiver is uppercase-initial (`Rc::new`, `MyEnum::Variant`).
-    pub(super) fn looks_like_constructor(expr: &Expr) -> bool {
-        match expr {
-            Expr::Identifier(name) => name.starts_with(char::is_uppercase),
-            Expr::FieldAccess { object, .. } => {
-                // Rc::new, MyEnum::Variant, etc.
-                matches!(&object.0, Expr::Identifier(name) if name.starts_with(char::is_uppercase))
-            }
-            _ => false,
+    /// Classification is resolution-based, not casing-based (#2116): a bare
+    /// identifier is a constructor iff it is a builtin `Option`/`Result` variant
+    /// or resolves via `lookup_variant_constructor`.  This fixes two casing bugs:
+    /// an uppercase regular function (`Helper(r)`) is no longer a false hit
+    /// (spurious `BorrowedParamReturn`), and a lowercase user variant (`wrap(r)`)
+    /// is no longer a false miss (a real aggregate escape that the old uppercase
+    /// heuristic silently dropped).
+    pub(super) fn callee_is_aggregate_constructor(&self, function: &Expr) -> bool {
+        let Expr::Identifier(name) = function else {
+            // Calling a function-valued field or closure (`(obj.f)(arg)`) passes
+            // the argument as a borrow; it is never an aggregate constructor.
+            return false;
+        };
+        // `Type::assoc` / `E::Variant` paths construct or wrap a value and may
+        // embed the argument (`Rc::new(r)`, `MyEnum::Variant(r)`).  Fail-closed:
+        // descend on every qualified call so an aggregate escape is never missed.
+        if name.contains("::") {
+            return true;
         }
+        // Builtin Option/Result variant constructors embed their payload.
+        if matches!(name.as_str(), "Some" | "Ok" | "Err" | "None") {
+            return true;
+        }
+        // User enum / struct tuple-variant constructors, resolved by name
+        // (any casing) rather than an uppercase-first heuristic.
+        self.lookup_variant_constructor(name).is_some()
     }
 
     /// Return the nearest visible dangerous Rc binding for `name`.
@@ -4328,30 +4348,27 @@ impl Checker {
         Self::define_dangerous_binding(scopes, name.to_string(), binding);
     }
 
-    fn shadow_pattern_bindings(pattern: &Pattern, scopes: &mut [DangerousRcScope]) {
-        match pattern {
-            Pattern::Identifier(name) => {
+    /// Shadow the borrowed-Rc bindings introduced by a match-arm / if-let /
+    /// loop / destructuring pattern.
+    ///
+    /// Routes through the single binder authority instead of re-deriving the
+    /// binder-vs-constructor decision locally (#2116): `bind_pattern` already
+    /// recorded the exact set of names this pattern binds — its env delta —
+    /// keyed by the pattern span in `pattern_bound_names`. We shadow precisely
+    /// those names. A constructor identifier (e.g. `Red` in `Red | Green`, or a
+    /// bare unit-variant arm) binds nothing, so it is absent from the set and
+    /// does NOT shadow a dangerous param of the same name — keeping the escape
+    /// analysis consistent with the real binding env. A pattern that bound
+    /// nothing (or was never type-checked, e.g. a cascade off an earlier error)
+    /// has no entry and shadows nothing, which is the fail-closed direction:
+    /// the scanner then still sees the dangerous param and flags a genuine
+    /// escape rather than silently masking it.
+    fn shadow_pattern_bindings(&self, pattern_span: &Span, scopes: &mut [DangerousRcScope]) {
+        let key = super::types::SpanKey::in_module(pattern_span, self.current_module_idx);
+        if let Some(names) = self.pattern_bound_names.get(&key) {
+            for name in names {
                 Self::define_dangerous_binding(scopes, name.clone(), None);
             }
-            Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
-                for (pattern, _) in patterns {
-                    Self::shadow_pattern_bindings(pattern, scopes);
-                }
-            }
-            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
-                for field in fields {
-                    if let Some((pattern, _)) = &field.pattern {
-                        Self::shadow_pattern_bindings(pattern, scopes);
-                    } else {
-                        Self::define_dangerous_binding(scopes, field.name.clone(), None);
-                    }
-                }
-            }
-            Pattern::Or(left, right) => {
-                Self::shadow_pattern_bindings(&left.0, scopes);
-                Self::shadow_pattern_bindings(&right.0, scopes);
-            }
-            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Regex { .. } => {}
         }
     }
 
@@ -4437,9 +4454,10 @@ impl Checker {
     /// Check if `expr` directly names or structurally contains a visible
     /// dangerous Rc binding. Returns the first match or `None`.
     ///
-    /// Structural descent mirrors `check_expr_is_rc_param_return`: constructors
-    /// (uppercase-initial calls), tuples, struct inits, and blocks are
-    /// containers that embed the value.  Regular lowercase function/method
+    /// Structural descent mirrors `check_expr_is_rc_param_return`: aggregate
+    /// constructors (variant constructors and `Type::assoc` paths, classified by
+    /// resolution — see `callee_is_aggregate_constructor`), tuples, struct inits,
+    /// and blocks are containers that embed the value.  Regular function/method
     /// calls are borrows under call-boundary ownership — the return value is
     /// unrelated, so we do NOT recurse into those.
     pub(super) fn dangerous_source_in_expr(
@@ -4449,7 +4467,9 @@ impl Checker {
     ) -> Option<DangerousRcBinding> {
         match expr {
             Expr::Identifier(name) => Self::lookup_dangerous_binding(name, scopes),
-            Expr::Call { function, args, .. } if Self::looks_like_constructor(&function.0) => {
+            Expr::Call { function, args, .. }
+                if self.callee_is_aggregate_constructor(&function.0) =>
+            {
                 for arg in args {
                     let (e, _) = arg.expr();
                     if let Some(hit) = self.dangerous_source_in_expr(e, scopes) {
@@ -4517,11 +4537,25 @@ impl Checker {
                         .as_ref()
                         .and_then(|(expr, _)| self.dangerous_source_in_expr(expr, scopes));
                     match &pattern.0 {
-                        Pattern::Identifier(name) => {
+                        // A let-position identifier that resolves to a unit
+                        // variant is a refutable tag-test (`let None = opt else
+                        // { … }`, `let red = color else { … }`) that binds
+                        // NOTHING — the checker skips `bind_pattern` for it
+                        // (statements.rs). Consult that SAME authority so the
+                        // escape scanner does not invent a dangerous-scope
+                        // shadow for such a name, which would otherwise mask an
+                        // outer borrowed param of the same name and miss a real
+                        // escape. A genuine binder still propagates the RHS
+                        // danger (and shadows an outer dangerous param when the
+                        // RHS is safe).
+                        Pattern::Identifier(name) if !self.let_identifier_is_unit_variant(name) => {
                             Self::define_dangerous_binding(scopes, name.clone(), binding);
                         }
+                        Pattern::Identifier(_) => {
+                            // Unit-variant tag-test: binds nothing, shadows nothing.
+                        }
                         _ => {
-                            Self::shadow_pattern_bindings(&pattern.0, scopes);
+                            self.shadow_pattern_bindings(&pattern.1, scopes);
                         }
                     }
                 }
@@ -4607,7 +4641,7 @@ impl Checker {
                 }
                 Stmt::For { pattern, body, .. } => {
                     scopes.push(HashMap::new());
-                    Self::shadow_pattern_bindings(&pattern.0, scopes);
+                    self.shadow_pattern_bindings(&pattern.1, scopes);
                     self.scan_stmts_for_rc_param_return(&body.stmts, scopes);
                     if let Some(trailing) = &body.trailing_expr {
                         self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, scopes);
@@ -4619,7 +4653,7 @@ impl Checker {
                 }
                 Stmt::WhileLet { pattern, body, .. } => {
                     scopes.push(HashMap::new());
-                    Self::shadow_pattern_bindings(&pattern.0, scopes);
+                    self.shadow_pattern_bindings(&pattern.1, scopes);
                     self.scan_stmts_for_rc_param_return(&body.stmts, scopes);
                     if let Some(trailing) = &body.trailing_expr {
                         self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, scopes);
@@ -4633,7 +4667,7 @@ impl Checker {
                     ..
                 } => {
                     scopes.push(HashMap::new());
-                    Self::shadow_pattern_bindings(&pattern.0, scopes);
+                    self.shadow_pattern_bindings(&pattern.1, scopes);
                     self.scan_stmts_for_rc_param_return(&body.stmts, scopes);
                     if let Some(then_trailing) = &body.trailing_expr {
                         self.check_expr_is_rc_param_return(
@@ -4650,7 +4684,7 @@ impl Checker {
                 Stmt::Match { arms, .. } => {
                     for arm in arms {
                         scopes.push(HashMap::new());
-                        Self::shadow_pattern_bindings(&arm.pattern.0, scopes);
+                        self.shadow_pattern_bindings(&arm.pattern.1, scopes);
                         // Match arm body is an Expr — check if it's a bare Rc param
                         self.check_expr_is_rc_param_return(&arm.body.0, &arm.body.1, scopes);
                         scopes.pop();
@@ -4744,12 +4778,17 @@ impl Checker {
             match stmt {
                 // Track `let p = receiver.field` when `field` is an owned
                 // handle — a subsequent `return p` is the same double-free risk
-                // as `return receiver.field` directly.
+                // as `return receiver.field` directly. A unit-variant let-else
+                // (`let None = receiver.field else { … }`) binds nothing, so it
+                // is excluded via the shared binder authority — it must not
+                // register a phantom owned-handle binding.
                 Stmt::Let {
                     pattern: (Pattern::Identifier(var_name), _),
                     value: Some((Expr::FieldAccess { object, field }, _)),
                     ..
-                } if matches!(&object.0, Expr::Identifier(n) if n == receiver_name) => {
+                } if matches!(&object.0, Expr::Identifier(n) if n == receiver_name)
+                    && !self.let_identifier_is_unit_variant(var_name) =>
+                {
                     if let Some((field_name, handle_name)) =
                         self.owned_handle_field_return_by_name(field, type_name)
                     {
@@ -5202,6 +5241,30 @@ impl Checker {
                                     self.current_module.clone(),
                                     name.clone(),
                                 ));
+                                // Apply the same wasm native-only guard used for call
+                                // expressions (#2135): a value-position reference to a
+                                // native-only stdlib function is itself a
+                                // `PlatformLimitation` rejection on wasm32, mirroring
+                                // the call-form guard in methods.rs.
+                                // NATIVE_ONLY_WASM_MODULE_REJECTIONS is the single source
+                                // of truth; both guards iterate the same slice.
+                                if self.wasm_target && !self.user_modules.contains(name.as_str()) {
+                                    for &(module, feature) in
+                                        Self::NATIVE_ONLY_WASM_MODULE_REJECTIONS
+                                    {
+                                        if name.as_str() == module {
+                                            self.reject_wasm_feature(span, feature);
+                                        }
+                                    }
+                                    // crypto.random_bytes depends on a native-only secure
+                                    // entropy source absent from the wasm32 link set.
+                                    if name.as_str() == "crypto" && field == "random_bytes" {
+                                        self.reject_wasm_feature(
+                                            span,
+                                            WasmUnsupportedFeature::CryptoRandom,
+                                        );
+                                    }
+                                }
                                 return ty;
                             }
                             self.report_error(

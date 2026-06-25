@@ -4914,6 +4914,536 @@ fn typecheck_or_pattern_incompatible_binding_types_error() {
 }
 
 #[test]
+fn typecheck_or_pattern_uppercase_binders_inconsistent_error() {
+    // #2116 closing blocker: the or-pattern binding-consistency check must be
+    // driven by the AUTHORITATIVE binding result (the env delta), not a casing
+    // re-derivation.  `FOO` and `BAR` do not resolve as variants of `i64`, so
+    // both are *binders*.  The two branches bind different names → inconsistent
+    // → must raise OrPatternBindingMismatch.  The former casing heuristic dropped
+    // uppercase binders, yielding two empty sets that compared equal and silently
+    // accepted the mismatch (the left branch's binding won).
+    let (errors, _) = parse_and_check(concat!(
+        "fn f(x: i64) -> i64 {\n",
+        "    match x {\n",
+        "        FOO | BAR => FOO,\n",
+        "        _ => 0,\n",
+        "    }\n",
+        "}\n",
+    ));
+    let err = errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch))
+        .expect("FOO | BAR distinct uppercase binders must raise OrPatternBindingMismatch");
+    assert!(
+        err.notes
+            .iter()
+            .any(|(_, note)| note.contains("left branch binds `FOO`")),
+        "expected left-branch binding note for `FOO`, got: {err:?}"
+    );
+    assert!(
+        err.notes
+            .iter()
+            .any(|(_, note)| note.contains("right branch binds `BAR`")),
+        "expected right-branch binding note for `BAR`, got: {err:?}"
+    );
+}
+
+#[test]
+fn typecheck_or_pattern_uppercase_binders_consistent_ok() {
+    // The dual of the blocker: same uppercase binder on both sides is a
+    // *consistent* binding and must be accepted (any casing).  This is the case
+    // the old casing heuristic accepted only vacuously (by dropping both names);
+    // the resolution/env-delta path accepts it because both branches genuinely
+    // bind `FOO` at the same type.
+    let (errors, warnings) = parse_and_check(concat!(
+        "fn main() -> i64 {\n",
+        "    let x = 5;\n",
+        "    match x {\n",
+        "        FOO | FOO => FOO,\n",
+        "        _ => 0,\n",
+        "    }\n",
+        "}\n",
+    ));
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch)),
+        "consistent uppercase binder `FOO | FOO` must not raise OrPatternBindingMismatch; got: {errors:?}"
+    );
+    assert!(errors.is_empty(), "unexpected errors: {errors:?}");
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+}
+
+#[test]
+fn typecheck_or_pattern_unit_variants_bind_nothing_ok() {
+    // Soundness guard against the false-hit the old `// JUSTIFIED` comment feared:
+    // two unit-variant constructors bind NOTHING on both sides, so the branches
+    // are consistent (empty == empty) and must be accepted.  Because constructor
+    // identifiers are no longer over-defined as env bindings, the env delta for
+    // each branch is empty and no spurious mismatch is raised.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Color { Red; Green; Blue }\n",
+        "fn f(c: Color) -> i64 {\n",
+        "    match c {\n",
+        "        Red | Green => 1,\n",
+        "        Blue => 0,\n",
+        "    }\n",
+        "}\n",
+    ));
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch)),
+        "constructor or-pattern `Red | Green` (binds nothing) must not raise \
+         OrPatternBindingMismatch; got: {errors:?}"
+    );
+}
+
+#[test]
+fn typecheck_or_pattern_constructor_vs_binder_inconsistent_error() {
+    // Mixed branch: a unit variant (`Red`, binds nothing) or a binder (`x`).
+    // The binder is present in only one branch → inconsistent → must error.
+    // This proves the classification is resolution-driven on BOTH sides: `Red`
+    // resolves as a variant (no binder) while `x` does not (a binder).
+    let (errors, _) = parse_and_check(concat!(
+        "enum Color { Red; Green; Blue }\n",
+        "fn f(c: Color) -> i64 {\n",
+        "    match c {\n",
+        "        Red | x => 1,\n",
+        "        Blue => 0,\n",
+        "    }\n",
+        "}\n",
+    ));
+    let err = errors
+        .iter()
+        .find(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch))
+        .expect("`Red | x` (constructor vs binder) must raise OrPatternBindingMismatch");
+    assert!(
+        err.notes
+            .iter()
+            .any(|(_, note)| note.contains("left branch binds no names")),
+        "expected left-branch 'binds no names' note for unit variant `Red`, got: {err:?}"
+    );
+    assert!(
+        err.notes
+            .iter()
+            .any(|(_, note)| note.contains("right branch binds `x`")),
+        "expected right-branch binding note for `x`, got: {err:?}"
+    );
+}
+
+#[test]
+fn typecheck_or_pattern_regex_capture_inconsistent_error() {
+    // The env-delta consistency check sees regex capture binders, which the old
+    // `collect_pattern_bound_names` dropped for ALL `Pattern::Regex` (returning an
+    // empty set).  A capturing branch (`x`) versus a non-capturing branch is
+    // inconsistent and must error — previously this was silently accepted.
+    let (errors, _) = parse_and_check(concat!(
+        "fn f(s: string) -> i64 {\n",
+        "    match s {\n",
+        "        re\"(?P<x>a+)\" | re\"b+\" => 1,\n",
+        "        _ => 0,\n",
+        "    }\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch)),
+        "regex capture `x` present in only one or-branch must raise \
+         OrPatternBindingMismatch; got: {errors:?}"
+    );
+}
+
+#[test]
+fn typecheck_or_pattern_unit_variant_vs_payload_binder_inconsistent_error() {
+    // `Some(v) | None` over Option: the left binds the payload `v`, the right
+    // (a unit variant) binds nothing → inconsistent.  Confirms payload binders
+    // and unit-variant non-binders are reconciled by the same env-delta path.
+    let (errors, _) = parse_and_check(concat!(
+        "fn f(opt: Option<i64>) -> i64 {\n",
+        "    match opt {\n",
+        "        Some(v) | None => v,\n",
+        "    }\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch)),
+        "`Some(v) | None` must raise OrPatternBindingMismatch (payload binder absent \
+         from the unit-variant branch); got: {errors:?}"
+    );
+}
+
+#[test]
+fn typecheck_or_pattern_error_scrutinee_no_cascade() {
+    // Error-recovery guard: when the scrutinee type is unresolvable (here an
+    // undefined function makes it `Ty::Error`), a bare identifier cannot be
+    // classified as constructor-or-binder, so the binding-consistency check is
+    // suppressed rather than cascading off the already-broken scrutinee.  Only
+    // the root-cause error (the undefined function) is reported — NO
+    // OrPatternBindingMismatch is piled on, even though `Red` and `Green` would
+    // otherwise look like two distinct binders against an unknown type.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Colour { Red; Green }\n",
+        "fn main() {\n",
+        "    let _ = match missing() {\n",
+        "        Red | Green => 0,\n",
+        "    };\n",
+        "}\n",
+    ));
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::OrPatternBindingMismatch)),
+        "an or-pattern over an error-typed scrutinee must not cascade an \
+         OrPatternBindingMismatch; got: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::UndefinedFunction)),
+        "the root-cause undefined-function error must still be reported; got: {errors:?}"
+    );
+}
+
+// ── Borrowed-param escape: constructor classification (#2116 audit) ──────────
+// `callee_is_aggregate_constructor` decides whether the borrowed-param escape
+// analysis descends into a call's arguments.  It must classify by resolution,
+// not by the callee's casing, or it both falsely rejects valid programs (an
+// uppercase regular function) and falsely accepts memory-unsafe ones (a
+// lowercase variant constructor that embeds a borrowed parameter).
+
+#[test]
+fn borrowed_param_escape_uppercase_function_call_not_flagged() {
+    // Regression for the casing false-positive: a regular function that merely
+    // *happens* to be uppercase-named is not a constructor, so passing a borrow
+    // parameter to it is a safe borrow under call-boundary ownership — it must
+    // NOT raise BorrowedParamReturn.
+    let (errors, _) = parse_and_check(concat!(
+        "fn Helper(x: &i64) -> i64 { 5 }\n",
+        "fn f(r: &i64) -> i64 { Helper(r) }\n",
+    ));
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "passing a borrow param to the uppercase regular fn `Helper` is safe and must \
+         not raise BorrowedParamReturn; got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_lowercase_function_call_not_flagged() {
+    // Control for the above: the lowercase spelling was already accepted; it must
+    // stay accepted.
+    let (errors, _) = parse_and_check(concat!(
+        "fn helper(x: &i64) -> i64 { 5 }\n",
+        "fn f(r: &i64) -> i64 { helper(r) }\n",
+    ));
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "passing a borrow param to a regular fn is safe; got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_lowercase_variant_constructor_flagged() {
+    // Regression for the casing false-NEGATIVE (a memory-safety hole): a
+    // lowercase enum variant constructor that embeds a borrow parameter in the
+    // returned aggregate must raise BorrowedParamReturn.  The old uppercase-first
+    // heuristic dropped this, letting a returned reference outlive its owner.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Holder { wrap(&i64); empty }\n",
+        "fn f(r: &i64) -> Holder { wrap(r) }\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "embedding a borrow param in the lowercase variant `wrap` must raise \
+         BorrowedParamReturn; got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_uppercase_variant_constructor_flagged() {
+    // The uppercase variant spelling was already caught and must stay caught —
+    // proves the fix does not regress the originally-handled direction.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Holder { Wrap(&i64); Empty }\n",
+        "fn f(r: &i64) -> Holder { Wrap(r) }\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "embedding a borrow param in the variant `Wrap` must raise \
+         BorrowedParamReturn; got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_builtin_variant_constructor_flagged() {
+    // Builtin Option/Result variant constructors must remain classified as
+    // aggregate constructors so an embedded borrow param is still flagged.
+    let (errors, _) = parse_and_check("fn f(r: &i64) -> Option<&i64> { Some(r) }\n");
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "embedding a borrow param in `Some(_)` must raise BorrowedParamReturn; \
+         got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_qualified_path_constructor_flagged() {
+    // A `Type::Variant` qualified path constructor must remain classified as an
+    // aggregate constructor (fail-closed for all `::` paths, including `Rc::new`).
+    let (errors, _) = parse_and_check(concat!(
+        "enum Holder { V(&i64); E }\n",
+        "fn f(r: &i64) -> Holder { Holder::V(r) }\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "embedding a borrow param in the qualified variant `Holder::V` must raise \
+         BorrowedParamReturn; got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_match_arm_variant_collision_flagged() {
+    // Residual fix (#2116): a match-arm pattern that is a *unit-variant
+    // constructor* whose name collides with a borrow parameter must NOT shadow
+    // that parameter in the escape scanner. The arm body `red` therefore
+    // resolves to the borrowed param (the constructor `red` bound nothing), and
+    // returning it is a genuine escape that must raise BorrowedParamReturn.
+    //
+    // Before the fix `shadow_pattern_bindings` blindly treated every
+    // `Pattern::Identifier` as a binder, masking the `red => red` arm; the
+    // escape only surfaced (confusingly, via a sibling HIR/MIR pass) when a
+    // second non-colliding arm also returned the param. This fixture would
+    // regress to a missed escape on the colliding arm if the binder-vs-
+    // constructor decision were re-derived locally again.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Color { red; green; }\n",
+        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "    match color { red => red, green => red }\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "a unit-variant arm `red` colliding with borrow param `red` must not \
+         shadow it — returning the param must raise BorrowedParamReturn; \
+         got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_or_pattern_variant_collision_flagged() {
+    // The reviewer's exact repro shape, with a borrow param so the escape
+    // scanner actually runs: an or-pattern of unit-variant constructors that
+    // collide with the borrow param name. Both `red` and `green` are
+    // constructors (bind nothing), so the arm body `red` is the borrowed param
+    // and returning it must raise BorrowedParamReturn — not a confusing
+    // InitialisedBeforeUse / MIR-decision-map diagnostic from a sibling pass.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Color { red; green; }\n",
+        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "    match color { red | green => red }\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "an or-pattern of constructors `red | green` must not shadow the \
+         borrow param `red`; returning it must raise BorrowedParamReturn; \
+         got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_match_payload_binder_not_overflagged() {
+    // Guard against over-flagging: a genuine payload *binder* (`Some(inner)`)
+    // must shadow the dangerous param so returning the bound payload is NOT an
+    // escape, while a sibling arm that returns the borrow param directly still
+    // is. Exactly one BorrowedParamReturn — the `None => red` arm — must fire;
+    // the `Some(inner) => inner` arm must stay clean.
+    let (errors, _) = parse_and_check(concat!(
+        "fn leak(red: &i64, opt: Option<&i64>) -> &i64 {\n",
+        "    match opt { Some(inner) => inner, None => red }\n",
+        "}\n",
+    ));
+    let escapes = errors
+        .iter()
+        .filter(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn))
+        .count();
+    assert_eq!(
+        escapes, 1,
+        "only the `None => red` arm escapes; the `Some(inner) => inner` binder \
+         arm must not be over-flagged; got {escapes} BorrowedParamReturn in: \
+         {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_consistent_or_binder_not_overflagged() {
+    // End-to-end of the or-pattern binder path: `Ok(x) | Err(x) => x` binds a
+    // consistent `x` in both alternatives (recorded as the env delta of
+    // `bind_pattern`), which `shadow_pattern_bindings` then shadows. Returning
+    // the bound payload `x` (not the borrow param `p`) is safe and must raise
+    // NO BorrowedParamReturn — a regression here would mean the or-pattern
+    // binder set was not threaded through the single authority.
+    let (errors, _) = parse_and_check(concat!(
+        "fn leak(p: &i64, r: Result<&i64, &i64>) -> &i64 {\n",
+        "    match r { Ok(x) | Err(x) => x }\n",
+        "}\n",
+    ));
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "returning a consistent or-pattern binder `x` (not the borrow param) \
+         must not raise BorrowedParamReturn; got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_let_else_unit_variant_collision_flagged() {
+    // #2116 residual (6th finding): a `let`-else whose pattern is a unit-variant
+    // identifier colliding with a borrow param binds NOTHING — the checker
+    // classifies `red` as a refutable tag-test and skips `bind_pattern` for it
+    // (statements.rs). The borrow-escape scanner must consult that SAME
+    // authority (`let_identifier_is_unit_variant`) and NOT invent a shadow, so
+    // the trailing `red` resolves to the borrow param and returning it raises
+    // BorrowedParamReturn.
+    //
+    // Before the fix the scanner's `Stmt::Let` arm blindly treated the
+    // identifier as a binder and shadowed the dangerous param, masking the
+    // escape; it surfaced only later (confusingly) as a sibling MIR
+    // `DecisionMapTotal` / HIR no-binding error.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Color { red; green; }\n",
+        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "    let red = color else { panic(\"no\") };\n",
+        "    red\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "let-else unit-variant `let red = color else …` binds nothing — the \
+        trailing `red` is the borrow param and must raise BorrowedParamReturn; \
+        got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_let_else_intermediate_binding_flagged() {
+    // The masked param flows through a genuine intermediate binder. After the
+    // unit-variant `let red = color else …` (which binds nothing), `let x = red`
+    // copies the still-dangerous borrow param into `x`; returning `x` must be
+    // flagged. Exercises both the unit-variant skip AND the genuine-binder
+    // danger-propagation path in the same function.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Color { red; green; }\n",
+        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "    let red = color else { panic(\"no\") };\n",
+        "    let x = red;\n",
+        "    x\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "the borrow param survives the unit-variant let-else and is copied into \
+        `x`; returning `x` must raise BorrowedParamReturn; got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_while_let_unit_variant_collision_flagged() {
+    // The `while let` binding form already routes through the shared authority
+    // (`shadow_pattern_bindings` → `pattern_bound_names`); a unit-variant pattern
+    // records no binder, so `return red` inside the loop resolves to the borrow
+    // param and is flagged. Locks that consistency in alongside the let-else fix.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Color { red; green; }\n",
+        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "    while let red = color {\n",
+        "        return red;\n",
+        "    }\n",
+        "    red\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "while-let unit-variant `while let red = color` binds nothing — \
+        `return red` is the borrow param and must raise BorrowedParamReturn; \
+        got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_simple_let_binder_propagation_preserved() {
+    // Guard against the fix over-reaching: a genuine simple `let` binder (`let y
+    // = red`, where `y` is NOT a unit variant) must still copy the borrow
+    // param's danger forward, so returning `y` is flagged. Proves the
+    // unit-variant guard did not disable danger-propagation for real binders.
+    let (errors, _) = parse_and_check(concat!(
+        "fn leak(red: &i64) -> &i64 {\n",
+        "    let y = red;\n",
+        "    y\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "a genuine binder `let y = red` must still carry the borrow param's \
+        danger forward; returning `y` must raise BorrowedParamReturn; \
+        got: {errors:?}"
+    );
+}
+
+#[test]
+fn var_named_like_unit_variant_still_binds() {
+    // Inertness proof for the escape scanner's `Stmt::Var` arm (which records
+    // the var name as a dangerous binding unconditionally): a `var` has no
+    // pattern and no refutability, so its name is ALWAYS a fresh binder — even
+    // when it spells a unit variant. If `var a` were ever classified as a
+    // constructor (non-binding), `a = a + 1; a` would fail to resolve. It does
+    // not, so treating the var name as a binder can never disagree with the
+    // checker.
+    let (errors, _) = parse_and_check(concat!(
+        "enum E { a; b; }\n",
+        "fn f() -> i64 {\n",
+        "    var a = 0;\n",
+        "    a = a + 1;\n",
+        "    a\n",
+        "}\n",
+    ));
+    assert!(
+        errors.is_empty(),
+        "`var a` must bind a fresh i64 even though `a` is a unit variant of E; \
+        got: {errors:?}"
+    );
+}
+
+#[test]
 fn typecheck_error_scrutinee_constructor_pattern_stays_fail_closed() {
     let (errors, _) = parse_and_check(concat!(
         "fn main() {\n",
@@ -20242,6 +20772,101 @@ mod wasm_rejects {
         );
     }
 
+    // ── Issue #2135: value-position (first-class fn reference) wasm rejects ──
+
+    #[test]
+    fn wasm_rejects_crypto_random_bytes_value_position() {
+        // Taking crypto.random_bytes as a first-class function value on wasm32
+        // must be rejected with PlatformLimitation, not silently allowed.
+        let source = concat!(
+            "import std::crypto::crypto;\n",
+            "fn main() { let _f = crypto.random_bytes; }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "crypto.random_bytes value-position reference must be a compile-time error on WASM; got errors: {:?}",
+            output.errors
+        );
+        assert!(
+            platform_error_contains(&output, "random_bytes"),
+            "error message should mention random_bytes; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn native_crypto_random_bytes_value_position_no_error() {
+        // The same value-position reference must be accepted on native (non-wasm)
+        // targets so the guard does not break native builds.
+        let source = concat!(
+            "import std::crypto::crypto;\n",
+            "fn main() { let _f = crypto.random_bytes; }\n",
+        );
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "crypto.random_bytes value-position must not error on native target; got: {:?}",
+            output.errors
+        );
+    }
+
+    // ── Native sibling tests: no platform error on non-wasm target ────────
+
+    // ── Additional value-position coverage: net, http_client, encrypt (#2135) ─
+    // These tests verify that the NATIVE_ONLY_WASM_MODULE_REJECTIONS table
+    // covers a representative subset of the 12 native-only modules in the
+    // value-position path so a future accidental deletion is caught.
+
+    #[test]
+    fn wasm_rejects_net_connect_value_position() {
+        let source = concat!(
+            "import std::net;\n",
+            "fn main() { let _f = net.connect; }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "net.connect value-position reference must be a compile-time error on WASM; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_http_client_request_value_position() {
+        let source = concat!(
+            "import std::net::http::http_client;\n",
+            "fn main() { let _f = http_client.request; }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "http_client.request value-position reference must be a compile-time error on WASM; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_rejects_encrypt_seal_value_position() {
+        let source = concat!(
+            "import std::crypto::encrypt;\n",
+            "fn main() { let _f = encrypt.seal; }\n",
+        );
+        let output = check_wasm_with_registry(source);
+        assert!(
+            has_platform_limitation_error(&output),
+            "encrypt.seal value-position reference must be a compile-time error on WASM; got: {:?}",
+            output.errors
+        );
+    }
+
     // ── Native sibling tests: no platform error on non-wasm target ────────
 
     #[test]
@@ -25850,6 +26475,274 @@ fn foo(t: Tri) -> i64 {
         assert_eq!(
             bar_arm.payload_bindings[0].field_idx, 1,
             "field_idx must reflect declaration order, not alphabetical order"
+        );
+    }
+
+    // ── Issue #2116: resolution-based constructor vs binder detection ─────────
+
+    #[test]
+    fn uppercase_binder_not_constructor_records_binding_kind() {
+        // An uppercase plain identifier that does NOT resolve to a unit variant
+        // of the scrutinee type must be classified as `PatternKind::Binding`,
+        // not as `PatternKind::VariantCtor`. The old case heuristic mis-classified
+        // `INF` as a constructor and then failed to resolve it.
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(x: i64) -> i64 {
+    match x {
+        INF => INF,
+    }
+}",
+        );
+        assert_eq!(resolutions.len(), 1);
+        let arm = resolutions.values().next().unwrap();
+        assert_eq!(
+            arm.pattern_kind,
+            PatternKind::Binding,
+            "uppercase binder `INF` against non-enum type must record Binding, not VariantCtor"
+        );
+        assert!(
+            arm.variant_match.is_none(),
+            "uppercase binder must not have a variant_match"
+        );
+    }
+
+    #[test]
+    fn known_unit_variant_still_records_ctor_kind() {
+        // Ensure the resolution-based fix does NOT accidentally reclassify a
+        // genuine unit-variant constructor (`None`) as a binder when it DOES
+        // resolve against the scrutinee type.
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(opt: Option<i64>) -> i64 {
+    match opt {
+        None => 0,
+        Some(v) => v,
+    }
+}",
+        );
+        let none_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "None")
+            })
+            .expect("None arm must be recorded with a variant_match");
+        assert_eq!(
+            none_arm.pattern_kind,
+            PatternKind::VariantCtor,
+            "`None` against Option<i64> must record VariantCtor"
+        );
+    }
+
+    #[test]
+    fn uppercase_binder_in_payload_position_records_as_binding() {
+        // An uppercase name in a constructor-payload slot that does NOT resolve
+        // as a variant of the payload type must become a plain PayloadBinding
+        // rather than a failed nested-constructor attempt.
+        let resolutions = pattern_resolutions(
+            r"
+fn foo(opt: Option<i64>) -> i64 {
+    match opt {
+        Some(MAX) => MAX,
+        None => 0,
+    }
+}",
+        );
+        let some_arm = resolutions
+            .values()
+            .find(|r| {
+                r.variant_match
+                    .as_ref()
+                    .is_some_and(|vm| vm.variant_name == "Some")
+            })
+            .expect("Some arm must be recorded");
+        assert_eq!(some_arm.payload_bindings.len(), 1);
+        assert_eq!(
+            some_arm.payload_bindings[0].binding_name, "MAX",
+            "uppercase payload binder MAX must appear in payload_bindings"
+        );
+        assert!(
+            some_arm.payload_variant_patterns.is_empty(),
+            "uppercase binder MAX must not be recorded as a nested constructor"
+        );
+    }
+
+    #[test]
+    fn top_level_uppercase_binder_over_option_compiles() {
+        // Concrete repro for issue #2116 follow-up: a bare uppercase identifier
+        // that does NOT resolve as a variant of the scrutinee type (here
+        // `Option<i64>` has variants `Some` / `None`, neither of which is `INF`)
+        // must be treated as a binding catch-all, making the match exhaustive.
+        // The old code used a casing heuristic which caused a false
+        // NonExhaustiveMatch error for this shape.
+        let output = check_source(
+            r"fn foo(opt: Option<i64>) -> i64 {
+    match opt { INF => 0 }
+}",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "match opt {{ INF => 0 }} with uppercase binder must compile without errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    // ── Struct-variant field position binders (#2116 closing sweep) ──────────
+
+    #[test]
+    fn struct_variant_field_uppercase_binder_compiles() {
+        // The concrete repro from issue #2116:
+        //   enum Packet { Data { value: i64 }; Empty }
+        //   match p { Packet::Data { value: MAX } => MAX, Empty => 0 }
+        //
+        // `MAX` does not resolve as a variant of `i64`, so it must be classified
+        // as a binder rather than a "nested constructor".  The old casing heuristic
+        // in `unsupported_payload_subpattern_label` caused a false
+        // `UnsupportedPayloadSubpattern` error for this shape.
+        let output = check_source(
+            r"
+enum Packet { Data { value: i64 }; Empty }
+fn f(p: Packet) -> i64 {
+    match p {
+        Packet::Data { value: MAX } => MAX,
+        Empty => 0,
+    }
+}",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "struct-variant field uppercase binder `MAX` must compile without errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn struct_variant_field_real_constructor_still_rejected() {
+        // Soundness guard: a bare identifier that DOES resolve as a variant of the
+        // field type is still a nested constructor and must be rejected.
+        // `Packet::Data { value: Red }` where `Red` is a unit variant of `Color`
+        // must remain an `UnsupportedPayloadSubpattern` error.
+        let output = check_source(
+            r"
+enum Color { Red; Blue }
+enum Packet { Data { value: Color }; Empty }
+fn f(p: Packet) -> i64 {
+    match p {
+        Packet::Data { value: Red } => 1,
+        Packet::Data { value: _ } => 2,
+        Empty => 0,
+    }
+}",
+        );
+        let has_unsupported = output.errors.iter().any(|e| {
+            matches!(
+                &e.kind,
+                crate::error::TypeErrorKind::UnsupportedPayloadSubpattern {
+                    kind_label,
+                    ..
+                } if kind_label == "nested constructor"
+            )
+        });
+        assert!(
+            has_unsupported,
+            "enum variant `Red` in struct field position must remain UnsupportedPayloadSubpattern; \
+             got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn struct_variant_field_qualified_binder_rejected() {
+        // A path-qualified identifier like `Packet::Empty` in struct field position
+        // is always a constructor path regardless of resolution.
+        let output = check_source(
+            r"
+enum Packet { Data { value: i64 }; Empty }
+fn f(p: Packet) -> i64 {
+    match p {
+        Packet::Data { value: Packet::Empty } => 0,
+        _ => 1,
+    }
+}",
+        );
+        let has_unsupported = output.errors.iter().any(|e| {
+            matches!(
+                &e.kind,
+                crate::error::TypeErrorKind::UnsupportedPayloadSubpattern { .. }
+            )
+        });
+        assert!(
+            has_unsupported,
+            "qualified identifier in struct-variant field position must be UnsupportedPayloadSubpattern; \
+             got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn record_field_uppercase_binder_compiles() {
+        // A plain record (not an enum struct-variant) with an uppercase binder in
+        // a field subpattern position must also be accepted after the casing fix.
+        let output = check_source(
+            r"
+type Point { x: i64; y: i64 }
+fn f(p: Point) -> i64 {
+    match p {
+        Point { x: MAX, y: _ } => MAX,
+    }
+}",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "plain record field uppercase binder `MAX` must compile without errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn tuple_pattern_uppercase_binder_compiles() {
+        // An uppercase binder in a tuple destructure element position must be
+        // accepted after the casing fix.
+        let output = check_source(
+            r"
+fn f(pair: (i64, i64)) -> i64 {
+    match pair {
+        (A, B) => A,
+    }
+}",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "tuple pattern uppercase binders `A`, `B` must compile without errors; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn struct_variant_non_exhaustive_still_errors() {
+        // Soundness guard: dropping a real variant arm must still produce a
+        // NonExhaustiveMatch error even after the casing-to-resolution migration.
+        // An uppercase binder must NOT make an otherwise non-exhaustive match pass.
+        let output = check_source(
+            r"
+enum Packet { Data { value: i64 }; Empty }
+fn f(p: Packet) -> i64 {
+    match p {
+        Packet::Data { value: MAX } => MAX,
+        // Empty arm intentionally omitted
+    }
+}",
+        );
+        let has_non_exhaustive = output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, crate::error::TypeErrorKind::NonExhaustiveMatch));
+        assert!(
+            has_non_exhaustive,
+            "match missing `Empty` arm must still emit NonExhaustiveMatch; got: {:#?}",
+            output.errors
         );
     }
 }

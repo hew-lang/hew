@@ -462,6 +462,19 @@ impl Checker {
             .any(|td| matches!(td.variants.get(name), Some(VariantDef::Unit)))
     }
 
+    /// Does an identifier in `let`/binding position name a unit variant — a
+    /// refutable tag-test that binds NOTHING — rather than introduce a fresh
+    /// binder? This is the single authority for the let-side binder-vs-tag-test
+    /// decision: `check_stmt`'s `let` arm uses it to skip `bind_pattern` for a
+    /// unit-variant identifier (a `let None = … else { … }` / `let red = color
+    /// else { … }` tag-test), and the borrowed-Rc escape scanner consults the
+    /// SAME predicate so it never invents a dangerous-scope shadow for a name
+    /// that did not actually bind. Detection is by resolution (a `::`-qualified
+    /// path or a bare name resolving to a known unit variant), never by casing.
+    pub(super) fn let_identifier_is_unit_variant(&self, name: &str) -> bool {
+        name.contains("::") || self.bare_identifier_resolves_to_unit_variant(name)
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "statement checking covers many Stmt variants"
@@ -610,10 +623,7 @@ impl Checker {
                 // mismatched value type is then a clean type error); otherwise
                 // it binds.
                 let identifier_is_unit_variant = match &pattern.0 {
-                    Pattern::Identifier(name) if name.contains("::") => true,
-                    Pattern::Identifier(name) => {
-                        self.bare_identifier_resolves_to_unit_variant(name)
-                    }
+                    Pattern::Identifier(name) => self.let_identifier_is_unit_variant(name),
                     _ => false,
                 };
                 // For simple identifier patterns, track the definition span.

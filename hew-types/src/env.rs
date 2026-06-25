@@ -274,6 +274,21 @@ impl TypeEnv {
             .flat_map(|scope| scope.keys().map(String::as_str))
     }
 
+    /// Yield `(name, binding id)` for every binding in the innermost (current)
+    /// scope only.
+    ///
+    /// The binding id is part of the pair so a shadowing re-`define` (which
+    /// replaces the entry with a fresh id) is observable: comparing two
+    /// snapshots by `(name, id)` distinguishes "same binding untouched" from
+    /// "rebound in place". Used to compute the exact set of names a pattern
+    /// branch introduced (see `bind_pattern`'s or-pattern arm).
+    pub fn current_scope_bindings(&self) -> impl Iterator<Item = (&str, TypeBindingId)> {
+        self.scopes
+            .last()
+            .into_iter()
+            .flat_map(|scope| scope.iter().map(|(name, b)| (name.as_str(), b.id)))
+    }
+
     /// Undo the `is_used` mark on a variable (used for plain assignment LHS).
     /// Decrements the read count so that write-only variables are still detected.
     pub fn unmark_used(&mut self, name: &str) {

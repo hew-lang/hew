@@ -51,6 +51,8 @@
 #   make test-real-timing  — serialized real wall-clock / OS-timing quarantine tests (narrow)
 #   make test-lane CRATE=<crate> — fast in-process tier for one crate (lane iteration)
 #   make test-lane-all          — fast in-process tier for the whole workspace
+#   make test-fast              — fast tier scoped to git-diff-affected crates (agents/devs)
+#   make test-fast CRATE=<c>   — pin fast tier to one crate
 #   make test-hew          — run Hew test files (std/ *_test.hew)
 #   make test-ux-examples  — run examples/ux + examples/progressive tutorials against .expected files
 #   make asan         — run the nightly rust-runtime ASan test command locally
@@ -65,7 +67,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-o2-differential test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-fast test-stdlib test-hew test-hew-ratchet test-o2-differential test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -682,6 +684,29 @@ endif
 test-lane-all:
 	@echo "==> fast tier — exec corpus runs at the integrated gate"
 	cargo nextest run --workspace --profile lane
+
+# ── Affected-crate fast tier ─────────────────────────────────────────────────
+# Derives scope from git diff: runs nextest --profile lane restricted to the
+# rdeps() closure of crates that have changed since the merge base.  Falls back
+# to a full workspace lane run when no crates are detected (e.g. first commit,
+# workspace-wide file change, or no diff vs origin).
+#
+# Usage:
+#   make test-fast             # auto-derive scope from git diff
+#   make test-fast CRATE=hew-types  # pin to one crate (skips diff derivation)
+#
+# This target replaces hand-curated -p lists for interactive iteration.
+# The exec/e2e corpus is still excluded (profile.lane).  Acceptance gates
+# require the plan's named proving commands, not this tier.
+test-fast:
+	@crates=$$(CRATE="$(CRATE)" scripts/changed-crates.sh); \
+	if [ -n "$$crates" ]; then \
+	  echo "==> fast tier — affected: $$crates"; \
+	  cargo nextest run --profile lane -E "rdeps($$crates)"; \
+	else \
+	  echo "==> fast tier — full workspace (no crate-specific diff detected)"; \
+	  cargo nextest run --workspace --profile lane; \
+	fi
 
 test-stdlib: hew
 	@echo "==> Type-checking stdlib .hew files"

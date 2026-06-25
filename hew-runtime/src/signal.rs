@@ -168,6 +168,30 @@ mod shared {
         }
     }
 
+    /// Format `value` as `0x`-prefixed lowercase hex into `buf`, returning the
+    /// written byte slice. Async-signal-safe: no allocation, no locking, pure
+    /// arithmetic into a caller-owned stack buffer.
+    ///
+    /// `buf` must be at least 18 bytes (`0x` + 16 hex digits) to hold any
+    /// `usize` on a 64-bit target; the caller sizes it accordingly.
+    #[cfg(unix)]
+    fn fmt_hex_usize(value: usize, buf: &mut [u8; 18]) -> &[u8] {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        buf[0] = b'0';
+        buf[1] = b'x';
+        // Number of significant hex digits (at least 1, so a zero fault address
+        // renders as `0x0`). `usize::BITS - leading_zeros` rounded up to nibbles.
+        let significant_bits = (usize::BITS - value.leading_zeros()).max(1);
+        let digits = significant_bits.div_ceil(4) as usize;
+        // Emit nibbles MSB-first into buf[2..2+digits].
+        for i in 0..digits {
+            let shift = (digits - 1 - i) * 4;
+            let nibble = (value >> shift) & 0xf;
+            buf[2 + i] = HEX[nibble];
+        }
+        &buf[..2 + digits]
+    }
+
     /// Emit a crash diagnostic to stderr using only async-signal-safe operations.
     ///
     /// This function must only call `write(2)` (POSIX async-signal-safe) and
@@ -178,22 +202,75 @@ mod shared {
     /// context (main/free-fn context), so the process is about to `_exit`. A
     /// diagnostic is always emitted before process termination.
     ///
+    /// The diagnostic carries the faulting address (from `siginfo_t.si_addr`)
+    /// and the faulting thread's name, so an off-dispatch crash (the I/O accept
+    /// / connection-reader / SWIM-driver threads, which have no recovery
+    /// `jmp_buf` and so reach this terminal path) localizes to a concrete
+    /// pointer + thread instead of an opaque "SIGSEGV somewhere". This is what
+    /// turns a rare, load-only crash on a CI runner into an actionable fault
+    /// site on its next occurrence.
+    ///
     /// `eprintln!` is NOT async-signal-safe (it acquires a lock on the stderr
     /// handle). `write(2)` on fd 2 is the correct alternative here.
     #[cfg(unix)]
-    pub(super) fn emit_crash_diagnostic_sig_safe(sig: i32) {
-        // Write fixed prefix, then signal name, then newline — no allocation.
-        // Each write is a separate syscall; partial writes are acceptable for
-        // a terminal diagnostic before _exit.
+    pub(super) fn emit_crash_diagnostic_sig_safe(sig: i32, fault_addr: usize) {
+        // Faulting thread name: pthread_getname_np writes a NUL-terminated
+        // string into a caller buffer and is async-signal-safe on Linux/macOS.
+        //
+        // The symbol is declared locally rather than via `libc::` because the
+        // libc crate exposes `pthread_getname_np` for the BSD/Apple targets but
+        // not the `linux_like` module — yet glibc (>=2.12) and musl both export
+        // the identical 3-arg signature, so a local extern is portable across
+        // every unix target the runtime builds for, including the Linux CI host
+        // where the off-dispatch crash actually fires.
+        extern "C" {
+            fn pthread_getname_np(
+                thread: libc::pthread_t,
+                name: *mut libc::c_char,
+                len: libc::size_t,
+            ) -> libc::c_int;
+        }
+
+        // Write fixed prefix, then signal name, then fault address, then the
+        // faulting thread name, then newline — no allocation. Each write is a
+        // separate syscall; partial writes are acceptable for a terminal
+        // diagnostic before _exit.
         const PREFIX: &[u8] = b"hew: crash in main context: ";
+        const AT: &[u8] = b" at ";
+        const THREAD: &[u8] = b" thread=";
         const SUFFIX: &[u8] = b"\n";
         let name = signal_name(sig).as_bytes();
+        let mut addr_buf = [0u8; 18];
+        let addr = fmt_hex_usize(fault_addr, &mut addr_buf);
+
+        // A failed name lookup leaves the buffer as-is; we render "<unknown>".
+        let mut tname = [0u8; 32];
+        // SAFETY: pthread_self / pthread_getname_np are async-signal-safe; the
+        // buffer is stack-owned and sized for the platform's max thread name.
+        let tname_ok = unsafe {
+            pthread_getname_np(libc::pthread_self(), tname.as_mut_ptr().cast(), tname.len()) == 0
+        };
+        let tname_slice: &[u8] = if tname_ok {
+            let end = tname.iter().position(|&b| b == 0).unwrap_or(tname.len());
+            if end == 0 {
+                b"<main>"
+            } else {
+                &tname[..end]
+            }
+        } else {
+            b"<unknown>"
+        };
+
         // SAFETY: write(2) is POSIX async-signal-safe. fd 2 (STDERR_FILENO) is
         // always open. The byte slices are valid static/stack data. We ignore
         // the return value — a failed write before _exit is not actionable.
         unsafe {
             libc::write(2, PREFIX.as_ptr().cast(), PREFIX.len());
             libc::write(2, name.as_ptr().cast(), name.len());
+            libc::write(2, AT.as_ptr().cast(), AT.len());
+            libc::write(2, addr.as_ptr().cast(), addr.len());
+            libc::write(2, THREAD.as_ptr().cast(), THREAD.len());
+            libc::write(2, tname_slice.as_ptr().cast(), tname_slice.len());
             libc::write(2, SUFFIX.as_ptr().cast(), SUFFIX.len());
         }
     }
@@ -435,6 +512,26 @@ mod shared {
             unsafe { prepare_dispatch_impl(&mut state, ptr::null_mut(), ptr::null_mut()) };
             assert!(!state.intentional_panic.load(Ordering::Acquire));
         }
+
+        /// The async-signal-safe hex formatter backs the terminal crash
+        /// diagnostic for off-dispatch faults (accept / connection-reader /
+        /// SWIM-driver threads). It must render the exact fault address — a
+        /// wrong value would mislocate the next CI crash — including the zero,
+        /// single-digit, and full-width boundaries.
+        #[cfg(unix)]
+        #[test]
+        fn fmt_hex_usize_renders_fault_addresses() {
+            let mut buf = [0u8; 18];
+            assert_eq!(fmt_hex_usize(0, &mut buf), b"0x0");
+            assert_eq!(fmt_hex_usize(0xf, &mut buf), b"0xf");
+            assert_eq!(fmt_hex_usize(0x10, &mut buf), b"0x10");
+            assert_eq!(fmt_hex_usize(0xdead_beef, &mut buf), b"0xdeadbeef");
+            // A typical low-half null-region offset deref (the classic
+            // null-struct-field fault shape).
+            assert_eq!(fmt_hex_usize(0x28, &mut buf), b"0x28");
+            // Full-width usize: every nibble significant, no leading-zero trim.
+            assert_eq!(fmt_hex_usize(usize::MAX, &mut buf), b"0xffffffffffffffff");
+        }
     }
 }
 
@@ -602,9 +699,30 @@ mod platform {
         let ctx = unsafe { get_recovery_ctx() };
         if ctx.is_null() {
             // No recovery context (main/free-fn context) — emit a diagnostic
-            // then terminate. F1.3: a crash must never be silent.
+            // then terminate. F1.3: a crash must never be silent. Capture the
+            // faulting address from siginfo so an off-dispatch crash (accept /
+            // connection-reader / SWIM-driver threads have no recovery jmp_buf
+            // and land here) localizes to a concrete pointer instead of an
+            // opaque "SIGSEGV somewhere".
+            let fault_addr = if info.is_null() {
+                0usize
+            } else {
+                // `si_addr` is an async-signal-safe read of the kernel-provided
+                // siginfo_t — a method on Linux, a field on macOS — matched to
+                // the recovered path below.
+                #[cfg(target_os = "linux")]
+                {
+                    // SAFETY: `info` was validated non-null above.
+                    (unsafe { (*info).si_addr() }) as usize
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    // SAFETY: `info` was validated non-null above.
+                    (unsafe { (*info).si_addr }) as usize
+                }
+            };
             // write(2) is POSIX async-signal-safe; see emit_crash_diagnostic_sig_safe.
-            super::shared::emit_crash_diagnostic_sig_safe(sig);
+            super::shared::emit_crash_diagnostic_sig_safe(sig, fault_addr);
             // SAFETY: _exit is async-signal-safe.
             unsafe { libc::_exit(128 + sig) };
         }
@@ -1379,3 +1497,98 @@ pub(crate) use platform::{
     mark_recovery_active, prepare_dispatch_recovery, sigsetjmp, try_direct_longjmp,
     try_direct_longjmp_with_code,
 };
+
+// ── Terminal off-dispatch crash diagnostic (subprocess test) ─────────────────
+
+/// End-to-end proof that an off-dispatch fault (a thread with NO recovery
+/// `jmp_buf` — exactly the I/O accept / connection-reader / SWIM-driver threads
+/// in the distributed runtime) terminates with a diagnostic that pins the
+/// faulting ADDRESS and THREAD NAME, not just the signal. This is the surface
+/// that turns issue-#1963's opaque "crash in main context: SIGSEGV" on a CI
+/// runner into a localized fault site on its next occurrence.
+///
+/// The crash path `_exit`s the process, so it can only be exercised in a child:
+/// the child helper installs the crash handler, spawns a named thread, and
+/// dereferences a wild pointer there; the parent re-execs that helper and
+/// asserts the captured stderr.
+#[cfg(all(test, unix, not(target_arch = "wasm32")))]
+mod terminal_diag_tests {
+    const HELPER_ENV: &str = "HEW_SIGNAL_TERMINAL_DIAG_HELPER";
+    const FAULT_THREAD_NAME: &str = "hew-conn-diag";
+    // A fixed wild address in the unmapped low region: deterministic in the
+    // diagnostic output and reliably faults on read across unix targets.
+    const FAULT_ADDR: usize = 0x28;
+
+    /// Child helper: install the crash handler on the main thread (so the
+    /// process-wide signal disposition is set), then fault on a *named* thread
+    /// that never installed a per-thread recovery context. The handler's
+    /// no-recovery branch must emit the terminal diagnostic and `_exit(139)`.
+    #[test]
+    fn signal_terminal_diag_helper() {
+        if std::env::var(HELPER_ENV).as_deref() != Ok("1") {
+            return;
+        }
+        // Install the process signal handlers. The main thread also installs a
+        // per-thread recovery context inside init; the spawned thread below does
+        // NOT, so its fault takes the no-recovery terminal path.
+        super::init_crash_handling();
+
+        let handle = std::thread::Builder::new()
+            .name(FAULT_THREAD_NAME.to_owned())
+            .spawn(|| {
+                let wild = FAULT_ADDR as *const u8;
+                // SAFETY: intentional wild read to drive the fault on an
+                // off-dispatch thread; the process is expected to terminate.
+                let v = unsafe { std::ptr::read_volatile(wild) };
+                // Prevent the read from being optimized away.
+                std::process::exit(i32::from(v));
+            })
+            .expect("spawn fault thread");
+        let _ = handle.join();
+        // Reaching here means the fault did not terminate the process — fail
+        // loudly so the parent's assertion surfaces the regression.
+        std::process::exit(0);
+    }
+
+    #[test]
+    fn off_dispatch_fault_diagnostic_pins_address_and_thread() {
+        let exe = std::env::current_exe().expect("test binary path");
+        let output = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "signal::terminal_diag_tests::signal_terminal_diag_helper",
+                "--nocapture",
+            ])
+            .env(HELPER_ENV, "1")
+            .env("RUST_TEST_THREADS", "1")
+            .output()
+            .expect("spawn signal terminal-diag helper");
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let code = output.status.code();
+
+        // Terminal off-dispatch fault: SIGSEGV (or SIGBUS on some targets) →
+        // _exit(128 + sig). 139 = 128 + 11 (SIGSEGV); 135 = 128 + 7 (SIGBUS).
+        assert!(
+            matches!(code, Some(139 | 135)),
+            "expected terminal _exit(128+SIGSEGV/SIGBUS); got {code:?}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("hew: crash in main context:"),
+            "diagnostic prefix missing\nstderr:\n{stderr}"
+        );
+        // The fault ADDRESS must be pinned (the load-bearing localization). The
+        // exact wild address may be sanitized by the kernel on some targets, so
+        // accept either the precise address or any ` at 0x…` token.
+        assert!(
+            stderr.contains(" at 0x"),
+            "diagnostic must carry the faulting address\nstderr:\n{stderr}"
+        );
+        // The faulting THREAD NAME must be pinned so a multi-threaded runtime
+        // crash names its origin thread.
+        assert!(
+            stderr.contains(&format!("thread={FAULT_THREAD_NAME}")),
+            "diagnostic must name the faulting thread `{FAULT_THREAD_NAME}`\nstderr:\n{stderr}"
+        );
+    }
+}

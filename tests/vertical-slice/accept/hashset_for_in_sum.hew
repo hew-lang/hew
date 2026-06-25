@@ -1,0 +1,25 @@
+// `for x in s` over a HashSet<i64>.
+//
+// The for-in desugar snapshots the set's elements into an owned Vec via
+// `to_vec()` and iterates that Vec through a VecIter cursor. Three elements
+// 10, 20, 30 sum to 60; a count guard pins the iteration count. The set is
+// shared (Capture), so it stays live after the loop.
+pub fn main() -> i64 {
+    let s: HashSet<i64> = HashSet::new();
+    s.insert(10);
+    s.insert(20);
+    s.insert(30);
+    var total = 0;
+    var count = 0;
+    for x in s {
+        total = total + x;
+        count = count + 1;
+    }
+    if count != 3 {
+        return 100 + count;
+    }
+    if s.len() != 3 {
+        return 99;
+    }
+    total
+}

@@ -768,6 +768,16 @@ fn check_context_flow(blocks: &[BasicBlock]) -> Vec<MirCheck> {
 pub struct DataflowResult {
     pub checks: Vec<MirCheck>,
     pub exit_states: HashMap<u32, BTreeMap<BindingId, BindingState>>,
+    /// Per-block ENTRY (in-) state — the converged per-binding state at the
+    /// TOP of each block, before any of its statements run. Mirrors
+    /// `exit_states` but anchored at the block prologue. The elaborator needs
+    /// this for cooperate-cancel drop planning: a `CooperateKind::FunctionEntry`
+    /// cancel branches out of the function prologue, before the entry block's
+    /// own `Bind` statements execute, so its drop set must reflect what is live
+    /// at block ENTRY (parameters only, for a no-parameter function), never the
+    /// block EXIT state (which would over-include locals constructed later in
+    /// the same block and demonitor/free an uninitialised slot).
+    pub entry_states: HashMap<u32, BTreeMap<BindingId, BindingState>>,
 }
 
 #[must_use]
@@ -908,6 +918,10 @@ pub fn analyze(
     let mut checks: Vec<MirCheck> = Vec::new();
     let mut use_after_consume_seen: HashSet<(BindingId, SiteId)> = HashSet::new();
     let mut init_before_use_seen: HashSet<(BindingId, SiteId)> = HashSet::new();
+    // Per-block ENTRY state, captured before each block's statements run.
+    // Anchors cooperate-cancel drop planning at the block prologue (see
+    // `DataflowResult::entry_states`).
+    let mut entry_states: HashMap<u32, BTreeMap<BindingId, BindingState>> = HashMap::new();
     // Reset linear_bindings for the diagnostic pass (Phase 1 populated it
     // as a side-effect; resetting avoids double-registration).
     linear_bindings.clear();
@@ -926,6 +940,7 @@ pub fn analyze(
             // Phase 2 uses ALL predecessors (all are now in exit_states).
             meet_predecessors(preds_of_bb, &exit_states, &reachable)
         };
+        entry_states.insert(blk_id, entry.clone());
         transfer_block(
             entry,
             block,
@@ -1011,6 +1026,7 @@ pub fn analyze(
     DataflowResult {
         checks,
         exit_states,
+        entry_states,
     }
 }
 

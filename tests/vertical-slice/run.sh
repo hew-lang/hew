@@ -317,6 +317,68 @@ run_accept_expect_status "iter_filter_map_compose_run" 18
 # ["keep","keep2","skip_me"] filtered by s!="skip_me" → count = 2; exit 2.
 run_accept_expect_status "iter_filter_string_run" 2
 
+# ── Iterator-hierarchy gap ratchets (nyi-gap-needs-failable-test) ──────────────
+# Each pins a known iterator gap so it fails CLOSED with a specific diagnostic.
+# When a slice closes the gap, the corresponding ratchet flips from a
+# check-fail to an accept fixture (see the cross-references below).
+
+# mir-gap-cross-module-std-iter-lowering: namespaced `iter::map`/`iter::count`
+# called from an importing module do not resolve into the consumer's
+# fn_registry (and a closure arg to a cross-module generic fn lacks a
+# ClosureCaptureFact). Closing this enables `iter_xmod_map_count`.
+# shellcheck disable=SC2016  # backticks in the pattern are Hew diagnostic syntax, not shell expansion
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/mir_gap_cross_module_iter/main.hew" \
+  'undefined function `iter::map`' \
+  "mir_gap_cross_module_iter"
+
+# mir-gap-where-clause-proj-monomorph: a generic fn whose type param appears
+# only in a `where I: Iterator<Item = A>` projection has no MIR body to lower
+# (the collector cannot pin a projection-only param). Closing this enables
+# `iter_generic_count_collect`.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/mir_gap_where_clause_proj_mono.hew" \
+  "MIR lowering for function call is not implemented yet" \
+  "mir_gap_where_clause_proj_mono"
+
+# g12-A (CLOSED): `for (k, v) in m` over a HashMap lowers through a HashMapIter
+# cursor built from the map's keys()/values() projections. The former
+# mir_gap_hashmap_for_in ratchet flipped to these accept fixtures.
+# Scalar keys+values: 3 entries (keys sum 6 + values sum 60) → exit 66.
+run_accept_expect_status "hashmap_for_in_sum" 66
+# Owned (string) key yield, scalar value: key lens 6 + values 6 → exit 12.
+run_accept_expect_status "hashmap_for_in_string_key" 12
+# Owned key AND owned value: key lens 6 + value lens 29 → exit 35.
+run_accept_expect_status "hashmap_for_in_owned" 35
+
+# g12-B (CLOSED): `for x in s` over a HashSet snapshots the set's elements into
+# an owned Vec via to_vec() and drives a VecIter cursor.
+# Scalar elements: 10+20+30 → exit 60.
+run_accept_expect_status "hashset_for_in_sum" 60
+# Owned (string) elements: lens 2+3+4 → exit 9.
+run_accept_expect_status "hashset_for_in_owned" 9
+
+# Non-identifier iterables for HashMap/HashSet for-in. The lane's bare-identifier
+# fixtures masked an iterable-span clobber: recording the keys()/to_vec()
+# projection at the iterable's own span overwrote its checker type with `Vec`, so
+# a field-access / call-result source mis-routed (HashSet iterated zero times and
+# returned a wrong value; HashMap failed closed with a misleading diagnostic).
+# These pin CORRECT iteration (exact value + count, not zero) for the
+# non-identifier shapes the bug hid.
+# HashSet via a struct field: 10+20+30 → exit 60.
+run_accept_expect_status "hashset_for_in_field" 60
+# HashSet via a call result (also a single-eval witness): 10+20+30 → exit 60.
+run_accept_expect_status "hashset_for_in_call" 60
+# HashMap via a struct field: keys 6 + values 60 → exit 66.
+run_accept_expect_status "hashmap_for_in_field" 66
+# HashMap via a call result (single-eval: keys()+values() borrow one temp, so
+# make_map() runs once): keys 6 + values 60 → exit 66.
+run_accept_expect_status "hashmap_for_in_call" 66
+# Owned-element drop ratchet on the non-identifier route (field access): string
+# lens 2+3+4 → exit 9. Verified clean under the guard allocator (MallocScribble /
+# MallocGuardEdges) alongside the other owned for-in fixtures.
+run_accept_expect_status "hashset_for_in_field_owned" 9
+
 # Reject: spawned closures must not capture non-Send values. This fixture uses
 # a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR
 # diagnostic rather than unrelated Rc construction or lowering diagnostics.
@@ -822,6 +884,45 @@ run_accept_expect_status "supervisor_lifecycle_fires" 220
 # Discarded link()/monitor() calls lower to hew_actor_link / hew_actor_monitor
 # with dest=None and reach codegen.
 run_accept_expect_status "link_monitor_discarded" 0
+
+# Value-needed monitor(): MIR/codegen construct MonitorRef from the i64 ref_id
+# returned by hew_actor_monitor. The MonitorRef resource is dropped at scope
+# exit via hew_actor_demonitor.
+run_accept_expect_status "link_monitor_value_monitor" 0
+
+# Value-needed link(): MIR/codegen construct Result<(), LinkError> from the void
+# hew_actor_link return (Ok, no payload). Pattern-matched on the named LinkError
+# variants (AlreadyLinked / TargetDead) — proves the LinkError builtin-enum
+# catalog resolves them. hew_actor_link is infallible, so the Err arms never fire.
+run_accept_expect_status "link_monitor_value_result" 0
+
+# Drop-safety: value-needed monitor() INSIDE an actor receive handler. The handler
+# gets a FunctionEntry cooperate site whose cancel branch leaves the prologue
+# BEFORE the MonitorRef is constructed, so the cancel-exit drop set must EXCLUDE
+# the not-yet-live MonitorRef — demonitoring an uninitialised slot could cancel an
+# unrelated monitor (fail-open). Run (exit 0) AND inspect the dispatch IR: the
+# handler's `cancel_exit` block must carry NO hew_actor_demonitor call (the
+# demonitor appears only on the normal return path, after construction).
+run_accept_expect_status "link_monitor_value_monitor_in_actor" 0
+# Extract the Watcher__recv__watch function's cancel_exit basic block from the
+# emitted LLVM IR and assert it contains no demonitor of the not-yet-live ref.
+watch_ll="${ROOT}/.tmp/compile-out/link_monitor_value_monitor_in_actor.ll"
+watch_cancel_block="$(awk '
+  /^define .*@Watcher__recv__watch\(/ { in_fn = 1 }
+  in_fn && /^cancel_exit:/            { in_cancel = 1 }
+  in_cancel                            { print }
+  in_cancel && /^[[:space:]]*ret /     { exit }
+' "${watch_ll}")"
+if [[ -z "${watch_cancel_block}" ]]; then
+  echo "drop-safety: could not find Watcher__recv__watch cancel_exit block in IR" >&2
+  echo "${watch_ll}" >&2
+  exit 1
+fi
+if grep -q 'hew_actor_demonitor' <<<"${watch_cancel_block}"; then
+  echo "drop-safety REGRESSION: handler cancel_exit demonitors a not-yet-live MonitorRef" >&2
+  echo "${watch_cancel_block}" >&2
+  exit 1
+fi
 
 # on(crash) handler attachment: Crasher actor declares #[on(crash)]; codegen emits
 # a non-null on_crash fn-pointer in HewChildSpec; supervisor boots and main returns 42.
@@ -1423,16 +1524,6 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/spawn_lambda_removed.hew"
   exit 1
 fi
 grep -q 'E_SPAWN_LAMBDA_SYNTAX_REMOVED' "${reject_output}"
-
-# Reject: value-needed monitor() still needs Cluster 2 MonitorRef construction.
-# Discarded statement-position calls compile, but expression contexts remain
-# fail-closed at the MIR producer boundary.
-if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/link_monitor_pending_cluster2.hew" >"${reject_output}" 2>&1; then
-  echo "expected link/monitor fixture to fail" >&2
-  exit 1
-fi
-grep -q 'NotYetImplemented' "${reject_output}"
-grep -q 'MonitorRef' "${reject_output}"
 
 # ---------------------------------------------------------------------------
 # scope{} / fork — fail-closed surface pins
@@ -3244,4 +3335,17 @@ expect_check_fail_contains \
   "${ROOT}/tests/vertical-slice/reject/loop_break_in_iflet_scrutinee.hew" \
   "type mismatch" "loop_break_in_iflet_scrutinee"
 echo "PASS loop_break_in_iflet_scrutinee (reject)"
+
+# ---------------------------------------------------------------------------
+# string.split("", "") and split-to-chars semantics (empty separator)
+#
+# An empty separator splits the string into its individual Unicode codepoints,
+# each as a one-character string. Three cases:
+#   1. ASCII input "abc" → 3 elements "a"/"b"/"c"
+#   2. Multi-byte input "café" → 4 elements "c"/"a"/"f"/"é" (é is one element)
+#   3. Empty input "" → 0 elements (empty Vec)
+# ---------------------------------------------------------------------------
+run_accept_expect_status "string_split_to_chars_ascii" 0
+run_accept_expect_status "string_split_to_chars_multibyte" 0
+run_accept_expect_status "string_split_to_chars_empty" 0
 

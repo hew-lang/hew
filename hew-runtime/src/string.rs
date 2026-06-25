@@ -501,27 +501,33 @@ pub unsafe extern "C" fn hew_string_replace(
     result.cast::<c_char>()
 }
 
-/// Convert a single character code point to a one-byte C string. Caller must free the result with `hew_string_drop`.
+/// Convert a Unicode codepoint to its UTF-8 string representation.
+/// Returns a fresh, NUL-terminated C string. Caller must free with `hew_string_drop`.
+///
+/// `c` is a Unicode scalar value passed as `i32` (codepoints fit in `[0, 0x10_FFFF]`).
+/// Invalid codepoints (values that `char::from_u32` rejects) produce the replacement
+/// character U+FFFD so the caller always receives a valid UTF-8 string.
 ///
 /// # Safety
 ///
 /// Called from compiled Hew programs via C ABI. No preconditions beyond a valid `i32`.
 #[expect(
-    clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "C ABI passes characters as i32; truncation to u8 is intentional (matching C cast)"
+    reason = "C ABI passes codepoints as i32; reinterpreting as u32 for char::from_u32 is correct"
 )]
 #[no_mangle]
 pub unsafe extern "C" fn hew_char_to_string(c: i32) -> *mut c_char {
+    // Decode the Unicode scalar; fall back to U+FFFD for invalid codepoints.
+    let ch = char::from_u32(c as u32).unwrap_or('\u{FFFD}');
+    let mut buf = [0u8; 5]; // 4 UTF-8 bytes + NUL terminator
+    let encoded = ch.encode_utf8(&mut buf[..4]);
+    let nbytes = encoded.len();
+    // NUL-terminate: buf[nbytes] is already 0 from the zero-initialiser.
     // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
-    let ptr = alloc_cstring_data(2).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_char_to_string — header-aware)
-    cabi_guard!(ptr.is_null(), ptr.cast::<c_char>());
-    // SAFETY: ptr is a valid 2-byte allocation.
-    unsafe {
-        *ptr = c as u8;
-        *ptr.add(1) = 0;
-    }
-    ptr.cast::<c_char>()
+    // SAFETY: buf contains nbytes valid UTF-8 bytes for this codepoint; buf is alive
+    // for the duration of the call.
+    // CSTRING-ALLOC: str-open (hew_char_to_string — header-aware)
+    unsafe { malloc_cstring(buf.as_ptr(), nbytes) }
 }
 
 /// Return the byte length of a C string.
@@ -606,8 +612,28 @@ pub unsafe extern "C" fn hew_string_split(
     let dlen = d_bytes.len();
 
     if dlen == 0 {
-        // SAFETY: s is valid per caller contract.
-        unsafe { crate::vec::hew_vec_push_str(v, s) };
+        // Empty separator: split into individual Unicode codepoints, each as a
+        // single-character UTF-8 string. An empty input produces an empty vec.
+        // SAFETY: s is a valid NUL-terminated C string per caller contract.
+        let Ok(rust_str) = (unsafe { CStr::from_ptr(s) }).to_str() else {
+            // Invalid UTF-8 — return empty vec; caller cannot meaningfully split it.
+            return v;
+        };
+        for ch in rust_str.chars() {
+            let mut buf = [0u8; 5]; // 4 UTF-8 bytes + NUL terminator
+            let encoded = ch.encode_utf8(&mut buf[..4]);
+            let nbytes = encoded.len();
+            // SAFETY: buf contains nbytes valid UTF-8 bytes for this codepoint.
+            let part = unsafe { malloc_cstring(buf.as_ptr(), nbytes) };
+            if part.is_null() {
+                // SAFETY: abort is always safe to call.
+                unsafe { libc::abort() };
+            }
+            // SAFETY: v is a valid HewVec and part is a valid C string.
+            unsafe { crate::vec::hew_vec_push_str(v, part) };
+            // SAFETY: part was allocated by malloc_cstring and copied-in by push_str.
+            unsafe { free_cstring(part) }; // CSTRING-FREE: str-open (hew_string_split empty-sep codepoint, copied-in by push_str)
+        }
         return v;
     }
 
@@ -907,27 +933,18 @@ pub unsafe extern "C" fn hew_string_abort_oob(index: i64, len: i64) -> ! {
     }
 }
 
-/// Create a one-character string from a character code. Caller must free the result with `hew_string_drop`.
+/// Create a UTF-8 string from a Unicode codepoint. Caller must free the result with `hew_string_drop`.
+///
+/// `c` is a Unicode scalar value passed as `i32`. Invalid codepoints produce U+FFFD.
 ///
 /// # Safety
 ///
 /// Called from compiled Hew programs via C ABI. No preconditions beyond a valid `i32`.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "C ABI passes characters as i32; truncation to u8 is intentional"
-)]
 #[no_mangle]
 pub unsafe extern "C" fn hew_string_from_char(c: i32) -> *mut c_char {
-    // Header-aware (S1): the result is released via hew_string_drop / free_cstring.
-    let ptr = alloc_cstring_data(2).cast::<u8>(); // CSTRING-ALLOC: str-open (hew_string_from_char — header-aware)
-    cabi_guard!(ptr.is_null(), ptr.cast::<c_char>());
-    // SAFETY: ptr is a valid 2-byte allocation.
-    unsafe {
-        *ptr = c as u8;
-        *ptr.add(1) = 0;
-    }
-    ptr.cast::<c_char>()
+    // Delegate to the canonical codepoint-to-string function.
+    // SAFETY: hew_char_to_string has the same ABI contract and handles all codepoints.
+    unsafe { hew_char_to_string(c) }
 }
 
 /// Repeat a string `count` times. Caller must free the result with `hew_string_drop`.
@@ -2206,6 +2223,74 @@ mod tests {
         unsafe { crate::vec::hew_vec_free(v) };
     }
 
+    // split("abc", "") produces ["a", "b", "c"] — one element per codepoint.
+    #[test]
+    fn split_empty_sep_ascii_produces_chars() {
+        let s = CString::new("abc").unwrap();
+        let sep = CString::new("").unwrap();
+        // SAFETY: Both args are valid NUL-terminated C strings.
+        let v = unsafe { hew_string_split(s.as_ptr(), sep.as_ptr()) };
+        assert!(!v.is_null());
+        // SAFETY: v is a valid HewVec.
+        assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 3);
+        for (i, expected) in ["a", "b", "c"].iter().enumerate() {
+            #[expect(clippy::cast_possible_wrap, reason = "test: index ≤ 2, never wraps")]
+            // SAFETY: index i is within bounds.
+            let part = unsafe { crate::vec::hew_vec_get_str(v, i as i64) };
+            assert!(!part.is_null());
+            // SAFETY: part is a valid C string.
+            assert_eq!(unsafe { CStr::from_ptr(part) }.to_str().unwrap(), *expected);
+            // SAFETY: release the caller's retained ref.
+            unsafe { hew_string_drop(part.cast_mut()) };
+        }
+        // SAFETY: v is a valid HewVec.
+        unsafe { crate::vec::hew_vec_free(v) };
+    }
+
+    // split("café", "") produces ["c","a","f","é"] — é is one element, not two bytes.
+    #[test]
+    fn split_empty_sep_multibyte_produces_codepoints() {
+        let s = CString::new("café").unwrap();
+        let sep = CString::new("").unwrap();
+        // SAFETY: Both args are valid NUL-terminated C strings.
+        let v = unsafe { hew_string_split(s.as_ptr(), sep.as_ptr()) };
+        assert!(!v.is_null());
+        // SAFETY: v is a valid HewVec.
+        assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 4);
+        let expected = ["c", "a", "f", "é"];
+        for (i, exp) in expected.iter().enumerate() {
+            #[expect(clippy::cast_possible_wrap, reason = "test: index ≤ 3, never wraps")]
+            // SAFETY: index i is within bounds.
+            let part = unsafe { crate::vec::hew_vec_get_str(v, i as i64) };
+            assert!(!part.is_null());
+            // SAFETY: part is a valid C string.
+            let got = unsafe { CStr::from_ptr(part) }.to_str().unwrap();
+            assert_eq!(got, *exp, "element {i}");
+            // Confirm that each element is valid UTF-8 (the old implementation
+            // would have emitted a lone 0xE9 byte here, which is not valid UTF-8).
+            // SAFETY: part is a valid C string — already checked above.
+            assert!(std::str::from_utf8(unsafe { CStr::from_ptr(part) }.to_bytes()).is_ok());
+            // SAFETY: release the caller's retained ref.
+            unsafe { hew_string_drop(part.cast_mut()) };
+        }
+        // SAFETY: v is a valid HewVec.
+        unsafe { crate::vec::hew_vec_free(v) };
+    }
+
+    /// split("", "") → [] (empty vec for empty input).
+    #[test]
+    fn split_empty_sep_empty_string_is_empty_vec() {
+        let s = CString::new("").unwrap();
+        let sep = CString::new("").unwrap();
+        // SAFETY: Both args are valid NUL-terminated C strings.
+        let v = unsafe { hew_string_split(s.as_ptr(), sep.as_ptr()) };
+        assert!(!v.is_null());
+        // SAFETY: v is a valid HewVec.
+        assert_eq!(unsafe { crate::vec::hew_vec_len(v) }, 0);
+        // SAFETY: v is a valid HewVec.
+        unsafe { crate::vec::hew_vec_free(v) };
+    }
+
     #[test]
     fn test_string_lines_basic() {
         let s = CString::new("line1\nline2\nline3").unwrap();
@@ -2648,5 +2733,59 @@ mod tests {
     fn unicode_to_lower_invalid_returns_unchanged() {
         // SAFETY: hew_unicode_to_lower takes only an i32; no pointers.
         assert_eq!(unsafe { hew_unicode_to_lower(-1) }, -1);
+    }
+
+    // ── hew_char_to_string UTF-8 correctness ─────────────────────────────────
+
+    #[test]
+    fn char_to_string_ascii() {
+        // 'a' = 0x61 — single-byte UTF-8; result must be exactly "a".
+        // SAFETY: hew_char_to_string takes only an i32; no pointers.
+        let s = unsafe { hew_char_to_string(0x61) };
+        assert!(!s.is_null());
+        // SAFETY: s is a valid malloc'd C string.
+        assert_eq!(unsafe { read_and_free(s) }, "a");
+    }
+
+    #[test]
+    fn char_to_string_latin_extended() {
+        // U+00E9 'é' — two UTF-8 bytes (0xC3, 0xA9).
+        // The old implementation emitted only 0xE9 (a single invalid UTF-8 byte).
+        // SAFETY: hew_char_to_string takes only an i32; no pointers.
+        let s = unsafe { hew_char_to_string(0x00E9) };
+        assert!(!s.is_null());
+        // SAFETY: s is a valid malloc'd C string.
+        assert_eq!(unsafe { read_and_free(s) }, "é");
+    }
+
+    #[test]
+    fn char_to_string_cjk() {
+        // U+4E2D '中' — three UTF-8 bytes.
+        // SAFETY: hew_char_to_string takes only an i32; no pointers.
+        let s = unsafe { hew_char_to_string(0x4E2D) };
+        assert!(!s.is_null());
+        // SAFETY: s is a valid malloc'd C string.
+        assert_eq!(unsafe { read_and_free(s) }, "中");
+    }
+
+    #[test]
+    fn char_to_string_emoji() {
+        // U+1F600 '😀' — four UTF-8 bytes.
+        // SAFETY: hew_char_to_string takes only an i32; no pointers.
+        let s = unsafe { hew_char_to_string(0x1F600) };
+        assert!(!s.is_null());
+        // SAFETY: s is a valid malloc'd C string.
+        assert_eq!(unsafe { read_and_free(s) }, "😀");
+    }
+
+    #[test]
+    fn char_to_string_invalid_codepoint_yields_replacement() {
+        // 0xD800 is a surrogate half — not a valid Unicode scalar.
+        // Must produce U+FFFD rather than garbage bytes.
+        // SAFETY: hew_char_to_string takes only an i32; no pointers.
+        let s = unsafe { hew_char_to_string(0xD800) };
+        assert!(!s.is_null());
+        // SAFETY: s is a valid malloc'd C string.
+        assert_eq!(unsafe { read_and_free(s) }, "\u{FFFD}");
     }
 }

@@ -1,0 +1,39 @@
+// Ratchet for `mir-gap-cross-module-std-iter-lowering`.
+//
+// Calling the `std::iter` free-function combinators from an importing module
+// must fail closed — loudly — until the cross-module lowering gap is closed.
+// Today two things go wrong and both are pinned here so the gap cannot widen
+// or silently regress to a wrong-value pass:
+//
+//   1. The namespaced `iter::map` / `iter::count` calls do not resolve: the
+//      stdlib's `pub fn` adapters are not admitted into the importing module's
+//      `fn_registry`, so the checker reports `undefined function iter::map`.
+//   2. A closure passed as an argument to a cross-module generic fn reaches the
+//      checker output without a resolved `ClosureCaptureFact`, tripping the
+//      checker -> MIR contract.
+//
+// When the gap closes this fixture flips to an accept (the chain runs and
+// returns the mapped count) — see `iter_xmod_map_count` in run.sh.
+import std::iter;
+
+type Countdown {
+    n: i64;
+}
+
+impl Iterator for Countdown {
+    type Item = i64;
+    fn next(var self) -> Option<i64> {
+        if self.n <= 0 {
+            None
+        } else {
+            let cur = self.n;
+            self.n = self.n - 1;
+            Some(cur)
+        }
+    }
+}
+
+pub fn main() -> i64 {
+    let m = iter::map(Countdown { n: 3 }, |x: i64| x * 2);
+    iter::count(m)
+}

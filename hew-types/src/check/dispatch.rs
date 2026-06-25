@@ -245,6 +245,8 @@ pub enum HashSetMethod {
     Len,
     IsEmpty,
     Clone,
+    /// Snapshot all elements into an owned `Vec<T>` (the `for x in s` source).
+    ToVec,
 }
 
 /// Vec dispatch methods. Mirrors the methods registered for the

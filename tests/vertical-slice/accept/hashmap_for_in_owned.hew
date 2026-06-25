@@ -1,0 +1,27 @@
+// Owned-element drop ratchet for `for (k, v) in m` over HashMap<string, string>.
+//
+// Both key and value are owned strings. Each yielded `(k, v)` is a fresh owner
+// cloned from the map by the `keys()`/`values()` projections; the cursor only
+// borrows the snapshot Vecs and the loop body drops each yielded pair exactly
+// once at iteration-scope exit (`drop-allowset-from-value-flow`,
+// `by-value-heap-params-are-borrows`). Run under `MallocScribble=1` to prove no
+// double-free / use-after-free on the owned key/value yields.
+//
+// Keys "k1","k2","k3" (lens 2+2+2 = 6); values "value_one","value_two",
+// "value_three" (lens 9+9+11 = 29): exit 35.
+pub fn main() -> i64 {
+    let m: HashMap<string, string> = HashMap::new();
+    m.insert("k1", "value_one");
+    m.insert("k2", "value_two");
+    m.insert("k3", "value_three");
+    var total = 0;
+    var count = 0;
+    for (k, v) in m {
+        total = total + k.len() + v.len();
+        count = count + 1;
+    }
+    if count != 3 {
+        return 100 + count;
+    }
+    total
+}

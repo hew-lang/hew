@@ -1,0 +1,25 @@
+// Owned-element drop ratchet for `for x in s` over HashSet<string>.
+//
+// Each yielded element is a fresh owned string cloned by the `to_vec()`
+// projection (which delegates to the inner map's keys clone discipline); the
+// VecIter cursor borrows the snapshot Vec and the loop body drops each yielded
+// string exactly once at iteration-scope exit. Run under `MallocScribble=1` to
+// prove no double-free / use-after-free.
+//
+// Elements "aa","bbb","cccc" (lens 2+3+4 = 9): exit 9.
+pub fn main() -> i64 {
+    let s: HashSet<string> = HashSet::new();
+    s.insert("aa");
+    s.insert("bbb");
+    s.insert("cccc");
+    var total_len = 0;
+    var count = 0;
+    for x in s {
+        total_len = total_len + x.len();
+        count = count + 1;
+    }
+    if count != 3 {
+        return 100 + count;
+    }
+    total_len
+}

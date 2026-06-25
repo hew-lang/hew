@@ -23,9 +23,10 @@ use hew_cabi::vec::HewTypeOwnershipKind;
 
 use crate::hashmap::{
     hew_hashmap_clone_layout, hew_hashmap_contains_key_layout, hew_hashmap_free_layout,
-    hew_hashmap_insert_layout, hew_hashmap_len_layout, hew_hashmap_new_with_layout,
-    hew_hashmap_remove_layout, HewLayoutHashMap,
+    hew_hashmap_insert_layout, hew_hashmap_keys_layout, hew_hashmap_len_layout,
+    hew_hashmap_new_with_layout, hew_hashmap_remove_layout, HewLayoutHashMap,
 };
+use crate::vec::HewVec;
 
 // RETIRED: HewHashSet (untyped, string-key wrapper over HewHashMap) was deleted
 // in W5.003. The symbols hew_hashset_new / _insert_int / _insert_string /
@@ -335,6 +336,36 @@ pub unsafe extern "C" fn hew_hashset_len_layout(set: *const HewLayoutHashSet) ->
 pub unsafe extern "C" fn hew_hashset_is_empty_layout(set: *const HewLayoutHashSet) -> bool {
     // SAFETY: hew_hashset_len_layout performs the null/handle validation.
     unsafe { hew_hashset_len_layout(set) == 0 }
+}
+
+/// Collect all elements of a layout-backed set into a new `HewVec`.
+///
+/// Elements are the keys of the inner map, so this delegates to
+/// [`hew_hashmap_keys_layout`], which clones each element into the owned Vec
+/// using the element layout's clone discipline (the same fresh-owner
+/// clone-on-read the map accessor establishes). The caller owns the returned
+/// `HewVec`; order is unspecified (slot-walk order). This is the projection the
+/// `for x in s` desugar snapshots into a `VecIter` cursor — each yielded element
+/// is independently droppable and the source set is unchanged.
+///
+/// A null `set` returns null fail-closed.
+///
+/// # Safety
+///
+/// `set` must have been returned by [`hew_hashset_new_with_layout`] (or be
+/// null). The returned pointer must eventually be freed via the matching Vec
+/// free entry for the element class.
+#[no_mangle]
+pub unsafe extern "C" fn hew_hashset_to_vec_layout(set: *const HewLayoutHashSet) -> *mut HewVec {
+    if set.is_null() {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: set non-null per the gate; map was constructed via
+    // hew_hashmap_new_with_layout, so keys_layout reads its occupied slots.
+    unsafe {
+        validate_set_op(set);
+        hew_hashmap_keys_layout((*set).map)
+    }
 }
 
 // ---------------------------------------------------------------------------

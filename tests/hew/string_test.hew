@@ -195,9 +195,13 @@ fn test_split_splits_and_keeps_trailing_empty_segment() {
 }
 
 #[test]
-fn test_split_empty_separator_returns_original_string() {
+fn test_split_empty_separator_returns_codepoints() {
+    // split(s, "") splits into one element per Unicode codepoint.
+    // "abc" is 3 ASCII codepoints → ["a", "b", "c"].
     let expected: Vec<string> = Vec::new();
-    expected.push("abc");
+    expected.push("a");
+    expected.push("b");
+    expected.push("c");
     assert_string_vec_eq(string.split("abc", ""), expected);
 }
 

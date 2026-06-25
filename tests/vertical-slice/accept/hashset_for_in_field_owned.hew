@@ -1,0 +1,37 @@
+// Owned-element drop ratchet for `for x in self.field` over HashSet<string>.
+//
+// Extends the owned-element drop coverage to the NON-identifier iterable route
+// (field access). `b.s` is a PLACE (field read re-evaluates the field each
+// time it is needed but does NOT create an owning temp); the set remains owned
+// by `b` and is borrowed for the duration of the loop. Each yielded element is
+// a fresh owned string cloned by the `to_vec()` projection; the VecIter cursor
+// borrows the snapshot Vec and the loop body drops each yielded string exactly
+// once at iteration-scope exit. Run under `MallocScribble=1`/
+// `MallocGuardEdges=1` to prove no double-free / UAF on the field-place path.
+//
+// Elements "aa","bbb","cccc" (lens 2+3+4 = 9): exit 9.
+type SetBox {
+    s: HashSet<string>;
+}
+
+fn make_set_box() -> SetBox {
+    let s: HashSet<string> = HashSet::new();
+    s.insert("aa");
+    s.insert("bbb");
+    s.insert("cccc");
+    SetBox { s: s }
+}
+
+pub fn main() -> i64 {
+    let b = make_set_box();
+    var total_len = 0;
+    var count = 0;
+    for x in b.s {
+        total_len = total_len + x.len();
+        count = count + 1;
+    }
+    if count != 3 {
+        return 100 + count;
+    }
+    total_len
+}

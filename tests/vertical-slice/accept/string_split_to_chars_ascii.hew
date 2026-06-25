@@ -1,0 +1,14 @@
+// Vertical slice: split("abc", "") → individual characters ["a", "b", "c"].
+//
+// An empty separator splits the string into its Unicode codepoints, each
+// as a one-character string. For ASCII input the codepoint count equals the
+// byte count, so this also validates the length gate.
+import std::string;
+
+fn main() {
+    let parts = string.split("abc", "");
+    assert_eq(parts.len(), 3);
+    assert_eq(parts[0], "a");
+    assert_eq(parts[1], "b");
+    assert_eq(parts[2], "c");
+}

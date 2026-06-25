@@ -160,6 +160,12 @@ pub enum RuntimeCallFamily {
     ActorAsk,
     ActorAskWithChannel,
     ActorCooperate,
+    /// `MonitorRef::close` → `hew_actor_demonitor(ref_id: u64) -> void`.
+    /// In the drop path, codegen extracts `ref_id` from the struct alloca
+    /// via `build_struct_gep` + `build_load` and passes it directly.
+    /// Present as a `RuntimeCallFamily` variant for allowlist parity only;
+    /// the canonical path is `RuntimeDropDescriptor::MonitorRefClose`.
+    ActorDemonitor,
     ActorLink,
     ActorMonitor,
     ActorSelf,
@@ -474,6 +480,7 @@ impl RuntimeCallFamily {
             Self::ActorAsk => "hew_actor_ask",
             Self::ActorAskWithChannel => "hew_actor_ask_with_channel",
             Self::ActorCooperate => "hew_actor_cooperate",
+            Self::ActorDemonitor => "hew_actor_demonitor",
             Self::ActorLink => "hew_actor_link",
             Self::ActorMonitor => "hew_actor_monitor",
             Self::ActorSelf => "hew_actor_self",
@@ -713,6 +720,7 @@ impl RuntimeCallFamily {
             "hew_actor_ask" => Self::ActorAsk,
             "hew_actor_ask_with_channel" => Self::ActorAskWithChannel,
             "hew_actor_cooperate" => Self::ActorCooperate,
+            "hew_actor_demonitor" => Self::ActorDemonitor,
             "hew_actor_link" => Self::ActorLink,
             "hew_actor_monitor" => Self::ActorMonitor,
             "hew_actor_self" => Self::ActorSelf,
@@ -1013,6 +1021,7 @@ impl RuntimeCallFamily {
             | F::ActorAsk
             | F::ActorAskWithChannel
             | F::ActorCooperate
+            | F::ActorDemonitor
             | F::ActorLink
             | F::ActorMonitor
             | F::ActorSelf
@@ -1361,6 +1370,9 @@ pub enum RuntimeDropDescriptor {
     RecvHalfClose,
     /// `CancellationToken::release` → `hew_cancel_token_release`.
     CancellationTokenRelease,
+    /// `MonitorRef::close` → `hew_actor_demonitor`. Extracts `ref_id: i64`
+    /// from the struct and passes it directly to the runtime.
+    MonitorRefClose,
 }
 
 impl RuntimeDropDescriptor {
@@ -1380,6 +1392,7 @@ impl RuntimeDropDescriptor {
             Self::LambdaActorHandleClose => "hew_lambda_actor_release",
             Self::SendHalfClose | Self::RecvHalfClose => "hew_duplex_close_half",
             Self::CancellationTokenRelease => "hew_cancel_token_release",
+            Self::MonitorRefClose => "hew_actor_demonitor",
         }
     }
 
@@ -1400,6 +1413,7 @@ impl RuntimeDropDescriptor {
             Self::SendHalfClose => "SendHalf::close",
             Self::RecvHalfClose => "RecvHalf::close",
             Self::CancellationTokenRelease => "CancellationToken::release",
+            Self::MonitorRefClose => "MonitorRef::close",
         }
     }
 
@@ -1422,6 +1436,7 @@ impl RuntimeDropDescriptor {
             "SendHalf::close" => Some(Self::SendHalfClose),
             "RecvHalf::close" => Some(Self::RecvHalfClose),
             "CancellationToken::release" => Some(Self::CancellationTokenRelease),
+            "MonitorRef::close" => Some(Self::MonitorRefClose),
             _ => None,
         }
     }
@@ -1475,7 +1490,7 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
 /// See the bijection / parity tests; same coverage discipline as
 /// [`all_runtime_call_families`].
 #[must_use]
-pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 9] {
+pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 10] {
     [
         RuntimeDropDescriptor::DuplexClose,
         RuntimeDropDescriptor::StreamClose,
@@ -1486,6 +1501,7 @@ pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 9] {
         RuntimeDropDescriptor::SendHalfClose,
         RuntimeDropDescriptor::RecvHalfClose,
         RuntimeDropDescriptor::CancellationTokenRelease,
+        RuntimeDropDescriptor::MonitorRefClose,
     ]
 }
 
@@ -1789,6 +1805,7 @@ mod tests {
             ("SendHalf::close", "hew_duplex_close_half"),
             ("RecvHalf::close", "hew_duplex_close_half"),
             ("CancellationToken::release", "hew_cancel_token_release"),
+            ("MonitorRef::close", "hew_actor_demonitor"),
         ];
         let mut by_name: HashMap<&'static str, RuntimeDropDescriptor> = HashMap::new();
         for d in all_runtime_drop_descriptors() {

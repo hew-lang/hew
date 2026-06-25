@@ -154,6 +154,22 @@ pub enum TimeoutError {
     Timeout;
 }
 
+/// Error returned by the `link(handle)` builtin in value position
+/// (`link(actor) -> Result<(), LinkError>`).
+///
+/// Prelude-published — like `SendError` / `TimeoutError`, the variants are
+/// nameable in match arms without an explicit import, because `link()` is a
+/// compiler builtin. `std::link_monitor` re-exports the same surface for
+/// programs that name `MonitorRef` / `MonitorError` / `PartitionPolicy`.
+///
+/// `AlreadyLinked` is an idempotent non-fatal condition — callers may treat it
+/// as `Ok(())`. `TargetDead` is returned when the target actor has already
+/// exited; the caller's exit handler will fire immediately.
+pub enum LinkError {
+    AlreadyLinked;
+    TargetDead;
+}
+
 /// Message contract for actor types used behind `LocalPid<A>` / `RemotePid<A>`.
 ///
 /// Named actors opt into the erased `Pid` surface by implementing this trait
@@ -362,6 +378,62 @@ impl<T> IntoIterator for Vec<T> {
         VecIter { vec: v, idx: 0 }
     }
 }
+
+// ---------------------------------------------------------------------------
+// HashMapIter — concrete IntoIterator impl for HashMap<K, V>
+// ---------------------------------------------------------------------------
+/// Cursor iterator over a `HashMap<K, V>` produced by `map.into_iter()`.
+///
+/// `HashMapIter<K, V>` snapshots the map's keys and values into two parallel
+/// `Vec`s at construction (`HashMap::into_iter`) and walks them by a shared
+/// `idx`. The keys and values are taken from the SAME map state in the same
+/// projection order, so `ks[i]` and `vs[i]` are the matching key/value of one
+/// entry. Each yielded `(K, V)` is a FRESH, independently-droppable owner: the
+/// `keys()` / `values()` projections clone every element into the owned `Vec`
+/// (the same clone-on-read discipline as the `Index<K>` accessor), and the
+/// cursor only borrows those snapshot `Vec`s — it never co-owns a yielded pair
+/// with the source map (`drop-allowset-from-value-flow`,
+/// `by-value-heap-params-are-borrows`).
+///
+/// `next` mirrors `VecIter::next`: read `(ks[idx], vs[idx])`, bump `idx` in
+/// place, and return `None` once the cursor passes the snapshot length. The
+/// receiver stays `Live` after exhaustion and drops at scope exit — the
+/// `Iterator` "exhaustion ≠ drop" invariant.
+pub type HashMapIter<K, V> {
+    ks: Vec<K>;
+    vs: Vec<V>;
+    idx: i64;
+}
+
+impl<K, V> Iterator for HashMapIter<K, V> {
+    type Item = (K, V);
+    /// Yield `Some((ks[idx], vs[idx]))` and advance `idx`; `None` at the end.
+    fn next(var self) -> Option<(K, V)> {
+        if self.idx >= self.ks.len() {
+            None
+        } else {
+            let k = self.ks[self.idx];
+            let v = self.vs[self.idx];
+            self.idx = self.idx + 1;
+            Some((k, v))
+        }
+    }
+}
+
+// `for (k, v) in m` over a `HashMap<K, V>` builds a `HashMapIter` cursor from
+// the map's `keys()` and `values()` projections at the concrete iteration site
+// (the HIR for-in desugar synthesizes the constructor, mirroring how `Vec`'s
+// for-in builds a `VecIter` — see `is_builtin_vec_iterator_impl` and the
+// HashMap arm in `lower.rs`). The projections clone every key/value into a
+// fresh owned `Vec`, so each yielded `(K, V)` is independently droppable and
+// the cursor never co-owns a yielded pair with the source map.
+//
+// A standalone `impl IntoIterator for HashMap<K, V>` is intentionally NOT
+// declared here: its body would call `keys()`/`values()` on an abstract
+// `HashMap<K, V>` receiver, which the checker does not admit for unbound type
+// parameters (the projections only lower at concrete instantiations). The
+// concrete-site synthesis keeps the cursor on the proven `keys()`/`values()`
+// clone-on-read path without an abstract method-dispatch hazard.
 
 // ---------------------------------------------------------------------------
 // Index trait — the single indexed/keyed-access protocol

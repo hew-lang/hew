@@ -7,7 +7,7 @@
 // the trait into scope under an ALIAS (`Closable as C`) and defines its OWN
 // LOCAL `CloseError` — a DISTINCT nominal type sharing the bare name.
 //
-// The `impl C for MonitorRef` returns the LOCAL `CloseError` (bare). After
+// The `impl C for ClosableHandle` returns the LOCAL `CloseError` (bare). After
 // resolving the aliased trait `C` to its SOURCE owner (`closableerr`), the trait
 // side's bare `CloseError` qualifies to `closableerr.CloseError` while the impl
 // side's bare `CloseError` shadows a local type and keeps its local identity.
@@ -16,9 +16,9 @@
 // carve-out is reached through an alias, not only through a bare trait name.
 //
 // Harness verb: hew check (negative — see run.sh).
-import hew::closableerr::{ Closable as C };
+import hew::closableerr::{Closable as C};
 
-pub type MonitorRef {
+pub type ClosableHandle {
     id: i64;
 }
 
@@ -27,14 +27,14 @@ pub type CloseError {
     detail: i64;
 }
 
-impl C for MonitorRef {
-    fn close(monitor_ref: MonitorRef) -> Result<(), CloseError> {
+impl C for ClosableHandle {
+    fn close(handle: ClosableHandle) -> Result<(), CloseError> {
         Ok(())
     }
 }
 
 fn main() {
-    let m = MonitorRef { id: 1 };
+    let m = ClosableHandle { id: 1 };
     match m.close() {
         Ok(_) => println("ok"),
         Err(_) => println("err"),

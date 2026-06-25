@@ -53,6 +53,12 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     // -- Codegen-internal emission: injected by codegen passes (drop
     //    elaboration backends, deadline timers, closure-env mutexes,
     //    task spill machinery), never present in a MIR dump.
+    // `hew_actor_demonitor` is emitted exclusively from lower_drop_runtime
+    // (struct-field extraction path for MonitorRef::close); it never appears
+    // as a RuntimeCallFamily in an Instr::CallRuntimeAbi MIR dump of any
+    // corpus fixture (it does appear via the std::link_monitor import path,
+    // but no corpus fixture exercises that path).
+    "hew_actor_demonitor",
     "hew_auto_mutex_alloc",
     "hew_auto_mutex_free",
     "hew_auto_mutex_lock",

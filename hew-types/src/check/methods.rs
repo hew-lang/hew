@@ -3817,7 +3817,7 @@ impl Checker {
         self.hashmap_abstract_key_param_name(key_ty).is_some()
     }
 
-    fn record_resolved_hashset_call(&mut self, method: &str, elem_ty: &Ty, span: &Span) {
+    pub(super) fn record_resolved_hashset_call(&mut self, method: &str, elem_ty: &Ty, span: &Span) {
         let receiver = TyPattern::App {
             ctor: "HashSet".to_string(),
             args: vec![self.ty_to_dispatch_pattern(elem_ty)],
@@ -8577,6 +8577,19 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 MethodTarget {
                     symbol_name: "hew_hashset_clone_layout".to_string(),
                     family: MethodTargetFamily::HashSet(HashSetMethod::Clone),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
+                // Element snapshot into an owned `Vec<T>` — the projection the
+                // `for x in s` desugar consumes. Borrows the set (reads its
+                // elements, clones each into the fresh Vec); does not consume.
+                "to_vec".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashset_to_vec_layout".to_string(),
+                    family: MethodTargetFamily::HashSet(HashSetMethod::ToVec),
                     abi: RuntimeAbi::ByRef,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,

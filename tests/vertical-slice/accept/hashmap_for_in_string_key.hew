@@ -1,0 +1,25 @@
+// `for (k, v) in m` over a HashMap<string, i64> — owned-key yield.
+//
+// The yielded key is a fresh, independently-droppable owned string cloned by
+// the `keys()` projection (the same clone-on-read discipline as the `Index<K>`
+// accessor); the cursor borrows the snapshot Vec and never co-owns the yielded
+// key with the source map. Keys "a","bb","ccc" (lens 1+2+3 = 6) with values
+// 1,2,3 (sum 6): exit 12.
+pub fn main() -> i64 {
+    let m: HashMap<string, i64> = HashMap::new();
+    m.insert("a", 1);
+    m.insert("bb", 2);
+    m.insert("ccc", 3);
+    var total_len = 0;
+    var total_val = 0;
+    var count = 0;
+    for (k, v) in m {
+        total_len = total_len + k.len();
+        total_val = total_val + v;
+        count = count + 1;
+    }
+    if count != 3 {
+        return 100 + count;
+    }
+    total_len + total_val
+}

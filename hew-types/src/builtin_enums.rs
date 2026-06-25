@@ -172,6 +172,17 @@ const ASK_ERROR_VARIANTS: &[BuiltinMonomorphicEnumVariant] = &[
 const TIMEOUT_ERROR_VARIANTS: &[BuiltinMonomorphicEnumVariant] =
     &[BuiltinMonomorphicEnumVariant { name: "Timeout" }];
 
+/// `LinkError` is the `Err` variant of `Result<(), LinkError>` returned by
+/// `link()` in value position. Variants correspond to the inline source in
+/// `registration.rs`. Carried out-of-band so programs that use `link()` do
+/// not require a user-level `type LinkError` declaration.
+const LINK_ERROR_VARIANTS: &[BuiltinMonomorphicEnumVariant] = &[
+    BuiltinMonomorphicEnumVariant {
+        name: "AlreadyLinked",
+    },
+    BuiltinMonomorphicEnumVariant { name: "TargetDead" },
+];
+
 /// Catalog of monomorphic builtin enums whose layout must be registered
 /// out-of-band into MIR's `enum_layouts` and `machine_layout_names`.
 ///
@@ -231,6 +242,17 @@ pub fn monomorphic_builtin_enums() -> &'static [BuiltinMonomorphicEnum] {
         BuiltinMonomorphicEnum {
             name: "TimeoutError",
             variants: TIMEOUT_ERROR_VARIANTS,
+            suppress_from_sandbox_emit: true,
+        },
+        // `LinkError` is the `Err` variant of `Result<(), LinkError>` returned
+        // by `link()` in value position. User programs that pattern-match the
+        // result of `link()` reference the variants (`AlreadyLinked`,
+        // `TargetDead`) but never declare the type — the `EnumLayoutRegistry`
+        // generic path would never register it. `suppress_from_sandbox_emit:
+        // true` because no stable fixture baseline for `LinkError` exists yet.
+        BuiltinMonomorphicEnum {
+            name: "LinkError",
+            variants: LINK_ERROR_VARIANTS,
             suppress_from_sandbox_emit: true,
         },
     ]

@@ -1361,6 +1361,9 @@ pub enum RuntimeDropDescriptor {
     RecvHalfClose,
     /// `CancellationToken::release` → `hew_cancel_token_release`.
     CancellationTokenRelease,
+    /// `MonitorRef::close` → `hew_actor_demonitor`. Extracts `ref_id: i64`
+    /// from the struct and passes it directly to the runtime.
+    MonitorRefClose,
 }
 
 impl RuntimeDropDescriptor {
@@ -1380,6 +1383,7 @@ impl RuntimeDropDescriptor {
             Self::LambdaActorHandleClose => "hew_lambda_actor_release",
             Self::SendHalfClose | Self::RecvHalfClose => "hew_duplex_close_half",
             Self::CancellationTokenRelease => "hew_cancel_token_release",
+            Self::MonitorRefClose => "hew_actor_demonitor",
         }
     }
 
@@ -1400,6 +1404,7 @@ impl RuntimeDropDescriptor {
             Self::SendHalfClose => "SendHalf::close",
             Self::RecvHalfClose => "RecvHalf::close",
             Self::CancellationTokenRelease => "CancellationToken::release",
+            Self::MonitorRefClose => "MonitorRef::close",
         }
     }
 
@@ -1422,6 +1427,7 @@ impl RuntimeDropDescriptor {
             "SendHalf::close" => Some(Self::SendHalfClose),
             "RecvHalf::close" => Some(Self::RecvHalfClose),
             "CancellationToken::release" => Some(Self::CancellationTokenRelease),
+            "MonitorRef::close" => Some(Self::MonitorRefClose),
             _ => None,
         }
     }
@@ -1475,7 +1481,7 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
 /// See the bijection / parity tests; same coverage discipline as
 /// [`all_runtime_call_families`].
 #[must_use]
-pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 9] {
+pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 10] {
     [
         RuntimeDropDescriptor::DuplexClose,
         RuntimeDropDescriptor::StreamClose,
@@ -1486,6 +1492,7 @@ pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 9] {
         RuntimeDropDescriptor::SendHalfClose,
         RuntimeDropDescriptor::RecvHalfClose,
         RuntimeDropDescriptor::CancellationTokenRelease,
+        RuntimeDropDescriptor::MonitorRefClose,
     ]
 }
 

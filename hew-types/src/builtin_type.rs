@@ -213,7 +213,8 @@ impl BuiltinType {
             | Self::RecvHalf
             | Self::LambdaActorHandle
             | Self::LambdaPid
-            | Self::CancellationToken => BuiltinTypeMarker::Resource,
+            | Self::CancellationToken
+            | Self::MonitorRef => BuiltinTypeMarker::Resource,
             Self::ActorState | Self::MachineState => BuiltinTypeMarker::Linear,
             Self::CrashInfo => BuiltinTypeMarker::BitCopy,
             _ => BuiltinTypeMarker::None,
@@ -236,7 +237,8 @@ impl BuiltinType {
             | Self::SendHalf
             | Self::RecvHalf
             | Self::LambdaActorHandle
-            | Self::LambdaPid => Some("close"),
+            | Self::LambdaPid
+            | Self::MonitorRef => Some("close"),
             Self::CancellationToken => Some("release"),
             _ => None,
         }

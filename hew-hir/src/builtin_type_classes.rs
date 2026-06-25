@@ -67,6 +67,12 @@ const CRASH_INFO_FIELDS: &[BuiltinTypeField] = &[BuiltinTypeField {
     ty: BuiltinFieldTy::I64,
 }];
 
+/// `MonitorRef { ref_id: i64 }` — single-field resource handle returned by `monitor()`.
+const MONITOR_REF_FIELDS: &[BuiltinTypeField] = &[BuiltinTypeField {
+    name: "ref_id",
+    ty: BuiltinFieldTy::I64,
+}];
+
 const CRASH_ACTION_VARIANTS: &[&str] = &["Restart", "Escalate", "Kill"];
 
 const fn marker(marker: BuiltinTypeMarker) -> ResourceMarker {
@@ -127,6 +133,7 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(RecvHalf, BuiltinTypeShape::Opaque),
     registration!(CrashInfo, BuiltinTypeShape::Struct(CRASH_INFO_FIELDS)),
     registration!(CrashAction, BuiltinTypeShape::Enum(CRASH_ACTION_VARIANTS)),
+    registration!(MonitorRef, BuiltinTypeShape::Struct(MONITOR_REF_FIELDS)),
 ];
 
 #[must_use]

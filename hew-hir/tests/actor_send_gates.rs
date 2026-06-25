@@ -1,16 +1,41 @@
-//! Tests for FC-P1-A2: Actor `.send(msg)` unit-handler HIR pre-pass gate.
+//! Tests for actor `.send(msg)` dispatch semantics.
 //!
-//! The MIR layer carries a defense-in-depth diagnostic at
-//! `hew-mir/src/lower.rs:8477` (`ActorSendRequiresUnitHandler`). Per slepp
-//! A222 the failure belongs at compile-time; this gate surfaces the same
-//! constraint as a HIR fatal diagnostic before MIR ever runs.
+//! The FC-P1-A2 HIR pre-pass gate (`check_actor_send_gates`) was retired when
+//! anonymous-payload `.send(payload)` on named actors without a `receive fn
+//! send` handler was formally rejected at the type-checker layer (issue #2122).
+//! The type-checker now owns the single authority for this shape:
+//! - No `receive fn send` handler → `UndefinedMethod` at check time.
+//! - Non-unit `receive fn send` without `await` → `InvalidOperation` ("ask
+//!   requires await") at check time.
+//!
+//! Both cases abort compilation before HIR runs, so the HIR gate is no longer
+//! reachable for those shapes and has been removed.
+//!
+//! What remains here:
+//! - Type-checker rejects anonymous `.send()` on actors with no `send` handler.
+//! - Type-checker rejects anonymous `.send()` on actors with only a non-send handler.
+//! - `await actor.compute(msg)` (ask form, user-named handler) compiles clean.
+//! - `await actor.send(msg)` (user `receive fn send` → ask under `await`) compiles clean.
+//! - Bare `actor.send(msg)` for user `receive fn send` returning non-unit is
+//!   rejected at type-check (ask requires `await`).
+//! - Lambda-actor `.send()` (`Duplex<Msg, Reply>`) compiles clean.
 
-use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx, TargetArch};
-use hew_parser::parser;
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
-fn lower(source: &str) -> hew_hir::LowerOutput {
-    let parsed = parser::parse(source);
+fn typecheck(source: &str) -> hew_types::TypeCheckOutput {
+    let parsed = hew_parser::parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&parsed.program)
+}
+
+fn lower_clean(source: &str) -> hew_hir::LowerOutput {
+    use hew_hir::{lower_program, ResolutionCtx, TargetArch};
+    let parsed = hew_parser::parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -26,24 +51,20 @@ fn lower(source: &str) -> hew_hir::LowerOutput {
     lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host())
 }
 
-fn has_actor_send_diag(output: &hew_hir::LowerOutput) -> bool {
-    output.diagnostics.iter().any(|d| {
-        matches!(
-            d.kind,
-            HirDiagnosticKind::ActorSendRequiresUnitHandler { .. }
-        )
-    })
-}
+// ── Type-checker rejects anonymous send (no handler) ─────────────────────────
 
 #[test]
-fn actor_bare_send_unit_handler_accepted() {
-    // Unit-returning handler — `.send(msg)` is the canonical fire-and-forget
-    // surface and must not be rejected.
-    let output = lower(
+fn actor_bare_send_no_handler_rejected_at_typecheck() {
+    // The type-checker emits `UndefinedMethod` when `w.send(msg)` has no
+    // matching `receive fn send` handler.  The rejection is at check time;
+    // HIR is never reached.  This replaces the old FC-P1-A2 HIR gate test
+    // `actor_bare_send_unit_handler_accepted` (deleted: anonymous send is
+    // now a type error even when the actor has a unit-returning handler,
+    // because that handler is named `handle`, not `send`).
+    let tco = typecheck(
         r"
         actor Worker {
             let count: i64;
-
             receive fn handle(n: i64) {
             }
         }
@@ -55,17 +76,22 @@ fn actor_bare_send_unit_handler_accepted() {
         ",
     );
     assert!(
-        !has_actor_send_diag(&output),
-        "unit-handler `.send()` must not trigger ActorSendRequiresUnitHandler; got: {:#?}",
-        output.diagnostics
+        tco.errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::UndefinedMethod),
+        "anonymous `.send()` with no `receive fn send` handler must produce \
+         UndefinedMethod at type-check; got: {:#?}",
+        tco.errors
     );
 }
 
 #[test]
-fn actor_bare_send_non_unit_handler_rejected() {
-    // Non-unit handler reached via fire-and-forget `.send(msg)` — the reply
-    // would be discarded. This is the FC-P1-A2 fail-closed case.
-    let output = lower(
+fn actor_bare_send_non_unit_named_handler_rejected_at_typecheck() {
+    // A bare `.send(msg)` on an actor whose only matching handler is non-unit
+    // (e.g. `compute`) is rejected at type-check with `UndefinedMethod`
+    // (no `receive fn send` handler).  The old HIR gate
+    // (`ActorSendRequiresUnitHandler`) is no longer reachable for this shape.
+    let tco = typecheck(
         r"
         actor Calculator {
             let total: i64;
@@ -82,182 +108,21 @@ fn actor_bare_send_non_unit_handler_rejected() {
         ",
     );
     assert!(
-        has_actor_send_diag(&output),
-        "non-unit-handler `.send()` must trigger ActorSendRequiresUnitHandler; got: {:#?}",
-        output.diagnostics
-    );
-
-    // The diagnostic must name the handler and return type so the user can
-    // resolve the failure without re-deriving it from the source span.
-    let diag = output
-        .diagnostics
-        .iter()
-        .find(|d| {
-            matches!(
-                d.kind,
-                HirDiagnosticKind::ActorSendRequiresUnitHandler { .. }
-            )
-        })
-        .expect("diagnostic present");
-    if let HirDiagnosticKind::ActorSendRequiresUnitHandler {
-        actor_name,
-        method_name,
-        return_ty,
-    } = &diag.kind
-    {
-        assert_eq!(actor_name, "Calculator");
-        assert_eq!(method_name, "compute");
-        assert!(
-            return_ty.contains("i64"),
-            "return_ty should render the handler's declared return type, got: {return_ty}"
-        );
-    } else {
-        unreachable!("matched above");
-    }
-
-    // Fatal: into_result must reject.
-    assert!(
-        output.into_result().is_err(),
-        "ActorSendRequiresUnitHandler is in the fatal set; into_result() must Err"
+        tco.errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::UndefinedMethod),
+        "anonymous `.send()` on an actor with only a non-send handler must \
+         produce UndefinedMethod at type-check; got: {:#?}",
+        tco.errors
     );
 }
 
 #[test]
-fn actor_ask_non_unit_handler_accepted() {
-    // Same non-unit handler, but invoked via call-syntax with `await` (the
-    // checker classifies this as `ActorMethodKind::Ask`). The gate is
-    // specific to bare `.send(msg)` and must not fire on the ask form.
-    let output = lower(
-        r"
-        actor Calculator {
-            let total: i64;
-
-            receive fn compute(x: i64) -> i64 {
-                return x + 1;
-            }
-        }
-
-        fn main() {
-            let c = spawn Calculator(total: 0);
-            let _ = await c.compute(3);
-        }
-        ",
-    );
-    assert!(
-        !has_actor_send_diag(&output),
-        "ask-form (`await c.compute(...)`) must not trigger ActorSendRequiresUnitHandler; got: {:#?}",
-        output.diagnostics
-    );
-}
-
-#[test]
-fn awaited_send_non_unit_handler_accepted() {
-    // A user `receive fn send(...) -> T` invoked as an *ask* via
-    // `await ref.send(...)` consumes the reply, so the fire-and-forget
-    // "reply discarded" gate must not fire. Prior to this fix the HIR
-    // pre-pass matched `.send()` by method name regardless of the enclosing
-    // `await`, blocking the awaited ask from lowering while the checker
-    // (correctly) classified it as an ask. Checker and HIR must agree: a
-    // value-returning `receive fn send` is a first-class ask under `await`.
-    let output = lower(
-        r"
-        actor Doubler {
-            receive fn send(n: i64) -> i64 {
-                n * 2
-            }
-        }
-
-        fn main() -> i64 {
-            let d = spawn Doubler;
-            match await d.send(21) {
-                Ok(v) => v,
-                Err(_) => 0,
-            }
-        }
-        ",
-    );
-    assert!(
-        !has_actor_send_diag(&output),
-        "awaited `.send()` ask to a non-unit handler must not trigger \
-         ActorSendRequiresUnitHandler; got: {:#?}",
-        output.diagnostics
-    );
-}
-
-#[test]
-fn unawaited_send_non_unit_handler_rejected() {
-    // The mirror of the awaited case: a *bare*, unawaited `ref.send(...)` to a
-    // value-returning `receive fn send` discards the reply. That must still be
-    // rejected — the awaited-ask carve-out only applies when the `.send()` is
-    // the direct operand of an `await`. Here the checker owns the verdict
-    // (`actor ask ... requires await`); this test pins that the HIR gate does
-    // not silently accept the discarded-reply form.
-    let parsed = parser::parse(
-        r"
-        actor Doubler {
-            receive fn send(n: i64) -> i64 {
-                n * 2
-            }
-        }
-
-        fn main() -> i64 {
-            let d = spawn Doubler;
-            d.send(21);
-            0
-        }
-        ",
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let tco = checker.check_program(&parsed.program);
-    // The checker rejects the discarded-reply ask before HIR runs; the verdict
-    // lives at the type-check layer, which is the agreed owner.
-    assert!(
-        !tco.errors.is_empty(),
-        "bare `.send()` to a non-unit handler must be rejected (reply discarded)"
-    );
-}
-
-#[test]
-fn actor_send_unknown_handler_skipped() {
-    // Defense-in-depth: lambda-actor handles surface as `Duplex<Msg, Reply>`
-    // (per `tests/vertical-slice/accept/lambda_method_send.hew`), not as
-    // `LocalPid<Actor>`. The gate must skip cleanly when the receiver type
-    // is not a recognised actor-handle shape — the lambda-actor protocol
-    // is owned by a different surface. False-rejecting here would break
-    // the allowed-secondary `.send()` form on lambda-actor handles.
-    let output = lower(
-        r"
-        fn main() {
-            let printer = actor |x: i64| {
-                println(x);
-            };
-            printer.send(42);
-        }
-        ",
-    );
-    assert!(
-        !has_actor_send_diag(&output),
-        "lambda-actor `.send()` (Duplex<Msg, Reply>) must fall through silently; got: {:#?}",
-        output.diagnostics
-    );
-}
-
-#[test]
-fn actor_send_in_machine_transition_body_rejected() {
-    // Regression for the walker miss: prior to this test `check_actor_send_gates`
-    // skipped `Item::Machine` on the (wrong) assumption that machines do not
-    // carry user expression bodies. They do — transition bodies, transition
-    // guards, and per-state `entry` / `exit` blocks all lower user expressions
-    // via `hew-hir/src/lower.rs::lower_machine_expr_filtered` (~L4194) and
-    // `lower_machine_block_filtered` (~L4129). A non-unit `.send()` hidden
-    // inside any of these forms must trip the same HIR pre-pass gate as one
-    // inside a free function.
-    let output = lower(
+fn actor_bare_send_no_handler_in_machine_transition_rejected_at_typecheck() {
+    // Same rejection when the anonymous send is nested inside a machine
+    // transition body.  The type-checker runs before HIR, so the rejection
+    // is at check time regardless of the enclosing construct.
+    let tco = typecheck(
         r"
         actor Calculator {
             let total: i64;
@@ -275,7 +140,6 @@ fn actor_send_in_machine_transition_body_rejected() {
             state Active;
             state Idle;
 
-
             on Tick: Active => Active reenter {
                 let c = spawn Calculator(total: 0);
                 c.send(3);
@@ -288,9 +152,114 @@ fn actor_send_in_machine_transition_body_rejected() {
         ",
     );
     assert!(
-        has_actor_send_diag(&output),
-        "non-unit `.send()` inside a machine transition body must trigger \
-         ActorSendRequiresUnitHandler; got: {:#?}",
+        tco.errors
+            .iter()
+            .any(|e| e.kind == hew_types::error::TypeErrorKind::UndefinedMethod),
+        "anonymous `.send()` inside a machine transition must produce \
+         UndefinedMethod at type-check; got: {:#?}",
+        tco.errors
+    );
+}
+
+// ── Type-checker admits well-formed actor dispatch ────────────────────────────
+
+#[test]
+fn actor_ask_non_unit_handler_accepted() {
+    // Named handler invoked via ask form (`await`) — correct shape.
+    let output = lower_clean(
+        r"
+        actor Calculator {
+            let total: i64;
+
+            receive fn compute(x: i64) -> i64 {
+                return x + 1;
+            }
+        }
+
+        fn main() {
+            let c = spawn Calculator(total: 0);
+            let _ = await c.compute(3);
+        }
+        ",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "ask-form (`await c.compute(...)`) must lower cleanly; got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn awaited_send_non_unit_handler_accepted() {
+    // A user `receive fn send(...) -> T` invoked as an ask via
+    // `await ref.send(...)` — correct shape.
+    let output = lower_clean(
+        r"
+        actor Doubler {
+            receive fn send(n: i64) -> i64 {
+                n * 2
+            }
+        }
+
+        fn main() -> i64 {
+            let d = spawn Doubler;
+            match await d.send(21) {
+                Ok(v) => v,
+                Err(_) => 0,
+            }
+        }
+        ",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "awaited `.send()` ask to a user `receive fn send` must lower cleanly; got: {:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn unawaited_send_non_unit_handler_rejected() {
+    // A bare, unawaited `ref.send(...)` to a value-returning `receive fn send`
+    // discards the reply — the type-checker rejects this ("ask requires await").
+    let tco = typecheck(
+        r"
+        actor Doubler {
+            receive fn send(n: i64) -> i64 {
+                n * 2
+            }
+        }
+
+        fn main() -> i64 {
+            let d = spawn Doubler;
+            d.send(21);
+            0
+        }
+        ",
+    );
+    assert!(
+        !tco.errors.is_empty(),
+        "bare `.send()` to a non-unit `receive fn send` must be rejected \
+         (reply discarded); got clean check"
+    );
+}
+
+#[test]
+fn actor_send_unknown_handler_skipped() {
+    // Lambda-actor handles surface as `Duplex<Msg, Reply>` — not a named actor
+    // handle.  The type-checker accepts lambda-actor `.send()` cleanly.
+    let output = lower_clean(
+        r"
+        fn main() {
+            let printer = actor |x: i64| {
+                println(x);
+            };
+            printer.send(42);
+        }
+        ",
+    );
+    assert!(
+        output.diagnostics.is_empty(),
+        "lambda-actor `.send()` must lower cleanly; got: {:#?}",
         output.diagnostics
     );
 }

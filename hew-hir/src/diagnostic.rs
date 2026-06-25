@@ -631,23 +631,6 @@ pub enum HirDiagnosticKind {
         /// Inner supervisor type name (e.g. `"SubSupervisor"`).
         nested_supervisor: String,
     },
-    /// Fire-and-forget actor send (`actor.send(msg)`) targeted a receive
-    /// handler that returns a non-unit type. Bare `.send()` discards any
-    /// reply value; non-unit handlers therefore require the request/reply
-    /// form (`await actor.ask(msg)` or call-syntax with `await`).
-    ///
-    /// Fail-closed per slepp A222: surfaced at HIR pre-pass instead of the
-    /// MIR defense-in-depth diagnostic at `hew-mir/src/lower.rs:8477`
-    /// (`ActorSendRequiresUnitHandler`). Mirrors the FC-P0 target-gate
-    /// pattern.
-    ActorSendRequiresUnitHandler {
-        /// Actor type name (e.g. `"Counter"`).
-        actor_name: String,
-        /// Receive handler name (e.g. `"compute"`).
-        method_name: String,
-        /// Handler return type, rendered for the diagnostic note.
-        return_ty: String,
-    },
     /// A binary operator was used in value position but the MIR backend has
     /// no lowering for it. Currently covers `..` and `..=` range operators
     /// outside of `for` loops or slice indexing. Closed at HIR pre-pass per

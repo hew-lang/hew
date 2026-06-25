@@ -1,0 +1,34 @@
+// `for (k, v) in make_map()` over a HashMap<i64, i64> produced by a call.
+//
+// A call-result iterable is non-identifier: pre-fix the `keys()`/`values()`
+// projections recorded at the iterable span clobbered its checker type with
+// `Vec`, mis-routing the loop. Post-fix the call result keeps its HashMap type
+// and routes to the HashMap arm.
+//
+// This is also a single-eval witness for HashMap: pre-fix the desugar cloned
+// the iterable AST into BOTH the `keys()` and `values()` receivers, so a
+// side-effectful source ran twice. The fix binds the iterable to one temp and
+// both projections borrow it, so `make_map()` runs exactly once.
+//
+// Entries 1->10, 2->20, 3->30: keys sum 6, values sum 60, exit 66; a count
+// guard pins the iteration count to 3.
+fn make_map() -> HashMap<i64, i64> {
+    let m: HashMap<i64, i64> = HashMap::new();
+    m.insert(1, 10);
+    m.insert(2, 20);
+    m.insert(3, 30);
+    m
+}
+
+pub fn main() -> i64 {
+    var total = 0;
+    var count = 0;
+    for (k, v) in make_map() {
+        total = total + k + v;
+        count = count + 1;
+    }
+    if count != 3 {
+        return 100 + count;
+    }
+    total
+}

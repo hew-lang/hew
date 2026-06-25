@@ -358,6 +358,27 @@ run_accept_expect_status "hashset_for_in_sum" 60
 # Owned (string) elements: lens 2+3+4 → exit 9.
 run_accept_expect_status "hashset_for_in_owned" 9
 
+# Non-identifier iterables for HashMap/HashSet for-in. The lane's bare-identifier
+# fixtures masked an iterable-span clobber: recording the keys()/to_vec()
+# projection at the iterable's own span overwrote its checker type with `Vec`, so
+# a field-access / call-result source mis-routed (HashSet iterated zero times and
+# returned a wrong value; HashMap failed closed with a misleading diagnostic).
+# These pin CORRECT iteration (exact value + count, not zero) for the
+# non-identifier shapes the bug hid.
+# HashSet via a struct field: 10+20+30 → exit 60.
+run_accept_expect_status "hashset_for_in_field" 60
+# HashSet via a call result (also a single-eval witness): 10+20+30 → exit 60.
+run_accept_expect_status "hashset_for_in_call" 60
+# HashMap via a struct field: keys 6 + values 60 → exit 66.
+run_accept_expect_status "hashmap_for_in_field" 66
+# HashMap via a call result (single-eval: keys()+values() borrow one temp, so
+# make_map() runs once): keys 6 + values 60 → exit 66.
+run_accept_expect_status "hashmap_for_in_call" 66
+# Owned-element drop ratchet on the non-identifier route (field access): string
+# lens 2+3+4 → exit 9. Verified clean under the guard allocator (MallocScribble /
+# MallocGuardEdges) alongside the other owned for-in fixtures.
+run_accept_expect_status "hashset_for_in_field_owned" 9
+
 # Reject: spawned closures must not capture non-Send values. This fixture uses
 # a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR
 # diagnostic rather than unrelated Rc construction or lowering diagnostics.

@@ -1,0 +1,41 @@
+// `for x in self.field` over a HashSet<i64> held in a record field.
+//
+// Coverage gap that hid the iterable-span clobber: a non-identifier iterable
+// (here a field access) derives its for-in route from the checker side-table
+// type at the iterable's span. Recording the `to_vec()` projection at the
+// iterable span (the pre-fix bug) clobbered that type with `Vec<i64>`, routing
+// the loop to the Vec arm and building a VecIter directly over the HashSet
+// handle — which read length 0 and silently iterated ZERO times (exit 0). The
+// synthetic-span fix keeps the field-read type as HashSet, so this routes to
+// the HashSet arm and yields all three elements.
+//
+// Elements 10, 20, 30 sum to 60; a count guard pins the iteration count to 3.
+type SetBox {
+    s: HashSet<i64>;
+}
+
+fn make_set_box() -> SetBox {
+    let s: HashSet<i64> = HashSet::new();
+    s.insert(10);
+    s.insert(20);
+    s.insert(30);
+    SetBox { s: s }
+}
+
+pub fn main() -> i64 {
+    let b = make_set_box();
+    var total = 0;
+    var count = 0;
+    for x in b.s {
+        total = total + x;
+        count = count + 1;
+    }
+    if count != 3 {
+        return 100 + count;
+    }
+    // The field must still be usable after the loop (shared, not consumed).
+    if b.s.len() != 3 {
+        return 99;
+    }
+    total
+}

@@ -78,18 +78,46 @@ impl Checker {
         }
     }
 
-    /// The synthetic span the `for (k, v) in m` desugar uses for the `values()`
+    /// The synthetic span the `for (k, v) in m` desugar uses for the `keys()`
     /// projection call.
     ///
-    /// `resolved_calls` (and `expr_types`) are keyed by span, so the `keys()`
-    /// and `values()` projections this for-in synthesizes cannot share one
-    /// span. `keys()` is recorded at the iterable span; `values()` at this
-    /// zero-width span anchored at the iterable's end offset — distinct from
-    /// every real expression span yet deterministic, so the checker (recording
-    /// the facts) and HIR (emitting the synthetic calls) agree byte-for-byte.
-    /// Both layers call this single helper; do not inline the derivation.
+    /// `resolved_calls` (and `expr_types`) are keyed by span, so the projection
+    /// calls this for-in synthesizes cannot share a span with each other OR with
+    /// the iterable expression itself. Recording any projection at the iterable's
+    /// real span would clobber `expr_types[iterable_span]` with `Vec<…>`, and HIR
+    /// derives the for-in route from that side-table type for non-identifier
+    /// iterables (a field access / call / index / method-call source reads its
+    /// type exclusively from the checker side-table) — so the loop would
+    /// mis-route to the Vec arm and build a `VecIter` directly over the
+    /// HashMap/HashSet handle (silent type confusion). Every projection therefore
+    /// uses its own zero-width synthetic span, leaving `expr_types[iterable_span]`
+    /// holding the iterable's true `HashMap`/`HashSet` type.
+    ///
+    /// `keys()` anchors at the iterable's start offset; `values()` at the end
+    /// offset. Both are zero-width (start == end), so each is distinct from every
+    /// real expression span (real spans have start < end) and from each other
+    /// (the iterable has start < end, so its start and end offsets differ). The
+    /// derivation is deterministic, so the checker (recording the facts) and HIR
+    /// (emitting the synthetic calls) agree byte-for-byte. Both layers call these
+    /// single helpers; do not inline the derivation.
+    pub(super) fn hashmap_for_in_keys_span(iterable: &Span) -> Span {
+        iterable.start..iterable.start
+    }
+
+    /// The synthetic span the `for (k, v) in m` desugar uses for the `values()`
+    /// projection call. See [`Self::hashmap_for_in_keys_span`] for the
+    /// synthetic-span rationale; `values()` anchors at the iterable's end offset.
     pub(super) fn hashmap_for_in_values_span(iterable: &Span) -> Span {
         iterable.end..iterable.end
+    }
+
+    /// The synthetic span the `for x in s` desugar uses for the `HashSet`
+    /// `to_vec()` projection call. See [`Self::hashmap_for_in_keys_span`] for the
+    /// synthetic-span rationale; `to_vec()` anchors at the iterable's start
+    /// offset (a `HashSet` for-in has only this one projection, so it cannot
+    /// collide with `keys()`/`values()`, which only appear in `HashMap` for-in).
+    pub(super) fn hashset_for_in_to_vec_span(iterable: &Span) -> Span {
+        iterable.start..iterable.start
     }
 
     fn for_await_actor_method_name(&mut self, iterable: &Expr) -> Option<String> {
@@ -1308,15 +1336,19 @@ impl Checker {
                         // and the resolved-call facts (plus matching expr_types,
                         // the HIR boundary's totality contract) must exist where
                         // the HIR synthesis emits the two calls. `resolved_calls`
-                        // is keyed by span, so the two projections cannot share a
-                        // span: `keys` is recorded at the iterable span; `values`
-                        // at a synthetic zero-width span anchored at the iterable
-                        // end (distinct from every real expression span, and
-                        // reproduced byte-for-byte by the HIR desugar via
-                        // `Self::hashmap_for_in_values_span`).
+                        // and `expr_types` are keyed by span, so the projections
+                        // cannot share a span with each other OR with the iterable
+                        // expression: `keys` and `values` are recorded at distinct
+                        // synthetic zero-width spans anchored at the iterable's
+                        // start/end offsets (distinct from every real expression
+                        // span, reproduced byte-for-byte by the HIR desugar via
+                        // `Self::hashmap_for_in_keys_span`/`..values_span`). This
+                        // leaves `expr_types[iterable_span]` holding the iterable's
+                        // true HashMap type so HIR routes non-identifier sources
+                        // (field/call/index) to the HashMap arm, not the Vec arm.
                         let key_ty = args[0].clone();
                         let val_ty = args[1].clone();
-                        let keys_span = iterable.1.clone();
+                        let keys_span = Self::hashmap_for_in_keys_span(&iterable.1);
                         let values_span = Self::hashmap_for_in_values_span(&iterable.1);
                         if self.validate_hashmap_projection_element_types(
                             &key_ty, &val_ty, "keys", &keys_span,
@@ -1356,14 +1388,22 @@ impl Checker {
                         }
                         // `for x in s` desugars (in HIR) to a `VecIter` over the
                         // set's `to_vec()` element snapshot. Record the `to_vec`
-                        // resolved-call fact (+ matching expr_type) at the
-                        // iterable span so the HIR synthesis lowers the
-                        // projection to `hew_hashset_to_vec_layout`.
+                        // resolved-call fact (+ matching expr_type) at a synthetic
+                        // zero-width span (NOT the iterable span — see
+                        // `hashset_for_in_to_vec_span`) so the HIR synthesis
+                        // lowers the projection to `hew_hashset_to_vec_layout`
+                        // while `expr_types[iterable_span]` keeps the iterable's
+                        // true HashSet type. Recording at the iterable span would
+                        // clobber it with `Vec<T>` and mis-route non-identifier
+                        // sources (`for x in self.s`) to the Vec arm — a silent
+                        // wrong-value pass (the VecIter reads the HashSet handle as
+                        // a zero-length Vec).
                         let elem_ty = args[0].clone();
-                        if self.validate_hashset_element_type(&elem_ty, &iterable.1) {
-                            let elem_vec = self.make_vec_type(elem_ty.clone(), &iterable.1);
-                            self.record_type(&iterable.1, &elem_vec);
-                            self.record_resolved_hashset_call("to_vec", &elem_ty, &iterable.1);
+                        let to_vec_span = Self::hashset_for_in_to_vec_span(&iterable.1);
+                        if self.validate_hashset_element_type(&elem_ty, &to_vec_span) {
+                            let elem_vec = self.make_vec_type(elem_ty.clone(), &to_vec_span);
+                            self.record_type(&to_vec_span, &elem_vec);
+                            self.record_resolved_hashset_call("to_vec", &elem_ty, &to_vec_span);
                         }
                         elem_ty
                     }

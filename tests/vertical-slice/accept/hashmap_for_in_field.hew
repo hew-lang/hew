@@ -1,0 +1,40 @@
+// `for (k, v) in self.field` over a HashMap<i64, i64> held in a record field.
+//
+// A field-access iterable routes via the checker side-table type at the
+// iterable span. Pre-fix, recording the `keys()` projection at that span
+// clobbered it with `Vec<i64>`, so the loop mis-routed: HashMap failed closed
+// with a misleading "nested tuple pattern on non-tuple value". The
+// synthetic-span fix keeps the field-read type as HashMap, so this routes to
+// the HashMap arm and yields all three pairs.
+//
+// Entries 1->10, 2->20, 3->30: keys sum 6, values sum 60, exit 66; a count
+// guard pins the iteration count to 3.
+type MapBox {
+    m: HashMap<i64, i64>;
+}
+
+fn make_map_box() -> MapBox {
+    let m: HashMap<i64, i64> = HashMap::new();
+    m.insert(1, 10);
+    m.insert(2, 20);
+    m.insert(3, 30);
+    MapBox { m: m }
+}
+
+pub fn main() -> i64 {
+    let b = make_map_box();
+    var total = 0;
+    var count = 0;
+    for (k, v) in b.m {
+        total = total + k + v;
+        count = count + 1;
+    }
+    if count != 3 {
+        return 100 + count;
+    }
+    // The field must still be usable after the loop (shared, not consumed).
+    if b.m.len() != 3 {
+        return 99;
+    }
+    total
+}

@@ -4736,7 +4736,7 @@ pub enum ExitPath {
 /// - [`DropFnSpec::Release`] — a cow-heap / fresh-value release C
 ///   symbol (`hew_string_drop`, `hew_bytes_drop`, `hew_vec_free`,
 ///   `hew_vec_free_owned`, `hew_hashmap_free_layout`,
-///   `hew_hashset_free_layout`, `hew_gen_free`). Selected by a closed
+///   `hew_hashset_free_layout`, `hew_gen_coro_destroy`). Selected by a closed
 ///   MIR-side type-shape authority (`generator_yield_drop_symbol`,
 ///   `drop_kind_for`'s cow tables) and congruence-checked against the
 ///   value's type in codegen before any call is emitted — the string is

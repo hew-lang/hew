@@ -1067,14 +1067,15 @@ fn classify_named(
     }
 
     // `Generator<Y, R>` / `AsyncGenerator<Y>` pointer-backed runtime handle.
-    // Same posture as Stream/Sink: drop routes to `hew_gen_free` (the standalone
-    // generator-binding release symbol), no dup helper, clone/restart fails
-    // closed. Without this arm a tuple/record/enum carrying a generator handle
-    // falls through to `classify_user_record` and fails as `MissingRecordLayout`,
-    // and (before this fix) the composite was mis-classified non-heap-owning so
-    // its member-drop never ran — leaking the context + OS thread. A generator's
-    // generic args (`i64`, `()`) never make the handle itself non-heap-owning, so
-    // classification is by name alone, independent of `args`.
+    // Same posture as Stream/Sink: drop routes to `hew_gen_coro_destroy` (the
+    // standalone generator-binding release symbol), no dup helper, clone/restart
+    // fails closed. Without this arm a tuple/record/enum carrying a generator
+    // handle falls through to `classify_user_record` and fails as
+    // `MissingRecordLayout`, and (before this fix) the composite was
+    // mis-classified non-heap-owning so its member-drop never ran — leaking the
+    // coroutine frame + companion. A generator's generic args (`i64`, `()`)
+    // never make the handle itself non-heap-owning, so classification is by name
+    // alone, independent of `args`.
     if matches!(name, "Generator" | "AsyncGenerator") {
         return Ok(StateFieldCloneKind::IoHandle {
             kind: IoHandleKind::Generator,

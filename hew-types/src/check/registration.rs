@@ -2611,11 +2611,17 @@ impl Checker {
             }
         }
 
+        // `decode` returns bare `Self` (binary CBOR is trap-on-failure); the
+        // text-format `from_json`/`from_yaml` parsers can fail on arbitrary
+        // user input (config files, HTTP bodies), so they return
+        // `Result<Self, string>` — the only honest shape for a fallible parse.
+        // This matches the non-wire `Encode` path (`register_encode_methods`).
+        let from_result_ty = Ty::result(self_ty.clone(), Ty::String);
         let static_methods = if is_wire_struct || is_serial_wire_enum {
             vec![
-                ("decode", vec![bytes_ty], self_ty.clone()),
-                ("from_json", vec![Ty::String], self_ty.clone()),
-                ("from_yaml", vec![Ty::String], self_ty),
+                ("decode", vec![bytes_ty], self_ty),
+                ("from_json", vec![Ty::String], from_result_ty.clone()),
+                ("from_yaml", vec![Ty::String], from_result_ty),
             ]
         } else {
             vec![]

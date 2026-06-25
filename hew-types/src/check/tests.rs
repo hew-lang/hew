@@ -258,6 +258,51 @@ fn wire_text_format_methods_record_no_codec_rewrite() {
 }
 
 #[test]
+fn wire_from_json_returns_result_self_string() {
+    // A `#[wire]` type's `from_json`/`from_yaml` static parsers are fallible
+    // (arbitrary user input — config files, HTTP bodies), so they return
+    // `Result<Self, string>`, matching the non-wire `Encode` path. This pins
+    // the ratified return shape on the wire registration path.
+    let output = check_source(
+        r#"
+        #[wire]
+        struct Point { x: i64 @1, y: i64 @2 }
+
+        fn main() {
+            let _r: Result<Point, string> = Point.from_json("{\"x\":1,\"y\":2}");
+            let _y: Result<Point, string> = Point.from_yaml("x: 1");
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "wire from_json/from_yaml must type-check as Result<Self, string>; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn wire_from_json_bare_self_is_type_error() {
+    // Assigning a wire `from_json` result directly to `Self` (not
+    // `Result<Self, …>`) must be a type error — the bare-`Self` registration
+    // is gone.
+    let output = check_source(
+        r#"
+        #[wire]
+        struct Point { x: i64 @1, y: i64 @2 }
+
+        fn main() {
+            let _p: Point = Point.from_json("{\"x\":1,\"y\":2}");
+        }
+        "#,
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "assigning Result<Point, string> to Point must be a type error"
+    );
+}
+
+#[test]
 fn wire_layout_table_populated_from_wire_struct() {
     let output = check_source(
         r"

@@ -5318,6 +5318,132 @@ fn borrowed_param_escape_consistent_or_binder_not_overflagged() {
 }
 
 #[test]
+fn borrowed_param_escape_let_else_unit_variant_collision_flagged() {
+    // #2116 residual (6th finding): a `let`-else whose pattern is a unit-variant
+    // identifier colliding with a borrow param binds NOTHING — the checker
+    // classifies `red` as a refutable tag-test and skips `bind_pattern` for it
+    // (statements.rs). The borrow-escape scanner must consult that SAME
+    // authority (`let_identifier_is_unit_variant`) and NOT invent a shadow, so
+    // the trailing `red` resolves to the borrow param and returning it raises
+    // BorrowedParamReturn.
+    //
+    // Before the fix the scanner's `Stmt::Let` arm blindly treated the
+    // identifier as a binder and shadowed the dangerous param, masking the
+    // escape; it surfaced only later (confusingly) as a sibling MIR
+    // `DecisionMapTotal` / HIR no-binding error.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Color { red; green; }\n",
+        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "    let red = color else { panic(\"no\") };\n",
+        "    red\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "let-else unit-variant `let red = color else …` binds nothing — the \
+        trailing `red` is the borrow param and must raise BorrowedParamReturn; \
+        got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_let_else_intermediate_binding_flagged() {
+    // The masked param flows through a genuine intermediate binder. After the
+    // unit-variant `let red = color else …` (which binds nothing), `let x = red`
+    // copies the still-dangerous borrow param into `x`; returning `x` must be
+    // flagged. Exercises both the unit-variant skip AND the genuine-binder
+    // danger-propagation path in the same function.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Color { red; green; }\n",
+        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "    let red = color else { panic(\"no\") };\n",
+        "    let x = red;\n",
+        "    x\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "the borrow param survives the unit-variant let-else and is copied into \
+        `x`; returning `x` must raise BorrowedParamReturn; got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_while_let_unit_variant_collision_flagged() {
+    // The `while let` binding form already routes through the shared authority
+    // (`shadow_pattern_bindings` → `pattern_bound_names`); a unit-variant pattern
+    // records no binder, so `return red` inside the loop resolves to the borrow
+    // param and is flagged. Locks that consistency in alongside the let-else fix.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Color { red; green; }\n",
+        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "    while let red = color {\n",
+        "        return red;\n",
+        "    }\n",
+        "    red\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "while-let unit-variant `while let red = color` binds nothing — \
+        `return red` is the borrow param and must raise BorrowedParamReturn; \
+        got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_simple_let_binder_propagation_preserved() {
+    // Guard against the fix over-reaching: a genuine simple `let` binder (`let y
+    // = red`, where `y` is NOT a unit variant) must still copy the borrow
+    // param's danger forward, so returning `y` is flagged. Proves the
+    // unit-variant guard did not disable danger-propagation for real binders.
+    let (errors, _) = parse_and_check(concat!(
+        "fn leak(red: &i64) -> &i64 {\n",
+        "    let y = red;\n",
+        "    y\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "a genuine binder `let y = red` must still carry the borrow param's \
+        danger forward; returning `y` must raise BorrowedParamReturn; \
+        got: {errors:?}"
+    );
+}
+
+#[test]
+fn var_named_like_unit_variant_still_binds() {
+    // Inertness proof for the escape scanner's `Stmt::Var` arm (which records
+    // the var name as a dangerous binding unconditionally): a `var` has no
+    // pattern and no refutability, so its name is ALWAYS a fresh binder — even
+    // when it spells a unit variant. If `var a` were ever classified as a
+    // constructor (non-binding), `a = a + 1; a` would fail to resolve. It does
+    // not, so treating the var name as a binder can never disagree with the
+    // checker.
+    let (errors, _) = parse_and_check(concat!(
+        "enum E { a; b; }\n",
+        "fn f() -> i64 {\n",
+        "    var a = 0;\n",
+        "    a = a + 1;\n",
+        "    a\n",
+        "}\n",
+    ));
+    assert!(
+        errors.is_empty(),
+        "`var a` must bind a fresh i64 even though `a` is a unit variant of E; \
+        got: {errors:?}"
+    );
+}
+
+#[test]
 fn typecheck_error_scrutinee_constructor_pattern_stays_fail_closed() {
     let (errors, _) = parse_and_check(concat!(
         "fn main() {\n",

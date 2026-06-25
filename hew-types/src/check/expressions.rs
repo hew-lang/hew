@@ -4537,8 +4537,22 @@ impl Checker {
                         .as_ref()
                         .and_then(|(expr, _)| self.dangerous_source_in_expr(expr, scopes));
                     match &pattern.0 {
-                        Pattern::Identifier(name) => {
+                        // A let-position identifier that resolves to a unit
+                        // variant is a refutable tag-test (`let None = opt else
+                        // { … }`, `let red = color else { … }`) that binds
+                        // NOTHING — the checker skips `bind_pattern` for it
+                        // (statements.rs). Consult that SAME authority so the
+                        // escape scanner does not invent a dangerous-scope
+                        // shadow for such a name, which would otherwise mask an
+                        // outer borrowed param of the same name and miss a real
+                        // escape. A genuine binder still propagates the RHS
+                        // danger (and shadows an outer dangerous param when the
+                        // RHS is safe).
+                        Pattern::Identifier(name) if !self.let_identifier_is_unit_variant(name) => {
                             Self::define_dangerous_binding(scopes, name.clone(), binding);
+                        }
+                        Pattern::Identifier(_) => {
+                            // Unit-variant tag-test: binds nothing, shadows nothing.
                         }
                         _ => {
                             self.shadow_pattern_bindings(&pattern.1, scopes);
@@ -4764,12 +4778,17 @@ impl Checker {
             match stmt {
                 // Track `let p = receiver.field` when `field` is an owned
                 // handle — a subsequent `return p` is the same double-free risk
-                // as `return receiver.field` directly.
+                // as `return receiver.field` directly. A unit-variant let-else
+                // (`let None = receiver.field else { … }`) binds nothing, so it
+                // is excluded via the shared binder authority — it must not
+                // register a phantom owned-handle binding.
                 Stmt::Let {
                     pattern: (Pattern::Identifier(var_name), _),
                     value: Some((Expr::FieldAccess { object, field }, _)),
                     ..
-                } if matches!(&object.0, Expr::Identifier(n) if n == receiver_name) => {
+                } if matches!(&object.0, Expr::Identifier(n) if n == receiver_name)
+                    && !self.let_identifier_is_unit_variant(var_name) =>
+                {
                     if let Some((field_name, handle_name)) =
                         self.owned_handle_field_return_by_name(field, type_name)
                     {

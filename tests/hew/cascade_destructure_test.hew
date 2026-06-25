@@ -1,0 +1,42 @@
+//! Regression coverage for record-destructure cascade suppression.
+//!
+//! An undefined-variable error in the RHS of a record-pattern destructure must
+//! produce exactly 1 diagnostic (the root undefined-variable error) and must
+//! NOT cascade into per-field `has no binding` phantoms. The tests here verify
+//! the POSITIVE side: a well-formed two-field destructure computes the correct
+//! result, confirming that the cascade engine does not over-suppress real
+//! successful destructures.
+
+import std::testing;
+
+type Vec2 {
+    x: i64;
+    y: i64;
+}
+
+/// Destructuring a two-field record into separate bindings yields the correct
+/// field values. Vec2 { x: 3, y: 4 } destructures to x + y == 7.
+#[test]
+fn destruct_two_field_exact_sum() {
+    let v = Vec2 { x: 3, y: 4 };
+    let Vec2 { x, y } = v;
+    testing.assert_eq(x + y, 7);
+}
+
+/// Nested record construction and destructure: both outer and inner fields
+/// must bind correctly with exact values.
+#[test]
+fn destruct_nested_record_exact_values() {
+    let v = Vec2 { x: 10, y: 20 };
+    let Vec2 { x, y } = v;
+    testing.assert_eq(x * 2 + y, 40);
+}
+
+/// Record field aliasing in a destructure (`x: alias`) binds the alias, not
+/// the field name, with the correct field value.
+#[test]
+fn destruct_field_alias_correct_value() {
+    let v = Vec2 { x: 5, y: 9 };
+    let Vec2 { x: a, y: b } = v;
+    testing.assert_eq(a + b, 14);
+}

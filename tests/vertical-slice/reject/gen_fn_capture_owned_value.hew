@@ -1,0 +1,30 @@
+// Reject fixture: gen_fn_capture_owned_value — a generator that captures an
+// owned (non-BitCopy) value as a free variable must fail closed at MIR lowering.
+//
+// The generator runtime (`hew_gen_ctx_create`) flat-`memcpy`s the capture
+// environment across the body-thread boundary. Owned values (like `string`)
+// hold heap-allocated state with a unique owner; shallow-copying them aliases
+// the caller's heap, causing a double-free or use-after-free when either side
+// is dropped. The generator capture gate must therefore reject any value that
+// is not plain BitCopy (no heap ownership, no drop requirement).
+//
+// This fixture tests the primary scalar owned type: `string`. The same gate
+// rejects `Vec<T>`, `HashMap<K, V>`, and other heap-owning values.
+//
+// Harness verb: hew check
+// Expected: rejected, fail closed (capture of opaque/owned value into a
+// generator); diagnostic cites the NYI capture protocol.
+//
+// Error count: currently 3 (two MIR cascade secondaries + one root NYI).
+// DIAG-L2 (genfn cascade suppress) will reduce this to 1; update the
+// vertical-slice assertion when that lane lands.
+gen fn drain(s: string) -> i64 {
+    yield s.len();
+}
+
+fn main() {
+    let name = "hello";
+    for n in drain(name) {
+        println(n);
+    }
+}

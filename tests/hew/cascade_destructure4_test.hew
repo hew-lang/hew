@@ -1,0 +1,40 @@
+//! Regression coverage for multi-field record-destructure cascade suppression.
+//!
+//! Mirrors cascade_destructure_test.hew with a four-field record. The cascade
+//! engine must not amplify a single root undefined-variable error into four
+//! per-field `has no binding` phantoms. These tests verify the POSITIVE side:
+//! a four-field destructure computes exact values, proving the suppression
+//! preserves correct behaviour on well-formed destructures.
+
+import std::testing;
+
+type Rect {
+    x: i64;
+    y: i64;
+    w: i64;
+    h: i64;
+}
+
+/// Destructuring a four-field record yields exact values for every binding.
+#[test]
+fn destruct_four_field_exact_values() {
+    let r = Rect { x: 1, y: 2, w: 10, h: 20 };
+    let Rect { x, y, w, h } = r;
+    testing.assert_eq(x + y + w + h, 33);
+}
+
+/// Area derived from destructured width and height fields is correct.
+#[test]
+fn destruct_four_field_area_computation() {
+    let r = Rect { x: 0, y: 0, w: 6, h: 7 };
+    let Rect { x: _x, y: _y, w, h } = r;
+    testing.assert_eq(w * h, 42);
+}
+
+/// Partial destructure aliases: two fields aliased, two named directly.
+#[test]
+fn destruct_four_field_partial_alias() {
+    let r = Rect { x: 3, y: 4, w: 5, h: 6 };
+    let Rect { x: left, y: top, w, h } = r;
+    testing.assert_eq(left + top + w + h, 18);
+}

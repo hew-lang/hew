@@ -1,0 +1,58 @@
+//! Realistic destructure cascade regression: function-boundary pattern.
+//!
+//! Mirrors the c21_realistic_destructure probe shape from the cascade audit:
+//! a record flows through a function, is returned, and is destructured at the
+//! call site. The cascade engine must not suppress or phantom-amplify errors
+//! when the destructure RHS is a function call returning a record type.
+//!
+//! All tests assert EXACT field values — a runtime-green exit alone is not
+//! evidence (a garbage codegen path can produce exit 0 with wrong field data).
+
+import std::testing;
+
+type Point {
+    x: i64;
+    y: i64;
+}
+
+fn make_point(a: i64, b: i64) -> Point {
+    Point { x: a, y: b }
+}
+
+fn scale(p: Point, factor: i64) -> Point {
+    let Point { x, y } = p;
+    Point { x: x * factor, y: y * factor }
+}
+
+/// Destructure the return value of a function call at the call site.
+#[test]
+fn destruct_function_return_exact_values() {
+    let p = make_point(3, 4);
+    let Point { x, y } = p;
+    testing.assert_eq(x, 3);
+    testing.assert_eq(y, 4);
+}
+
+/// Destructure inside a helper function and return a scaled result.
+#[test]
+fn destruct_inside_called_function_exact_values() {
+    let p = make_point(5, 6);
+    let scaled = scale(p, 2);
+    let Point { x, y } = scaled;
+    testing.assert_eq(x, 10);
+    testing.assert_eq(y, 12);
+}
+
+/// Chain: construct → destructure → re-construct → destructure again.
+/// Each destructure must bind the correct field values independently.
+#[test]
+fn destruct_chained_construction_exact_values() {
+    let p1 = make_point(2, 3);
+    let Point { x: a, y: b } = p1;
+    let p2 = Point { x: a + 1, y: b + 1 };
+    let Point { x: c, y: d } = p2;
+    testing.assert_eq(a, 2);
+    testing.assert_eq(b, 3);
+    testing.assert_eq(c, 3);
+    testing.assert_eq(d, 4);
+}

@@ -1552,6 +1552,12 @@ pub fn lower_program_with_mono_cap(
             }
             let module_short = mod_id.path.last().map_or("", String::as_str);
             if let Some(module) = mg.modules.get(mod_id) {
+                // #2202: lower this imported module's type-decl/record members
+                // under its OWN module context so a member typed by an import
+                // alias canonicalises through `import_type_name_aliases` (keyed
+                // by the full dotted path) instead of freezing as a bare name
+                // that MIR cannot resolve.
+                let saved_module_name = ctx.current_module_name.replace(mod_id.path.join("."));
                 for (item, _) in &module.items {
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
@@ -1703,6 +1709,7 @@ pub fn lower_program_with_mono_cap(
                         | Item::Supervisor(_) => {}
                     }
                 }
+                ctx.current_module_name = saved_module_name;
             }
         }
     }
@@ -2324,6 +2331,9 @@ pub fn lower_program_with_mono_cap(
             if let Some(module) = mg.modules.get(mod_id) {
                 let source_module = mod_id.path.join(".");
                 let diag_start = ctx.diagnostics.len();
+                // #2202: canonicalise this module's imported enum-payload and
+                // machine state/event member aliases under its own context.
+                let saved_module_name = ctx.current_module_name.replace(source_module.clone());
                 for (item, span) in &module.items {
                     match item {
                         Item::TypeDecl(decl)
@@ -2369,6 +2379,7 @@ pub fn lower_program_with_mono_cap(
                     }
                 }
                 ctx.tag_diagnostics_since(diag_start, &source_module);
+                ctx.current_module_name = saved_module_name;
             }
         }
     }
@@ -2407,6 +2418,10 @@ pub fn lower_program_with_mono_cap(
                     .last()
                     .map_or_else(|| source_module.as_str(), String::as_str);
                 let diag_start = ctx.diagnostics.len();
+                // #2202: §4b lowers imported type-decl + machine members into
+                // the HIR descriptors MIR consumes; resolve their alias-typed
+                // members under this module's own context.
+                let saved_module_name = ctx.current_module_name.replace(source_module.clone());
                 for (item, span) in &module.items {
                     match item {
                         Item::TypeDecl(decl)
@@ -2577,6 +2592,7 @@ pub fn lower_program_with_mono_cap(
                     }
                 }
                 ctx.tag_diagnostics_since(diag_start, &source_module);
+                ctx.current_module_name = saved_module_name;
             }
         }
     }

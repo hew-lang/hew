@@ -1,0 +1,26 @@
+// Reject fixture: HashMap.clone() must fail closed when V contains no clone_fn.
+//
+// `m.clone()` deep-clones every value blob through the descriptor clone
+// discipline. A value containing an `#[opaque]` runtime handle has no map-value
+// clone thunk, so admitting the clone would require a shallow pointer copy that
+// would later double-free. The checker rejects it at the same admission seam
+// that guards `HashMap::get` / `insert`.
+
+#[opaque]
+type Handle {}
+
+record WrappedHandle {
+    h: Handle,
+}
+
+extern "C" {
+    fn hew_handle_create() -> Handle;
+}
+
+fn main() -> i64 {
+    let m: HashMap<string, WrappedHandle> = HashMap::new();
+    let h = unsafe { hew_handle_create() };
+    m.insert("h", WrappedHandle { h: h });
+    let _c = m.clone();
+    0
+}

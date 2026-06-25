@@ -18411,9 +18411,12 @@ impl LowerCtx {
         // (e.g. a user-declared `trait Clone { fn clone(val: Self) -> Self; }`).
         //
         // Fail-closed per the no-silent-stub invariant (M-COW P0):
-        // `.clone()` must never silently return the same handle.  The runtime
-        // copy path (e.g. `hew_bytes_clone_ref` for `Bytes`) will be wired
-        // into the HIR→MIR→codegen pipeline in P2.  Until then, every
+        // `.clone()` must never silently return the same handle.  Collection
+        // clones with a ready runtime deep-copy (`HashMap`/`HashSet` via
+        // `hew_hashmap_clone_layout` / `hew_hashset_clone_layout`) are resolved
+        // by the checker to a `ResolvedCall` and never reach this gate.  The
+        // remaining heap types whose copy path is not yet wired (e.g.
+        // `hew_bytes_clone_ref` for `Bytes`) stay fail-closed here: every
         // unresolved `.clone()` call is a compile error with an explicit
         // diagnostic so the user is never left guessing why their code "works"
         // but produces aliased references instead of independent copies.

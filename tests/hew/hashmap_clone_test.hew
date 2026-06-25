@@ -1,0 +1,97 @@
+//! `HashMap.clone()` / `HashSet.clone()` — regression guard.
+//!
+//! The method surface resolves to the runtime deep-clone (`hew_hashmap_clone_layout`
+//! / `hew_hashset_clone_layout`), which duplicates every owned key/value blob via
+//! the descriptor clone discipline and yields an INDEPENDENT collection. The
+//! result is owned by the binding and freed exactly once at scope exit through
+//! the type-driven free pair (`HASHMAP_FREE_LAYOUT_SYMBOL` /
+//! `HASHSET_FREE_LAYOUT_SYMBOL`) — the same clone+free pair already used for a
+//! collection field nested inside a record/enum clone, so the deep copy and its
+//! drop are proven in all three drop contexts (sync return, actor shutdown,
+//! coroutine suspend).
+//!
+//! Key/value admission is shared with `insert`/`get`: a layout-managed key or a
+//! value with no map-value clone thunk fails closed at the checker (covered by
+//! the vertical-slice reject suite), so the runtime's fail-closed abort paths
+//! are unreachable from admitted programs.
+//!
+//! Independence is proven by mutating the SOURCE after the clone and asserting
+//! the clone is unaffected — a shallow alias would observe the mutation.
+
+import std::testing;
+
+record Point { x: i64, y: i64 }
+
+#[test]
+fn test_hashmap_clone_scalar_value_independent() {
+    let m: HashMap<string, i64> = HashMap::new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    let c: HashMap<string, i64> = m.clone();
+    m.insert("c", 3);
+    testing.assert_eq(m.len(), 3);
+    testing.assert_eq(c.len(), 2);
+    match c.get("a") {
+        Some(v) => testing.assert_eq(v, 1),
+        None => testing.assert_true(false),
+    }
+    match c.get("c") {
+        Some(_) => testing.assert_true(false),
+        None => testing.assert_true(true),
+    }
+}
+
+#[test]
+fn test_hashmap_clone_string_value_deep() {
+    let m: HashMap<string, string> = HashMap::new();
+    m.insert("alpha", "one");
+    m.insert("beta", "two");
+    let c: HashMap<string, string> = m.clone();
+    m.insert("gamma", "three");
+    testing.assert_eq(m.len(), 3);
+    testing.assert_eq(c.len(), 2);
+    match c.get("alpha") {
+        Some(v) => testing.assert_eq_str(v, "one"),
+        None => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_hashmap_clone_nested_owned_value() {
+    let inner: Vec<string> = Vec::new();
+    inner.push("x");
+    inner.push("y");
+    let m: HashMap<string, Vec<string>> = HashMap::new();
+    m.insert("k", inner);
+    let c: HashMap<string, Vec<string>> = m.clone();
+    testing.assert_eq(c.len(), 1);
+    match c.get("k") {
+        Some(v) => testing.assert_eq(v.len(), 2),
+        None => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_hashmap_clone_copy_record_key() {
+    let m: HashMap<Point, string> = HashMap::new();
+    m.insert(Point { x: 1, y: 2 }, "a");
+    let c: HashMap<Point, string> = m.clone();
+    testing.assert_eq(c.len(), 1);
+    match c.get(Point { x: 1, y: 2 }) {
+        Some(v) => testing.assert_eq_str(v, "a"),
+        None => testing.assert_true(false),
+    }
+}
+
+#[test]
+fn test_hashset_clone_independent() {
+    let s: HashSet<string> = HashSet::new();
+    s.insert("x");
+    s.insert("y");
+    let c: HashSet<string> = s.clone();
+    s.insert("z");
+    testing.assert_eq(s.len(), 3);
+    testing.assert_eq(c.len(), 2);
+    testing.assert_true(c.contains("x"));
+    testing.assert_true(!c.contains("z"));
+}

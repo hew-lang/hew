@@ -232,6 +232,7 @@ pub enum HashMapMethod {
     Len,
     Keys,
     Values,
+    Clone,
 }
 
 /// `HashSet` dispatch methods. Mirrors the methods registered for the
@@ -243,6 +244,7 @@ pub enum HashSetMethod {
     Remove,
     Len,
     IsEmpty,
+    Clone,
 }
 
 /// Vec dispatch methods. Mirrors the methods registered for the

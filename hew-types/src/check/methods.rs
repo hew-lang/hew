@@ -4170,7 +4170,14 @@ impl Checker {
                 }
                 if matches!(
                     method,
-                    "insert" | "get" | "remove" | "contains_key" | "len" | "keys" | "values"
+                    "insert"
+                        | "get"
+                        | "remove"
+                        | "contains_key"
+                        | "len"
+                        | "keys"
+                        | "values"
+                        | "clone"
                 ) {
                     self.record_resolved_hashmap_call(method, &cx.key, &cx.val, span);
                 }
@@ -4189,7 +4196,7 @@ impl Checker {
                 self.record_hashset_lowering_fact(span, &cx.elem);
                 if matches!(
                     method,
-                    "insert" | "contains" | "remove" | "len" | "is_empty"
+                    "insert" | "contains" | "remove" | "len" | "is_empty" | "clone"
                 ) {
                     self.record_resolved_hashset_call(method, &cx.elem, span);
                 }
@@ -8486,6 +8493,16 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                     consumes_receiver: false,
                 },
             ),
+            (
+                "clone".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashmap_clone_layout".to_string(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::Clone),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
         ],
     });
     registry.register(ImplDef {
@@ -8550,6 +8567,16 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 MethodTarget {
                     symbol_name: "hew_hashset_is_empty_layout".to_string(),
                     family: MethodTargetFamily::HashSet(HashSetMethod::IsEmpty),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
+                "clone".to_string(),
+                MethodTarget {
+                    symbol_name: "hew_hashset_clone_layout".to_string(),
+                    family: MethodTargetFamily::HashSet(HashSetMethod::Clone),
                     abi: RuntimeAbi::ByRef,
                     call_hint: CallAbiHint::RuntimeShim,
                     consumes_receiver: false,

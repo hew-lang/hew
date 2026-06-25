@@ -17887,11 +17887,13 @@ fn is_hashmap_layout_runtime_symbol(symbol: &str) -> bool {
             | "hew_hashmap_len_layout"
             | "hew_hashmap_keys_layout"
             | "hew_hashmap_values_layout"
+            | "hew_hashmap_clone_layout"
             | "hew_hashset_insert_layout"
             | "hew_hashset_contains_layout"
             | "hew_hashset_remove_layout"
             | "hew_hashset_len_layout"
             | "hew_hashset_is_empty_layout"
+            | "hew_hashset_clone_layout"
     )
 }
 
@@ -18061,6 +18063,8 @@ fn layout_hashmap_fn_type<'ctx>(
         "hew_hashmap_keys_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // `*mut HewVec hew_hashmap_values_layout(map)`
         "hew_hashmap_values_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
+        // `*mut HewLayoutHashMap hew_hashmap_clone_layout(map)`
+        "hew_hashmap_clone_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // `bool hew_hashset_insert_layout(set, elem_ptr)`
         "hew_hashset_insert_layout" => Ok(i1_ty.fn_type(&[ptr_ty.into(), ptr_ty.into()], false)),
         // `bool hew_hashset_contains_layout(set, elem_ptr)`
@@ -18071,6 +18075,8 @@ fn layout_hashmap_fn_type<'ctx>(
         "hew_hashset_len_layout" => Ok(i64_ty.fn_type(&[ptr_ty.into()], false)),
         // `bool hew_hashset_is_empty_layout(set)`
         "hew_hashset_is_empty_layout" => Ok(i1_ty.fn_type(&[ptr_ty.into()], false)),
+        // `*mut HewLayoutHashSet hew_hashset_clone_layout(set)`
+        "hew_hashset_clone_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         _ => Err(CodegenError::FailClosed(format!(
             "not a layout HashMap/HashSet runtime symbol: {symbol}"
         ))),
@@ -19293,11 +19299,15 @@ fn lower_hashmap_layout_direct_call(
     let expected_arity: usize = match callee {
         "hew_hashmap_insert_layout" => 3,
         "hew_hashmap_contains_key_layout" | "hew_hashmap_remove_layout" => 2,
-        "hew_hashmap_len_layout" | "hew_hashmap_keys_layout" | "hew_hashmap_values_layout" => 1,
+        "hew_hashmap_len_layout"
+        | "hew_hashmap_keys_layout"
+        | "hew_hashmap_values_layout"
+        | "hew_hashmap_clone_layout" => 1,
         "hew_hashset_insert_layout"
         | "hew_hashset_contains_layout"
         | "hew_hashset_remove_layout" => 2,
         "hew_hashset_len_layout" | "hew_hashset_is_empty_layout" => 1,
+        "hew_hashset_clone_layout" => 1,
         _ => {
             return Err(CodegenError::FailClosed(format!(
                 "lower_hashmap_layout_direct_call called with non-layout symbol `{callee}`"
@@ -19472,6 +19482,31 @@ fn lower_hashmap_layout_direct_call(
                 .build_store(dest_ptr, vec_ptr)
                 .llvm_ctx("hew_hashmap_values_layout store")?;
         }
+        "hew_hashmap_clone_layout" => {
+            // `*mut HewLayoutHashMap hew_hashmap_clone_layout(map)` — returns a
+            // deep-cloned map; caller is the sole owner. The runtime duplicates
+            // every owned key/value blob via the descriptor clone discipline and
+            // fails closed on a missing clone thunk, so the result is an
+            // independent map that the dest's type-driven scope-exit drop frees
+            // exactly once (the `HASHMAP_FREE_LAYOUT_SYMBOL` half of the pair).
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_hashmap_clone_layout returns *mut map; call must supply a dest".into(),
+                )
+            })?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[map_ptr.into()], "hew_hashmap_clone_layout_call")
+                .llvm_ctx("hew_hashmap_clone_layout call")?;
+            let cloned_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_hashmap_clone_layout returned void".into())
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, cloned_ptr)
+                .llvm_ctx("hew_hashmap_clone_layout store")?;
+        }
         "hew_hashset_insert_layout" => {
             // `bool hew_hashset_insert_layout(set, elem_ptr)`.
             let (elem_ptr, _elem_ty) = place_pointer(fn_ctx, args[1])?;
@@ -19604,6 +19639,31 @@ fn lower_hashmap_layout_direct_call(
                 .builder
                 .build_store(dest_ptr, widened)
                 .llvm_ctx("hew_hashset_is_empty_layout store")?;
+        }
+        "hew_hashset_clone_layout" => {
+            // `*mut HewLayoutHashSet hew_hashset_clone_layout(set)` — returns a
+            // deep-cloned set (delegates to the map clone for the inner storage);
+            // caller is the sole owner. Elements are constrained to Plain/string
+            // by the same Hash+Eq admission as map keys, so the runtime's
+            // layout-managed abort is unreachable; the dest's type-driven
+            // scope-exit drop frees it once via `HASHSET_FREE_LAYOUT_SYMBOL`.
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_hashset_clone_layout returns *mut set; call must supply a dest".into(),
+                )
+            })?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[map_ptr.into()], "hew_hashset_clone_layout_call")
+                .llvm_ctx("hew_hashset_clone_layout call")?;
+            let cloned_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_hashset_clone_layout returned void".into())
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, cloned_ptr)
+                .llvm_ctx("hew_hashset_clone_layout store")?;
         }
         _ => unreachable!("matched above"),
     }

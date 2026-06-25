@@ -63,11 +63,13 @@ extern "C" {
     fn hew_hashmap_len_layout(m: *const c_void) -> i64;
     fn hew_hashmap_keys_layout(m: *const c_void) -> *mut c_void;
     fn hew_hashmap_values_layout(m: *const c_void) -> *mut c_void;
+    fn hew_hashmap_clone_layout(m: *const c_void) -> *mut c_void;
     fn hew_hashset_insert_layout(s: *mut c_void, elem: *const c_void) -> bool;
     fn hew_hashset_contains_layout(s: *const c_void, elem: *const c_void) -> bool;
     fn hew_hashset_remove_layout(s: *mut c_void, elem: *const c_void) -> bool;
     fn hew_hashset_len_layout(s: *const c_void) -> i64;
     fn hew_hashset_is_empty_layout(s: *const c_void) -> bool;
+    fn hew_hashset_clone_layout(s: *const c_void) -> *mut c_void;
 }
 
 /// Statically-known set of kernel symbols this gate has *proved linkable*.
@@ -106,6 +108,10 @@ fn known_linked_kernel_symbols() -> HashMap<&'static str, *const ()> {
         hew_hashmap_values_layout as *const (),
     );
     m.insert(
+        "hew_hashmap_clone_layout",
+        hew_hashmap_clone_layout as *const (),
+    );
+    m.insert(
         "hew_hashset_insert_layout",
         hew_hashset_insert_layout as *const (),
     );
@@ -124,6 +130,10 @@ fn known_linked_kernel_symbols() -> HashMap<&'static str, *const ()> {
     m.insert(
         "hew_hashset_is_empty_layout",
         hew_hashset_is_empty_layout as *const (),
+    );
+    m.insert(
+        "hew_hashset_clone_layout",
+        hew_hashset_clone_layout as *const (),
     );
     m
 }
@@ -272,13 +282,14 @@ fn every_stage_b_method_target_symbol_is_link_resolved() {
         checked.len(),
     );
 
-    // Defensive lower-bound: the Stage B registry seeds 7 HashMap methods
-    // (insert, get, contains_key, remove, len, keys, values)
-    // + 5 HashSet methods = 12 symbols. A drift below this means the
-    // registry shrank silently; the gate forces an explicit reckoning.
+    // Defensive lower-bound: the Stage B registry seeds 8 HashMap methods
+    // (insert, get, contains_key, remove, len, keys, values, clone)
+    // + 6 HashSet methods (insert, contains, remove, len, is_empty, clone)
+    // = 14 symbols. A drift below this means the registry shrank silently;
+    // the gate forces an explicit reckoning.
     assert!(
-        checked.len() >= 12,
-        "expected ≥ 11 distinct kernel symbols in the Stage B registry, \
+        checked.len() >= 14,
+        "expected ≥ 14 distinct kernel symbols in the Stage B registry, \
          saw {} ({:?})",
         checked.len(),
         checked,

@@ -2485,6 +2485,13 @@ expect_check_fail_contains \
   "no map value clone_fn" \
   "hashmap_get_unclonable_opaque_value"
 
+# `m.clone()` deep-clones every value blob, so a value with no map value
+# clone_fn must fail closed at the same admission seam as `get`.
+expect_check_fail_contains \
+  "${ROOT}/tests/vertical-slice/reject/hashmap_clone_unclonable_opaque_value.hew" \
+  "no map value clone_fn" \
+  "hashmap_clone_unclonable_opaque_value"
+
 # ---------------------------------------------------------------------------
 # NEW-6b — `await … | after d` deadlines on suspendable actor asks
 # ---------------------------------------------------------------------------

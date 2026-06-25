@@ -154,9 +154,12 @@ pub fn net_error_cancelled() -> NetError {
 pub enum WriteError {
     /// The send buffer stayed full past the write deadline (or the socket
     /// was non-blocking): the downstream is not draining fast enough.
-    /// Recoverable — retry after a delay, drop, or apply application-level
-    /// flow control. The i64 payload is the raw OS errno (EAGAIN/EWOULDBLOCK
-    /// on Unix, WSAETIMEDOUT on Windows; 0 if none was recorded).
+    /// The connection may have partially committed bytes before the error was
+    /// returned, so a whole-payload retry is UNSAFE. Correct recovery is to
+    /// drop or close the connection; only retry if you know the stream is at
+    /// a frame boundary (i.e., no bytes were sent before the timeout fired).
+    /// The i64 payload is the raw OS errno (EAGAIN/EWOULDBLOCK on Unix,
+    /// WSAETIMEDOUT on Windows; 0 if none was recorded).
     BackpressureExceeded(i64);
     /// The peer reset or closed the connection, or the local end was shut
     /// down (ECONNRESET, EPIPE, ENOTCONN). The connection is no longer

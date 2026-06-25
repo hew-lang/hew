@@ -1652,9 +1652,18 @@ pub unsafe extern "C" fn hew_tcp_write(
         // Surface the OS errno so the Hew side can classify the failure as
         // backpressure (EAGAIN/EWOULDBLOCK or a write-timeout ETIMEDOUT —
         // the send buffer is full and not draining within the deadline),
-        // disconnect (ECONNRESET/EPIPE/ENOTCONN), or other. `write_all` does
-        // not partially commit from the caller's perspective: any error
-        // leaves the write unacknowledged and the caller decides recovery.
+        // disconnect (ECONNRESET/EPIPE/ENOTCONN), or other.
+        //
+        // PARTIAL-WRITE CAUTION: with SO_SNDTIMEO set, `write_all` may have
+        // committed a prefix of the payload to the kernel before the timeout
+        // fired and returned BackpressureExceeded. A whole-payload retry is
+        // therefore UNSAFE — it would duplicate the already-sent prefix. The
+        // correct recovery for BackpressureExceeded is to drop or close the
+        // connection and rely on application-level message framing; retrying
+        // the same payload bytes is only safe if the application knows the
+        // stream position is at a frame boundary (e.g., the error occurred
+        // before any bytes were sent).
+        //
         // `record_tcp_error_kind` deliberately does NOT count WouldBlock /
         // Interrupted / TimedOut as transport errors — backpressure is an
         // expected flow-control outcome, not a fault.

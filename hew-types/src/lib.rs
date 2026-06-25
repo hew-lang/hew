@@ -73,3 +73,30 @@ pub use runtime_call::{
 pub use runtime_calling_convention::RuntimeCallingConvention;
 pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;
+
+/// Native-only stdlib module short-names that are rejected on the wasm32 target
+/// and in the browser sandbox.
+///
+/// This is the single authoritative list shared between the type checker's
+/// call-form and value-position wasm32 guards (`check_method_call` in
+/// `methods.rs`, `check_field_access` in `expressions.rs`) and the browser
+/// sandbox profile gate (`hew-sandbox-wasm/src/profile.rs`).  Every guard that
+/// rejects a value-position or call-position reference to these modules on
+/// wasm32 must reference this const rather than maintaining its own copy.
+///
+/// Note: `crypto` is intentionally absent — only the specific symbol
+/// `crypto.random_bytes` is rejected, not the entire `crypto` module.
+pub const NATIVE_ONLY_WASM_MODULES: &[&str] = &[
+    "stream",
+    "http",
+    "net",
+    "process",
+    "tls",
+    "quic",
+    "dns",
+    "os",
+    "encrypt",
+    "sign",
+    "http_client",
+    "smtp",
+];

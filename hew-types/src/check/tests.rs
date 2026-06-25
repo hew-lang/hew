@@ -20867,6 +20867,66 @@ mod wasm_rejects {
         );
     }
 
+    // ── Over-reject regression: local bindings / params must not trigger guard ─
+
+    #[test]
+    fn wasm_admits_local_binding_named_net() {
+        // A local let-binding named `net` must NOT trigger the value-position
+        // guard because receiver_is_binding=true for local variables — the type
+        // checker records a type for the object and check_field_access takes the
+        // normal path.
+        let source = r"
+type Conn { connect: i64; }
+fn main() {
+    let net = Conn { connect: 42 };
+    println(net.connect);
+}
+";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        checker.enable_wasm_target();
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "local binding named `net` must not produce PlatformLimitation on WASM; got: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn wasm_admits_function_param_named_stream() {
+        // A function parameter named `stream` must NOT trigger the guard.
+        let source = r"
+type Packet { value: i64; }
+fn process(stream: Packet) -> i64 {
+    stream.value
+}
+fn main() {
+    let p = Packet { value: 7 };
+    println(process(p));
+}
+";
+        let result = hew_parser::parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "parse errors: {:?}",
+            result.errors
+        );
+        let mut checker = Checker::new(test_registry());
+        checker.enable_wasm_target();
+        let output = checker.check_program(&result.program);
+        assert!(
+            !has_platform_limitation_error(&output),
+            "function param named `stream` must not produce PlatformLimitation on WASM; got: {:?}",
+            output.errors
+        );
+    }
+
     // ── Native sibling tests: no platform error on non-wasm target ────────
 
     #[test]
@@ -21460,6 +21520,40 @@ mod wasm_rejects {
             kinds,
             vec![TypeErrorKind::UndefinedMethod],
             "expected exactly [UndefinedMethod] — chain must stay suppressed; got: {kinds:?}",
+        );
+    }
+
+    // ── Dedup parity: public const ↔ internal rejection table ────────────────
+
+    #[test]
+    fn native_only_wasm_modules_const_matches_rejection_table() {
+        // Verify that the public API const `crate::NATIVE_ONLY_WASM_MODULES`
+        // (consumed by hew-sandbox-wasm's profile gate) and the internal
+        // `Checker::NATIVE_ONLY_WASM_MODULE_REJECTIONS` table (consumed by
+        // `check_method_call` and `check_field_access`) enumerate the exact same
+        // set of module short-names.  Drift between the two means:
+        //   - a module added to the public const but missing from the table
+        //     → the compiler silently accepts it on wasm32 (fail-open)
+        //   - a module in the table but not in the public const
+        //     → the sandbox's profile gate silently accepts it (parity gap)
+        //
+        // To intentionally verify the test catches drift: temporarily comment
+        // out one entry from either list and confirm this test fails.
+        let mut from_const: Vec<&str> = crate::NATIVE_ONLY_WASM_MODULES.to_vec();
+        from_const.sort_unstable();
+
+        let mut from_table: Vec<&str> = Checker::NATIVE_ONLY_WASM_MODULE_REJECTIONS
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        from_table.sort_unstable();
+
+        assert_eq!(
+            from_const, from_table,
+            "NATIVE_ONLY_WASM_MODULES (public API const) and \
+             Checker::NATIVE_ONLY_WASM_MODULE_REJECTIONS (internal table) must \
+             list the same module short-names; add or remove the entry from BOTH \
+             when the native-only module set changes"
         );
     }
 }

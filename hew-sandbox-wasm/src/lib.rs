@@ -903,11 +903,10 @@ fn main() {
 
     #[test]
     fn crypto_random_bytes_is_rejected_with_platform_limitation() {
-        // crypto.random_bytes depends on a native-only entropy source absent
-        // from the wasm32 link set. The sandbox compiler now calls
-        // enable_wasm_target() so the checker emits a PlatformLimitation
-        // diagnostic — a security-focused, actionable rejection rather than a
-        // generic "unknown import" from the profile level.
+        // crypto.random_bytes(n) — the call form — depends on a native-only entropy
+        // source absent from the wasm32 link set.  The sandbox profile gate
+        // (Expr::MethodCall) emits a PlatformLimitation diagnostic for the call
+        // form; the value-position form (FieldAccess) is covered by a separate test.
         set_test_hewpath();
         let source = "import std::crypto::crypto;\nfn main() { let _ = crypto.random_bytes(32); }";
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
@@ -926,6 +925,234 @@ fn main() {
             "expected PlatformLimitation error for crypto.random_bytes, got {:#?}",
             output.diagnostics
         );
+    }
+
+    #[test]
+    fn sandbox_rejects_value_position_crypto_random_bytes() {
+        // `let f = crypto.random_bytes` is a FieldAccess (not a MethodCall) and
+        // must be rejected in the browser sandbox with a PlatformLimitation
+        // diagnostic, matching the call-form rejection and the native wasm32
+        // target guard.  Without the profile gate fix the FieldAccess arm would
+        // silently pass through, producing bytecode that the VM cannot execute
+        // securely (the entropy source is absent from the wasm32 link set).
+        set_test_hewpath();
+        let source = "import std::crypto::crypto;\nfn main() { let f = crypto.random_bytes; }";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.bytecode.is_none(),
+            "value-position crypto.random_bytes must not produce bytecode; got {:#?}",
+            output.bytecode
+        );
+        assert!(
+            output.diagnostics.iter().any(|d| {
+                d.severity == "error"
+                    && d.kind == "PlatformLimitation"
+                    && d.message.contains("random_bytes")
+            }),
+            "expected PlatformLimitation error for value-position crypto.random_bytes, got {:#?}",
+            output.diagnostics
+        );
+    }
+
+    #[test]
+    fn sandbox_rejects_value_position_net_module() {
+        // `let f = net.connect` is a value-position FieldAccess on the native-only
+        // `net` stdlib module.  The sandbox must reject with PlatformLimitation,
+        // matching the wasm32 target guard in the type checker and maintaining
+        // native/wasm parity for the full native-only module set.
+        set_test_hewpath();
+        let source = "import std::net::net;\nfn main() { let f = net.connect; }";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.bytecode.is_none(),
+            "value-position net.connect must not produce bytecode; got {:#?}",
+            output.bytecode
+        );
+        assert!(
+            output.diagnostics.iter().any(|d| {
+                d.severity == "error" && d.kind == "PlatformLimitation" && d.message.contains("net")
+            }),
+            "expected PlatformLimitation error for value-position net.connect, got {:#?}",
+            output.diagnostics
+        );
+    }
+
+    #[test]
+    fn sandbox_admits_value_position_user_record_field_access() {
+        // `let v = rec.x` where `rec` is a user-defined record must NOT be
+        // rejected: the native-only guard is gated on the object being one of the
+        // specific stdlib module short-names and NOT a user-declared type, so
+        // legitimate field access on user records must continue to compile.
+        let source = r"
+type Point { x: i64; y: i64; }
+
+fn main() {
+    let p = Point { x: 3, y: 7 };
+    let v = p.x;
+    println(v);
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "user record field access must not produce error diagnostics; got {:#?}",
+            output.diagnostics
+        );
+        assert!(
+            output.bytecode.is_some(),
+            "user record field access must emit bytecode; diagnostics {:#?}",
+            output.diagnostics
+        );
+    }
+
+    #[test]
+    fn sandbox_admits_local_binding_named_net() {
+        // A local let-binding whose name collides with the native-only module
+        // short-name `net` must NOT be rejected: the guard fires only when the
+        // object resolves to a stdlib module identifier (ty_for_expr returns None),
+        // not when it resolves to a typed local variable.
+        //
+        // Over-reject regression: the previous `is_user_local` guard only tracked
+        // top-level declarations and would have falsely rejected `net.connect` here.
+        let source = r"
+type Conn { connect: i64; }
+
+fn main() {
+    let net = Conn { connect: 42 };
+    println(net.connect);
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "local binding named `net` must not trigger PlatformLimitation; got {:#?}",
+            output.diagnostics
+        );
+        assert!(
+            output.bytecode.is_some(),
+            "local binding named `net` must emit bytecode; diagnostics {:#?}",
+            output.diagnostics
+        );
+    }
+
+    #[test]
+    fn sandbox_admits_local_binding_named_stream() {
+        // Same regression check for `stream` (another common collision name).
+        let source = r"
+type Packet { value: i64; }
+
+fn process(stream: Packet) -> i64 {
+    stream.value
+}
+
+fn main() {
+    let pkt = Packet { value: 7 };
+    println(process(pkt));
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "function param named `stream` must not trigger PlatformLimitation; got {:#?}",
+            output.diagnostics
+        );
+        assert!(
+            output.bytecode.is_some(),
+            "function param named `stream` must emit bytecode; diagnostics {:#?}",
+            output.diagnostics
+        );
+    }
+
+    #[test]
+    fn sandbox_admits_local_binding_named_os() {
+        // Same regression check for `os`.
+        let source = r"
+type Cfg { name: i64; }
+
+fn main() {
+    let os = Cfg { name: 1 };
+    println(os.name);
+}
+";
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "local binding named `os` must not trigger PlatformLimitation; got {:#?}",
+            output.diagnostics
+        );
+        assert!(
+            output.bytecode.is_some(),
+            "local binding named `os` must emit bytecode; diagnostics {:#?}",
+            output.diagnostics
+        );
+    }
+
+    #[test]
+    fn sandbox_native_only_module_set_drift_guard() {
+        // Drift guard: every module in the authoritative NATIVE_ONLY_WASM_MODULES
+        // const must be rejected by the sandbox in value-position.  This test
+        // fails if a new module is added to the const but not handled by the
+        // profile gate, or vice-versa.
+        //
+        // Structural drift is architecturally impossible: the profile gate uses
+        // `hew_types::NATIVE_ONLY_WASM_MODULES.contains()` directly, so any change
+        // to the const is automatically reflected.  This test verifies:
+        //   1. The const has the expected number of entries (catches silent additions).
+        //   2. Each expected short-name appears in the const.
+        //   3. End-to-end rejection for the three modules with well-known import
+        //      paths (net, tls, dns) as a representative sample.
+        let expected: &[&str] = &[
+            "stream",
+            "http",
+            "net",
+            "process",
+            "tls",
+            "quic",
+            "dns",
+            "os",
+            "encrypt",
+            "sign",
+            "http_client",
+            "smtp",
+        ];
+        assert_eq!(
+            expected.len(),
+            hew_types::NATIVE_ONLY_WASM_MODULES.len(),
+            "NATIVE_ONLY_WASM_MODULES length changed; update this expected list"
+        );
+        for name in expected {
+            assert!(
+                hew_types::NATIVE_ONLY_WASM_MODULES.contains(name),
+                "expected `{name}` to be in NATIVE_ONLY_WASM_MODULES"
+            );
+        }
+        // End-to-end: sample three modules with well-known import paths.
+        set_test_hewpath();
+        let sample: &[(&str, &str, &str)] = &[
+            ("net", "std::net::net", "connect"),
+            ("tls", "std::net::tls", "connect"),
+            ("dns", "std::net::dns", "resolve"),
+        ];
+        for (module, import_path, func) in sample {
+            let source = format!("import {import_path};\nfn main() {{ let f = {module}.{func}; }}");
+            let output = compile_to_sandbox_bytecode(&source, Some("sandbox-vm-export"))
+                .expect("compile should not throw");
+            let has_platform_error = output
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == "error" && d.kind == "PlatformLimitation");
+            assert!(
+                has_platform_error,
+                "value-position `{module}.{func}` must produce PlatformLimitation; got {:#?}",
+                output.diagnostics
+            );
+        }
     }
 
     #[test]

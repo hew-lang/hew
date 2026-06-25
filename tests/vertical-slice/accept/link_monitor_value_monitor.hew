@@ -1,0 +1,12 @@
+// Value-needed monitor(): returns a MonitorRef resource that is dropped at
+// end of scope via hew_actor_demonitor. Promoted from reject when MIR/codegen
+// gained composite-return construction for hew_actor_monitor.
+actor Probe {
+    receive fn ping() {}
+}
+
+fn main() {
+    let p = spawn Probe;
+    let m: MonitorRef = monitor(p);
+    let _ = m;
+}

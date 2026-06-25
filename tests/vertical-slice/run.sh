@@ -885,6 +885,15 @@ run_accept_expect_status "supervisor_lifecycle_fires" 220
 # with dest=None and reach codegen.
 run_accept_expect_status "link_monitor_discarded" 0
 
+# Value-needed monitor(): MIR/codegen construct MonitorRef from the i64 ref_id
+# returned by hew_actor_monitor. The MonitorRef resource is dropped at scope
+# exit via hew_actor_demonitor.
+run_accept_expect_status "link_monitor_value_monitor" 0
+
+# Value-needed link(): MIR/codegen construct Result<(), LinkError> from the void
+# hew_actor_link return (Ok, no payload). Pattern-matched; Err arm calls exit(1).
+run_accept_expect_status "link_monitor_value_result" 0
+
 # on(crash) handler attachment: Crasher actor declares #[on(crash)]; codegen emits
 # a non-null on_crash fn-pointer in HewChildSpec; supervisor boots and main returns 42.
 # The crash path is not triggered at runtime — handler-fire observability is covered
@@ -1485,16 +1494,6 @@ if "${HEW}" check "${ROOT}/tests/vertical-slice/reject/spawn_lambda_removed.hew"
   exit 1
 fi
 grep -q 'E_SPAWN_LAMBDA_SYNTAX_REMOVED' "${reject_output}"
-
-# Reject: value-needed monitor() still needs Cluster 2 MonitorRef construction.
-# Discarded statement-position calls compile, but expression contexts remain
-# fail-closed at the MIR producer boundary.
-if "${HEW}" compile "${ROOT}/tests/vertical-slice/reject/link_monitor_pending_cluster2.hew" >"${reject_output}" 2>&1; then
-  echo "expected link/monitor fixture to fail" >&2
-  exit 1
-fi
-grep -q 'NotYetImplemented' "${reject_output}"
-grep -q 'MonitorRef' "${reject_output}"
 
 # ---------------------------------------------------------------------------
 # scope{} / fork — fail-closed surface pins

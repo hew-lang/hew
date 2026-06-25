@@ -11,6 +11,5 @@
 #
 # Format: <test_function_name>  # <root_cause>; converging lane: <lane>
 #
-# Total: 2 unique failing test function names.
+# Total: 1 unique failing test function names.
 test_generic_vec_iter_i64  # G5 split follow-on: Hew-level Vec<T>::iter substrate
-test_generic_record_of_vec_clone  # G6 scope-out: generic record with a Vec<T> field hits an orthogonal MIR-boundary gap (E_MIR: unknown type T; no ValueClass for T); converging lane: generic-record-Vec-field follow-on

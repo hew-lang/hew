@@ -6279,6 +6279,21 @@ impl Checker {
                 }
             }
 
+            // Pre-seed every still-unbound type parameter with a fresh inference
+            // var so a field whose declared type CONTAINS a parameter (e.g.
+            // `items: Vec<T>`) constrains that parameter from its initializer,
+            // exactly as a field whose type IS the bare parameter (`val: T`)
+            // already does. Without this the nested parameter stays the raw
+            // type-def symbol `T` in the initializer's own type and never
+            // monomorphises (`E_MIR: unknown type T` at the MIR boundary). The
+            // vars unify during field checking below and are resolved back to
+            // concrete types before the result type is built.
+            for tp in &td.type_params {
+                type_arg_map
+                    .entry(tp.clone())
+                    .or_insert_with(|| Ty::Var(TypeVar::fresh()));
+            }
+
             for (field_name, (expr, es)) in fields {
                 if let Some(declared_ty) = td.fields.get(field_name) {
                     // Substitute already-inferred type params into the expected type.
@@ -6368,10 +6383,10 @@ impl Checker {
                 .type_params
                 .iter()
                 .map(|tp| {
-                    type_arg_map
-                        .get(tp)
-                        .cloned()
-                        .unwrap_or_else(|| Ty::Var(TypeVar::fresh()))
+                    type_arg_map.get(tp).map_or_else(
+                        || Ty::Var(TypeVar::fresh()),
+                        |bound| self.subst.resolve(bound),
+                    )
                 })
                 .collect();
             // Record the resolved type arguments for downstream monomorphisation

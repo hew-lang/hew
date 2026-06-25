@@ -15,11 +15,17 @@
 //! hash-equality contract: two NaN values may be `!=` yet hash to the same bucket,
 //! making every `HashMap<FloatRecord, V>` lookup semantically broken.
 //!
-//! Strings and other heap-managed types are ineligible because layout-ABI hashing
-//! operates on the fixed-size stack blob, not the heap contents. String equality
-//! must go through the existing string-ABI path, not the layout path.
+//! Strings are heap-managed but structurally hashable: a `string` field inside a
+//! record key is hashed by dereferencing the field's pointer and hashing the
+//! NUL-terminated payload bytes (codegen descends into the field, mirroring the
+//! `eq_eligibility.rs` string descent), and the owned key is deep-cloned on
+//! insert and dropped exactly once on remove/free. A bare `string` key routes
+//! through the runtime's canonical `hew_layout_key_string` descriptor. Other
+//! heap-managed leaves (`bytes`, owned aggregates, handles) remain ineligible —
+//! their per-record clone/drop discipline is a separate, larger surface.
 //!
-//! Named records are eligible only when every field is itself hash-eligible.
+//! Named records are eligible only when every field is itself hash-eligible
+//! (including `string`-or-string-bearing fields).
 //! Indirect (handle/managed) records are ineligible regardless of field content.
 //! Tuples are tracked but ineligible as layout hash keys in this slice; the
 //! admissibility gate (C-2c) will reject them before they reach codegen.
@@ -64,6 +70,15 @@ fn hash_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<H
         // Fixed-width integer primitives — hash the exact-width value load.
         // bool: hash the low bit as i8. char: hash 4-byte Unicode scalar as i32.
         // Duration: hash 8-byte i64 nanosecond value — deterministic fixed width.
+        // Fixed-width primitives hash on the exact-width value load.
+        //
+        // String is heap-managed but structurally hashable: a bare `string` key
+        // routes through the runtime's `hew_layout_key_string` descriptor, and a
+        // `string` field *inside* a record key is hashed by descending into the
+        // payload bytes (codegen) and dropped exactly once on remove/free via a
+        // per-record drop thunk. The owned-string deep-clone-on-insert / drop
+        // discipline mirrors the already-shipped eq side (`eq_eligibility.rs`,
+        // `Ty::String => None`), so admit it here too — eligible like a primitive.
         Ty::I8
         | Ty::I16
         | Ty::I32
@@ -74,13 +89,11 @@ fn hash_ineligibility(ty: &Ty, type_defs: &HashMap<String, TypeDef>) -> Option<H
         | Ty::U64
         | Ty::Bool
         | Ty::Char
-        | Ty::Duration => None,
+        | Ty::Duration
+        | Ty::String => None,
 
         // Floats: NaN != NaN violates the hash-equality contract.
         Ty::F32 | Ty::F64 => Some(HashEligibility::IneligibleFloat(ty.clone())),
-
-        // String: heap-managed; hashing must go through the string ABI, not layout.
-        Ty::String => Some(HashEligibility::IneligibleManaged(ty.clone())),
 
         // Tuples: tracked but not admitted as layout hash keys in this slice.
         Ty::Tuple(_) => Some(HashEligibility::IneligibleTuple(ty.clone())),
@@ -252,11 +265,13 @@ mod tests {
     }
 
     #[test]
-    fn hash_ineligible_string() {
+    fn hash_eligible_string() {
+        // A bare `string` is structurally hashable (routed through the runtime's
+        // canonical `hew_layout_key_string` descriptor at the key-layout seam).
         let tds = empty_type_defs();
         assert_eq!(
             ty_is_hash_eligible(&Ty::String, &tds),
-            HashEligibility::IneligibleManaged(Ty::String)
+            HashEligibility::Eligible
         );
     }
 
@@ -286,16 +301,38 @@ mod tests {
     }
 
     #[test]
-    fn hash_ineligible_record_with_string_field() {
+    fn hash_eligible_record_with_string_field() {
+        // A record key whose every field is hash-eligible-or-string is admitted:
+        // codegen descends into the string field to hash its payload, and a
+        // per-record drop thunk frees the owned string on remove/free.
         let mut tds = HashMap::new();
         tds.insert(
             "Named".to_string(),
-            make_record("Named", vec![("label", Ty::String)], false),
+            make_record(
+                "Named",
+                vec![("label", Ty::String), ("age", Ty::I64)],
+                false,
+            ),
         );
         let ty = Ty::normalize_named("Named".to_string(), vec![]);
+        assert_eq!(ty_is_hash_eligible(&ty, &tds), HashEligibility::Eligible);
+    }
+
+    #[test]
+    fn hash_ineligible_record_with_owned_vec_field() {
+        // The eligibility predicate stays a conjunction over leaves: an owned
+        // `Vec<T>` field is not hash-eligible (its per-key deep clone/drop is a
+        // larger surface), so the record key stays rejected fail-closed.
+        let mut tds = HashMap::new();
+        let vec_field = Ty::normalize_named("Vec".to_string(), vec![Ty::I64]);
+        tds.insert(
+            "Bag".to_string(),
+            make_record("Bag", vec![("items", vec_field.clone())], false),
+        );
+        let ty = Ty::normalize_named("Bag".to_string(), vec![]);
         assert_eq!(
             ty_is_hash_eligible(&ty, &tds),
-            HashEligibility::IneligibleManaged(Ty::String)
+            HashEligibility::IneligibleOwned(vec_field)
         );
     }
 

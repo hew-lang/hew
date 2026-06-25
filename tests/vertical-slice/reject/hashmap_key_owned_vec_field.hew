@@ -1,0 +1,13 @@
+// Reject ratchet (boundary): a record key whose field is an owned `Vec<T>` is
+// NOT hash-eligible. The eligibility predicate stays a conjunction over leaves:
+// admitting `string` leaves does not admit owned-aggregate leaves, whose
+// per-key deep clone/drop is a larger surface. The key stays rejected
+// fail-closed at the checker, before any codegen.
+
+record Bag { items: Vec<i64>, id: i64 }
+
+fn main() {
+    let m: HashMap<Bag, i64> = HashMap::new();
+    let xs: Vec<i64> = Vec::new();
+    m.insert(Bag { items: xs, id: 1 }, 7);
+}

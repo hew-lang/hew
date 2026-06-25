@@ -1,0 +1,29 @@
+// Accept fixture (owned-key drop ratchet): churn a HashMap<Person, i64> with an
+// owned `string` key field through insert / overwrite / remove / map-free so the
+// per-record key drop thunk fires on every release path. Run under the guard
+// allocator (MallocScribble / MallocGuardEdges) in CI: each owned string key is
+// dropped exactly once, with no double-free and no scribble-read.
+
+record Person { name: string, age: i64 }
+
+fn churn() -> i64 {
+    let m: HashMap<Person, i64> = HashMap::new();
+    var i = 0;
+    while i < 64 {
+        m.insert(Person { name: "user", age: i }, i);
+        i = i + 1;
+    }
+    // Overwrite an existing key: the new value replaces the old; the slot key is
+    // reused (not re-cloned), the caller's probe key is the caller's to drop.
+    m.insert(Person { name: "user", age: 10 }, 999);
+    // Remove drops the slot key exactly once.
+    if !m.remove(Person { name: "user", age: 20 }) { return 40; }
+    if m.len() != 63 { return 41; }
+    if match m.get(Person { name: "user", age: 10 }) { Some(v) => v, None => -1 } != 999 {
+        return 42;
+    }
+    // Map-free at scope end drops every remaining owned key exactly once.
+    0
+}
+
+fn main() -> i64 { churn() }

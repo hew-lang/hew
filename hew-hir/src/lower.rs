@@ -312,6 +312,15 @@ const SYNTHETIC_SEND_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1001);
 /// arms inside `Result<Option<T>, TimeoutError>` matches resolve via
 /// `machine_ctor_registry`. One variant: Timeout=0, no payload.
 const SYNTHETIC_TIMEOUT_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1005);
+/// `LinkError` is the `Err` variant of `Result<(), LinkError>` returned by
+/// `link()` in value position. Declared in `std/builtins.hew` and — like
+/// `SendError` / `TimeoutError` — invisible to the user-enum walk in
+/// `lower_program` (builtins.hew is loaded out-of-band, not via `module_graph`).
+/// Surface it through the same builtin-enum path so
+/// `Err(LinkError::AlreadyLinked)` / `Err(LinkError::TargetDead)` match arms
+/// resolve via `machine_ctor_registry`. Variant order matches
+/// `hew_types::builtin_enums::LINK_ERROR_VARIANTS`: AlreadyLinked=0, TargetDead=1.
+const SYNTHETIC_LINK_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1004);
 pub(crate) const SYNTHETIC_VEC_ITER_ITEM: ItemId = ItemId(u32::MAX - 1002);
 /// Sentinel `ItemId` for the synthetic `HashMapIter<K, V>` record — the
 /// `for (k, v) in m` desugar target. Like `VecIter`, it is declared in
@@ -487,6 +496,8 @@ const BUILTIN_ENUM_VARIANT_BARE_NAMES: &[&str] = &[
     "Unauthorized",
     "Backpressure",
     "MonitorLost",
+    "AlreadyLinked",
+    "TargetDead",
 ];
 
 const UNIT_VARIANT_PAYLOAD: &[&str] = &[];
@@ -541,6 +552,8 @@ const ASK_ERROR_VARIANTS: &[&str] = &[
 const ASK_ERROR_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 22];
 const TIMEOUT_ERROR_VARIANTS: &[&str] = &["Timeout"];
 const TIMEOUT_ERROR_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 1];
+const LINK_ERROR_VARIANTS: &[&str] = &["AlreadyLinked", "TargetDead"];
+const LINK_ERROR_PAYLOADS: &[&[&str]] = &[UNIT_VARIANT_PAYLOAD; 2];
 
 /// Description of a built-in tagged union for the HIR pre-pass that seeds
 /// the same registries user enums populate (`machine_ctor_registry`,
@@ -592,6 +605,13 @@ fn builtin_enum_specs() -> &'static [BuiltinEnumSpec] {
             type_params: &[],
             variant_names: TIMEOUT_ERROR_VARIANTS,
             variant_payloads: TIMEOUT_ERROR_PAYLOADS,
+        },
+        BuiltinEnumSpec {
+            type_name: "LinkError",
+            item_id: SYNTHETIC_LINK_ERROR_ITEM,
+            type_params: &[],
+            variant_names: LINK_ERROR_VARIANTS,
+            variant_payloads: LINK_ERROR_PAYLOADS,
         },
         BuiltinEnumSpec {
             type_name: "AskError",

@@ -18,7 +18,7 @@ fn Caller__recv__go -> i64
     suspend[bb0 resume=bb1 cleanup=bb1] ->
       (none)
     cancel[bb0] ->
-      drop actor0 ty=LocalPid<Fast> kind=resource
+      (none)
     branch[bb1: bb3/bb6] ->
       (none)
     return[bb2] ->

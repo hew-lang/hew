@@ -69,15 +69,20 @@ const MIR_EMITTER_RUNTIME_SYMBOLS: &[&str] = &[
     // by codegen at Checked MIR cooperate sites. Implemented by both native
     // and WASM schedulers.
     "hew_actor_cooperate",
+    // `hew_actor_demonitor(ref_id: u64) -> void` — cancels a monitor
+    // previously registered by `hew_actor_monitor`. The `MonitorRef::close`
+    // drop path extracts `ref_id` from the struct alloca and calls this
+    // directly (struct-field extraction path in `lower_drop_runtime`).
+    "hew_actor_demonitor",
     // `hew_actor_link(parent, child)` — bidirectional link; void return. The
     // Hew `link()` builtin wraps the call in `Ok(())` unconditionally because
     // the current runtime does not surface AlreadyLinked as a return code.
-    // Codegen composite-return synthesis (Result<(), LinkError>) requires the
-    // Cluster 2 spine; the codegen arm is a tracked-gap shim until that lands.
+    // Codegen composite-return synthesis (Result<(), LinkError>) is wired via
+    // the value-needed MIR path; the codegen ActorLink arm calls emit_result_ok.
     "hew_actor_link",
     // `hew_actor_monitor(watcher, target) -> u64` — returns a ref_id. Dead
     // targets return immediately with a DOWN signal; ref_id is still non-zero.
-    // Codegen struct-wrapping (MonitorRef { ref_id }) requires Cluster 2 spine.
+    // Codegen wraps the i64 ref_id into MonitorRef { ref_id } via RecordInit.
     "hew_actor_monitor",
     // `hew_actor_self() -> *mut HewActor` (`hew-runtime/src/actor.rs:3862`).
     // Returns the actor installed in the current dispatch context, or null

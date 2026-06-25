@@ -172,6 +172,20 @@ const ASK_ERROR_VARIANTS: &[BuiltinMonomorphicEnumVariant] = &[
 const TIMEOUT_ERROR_VARIANTS: &[BuiltinMonomorphicEnumVariant] =
     &[BuiltinMonomorphicEnumVariant { name: "Timeout" }];
 
+/// `LinkError` is the `Err` variant of `Result<(), LinkError>` returned by
+/// `link()` in value position. It is prelude-declared in `std/builtins.hew`
+/// (like `SendError` / `TimeoutError`), so programs name its variants without a
+/// `type LinkError` declaration or an import. This out-of-band catalog entry
+/// mirrors `SendError`'s: it sizes the dest local for the value-position
+/// composite return that codegen constructs in place, in case the generic
+/// `EnumLayoutRegistry` path has not already registered the layout.
+const LINK_ERROR_VARIANTS: &[BuiltinMonomorphicEnumVariant] = &[
+    BuiltinMonomorphicEnumVariant {
+        name: "AlreadyLinked",
+    },
+    BuiltinMonomorphicEnumVariant { name: "TargetDead" },
+];
+
 /// Catalog of monomorphic builtin enums whose layout must be registered
 /// out-of-band into MIR's `enum_layouts` and `machine_layout_names`.
 ///
@@ -231,6 +245,21 @@ pub fn monomorphic_builtin_enums() -> &'static [BuiltinMonomorphicEnum] {
         BuiltinMonomorphicEnum {
             name: "TimeoutError",
             variants: TIMEOUT_ERROR_VARIANTS,
+            suppress_from_sandbox_emit: true,
+        },
+        // `LinkError` is the `Err` variant of `Result<(), LinkError>` returned
+        // by `link()` in value position. Prelude-declared in `std/builtins.hew`,
+        // so user programs name `LinkError::AlreadyLinked` / `TargetDead` in
+        // match arms without an import (parity with `SendError`). Carried
+        // out-of-band here for the same reason as `SendError`: codegen
+        // constructs the `Result<(), LinkError>` in place for the value-position
+        // `link()` call, and MIR needs the layout to size the dest local even on
+        // a path the generic `EnumLayoutRegistry` has not seeded.
+        // `suppress_from_sandbox_emit: true` because no stable sandbox-bytecode
+        // fixture baseline for `LinkError` exists yet.
+        BuiltinMonomorphicEnum {
+            name: "LinkError",
+            variants: LINK_ERROR_VARIANTS,
             suppress_from_sandbox_emit: true,
         },
     ]

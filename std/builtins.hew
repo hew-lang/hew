@@ -154,6 +154,22 @@ pub enum TimeoutError {
     Timeout;
 }
 
+/// Error returned by the `link(handle)` builtin in value position
+/// (`link(actor) -> Result<(), LinkError>`).
+///
+/// Prelude-published — like `SendError` / `TimeoutError`, the variants are
+/// nameable in match arms without an explicit import, because `link()` is a
+/// compiler builtin. `std::link_monitor` re-exports the same surface for
+/// programs that name `MonitorRef` / `MonitorError` / `PartitionPolicy`.
+///
+/// `AlreadyLinked` is an idempotent non-fatal condition — callers may treat it
+/// as `Ok(())`. `TargetDead` is returned when the target actor has already
+/// exited; the caller's exit handler will fire immediately.
+pub enum LinkError {
+    AlreadyLinked;
+    TargetDead;
+}
+
 /// Message contract for actor types used behind `LocalPid<A>` / `RemotePid<A>`.
 ///
 /// Named actors opt into the erased `Pid` surface by implementing this trait

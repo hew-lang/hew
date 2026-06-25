@@ -1,6 +1,10 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint::black_box;
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "benchmark workload; truncation is intentional"
+)]
 fn allocation_workload(iterations: usize) -> usize {
     let mut total = 0;
     for i in 0..iterations {

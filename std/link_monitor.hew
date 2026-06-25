@@ -1,28 +1,23 @@
 //! Actor monitor / link handle helpers.
 //!
 //! Import `std::link_monitor` when you want to name `MonitorRef`,
-//! `LinkError`, `MonitorError`, or `PartitionPolicy` explicitly. The
-//! `monitor(actor)` builtin returns `MonitorRef`; the `link(actor)` builtin
-//! returns `Result<(), LinkError>`.
+//! `MonitorError`, or `PartitionPolicy` explicitly. The `monitor(actor)`
+//! builtin returns `MonitorRef`; the `link(actor)` builtin returns
+//! `Result<(), LinkError>` — `LinkError` is prelude-published from
+//! `std/builtins.hew` (like `SendError`), so it needs no import.
 //!
-//! v0.5 link/monitor builtins return through the Cluster 2 composite-return
-//! spine, which lands in v0.6. The runtime symbols exist (`hew_actor_link`,
-//! `hew_actor_monitor`), but the user-source surface fails closed today. See
-//! commit `1698840f` for the explicit deferral.
+//! link/monitor builtins return through the value-position composite-return
+//! spine: `link()` builds `Result<(), LinkError>` and `monitor()` builds
+//! `MonitorRef` in place from the runtime ref_id.
 
 // WASM-TODO(#1451): `MonitorRef` and `LinkError` depend on the native actor
 // monitor / link runtime. The checker rejects `monitor()` and `link()` on
 // wasm32 via the existing Link/monitor gate.
-/// Error returned by `link(handle)`.
-///
-/// `AlreadyLinked` is an idempotent non-fatal condition — callers may
-/// treat it as `Ok(())`.  `TargetDead` is returned when the target actor
-/// has already exited; the caller's exit handler will fire immediately.
-pub enum LinkError {
-    AlreadyLinked;
-    TargetDead;
-}
-
+//
+// `LinkError` is prelude-published from `std/builtins.hew` (the error type of
+// the `link()` builtin, like `SendError` for `.tell`), so it is NOT redeclared
+// here — that would collide with the always-loaded prelude on import. Programs
+// name `LinkError::AlreadyLinked` / `TargetDead` without importing this module.
 /// Error returned when a monitor delivery cannot be completed.
 pub enum MonitorError {
     /// The route to the monitored peer is unavailable or the peer is suspect.

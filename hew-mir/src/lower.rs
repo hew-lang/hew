@@ -20577,7 +20577,20 @@ impl Builder {
             "hew_duplex_close" => self.lower_duplex_close(hir_args, site, context, result_ty),
             "hew_supervisor_stop" => self.lower_supervisor_stop(hir_args, site),
             "hew_actor_link" | "hew_actor_monitor" => {
-                self.lower_actor_link_or_monitor(symbol, hir_args, site, context)
+                self.lower_actor_link_or_monitor(symbol, hir_args, site, context, result_ty)
+            }
+            // `hew_actor_demonitor(ref_id: i64) -> void`: cancels a monitor.
+            // The auto-drop path for a MonitorRef value (scope-exit, the common
+            // case) goes through RuntimeDropDescriptor::MonitorRefClose →
+            // lower_drop_runtime (struct-field extraction in llvm.rs), NOT this
+            // arm. This arm lowers the DIRECT call in the body of
+            // `impl MonitorRef { fn close(self) { hew_actor_demonitor(self.ref_id) } }`
+            // (std/link_monitor.hew): a program that `import std::link_monitor`s
+            // lowers that inherent `close` body, whose `unsafe` block calls the
+            // symbol directly with a plain i64 `ref_id`. Returns void; a
+            // value-needed context is fail-closed in the helper.
+            "hew_actor_demonitor" => {
+                self.lower_simple_void_runtime_call(symbol, hir_args, site, context)
             }
             "hew_actor_unlink" => self.lower_actor_unlink(hir_args, site, context),
             "hew_bytes_push" => self.lower_bytes_push(hir_args, site, context),
@@ -21092,18 +21105,41 @@ impl Builder {
         dest
     }
 
-    /// Emit `Instr::CallRuntimeAbi` for discarded `link` / `monitor` calls.
+    /// Lower `link(target)` / `monitor(target)` to `Instr::CallRuntimeAbi`,
+    /// constructing the composite return value (`Result<(), LinkError>` or
+    /// `MonitorRef`) when the call is in value-needed context.
     ///
-    /// Statement-position calls are authorised by `HirStmtKind::Expr` before
-    /// `lower_value` is entered. Value-needed calls still fail closed because
-    /// the current codegen spine cannot construct `Result<(), LinkError>` or
-    /// `MonitorRef`.
+    /// **Statement-position** (`context == Discarded`): emit the ABI call with
+    /// `dest = None`. The codegen handler calls `hew_actor_link` / discards the
+    /// `hew_actor_monitor` u64 return — no composite needed.
+    ///
+    /// **Value-needed** (`context == ValueNeeded`): two shapes:
+    ///
+    /// - `link` (void runtime ABI): allocate a `Result<(), LinkError>` dest
+    ///   local from the checker-authoritative `result_ty`, emit the ABI call
+    ///   with `dest = Some(result_local)`. The codegen handler (`runtime_abi.rs`
+    ///   `ActorLink` arm) detects the dest and calls `emit_result_ok(dest, None)`
+    ///   to write `tag = 0` (Ok, no payload) — the only shape because
+    ///   `hew_actor_link` is void/infallible at the runtime today.
+    ///
+    /// - `monitor` (i64 runtime ABI → `MonitorRef` struct): allocate a raw `i64`
+    ///   dest for the runtime return, emit the ABI call storing the `ref_id` into
+    ///   it, then emit `Instr::RecordInit` to assemble `MonitorRef { ref_id }`
+    ///   into a freshly-allocated `MonitorRef` local from `result_ty`. Returns
+    ///   the `MonitorRef` local.
+    ///
+    /// **Null-self window (INTERIM):** `hew_actor_self()` returns null outside an
+    /// actor dispatch context. The "only valid in actor context" fail-closed gate
+    /// belongs to the actor-messaging lane and is not installed here. Calls from
+    /// `main` / free functions are an out-of-context window; the runtime handles
+    /// null self gracefully (`hew_actor_monitor` returns `ref_id = 0`).
     fn lower_actor_link_or_monitor(
         &mut self,
         symbol: &str,
         hir_args: &[hew_hir::HirExpr],
         site: hew_hir::SiteId,
         context: RuntimeCallContext,
+        result_ty: Option<&ResolvedTy>,
     ) -> Option<Place> {
         // ARITY: the user-facing surface is 1-arg — `link(target)` /
         // `monitor(target)`. The linking/monitoring subject is the implicit
@@ -21112,12 +21148,6 @@ impl Builder {
         // (`hew_actor_link(parent, child)` / `hew_actor_monitor(watcher,
         // target)`) is satisfied by synthesizing `hew_actor_self()` as arg0
         // and the user target as arg1.
-        //
-        // INTERIM (out-of-context window): `hew_actor_self()` returns null
-        // when called outside an actor dispatch context. The companion
-        // "only valid in actor context" fail-closed gate is deferred (it
-        // belongs to the actor-messaging lane); until it lands, calling
-        // link/monitor outside an actor is an interim out-of-context window.
         if hir_args.len() != 1 {
             self.diagnostics.push(MirDiagnostic {
                 kind: MirDiagnosticKind::NotYetImplemented {
@@ -21132,26 +21162,6 @@ impl Builder {
             return None;
         }
 
-        if context == RuntimeCallContext::ValueNeeded {
-            let return_shape = match symbol {
-                "hew_actor_link" => "Result<(), LinkError>",
-                "hew_actor_monitor" => "MonitorRef",
-                _ => unreachable!("only link/monitor symbols reach this helper"),
-            };
-            self.diagnostics.push(MirDiagnostic {
-                kind: MirDiagnosticKind::NotYetImplemented {
-                    construct: format!("runtime call `{symbol}` value result"),
-                    site,
-                },
-                note: format!(
-                    "`{symbol}` requires {return_shape} construction in value-needed \
-                     context; discarded statement-position calls are wired with dest=None, \
-                     but composite return construction remains fail-closed"
-                ),
-            });
-            return None;
-        }
-
         // arg1: the user-provided target handle. Lower it first so a failure
         // to lower the target is reported before we emit the self-handle call.
         let target = self.lower_value(&hir_args[0])?;
@@ -21159,8 +21169,68 @@ impl Builder {
         // arg0: synthesize the implicit `self` subject via `hew_actor_self()`.
         let self_handle = self.emit_actor_self_handle();
 
-        self.push_runtime_call(symbol, vec![self_handle, target], None);
-        None
+        if context != RuntimeCallContext::ValueNeeded {
+            // Statement-position (Discarded): emit with dest=None. The codegen
+            // handler calls the C ABI and ignores the return.
+            self.push_runtime_call(symbol, vec![self_handle, target], None);
+            return None;
+        }
+
+        // Value-needed: construct the composite return.
+        // `result_ty` carries the checker-authoritative return type:
+        //   hew_actor_link   → Result<(), LinkError>
+        //   hew_actor_monitor → MonitorRef
+        // Fail closed if the checker did not record a return type — a
+        // checker-boundary violation that the HIR→MIR handoff must not
+        // propagate silently.
+        let composite_ty = if let Some(ty) = result_ty {
+            ty.clone()
+        } else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: format!("runtime call `{symbol}` value result"),
+                    site,
+                },
+                note: format!(
+                    "`{symbol}` value-needed path requires a checker-authoritative \
+                     result type; result_ty was None (checker did not record a type \
+                     for this call site — boundary violation)"
+                ),
+            });
+            return None;
+        };
+
+        match symbol {
+            "hew_actor_link" => {
+                // hew_actor_link is void/infallible. Allocate the
+                // Result<(), LinkError> dest and pass it to the ABI call.
+                // The codegen ActorLink handler sees the dest and emits
+                // `emit_result_ok(dest, None)` to write tag=0 (Ok, no payload).
+                let result_local = self.alloc_local(composite_ty);
+                self.push_runtime_call(symbol, vec![self_handle, target], Some(result_local));
+                Some(result_local)
+            }
+            "hew_actor_monitor" => {
+                // hew_actor_monitor returns a u64 ref_id. Store the raw i64
+                // into a temp local, then assemble MonitorRef { ref_id } via
+                // RecordInit. The codegen ActorMonitor handler stores the i64
+                // call result into the raw dest; RecordInit copies it into the
+                // struct field.
+                let ref_id_local = self.alloc_local(ResolvedTy::I64);
+                self.push_runtime_call(symbol, vec![self_handle, target], Some(ref_id_local));
+                // Assemble MonitorRef { ref_id: i64 } from the raw ref_id.
+                // FieldOffset(0) is the declaration-order index of `ref_id`
+                // in `MonitorRef { ref_id: i64 }`.
+                let monitor_ref_local = self.alloc_local(composite_ty.clone());
+                self.push_instr(Instr::RecordInit {
+                    ty: composite_ty,
+                    fields: vec![(FieldOffset(0), ref_id_local)],
+                    dest: monitor_ref_local,
+                });
+                Some(monitor_ref_local)
+            }
+            _ => unreachable!("only hew_actor_link / hew_actor_monitor reach this helper"),
+        }
     }
 
     /// Emit `Instr::CallRuntimeAbi` for discarded `unlink` calls.
@@ -21213,6 +21283,33 @@ impl Builder {
         let self_handle = self.emit_actor_self_handle();
 
         self.push_runtime_call("hew_actor_unlink", vec![self_handle, target], None);
+        None
+    }
+
+    /// Pass-through handler for void-returning runtime symbols that carry no
+    /// MIR-level composite-return semantics. The sole consumer today is
+    /// `hew_actor_demonitor`, called directly from the body of the stdlib
+    /// `impl MonitorRef { fn close(self) }` inherent method (lowered when a
+    /// program imports `std::link_monitor`); the caller is responsible for
+    /// lowering args correctly.
+    ///
+    /// Returns `None` (unit) in both statement and value-needed position — a
+    /// void call appearing as the last expression in a block is valid Hew; the
+    /// block yields unit. The `context` parameter is accepted but unused
+    /// because the void→unit semantics are uniform across both positions.
+    fn lower_simple_void_runtime_call(
+        &mut self,
+        symbol: &str,
+        hir_args: &[hew_hir::HirExpr],
+        _site: hew_hir::SiteId,
+        _context: RuntimeCallContext,
+    ) -> Option<Place> {
+        let mut arg_places = Vec::with_capacity(hir_args.len());
+        for arg in hir_args {
+            let p = self.lower_value(arg)?;
+            arg_places.push(p);
+        }
+        self.push_runtime_call(symbol, arg_places, None);
         None
     }
 
@@ -26965,6 +27062,7 @@ fn elaborate(
         &checked.blocks,
         &lifo_drops,
         &dataflow_result.exit_states,
+        &dataflow_result.entry_states,
         &builder.binding_locals,
         &checked
             .cooperate_sites
@@ -34284,10 +34382,22 @@ fn is_vec_copy_in_element_store_symbol(callee: &str) -> bool {
               with per-arm payload construction; the line count is the \
               variant count, not deep nesting"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct producer-supplied input the per-exit \
+              drop planner reads independently (the LIFO template, the exit- and \
+              entry-state dataflow maps, the binding→Place / binding→scope tables, \
+              the cancellation + loop-back-edge block sets); bundling them into a \
+              struct would add indirection without clarifying the data flow"
+)]
 fn enumerate_exits(
     blocks: &[BasicBlock],
     lifo: &[ElabDrop],
     exit_states: &std::collections::HashMap<
+        u32,
+        std::collections::BTreeMap<hew_hir::BindingId, dataflow::BindingState>,
+    >,
+    entry_states: &std::collections::HashMap<
         u32,
         std::collections::BTreeMap<hew_hir::BindingId, dataflow::BindingState>,
     >,
@@ -34324,13 +34434,16 @@ fn enumerate_exits(
         .map(|(binding, place)| (*place, *binding))
         .collect();
 
-    let drops_for_exit = |block_id: u32| -> Vec<ElabDrop> {
-        let Some(state_map) = exit_states.get(&block_id) else {
-            // No dataflow result for this block (defensive — every
-            // reachable block has an exit_state entry after
-            // analyze). Fall back to the function-wide LIFO.
-            return drops_template.clone();
-        };
+    // Narrow the function-wide LIFO to the drops whose owning binding is
+    // live (`Live` / `MaybeConsumed` / `AliasedIntoAggregate`) in `state_map`.
+    // A binding `Consumed` (moved out) or `Uninit` (not yet, or never,
+    // constructed) on the reaching path is excluded — firing its drop would
+    // double-free a moved value or free/demonitor an uninitialised slot.
+    let filter_drops_by_state = |state_map: &std::collections::BTreeMap<
+        hew_hir::BindingId,
+        dataflow::BindingState,
+    >|
+     -> Vec<ElabDrop> {
         drops_template
             .iter()
             .filter(|drop| match place_to_binding.get(&drop.place) {
@@ -34352,6 +34465,34 @@ fn enumerate_exits(
             })
             .cloned()
             .collect()
+    };
+
+    let drops_for_exit = |block_id: u32| -> Vec<ElabDrop> {
+        let Some(state_map) = exit_states.get(&block_id) else {
+            // No dataflow result for this block (defensive — every
+            // reachable block has an exit_state entry after
+            // analyze). Fall back to the function-wide LIFO.
+            return drops_template.clone();
+        };
+        filter_drops_by_state(state_map)
+    };
+
+    // Drop set for a `CooperateKind::FunctionEntry` cancel exit. The cancel
+    // branch leaves the function prologue BEFORE the entry block's own `Bind`
+    // statements run, so the live set is the block's ENTRY (in-) state, not
+    // its exit state. Using the exit state would over-include locals that the
+    // entry block constructs after the cooperate site — for a struct-shaped
+    // resource (`MonitorRef`) that means demonitoring an uninitialised stack
+    // slot (fail-open: a garbage `ref_id` could cancel an unrelated monitor).
+    // For a no-parameter function the entry state is empty, so the cancel exit
+    // drops nothing — matching the established baseline for every other
+    // resource. A by-value resource PARAMETER is `Live` at entry and is
+    // correctly retained. LESSONS: cleanup-all-exits (P0), raii-null-after-move.
+    let drops_for_entry_cancel = |block_id: u32| -> Vec<ElabDrop> {
+        let Some(state_map) = entry_states.get(&block_id) else {
+            return drops_template.clone();
+        };
+        filter_drops_by_state(state_map)
     };
 
     // Per-iteration drops for a loop-body back-edge `Goto`. Restricts
@@ -34650,16 +34791,31 @@ fn enumerate_exits(
         };
         plans.push(plan);
         if cancellation_blocks.contains(&block_id) {
-            plans.push((
-                ExitPath::Cancel { block: block_id },
-                DropPlan {
-                    drops: drops_for_exit(block_id),
-                },
-            ));
+            // The drop set depends on WHERE the cooperate-cancel branch leaves
+            // the function (see `CooperateKind`). A `FunctionEntry` site (always
+            // the entry block, id 0 — both `dataflow::analyze` and
+            // `compute_cooperate_sites` pin the entry block to 0) fires in the
+            // prologue, BEFORE this block's `Bind` statements run, so its live
+            // set is the block ENTRY state. A `LoopBackEdge` site fires after the
+            // back-edge block body, so its live set is the block EXIT state — the
+            // established loop-cancel posture, unchanged here.
+            let drops = if block_id == ENTRY_BLOCK_ID {
+                drops_for_entry_cancel(block_id)
+            } else {
+                drops_for_exit(block_id)
+            };
+            plans.push((ExitPath::Cancel { block: block_id }, DropPlan { drops }));
         }
     }
     (elab_blocks, plans)
 }
+
+/// The function entry block id. `dataflow::analyze` seeds parameter live-state
+/// at block 0 and `dataflow::compute_cooperate_sites` pins the `FunctionEntry`
+/// cooperate site to block 0; the MIR builder's `finalize_blocks` constructs the
+/// entry block as id 0. This single constant keeps the elaborator's
+/// FunctionEntry-cancel handling aligned with those producers.
+const ENTRY_BLOCK_ID: u32 = 0;
 
 // ============================================================================
 // Slice 3 (M2 substrate) drop-plan invariant tests.
@@ -35901,7 +36057,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
 
             // Exactly one Return plan for the single block.
             prop_assert_eq!(plans.len(), 1);
@@ -35956,7 +36112,7 @@ mod slice3_narrowing_proptests {
             let lifo = build_lifo(n);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
             let (_, plan) = &plans[0];
 
             // Expected: every binding NOT Consumed survives in the drop
@@ -35995,8 +36151,8 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
-            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (b1, p1) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (b2, p2) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
 
             prop_assert_eq!(b1.len(), b2.len());
             prop_assert_eq!(p1.len(), p2.len());
@@ -36022,7 +36178,7 @@ mod slice3_narrowing_proptests {
             let exit_states = build_exit_states(n, &moved_out);
             let binding_locals = build_binding_locals(n);
 
-            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
+            let (_, plans) = enumerate_exits(&blocks, &lifo, &exit_states, &HashMap::new(), &binding_locals, &HashSet::new(), &HashMap::new(), &HashMap::new());
             let (_, plan) = &plans[0];
 
             for d in &plan.drops {
@@ -36836,6 +36992,7 @@ mod enum_layout_tests {
                     && l.name != "SendError"
                     && l.name != "AskError"
                     && l.name != "TimeoutError"
+                    && l.name != "LinkError"
             })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Shape");
@@ -36893,6 +37050,7 @@ mod enum_layout_tests {
                     && l.name != "SendError"
                     && l.name != "AskError"
                     && l.name != "TimeoutError"
+                    && l.name != "LinkError"
             })
             .collect();
         assert_eq!(user_layouts.len(), 1, "expected one EnumLayout for Colour");
@@ -37094,6 +37252,7 @@ mod enum_layout_tests {
                     && l.name != "SendError"
                     && l.name != "AskError"
                     && l.name != "TimeoutError"
+                    && l.name != "LinkError"
             })
             .collect();
         assert_eq!(

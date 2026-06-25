@@ -402,36 +402,106 @@ fn discarded_link_and_monitor_emit_call_runtime_abi_without_dest() {
 }
 
 #[test]
-fn value_needed_monitor_stays_fail_closed_until_monitor_ref_construction() {
+fn value_needed_link_emits_call_runtime_abi_with_result_dest() {
+    // link() in value position: the MIR producer must emit hew_actor_link
+    // with dest=Some(Place::Local(N)) of type Result<(),LinkError>, with no
+    // NYI diagnostic.
     let source = link_monitor_source(
         r"
         let p = spawn Probe;
-        let m = monitor(p);
+        let r = link(p);
+        let _ = r;
         return 0;
         ",
     );
     let pipeline = pipeline_with_tc(&source);
     let raw = main_raw(&pipeline);
 
+    // No NYI diagnostics: the feature is now wired.
     assert!(
-        calls_for(raw, "hew_actor_monitor").is_empty(),
-        "value-needed monitor() must not emit CallRuntimeAbi until MonitorRef construction exists"
-    );
-    // Non-vacuous: prove the fail-closed gate actually FIRES — the producer
-    // must emit a NotYetImplemented diagnostic naming the symbol, the
-    // value-result construct, and the MonitorRef return shape. Absence of
-    // CallRuntimeAbi alone would be vacuous.
-    assert!(
-        pipeline.diagnostics.iter().any(|d| {
-            matches!(
-                &d.kind,
-                hew_mir::MirDiagnosticKind::NotYetImplemented { construct, .. }
-                    if construct.contains("hew_actor_monitor")
-                        && construct.contains("value result")
-            ) && d.note.contains("MonitorRef")
-        }),
-        "value-needed monitor() must fail closed with a MonitorRef diagnostic; got: {:?}",
+        pipeline.diagnostics.is_empty(),
+        "value-needed link() must produce no diagnostics; got: {:?}",
         pipeline.diagnostics
+    );
+
+    let calls = calls_for(raw, "hew_actor_link");
+    assert_eq!(
+        calls.len(),
+        1,
+        "expected exactly one hew_actor_link CallRuntimeAbi; got {calls:?}"
+    );
+    let call = calls[0];
+    assert_eq!(
+        call.args().len(),
+        2,
+        "hew_actor_link must carry two handles"
+    );
+    // Value-needed: dest must be Some(Place::Local(_)) — the Result<(),LinkError>
+    // local the codegen handler writes Ok(()) into.
+    assert!(
+        matches!(call.dest(), Some(Place::Local(_))),
+        "value-needed hew_actor_link must use dest=Some(Place::Local(_)); got {:?}",
+        call.dest()
+    );
+}
+
+#[test]
+fn value_needed_monitor_emits_call_runtime_abi_with_i64_dest_and_record_init() {
+    // monitor() in value position: the MIR producer must emit hew_actor_monitor
+    // with dest=Some(Place::Local(N: i64)) for the raw ref_id, then a RecordInit
+    // that assembles MonitorRef{ref_id} from that local. No NYI diagnostic.
+    //
+    // The MonitorRef is consumed with `let _ = m;` (move-to-wildcard), which
+    // routes through the real auto-drop path (RuntimeDropDescriptor::MonitorRefClose
+    // → lower_drop_runtime). It is deliberately NOT consumed via `m.close()`:
+    // `.close()` does not resolve as a method on `MonitorRef` from real source,
+    // so a `.close()` here would exercise a path no user program can reach.
+    let source = link_monitor_source(
+        r"
+        let p = spawn Probe;
+        let m = monitor(p);
+        let _ = m;
+        return 0;
+        ",
+    );
+    let pipeline = pipeline_with_tc(&source);
+    let raw = main_raw(&pipeline);
+
+    // No NYI diagnostics.
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "value-needed monitor() must produce no diagnostics; got: {:?}",
+        pipeline.diagnostics
+    );
+
+    let calls = calls_for(raw, "hew_actor_monitor");
+    assert_eq!(
+        calls.len(),
+        1,
+        "expected exactly one hew_actor_monitor CallRuntimeAbi; got {calls:?}"
+    );
+    let call = calls[0];
+    assert_eq!(
+        call.args().len(),
+        2,
+        "hew_actor_monitor must carry two handles"
+    );
+    // Value-needed: dest must be Some(Place::Local(_)) for the raw i64 ref_id.
+    assert!(
+        matches!(call.dest(), Some(Place::Local(_))),
+        "value-needed hew_actor_monitor must use dest=Some(Place::Local(_)); got {:?}",
+        call.dest()
+    );
+
+    // A RecordInit must follow to assemble MonitorRef{ref_id} from the raw i64.
+    let has_record_init = raw
+        .blocks
+        .iter()
+        .flat_map(|b| b.instructions.iter())
+        .any(|i| matches!(i, Instr::RecordInit { .. }));
+    assert!(
+        has_record_init,
+        "value-needed monitor() must produce a RecordInit to assemble MonitorRef{{ref_id}}"
     );
 }
 

@@ -19,21 +19,22 @@
 // deferred to a downstream `E_CODEGEN_FRONT` / D10 fall-through.
 //
 // Harness verb: hew check (negative — see run.sh).
-import hew::closableerr::{ Closable as C };
+import hew::closableerr::{Closable as C};
+
 import hew::closableerr2;
 
-pub type MonitorRef {
+pub type ClosableHandle {
     id: i64;
 }
 
-impl C for MonitorRef {
-    fn close(monitor_ref: MonitorRef) -> Result<(), closableerr2.CloseError> {
+impl C for ClosableHandle {
+    fn close(handle: ClosableHandle) -> Result<(), closableerr2.CloseError> {
         Ok(())
     }
 }
 
 fn main() {
-    let m = MonitorRef { id: 1 };
+    let m = ClosableHandle { id: 1 };
     match m.close() {
         Ok(_) => println("ok"),
         Err(_) => println("err"),

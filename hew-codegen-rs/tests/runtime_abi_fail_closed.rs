@@ -251,14 +251,18 @@ fn actor_link_and_monitor_runtime_calls_are_codegen_reachable_without_dest() {
 }
 
 #[test]
-fn actor_monitor_runtime_call_with_dest_still_fails_closed() {
+fn actor_monitor_runtime_call_with_i64_dest_succeeds() {
+    // hew_actor_monitor with dest=Some(Place::Local(i64)) now succeeds:
+    // the handler calls hew_actor_monitor → i64 ref_id and stores it into
+    // the dest. The SHIM fail-closed guard is removed; the MIR producer
+    // supplies an i64 dest and a subsequent RecordInit builds MonitorRef.
     let pipeline = pipeline_with_call_runtime_abi_parts(
         "hew_actor_monitor",
         vec![Place::ActorHandle(0), Place::ActorHandle(1)],
         Some(Place::Local(2)),
         vec![local_pid_ty(), local_pid_ty(), ResolvedTy::I64],
     );
-    let tmp = std::env::temp_dir().join("hew-mir-monitor-dest-fail-closed");
+    let tmp = std::env::temp_dir().join("hew-mir-monitor-dest-i64");
     let options = EmitOptions {
         module_name: "monitor_dest_probe",
         out_dir: &tmp,
@@ -270,14 +274,8 @@ fn actor_monitor_runtime_call_with_dest_still_fails_closed() {
         source_path: None,
     };
     let result = emit_module(&pipeline, &options);
-    match result {
-        Err(CodegenError::FailClosed(msg)) => {
-            assert!(
-                msg.contains("hew_actor_monitor") && msg.contains("MonitorRef"),
-                "dest-slot fail-closed message must name hew_actor_monitor and MonitorRef; got: {msg}"
-            );
-        }
-        Err(other) => panic!("expected monitor dest fail-closed, got {other:?}"),
-        Ok(_) => panic!("expected monitor CallRuntimeAbi with dest to fail closed"),
-    }
+    assert!(
+        result.is_ok(),
+        "hew_actor_monitor CallRuntimeAbi with i64 dest must succeed (SHIM removed); got {result:?}"
+    );
 }

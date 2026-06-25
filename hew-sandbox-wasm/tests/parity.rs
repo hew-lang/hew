@@ -313,6 +313,46 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "examples/playground/types/vec_f64_nonfinite_contains.hew",
         accepted_divergences: &[],
     },
+    ParityCase {
+        test_name: "bool_not",
+        source_rel: "examples/sandbox-graduation/bool_not.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "scalar_match_int",
+        source_rel: "examples/sandbox-graduation/scalar_match_int.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "scalar_match_string",
+        source_rel: "examples/sandbox-graduation/scalar_match_string.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "bool_match",
+        source_rel: "examples/sandbox-graduation/bool_match.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "struct_functional_update",
+        source_rel: "examples/sandbox-graduation/struct_functional_update.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "struct_pattern_match",
+        source_rel: "examples/sandbox-graduation/struct_pattern_match.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "option_some_none",
+        source_rel: "examples/sandbox-graduation/option_some_none.hew",
+        accepted_divergences: &[],
+    },
+    ParityCase {
+        test_name: "const_reference",
+        source_rel: "examples/sandbox-graduation/const_reference.hew",
+        accepted_divergences: &[],
+    },
 ];
 
 #[derive(Debug, Clone, Copy)]

@@ -1,0 +1,13 @@
+type Point {
+    x: i64;
+    y: i64;
+    label: string;
+}
+
+fn main() {
+    let base = Point { x: 1, y: 2, label: "base" };
+    let updated = Point { x: 9, ..base };
+    println(updated.x);
+    println(updated.y);
+    println(updated.label);
+}

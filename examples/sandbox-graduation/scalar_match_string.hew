@@ -1,0 +1,12 @@
+fn code(s: string) -> i64 {
+    match s {
+        "red" => 1,
+        "blue" => 2,
+        _ => 0,
+    }
+}
+
+fn main() {
+    println(code("red"));
+    println(code("green"));
+}

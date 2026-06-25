@@ -6,9 +6,13 @@ type Counter {
     value: i64;
 }
 
-type Pair {
-    first: i64;
-    second: i64;
+type Inner {
+    value: i64;
+}
+
+type Outer {
+    inner: Inner;
+    label: string;
 }
 
 fn main() {
@@ -19,11 +23,12 @@ fn main() {
     println(f"b.value: {b.value}");
     println(f"equal:   {a.value == b.value}");
 
-    // Clone a record that contains a vector field so the deep-copy path is
-    // exercised: push to the clone must not affect the original.
-    let p = Pair { first: 3, second: 7 };
-    let q = p.clone();
-    println(f"p.first: {p.first}");
-    println(f"q.first: {q.first}");
-    println(f"p.second == q.second: {p.second == q.second}");
+    // Clone a nested record, then replace the original. The clone keeps the
+    // original nested field values.
+    var original = Outer { inner: Inner { value: 3 }, label: "before" };
+    let copied = original.clone();
+    original = Outer { inner: Inner { value: 99 }, label: "after" };
+    println(f"original.inner.value: {original.inner.value}");
+    println(f"copied.inner.value: {copied.inner.value}");
+    println(f"copied.label: {copied.label}");
 }

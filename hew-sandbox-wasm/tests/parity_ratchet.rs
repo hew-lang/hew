@@ -317,12 +317,8 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "boolean not (`!b`)",
-        // lower_expr's Unary arm only handles Negate; Not hits emit_unsupported.
         probe: "fn main() {\n    let b: bool = true;\n    println(!b);\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "Unary::Not has no lowering arm (only Negate); needs a bool.not opcode + handler",
-        },
+        coverage: Coverage::Parity("bool_not"),
     },
     Construct {
         id: "array-repeat literal (`[v; n]`)",
@@ -346,34 +342,22 @@ const CONSTRUCTS: &[Construct] = &[
     Construct {
         id: "struct functional-update (`R { x: v, ..base }`)",
         probe: "type P { x: i64; y: i64; }\nfn main() {\n    let a = P { x: 1, y: 2 };\n    let b = P { x: 9, ..a };\n    println(b.y);\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "StructInit lowering ignores `base`; functional-update fields are not copied so b.y traps/diverges",
-        },
+        coverage: Coverage::Parity("struct_functional_update"),
     },
     Construct {
         id: "scalar-literal match (i64 scrutinee)",
         probe: "fn pick(n: i64) -> string {\n    match n { 1 => \"one\", _ => \"many\" }\n}\nfn main() {\n    println(pick(1));\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "lower_match lowers EVERY match as enum.tag dispatch; a non-enum scrutinee traps invalid_enum_tag",
-        },
+        coverage: Coverage::Parity("scalar_match_int"),
     },
     Construct {
         id: "scalar-literal match (string scrutinee)",
         probe: "fn code(s: string) -> i64 {\n    match s { \"a\" => 1, _ => 0 }\n}\nfn main() {\n    println(code(\"a\"));\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "string match lowers as enum.tag dispatch and traps; needs scalar-equality match lowering",
-        },
+        coverage: Coverage::Parity("scalar_match_string"),
     },
     Construct {
         id: "bool match",
         probe: "fn f(b: bool) -> i64 {\n    match b { true => 1, false => 0 }\n}\nfn main() {\n    println(f(true));\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "bool match lowers as enum.tag dispatch and traps; needs scalar-equality match lowering",
-        },
+        coverage: Coverage::Parity("bool_match"),
     },
     Construct {
         id: "tuple value + tuple-let destructure",
@@ -463,23 +447,17 @@ const CONSTRUCTS: &[Construct] = &[
     Construct {
         id: "Option Some/None construction",
         probe: "fn main() {\n    let o = Some(5);\n    println(match o { Some(x) => x, None => 0 });\n}\n",
-        coverage: Coverage::Parity("option_result_methods"),
+        coverage: Coverage::Parity("option_some_none"),
     },
     Construct {
         id: "struct pattern in match arm",
         probe: "type Point { x: i64; y: i64; }\nfn sum(p: Point) -> i64 {\n    match p { Point { x: a, y: b } => a + b }\n}\nfn main() {\n    println(sum(Point { x: 3, y: 4 }));\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "lower_match early-rejects Struct/Tuple arm patterns -> emit_unsupported -> trap",
-        },
+        coverage: Coverage::Parity("struct_pattern_match"),
     },
     Construct {
         id: "const item reference",
         probe: "const LIMIT: i64 = 100;\nfn main() {\n    println(LIMIT);\n}\n",
-        coverage: Coverage::NotYetRunnable {
-            failure: Failure::Trap,
-            reason: "const value is not bound; the identifier reference hits the identifier catch-all -> emit_unsupported -> trap (prints unit)",
-        },
+        coverage: Coverage::Parity("const_reference"),
     },
 
     // ───────────────── Fail-closed: profile REJECTS (no bytecode) ─────────────────
@@ -785,7 +763,7 @@ fn every_required_parity_case_backs_a_construct() {
 /// justifying a removed admission in the same commit.
 #[test]
 fn runnable_coverage_does_not_shrink() {
-    const RUNNABLE_BASELINE: usize = 43; // +3: vec_inclusive_slice, record_clone, fn_field_call
+    const RUNNABLE_BASELINE: usize = 50; // +7: bool_not, scalar matches, struct update/pattern, const refs
     let runnable = CONSTRUCTS
         .iter()
         .filter(|c| matches!(c.coverage, Coverage::Parity(_)))

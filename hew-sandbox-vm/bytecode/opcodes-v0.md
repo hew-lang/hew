@@ -34,6 +34,12 @@ Terminators are separate from instructions and are listed in
 | `const.string` | string local | literal string | UTF-8 string. |
 | `const.regex` | regex pattern local | literal pattern string | Encoding only; regex compilation may trap or reject later. |
 
+## Booleans
+
+| Opcode | Result | Operand shape | Notes |
+| --- | --- | --- | --- |
+| `bool.not` | bool | value | Logical negation. |
+
 ## Locals and moves
 
 | Opcode | Result | Operand shape | Notes |

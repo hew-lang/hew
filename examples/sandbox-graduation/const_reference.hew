@@ -1,0 +1,5 @@
+const LIMIT: i64 = 100;
+
+fn main() {
+    println(LIMIT);
+}

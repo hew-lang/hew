@@ -1,6 +1,6 @@
 a.value: 10
 b.value: 10
 equal:   true
-p.first: 3
-q.first: 3
-p.second == q.second: true
+original.inner.value: 99
+copied.inner.value: 3
+copied.label: before

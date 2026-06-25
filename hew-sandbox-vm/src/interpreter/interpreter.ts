@@ -306,6 +306,14 @@ class Interpreter {
       case "const.regex":
         this.writeDst(frame, instruction, this.compileRegex(this.stringArg(instruction.args[0], instruction.span), instruction.span));
         return;
+      case "bool.not": {
+        const value = this.resolve(frame, instruction.args[0], instruction.span);
+        if (value.kind !== "bool") {
+          this.trap("invalid_local", "bool.not requires a bool operand", instruction.span);
+        }
+        this.writeDst(frame, instruction, { kind: "bool", value: !value.value });
+        return;
+      }
       case "local.get":
       case "local.move":
       case "local.borrow":

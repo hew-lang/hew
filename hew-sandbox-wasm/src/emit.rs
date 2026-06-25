@@ -5,7 +5,7 @@ use hew_parser::ast::{
     Item, Literal, MatchArm, Pattern, Program, ReceiveFnDecl, Spanned, Stmt, TypeBodyItem,
     TypeDeclKind, VariantKind,
 };
-use hew_types::check::{SpanKey, TypeDefKind, VariantDef};
+use hew_types::check::{PatternKind, SpanKey, TypeDefKind, VariantDef};
 use hew_types::{BuiltinType, Ty};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -49,6 +49,7 @@ struct PackageEmitter<'a> {
     capabilities: BTreeMap<String, Capability>,
     record_field_indexes: BTreeMap<String, BTreeMap<String, usize>>,
     enum_variant_tags: BTreeMap<String, (String, usize, Vec<Ty>)>,
+    const_literals: BTreeMap<String, Literal>,
     user_functions: BTreeSet<String>,
     /// Actor descriptor tables keyed by the actor's `type:` id, populated in
     /// `collect_layouts` and serialized into `layouts.actors`.
@@ -83,6 +84,7 @@ impl<'a> PackageEmitter<'a> {
             capabilities: BTreeMap::new(),
             record_field_indexes: BTreeMap::new(),
             enum_variant_tags: BTreeMap::new(),
+            const_literals: BTreeMap::new(),
             user_functions: BTreeSet::new(),
             actor_layouts: BTreeMap::new(),
             actor_field_order: BTreeMap::new(),
@@ -95,6 +97,7 @@ impl<'a> PackageEmitter<'a> {
 
     fn emit(&mut self, program: &Program) -> Result<SandboxBytecodePackage, CompileError> {
         self.collect_user_functions(program);
+        self.collect_const_literals(program);
         self.collect_layouts(program);
         self.ensure_core_types();
 
@@ -178,6 +181,16 @@ impl<'a> PackageEmitter<'a> {
         for (item, _) in &program.items {
             if let Item::Function(function) = item {
                 self.user_functions.insert(function.name.clone());
+            }
+        }
+    }
+
+    fn collect_const_literals(&mut self, program: &Program) {
+        for (item, _) in &program.items {
+            if let Item::Const(const_decl) = item {
+                if let Some(literal) = const_literal(&const_decl.value.0) {
+                    self.const_literals.insert(const_decl.name.clone(), literal);
+                }
             }
         }
     }
@@ -1824,6 +1837,8 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                         None,
                     );
                     Ok(dst)
+                } else if let Some(literal) = self.package.const_literals.get(name).cloned() {
+                    Ok(self.lower_literal(&literal, span.clone()))
                 } else {
                     self.emit_unsupported(Some(span.clone()));
                     Ok(self.emit_const_unit(Some(span.clone())))
@@ -1847,6 +1862,16 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                         None,
                     );
                     Ok(dst)
+                } else if *op == hew_parser::ast::UnaryOp::Not {
+                    let dst = self.temp_local(&Ty::Bool, Some(span.clone()));
+                    self.emit_instruction(
+                        "bool.not",
+                        Some(dst.clone()),
+                        vec![Operand::local(value)],
+                        Some(span.clone()),
+                        None,
+                    );
+                    Ok(dst)
                 } else {
                     self.emit_unsupported(Some(span.clone()));
                     Ok(value)
@@ -1858,35 +1883,9 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 method,
                 args,
             } => self.lower_method_call(receiver, method, args, span.clone()),
-            Expr::StructInit { name, fields, .. } => {
-                let mut field_values = BTreeMap::new();
-                for (field, value) in fields {
-                    field_values.insert(field.clone(), self.lower_expr(value)?);
-                }
-                let type_id = self.package.type_id_for_named(name, &[]);
-                let mut args = vec![Operand::ty(type_id)];
-                if let Some(indexes) = self.package.record_field_indexes.get(name) {
-                    for field in indexes.keys() {
-                        if let Some(local) = field_values.get(field) {
-                            args.push(Operand::local(local.clone()));
-                        }
-                    }
-                } else {
-                    for (_, local) in field_values {
-                        args.push(Operand::local(local));
-                    }
-                }
-                let ty = self.ty_for_expr(expr);
-                let dst = self.temp_local(&ty, Some(span.clone()));
-                self.emit_instruction(
-                    "record.new",
-                    Some(dst.clone()),
-                    args,
-                    Some(span.clone()),
-                    None,
-                );
-                Ok(dst)
-            }
+            Expr::StructInit {
+                name, fields, base, ..
+            } => self.lower_struct_init(expr, name, fields, base.as_deref(), span.clone()),
             Expr::FieldAccess { object, field } => {
                 let object_ty = self.ty_for_expr(object);
                 // `supervisor.childName` resolves a running child actor handle.
@@ -2249,6 +2248,74 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 Ok(self.emit_const_unit(Some(span.clone())))
             }
         }
+    }
+
+    fn lower_struct_init(
+        &mut self,
+        expr: &Spanned<Expr>,
+        name: &str,
+        fields: &[(String, Spanned<Expr>)],
+        base: Option<&Spanned<Expr>>,
+        span: std::ops::Range<usize>,
+    ) -> Result<String, CompileError> {
+        let mut field_values = BTreeMap::new();
+        for (field, value) in fields {
+            field_values.insert(field.clone(), self.lower_expr(value)?);
+        }
+
+        let base_local = base.map(|base| self.lower_expr(base)).transpose()?;
+        let ty = self.ty_for_expr(expr);
+        let type_id = self.package.type_id_for_named(name, &[]);
+        let mut args = vec![Operand::ty(type_id.clone())];
+
+        let ordered_fields: Vec<String> = self.package.record_layouts.get(&type_id).map_or_else(
+            || field_values.keys().cloned().collect(),
+            |layout| {
+                let mut fields = layout.fields.clone();
+                fields.sort_by_key(|field| field.index);
+                fields.into_iter().map(|field| field.name).collect()
+            },
+        );
+
+        for (index, field) in ordered_fields.iter().enumerate() {
+            if let Some(local) = field_values.get(field) {
+                args.push(Operand::local(local.clone()));
+            } else if let Some(base_local) = &base_local {
+                let field_ty = self
+                    .package
+                    .type_output
+                    .type_defs
+                    .get(name)
+                    .and_then(|def| def.fields.get(field))
+                    .cloned()
+                    .unwrap_or(Ty::Unit);
+                let copied = self.temp_local(&field_ty, Some(span.clone()));
+                self.emit_instruction(
+                    "record.get",
+                    Some(copied.clone()),
+                    vec![
+                        Operand::local(base_local.clone()),
+                        Operand::literal(index as u64),
+                    ],
+                    Some(span.clone()),
+                    None,
+                );
+                args.push(Operand::local(copied));
+            } else {
+                self.emit_unsupported(Some(span.clone()));
+                return Ok(self.emit_const_unit(Some(span)));
+            }
+        }
+
+        let dst = self.temp_local(&ty, Some(span.clone()));
+        self.emit_instruction(
+            "record.new",
+            Some(dst.clone()),
+            args,
+            Some(span.clone()),
+            None,
+        );
+        Ok(dst)
     }
 
     fn lower_literal(&mut self, literal: &Literal, span: std::ops::Range<usize>) -> String {
@@ -3261,24 +3328,24 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         arms: &[MatchArm],
         span: std::ops::Range<usize>,
     ) -> Result<String, CompileError> {
-        if arms
-            .iter()
-            .any(|arm| matches!(arm.pattern.0, Pattern::Struct { .. } | Pattern::Tuple(_)))
-        {
-            self.emit_unsupported(Some(span.clone()));
-            return Ok(self.emit_const_unit(Some(span)));
-        }
+        let scrutinee_ty = self.ty_for_expr(scrutinee);
+        self.package.ensure_option_result_layout(&scrutinee_ty);
         let scrutinee_local = self.lower_expr(scrutinee)?;
         let result_ty = self.ty_for_span(&span);
         let result_local = self.declare_local(None, &result_ty, true, Some(span.clone()));
-        let tag_local = self.temp_local(&Ty::I64, Some(scrutinee.1.clone()));
-        self.emit_instruction(
-            "enum.tag",
-            Some(tag_local.clone()),
-            vec![Operand::local(scrutinee_local.clone())],
-            Some(scrutinee.1.clone()),
-            None,
-        );
+        let tag_local = if self.match_uses_enum_tag(&scrutinee_ty) {
+            let local = self.temp_local(&Ty::I64, Some(scrutinee.1.clone()));
+            self.emit_instruction(
+                "enum.tag",
+                Some(local.clone()),
+                vec![Operand::local(scrutinee_local.clone())],
+                Some(scrutinee.1.clone()),
+                None,
+            );
+            Some(local)
+        } else {
+            None
+        };
 
         let exit_span = self.package.spans.span_ref(&span);
         let (exit_idx, exit_id) = self.new_block("match_exit", exit_span);
@@ -3294,28 +3361,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             let (check_idx, _) = check_blocks[index].clone();
             self.switch_to(check_idx);
             let (_, arm_id) = &arm_blocks[index];
-            let pattern_tag = self.pattern_tag(&arm.pattern);
-            let pattern_is_catch_all = pattern_tag.is_none()
-                && matches!(arm.pattern.0, Pattern::Wildcard | Pattern::Identifier(_));
-            let tag = pattern_tag.unwrap_or(index);
-            let tag_const = self.lower_literal(
-                &Literal::Integer {
-                    value: i64::try_from(tag).unwrap_or(0),
-                    radix: hew_parser::ast::IntRadix::Decimal,
-                },
-                arm.pattern.1.clone(),
-            );
-            let cond = self.temp_local(&Ty::Bool, Some(arm.pattern.1.clone()));
-            self.emit_instruction(
-                "cmp.eq",
-                Some(cond.clone()),
-                vec![Operand::local(tag_local.clone()), Operand::local(tag_const)],
-                Some(arm.pattern.1.clone()),
-                None,
-            );
             let matched_id = guard_blocks[index]
                 .as_ref()
                 .map_or_else(|| arm_id.clone(), |(_, id)| id.clone());
+            let pattern_is_catch_all = self.pattern_is_catch_all(&arm.pattern, &scrutinee_ty);
             let else_id = Self::next_match_arm_id(
                 index,
                 arm.guard.is_some(),
@@ -3326,13 +3375,22 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 &exit_id,
             );
             let pattern_span = self.package.spans.span_ref(&arm.pattern.1);
-            self.terminate(Terminator::br_if(
-                Operand::local(cond),
-                matched_id,
-                else_id.clone(),
-                Vec::new(),
-                pattern_span,
-            ));
+            if self.pattern_is_unconditional(&arm.pattern, &scrutinee_ty) {
+                self.terminate(Terminator::br(matched_id, Vec::new(), pattern_span));
+            } else if let Some(cond) = self.lower_match_condition(
+                &arm.pattern,
+                &scrutinee_local,
+                &scrutinee_ty,
+                tag_local.as_deref(),
+            ) {
+                self.terminate(Terminator::br_if(
+                    Operand::local(cond),
+                    matched_id,
+                    else_id.clone(),
+                    Vec::new(),
+                    pattern_span,
+                ));
+            }
 
             if let (Some(guard), Some((guard_idx, _))) = (&arm.guard, guard_blocks[index].clone()) {
                 let guard_else_id = Self::match_guard_failure_id(index, &check_blocks, &exit_id);
@@ -3341,6 +3399,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     guard_idx,
                     &arm.pattern,
                     &scrutinee_local,
+                    &scrutinee_ty,
                     arm_id.clone(),
                     guard_else_id,
                 )?;
@@ -3349,7 +3408,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             let (arm_idx, _) = arm_blocks[index].clone();
             self.switch_to(arm_idx);
             let saved_bindings = self.bindings.clone();
-            self.bind_pattern_payloads(&arm.pattern, &scrutinee_local);
+            self.bind_pattern_payloads(&arm.pattern, &scrutinee_local, &scrutinee_ty);
             let value = self.lower_expr(&arm.body)?;
             self.emit_instruction(
                 "local.set",
@@ -3367,36 +3426,90 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         Ok(result_local)
     }
 
-    fn bind_pattern_payloads(&mut self, pattern: &Spanned<Pattern>, scrutinee_local: &str) {
-        if let Pattern::Constructor { name, patterns } = &pattern.0 {
-            let payload_tys = self
-                .package
-                .enum_variant_tags
-                .get(name)
-                .map(|(_, _, tys)| tys.clone())
-                .unwrap_or_default();
-            for (idx, payload_pattern) in patterns.iter().enumerate() {
-                if let Pattern::Identifier(binding) = &payload_pattern.0 {
-                    let ty = payload_tys.get(idx).cloned().unwrap_or(Ty::Unit);
-                    let local = self.declare_local(
-                        Some(binding.clone()),
-                        &ty,
-                        false,
-                        Some(payload_pattern.1.clone()),
-                    );
-                    self.emit_instruction(
-                        "enum.payload",
-                        Some(local.clone()),
-                        vec![
-                            Operand::local(scrutinee_local.to_string()),
-                            Operand::literal(idx as u64),
-                        ],
-                        Some(payload_pattern.1.clone()),
-                        None,
-                    );
-                    self.bindings.insert(binding.clone(), local);
+    fn bind_pattern_payloads(
+        &mut self,
+        pattern: &Spanned<Pattern>,
+        scrutinee_local: &str,
+        scrutinee_ty: &Ty,
+    ) {
+        match &pattern.0 {
+            Pattern::Identifier(binding) if self.pattern_tag(pattern, scrutinee_ty).is_none() => {
+                let local = self.declare_local(
+                    Some(binding.clone()),
+                    scrutinee_ty,
+                    false,
+                    Some(pattern.1.clone()),
+                );
+                self.emit_instruction(
+                    "local.set",
+                    None,
+                    vec![
+                        Operand::local(local.clone()),
+                        Operand::local(scrutinee_local.to_string()),
+                    ],
+                    Some(pattern.1.clone()),
+                    None,
+                );
+                self.bindings.insert(binding.clone(), local);
+            }
+            Pattern::Constructor { name, patterns } => {
+                let payload_tys = self
+                    .variant_info_for_name(name, scrutinee_ty)
+                    .map(|(_, tys)| tys)
+                    .unwrap_or_default();
+                for (idx, payload_pattern) in patterns.iter().enumerate() {
+                    if let Pattern::Identifier(binding) = &payload_pattern.0 {
+                        let ty = payload_tys.get(idx).cloned().unwrap_or(Ty::Unit);
+                        let local = self.declare_local(
+                            Some(binding.clone()),
+                            &ty,
+                            false,
+                            Some(payload_pattern.1.clone()),
+                        );
+                        self.emit_instruction(
+                            "enum.payload",
+                            Some(local.clone()),
+                            vec![
+                                Operand::local(scrutinee_local.to_string()),
+                                Operand::literal(idx as u64),
+                            ],
+                            Some(payload_pattern.1.clone()),
+                            None,
+                        );
+                        self.bindings.insert(binding.clone(), local);
+                    }
                 }
             }
+            Pattern::Struct { .. } | Pattern::Tuple(_) => {
+                let key = SpanKey::from(&pattern.1);
+                if let Some(resolution) = self.package.type_output.pattern_resolutions.get(&key) {
+                    if matches!(
+                        resolution.pattern_kind,
+                        PatternKind::StructPattern | PatternKind::TuplePattern
+                    ) {
+                        for binding in resolution.payload_bindings.clone() {
+                            let local = self.declare_local(
+                                Some(binding.binding_name.clone()),
+                                &binding.ty,
+                                false,
+                                Some(pattern.1.clone()),
+                            );
+                            self.emit_instruction(
+                                "record.get",
+                                Some(local.clone()),
+                                vec![
+                                    Operand::local(scrutinee_local.to_string()),
+                                    Operand::literal(binding.field_idx as u64),
+                                ],
+                                Some(pattern.1.clone()),
+                                None,
+                            );
+                            self.bindings.insert(binding.binding_name, local);
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -3417,20 +3530,119 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         (check_blocks, guard_blocks, arm_blocks)
     }
 
-    fn pattern_tag(&self, pattern: &Spanned<Pattern>) -> Option<usize> {
-        match &pattern.0 {
-            Pattern::Constructor { name, .. } => self
+    fn match_uses_enum_tag(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Named {
+                builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                ..
+            } => true,
+            Ty::Named { name, .. } => self
                 .package
-                .enum_variant_tags
+                .type_output
+                .type_defs
                 .get(name)
-                .map(|(_, tag, _)| *tag),
-            Pattern::Identifier(name) => self
-                .package
-                .enum_variant_tags
-                .get(name)
-                .map(|(_, tag, _)| *tag),
+                .is_some_and(|def| def.kind == TypeDefKind::Enum),
+            _ => false,
+        }
+    }
+
+    fn variant_info_for_name(&self, name: &str, scrutinee_ty: &Ty) -> Option<(usize, Vec<Ty>)> {
+        if let Some((_, tag, payload_tys)) = self.package.enum_variant_tags.get(name) {
+            return Some((*tag, payload_tys.clone()));
+        }
+        let short_name = name.rsplit("::").next().unwrap_or(name);
+        match scrutinee_ty {
+            Ty::Named {
+                builtin: Some(BuiltinType::Option),
+                args,
+                ..
+            } => match short_name {
+                "Some" => Some((0, vec![args.first().cloned().unwrap_or(Ty::Unit)])),
+                "None" => Some((1, Vec::new())),
+                _ => None,
+            },
+            Ty::Named {
+                builtin: Some(BuiltinType::Result),
+                args,
+                ..
+            } => match short_name {
+                "Ok" => Some((0, vec![args.first().cloned().unwrap_or(Ty::Unit)])),
+                "Err" => Some((1, vec![args.get(1).cloned().unwrap_or(Ty::Unit)])),
+                _ => None,
+            },
             _ => None,
         }
+    }
+
+    fn pattern_tag(&self, pattern: &Spanned<Pattern>, scrutinee_ty: &Ty) -> Option<usize> {
+        match &pattern.0 {
+            Pattern::Constructor { name, .. } | Pattern::Identifier(name) => self
+                .variant_info_for_name(name, scrutinee_ty)
+                .map(|(tag, _)| tag),
+            _ => None,
+        }
+    }
+
+    fn pattern_is_catch_all(&self, pattern: &Spanned<Pattern>, scrutinee_ty: &Ty) -> bool {
+        match &pattern.0 {
+            Pattern::Wildcard => true,
+            Pattern::Identifier(_) => self.pattern_tag(pattern, scrutinee_ty).is_none(),
+            Pattern::Struct { .. } | Pattern::Tuple(_) => !self.match_uses_enum_tag(scrutinee_ty),
+            _ => false,
+        }
+    }
+
+    fn pattern_is_unconditional(&self, pattern: &Spanned<Pattern>, scrutinee_ty: &Ty) -> bool {
+        self.pattern_is_catch_all(pattern, scrutinee_ty)
+    }
+
+    fn lower_match_condition(
+        &mut self,
+        pattern: &Spanned<Pattern>,
+        scrutinee_local: &str,
+        scrutinee_ty: &Ty,
+        tag_local: Option<&str>,
+    ) -> Option<String> {
+        if let Some(tag_local) = tag_local {
+            if let Some(tag) = self.pattern_tag(pattern, scrutinee_ty) {
+                let tag_const = self.lower_literal(
+                    &Literal::Integer {
+                        value: i64::try_from(tag).unwrap_or(0),
+                        radix: hew_parser::ast::IntRadix::Decimal,
+                    },
+                    pattern.1.clone(),
+                );
+                let cond = self.temp_local(&Ty::Bool, Some(pattern.1.clone()));
+                self.emit_instruction(
+                    "cmp.eq",
+                    Some(cond.clone()),
+                    vec![
+                        Operand::local(tag_local.to_string()),
+                        Operand::local(tag_const),
+                    ],
+                    Some(pattern.1.clone()),
+                    None,
+                );
+                return Some(cond);
+            }
+        } else if let Pattern::Literal(literal) = &pattern.0 {
+            let pattern_local = self.lower_literal(literal, pattern.1.clone());
+            let cond = self.temp_local(&Ty::Bool, Some(pattern.1.clone()));
+            self.emit_instruction(
+                "cmp.eq",
+                Some(cond.clone()),
+                vec![
+                    Operand::local(scrutinee_local.to_string()),
+                    Operand::local(pattern_local),
+                ],
+                Some(pattern.1.clone()),
+                None,
+            );
+            return Some(cond);
+        }
+
+        self.emit_unsupported(Some(pattern.1.clone()));
+        None
     }
 
     fn next_match_arm_id(
@@ -3463,18 +3675,25 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             .map_or_else(|| exit_id.to_string(), |(_, id)| id.clone())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "all 8 params are distinct per-call inputs (guard expr, \
+                  block index, pattern, scrutinee, type, two branch target ids); \
+                  no cohesive subset warrants a struct at one call site"
+    )]
     fn lower_match_guard_block(
         &mut self,
         guard: &Spanned<Expr>,
         guard_idx: usize,
         pattern: &Spanned<Pattern>,
         scrutinee_local: &str,
+        scrutinee_ty: &Ty,
         arm_id: String,
         else_id: String,
     ) -> Result<(), CompileError> {
         self.switch_to(guard_idx);
         let saved_bindings = self.bindings.clone();
-        self.bind_pattern_payloads(pattern, scrutinee_local);
+        self.bind_pattern_payloads(pattern, scrutinee_local, scrutinee_ty);
         let guard_local = self.lower_expr(guard)?;
         self.bindings = saved_bindings;
         if self.current_is_terminated() {
@@ -3801,22 +4020,22 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         arms: &[MatchArm],
         span: std::ops::Range<usize>,
     ) -> Result<(), CompileError> {
-        if arms
-            .iter()
-            .any(|arm| matches!(arm.pattern.0, Pattern::Struct { .. } | Pattern::Tuple(_)))
-        {
-            self.emit_unsupported(Some(span));
-            return Ok(());
-        }
+        let scrutinee_ty = self.ty_for_expr(scrutinee);
+        self.package.ensure_option_result_layout(&scrutinee_ty);
         let scrutinee_local = self.lower_expr(scrutinee)?;
-        let tag_local = self.temp_local(&Ty::I64, Some(scrutinee.1.clone()));
-        self.emit_instruction(
-            "enum.tag",
-            Some(tag_local.clone()),
-            vec![Operand::local(scrutinee_local.clone())],
-            Some(scrutinee.1.clone()),
-            None,
-        );
+        let tag_local = if self.match_uses_enum_tag(&scrutinee_ty) {
+            let local = self.temp_local(&Ty::I64, Some(scrutinee.1.clone()));
+            self.emit_instruction(
+                "enum.tag",
+                Some(local.clone()),
+                vec![Operand::local(scrutinee_local.clone())],
+                Some(scrutinee.1.clone()),
+                None,
+            );
+            Some(local)
+        } else {
+            None
+        };
 
         let exit_span = self.package.spans.span_ref(&span);
         let (exit_idx, exit_id) = self.new_block("match_exit", exit_span);
@@ -3832,28 +4051,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             let (check_idx, _) = check_blocks[index].clone();
             self.switch_to(check_idx);
             let (_, arm_id) = &arm_blocks[index];
-            let pattern_tag = self.pattern_tag(&arm.pattern);
-            let pattern_is_catch_all = pattern_tag.is_none()
-                && matches!(arm.pattern.0, Pattern::Wildcard | Pattern::Identifier(_));
-            let tag = pattern_tag.unwrap_or(index);
-            let tag_const = self.lower_literal(
-                &Literal::Integer {
-                    value: i64::try_from(tag).unwrap_or(0),
-                    radix: hew_parser::ast::IntRadix::Decimal,
-                },
-                arm.pattern.1.clone(),
-            );
-            let cond = self.temp_local(&Ty::Bool, Some(arm.pattern.1.clone()));
-            self.emit_instruction(
-                "cmp.eq",
-                Some(cond.clone()),
-                vec![Operand::local(tag_local.clone()), Operand::local(tag_const)],
-                Some(arm.pattern.1.clone()),
-                None,
-            );
             let matched_id = guard_blocks[index]
                 .as_ref()
                 .map_or_else(|| arm_id.clone(), |(_, id)| id.clone());
+            let pattern_is_catch_all = self.pattern_is_catch_all(&arm.pattern, &scrutinee_ty);
             let else_id = Self::next_match_arm_id(
                 index,
                 arm.guard.is_some(),
@@ -3864,13 +4065,22 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 &exit_id,
             );
             let pattern_span = self.package.spans.span_ref(&arm.pattern.1);
-            self.terminate(Terminator::br_if(
-                Operand::local(cond),
-                matched_id,
-                else_id.clone(),
-                Vec::new(),
-                pattern_span,
-            ));
+            if self.pattern_is_unconditional(&arm.pattern, &scrutinee_ty) {
+                self.terminate(Terminator::br(matched_id, Vec::new(), pattern_span));
+            } else if let Some(cond) = self.lower_match_condition(
+                &arm.pattern,
+                &scrutinee_local,
+                &scrutinee_ty,
+                tag_local.as_deref(),
+            ) {
+                self.terminate(Terminator::br_if(
+                    Operand::local(cond),
+                    matched_id,
+                    else_id.clone(),
+                    Vec::new(),
+                    pattern_span,
+                ));
+            }
 
             if let (Some(guard), Some((guard_idx, _))) = (&arm.guard, guard_blocks[index].clone()) {
                 let guard_else_id = Self::match_guard_failure_id(index, &check_blocks, &exit_id);
@@ -3879,6 +4089,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     guard_idx,
                     &arm.pattern,
                     &scrutinee_local,
+                    &scrutinee_ty,
                     arm_id.clone(),
                     guard_else_id,
                 )?;
@@ -3887,7 +4098,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             let (arm_idx, _) = arm_blocks[index].clone();
             self.switch_to(arm_idx);
             let saved_bindings = self.bindings.clone();
-            self.bind_pattern_payloads(&arm.pattern, &scrutinee_local);
+            self.bind_pattern_payloads(&arm.pattern, &scrutinee_local, &scrutinee_ty);
             // Discard the arm result (statement-position: side effects only).
             self.lower_expr(&arm.body)?;
             self.bindings = saved_bindings;
@@ -3920,6 +4131,8 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         let (then_idx, then_id) = self.new_block("ifl_then", span_ref.clone());
         let (exit_idx, exit_id) = self.new_block("ifl_exit", span_ref.clone());
 
+        let scrutinee_ty = self.ty_for_expr(expr);
+        self.package.ensure_option_result_layout(&scrutinee_ty);
         let scrutinee = self.lower_expr(expr)?;
         let tag_local = self.temp_local(&Ty::I64, Some(expr.1.clone()));
         self.emit_instruction(
@@ -3930,10 +4143,8 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             None,
         );
         let expected_tag = self
-            .package
-            .enum_variant_tags
-            .get(&constructor_name)
-            .map_or(0, |(_, tag, _)| *tag);
+            .variant_info_for_name(&constructor_name, &scrutinee_ty)
+            .map_or(0, |(tag, _)| tag);
         let expected_local = self.lower_literal(
             &Literal::Integer {
                 value: i64::try_from(expected_tag).unwrap_or(0),
@@ -3962,7 +4173,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
 
             self.switch_to(then_idx);
             let saved_bindings = self.bindings.clone();
-            self.bind_pattern_payloads(pattern, &scrutinee);
+            self.bind_pattern_payloads(pattern, &scrutinee, &scrutinee_ty);
             self.lower_block(body)?;
             self.bindings = saved_bindings;
             if !self.current_is_terminated() {
@@ -3987,7 +4198,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
 
             self.switch_to(then_idx);
             let saved_bindings = self.bindings.clone();
-            self.bind_pattern_payloads(pattern, &scrutinee);
+            self.bind_pattern_payloads(pattern, &scrutinee, &scrutinee_ty);
             self.lower_block(body)?;
             self.bindings = saved_bindings;
             if !self.current_is_terminated() {
@@ -4036,6 +4247,8 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         let result_ty = self.ty_for_expr(whole_expr);
         let result_local = self.declare_local(None, &result_ty, true, Some(span.clone()));
 
+        let scrutinee_ty = self.ty_for_expr(scrutinee_expr);
+        self.package.ensure_option_result_layout(&scrutinee_ty);
         let scrutinee = self.lower_expr(scrutinee_expr)?;
         let tag_local = self.temp_local(&Ty::I64, Some(scrutinee_expr.1.clone()));
         self.emit_instruction(
@@ -4046,10 +4259,8 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             None,
         );
         let expected_tag = self
-            .package
-            .enum_variant_tags
-            .get(&constructor_name)
-            .map_or(0, |(_, tag, _)| *tag);
+            .variant_info_for_name(&constructor_name, &scrutinee_ty)
+            .map_or(0, |(tag, _)| tag);
         let expected_local = self.lower_literal(
             &Literal::Integer {
                 value: i64::try_from(expected_tag).unwrap_or(0),
@@ -4076,7 +4287,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         // Then arm: bind the matched payload, lower the body, join its value.
         self.switch_to(then_idx);
         let saved_bindings = self.bindings.clone();
-        self.bind_pattern_payloads(pattern, &scrutinee);
+        self.bind_pattern_payloads(pattern, &scrutinee, &scrutinee_ty);
         let then_val = self
             .lower_block(body)?
             .unwrap_or_else(|| self.emit_const_unit(Some(span.clone())));
@@ -4395,6 +4606,24 @@ fn ty_from_type_expr(ty: &hew_parser::ast::TypeExpr) -> Ty {
         hew_parser::ast::TypeExpr::Borrow(inner) => Ty::Borrow {
             pointee: Box::new(ty_from_type_expr(&inner.0)),
         },
+    }
+}
+
+fn const_literal(expr: &Expr) -> Option<Literal> {
+    match expr {
+        Expr::Literal(literal) => Some(literal.clone()),
+        Expr::Unary {
+            op: hew_parser::ast::UnaryOp::Negate,
+            operand,
+        } => match &operand.0 {
+            Expr::Literal(Literal::Integer { value, radix }) => Some(Literal::Integer {
+                value: value.checked_neg()?,
+                radix: *radix,
+            }),
+            Expr::Literal(Literal::Float(value)) => Some(Literal::Float(-value)),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

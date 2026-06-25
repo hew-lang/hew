@@ -1,3 +1,26 @@
+# ── Linux linker (x86_64) ─────────────────────────────────────────────────────
+# Use mold on Linux x86_64 for faster incremental link times.  mold reduces
+# link time for hew-cli from ~5-10 s to ~0.5-1 s per incremental cycle.
+#
+# WHY: per-incremental link cost dominates iteration time for CLI-touching
+# changes; mold is a drop-in ld replacement that completes in milliseconds.
+# WHEN obsolete: if a future Cargo version supports a fallback-linker chain
+# or the default system linker reaches mold-level speed.
+# WHAT the real solution looks like: this entry, exactly as written, with
+# mold installed on every CI/CD Linux runner (see ci.yml "Install mold").
+#
+# GATE: this block is ignored on macOS, Windows, and non-x86_64 Linux.
+# Linux x86_64 users without mold can override for their session:
+#   export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=gcc
+# or install mold: apt install mold / dnf install mold
+#
+# CI installs mold unconditionally (ci.yml "Install build tools" step)
+# so the build never breaks on CI.  See LESSONS.md or the commit that
+# introduced this block for the cost evidence.
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=--ld-path=mold"]
+
 # Windows uses the LLVM linker from the same provisioned LLVM 22 toolchain that
 # supplies clang.exe for `hew build` and llvm-config for llvm-sys.  Keep this
 # pinned to lld-link rather than relying on a Developer Command Prompt: the

@@ -15,7 +15,7 @@ type Vec2 {
 }
 
 /// Destructuring a two-field record into separate bindings yields the correct
-/// field values. The dot-product of (3, 4) with itself is 9 + 16 = 25.
+/// field values. Vec2 { x: 3, y: 4 } destructures to x + y == 7.
 #[test]
 fn destruct_two_field_exact_sum() {
     let v = Vec2 { x: 3, y: 4 };

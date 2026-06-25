@@ -258,6 +258,7 @@ stable = [
   "hew_hashset_len_layout",
   "hew_hashset_new_with_layout",
   "hew_hashset_remove_layout",
+  "hew_hashset_to_vec_layout",
   "hew_home_dir",
   "hew_hostname",
   "hew_i64_to_string",

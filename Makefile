@@ -23,6 +23,7 @@
 #   make hew-native   — compiler driver + native libhew archive for `hew build`
 #   make adze         — just the package manager
 #   make observe      — just the TUI observer (hew-observe)
+#   make observe-functional-test — HTTP-backed functional observe harness
 #   make runtime      — just libhew_runtime.a
 #   make stdlib       — all stdlib packages + combine into libhew.a
 #   make wasm-runtime — WASM runtime + wire JSON/YAML/TOML archives
@@ -66,7 +67,7 @@
 #   make clean        — remove build/, target/
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks hew hew-native adze observe runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
+.PHONY: all build bootstrap install-hooks hew hew-native adze observe observe-functional-test runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
 .PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-fast test-stdlib test-hew test-hew-ratchet test-o2-differential test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
@@ -146,6 +147,9 @@ adze:
 # present next to the running hew binary or on PATH (see exec_sibling_binary).
 observe:
 	cargo build -p hew-observe
+
+observe-functional-test: hew-native observe
+	cargo test -p hew-observe --test functional -- --ignored --nocapture
 
 # Build the runtime static library (debug)
 runtime:

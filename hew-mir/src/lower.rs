@@ -24471,35 +24471,42 @@ impl Builder {
     /// or as new expression forms are added — can silently reopen the UAF.
     ///
     /// A base is provably safe in exactly two ways:
-    ///   (a) a bare live `BindingRef` — `alias_moved_owned_operand` consume-
-    ///       marks it, so the move-checker rejects any later read and the
-    ///       binding is excluded from its scope-exit drop: its fields are dead
-    ///       after the update; or
-    ///   (b) a materialised owner with no live named alias — a call/method/
-    ///       clone result (`makeInner()`, `o.inner.clone()`), a `Vec<T>`
-    ///       element load (`v[i]`) or slice, or a projection whose object chain
-    ///       bottoms out at one of those (`makeOuter().inner`,
-    ///       `o.items[0].inner`). See `expr_is_materialized_owner`.
+    ///   (a) a SYNTACTICALLY bare live `BindingRef` — `alias_moved_owned_-
+    ///       operand` consume-marks it, so the move-checker rejects any later
+    ///       read and the binding is excluded from its scope-exit drop: its
+    ///       fields are dead after the update. A binding wrapped in ANY
+    ///       control/block form does NOT qualify as (a): the consume does not
+    ///       peel wrappers, and a conditionally-selected binding cannot be
+    ///       soundly consumed — such a wrapper is held to (b) below, which
+    ///       rejects a bare-binding leaf. (Admitting `..{ base }` as (a) while
+    ///       the consume silently no-ops on the block is itself a UAF.)
+    ///   (b) a materialised owner with no live named alias — see
+    ///       `expr_is_materialized_owner`, which looks THROUGH wrapper forms
+    ///       (block tail, `if` branches, `match` arms) and requires EVERY
+    ///       reachable value to be a fresh owned rvalue (`makeInner()`,
+    ///       `o.inner.clone()`), a `Vec<T>` element / slice (`v[i]`), or a
+    ///       projection rooted at one (`makeOuter().inner`, `o.items[0].inner`).
     ///
     /// ANY other base — a projection of a LIVE binding (`o.inner`, `t.0`,
     /// `o.pair.0`, `t.0.inner`, nested), a machine-state field (`self.field`),
-    /// a `Const`/`Item` ref, a deref, an `if`/`match` value, or any future
-    /// expression form — is NOT provably safe and is rejected fail-closed.
+    /// a `Const`/`Item` ref, a deref, a wrapper whose tail/branch/arm is any
+    /// of those (`{ base }`, `if c { o.inner } else { makeInner() }`), or any
+    /// future expression form — is NOT provably safe and is rejected
+    /// fail-closed.
     fn base_is_safe_for_destructive_funcupdate(base: &HirExpr) -> bool {
-        match &base.kind {
-            // Peel a transparent tail-only block wrapper (`{ ..; b }`).
-            HirExprKind::Block(block) if block.statements.is_empty() => block
-                .tail
-                .as_deref()
-                .is_some_and(Self::base_is_safe_for_destructive_funcupdate),
-            // (a) Bare live binding — consume-marked, fields dead after update.
-            HirExprKind::BindingRef {
-                resolved: ResolvedRef::Binding(_),
-                ..
-            } => true,
-            // (b) Materialised owner / temporary with no live named alias.
-            _ => Self::expr_is_materialized_owner(base),
+        // (a) ONLY a syntactically bare binding is the consume case. NO wrapper
+        //     peeling here: a block/if/match-wrapped binding is not reliably
+        //     consume-marked, so it must instead prove materialised via (b).
+        if let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(_),
+            ..
+        } = &base.kind
+        {
+            return true;
         }
+        // (b) Every other base — INCLUDING every wrapper — is safe only if
+        //     every reachable value is a materialised owner with no live alias.
+        Self::expr_is_materialized_owner(base)
     }
 
     /// True when `expr` evaluates to a freshly MATERIALISED owner — a value in
@@ -24507,7 +24514,16 @@ impl Builder {
     /// fields. Used for the `(b)` arm of the funcupdate base allowlist and to
     /// recurse a projection's object chain.
     ///
-    /// Materialised owners:
+    /// COMPLETE THROUGH WRAPPERS: a value-passthrough form (a block tail, both
+    /// `if` branches, all `match` arm bodies) is materialised ONLY when EVERY
+    /// reachable value-producing position is itself materialised. A bare-binding
+    /// or live-projection leaf anywhere inside a wrapper fails the whole base
+    /// (it is not consume-marked through the wrapper, and a conditionally-
+    /// selected binding cannot be soundly consumed) — e.g.
+    /// `if c { o.inner } else { makeInner() }` and `{ let z = 0; o.inner }` are
+    /// rejected because a reachable value aliases the live `o`.
+    ///
+    /// Materialised leaves:
     ///   * a call / method / `.clone()` result — a fresh value written into its
     ///     own return slot (`Call`, the four method-call variants,
     ///     `RecordCloneCall`);
@@ -24527,10 +24543,10 @@ impl Builder {
     /// is safe, `o.inner` (rooted at a live binding) is not.
     ///
     /// EVERY other form — a `BindingRef` (live local, `Const`, or `Item`), a
-    /// `MachineFieldAccess` (`self.field`), a deref, an `if`/`match`, or any
+    /// `MachineFieldAccess` (`self.field`), a deref, a loop-break value, or any
     /// expression form added later — returns false (fail closed).
     // The owned-rvalue arm and the `Index`/`Slice` arm both yield `true` but
-    // are kept separate: they admit a base for DIFFERENT safety reasons (a
+    // are kept separate: they admit a leaf for DIFFERENT safety reasons (a
     // call result is a fresh return-slot value; a `Vec` element is heap-
     // independent via push-clone + refcount). Merging them would erase that
     // distinction in a security-critical allowlist.
@@ -24540,11 +24556,35 @@ impl Builder {
     )]
     fn expr_is_materialized_owner(expr: &HirExpr) -> bool {
         match &expr.kind {
-            // Peel a transparent tail-only block wrapper.
-            HirExprKind::Block(block) if block.statements.is_empty() => block
+            // ---- value-passthrough wrappers: ALL reachable values must be
+            //      materialised (look THROUGH; reject any bare-binding leaf) ----
+            // A block's value is its tail (statements are side-effecting only);
+            // peel to the tail regardless of statement count.
+            HirExprKind::Block(block) => block
                 .tail
                 .as_deref()
                 .is_some_and(Self::expr_is_materialized_owner),
+            // BOTH `if` branches must be materialised. A missing `else` cannot
+            // produce an owned-record value, so it fails closed.
+            HirExprKind::If {
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                Self::expr_is_materialized_owner(then_expr)
+                    && else_expr
+                        .as_deref()
+                        .is_some_and(Self::expr_is_materialized_owner)
+            }
+            // EVERY `match` arm body must be materialised (an arm body that is a
+            // bare payload binding aliases the scrutinee and fails closed).
+            HirExprKind::Match { arms, .. } => {
+                !arms.is_empty()
+                    && arms
+                        .iter()
+                        .all(|arm| Self::expr_is_materialized_owner(&arm.body))
+            }
+            // ---- materialised leaves ----
             // Owned rvalues: a call / method / clone result is a fresh value
             // materialised into its own slot. Conservatively limited to the
             // call-like variants whose result is an owned value; any unlisted
@@ -24563,8 +24603,8 @@ impl Builder {
             HirExprKind::FieldAccess { object, .. } => Self::expr_is_materialized_owner(object),
             HirExprKind::TupleIndex { tuple, .. } => Self::expr_is_materialized_owner(tuple),
             // Bare/`Const` binding ref, machine-state field projection, deref,
-            // `if`/`match`, or any future expression form — not provably a
-            // materialised owner. Fail closed.
+            // or any future expression form — not provably a materialised
+            // owner. Fail closed.
             _ => false,
         }
     }

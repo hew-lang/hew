@@ -56,6 +56,20 @@
 //! external Guard-Malloc + `MallocScribble` repro matrix (the in-suite `run`
 //! fixtures use plain malloc).
 //!
+//! ## Wrapper completeness — value-passthrough forms (block / if / match)
+//!
+//! The allowlist is COMPLETE THROUGH value-passthrough wrappers: a block tail,
+//! both `if` branches, and every `match` arm body are looked THROUGH, and the
+//! base is admitted only when EVERY reachable value is itself a materialised
+//! owner. A wrapper that can yield a live-binding projection is rejected
+//! fail-closed — `..if c { o.inner } else { makeInner() }`,
+//! `..{ let _z = 0; o.inner }`, `..match c { _ => o.inner }` — and so is a
+//! block-wrapped bare binding (`..{ base }`): the consume cannot peel the
+//! block, so the base must prove materialised, which a bare-binding tail fails
+//! (admitting it while the consume silently no-ops on the block is itself a
+//! UAF). An all-rvalue wrapper whose every branch / arm / tail is a fresh owned
+//! value is accepted and runs clean (`..if c { makeInner() } else { makeOther() }`).
+//!
 //! ## Owned-aggregate override + closure-pair / Generator inline-drop
 //!
 //! Overriding an owned-AGGREGATE field (record / tuple / enum) is a
@@ -470,6 +484,136 @@ fn main() {
     );
 }
 
+// ── reject: value-passthrough WRAPPER bases (block / if / match) ────────────
+//
+// A wrapper — a block (`{ ..; tail }`), an `if`, or a `match` — is a value-
+// passthrough form: its value is the tail / the selected branch / the winning
+// arm. The allowlist looks THROUGH each wrapper (`expr_is_materialized_owner`)
+// and admits the base only when EVERY reachable value is a materialised owner.
+// A live-binding projection reachable through ANY wrapper is rejected fail-
+// closed: the consume does not peel the wrapper, and a conditionally-selected
+// binding cannot be soundly consumed, so the override-drop would free storage
+// the live owner still references. The `if`/`block` wrapper-escape was a
+// residual use-after-free an earlier denylist shipped (a live projection
+// hidden behind `if true { … }` / `{ … }`); these pin it closed.
+
+/// `..if true { o.inner } else { makeInner() }`: the then-branch yields a
+/// projection of the live binding `o`. One reachable value aliases `o`'s
+/// interior, so the whole `if` base is rejected — even though the else-branch
+/// is a materialised owner. (The `if`-wrapper escape this completes.)
+#[test]
+fn reject_wrapper_if_live_projection_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn makeInner() -> Inner { Inner { label: string.repeat("a", 32), n: 1 } }
+fn main() {
+    let o = Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 };
+    let u = Inner { label: string.repeat("b", 32), ..if true { o.inner } else { makeInner() } };
+    println(u.label);
+    println(o.inner.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "if-wrapper over a live-binding projection must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value"),
+        "expected the fail-closed allowlist NotYetImplemented; got:\n{out}"
+    );
+}
+
+/// `..{ let _z = 0; o.inner }`: a non-empty block whose tail projects the live
+/// binding `o`. The block is looked through to its tail (statements are side-
+/// effecting only); the tail aliases `o`, so the base is rejected. (The
+/// block-wrapper escape this completes.)
+#[test]
+fn reject_block_wrapper_live_projection_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn main() {
+    let o = Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 };
+    let u = Inner { label: string.repeat("b", 32), ..{ let _z: i64 = 0; o.inner } };
+    println(u.label);
+    println(o.inner.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "block-wrapper over a live-binding projection must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value"),
+        "expected the fail-closed allowlist NotYetImplemented; got:\n{out}"
+    );
+}
+
+/// `..match flag { true => o.inner, false => makeInner() }`: a `match` arm body
+/// projects the live binding `o`. Every arm body must be a materialised owner;
+/// the `true` arm aliases `o`, so the whole `match` base is rejected.
+#[test]
+fn reject_match_wrapper_live_projection_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn makeInner() -> Inner { Inner { label: string.repeat("a", 32), n: 1 } }
+fn main() {
+    let o = Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 };
+    let flag = true;
+    let u = Inner { label: string.repeat("b", 32), ..match flag { true => o.inner, false => makeInner() } };
+    println(u.label);
+    println(o.inner.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "match-wrapper over a live-binding projection must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value"),
+        "expected the fail-closed allowlist NotYetImplemented; got:\n{out}"
+    );
+}
+
+/// `..{ base }`: a block-wrapped bare binding. The consume marker
+/// (`alias_moved_owned_operand`) fires only on a SYNTACTICALLY bare `BindingRef`
+/// — it does NOT peel the block, so `base` is never consume-marked. Admitting
+/// this as the bare-binding case while the consume silently no-ops would leave
+/// `base` live AND destructively release its overridden field — a use-after-
+/// free plus a double-free at `base`'s scope-exit drop. The base must instead
+/// prove materialised (it cannot: the tail is a bare binding), so it is
+/// rejected fail-closed.
+#[test]
+fn reject_block_wrapped_binding_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+fn main() {
+    let base = Inner { label: string.repeat("a", 32), n: 1 };
+    let u = Inner { label: string.repeat("b", 32), ..{ base } };
+    println(u.label);
+    println(base.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "block-wrapped bare-binding base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value"),
+        "expected the fail-closed allowlist NotYetImplemented; got:\n{out}"
+    );
+}
+
 // ── reject: overriding an owned-AGGREGATE field ────────────────────────────
 
 /// Overriding a record/tuple/enum field (`inner: Inner` here) in a
@@ -645,6 +789,95 @@ fn main() {
     assert!(
         out.contains(&"a".repeat(32)) && out.contains(&"b".repeat(32)),
         "clone-of-projection base should apply override and leave source intact; got:\n{out}"
+    );
+}
+
+// ── accept: all-rvalue WRAPPER bases (block / if / match) ──────────────────
+
+/// `..if c { makeInner() } else { makeOther() }`: every branch is a fresh owned
+/// call result, so whichever branch is selected the base is a materialised
+/// owner with no live alias. The allowlist looks through the `if` and admits
+/// it. Must `check` and `run` cleanly (the sound sibling of the rejected
+/// `if`-wrapper-over-live-projection).
+#[test]
+fn accept_all_rvalue_if_wrapper_base_runs_clean() {
+    require_codegen();
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+fn makeInner() -> Inner { Inner { label: string.repeat("a", 32), n: 1 } }
+fn makeOther() -> Inner { Inner { label: string.repeat("c", 32), n: 2 } }
+fn main() {
+    let c = true;
+    let u = Inner { label: string.repeat("b", 32), ..if c { makeInner() } else { makeOther() } };
+    println(u.label);
+    println(u.n);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(
+        ok,
+        "all-rvalue if-wrapper base must run cleanly; got:\n{out}"
+    );
+    assert!(
+        out.contains(&"b".repeat(32)) && out.contains('1'),
+        "all-rvalue if-wrapper should apply the override and carry n=1 from makeInner(); got:\n{out}"
+    );
+}
+
+/// `..match flag { true => makeInner(), false => makeOther() }`: every arm body
+/// is a fresh owned call result. The allowlist looks through the `match` and
+/// admits it. Must `check` and `run` cleanly.
+#[test]
+fn accept_all_rvalue_match_wrapper_base_runs_clean() {
+    require_codegen();
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+fn makeInner() -> Inner { Inner { label: string.repeat("a", 32), n: 1 } }
+fn makeOther() -> Inner { Inner { label: string.repeat("c", 32), n: 2 } }
+fn main() {
+    let flag = true;
+    let u = Inner { label: string.repeat("b", 32), ..match flag { true => makeInner(), false => makeOther() } };
+    println(u.n);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(
+        ok,
+        "all-rvalue match-wrapper base must run cleanly; got:\n{out}"
+    );
+    assert!(
+        out.contains('1'),
+        "all-rvalue match-wrapper should carry n=1 from the true arm; got:\n{out}"
+    );
+}
+
+/// `..{ println("seed"); makeInner() }`: a non-empty block whose tail is a
+/// materialised owner. The block's statement is side-effecting only; its VALUE
+/// is the tail call result, which has no live alias. The allowlist peels to the
+/// tail regardless of statement count and admits it. Must `check` and `run`
+/// cleanly (the sound sibling of the rejected block-wrapper-over-live-projection).
+#[test]
+fn accept_block_statements_rvalue_tail_base_runs_clean() {
+    require_codegen();
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+fn makeInner() -> Inner { Inner { label: string.repeat("a", 32), n: 1 } }
+fn main() {
+    let u = Inner { label: string.repeat("b", 32), ..{ println("seed"); makeInner() } };
+    println(u.n);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(
+        ok,
+        "block-with-statements rvalue-tail base must run cleanly; got:\n{out}"
+    );
+    assert!(
+        out.contains("seed") && out.contains('1'),
+        "block tail should run the side-effecting statement and carry n=1; got:\n{out}"
     );
 }
 

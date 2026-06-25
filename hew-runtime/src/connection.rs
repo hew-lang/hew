@@ -38,7 +38,7 @@
 
 use std::ffi::{c_char, c_int, CStr};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -63,7 +63,7 @@ use crate::mailbox_envelope::{validate_cross_node_send_params, MailboxPayloadCla
 use crate::routing::{hew_routing_add_route, hew_routing_remove_route_if_conn, HewRoutingTable};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HEW_CONN_INVALID};
-use crate::util::MutexExt;
+use crate::util::{CondvarExt, MutexExt};
 
 // ── Connection states ──────────────────────────────────────────────────
 
@@ -244,6 +244,14 @@ pub struct HewConnMgr {
     pub(crate) inbound_ask_active: Arc<AtomicUsize>,
     /// Background reconnect worker handles.
     reconnect_workers: PoisonSafe<Vec<JoinHandle<()>>>,
+    /// Counts every spawned reader until its thread function fully returns.
+    ///
+    /// A reader can remove and drop its own [`ConnectionActor`] on an unexpected
+    /// peer close. That self-drop cannot join the current thread, so the actor
+    /// disappearing from `connections` is not a sufficient teardown barrier.
+    /// `hew_connmgr_free` waits on this lifecycle before the manager's owner
+    /// frees routing/cluster state that reader cleanup may still touch.
+    reader_lifecycle: Arc<ReaderLifecycle>,
     /// Monotonic token generator for connection-lifecycle publications.
     next_publication_token: AtomicU64,
     /// The node ID advertised in the handshake for this manager's node.
@@ -251,6 +259,47 @@ pub struct HewConnMgr {
     /// correct ID in their outgoing handshake even when `LOCAL_NODE_ID` refers
     /// to a different (`CURRENT_NODE`) node.
     pub(crate) local_node_id: u16,
+}
+
+#[derive(Debug, Default)]
+struct ReaderLifecycle {
+    active: Mutex<usize>,
+    idle: Condvar,
+}
+
+impl ReaderLifecycle {
+    fn register(self: &Arc<Self>) -> ReaderLifecycleGuard {
+        let mut active = self.active.lock_or_recover();
+        *active = active
+            .checked_add(1)
+            .expect("reader lifecycle active count overflow");
+        ReaderLifecycleGuard {
+            lifecycle: Arc::clone(self),
+        }
+    }
+
+    fn wait_for_idle(&self) {
+        let mut active = self.active.lock_or_recover();
+        while *active > 0 {
+            active = self.idle.wait_or_recover(active);
+        }
+    }
+}
+
+struct ReaderLifecycleGuard {
+    lifecycle: Arc<ReaderLifecycle>,
+}
+
+impl Drop for ReaderLifecycleGuard {
+    fn drop(&mut self) {
+        let mut active = self.lifecycle.active.lock_or_recover();
+        *active = active
+            .checked_sub(1)
+            .expect("reader lifecycle active count underflow");
+        if *active == 0 {
+            self.lifecycle.idle.notify_all();
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1651,6 +1700,7 @@ pub unsafe extern "C" fn hew_connmgr_new(
         inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
         reconnect_workers: PoisonSafe::new(Vec::new()),
+        reader_lifecycle: Arc::new(ReaderLifecycle::default()),
         next_publication_token: AtomicU64::new(1),
         local_node_id,
     });
@@ -1692,6 +1742,7 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
             }
             // ConnectionActor::drop signals reader thread to stop and joins.
         }
+        mgr.reader_lifecycle.wait_for_idle();
         let workers: Vec<JoinHandle<()>> = mgr.reconnect_workers.access(std::mem::take);
         for worker in workers {
             let _ = worker.join();
@@ -2054,12 +2105,14 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     let activity_send = Arc::clone(&actor.last_activity_ms);
     let mgr_send = SendConnMgr(mgr_ptr);
     let peer_feature_flags = actor.peer_feature_flags;
+    let reader_lifecycle_guard = mgr.reader_lifecycle.register();
     #[cfg(feature = "encryption")]
     let noise_transport = Arc::clone(&actor.noise_transport);
 
     let handle = thread::Builder::new()
         .name(format!("hew-conn-{conn_id}"))
         .spawn(move || {
+            let _reader_lifecycle_guard = reader_lifecycle_guard;
             reader_loop(
                 mgr_send,
                 transport_send,
@@ -2723,6 +2776,7 @@ mod tests {
             inbound_spawn_closed: Arc::new(AtomicBool::new(false)),
             inbound_ask_active: Arc::new(AtomicUsize::new(0)),
             reconnect_workers: PoisonSafe::new(Vec::new()),
+            reader_lifecycle: Arc::new(ReaderLifecycle::default()),
             next_publication_token: AtomicU64::new(1),
             local_node_id: 0,
         };
@@ -3382,6 +3436,78 @@ mod tests {
             drop(Box::from_raw(
                 close_impl.cast::<std::sync::mpsc::Sender<c_int>>(),
             ));
+        }
+        drop(ops);
+    }
+
+    #[test]
+    fn connmgr_free_waits_for_self_removed_reader_lifecycle() {
+        let ops = Box::new(crate::transport::HewTransportOps {
+            connect: None,
+            listen: None,
+            accept: None,
+            send: None,
+            recv: None,
+            close_conn: None,
+            destroy: None,
+        });
+        let transport = Box::new(HewTransport {
+            ops: &raw const *ops,
+            r#impl: std::ptr::null_mut(),
+        });
+        let transport_ptr = Box::into_raw(transport);
+
+        // SAFETY: transport_ptr remains valid until explicit cleanup below.
+        let mgr = unsafe {
+            hew_connmgr_new(
+                transport_ptr,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        assert!(!mgr.is_null());
+
+        // Model a reader that already removed/dropped its own ConnectionActor:
+        // it no longer appears in `connections`, but its thread is still in
+        // post-remove cleanup and must keep the manager's owner from freeing
+        // routing/cluster state.
+        // SAFETY: mgr is live until the free thread returns.
+        let reader_guard = unsafe { (&*mgr).reader_lifecycle.register() };
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let mgr_addr = mgr as usize;
+        let free_thread = std::thread::spawn(move || {
+            started_tx
+                .send(())
+                .expect("free thread should announce start");
+            // SAFETY: mgr_addr is the live manager pointer handed to this thread;
+            // this call owns and frees it.
+            unsafe { hew_connmgr_free(mgr_addr as *mut HewConnMgr) };
+            done_tx.send(()).expect("free completion send");
+        });
+
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("free thread should start");
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err(),
+            "hew_connmgr_free returned before the self-removed reader finished"
+        );
+
+        drop(reader_guard);
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("free should finish once reader lifecycle is idle");
+        free_thread.join().expect("free thread panicked");
+
+        // SAFETY: hew_connmgr_free does not own the test transport allocation.
+        unsafe {
+            drop(Box::from_raw(transport_ptr));
         }
         drop(ops);
     }

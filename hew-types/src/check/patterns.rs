@@ -484,12 +484,63 @@ impl Checker {
         }
     }
 
+    /// Pattern binding — the single authority on which pattern identifiers are
+    /// binders (introduce a name) versus constructors (introduce none). Every
+    /// consumer that needs that decision routes through the env delta this
+    /// records, never a private re-derivation.
+    ///
+    /// The top-level call snapshots the innermost scope, runs the binding via
+    /// [`Self::bind_pattern_inner`], then records the set of names introduced
+    /// (keyed by the pattern span) into `pattern_bound_names`. A constructor
+    /// identifier binds nothing, so it never appears in that set — which is why
+    /// the borrowed-Rc escape scanner can shadow exactly the real binders
+    /// (`shadow_pattern_bindings`) without duplicating the resolution logic.
+    /// Nested sub-pattern binds re-enter through `bind_pattern` but the
+    /// `bind_pattern_recording` guard keeps them part of the one top-level
+    /// delta.
+    pub(super) fn bind_pattern(
+        &mut self,
+        pattern: &Pattern,
+        ty: &Ty,
+        is_mutable: bool,
+        span: &Span,
+    ) {
+        if self.bind_pattern_recording {
+            // Nested sub-pattern: its binders belong to the top-level delta
+            // already being recorded by an enclosing call.
+            self.bind_pattern_inner(pattern, ty, is_mutable, span);
+            return;
+        }
+        self.bind_pattern_recording = true;
+        let before: HashSet<String> = self
+            .env
+            .current_scope_bindings()
+            .map(|(name, _)| name.to_string())
+            .collect();
+        self.bind_pattern_inner(pattern, ty, is_mutable, span);
+        let bound: Vec<String> = self
+            .env
+            .current_scope_bindings()
+            .filter(|(name, _)| !before.contains(*name))
+            .map(|(name, _)| name.to_string())
+            .collect();
+        self.bind_pattern_recording = false;
+        let key = super::types::SpanKey::in_module(span, self.current_module_idx);
+        if bound.is_empty() {
+            // A pure-constructor pattern (e.g. `Red | Green`) binds nothing;
+            // ensure no stale entry survives for this span.
+            self.pattern_bound_names.remove(&key);
+        } else {
+            self.pattern_bound_names.insert(key, bound);
+        }
+    }
+
     /// Pattern binding
     #[expect(
         clippy::too_many_lines,
         reason = "impl method resolution requires many cases"
     )]
-    pub(super) fn bind_pattern(
+    pub(super) fn bind_pattern_inner(
         &mut self,
         pattern: &Pattern,
         ty: &Ty,

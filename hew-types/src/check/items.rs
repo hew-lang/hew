@@ -630,6 +630,11 @@ impl Checker {
         let prev_function = self.current_function.take();
         self.current_function = Some(fn_name.to_string());
         self.env.push_scope();
+        // Scratch map of per-pattern bound names is function-local: the
+        // borrowed-Rc escape scanner (`warn_rc_param_return`, run at the end of
+        // this same call) consumes only this function's pattern spans. Clear so
+        // it never accumulates across the whole program.
+        self.pattern_bound_names.clear();
 
         // Push this fn's type-param bounds onto the resolver stack so
         // `T::Bar` projections inside `let x: T::Bar = ...` and other in-body

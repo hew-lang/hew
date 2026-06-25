@@ -4253,7 +4253,7 @@ impl Checker {
                 ..
             } => {
                 let mut then_scopes = scopes.to_vec();
-                Self::shadow_pattern_bindings(&pattern.0, &mut then_scopes);
+                self.shadow_pattern_bindings(&pattern.1, &mut then_scopes);
                 self.scan_block_for_rc_param_return(body, &mut then_scopes);
                 if let Some(else_blk) = else_body {
                     let mut else_scopes = scopes.to_vec();
@@ -4263,7 +4263,7 @@ impl Checker {
             Expr::Match { arms, .. } => {
                 for arm in arms {
                     let mut arm_scopes = scopes.to_vec();
-                    Self::shadow_pattern_bindings(&arm.pattern.0, &mut arm_scopes);
+                    self.shadow_pattern_bindings(&arm.pattern.1, &mut arm_scopes);
                     self.check_expr_is_rc_param_return(&arm.body.0, &arm.body.1, &arm_scopes);
                 }
             }
@@ -4348,30 +4348,27 @@ impl Checker {
         Self::define_dangerous_binding(scopes, name.to_string(), binding);
     }
 
-    fn shadow_pattern_bindings(pattern: &Pattern, scopes: &mut [DangerousRcScope]) {
-        match pattern {
-            Pattern::Identifier(name) => {
+    /// Shadow the borrowed-Rc bindings introduced by a match-arm / if-let /
+    /// loop / destructuring pattern.
+    ///
+    /// Routes through the single binder authority instead of re-deriving the
+    /// binder-vs-constructor decision locally (#2116): `bind_pattern` already
+    /// recorded the exact set of names this pattern binds — its env delta —
+    /// keyed by the pattern span in `pattern_bound_names`. We shadow precisely
+    /// those names. A constructor identifier (e.g. `Red` in `Red | Green`, or a
+    /// bare unit-variant arm) binds nothing, so it is absent from the set and
+    /// does NOT shadow a dangerous param of the same name — keeping the escape
+    /// analysis consistent with the real binding env. A pattern that bound
+    /// nothing (or was never type-checked, e.g. a cascade off an earlier error)
+    /// has no entry and shadows nothing, which is the fail-closed direction:
+    /// the scanner then still sees the dangerous param and flags a genuine
+    /// escape rather than silently masking it.
+    fn shadow_pattern_bindings(&self, pattern_span: &Span, scopes: &mut [DangerousRcScope]) {
+        let key = super::types::SpanKey::in_module(pattern_span, self.current_module_idx);
+        if let Some(names) = self.pattern_bound_names.get(&key) {
+            for name in names {
                 Self::define_dangerous_binding(scopes, name.clone(), None);
             }
-            Pattern::Constructor { patterns, .. } | Pattern::Tuple(patterns) => {
-                for (pattern, _) in patterns {
-                    Self::shadow_pattern_bindings(pattern, scopes);
-                }
-            }
-            Pattern::Struct { fields, .. } | Pattern::RecordShorthand { fields } => {
-                for field in fields {
-                    if let Some((pattern, _)) = &field.pattern {
-                        Self::shadow_pattern_bindings(pattern, scopes);
-                    } else {
-                        Self::define_dangerous_binding(scopes, field.name.clone(), None);
-                    }
-                }
-            }
-            Pattern::Or(left, right) => {
-                Self::shadow_pattern_bindings(&left.0, scopes);
-                Self::shadow_pattern_bindings(&right.0, scopes);
-            }
-            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Regex { .. } => {}
         }
     }
 
@@ -4544,7 +4541,7 @@ impl Checker {
                             Self::define_dangerous_binding(scopes, name.clone(), binding);
                         }
                         _ => {
-                            Self::shadow_pattern_bindings(&pattern.0, scopes);
+                            self.shadow_pattern_bindings(&pattern.1, scopes);
                         }
                     }
                 }
@@ -4630,7 +4627,7 @@ impl Checker {
                 }
                 Stmt::For { pattern, body, .. } => {
                     scopes.push(HashMap::new());
-                    Self::shadow_pattern_bindings(&pattern.0, scopes);
+                    self.shadow_pattern_bindings(&pattern.1, scopes);
                     self.scan_stmts_for_rc_param_return(&body.stmts, scopes);
                     if let Some(trailing) = &body.trailing_expr {
                         self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, scopes);
@@ -4642,7 +4639,7 @@ impl Checker {
                 }
                 Stmt::WhileLet { pattern, body, .. } => {
                     scopes.push(HashMap::new());
-                    Self::shadow_pattern_bindings(&pattern.0, scopes);
+                    self.shadow_pattern_bindings(&pattern.1, scopes);
                     self.scan_stmts_for_rc_param_return(&body.stmts, scopes);
                     if let Some(trailing) = &body.trailing_expr {
                         self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, scopes);
@@ -4656,7 +4653,7 @@ impl Checker {
                     ..
                 } => {
                     scopes.push(HashMap::new());
-                    Self::shadow_pattern_bindings(&pattern.0, scopes);
+                    self.shadow_pattern_bindings(&pattern.1, scopes);
                     self.scan_stmts_for_rc_param_return(&body.stmts, scopes);
                     if let Some(then_trailing) = &body.trailing_expr {
                         self.check_expr_is_rc_param_return(
@@ -4673,7 +4670,7 @@ impl Checker {
                 Stmt::Match { arms, .. } => {
                     for arm in arms {
                         scopes.push(HashMap::new());
-                        Self::shadow_pattern_bindings(&arm.pattern.0, scopes);
+                        self.shadow_pattern_bindings(&arm.pattern.1, scopes);
                         // Match arm body is an Expr — check if it's a bare Rc param
                         self.check_expr_is_rc_param_return(&arm.body.0, &arm.body.1, scopes);
                         scopes.pop();

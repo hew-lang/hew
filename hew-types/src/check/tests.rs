@@ -5218,6 +5218,106 @@ fn borrowed_param_escape_qualified_path_constructor_flagged() {
 }
 
 #[test]
+fn borrowed_param_escape_match_arm_variant_collision_flagged() {
+    // Residual fix (#2116): a match-arm pattern that is a *unit-variant
+    // constructor* whose name collides with a borrow parameter must NOT shadow
+    // that parameter in the escape scanner. The arm body `red` therefore
+    // resolves to the borrowed param (the constructor `red` bound nothing), and
+    // returning it is a genuine escape that must raise BorrowedParamReturn.
+    //
+    // Before the fix `shadow_pattern_bindings` blindly treated every
+    // `Pattern::Identifier` as a binder, masking the `red => red` arm; the
+    // escape only surfaced (confusingly, via a sibling HIR/MIR pass) when a
+    // second non-colliding arm also returned the param. This fixture would
+    // regress to a missed escape on the colliding arm if the binder-vs-
+    // constructor decision were re-derived locally again.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Color { red; green; }\n",
+        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "    match color { red => red, green => red }\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "a unit-variant arm `red` colliding with borrow param `red` must not \
+         shadow it — returning the param must raise BorrowedParamReturn; \
+         got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_or_pattern_variant_collision_flagged() {
+    // The reviewer's exact repro shape, with a borrow param so the escape
+    // scanner actually runs: an or-pattern of unit-variant constructors that
+    // collide with the borrow param name. Both `red` and `green` are
+    // constructors (bind nothing), so the arm body `red` is the borrowed param
+    // and returning it must raise BorrowedParamReturn — not a confusing
+    // InitialisedBeforeUse / MIR-decision-map diagnostic from a sibling pass.
+    let (errors, _) = parse_and_check(concat!(
+        "enum Color { red; green; }\n",
+        "fn leak(red: &i64, color: Color) -> &i64 {\n",
+        "    match color { red | green => red }\n",
+        "}\n",
+    ));
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "an or-pattern of constructors `red | green` must not shadow the \
+         borrow param `red`; returning it must raise BorrowedParamReturn; \
+         got: {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_match_payload_binder_not_overflagged() {
+    // Guard against over-flagging: a genuine payload *binder* (`Some(inner)`)
+    // must shadow the dangerous param so returning the bound payload is NOT an
+    // escape, while a sibling arm that returns the borrow param directly still
+    // is. Exactly one BorrowedParamReturn — the `None => red` arm — must fire;
+    // the `Some(inner) => inner` arm must stay clean.
+    let (errors, _) = parse_and_check(concat!(
+        "fn leak(red: &i64, opt: Option<&i64>) -> &i64 {\n",
+        "    match opt { Some(inner) => inner, None => red }\n",
+        "}\n",
+    ));
+    let escapes = errors
+        .iter()
+        .filter(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn))
+        .count();
+    assert_eq!(
+        escapes, 1,
+        "only the `None => red` arm escapes; the `Some(inner) => inner` binder \
+         arm must not be over-flagged; got {escapes} BorrowedParamReturn in: \
+         {errors:?}"
+    );
+}
+
+#[test]
+fn borrowed_param_escape_consistent_or_binder_not_overflagged() {
+    // End-to-end of the or-pattern binder path: `Ok(x) | Err(x) => x` binds a
+    // consistent `x` in both alternatives (recorded as the env delta of
+    // `bind_pattern`), which `shadow_pattern_bindings` then shadows. Returning
+    // the bound payload `x` (not the borrow param `p`) is safe and must raise
+    // NO BorrowedParamReturn — a regression here would mean the or-pattern
+    // binder set was not threaded through the single authority.
+    let (errors, _) = parse_and_check(concat!(
+        "fn leak(p: &i64, r: Result<&i64, &i64>) -> &i64 {\n",
+        "    match r { Ok(x) | Err(x) => x }\n",
+        "}\n",
+    ));
+    assert!(
+        !errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::BorrowedParamReturn)),
+        "returning a consistent or-pattern binder `x` (not the borrow param) \
+         must not raise BorrowedParamReturn; got: {errors:?}"
+    );
+}
+
+#[test]
 fn typecheck_error_scrutinee_constructor_pattern_stays_fail_closed() {
     let (errors, _) = parse_and_check(concat!(
         "fn main() {\n",

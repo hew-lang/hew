@@ -2594,6 +2594,18 @@ pub struct Checker {
     pub(super) current_function: Option<String>,
     /// Whether we are currently inside a for-loop binding (suppress shadowing for loop vars).
     pub(super) in_for_binding: bool,
+    /// Names actually bound by each top-level pattern, keyed by the pattern's
+    /// span. Recorded by `bind_pattern` — the single binder-vs-constructor
+    /// authority — as the env delta it introduces (a constructor identifier
+    /// binds nothing and so contributes no name). Consumed by the borrowed-Rc
+    /// escape scanner's `shadow_pattern_bindings`, which shadows exactly the
+    /// recorded names rather than re-deriving the binder/constructor decision.
+    /// Scratch state: cleared at the start of each function body check.
+    pub(super) pattern_bound_names: HashMap<SpanKey, Vec<String>>,
+    /// Re-entrancy guard ensuring only the *top-level* `bind_pattern` call
+    /// records its env delta into `pattern_bound_names`; nested sub-pattern
+    /// binds are already part of that single delta.
+    pub(super) bind_pattern_recording: bool,
     /// Whether we are currently inside an actor receive function body.
     /// Used to warn about blocking calls that can starve the scheduler.
     pub(super) in_receive_fn: bool,
@@ -3013,6 +3025,8 @@ impl Checker {
             call_graph: HashMap::new(),
             current_function: None,
             in_for_binding: false,
+            pattern_bound_names: HashMap::new(),
+            bind_pattern_recording: false,
             in_receive_fn: false,
             in_actor_handler_context: false,
             in_lambda_actor_body: false,

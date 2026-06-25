@@ -41,7 +41,15 @@ pub(crate) fn primitive_copy_layout(
         // for completeness so this function can serve as a general primitive sizer.
         Ty::I32 | Ty::U32 | Ty::Char | Ty::F32 => Some((4, 4)),
         // f64 is hash-ineligible but included for the same reason.
-        Ty::I64 | Ty::U64 | Ty::Duration | Ty::F64 => Some((8, 8)),
+        //
+        // String: the in-record slot blob is a single owned `*const c_char`
+        // pointer (the heap payload lives elsewhere). Pointer-width / pointer-
+        // aligned (8/8 on the 64-bit targets this sizer serves, matching the
+        // hardcoded 8-byte primitives above). Eligibility (`ty_is_hash_eligible`)
+        // gates admission; the owned string is hashed by payload-descent and
+        // dropped via the per-record key drop thunk (codegen). Hash/Eq remain
+        // structural.
+        Ty::I64 | Ty::U64 | Ty::Duration | Ty::F64 | Ty::String => Some((8, 8)),
         Ty::Array(elem, count) => {
             let (elem_size, elem_align) = primitive_copy_layout(elem, type_defs)?;
             let count = usize::try_from(*count).ok()?;
@@ -2959,9 +2967,13 @@ mod tests {
     }
 
     #[test]
-    fn primitive_copy_layout_string_returns_none() {
-        // String is heap-managed; not a fixed-layout Copy type.
-        assert_eq!(primitive_copy_layout(&Ty::String, &HashMap::new()), None);
+    fn primitive_copy_layout_string_is_pointer_width() {
+        // A `string` field's in-record slot blob is a single owned pointer; the
+        // heap payload lives elsewhere and is hashed/dropped by descent.
+        assert_eq!(
+            primitive_copy_layout(&Ty::String, &HashMap::new()),
+            Some((8, 8))
+        );
     }
 
     #[test]

@@ -1,3 +1,24 @@
+# ── Linux linker (x86_64) ─────────────────────────────────────────────────────
+# mold is not forced globally here because it requires a running mold install
+# AND a compatible driver.  Not every Linux workflow or runner has mold; forcing
+# it via .cargo/config.toml breaks release-gate, coverage-nightly, and sanitizer
+# jobs that run on bare ubuntu runners without mold installed.
+#
+# CI opt-in: ci.yml's build-and-test job sets
+#   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: -C link-arg=-fuse-ld=mold
+# using gcc's -fuse-ld= flag (no clang dependency) after apt-installing mold.
+#
+# Dev opt-in: for local Linux x86_64 development with mold installed,
+# add to your shell profile:
+#   export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
+#
+# WHY opt-in not forced: forcing clang + --ld-path=mold here breaks every
+# CI workflow that lacks both clang-as-linker-driver AND mold.  gcc's
+# -fuse-ld=mold is cleaner but still requires mold installed; an env var
+# scoped to the job that installs mold is the correct isolation boundary.
+# WHEN obsolete: if every CI runner provisions mold unconditionally and
+# the project drops non-mold Linux workflows.
+
 # Windows uses the LLVM linker from the same provisioned LLVM 22 toolchain that
 # supplies clang.exe for `hew build` and llvm-config for llvm-sys.  Keep this
 # pinned to lld-link rather than relying on a Developer Command Prompt: the

@@ -272,6 +272,7 @@ test-group = "subprocess-intensive"
 # Usage:
 #   make test-lane CRATE=hew-types    — single crate, fast tier
 #   make test-lane-all                — full workspace, fast tier
+#   make test-fast                    — affected crates only, via git-diff scope
 #   cargo nextest run -p <crate> --profile lane
 #
 # Coverage contract:
@@ -297,6 +298,14 @@ test-group = "subprocess-intensive"
 default-filter = "not package(hew-wasm) - binary(eval_e2e) - binary(test_runner_e2e) - binary(parity) - binary(~exec) - binary(~e2e) - binary(~oracle) - binary(machine_lifecycle) - binary(zeroarg_module_enum_emission) - binary(jit_trap_bridge) - test(bounded_child_timeout_kills_grandchild_process_group) - test(two_process_remote_ask_echo_double_returns_42) - test(remote_ask_two_process_echo_client_helper) - test(remote_ask_two_process_echo_server_helper) - test(two_process_remote_ask_timeout_returns_timeout_under_1500ms) - test(remote_ask_two_process_timeout_client_helper) - test(remote_ask_two_process_timeout_server_helper)"
 test-threads = "num-cpus"
 slow-timeout = { period = "30s", terminate-after = 2 }
+# Suppress the 3800-line passing-test wall; show only failures during the run
+# and in the final summary.  Broken imports and IR mismatches are immediately
+# visible without scrolling past a sea of green lines.
+status-level = "fail"
+final-status-level = "fail"
+# Never stop at the first failure; one broken import should not mask the
+# cascade of downstream failures that tells you the actual blast radius.
+fail-fast = false
 
 [[profile.lane.overrides]]
 # Safety net: route any exec-named tests that slip past the default-filter into

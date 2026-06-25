@@ -73,7 +73,7 @@ LIST_CI_REQUIRED=0
 # PATTERN is a substring matched against the dispatcher's fallback-lane output.
 CI_REQUIRED_CHECKS=(
     "Rust fmt check (ci.yml: cargo fmt --all -- --check)	make ci-preflight-smoke"
-    "Cargo clippy (ci.yml: cargo clippy --workspace --tests -- -D warnings)	make ci-preflight-smoke"
+    "Cargo clippy (ci.yml: cargo clippy --workspace --tests -- -D warnings)	make lint"
     "verify-ffi (ci.yml: make verify-ffi)	make lint"
     "runtime-poison-safe-lint (ci.yml: make runtime-poison-safe-lint)	make lint"
     "nextest workspace ci (release-gate.yml: nextest run --workspace --profile ci)	make test"

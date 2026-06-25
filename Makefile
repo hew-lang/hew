@@ -35,7 +35,7 @@
 #   make playground-check          — manifest freshness + full hew-wasm test suite + build hew-wasm
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
 #   make ci-preflight              — dispatch a conservative local preflight from the current diff
-#   make ci-preflight-smoke        — fast smoke tier: fmt + clippy + in-process tests (<5 min)
+#   make ci-preflight-smoke        — fast smoke tier: fmt + in-process tests (<5 min)
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — Rust workspace tests (fast path; excludes test-hew)
@@ -51,6 +51,8 @@
 #   make test-real-timing  — serialized real wall-clock / OS-timing quarantine tests (narrow)
 #   make test-lane CRATE=<crate> — fast in-process tier for one crate (lane iteration)
 #   make test-lane-all          — fast in-process tier for the whole workspace
+#   make test-fast              — fast tier scoped to git-diff-affected crates (agents/devs)
+#   make test-fast CRATE=<c>   — pin fast tier to one crate
 #   make test-hew          — run Hew test files (std/ *_test.hew)
 #   make test-ux-examples  — run examples/ux + examples/progressive tutorials against .expected files
 #   make asan         — run the nightly rust-runtime ASan test command locally
@@ -65,7 +67,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks hew hew-native adze observe runtime stdlib wasm-runtime wasm playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-parity playground-check playground-wasi-check ci-preflight ci-preflight-smoke ci-preflight-strict ci-local-linux wasm-dist release check-libhew-fresh
-.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-stdlib test-hew test-hew-ratchet test-o2-differential test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar
+.PHONY: test test-all test-rust test-parser test-types test-cli test-compiler-pipeline test-vertical-slice test-pkg-import test-runtime-net test-runtime-unit test-real-timing test-lane test-lane-all test-fast test-stdlib test-hew test-hew-ratchet test-o2-differential test-stdlib-ratchet test-ux-examples test-surface-examples test-release-binary check-sanitizer-gate asan asan-fixtures tsan miri lint runtime-poison-safe-lint stdlib-lint stdlib-errno-gate lint-wasm-todo leak-scan hew-fmt-check grammar
 .PHONY: clean install install-check uninstall verify-ffi
 .PHONY: assemble assemble-release pre-release publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
@@ -210,9 +212,10 @@ playground-wasi-check:
 ci-preflight:
 	scripts/ci-preflight-dispatcher.sh $(ARGS)
 
-# Fast smoke preflight: Rust fmt + clippy + the workspace's deterministic in-process
-# tests (nextest smoke profile).  Designed to complete in <5 min and surface format,
-# lint, and fast oracle failures before the full heavy tier is invoked.
+# Fast smoke preflight: Rust fmt + the workspace's deterministic in-process
+# tests (nextest smoke profile).  Designed to complete in <5 min and surface
+# format and fast oracle failures before the full heavy tier is invoked.
+# Clippy runs in the lint target; the fallback lane runs both sequentially.
 #
 # This target is invoked by the dispatcher as the first step of the fallback/heavy
 # lane; the full suite (make test) still runs on smoke pass.  Run it directly for
@@ -231,7 +234,6 @@ ci-preflight:
 # (hew-fmt-check requires target/debug/hew but nextest does not produce it).
 ci-preflight-smoke:
 	cargo fmt --all -- --check
-	cargo clippy --workspace --tests -- -D warnings
 	$(MAKE) stdlib
 	cargo nextest run --workspace --profile smoke
 	$(MAKE) hew
@@ -683,6 +685,36 @@ endif
 test-lane-all:
 	@echo "==> fast tier — exec corpus runs at the integrated gate"
 	cargo nextest run --workspace --profile lane
+
+# ── Affected-crate fast tier ─────────────────────────────────────────────────
+# Derives scope from git diff: runs nextest --profile lane restricted to the
+# rdeps() closure of crates that have changed since the merge base.  Falls back
+# to a full workspace lane run when no crates are detected (e.g. first commit,
+# workspace-wide file change, or no diff vs origin).
+#
+# Multi-crate case: changed-crates.sh may return several space-separated names.
+# A single rdeps(hew-types hew-parser) is not valid nextest syntax — it matches
+# no package.  Instead each crate gets its own rdeps() term, joined with `|`:
+#   rdeps(hew-types) | rdeps(hew-parser)
+# The workspace fallback only fires when the crate list is empty.
+#
+# Usage:
+#   make test-fast                    # auto-derive scope from git diff
+#   make test-fast CRATE=hew-types    # pin to one crate (skips diff derivation)
+#
+# This target replaces hand-curated -p lists for interactive iteration.
+# The exec/e2e corpus is still excluded (profile.lane).  Acceptance gates
+# require the plan's named proving commands, not this tier.
+test-fast:
+	@crates=$$(CRATE="$(CRATE)" scripts/changed-crates.sh); \
+	if [ -n "$$crates" ]; then \
+	  echo "==> fast tier — affected: $$crates"; \
+	  expr=$$(printf 'rdeps(%s) | ' $$crates); expr=$${expr% | }; \
+	  cargo nextest run --profile lane -E "$$expr"; \
+	else \
+	  echo "==> fast tier — full workspace (no crate-specific diff detected)"; \
+	  cargo nextest run --workspace --profile lane; \
+	fi
 
 test-stdlib: hew
 	@echo "==> Type-checking stdlib .hew files"

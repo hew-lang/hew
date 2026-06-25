@@ -35,7 +35,7 @@
 #   make playground-check          — manifest freshness + full hew-wasm test suite + build hew-wasm
 #   make playground-wasi-check     — focused curated manifest WASI runtime preflight
 #   make ci-preflight              — dispatch a conservative local preflight from the current diff
-#   make ci-preflight-smoke        — fast smoke tier: fmt + clippy + in-process tests (<5 min)
+#   make ci-preflight-smoke        — fast smoke tier: fmt + in-process tests (<5 min)
 #   make ci-preflight-strict       — run the local preflight superset that mirrors merge-queue gates
 #   make wasm-dist    — build + copy WASM to hew.sh and hew.run
 #   make test         — Rust workspace tests (fast path; excludes test-hew)
@@ -212,9 +212,10 @@ playground-wasi-check:
 ci-preflight:
 	scripts/ci-preflight-dispatcher.sh $(ARGS)
 
-# Fast smoke preflight: Rust fmt + clippy + the workspace's deterministic in-process
-# tests (nextest smoke profile).  Designed to complete in <5 min and surface format,
-# lint, and fast oracle failures before the full heavy tier is invoked.
+# Fast smoke preflight: Rust fmt + the workspace's deterministic in-process
+# tests (nextest smoke profile).  Designed to complete in <5 min and surface
+# format and fast oracle failures before the full heavy tier is invoked.
+# Clippy runs in the lint target; the fallback lane runs both sequentially.
 #
 # This target is invoked by the dispatcher as the first step of the fallback/heavy
 # lane; the full suite (make test) still runs on smoke pass.  Run it directly for

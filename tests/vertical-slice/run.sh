@@ -1675,10 +1675,27 @@ expect_check_fail_contains \
 # thread, and shallow-copying an opaque handle aliases the caller's handle
 # (use-after-free / double-free at teardown). The gate rejects any value
 # transitively containing an opaque handle, not only non-`BitCopy` heap owners.
-expect_check_fail_contains \
+#
+# Error count: currently 3 (two MIR cascade secondaries + one root NYI).
+# DIAG-L2 (genfn cascade suppress) will reduce this to 1 by suppressing the
+# InitialisedBeforeUse + UnresolvedPlace secondaries; update to 1 when that
+# lane lands.
+expect_check_fail_error_count \
   "${ROOT}/tests/vertical-slice/reject/gen_fn_capture_opaque_handle.hew" \
-  "capture of opaque/owned value" \
+  3 \
   "gen_fn_capture_opaque_handle"
+
+# Reject: a generator that captures an owned (non-BitCopy) value — specifically
+# a `string` — as a free variable must fail closed. Owned values hold heap state
+# with a unique owner; shallow-copying them across the generator body-thread
+# boundary aliases the caller's heap (double-free / UAF on teardown).
+#
+# Error count: currently 3 (two MIR cascade secondaries + one root NYI).
+# DIAG-L2 (genfn cascade suppress) will reduce this to 1; update when it lands.
+expect_check_fail_error_count \
+  "${ROOT}/tests/vertical-slice/reject/gen_fn_capture_owned_value.hew" \
+  3 \
+  "gen_fn_capture_owned_value"
 
 # Generator proving-gate (compile + run + stdout-order): the behavioural oracle
 # the generator->coro substrate unification must preserve byte-for-byte.

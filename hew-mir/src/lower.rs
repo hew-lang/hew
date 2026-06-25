@@ -1933,6 +1933,14 @@ pub fn lower_hir_module_with_facts(
         }
     }
 
+    // Module-global interprocedural freshness summary, computed ONCE over every
+    // function item (a least-fixpoint). Threaded into every body-lowering
+    // builder so the destructive-funcupdate base gate can admit a `..f(args)`
+    // base ONLY when `f` provably returns a fresh owner — closing the
+    // call-returns-borrowed-param use-after-free. `Rc` so child builders share
+    // it without re-cloning the map.
+    let funcupdate_fn_returns_fresh: Rc<HashMap<hew_hir::ItemId, bool>> =
+        Rc::new(compute_fn_returns_fresh_owner(&origin_fns));
     for item in &module.items {
         match item {
             HirItem::Function(func) => {
@@ -1972,6 +1980,7 @@ pub fn lower_hir_module_with_facts(
                         None,
                         &module_fn_names,
                         &module_generic_fn_names,
+                        &funcupdate_fn_returns_fresh,
                         &trait_impl_index,
                         &module.call_site_type_args,
                         Some(&module.vec_generic_element_abi),
@@ -2021,6 +2030,7 @@ pub fn lower_hir_module_with_facts(
                     None,
                     &module_fn_names,
                     &module_generic_fn_names,
+                    &funcupdate_fn_returns_fresh,
                     &trait_impl_index,
                     &module.call_site_type_args,
                     Some(&module.vec_generic_element_abi),
@@ -2061,6 +2071,7 @@ pub fn lower_hir_module_with_facts(
                     &opaque_handle_names,
                     &module_fn_names,
                     &module_generic_fn_names,
+                    &funcupdate_fn_returns_fresh,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     actor_send_aliasing,
@@ -2103,6 +2114,7 @@ pub fn lower_hir_module_with_facts(
                     &opaque_handle_names,
                     &module_fn_names,
                     &module_generic_fn_names,
+                    &funcupdate_fn_returns_fresh,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     actor_send_aliasing,
@@ -2176,6 +2188,7 @@ pub fn lower_hir_module_with_facts(
                     &classification_enum_layouts,
                     &module_fn_names,
                     &module_generic_fn_names,
+                    &funcupdate_fn_returns_fresh,
                     &module.call_site_type_args,
                     &module.supervisor_child_slots,
                     actor_send_aliasing,
@@ -2240,6 +2253,7 @@ pub fn lower_hir_module_with_facts(
             None,
             &module_fn_names,
             &module_generic_fn_names,
+            &funcupdate_fn_returns_fresh,
             &trait_impl_index,
             &module.call_site_type_args,
             Some(&module.vec_generic_element_abi),
@@ -2403,6 +2417,7 @@ fn lower_actor_receive_handlers(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
@@ -2500,6 +2515,7 @@ fn lower_actor_receive_handlers(
             Some(actor.qualified_name().as_str()),
             module_fn_names,
             module_generic_fn_names,
+            funcupdate_fn_returns_fresh,
             &HashMap::new(),
             call_site_type_args,
             None,
@@ -2528,6 +2544,7 @@ fn lower_actor_body_handlers(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
@@ -2549,6 +2566,7 @@ fn lower_actor_body_handlers(
             opaque_handle_names,
             module_fn_names,
             module_generic_fn_names,
+            funcupdate_fn_returns_fresh,
             call_site_type_args,
             supervisor_child_slots,
             actor_send_aliasing,
@@ -2570,6 +2588,7 @@ fn lower_actor_body_handlers(
         opaque_handle_names,
         module_fn_names,
         module_generic_fn_names,
+        funcupdate_fn_returns_fresh,
         call_site_type_args,
         supervisor_child_slots,
         actor_send_aliasing,
@@ -2588,6 +2607,7 @@ fn lower_actor_body_handlers(
         opaque_handle_names,
         module_fn_names,
         module_generic_fn_names,
+        funcupdate_fn_returns_fresh,
         call_site_type_args,
         supervisor_child_slots,
         actor_send_aliasing,
@@ -2614,6 +2634,7 @@ fn lower_actor_init_handler(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
@@ -2664,6 +2685,7 @@ fn lower_actor_init_handler(
         Some(&actor.name),
         module_fn_names,
         module_generic_fn_names,
+        funcupdate_fn_returns_fresh,
         &HashMap::new(),
         call_site_type_args,
         None,
@@ -2693,6 +2715,7 @@ fn lower_actor_lifecycle_handlers(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
@@ -2748,6 +2771,7 @@ fn lower_actor_lifecycle_handlers(
                     Some(actor.qualified_name().as_str()),
                     module_fn_names,
                     module_generic_fn_names,
+                    funcupdate_fn_returns_fresh,
                     &HashMap::new(),
                     call_site_type_args,
                     None,
@@ -2796,6 +2820,7 @@ fn lower_actor_lifecycle_handlers(
                     Some(actor.qualified_name().as_str()),
                     module_fn_names,
                     module_generic_fn_names,
+                    funcupdate_fn_returns_fresh,
                     &HashMap::new(),
                     call_site_type_args,
                     None,
@@ -2982,6 +3007,7 @@ fn lower_actor_lifecycle_handlers(
                     Some(actor.qualified_name().as_str()),
                     module_fn_names,
                     module_generic_fn_names,
+                    funcupdate_fn_returns_fresh,
                     &HashMap::new(),
                     call_site_type_args,
                     None,
@@ -3163,6 +3189,7 @@ fn synthesize_machine_step_fn(
     enum_layouts: &[crate::model::EnumLayout],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
@@ -3211,6 +3238,7 @@ fn synthesize_machine_step_fn(
         enum_layouts: enum_layouts.to_vec(),
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
+        funcupdate_fn_returns_fresh: funcupdate_fn_returns_fresh.clone(),
         call_site_type_args: call_site_type_args.clone(),
         supervisor_child_slots: supervisor_child_slots.clone(),
         actor_send_aliasing: actor_send_aliasing.clone(),
@@ -3999,6 +4027,7 @@ fn lower_supervisor_bootstrap(
     opaque_handle_names: &[String],
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     call_site_type_args: &HashMap<hew_hir::SiteId, Vec<ResolvedTy>>,
     supervisor_child_slots: &HashMap<hew_hir::SiteId, ChildSlot>,
     actor_send_aliasing: &HashMap<hew_types::SpanKey, hew_types::ActorSendAliasing>,
@@ -4246,6 +4275,7 @@ fn lower_supervisor_bootstrap(
         None,
         module_fn_names,
         module_generic_fn_names,
+        funcupdate_fn_returns_fresh,
         &HashMap::new(),
         call_site_type_args,
         None,
@@ -4653,6 +4683,1016 @@ fn collect_unknown_self_fields_in_expr(
     }
 }
 
+/// Flow-insensitive prescan deciding, for every binding in `func`, whether a
+/// destructive `{ ..<binding>, f: new }` is a PROVEN unique owner of its heap
+/// fields — see the `Builder::funcupdate_base_proven` field and
+/// `base_is_safe_for_destructive_funcupdate`.
+///
+/// A binding is proven iff it is introduced by a `let` or a by-value parameter
+/// AND every one of its definitions (the `let` initialiser, every `=`
+/// reassignment, and the parameter origin) is a materialised owner
+/// (`Builder::expr_is_materialized_owner`) or a move-chain of such
+/// (`let c = makeThing(); let d = c; { ..d, f }`). A binding bound from a
+/// projection of a still-live owner (`let b = o.inner`), or introduced by any
+/// other form (match-arm payload, let-else binder, loop variable), is left
+/// UNPROVEN so the base gate fails closed.
+///
+/// FLOW-INSENSITIVE BY DESIGN: EVERY definition must prove safe, regardless of
+/// control flow. This is conservative (a binding that is safely materialised at
+/// the update site but aliased on a dead branch is rejected) but SOUND — it
+/// cannot admit a binding that aliases a live owner on ANY path, which a
+/// last-write-wins flow-sensitive map would (`var c = o.inner; if p { c =
+/// makeThing() } { ..c, f }` is unsafe on the `p == false` path). The reassign-
+/// loop idiom (`var c = Record { .. }; while .. { c = Record { ..c, f } }`) stays
+/// admitted because every definition is a record literal / funcupdate result.
+fn compute_funcupdate_base_provenance<'f>(
+    func: &'f HirFn,
+    fresh: &'f HashMap<hew_hir::ItemId, bool>,
+) -> HashMap<BindingId, bool> {
+    let mut defs: HashMap<BindingId, Vec<&HirExpr>> = HashMap::new();
+    let mut let_or_param: HashSet<BindingId> = HashSet::new();
+    let mut params: HashSet<BindingId> = HashSet::new();
+    for param in &func.params {
+        params.insert(param.id);
+        let_or_param.insert(param.id);
+    }
+    collect_binding_defs_in_block(&func.body, &mut defs, &mut let_or_param);
+
+    let mut resolver = BaseOwnerResolver {
+        defs,
+        let_or_param,
+        params,
+        memo: HashMap::new(),
+        fresh,
+    };
+    let ids: Vec<BindingId> = resolver.let_or_param.iter().copied().collect();
+    for id in ids {
+        let mut visiting: HashSet<BindingId> = HashSet::new();
+        resolver.resolve(id, &mut visiting);
+    }
+    resolver.memo
+}
+
+/// Memoised resolver for `compute_funcupdate_base_provenance`. `defs` maps each
+/// binding to every initialiser/reassignment expression that defines it;
+/// `let_or_param` is the set of bindings introduced by a `let` or a parameter
+/// (any other origin is unproven); `params` is the by-value parameter subset;
+/// `fresh` is the module interprocedural freshness summary
+/// (`compute_fn_returns_fresh_owner`) consulted when a definition is a call.
+struct BaseOwnerResolver<'f> {
+    defs: HashMap<BindingId, Vec<&'f HirExpr>>,
+    let_or_param: HashSet<BindingId>,
+    params: HashSet<BindingId>,
+    memo: HashMap<BindingId, bool>,
+    fresh: &'f HashMap<hew_hir::ItemId, bool>,
+}
+
+impl<'f> BaseOwnerResolver<'f> {
+    /// True iff `{ ..<binding>, f: new }` is a proven unique owner: `binding` is
+    /// `let`/param-introduced and EVERY definition proves a materialised owner.
+    fn resolve(&mut self, binding: BindingId, visiting: &mut HashSet<BindingId>) -> bool {
+        if let Some(&cached) = self.memo.get(&binding) {
+            return cached;
+        }
+        // A binding NOT introduced by a `let`/parameter (match-arm payload,
+        // let-else binder, loop variable, or an origin the prescan does not
+        // model) cannot be proven a unique owner — fail closed.
+        if !self.let_or_param.contains(&binding) {
+            return false;
+        }
+        // A definition cycle (only reachable via pathological reassignment) is
+        // not provable — fail closed without recursing forever.
+        if !visiting.insert(binding) {
+            return false;
+        }
+        let is_param = self.params.contains(&binding);
+        // Clone out the def references (cheap: each is a pointer) so the borrow
+        // of `self.defs` is released before the recursive `init_proves` calls.
+        let inits: Vec<&'f HirExpr> = self.defs.get(&binding).cloned().unwrap_or_default();
+        let result = if is_param {
+            // A by-value heap parameter is a BORROW, not a move (LESSONS
+            // `by-value-heap-params-are-borrows`): the caller retains ownership,
+            // so the parameter's incoming value is NEVER a proven unique owner.
+            // Flow-insensitively the borrowed origin reaches every use that a
+            // reassignment does not provably dominate (`fn f(mut p) { if c { p =
+            // makeInner() } { ..p, x } }` aliases the caller's argument on the
+            // `!c` path), so a parameter-introduced base fails closed regardless
+            // of any reassignment. The gate sees only the callee body, never the
+            // call site: `fn upd(p: Cfg) -> Cfg { Cfg { name: .., ..p } }` is
+            // sound for `upd(moved_in_local)` but a use-after-free for
+            // `upd(o.cfg)` where the caller's `o` stays live — the override-drop
+            // frees `o.cfg.name` under the live owner (empirically: SIGSEGV /
+            // scribble-poison read under Guard Malloc). Indistinguishable here,
+            // so reject.
+            false
+        } else if inits.is_empty() {
+            // A `let x;` with no initialiser and no reassignment is
+            // uninitialised (the move-checker rejects a read) — not an owner.
+            false
+        } else {
+            // Every recorded definition must prove a materialised owner.
+            inits.iter().all(|init| self.init_proves(init, visiting))
+        };
+        visiting.remove(&binding);
+        self.memo.insert(binding, result);
+        result
+    }
+
+    /// Classify a single definition expression of a binding.
+    fn init_proves(&mut self, init: &HirExpr, visiting: &mut HashSet<BindingId>) -> bool {
+        match &init.kind {
+            // A whole-binding move (`let d = c`) CONSUMES the source — the
+            // move-checker rejects a later use of `c` — so `d` inherits `c`'s
+            // unique-ownership provenance. Recurse: a move-chain of materialised
+            // owners is proven; a chain rooted at a live-projection rebind
+            // (`let b = o.inner; let c = b; { ..c, f }`) is not.
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(source),
+                ..
+            } => self.resolve(*source, visiting),
+            // Every other initialiser must be a materialised owner directly (a
+            // call to a proven-fresh fn / clone / record-or-tuple literal /
+            // funcupdate result / Vec element, or a projection rooted at one). A
+            // projection of a live binding (`o.inner`, `t.0`) is NOT materialised
+            // and fails here; a call is checked against the freshness summary; a
+            // construction embedding a whole by-value parameter is rejected via
+            // the prescan's `params` set.
+            _ => Builder::expr_is_materialized_owner(init, self.fresh, &self.params),
+        }
+    }
+}
+
+/// Collect every binding definition in `block` into `defs` (and record each
+/// `let`-introduced binding in `let_ids`) for `compute_funcupdate_base_-
+/// provenance`. EXHAUSTIVE over statements: a missed reassignment to a live-
+/// projection alias would reopen the funcupdate use-after-free, whereas a missed
+/// binding merely fails the gate closed.
+fn collect_binding_defs_in_block<'f>(
+    block: &'f HirBlock,
+    defs: &mut HashMap<BindingId, Vec<&'f HirExpr>>,
+    let_ids: &mut HashSet<BindingId>,
+) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(binding, init) => {
+                let_ids.insert(binding.id);
+                if let Some(init) = init {
+                    defs.entry(binding.id).or_default().push(init);
+                    collect_binding_defs_in_expr(init, defs, let_ids);
+                }
+            }
+            HirStmtKind::Assign { target, value } => {
+                // A reassignment of a whole binding redefines its provenance; a
+                // field/index assignment (`o.f = ..`) does not rebind the name.
+                if let HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(binding_id),
+                    ..
+                } = &target.kind
+                {
+                    defs.entry(*binding_id).or_default().push(value);
+                }
+                collect_binding_defs_in_expr(target, defs, let_ids);
+                collect_binding_defs_in_expr(value, defs, let_ids);
+            }
+            HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
+                collect_binding_defs_in_expr(expr, defs, let_ids);
+            }
+            HirStmtKind::Return(None) => {}
+            HirStmtKind::Defer { body, .. } => {
+                collect_binding_defs_in_expr(body, defs, let_ids);
+            }
+            HirStmtKind::LetElse {
+                scrutinee,
+                success_prelude,
+                else_body,
+                ..
+            } => {
+                // The escaping let-else binders are deliberately NOT recorded in
+                // `let_ids`: a binder destructured from a scrutinee projection is
+                // not a proven unique owner, so it must fail the base gate
+                // closed. Still recurse for nested defs/reassignments.
+                collect_binding_defs_in_expr(scrutinee, defs, let_ids);
+                for prelude_stmt in success_prelude {
+                    if let HirStmtKind::Let(_, Some(value)) = &prelude_stmt.kind {
+                        collect_binding_defs_in_expr(value, defs, let_ids);
+                    }
+                }
+                collect_binding_defs_in_block(else_body, defs, let_ids);
+            }
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_binding_defs_in_expr(tail, defs, let_ids);
+    }
+}
+
+/// Recurse into every sub-expression and nested block of `expr` so
+/// `collect_binding_defs_in_block` reaches every `let`/`=` in inner scopes.
+/// Mirrors the sealed `HirExprKind` surface (cf.
+/// `collect_unknown_self_fields_in_expr`) so no nested reassignment is missed.
+#[allow(
+    clippy::too_many_lines,
+    reason = "visitor mirrors the sealed HirExprKind surface so binding-def collection is exhaustive"
+)]
+fn collect_binding_defs_in_expr<'f>(
+    expr: &'f HirExpr,
+    defs: &mut HashMap<BindingId, Vec<&'f HirExpr>>,
+    let_ids: &mut HashSet<BindingId>,
+) {
+    match &expr.kind {
+        HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
+        | HirExprKind::BindingRef { .. }
+        | HirExprKind::AwaitTask { .. }
+        | HirExprKind::ContextReader { .. }
+        | HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::MachineEventFieldAccess { .. }
+        | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
+        | HirExprKind::Unsupported(_) => {}
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+            collect_binding_defs_in_expr(left, defs, let_ids);
+            collect_binding_defs_in_expr(right, defs, let_ids);
+        }
+        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
+            collect_binding_defs_in_expr(operand, defs, let_ids);
+        }
+        HirExprKind::ConnAwaitRead { conn, .. } => {
+            collect_binding_defs_in_expr(conn, defs, let_ids);
+        }
+        HirExprKind::ListenerAwaitAccept { listener, .. } => {
+            collect_binding_defs_in_expr(listener, defs, let_ids);
+        }
+        HirExprKind::StreamRecvAwait { stream, .. } => {
+            collect_binding_defs_in_expr(stream, defs, let_ids);
+        }
+        HirExprKind::NumericCast { value, .. }
+        | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_binding_defs_in_expr(value, defs, let_ids);
+        }
+        HirExprKind::TupleLiteral { elements } => {
+            for elem in elements {
+                collect_binding_defs_in_expr(elem, defs, let_ids);
+            }
+        }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            collect_binding_defs_in_expr(receiver, defs, let_ids);
+            collect_binding_defs_in_expr(arg, defs, let_ids);
+        }
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            collect_binding_defs_in_expr(callee, defs, let_ids);
+            for arg in args {
+                collect_binding_defs_in_expr(arg, defs, let_ids);
+            }
+        }
+        HirExprKind::Spawn { args, .. } => {
+            for (_, arg) in args {
+                collect_binding_defs_in_expr(arg, defs, let_ids);
+            }
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
+        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
+            collect_binding_defs_in_expr(receiver, defs, let_ids);
+            for arg in args {
+                collect_binding_defs_in_expr(arg, defs, let_ids);
+            }
+        }
+        HirExprKind::RemoteActorAsk {
+            receiver,
+            msg,
+            timeout_ms,
+            ..
+        } => {
+            collect_binding_defs_in_expr(receiver, defs, let_ids);
+            collect_binding_defs_in_expr(msg, defs, let_ids);
+            collect_binding_defs_in_expr(timeout_ms, defs, let_ids);
+        }
+        HirExprKind::Block(block)
+        | HirExprKind::Scope { body: block }
+        | HirExprKind::ForkBlock { body: block, .. }
+        | HirExprKind::GenBlock { body: block, .. } => {
+            collect_binding_defs_in_block(block, defs, let_ids);
+        }
+        HirExprKind::Yield { value, .. }
+        | HirExprKind::Break { value, .. }
+        | HirExprKind::Return { value } => {
+            if let Some(value) = value {
+                collect_binding_defs_in_expr(value, defs, let_ids);
+            }
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_binding_defs_in_expr(condition, defs, let_ids);
+            collect_binding_defs_in_expr(then_expr, defs, let_ids);
+            if let Some(else_expr) = else_expr {
+                collect_binding_defs_in_expr(else_expr, defs, let_ids);
+            }
+        }
+        HirExprKind::StructInit { fields, base, .. } => {
+            for (_, field_expr) in fields {
+                collect_binding_defs_in_expr(field_expr, defs, let_ids);
+            }
+            if let Some(base) = base {
+                collect_binding_defs_in_expr(base, defs, let_ids);
+            }
+        }
+        HirExprKind::FieldAccess { object, .. } => {
+            collect_binding_defs_in_expr(object, defs, let_ids);
+        }
+        HirExprKind::ScopeDeadline { duration, body } => {
+            collect_binding_defs_in_expr(duration, defs, let_ids);
+            collect_binding_defs_in_block(body, defs, let_ids);
+        }
+        HirExprKind::Select(select) => {
+            for arm in &select.arms {
+                match &arm.kind {
+                    hew_hir::HirSelectArmKind::StreamNext { stream } => {
+                        collect_binding_defs_in_expr(stream, defs, let_ids);
+                    }
+                    hew_hir::HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                        collect_binding_defs_in_expr(actor, defs, let_ids);
+                        for arg in args {
+                            collect_binding_defs_in_expr(arg, defs, let_ids);
+                        }
+                    }
+                    hew_hir::HirSelectArmKind::TaskAwait { task } => {
+                        collect_binding_defs_in_expr(task, defs, let_ids);
+                    }
+                    hew_hir::HirSelectArmKind::ChannelRecv { receiver, .. } => {
+                        collect_binding_defs_in_expr(receiver, defs, let_ids);
+                    }
+                    hew_hir::HirSelectArmKind::AfterTimer { duration } => {
+                        collect_binding_defs_in_expr(duration, defs, let_ids);
+                    }
+                }
+                collect_binding_defs_in_expr(&arm.body, defs, let_ids);
+            }
+        }
+        HirExprKind::Join(join) => {
+            for branch in &join.branches {
+                collect_binding_defs_in_expr(&branch.actor, defs, let_ids);
+                for arg in &branch.args {
+                    collect_binding_defs_in_expr(arg, defs, let_ids);
+                }
+            }
+        }
+        HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
+            collect_binding_defs_in_expr(body, defs, let_ids);
+        }
+        HirExprKind::TupleIndex { tuple, .. } => {
+            collect_binding_defs_in_expr(tuple, defs, let_ids);
+        }
+        HirExprKind::Index { container, index } => {
+            collect_binding_defs_in_expr(container, defs, let_ids);
+            collect_binding_defs_in_expr(index, defs, let_ids);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            ..
+        } => {
+            collect_binding_defs_in_expr(container, defs, let_ids);
+            if let Some(start) = start {
+                collect_binding_defs_in_expr(start, defs, let_ids);
+            }
+            if let Some(end) = end {
+                collect_binding_defs_in_expr(end, defs, let_ids);
+            }
+        }
+        HirExprKind::MachineEmit { fields, .. } => {
+            for (_, field_val) in fields {
+                collect_binding_defs_in_expr(field_val, defs, let_ids);
+            }
+        }
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            collect_binding_defs_in_expr(receiver, defs, let_ids);
+            collect_binding_defs_in_expr(event, defs, let_ids);
+        }
+        HirExprKind::ChannelRecvAwait { receiver, .. }
+        | HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. }
+        | HirExprKind::MachineStateName { receiver, .. }
+        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+            collect_binding_defs_in_expr(receiver, defs, let_ids);
+        }
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            if let Some(fields) = payload {
+                for (_, val) in fields {
+                    collect_binding_defs_in_expr(val, defs, let_ids);
+                }
+            }
+        }
+        HirExprKind::While {
+            condition, body, ..
+        } => {
+            collect_binding_defs_in_expr(condition, defs, let_ids);
+            collect_binding_defs_in_block(body, defs, let_ids);
+        }
+        HirExprKind::ForRange {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            collect_binding_defs_in_expr(start, defs, let_ids);
+            collect_binding_defs_in_expr(end, defs, let_ids);
+            collect_binding_defs_in_expr(step, defs, let_ids);
+            collect_binding_defs_in_block(body, defs, let_ids);
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            collect_binding_defs_in_expr(scrutinee, defs, let_ids);
+            for arm in arms {
+                collect_binding_defs_in_expr(&arm.body, defs, let_ids);
+            }
+        }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => {
+            collect_binding_defs_in_expr(scrutinee, defs, let_ids);
+            collect_binding_defs_in_block(body, defs, let_ids);
+        }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_binding_defs_in_expr(scrutinee, defs, let_ids);
+            collect_binding_defs_in_block(body, defs, let_ids);
+            if let Some(eb) = else_body {
+                collect_binding_defs_in_block(eb, defs, let_ids);
+            }
+        }
+        HirExprKind::Loop { body, .. } => {
+            collect_binding_defs_in_block(body, defs, let_ids);
+        }
+    }
+}
+
+/// Per-function summary for the destructive-funcupdate base gate: does function
+/// `f` provably return a FRESH MATERIALISED owner on EVERY return path — a value
+/// in its own storage that does NOT originate from a by-value heap parameter?
+///
+/// A by-value heap parameter is a BORROW, not a move (LESSONS
+/// `by-value-heap-params-are-borrows`): the caller retains ownership, so a
+/// function that hands one of its params back — directly (`fn id(p) { p }`), as
+/// a projection (`fn g(p) { p.inner }`), or laundered through another such call
+/// (`fn h(p) { id(p) }`) — returns a value that ALIASES the caller's still-live
+/// argument WITHOUT a refcount bump. Using that result as a `{ ..base, f: new }`
+/// base then frees the caller's live storage at the override-drop: the
+/// call-returns-borrowed-param use-after-free. This summary lets
+/// `expr_is_materialized_owner` admit a `..f(args)` base ONLY when `f` cannot
+/// leak a borrowed argument through its return — for ANY arguments, since the
+/// call site cannot know whether a given argument is itself live elsewhere.
+///
+/// Least-fixpoint from all-false (a function earns `true` only by positive
+/// proof). `fresh[f] == true` iff every return path of `f` is a construction /
+/// `.clone()` / `Vec` element / funcupdate result, a projection rooted at one,
+/// or a `Call` to an ALREADY-proven-fresh function. A return that is (or
+/// projects, or is laundered through a call to) a parameter or a bare local
+/// binding, a method call (which can return borrowed `self`/param), or a call to
+/// an unproven / mutually-recursive callee fails the function closed. A return
+/// whose value is produced by a closure / function-pointer / indirect call also
+/// fails closed (the closure can hand back a captured parameter — see the
+/// `callee_is_resolved_item` guard in `return_value_may_alias_borrow`). User
+/// functions read their analyzed `fns` entry; a resolved Item with no body in
+/// this module (an extern / runtime primitive / aggregate constructor) is fresh
+/// by the owned-return ABI (`callee_returns_fresh_owner` → `true`).
+///
+/// Conservative by construction: a helper that returns a let-bound local
+/// (`fn make() { let x = Inner { .. }; x }`) is classified non-fresh — sound
+/// (fail-closed), at the cost of over-rejecting that idiom as a funcupdate base.
+fn compute_fn_returns_fresh_owner(
+    fns: &HashMap<hew_hir::ItemId, &HirFn>,
+) -> HashMap<hew_hir::ItemId, bool> {
+    let mut fresh: HashMap<hew_hir::ItemId, bool> = fns.keys().map(|&id| (id, false)).collect();
+    // Monotone least-fixpoint: a pass only ever flips false→true, and a flip
+    // requires every return path fresh under the CURRENT table, so iteration
+    // converges in at most (longest fresh call chain) passes.
+    loop {
+        let mut changed = false;
+        for (&id, &f) in fns {
+            if fresh[&id] {
+                continue;
+            }
+            if fn_body_returns_fresh_owner(f, &fresh) {
+                fresh.insert(id, true);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    fresh
+}
+
+/// True when EVERY value-bearing return path of `f` — every `return <expr>`
+/// anywhere in the body that is not inside a nested closure, plus the
+/// fall-through tail when it yields a value — is a fresh materialised owner
+/// under the current `fresh` table. A body with no value-bearing return path is
+/// not a fresh owner (fail closed).
+fn fn_body_returns_fresh_owner(f: &HirFn, fresh: &HashMap<hew_hir::ItemId, bool>) -> bool {
+    // Every explicit `return <expr>` value (statement and expression forms, at
+    // any depth, NOT descending into closures whose `return` exits the closure
+    // rather than `f`).
+    let mut return_values: Vec<&HirExpr> = Vec::new();
+    collect_return_values_in_block(&f.body, &mut return_values);
+    // The fall-through tail is the remaining return path — but only when it
+    // actually produces a value. A unit-/never-typed tail (`if c { return x }
+    // else { return y }`, or a block ending in a `return`) is a diverging
+    // continuation, not a value the function hands back, so it does not gate
+    // freshness.
+    if let Some(tail) = &f.body.tail {
+        if !matches!(tail.ty, ResolvedTy::Unit | ResolvedTy::Never) {
+            return_values.push(tail);
+        }
+    }
+    if return_values.is_empty() {
+        return false;
+    }
+    // Fresh iff NO return path aliases a by-value parameter (directly, via a
+    // projection, embedded in a construction, or laundered through a call that
+    // forwards a parameter). The aliasing question is param-INDEPENDENT — it
+    // composes through nested calls without arg-flow tracking — so a single
+    // module-global fixpoint suffices.
+    return_values
+        .iter()
+        .all(|e| !return_value_may_alias_borrow(e, fresh))
+}
+
+/// True when `expr`, used as a function's return value, MAY alias a by-value
+/// heap parameter of that function — i.e. the returned value is (or transitively
+/// embeds / projects / launders) a borrow the caller still owns. The negation is
+/// "provably a fresh owner". This is the leaf of the module freshness fixpoint.
+///
+/// WHY a dedicated may-alias predicate and not "is the operand itself fresh":
+/// a constructor operand like `string.repeat("a", 32)` is a `Call` to a callee
+/// the summary cannot prove fresh (its body bottoms out in a runtime method),
+/// yet its result CANNOT alias the enclosing function's parameters because every
+/// argument is a literal. Asking "is the operand fresh" would reject it (and
+/// collapse every `Record { f: string.repeat(..) }` helper); asking "does the
+/// operand alias a parameter" admits it. A `Call(g, args)` aliases a parameter
+/// ONLY when `g` is not proven fresh AND some argument itself aliases a
+/// parameter — the param-flow that composes interprocedurally.
+///
+/// EXHAUSTIVE and fail-closed: every form that is not provably non-aliasing
+/// (a bare binding, a method call, a deref, any unmodelled form) returns `true`.
+fn return_value_may_alias_borrow(expr: &HirExpr, fresh: &HashMap<hew_hir::ItemId, bool>) -> bool {
+    match &expr.kind {
+        // Value-passthrough wrappers: the value flows from the tail / both
+        // branches / every arm — aliasing iff ANY reachable value aliases.
+        HirExprKind::Block(block) => block
+            .tail
+            .as_deref()
+            .is_none_or(|t| return_value_may_alias_borrow(t, fresh)),
+        HirExprKind::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            return_value_may_alias_borrow(then_expr, fresh)
+                || else_expr
+                    .as_deref()
+                    .is_none_or(|e| return_value_may_alias_borrow(e, fresh))
+        }
+        HirExprKind::Match { arms, .. } => {
+            arms.is_empty()
+                || arms
+                    .iter()
+                    .any(|arm| return_value_may_alias_borrow(&arm.body, fresh))
+        }
+        // A nested `return <e>` in value position (`... else { return p }`)
+        // contributes its own value; it aliases iff that value does.
+        HirExprKind::Return { value } => value
+            .as_deref()
+            .is_none_or(|v| return_value_may_alias_borrow(v, fresh)),
+        // Fresh leaves — NEVER an alias of a caller-owned value. A `.clone()` is
+        // a deep copy; a `Vec<T>` element load / slice is an independent heap
+        // element (push-clone + refcount); a literal owns nothing borrowed.
+        HirExprKind::RecordCloneCall { .. }
+        | HirExprKind::Index { .. }
+        | HirExprKind::Slice { .. }
+        | HirExprKind::Literal(_) => false,
+        // A construction aliases a parameter iff one of its owned operands does.
+        // Storing a managed operand into a field/element refcount-bumps or
+        // COW-copies a PROJECTION/temporary, but a WHOLE by-value parameter is
+        // moved without a bump (`Outer { inner: p }` returns a value whose
+        // `inner` aliases the caller's argument — the call-returns-a-constructor-
+        // embedding-a-borrow use-after-free). The recursion bottoms a bare
+        // parameter operand out at the `_ => true` arm, so it is caught.
+        HirExprKind::StructInit { fields, base, .. } => {
+            fields
+                .iter()
+                .any(|(_, v)| return_value_may_alias_borrow(v, fresh))
+                || base
+                    .as_deref()
+                    .is_some_and(|b| return_value_may_alias_borrow(b, fresh))
+        }
+        HirExprKind::TupleLiteral { elements } => elements
+            .iter()
+            .any(|e| return_value_may_alias_borrow(e, fresh)),
+        HirExprKind::MachineVariantCtor { payload, .. } => payload.as_ref().is_some_and(|fields| {
+            fields
+                .iter()
+                .any(|(_, v)| return_value_may_alias_borrow(v, fresh))
+        }),
+        // A call that is NOT to a statically-resolved Item — a closure value, a
+        // function-pointer parameter, or any indirect/dynamic dispatch — can hand
+        // back a CAPTURED by-value heap parameter through its environment, a
+        // HIDDEN argument the explicit-arg flow below cannot see:
+        // `fn f(p) { let g = || -> Inner { p }; g() }` returns `p` with ZERO
+        // explicit arguments, so an `args`-only test would conclude "no args ⇒ no
+        // alias ⇒ fresh" and admit `..f(o.inner)` — the closure-capture-return
+        // use-after-free. Trust ONLY a resolved Item (a free function whose body
+        // the fixpoint analyzed, or an owned-return-ABI extern / constructor);
+        // every other callee may-alias regardless of arguments. Fail closed.
+        HirExprKind::Call { callee, args } => {
+            !callee_is_resolved_item(callee)
+                // A resolved free-function / owned-ABI extern / constructor call
+                // aliases a parameter iff the callee is NOT proven to return a
+                // fresh owner AND some argument itself aliases a parameter (the
+                // callee could forward that argument out). A proven-fresh callee
+                // never aliases regardless of arguments; a non-fresh callee with
+                // only non-aliasing arguments (`string.repeat("a", 32)`) cannot
+                // alias the ENCLOSING function's parameters. Param-flow, composed
+                // through the fixpoint.
+                || (!callee_returns_fresh_owner(callee, fresh)
+                    && args.iter().any(|a| return_value_may_alias_borrow(a, fresh)))
+        }
+        // A projection aliases a parameter iff its object chain does: `p.inner`
+        // / `t.0` bottoms out at a bare parameter (`_ => true`) and carries that
+        // up; `makeOuter().inner` bottoms out at a fresh `Call` and does not.
+        HirExprKind::FieldAccess { object, .. } => return_value_may_alias_borrow(object, fresh),
+        HirExprKind::TupleIndex { tuple, .. } => return_value_may_alias_borrow(tuple, fresh),
+        // A by-value parameter is a BORROW; a bare local may itself hold a
+        // borrow (`let x = p; x`); a method call can return borrowed `self` /
+        // a parameter; a deref and every other form are not provably fresh.
+        // Fail closed: assume the value MAY alias.
+        _ => true,
+    }
+}
+
+/// Resolve a `Call` callee to its freshness fact.
+///
+/// - A statically-resolved item callee (`BindingRef { resolved: Item(id) }`)
+///   that names a function body IN THIS MODULE reads that body's summary entry
+///   (the analyzed `fresh` verdict — a HEW function that forwards a by-value
+///   parameter is `false`, caught by the interprocedural fixpoint).
+/// - A resolved item callee with NO body in this module is an extern / runtime
+///   primitive (`hew_string_repeat`, `hew_vec_*`, …) or an aggregate
+///   constructor. Both return a freshly-owned value by the cross-ABI
+///   owned-return contract: a callee returning a heap type hands back a value
+///   the caller owns and must free, so it cannot be a borrowed alias of an
+///   argument (an extern that returned an un-retained borrow would double-free
+///   in EVERY caller that frees the result, not just funcupdate — that is an
+///   ABI violation at the extern boundary, the same trust the `RecordCloneCall`
+///   / `Index` / `Slice` arms already extend to the `hew_*_clone` /
+///   `hew_*_get_clone` primitives they lower to). Classified fresh.
+/// - Any other callee shape (an unresolved name, a value-typed fn pointer, an
+///   indirect/closure call) is not statically resolvable and fails closed.
+fn callee_returns_fresh_owner(callee: &HirExpr, fresh: &HashMap<hew_hir::ItemId, bool>) -> bool {
+    if let HirExprKind::BindingRef {
+        resolved: ResolvedRef::Item(item_id),
+        ..
+    } = &callee.kind
+    {
+        // `Some(f)` — a module function body the summary analyzed; trust its
+        // verdict. `None` — a resolved item with no analyzable body here
+        // (extern primitive or constructor); fresh by the owned-return ABI.
+        fresh.get(item_id).copied().unwrap_or(true)
+    } else {
+        false
+    }
+}
+
+/// True when `callee` names a statically-resolved Item — a free function (whose
+/// body the freshness fixpoint analyzed), an extern / runtime primitive, or an
+/// aggregate constructor. False for a closure value, a function-pointer
+/// parameter, a method receiver, or any indirect/dynamic dispatch, whose return
+/// the summary cannot prove fresh because the called body (and any environment
+/// it captures) is not statically in hand. This is the gate that stops a
+/// zero-argument closure call (`g()`) from being mistaken for a fresh owner when
+/// `g` captures a by-value heap parameter.
+fn callee_is_resolved_item(callee: &HirExpr) -> bool {
+    matches!(
+        &callee.kind,
+        HirExprKind::BindingRef {
+            resolved: ResolvedRef::Item(_),
+            ..
+        }
+    )
+}
+
+/// Collect every explicit `return <expr>` value in `block` (statement form),
+/// recursing into nested control flow but NOT into closures. Exhaustive over
+/// `HirStmtKind`: a missed return statement would let a borrowed-param return
+/// escape the freshness summary (a use-after-free), so every form is handled.
+fn collect_return_values_in_block<'f>(block: &'f HirBlock, out: &mut Vec<&'f HirExpr>) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(_, init) => {
+                if let Some(init) = init {
+                    collect_return_values_in_expr(init, out);
+                }
+            }
+            HirStmtKind::Assign { target, value } => {
+                collect_return_values_in_expr(target, out);
+                collect_return_values_in_expr(value, out);
+            }
+            HirStmtKind::Expr(expr) => collect_return_values_in_expr(expr, out),
+            HirStmtKind::Return(Some(expr)) => {
+                out.push(expr);
+                collect_return_values_in_expr(expr, out);
+            }
+            HirStmtKind::Return(None) => {}
+            HirStmtKind::Defer { body, .. } => collect_return_values_in_expr(body, out),
+            HirStmtKind::LetElse {
+                scrutinee,
+                success_prelude,
+                else_body,
+                ..
+            } => {
+                collect_return_values_in_expr(scrutinee, out);
+                for prelude_stmt in success_prelude {
+                    if let HirStmtKind::Let(_, Some(value)) = &prelude_stmt.kind {
+                        collect_return_values_in_expr(value, out);
+                    }
+                }
+                collect_return_values_in_block(else_body, out);
+            }
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_return_values_in_expr(tail, out);
+    }
+}
+
+/// Collect every explicit `return <expr>` value reachable from `expr` (the
+/// `HirExprKind::Return` expression form plus any buried in sub-expressions and
+/// nested blocks), recursing into all sub-expressions EXCEPT closure /
+/// lambda-actor bodies (whose `return` exits the closure, not the enclosing
+/// function). Exhaustive over the sealed `HirExprKind` surface (mirrors
+/// `collect_binding_defs_in_expr`) so no buried return is missed.
+#[allow(
+    clippy::too_many_lines,
+    clippy::match_same_arms,
+    reason = "visitor mirrors the sealed HirExprKind surface so return-value collection is exhaustive; the closure/lambda-actor arm is kept separate from the leaf no-op arm to document the do-NOT-descend invariant (a `return` inside a closure exits the closure, not the enclosing function)"
+)]
+fn collect_return_values_in_expr<'f>(expr: &'f HirExpr, out: &mut Vec<&'f HirExpr>) {
+    match &expr.kind {
+        HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
+        | HirExprKind::BindingRef { .. }
+        | HirExprKind::AwaitTask { .. }
+        | HirExprKind::ContextReader { .. }
+        | HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::MachineEventFieldAccess { .. }
+        | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
+        | HirExprKind::Unsupported(_) => {}
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+            collect_return_values_in_expr(left, out);
+            collect_return_values_in_expr(right, out);
+        }
+        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
+            collect_return_values_in_expr(operand, out);
+        }
+        HirExprKind::ConnAwaitRead { conn, .. } => collect_return_values_in_expr(conn, out),
+        HirExprKind::ListenerAwaitAccept { listener, .. } => {
+            collect_return_values_in_expr(listener, out);
+        }
+        HirExprKind::StreamRecvAwait { stream, .. } => {
+            collect_return_values_in_expr(stream, out);
+        }
+        HirExprKind::NumericCast { value, .. }
+        | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_return_values_in_expr(value, out);
+        }
+        HirExprKind::TupleLiteral { elements } => {
+            for elem in elements {
+                collect_return_values_in_expr(elem, out);
+            }
+        }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            collect_return_values_in_expr(receiver, out);
+            collect_return_values_in_expr(arg, out);
+        }
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            collect_return_values_in_expr(callee, out);
+            for arg in args {
+                collect_return_values_in_expr(arg, out);
+            }
+        }
+        HirExprKind::Spawn { args, .. } => {
+            for (_, arg) in args {
+                collect_return_values_in_expr(arg, out);
+            }
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
+        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
+            collect_return_values_in_expr(receiver, out);
+            for arg in args {
+                collect_return_values_in_expr(arg, out);
+            }
+        }
+        HirExprKind::RemoteActorAsk {
+            receiver,
+            msg,
+            timeout_ms,
+            ..
+        } => {
+            collect_return_values_in_expr(receiver, out);
+            collect_return_values_in_expr(msg, out);
+            collect_return_values_in_expr(timeout_ms, out);
+        }
+        HirExprKind::Block(block)
+        | HirExprKind::Scope { body: block }
+        | HirExprKind::ForkBlock { body: block, .. }
+        | HirExprKind::GenBlock { body: block, .. } => {
+            collect_return_values_in_block(block, out);
+        }
+        // `return <e>` — the value escapes the FUNCTION; collect it and recurse
+        // for nested returns inside `e`. `yield`/`break` carry values out of a
+        // generator/loop, NOT the function, so recurse but do not collect.
+        HirExprKind::Return { value } => {
+            if let Some(value) = value {
+                out.push(value);
+                collect_return_values_in_expr(value, out);
+            }
+        }
+        HirExprKind::Yield { value, .. } | HirExprKind::Break { value, .. } => {
+            if let Some(value) = value {
+                collect_return_values_in_expr(value, out);
+            }
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_return_values_in_expr(condition, out);
+            collect_return_values_in_expr(then_expr, out);
+            if let Some(else_expr) = else_expr {
+                collect_return_values_in_expr(else_expr, out);
+            }
+        }
+        HirExprKind::StructInit { fields, base, .. } => {
+            for (_, field_expr) in fields {
+                collect_return_values_in_expr(field_expr, out);
+            }
+            if let Some(base) = base {
+                collect_return_values_in_expr(base, out);
+            }
+        }
+        HirExprKind::FieldAccess { object, .. } => collect_return_values_in_expr(object, out),
+        HirExprKind::ScopeDeadline { duration, body } => {
+            collect_return_values_in_expr(duration, out);
+            collect_return_values_in_block(body, out);
+        }
+        HirExprKind::Select(select) => {
+            for arm in &select.arms {
+                match &arm.kind {
+                    hew_hir::HirSelectArmKind::StreamNext { stream } => {
+                        collect_return_values_in_expr(stream, out);
+                    }
+                    hew_hir::HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                        collect_return_values_in_expr(actor, out);
+                        for arg in args {
+                            collect_return_values_in_expr(arg, out);
+                        }
+                    }
+                    hew_hir::HirSelectArmKind::TaskAwait { task } => {
+                        collect_return_values_in_expr(task, out);
+                    }
+                    hew_hir::HirSelectArmKind::ChannelRecv { receiver, .. } => {
+                        collect_return_values_in_expr(receiver, out);
+                    }
+                    hew_hir::HirSelectArmKind::AfterTimer { duration } => {
+                        collect_return_values_in_expr(duration, out);
+                    }
+                }
+                collect_return_values_in_expr(&arm.body, out);
+            }
+        }
+        HirExprKind::Join(join) => {
+            for branch in &join.branches {
+                collect_return_values_in_expr(&branch.actor, out);
+                for arg in &branch.args {
+                    collect_return_values_in_expr(arg, out);
+                }
+            }
+        }
+        // Closure / lambda-actor bodies: a `return` inside exits the CLOSURE,
+        // not the enclosing function, so do NOT descend.
+        HirExprKind::SpawnLambdaActor { .. } | HirExprKind::Closure { .. } => {}
+        HirExprKind::TupleIndex { tuple, .. } => collect_return_values_in_expr(tuple, out),
+        HirExprKind::Index { container, index } => {
+            collect_return_values_in_expr(container, out);
+            collect_return_values_in_expr(index, out);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            ..
+        } => {
+            collect_return_values_in_expr(container, out);
+            if let Some(start) = start {
+                collect_return_values_in_expr(start, out);
+            }
+            if let Some(end) = end {
+                collect_return_values_in_expr(end, out);
+            }
+        }
+        HirExprKind::MachineEmit { fields, .. } => {
+            for (_, field_val) in fields {
+                collect_return_values_in_expr(field_val, out);
+            }
+        }
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            collect_return_values_in_expr(receiver, out);
+            collect_return_values_in_expr(event, out);
+        }
+        HirExprKind::ChannelRecvAwait { receiver, .. }
+        | HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. }
+        | HirExprKind::MachineStateName { receiver, .. }
+        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+            collect_return_values_in_expr(receiver, out);
+        }
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            if let Some(fields) = payload {
+                for (_, val) in fields {
+                    collect_return_values_in_expr(val, out);
+                }
+            }
+        }
+        HirExprKind::While {
+            condition, body, ..
+        } => {
+            collect_return_values_in_expr(condition, out);
+            collect_return_values_in_block(body, out);
+        }
+        HirExprKind::ForRange {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            collect_return_values_in_expr(start, out);
+            collect_return_values_in_expr(end, out);
+            collect_return_values_in_expr(step, out);
+            collect_return_values_in_block(body, out);
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            collect_return_values_in_expr(scrutinee, out);
+            for arm in arms {
+                collect_return_values_in_expr(&arm.body, out);
+            }
+        }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => {
+            collect_return_values_in_expr(scrutinee, out);
+            collect_return_values_in_block(body, out);
+        }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_return_values_in_expr(scrutinee, out);
+            collect_return_values_in_block(body, out);
+            if let Some(eb) = else_body {
+                collect_return_values_in_block(eb, out);
+            }
+        }
+        HirExprKind::Loop { body, .. } => collect_return_values_in_block(body, out),
+    }
+}
+
 #[derive(Debug)]
 struct LoweredFunction {
     thir: ThirFunction,
@@ -4708,6 +5748,7 @@ fn lower_function(
     current_actor_name: Option<&str>,
     module_fn_names: &HashSet<String>,
     module_generic_fn_names: &HashSet<String>,
+    funcupdate_fn_returns_fresh: &Rc<HashMap<hew_hir::ItemId, bool>>,
     trait_impl_index: &HashMap<
         hew_hir::dispatch::TraitImplKey,
         hew_hir::dispatch::TraitImplMethodEntry,
@@ -4753,6 +5794,7 @@ fn lower_function(
             .unwrap_or_default(),
         module_fn_names: module_fn_names.clone(),
         module_generic_fn_names: module_generic_fn_names.clone(),
+        funcupdate_fn_returns_fresh: funcupdate_fn_returns_fresh.clone(),
         trait_impl_index: trait_impl_index.clone(),
         subst,
         call_site_type_args: call_site_type_args.clone(),
@@ -4775,6 +5817,8 @@ fn lower_function(
     // Codegen emits a parameter-prologue that stores each LLVM function
     // argument into the corresponding alloca slot before the first instruction.
     builder.lower_params(func);
+    builder.funcupdate_base_proven =
+        compute_funcupdate_base_provenance(func, funcupdate_fn_returns_fresh);
     builder.function_body(func);
 
     // Effective return type after type-parameter substitution.
@@ -5523,6 +6567,41 @@ struct Builder {
     /// initialiser. Cluster 1 reads the slot directly; later clusters add
     /// drop-cleanup and rebinding semantics.
     binding_locals: HashMap<BindingId, Place>,
+    /// Per-function destructive-funcupdate base provenance. Maps a `BindingId`
+    /// to whether `{ ..<binding>, f: new }` over it is a PROVEN unique owner of
+    /// its heap fields — i.e. consuming it leaves no live alias, so the
+    /// override-drop's in-place field release is sound. Populated once per
+    /// function by `compute_funcupdate_base_provenance` (a flow-insensitive
+    /// prescan of the body) BEFORE the body is lowered, so the base allowlist
+    /// gate sees every reassignment. A binding is proven iff EVERY definition
+    /// (its `let` initialiser, every `=` reassignment, or a by-value parameter
+    /// origin) is a materialised owner (`expr_is_materialized_owner`) or a
+    /// move-chain of such; a binding bound from a projection of a still-live
+    /// owner (`let b = o.inner`), or introduced by any non-`let`/non-param form
+    /// (match-arm payload, let-else, loop var), is ABSENT or `false` — the gate
+    /// then fails closed. See `base_is_safe_for_destructive_funcupdate`.
+    funcupdate_base_proven: HashMap<BindingId, bool>,
+    /// Module-global interprocedural freshness summary: maps each free-function
+    /// `ItemId` to whether it provably returns a FRESH MATERIALISED owner on
+    /// every return path (`compute_fn_returns_fresh_owner`). Consulted by
+    /// `expr_is_materialized_owner` so a `..f(args)` funcupdate base is admitted
+    /// ONLY when `f` cannot launder a borrowed by-value parameter through its
+    /// return (the call-returns-borrowed-param use-after-free). `Rc` so child
+    /// builders share it cheaply; the empty default fails every call-base
+    /// closed, which is sound. See `compute_fn_returns_fresh_owner`.
+    funcupdate_fn_returns_fresh: Rc<HashMap<hew_hir::ItemId, bool>>,
+    /// Binding ids of the CURRENT function's by-value parameters, captured in
+    /// `lower_params`. A funcupdate base that is (or embeds in a construction) a
+    /// WHOLE by-value parameter is NOT a unique owner — the parameter is a
+    /// borrow (LESSONS `by-value-heap-params-are-borrows`) stored without a
+    /// refcount bump (`{ ..Wrap { s: p, .. }, s: new }` frees the caller's `p`
+    /// at the override-drop). Consulted by `expr_is_materialized_owner` to reject
+    /// such bases. `Rc` so child builders (closures) inherit the enclosing
+    /// parameters cheaply; the empty default is sound (admits nothing extra).
+    /// Projections of a parameter (`p.inner`) and bare locals are NOT listed —
+    /// a field read refcount-bumps and a local move consumes, both empirically
+    /// owner-preserving.
+    funcupdate_param_ids: Rc<HashSet<BindingId>>,
     /// F-04 fungible supervisor-child reference table. Maps the handle local id
     /// produced by `lower_supervisor_child_get` (`Place::ActorHandle(N)`) to the
     /// stable `(supervisor, slot)` reference it stands for.
@@ -5900,6 +6979,17 @@ struct Builder {
     /// than the direct `Instr::CallClosure`. A non-suspending closure is never
     /// inserted, keeping it on the direct path (no spurious coroutine driving).
     suspending_closure_bindings: HashSet<BindingId>,
+    /// `let` bindings whose initializer failed to lower (returned `None`) AND
+    /// emitted at least one diagnostic of its own. A later `BindingRef` to such
+    /// a binding has no `binding_locals` Place, which would otherwise raise a
+    /// follow-on `UnresolvedPlace` ("could not resolve binding `u`") — pure
+    /// cascade noise stacked on the root error the user must actually fix (e.g.
+    /// a fail-closed functional-update base/carry reject on `let u = { ..base }`).
+    /// The `BindingRef` resolver consults this set and returns `None` silently
+    /// for a poisoned binding, so only the root diagnostic surfaces. Guarded on
+    /// "a diagnostic was emitted" so a genuinely-unresolved binding (a real bug
+    /// with no prior error) still reports.
+    poisoned_let_bindings: HashSet<BindingId>,
     /// Transient: set by `lower_closure_literal` to the just-lowered closure's
     /// body-suspends verdict (derived from its shim's MIR carriers) so the `Let`
     /// handler can attribute it to the bound binding. Reset around each closure
@@ -6801,6 +7891,11 @@ impl Builder {
     /// produce indices ≥ `params.len()`, maintaining the invariant documented
     /// on `RawMirFunction.params`.
     fn lower_params(&mut self, func: &HirFn) {
+        // Record the by-value parameter binding ids for the destructive-
+        // funcupdate base gate: a base that embeds a WHOLE parameter is a borrow,
+        // not a unique owner. Captured here so every entry point that lowers a
+        // parameterised body through `lower_params` participates.
+        self.funcupdate_param_ids = Rc::new(func.params.iter().map(|p| p.id).collect());
         for param in &func.params {
             let slot = self.alloc_local(param.ty.clone());
             self.binding_locals.insert(param.id, slot);
@@ -8025,7 +9120,17 @@ impl Builder {
                 };
                 self.pending_closure_literal_suspends = None;
                 self.pending_closure_literal_heap = None;
+                let diag_len_before_value = self.diagnostics.len();
                 let value_place = self.lower_value(value);
+                // Cascade suppression: a `let` whose initializer failed to lower
+                // (`None`) AFTER emitting its own diagnostic poisons the binding,
+                // so a later `BindingRef` to it stays silent instead of stacking
+                // an `UnresolvedPlace` follow-on on the root error. Guarded on a
+                // diagnostic actually having been emitted, so a silent-`None`
+                // producer (a real defect with no prior error) still surfaces.
+                if value_place.is_none() && self.diagnostics.len() > diag_len_before_value {
+                    self.poisoned_let_bindings.insert(binding.id);
+                }
                 if pending {
                     self.pending_lambda_actor_handle = None;
                 }
@@ -8729,6 +9834,25 @@ impl Builder {
             } => {
                 if let Some(dest) = self.binding_locals.get(binding).copied() {
                     self.push_instr(Instr::Move { dest, src });
+                    // A simple-variable assignment RE-DEFINES its target: after
+                    // `h = <rhs>` the binding `h` holds a fresh value and is
+                    // unconditionally Live, regardless of any move/consume the
+                    // RHS performed on `h` itself. Emit a checker-stream `Bind`
+                    // so move-state tracking resets `h` to Live. Without this the
+                    // self-consuming reassign idiom `h = T { ..h, f: new }`
+                    // (the canonical functional-update loop body) would leave `h`
+                    // flagged `Consumed` from the `..h` ingress and every
+                    // subsequent read — including the next loop iteration — would
+                    // spuriously trip `UseAfterConsume`. This re-`Bind` carries no
+                    // drop semantics (it does not touch `owned_locals`, which is
+                    // populated only at `let`/param sites), so scope-exit drop
+                    // accounting for `h` is unchanged.
+                    self.statements.push(MirStatement::Bind {
+                        binding: *binding,
+                        name: name.clone(),
+                        site: target.site,
+                        ty: self.subst_ty(&target.ty),
+                    });
                 } else {
                     self.diagnostics.push(MirDiagnostic {
                         kind: MirDiagnosticKind::UnresolvedPlace {
@@ -8996,6 +10120,13 @@ impl Builder {
                 }
                 let place = self.binding_locals.get(id).copied();
                 if place.is_none() {
+                    if self.poisoned_let_bindings.contains(id) {
+                        // The binding's `let` initializer already failed to lower
+                        // and reported the root error; this read is pure cascade.
+                        // Stay silent (the compile already fails) instead of
+                        // stacking an `UnresolvedPlace` follow-on.
+                        return None;
+                    }
                     // Function parameters and other bindings without a
                     // backend slot are out of Cluster 1's spine. Without a
                     // Place, the emitter would silently load an
@@ -9655,6 +10786,142 @@ impl Builder {
                     return None;
                 };
 
+                // ── Functional-update base is CONSUMED ──────────────────────
+                // Owned-record `..base` moves the base into the new record:
+                // its carried fields escape via `RecordFieldLoad` and its
+                // OVERRIDDEN owned fields are destructively released at the
+                // construction site (below). Two fail-closed guards keep the
+                // consume sound, so every admitted program is memory-safe:
+                //
+                //   (1) Self-reference reject (here): an overriding field value
+                //       that bare-aliases the base's heap (`{ items: s.items,
+                //       ..s }`) would be freed by the override-drop before the
+                //       new record reads it. Reject at lowering.
+                //
+                //   (2) Use-after-move (consume-marking after the base is
+                //       lowered, below): any later use of the base — including a
+                //       second `..base` from the same source, or a `base.field`
+                //       read — is flagged `UseAfterConsume` by the move-checker.
+                //
+                // The long-term value model targets COW (`cow_share` +
+                // `ensure_unique`, base stays valid — see
+                // tests/corpus/v05-value-model/18_record_update_syntax) where
+                // these shapes become legal. Until the retain-on-share spine
+                // lands, the consume semantics are the fail-closed interim: the
+                // rejected shapes are exactly the ones that would otherwise
+                // miscompile (use-after-free / double-free). BitCopy records are
+                // exempt — they bit-copy and the base stays valid.
+                let base_binding: Option<BindingId> = match base.as_deref().map(|b| &b.kind) {
+                    Some(HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(id),
+                        ..
+                    }) => Some(*id),
+                    _ => None,
+                };
+                if let Some(base_id) = base_binding {
+                    if let Some((fname, _)) = fields.iter().find(|(_, fexpr)| {
+                        self.functional_update_value_aliases_base(fexpr, base_id)
+                    }) {
+                        // Walk every sub-expression for checker-stream coverage
+                        // before bailing, mirroring the field-order-miss path.
+                        for (_, fe) in fields {
+                            let _ = self.lower_value(fe);
+                        }
+                        if let Some(base_expr) = base.as_deref() {
+                            let _ = self.lower_value(base_expr);
+                        }
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "functional-update override aliasing the consumed base"
+                                    .to_string(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "field `{fname}` of `{name}` is initialised from a bare \
+                                 projection of the functional-update base `..base`, which is \
+                                 consumed by the update; the base's overridden owned fields \
+                                 are released at the construction site, so the new record \
+                                 would alias freed memory. Clone the value \
+                                 (`<base>.<field>.clone()`) or bind it into a separate \
+                                 variable before the update. (The COW value model that keeps \
+                                 the base live after an update is not yet implemented.)"
+                            ),
+                        });
+                        return None;
+                    }
+                }
+
+                // (1b) Fail-closed ALLOWLIST gate for the destructive base.
+                // The override-drop below frees an overridden owned field of
+                // `base` IN PLACE, and the non-overridden owned fields escape
+                // via shallow `RecordFieldLoad`. Both are sound ONLY when the
+                // base is the UNIQUE live owner of its heap fields. Rather than
+                // denylist the unsafe projection shapes (a list that has
+                // repeatedly missed cases — `FieldAccess`, then `Index`, then
+                // `TupleIndex`, then a bare binding REBOUND from a projection —
+                // each a fresh use-after-free), the base must POSITIVELY prove
+                // safe via `base_is_safe_for_destructive_funcupdate`: a bare
+                // binding whose PROVENANCE proves unique ownership (every
+                // definition a materialised owner — consume-marked in place), or
+                // a directly-materialised owner with no live alias (call /
+                // `.clone()` result, record literal, `Vec` element `v[i]`, or a
+                // projection rooted at one). Any other base — a projection of a
+                // LIVE binding (`o.inner`, `t.0`, `o.pair.0`, nested), a bare
+                // binding bound from such a projection (`let b = o.inner; ..b`),
+                // a machine-state field (`self.field`), a `Const`/`Item` ref, a
+                // deref, or any future expression form — is rejected. This is
+                // complete by construction: no base shape can slip the gate.
+                //
+                // Only OWNED-aggregate bases reach the override-drop / shallow-
+                // carry path, so the gate is type-fenced by
+                // `aggregate_ingress_moves_binding_ty`: a `BitCopy` base
+                // bit-copies and stays valid regardless of shape.
+                if let Some(base_expr) = base.as_deref() {
+                    let base_ty = self.subst_ty(&base_expr.ty);
+                    if self.aggregate_ingress_moves_binding_ty(&base_ty)
+                        && !self.base_is_safe_for_destructive_funcupdate(base_expr)
+                    {
+                        // Walk every sub-expression for checker-stream
+                        // coverage before bailing, mirroring the paths above.
+                        for (_, fe) in fields {
+                            let _ = self.lower_value(fe);
+                        }
+                        let _ = self.lower_value(base_expr);
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct:
+                                    "functional-update base that is not a binding or owned value"
+                                        .to_string(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "the `..base` of `{name}` is not provably the unique owner of \
+                                 its heap fields, so it may interior-alias storage that stays \
+                                 live after the update — a field projection of a live binding \
+                                 (`b.field`, `b.0`, `t.0.field`), a machine-state field \
+                                 (`self.field`), a binding REBOUND from such a projection \
+                                 (`let b = o.inner; ..b` — `b` shares `o.inner`'s storage), or \
+                                 another aliasing shape. The update's in-place release of an \
+                                 overridden owned field (and the shallow carry of the \
+                                 non-overridden owned fields) would then free memory the live \
+                                 owner still references — a use-after-free, and a double-free at \
+                                 its scope-exit drop. Clone the base into a fresh owned value \
+                                 (`{name} {{ ..<base>.clone(), <field>: new }}`), or clone the \
+                                 overridden field. (Binding the projection first — \
+                                 `let b = <base>` — does NOT help: it re-aliases the same \
+                                 storage; clone or consume the source instead. Accepted: a bare \
+                                 binding whose every definition is a freshly-owned value — a call \
+                                 result, a `.clone()`, a record literal, a `Vec` element `v[i]`, \
+                                 or a move-chain of those (this admits the reassign-loop idiom) \
+                                 — and an owned-rvalue base directly.) The COW value model that \
+                                 keeps a projected source live after an update is not yet \
+                                 implemented."
+                            ),
+                        });
+                        return None;
+                    }
+                }
+
                 // Lower each explicit field value to a Place, keyed by name.
                 let mut explicit: HashMap<String, Place> = HashMap::new();
                 for (fname, fexpr) in fields {
@@ -9676,7 +10943,16 @@ impl Builder {
 
                 // Lower the functional-update base, if any.
                 let base_place: Option<Place> = if let Some(base_expr) = base {
-                    self.lower_value(base_expr)
+                    let place = self.lower_value(base_expr);
+                    // (2) Consume the base — see the guard note above. An owned
+                    // record handed in via `..base` moves into the new record,
+                    // so mark the source binding consumed: a later use (a second
+                    // `..base`, or a `base.field` read) is `UseAfterConsume`.
+                    // `alias_moved_owned_operand` is drop-neutral (it does NOT
+                    // suppress the base's scope-exit drop) and self-skips BitCopy
+                    // records via `aggregate_ingress_moves_binding_ty`.
+                    self.alias_moved_owned_operand(base_expr);
+                    place
                 } else {
                     None
                 };
@@ -9685,29 +10961,359 @@ impl Builder {
                 // For each field: use the explicit value if present; otherwise
                 // emit a RecordFieldLoad from the base and use that intermediate.
                 //
-                // SHIM / FAIL-CLOSED (W5.021 Finding 3): for an OVERRIDDEN owned
-                // field, the base's old value is never loaded here (the explicit
-                // value replaces it), so it is not moved into the new record. The
-                // `base` binding itself is then excluded from drop by
-                // `derive_owned_record_drop_allowed` (its kept fields escape into
-                // the new record via these RecordFieldLoads), so the overridden
-                // field's OLD heap value is never released -> it LEAKS. This is
-                // fail-closed (leak, never double-free): the new record owns the
-                // replacement; nothing double-frees the old value.
-                // WHEN OBSOLETE: when functional update over owned records gets a
-                // precise per-field drop (drop the overridden base field at the
-                // RecordInit site). REAL SOLUTION: emit a targeted drop of
-                // `base.<overridden_offset>` for each owned overridden field
-                // before/at construction. Only string-literal overrides are
-                // common today (no heap leak), so the cost is bounded; tracked as
-                // a v0.5.1 follow-on.
+                // For OVERRIDDEN fields with heap-owning types (string / bytes /
+                // Vec<T> / HashMap / HashSet / Generator), destructively release
+                // the OLD base value at the construction site: single-pointer COW
+                // fields via `RecordFieldDrop`, the fat `bytes` triple via
+                // `RecordFieldLoad` + inline `Instr::Drop` (see the per-field
+                // routing comment below). Without this release the overwritten
+                // allocation is orphaned — the functional-update
+                // overridden-owned-field LEAK (the bug the leak oracle pins).
+                // The release is now correct for single-pointer COW leaf fields;
+                // owned-aggregate overrides (record / tuple / enum) remain a
+                // follow-on guarded by the fail-closed pre-flight below.
+                //
+                // SOUNDNESS depends on `..base` consuming the base: the base is
+                // marked consumed (above), so the move-checker rejects any later
+                // read of `base` (a second `..base`, a `base.field`). The old
+                // value freed here therefore has no surviving reader. Were the
+                // base reusable, this destructive release would be a
+                // use-after-free / double-free — which is exactly why the
+                // consume guard and this release ship together.
+                //
+                // Drop-safety across all three exit contexts (sync return, async
+                // cancel, actor shutdown): the drops are emitted BEFORE RecordInit
+                // in the same basic block, so they fire on every execution path
+                // that reaches the functional-update site.  No scope-exit /
+                // suspend-point interleaving exists between the old-value release
+                // and the new-record construction.
+                //
+                // Double-drop avoidance: each emitted RecordFieldLoad+Drop temp
+                // appears in `derive_owned_record_drop_allowed`'s `field_binders`
+                // set AND its `release_owner_bases` set (the Defect-1 guard),
+                // which then excludes the base binding from composite drop —
+                // complementing the existing exclusion from non-overridden field
+                // binders escaping via RecordInit.  No owned field of `base` is
+                // ever dropped twice.
+                //
+                // Fail-closed WHOLE-RECORD pre-flight: both the override-drop and
+                // the shallow carry below are sound ONLY when the base record is
+                // CONSUME-MARKED — `alias_moved_owned_operand` emits the
+                // `AggregateAlias` iff `aggregate_ingress_moves_binding_ty` admits
+                // the WHOLE record. The override-drop's debug coupling assertion
+                // (B) assumes exactly that precondition. But the per-field carry /
+                // override gates below admit a field IN ISOLATION when it has a
+                // single-pointer inline-drop symbol (`project_field_inline_drop_-
+                // symbol`), and a `Vec<closure>` / `Vec<opaque>` element DOES have
+                // one (`hew_vec_free_closure_pairs` / `hew_vec_free`) even though
+                // the whole record is NOT a consume-markable owned-aggregate
+                // (`is_owned_aggregate_record_ty` is false — its element fails
+                // `supports_value_class_drop_spine`). That record is never
+                // consume-marked, yet an override-drop on a sibling single-pointer
+                // COW field would still fire, tripping the coupling assertion in
+                // debug BEFORE the downstream W3.029 value-class gate
+                // (`UnsupportedUserRecordValueClass`) rejects it in release.
+                //
+                // Close the divergence at its source: when the base carries an
+                // owned heap field (so an override-drop / shallow carry would run)
+                // but the whole record is not consume-markable as an owned
+                // aggregate, fail closed HERE with the same clean
+                // `E_NOT_YET_IMPLEMENTED` the release build already emits — never
+                // panic. This mirrors the fail-closed posture the per-field gates
+                // already take for closure / tuple / `Option` fields.
+                if base_place.is_some() {
+                    if let Some(base_expr) = base.as_deref() {
+                        let base_ty = self.subst_ty(&base_expr.ty);
+                        let record_has_owned_heap_field = field_order.iter().any(|(_, fty)| {
+                            let subst_fty = self.subst_ty(fty);
+                            !matches!(
+                                ValueClass::of_ty(&subst_fty, &self.type_classes),
+                                ValueClass::BitCopy | ValueClass::View
+                            )
+                        });
+                        if record_has_owned_heap_field
+                            && !self.aggregate_ingress_moves_binding_ty(&base_ty)
+                        {
+                            // Walk every sub-expression for checker-stream coverage
+                            // before bailing, mirroring the gates above.
+                            for (_, fe) in fields {
+                                let _ = self.lower_value(fe);
+                            }
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: "functional-update over a record whose value class \
+                                                MIR cannot lower yet"
+                                        .to_string(),
+                                    site: expr.site,
+                                },
+                                note: format!(
+                                    "the `..base` of `{name}` carries or overrides an owned heap \
+                                     field, but `{ty}` is not a consume-markable owned-aggregate \
+                                     record: at least one field has a value class MIR cannot lower \
+                                     yet (for example a `Vec` of closures or of opaque handles). \
+                                     Without the whole-record consume mark the functional-update \
+                                     in-place field release has no sound base, so it is rejected \
+                                     here rather than emitted. Set the affected fields explicitly \
+                                     in a plain constructor instead of carrying them through \
+                                     `..base`.",
+                                    ty = base_ty.user_facing(),
+                                ),
+                            });
+                            return None;
+                        }
+                    }
+                }
+                // Fail-closed pre-flight: owned-aggregate field overrides (record /
+                // tuple / enum) have no single-ptr leaf release symbol and surface
+                // a NotYetImplemented diagnostic rather than leaking silently.
+                if base_place.is_some() {
+                    for (fname, fty) in &field_order {
+                        if !explicit.contains_key(fname.as_str()) {
+                            continue; // Not overridden — carries into new record normally.
+                        }
+                        let subst_fty = self.subst_ty(fty);
+                        let vc = ValueClass::of_ty(&subst_fty, &self.type_classes);
+                        if matches!(
+                            vc,
+                            ValueClass::BitCopy | ValueClass::View | ValueClass::PersistentShare
+                        ) {
+                            // No heap ownership — no destructor to emit.
+                            continue;
+                        }
+                        if self.project_field_inline_drop_symbol(&subst_fty).is_none() {
+                            // Owned-aggregate field (record / tuple / enum): in-place
+                            // drop kinds are function-scope only and cannot be emitted
+                            // as inline `Instr::Drop` here.  Fail closed.
+                            self.diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct:
+                                        "functional-update override of owned-aggregate field"
+                                            .to_string(),
+                                    site: expr.site,
+                                },
+                                note: format!(
+                                    "field `{fname}` of `{name}` has owned-aggregate type \
+                                     `{ty}` (record / tuple / enum with heap fields); \
+                                     overriding an owned-aggregate field in a \
+                                     functional-update expression is not yet supported — \
+                                     in-place drop kinds (`RecordInPlace` / `TupleInPlace` \
+                                     / `EnumInPlace`) cannot be emitted as inline \
+                                     `Instr::Drop` here (follow-on to the \
+                                     functional-update overridden-owned-field \
+                                     leak fix)",
+                                    ty = subst_fty.user_facing(),
+                                ),
+                            });
+                            return None;
+                        }
+                    }
+                }
+                // Fail-closed CARRY pre-flight (complement of the override
+                // pre-flight above). A NON-overridden owned field is CARRIED out
+                // of the consumed base into the new record by a shallow
+                // `RecordFieldLoad`, with the base excluded from its composite
+                // `RecordInPlace` drop (`derive_owned_record_drop_allowed`). That
+                // shallow move soundly transfers ownership ONLY for field types
+                // whose whole value is one pointer / handle (or a record of such):
+                //   * `BitCopy` / `View` — no heap ownership; nothing to transfer
+                //     or to double-free.
+                //   * single-pointer COW / handle leaves (string, bytes, `Vec`,
+                //     `HashMap`, `HashSet`, `Generator`) — `project_field_inline_-
+                //     drop_symbol` is `Some`; the binder-escape exclusion hands the
+                //     one allocation to the result, freed exactly once.
+                //   * owned user records — `is_owned_aggregate_record_ty`; the
+                //     nested record's heap leaves transfer with the base excluded
+                //     (the binder-detection fix that also recognises nested records
+                //     as heap-owning binders).
+                // Every OTHER owned field type has NO sound shallow carry and
+                // would be released twice — once by the base's in-place drop and
+                // once by the result's drop (a double-free / use-after-free at
+                // teardown):
+                //   * a closure / `fn` / trait-object value (`PersistentShare`) is
+                //     a heap-boxed capture env with no retain/release carry spine;
+                //   * an `@resource` / `CancellationToken` / `Task` handle is a
+                //     single-release affine/linear value the inline-drop authority
+                //     does not cover here;
+                //   * an owned composite the leaf authority does not cover
+                //     (tuple-of-owned, `Option<owned>`, enum-with-heap, or any
+                //     `Unknown`-class owned Named type).
+                // Fail closed with an NYI diagnostic mirroring the override
+                // pre-flight rather than emit the double-free. Lifting a specific
+                // type's carry is tracked in hew-lang/hew#2207 (closure/`fn` env
+                // carry needs the env retain/release spine that clone also lacks).
+                if base_place.is_some() {
+                    for (fname, fty) in &field_order {
+                        if explicit.contains_key(fname.as_str()) {
+                            continue; // Overridden — handled by the override path.
+                        }
+                        let subst_fty = self.subst_ty(fty);
+                        let vc = ValueClass::of_ty(&subst_fty, &self.type_classes);
+                        let sound_carry = matches!(vc, ValueClass::BitCopy | ValueClass::View)
+                            || self.project_field_inline_drop_symbol(&subst_fty).is_some()
+                            || self.is_owned_aggregate_record_ty(&subst_fty);
+                        if sound_carry {
+                            continue;
+                        }
+                        self.diagnostics.push(MirDiagnostic {
+                            kind: MirDiagnosticKind::NotYetImplemented {
+                                construct: "functional-update carry of owned non-record field"
+                                    .to_string(),
+                                site: expr.site,
+                            },
+                            note: format!(
+                                "field `{fname}` of `{name}` has owned type `{ty}` whose \
+                                 ownership cannot be transferred by the functional-update's \
+                                 shallow field carry: a closure / `fn` / trait-object capture \
+                                 env, an `@resource` / cancellation-token / task handle, or an \
+                                 owned composite (tuple / `Option` / enum) with heap fields. \
+                                 The `..base` consumes the base, so the base's scope-exit drop \
+                                 and the new record's drop would both release this carried field \
+                                 — a double-free. Set `{fname}` explicitly to a fresh value in \
+                                 the update instead of carrying it through `..base`, or clone \
+                                 the base into a fresh owned value first.",
+                                ty = subst_fty.user_facing(),
+                            ),
+                        });
+                        return None;
+                    }
+                }
                 let mut field_pairs: Vec<(FieldOffset, Place)> = Vec::new();
+                // Predicate-coupling backstop (debug builds only). The
+                // destructive override-drop below frees the OLD value of each
+                // overridden owned field IN PLACE on `base_place`. That is sound
+                // ONLY because the base does not interior-alias a surviving
+                // reader:
+                //   * a bare-binding base is consume-marked (`AggregateAlias`),
+                //     so the move-checker rejects any later read of it;
+                //   * a materialised owner (call / `.clone()` result, `Vec`
+                //     element) has no surviving named alias; and
+                //   * any other base shape is REJECTED by the allowlist gate
+                //     (1b) above (fail-closed).
+                // Assert BOTH coupled invariants at EVERY override-drop site:
+                //   (A) the base passed `base_is_safe_for_destructive_funcupdate`
+                //       — reaching an override-drop with an unsafe base means the
+                //       (1b) allowlist gate was bypassed (a new expr form, a
+                //       refactor) and the UAF is reopened; and
+                //   (B) for the bare-binding sub-case, the consume mark actually
+                //       fired — the allowlist returns true for ANY binding shape,
+                //       but that arm's safety depends on `alias_moved_owned_-
+                //       operand` having emitted the `AggregateAlias` (a record
+                //       newly admitted as `CowValue` would be skipped, silently
+                //       reopening the UAF — the predicate-coupling guard).
+                #[cfg(debug_assertions)]
+                if base_place.is_some() {
+                    if let Some(base_expr) = base.as_deref() {
+                        let emits_override_drop = field_order.iter().any(|(fname, fty)| {
+                            explicit.contains_key(fname.as_str())
+                                && self
+                                    .project_field_inline_drop_symbol(&self.subst_ty(fty))
+                                    .is_some()
+                        });
+                        if emits_override_drop {
+                            // (A) Allowlist backstop — fires for every base shape.
+                            debug_assert!(
+                                self.base_is_safe_for_destructive_funcupdate(base_expr),
+                                "functional-update override-drop on a base that did NOT pass \
+                                 `base_is_safe_for_destructive_funcupdate`: the in-place field \
+                                 release would be a use-after-free. The allowlist gate (1b) and \
+                                 the override-drop are coupled invariants — a change that admits \
+                                 an unsafe base shape has reopened the UAF."
+                            );
+                            // (B) Bare-binding sub-case: assert the consume fired.
+                            if let Some(base_id) = base_binding {
+                                let consume_marked = self.statements.iter().any(|stmt| {
+                                    matches!(
+                                        stmt,
+                                        MirStatement::AggregateAlias { binding, .. }
+                                            if *binding == base_id
+                                    )
+                                });
+                                debug_assert!(
+                                    consume_marked,
+                                    "functional-update override-drop on base binding {base_id:?} \
+                                     that was NOT consume-marked: the in-place field release would \
+                                     be a use-after-free. The base consume \
+                                     (`alias_moved_owned_operand`) and the override-drop are \
+                                     coupled invariants — a change that admits an owned-aggregate \
+                                     base without the `AggregateAlias` mark has reopened the UAF."
+                                );
+                            }
+                        }
+                    }
+                }
                 for (idx, (fname, fty)) in field_order.iter().enumerate() {
                     let offset = FieldOffset(
                         u32::try_from(idx)
                             .expect("record field count exceeds u32::MAX — impossible in Hew"),
                     );
                     if let Some(&src) = explicit.get(fname.as_str()) {
+                        // Emit an inline drop of the OLD base field value when it
+                        // is heap-owning.  The pre-flight above guarantees every
+                        // non-BitCopy overridden field has a known inline drop
+                        // symbol; BitCopy / View / PersistentShare fields need no
+                        // destructor.
+                        if let Some(base_rec) = base_place {
+                            let subst_fty = self.subst_ty(fty);
+                            if let Some(symbol) = self.project_field_inline_drop_symbol(&subst_fty)
+                            {
+                                // Destructively release the OLD value of the
+                                // overridden field, in declaration order, BEFORE
+                                // the new record is constructed. The base is
+                                // CONSUMED by `..base` (the move-checker rejects
+                                // any later use — see the consume guard above), so
+                                // this old value is orphaned and must be freed here
+                                // or it leaks (the functional-update
+                                // overridden-owned-field leak the oracle pins).
+                                //
+                                // SINGLE MECHANISM for single-pointer COW fields
+                                // (`string` / `Vec<T>` / `HashMap` / `HashSet` /
+                                // `Generator`): `RecordFieldDrop` (raw load → release
+                                // → null-store). It is the purpose-built op for an
+                                // in-place field destructor and gives three things
+                                // the old `RecordFieldLoad` + `Drop` split did not:
+                                //   * it bypasses `RecordFieldLoad`'s `string` retain
+                                //     (a retain+drop no-op that LEAVES the original
+                                //     un-freed — the original string-vs-rest split
+                                //     existed only to dodge this);
+                                //   * it does NOT depend on the incidental fact that
+                                //     `RecordFieldLoad` skips retain for `Vec`/map —
+                                //     when the retain-on-share spine lands and that
+                                //     load starts retaining, a `load` + `Drop` here
+                                //     would silently regress to a leak; and
+                                //   * it null-stores the freed slot, so the exotic
+                                //     residual-alias path frees `null` (a no-op for
+                                //     every COW release symbol) instead of a dangle.
+                                //
+                                // `bytes` is the ONE exception: it is a fat
+                                // `{ ptr, len, cap }` triple, not a single pointer,
+                                // so its destructor takes the whole by-value triple
+                                // and must be reached through `RecordFieldLoad` +
+                                // `Instr::Drop` (which materialises the fat value).
+                                // `field_override_uses_record_field_drop` mirrors
+                                // codegen's `cow_heap_release_symbol` single-ptr set
+                                // so the `RecordFieldDrop` congruence assert agrees.
+                                if field_override_uses_record_field_drop(&subst_fty) {
+                                    self.push_instr(Instr::RecordFieldDrop {
+                                        record: base_rec,
+                                        field_offset: offset,
+                                        ty: subst_fty,
+                                        drop_fn: crate::model::DropFnSpec::Release(symbol),
+                                    });
+                                } else {
+                                    let old_val = self.alloc_local(subst_fty.clone());
+                                    self.push_instr(Instr::RecordFieldLoad {
+                                        record: base_rec,
+                                        field_offset: offset,
+                                        dest: old_val,
+                                    });
+                                    self.push_instr(Instr::Drop {
+                                        place: old_val,
+                                        ty: subst_fty,
+                                        drop_fn: Some(crate::model::DropFnSpec::Release(symbol)),
+                                    });
+                                }
+                            }
+                        }
                         field_pairs.push((offset, src));
                     } else if let Some(base_rec) = base_place {
                         // Field absent from the explicit list — load it from base.
@@ -12930,10 +14536,11 @@ impl Builder {
     /// lower_inline_drop`) is allowed to emit:
     ///   - `string` → `hew_string_drop`
     ///   - `bytes`  → `hew_bytes_drop` (triple-field-0 release)
-    ///   - `Vec<T>` → `hew_vec_free` or `hew_vec_free_owned` (per-element-owns-heap)
+    ///   - `Vec<T>` → `hew_vec_free`, `hew_vec_free_owned` (per-element-owns-heap),
+    ///     or `hew_vec_free_closure_pairs` (`Vec<fn>` / `Vec<closure>` element)
     ///   - `HashMap<K,V>` → `hew_hashmap_free_layout`
     ///   - `HashSet<T>` → `hew_hashset_free_layout`
-    ///   - `Generator<Y,R>` / `AsyncGenerator<Y>` → `hew_gen_free`
+    ///   - `Generator<Y,R>` / `AsyncGenerator<Y>` → `hew_gen_coro_destroy`
     ///
     /// Returns `None` for owned-aggregate fields (records/tuples/enums) — their
     /// in-place drop is `DropKind::RecordInPlace` / `TupleInPlace` /
@@ -12953,7 +14560,26 @@ impl Builder {
                 ref args,
                 ..
             } => {
-                if args.first().is_some_and(|e| self.is_owned_vec_element(e)) {
+                // Mirror codegen's `cow_heap_release_symbol` Vec arm EXACTLY,
+                // including order: a closure-pair element (`Vec<fn>` /
+                // `Vec<closure>`) is checked FIRST and releases via
+                // `hew_vec_free_closure_pairs` (per-element env-thunk + pair-box
+                // walk, then buffer/handle free). A fn element is neither an
+                // owned composite nor a plain leaf, so it must not fall through
+                // to the owned/plain arms. Omitting this arm made the MIR symbol
+                // authority disagree with codegen (`hew_vec_free` vs
+                // `hew_vec_free_closure_pairs`): every consumer — the
+                // functional-update override-drop AND the match-destructure
+                // wildcard inline-drop — then emitted an incongruent release
+                // that codegen rejects fail-closed
+                // (`is_known_cow_heap_drop_symbol` / the RecordFieldDrop
+                // congruence assert). Both authorities are documented to agree;
+                // this restores that agreement.
+                if args.first().is_some_and(|e| {
+                    matches!(e, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
+                }) {
+                    Some("hew_vec_free_closure_pairs")
+                } else if args.first().is_some_and(|e| self.is_owned_vec_element(e)) {
                     Some("hew_vec_free_owned")
                 } else {
                     Some("hew_vec_free")
@@ -17870,6 +19496,7 @@ impl Builder {
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
+            funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -22060,6 +23687,7 @@ impl Builder {
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
+            funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -22069,6 +23697,17 @@ impl Builder {
             // inherit the parent's target pointer width so an isize/usize
             // div/shift lowered inside a closure emits the same per-target guard.
             pointer_width: self.pointer_width,
+            // Destructive-funcupdate base provenance is computed once per
+            // top-level function over the WHOLE body (the prescan recurses into
+            // closure/gen bodies), and `BindingId`s are globally unique, so the
+            // parent map already classifies this child's bindings. Inherit it so
+            // a `{ ..base, f }` inside a closure is gated by the same proof
+            // instead of failing closed for want of the map.
+            funcupdate_base_proven: self.funcupdate_base_proven.clone(),
+            // Same rationale: the enclosing function's by-value parameters are
+            // globally-unique bindings a closure can capture and embed in a
+            // funcupdate base, so the child must see them to reject the borrow.
+            funcupdate_param_ids: self.funcupdate_param_ids.clone(),
             ..Builder::default()
         }
     }
@@ -22248,6 +23887,7 @@ impl Builder {
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
+            funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -23327,6 +24967,7 @@ impl Builder {
             machine_layout_names: self.machine_layout_names.clone(),
             module_fn_names: self.module_fn_names.clone(),
             module_generic_fn_names: self.module_generic_fn_names.clone(),
+            funcupdate_fn_returns_fresh: self.funcupdate_fn_returns_fresh.clone(),
             subst: self.subst.clone(),
             call_site_type_args: self.call_site_type_args.clone(),
             supervisor_child_slots: self.supervisor_child_slots.clone(),
@@ -24035,6 +25676,310 @@ impl Builder {
             site: operand.site,
             ty,
         });
+    }
+
+    /// True when an overriding functional-update field VALUE is, at its
+    /// value-producing root, a bare interior alias of the consumed base's
+    /// heap: a whole `base` reference or a `base.field` projection of an
+    /// OWNED (heap-owning) field.
+    ///
+    /// Owned-record `..base` consumes the base (its carried fields escape via
+    /// `RecordFieldLoad` into the new record and its OVERRIDDEN owned fields
+    /// are destructively released at the construction site). An override value
+    /// that bare-projects an owned field of that same base is a non-retaining
+    /// interior alias; the override-drop frees it before the new record is
+    /// built — a use-after-free (the repro-B self-override shape
+    /// `{ items: s.items, ..s }`). Fail closed: the caller rejects.
+    ///
+    /// Values whose root is a method/function call, operator, index, or
+    /// literal are NOT flagged even when they READ `base.field` internally:
+    /// they produce a fresh or copied value (`base.items.clone()`,
+    /// `base.n + 1`, `base.items.len()`), which the override-drop cannot
+    /// dangle. A `BitCopy` / `View` / `PersistentShare` field projection
+    /// (`base.count`) is a copied scalar that is never released, so it is not
+    /// a hazard either. Transparent tail-only blocks are peeled.
+    fn functional_update_value_aliases_base(&self, value: &HirExpr, base_id: BindingId) -> bool {
+        match &value.kind {
+            // Peel a transparent tail-only block wrapper (`{ base.items }`).
+            HirExprKind::Block(block) if block.statements.is_empty() => block
+                .tail
+                .as_deref()
+                .is_some_and(|tail| self.functional_update_value_aliases_base(tail, base_id)),
+            // A whole `base` value handed into a field position.
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } => *id == base_id,
+            // A bare `base.field` projection of an owned (heap-owning) field.
+            HirExprKind::FieldAccess { object, .. } => {
+                matches!(
+                    &object.kind,
+                    HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(id),
+                        ..
+                    } if *id == base_id
+                ) && !matches!(
+                    ValueClass::of_ty(&self.subst_ty(&value.ty), &self.type_classes),
+                    ValueClass::BitCopy | ValueClass::View | ValueClass::PersistentShare
+                )
+            }
+            _ => false,
+        }
+    }
+
+    /// Fail-closed ALLOWLIST for the destructive functional-update base.
+    ///
+    /// An owned-record `..base` consumes the base in place: its non-overridden
+    /// owned fields escape via shallow `RecordFieldLoad` into the new record,
+    /// and its OVERRIDDEN owned fields are destructively released at the
+    /// construction site (the override-drop). Both operations are sound ONLY
+    /// when the base does not interior-alias storage that stays live after the
+    /// update. Rather than enumerate the unsafe shapes (a denylist that has
+    /// repeatedly missed cases — `FieldAccess`, then `Index`, then `TupleIndex`
+    /// — each a fresh use-after-free), this admits a base ONLY when it is
+    /// PROVABLY safe and rejects everything else, so no projection shape — now
+    /// or as new expression forms are added — can silently reopen the UAF.
+    ///
+    /// A base is provably safe in exactly two ways:
+    ///   (a) a SYNTACTICALLY bare live `BindingRef` whose PROVENANCE proves it
+    ///       is the unique live owner of its heap fields. `alias_moved_owned_-
+    ///       operand` consume-marks the binding so the move-checker rejects any
+    ///       later read and excludes it from its scope-exit drop — but consuming
+    ///       the NAME does not make the destructive release sound if the
+    ///       binding's heap fields are ALIASED by a still-live owner. A binding
+    ///       bound from a projection of a live value (`let b = o.inner; ..b`)
+    ///       shares `o.inner`'s leaf pointers; consuming `b` then frees storage
+    ///       `o` still references — a double-free (the 5th UAF this allowlist
+    ///       leaked). So (a) holds ONLY when the per-function provenance prescan
+    ///       (`compute_funcupdate_base_provenance`, consulted via
+    ///       `funcupdate_base_proven`) proves EVERY definition of the binding is
+    ///       a materialised owner — its `let` initialiser, every `=`
+    ///       reassignment, or a by-value parameter origin — or a move-chain of
+    ///       such (`let c = makeThing(); let d = c; ..d`). A binding wrapped in
+    ///       ANY control/block form does NOT qualify as (a): the consume does
+    ///       not peel wrappers, and a conditionally-selected binding cannot be
+    ///       soundly consumed — such a wrapper is held to (b) below.
+    ///   (b) a materialised owner with no live named alias — see
+    ///       `expr_is_materialized_owner`, which looks THROUGH wrapper forms
+    ///       (block tail, `if` branches, `match` arms) and requires EVERY
+    ///       reachable value to be a fresh owned rvalue (`makeInner()`,
+    ///       `o.inner.clone()`), a record/tuple/enum literal or funcupdate
+    ///       result (`Record { .. }`), a `Vec<T>` element / slice (`v[i]`), or a
+    ///       projection rooted at one (`makeOuter().inner`, `o.items[0].inner`).
+    ///
+    /// ANY other base — a bare binding whose provenance is unproven (a rebind of
+    /// a live projection `let b = o.inner`/`let b = t.0`, a match-arm payload, a
+    /// let-else binder, a loop variable), a projection of a LIVE binding
+    /// (`o.inner`, `t.0`, `o.pair.0`, `t.0.inner`, nested), a machine-state field
+    /// (`self.field`), a `Const`/`Item` ref, a deref, a wrapper whose
+    /// tail/branch/arm is any of those (`{ base }`, `if c { o.inner } else {
+    /// makeInner() }`), or any future expression form — is NOT provably safe and
+    /// is rejected fail-closed.
+    fn base_is_safe_for_destructive_funcupdate(&self, base: &HirExpr) -> bool {
+        // (a) A syntactically bare binding is the consume case — but ONLY when
+        //     its provenance proves it is the unique live owner of its heap
+        //     fields. Fail closed (reject) for any binding the prescan did not
+        //     prove (a live-projection rebind, a match/let-else/loop binder, or
+        //     an unseen origin). NO wrapper peeling here: a block/if/match-
+        //     wrapped binding is not reliably consume-marked, so it must instead
+        //     prove materialised via (b).
+        if let HirExprKind::BindingRef {
+            resolved: ResolvedRef::Binding(binding_id),
+            ..
+        } = &base.kind
+        {
+            return self
+                .funcupdate_base_proven
+                .get(binding_id)
+                .copied()
+                .unwrap_or(false);
+        }
+        // (b) Every other base — INCLUDING every wrapper — is safe only if
+        //     every reachable value is a materialised owner with no live alias.
+        Self::expr_is_materialized_owner(
+            base,
+            &self.funcupdate_fn_returns_fresh,
+            &self.funcupdate_param_ids,
+        )
+    }
+
+    /// True when `expr` evaluates to a freshly MATERIALISED owner — a value in
+    /// its own storage that does not alias any surviving named binding's inline
+    /// fields. Used for the `(b)` arm of the funcupdate base allowlist and to
+    /// recurse a projection's object chain.
+    ///
+    /// COMPLETE THROUGH WRAPPERS: a value-passthrough form (a block tail, both
+    /// `if` branches, all `match` arm bodies) is materialised ONLY when EVERY
+    /// reachable value-producing position is itself materialised. A bare-binding
+    /// or live-projection leaf anywhere inside a wrapper fails the whole base
+    /// (it is not consume-marked through the wrapper, and a conditionally-
+    /// selected binding cannot be soundly consumed) — e.g.
+    /// `if c { o.inner } else { makeInner() }` and `{ let z = 0; o.inner }` are
+    /// rejected because a reachable value aliases the live `o`.
+    ///
+    /// Materialised leaves:
+    ///   * a `.clone()` result (`RecordCloneCall`) — a fresh deep copy;
+    ///   * a free-function `Call` whose callee is PROVEN to return a fresh owner
+    ///     by the module interprocedural summary (`compute_fn_returns_fresh_-
+    ///     owner`, threaded as `fresh`). A call is NOT blanket-fresh: a function
+    ///     can launder a by-value heap parameter (a BORROW — LESSONS
+    ///     `by-value-heap-params-are-borrows`) through its return without a
+    ///     refcount bump (`fn id(p: Inner) -> Inner { p }`), so `..id(o.inner)`
+    ///     would free the caller's live `o.inner` at the override-drop. Method
+    ///     calls (`CallDynMethod`/`CallTraitMethodStatic`/`VarSelfMethodCall`/
+    ///     `ResolvedImplCall`) can likewise return borrowed `self`/params and are
+    ///     NOT summarised, so they fail closed;
+    ///   * a `Vec<T>` element load (`v[i]`) or slice (`v[a..b]`). The element
+    ///     is independent of any live binding: `hew_vec_push_owned` deep-clones
+    ///     each element on insert (`clone_fn`) and the buffer carries its own
+    ///     refcount, so the override-drop's in-place release of an element
+    ///     field decrements a shared count rather than freeing storage a live
+    ///     binding still references. (NOTE: `hew_vec_get_owned` itself returns a
+    ///     BORROW into the buffer, not a clone — the safety comes from the
+    ///     push-time deep clone + refcount, not from a materialising getter.
+    ///     `Index` is checker-restricted to `Vec<T>`; a future aliasing
+    ///     container would need re-evaluation here.)
+    ///
+    /// A projection (`expr.field`, `expr.0`) is materialised ONLY when its
+    /// object chain bottoms out at a materialised owner — `makeOuter().inner`
+    /// is safe, `o.inner` (rooted at a live binding) is not.
+    ///
+    /// EVERY other form — a `BindingRef` (live local, `Const`, or `Item`), a
+    /// `MachineFieldAccess` (`self.field`), a deref, a loop-break value, or any
+    /// expression form added later — returns false (fail closed).
+    // The `RecordCloneCall`/`Call` arm and the `Index`/`Slice` arm both can
+    // yield `true` but are kept separate: they admit a leaf for DIFFERENT safety
+    // reasons (a clone / proven-fresh call is a fresh return-slot value; a `Vec`
+    // element is heap-independent via push-clone + refcount). Merging them would
+    // erase that distinction in a security-critical allowlist.
+    #[allow(
+        clippy::match_same_arms,
+        reason = "distinct safety rationales per arm in a security-critical allowlist"
+    )]
+    fn expr_is_materialized_owner(
+        expr: &HirExpr,
+        fresh: &HashMap<hew_hir::ItemId, bool>,
+        params: &HashSet<BindingId>,
+    ) -> bool {
+        match &expr.kind {
+            // ---- value-passthrough wrappers: ALL reachable values must be
+            //      materialised (look THROUGH; reject any bare-binding leaf) ----
+            // A block's value is its tail (statements are side-effecting only);
+            // peel to the tail regardless of statement count.
+            HirExprKind::Block(block) => block
+                .tail
+                .as_deref()
+                .is_some_and(|t| Self::expr_is_materialized_owner(t, fresh, params)),
+            // BOTH `if` branches must be materialised. A missing `else` cannot
+            // produce an owned-record value, so it fails closed.
+            HirExprKind::If {
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                Self::expr_is_materialized_owner(then_expr, fresh, params)
+                    && else_expr
+                        .as_deref()
+                        .is_some_and(|e| Self::expr_is_materialized_owner(e, fresh, params))
+            }
+            // EVERY `match` arm body must be materialised (an arm body that is a
+            // bare payload binding aliases the scrutinee and fails closed).
+            HirExprKind::Match { arms, .. } => {
+                !arms.is_empty()
+                    && arms
+                        .iter()
+                        .all(|arm| Self::expr_is_materialized_owner(&arm.body, fresh, params))
+            }
+            // ---- materialised leaves ----
+            // A `.clone()` result is a fresh deep copy materialised into its own
+            // slot — unconditionally an owner.
+            HirExprKind::RecordCloneCall { .. } => true,
+            // A free-function call is a materialised owner ONLY when the module
+            // interprocedural summary proves the callee returns a fresh owner on
+            // every path. A blanket `Call => true` is UNSOUND: a function can
+            // launder a by-value heap parameter (a BORROW) through its return
+            // without a refcount bump (`fn id(p: Inner) -> Inner { p }`), so
+            // `..id(o.inner)` would free the caller's live `o.inner` at the
+            // override-drop (the call-returns-borrowed-param use-after-free).
+            // Method-call variants can likewise return borrowed `self`/params
+            // and are not summarised — they fall to the fail-closed `_` arm.
+            HirExprKind::Call { callee, .. } => callee_returns_fresh_owner(callee, fresh),
+            // A `Vec<T>` element load / slice — an independent heap element
+            // (see the push-clone + refcount note above), not an interior alias
+            // of a surviving named binding.
+            HirExprKind::Index { .. } | HirExprKind::Slice { .. } => true,
+            // A record/tuple/enum literal AND a functional-update result
+            // (`Record { f: .. }`, `Record { ..base, f: new }`) — construction
+            // writes a FRESH record into its own storage. A field operand that is
+            // a PROJECTION (`o.inner.label`), a bare LOCAL (moved-in), a CALL
+            // result, or a `.clone()` is refcount-bumped / COW-copied / consumed
+            // into the new slot — empirically owner-preserving (a destructive
+            // funcupdate over such a record does not dangle the source). The ONE
+            // exception is a WHOLE by-value PARAMETER operand: a parameter is a
+            // borrow stored WITHOUT a refcount bump, so `{ ..Wrap { s: p, .. },
+            // s: new }` frees the caller's `p` at the override-drop. Reject a
+            // construction that embeds (directly or through nested constructions)
+            // a whole parameter; admit every other construction. A nested `..base`
+            // is checked too — its own embedded parameters dangle identically.
+            HirExprKind::StructInit { fields, base, .. } => {
+                !fields
+                    .iter()
+                    .any(|(_, v)| Self::expr_embeds_whole_param(v, params))
+                    && base
+                        .as_deref()
+                        .is_none_or(|b| !Self::expr_embeds_whole_param(b, params))
+            }
+            // A projection is materialised iff its object chain is.
+            HirExprKind::FieldAccess { object, .. } => {
+                Self::expr_is_materialized_owner(object, fresh, params)
+            }
+            HirExprKind::TupleIndex { tuple, .. } => {
+                Self::expr_is_materialized_owner(tuple, fresh, params)
+            }
+            // Bare/`Const` binding ref, machine-state field projection, deref, a
+            // method call (can return borrowed `self`/param), or any future
+            // expression form — not provably a materialised owner. Fail closed.
+            _ => false,
+        }
+    }
+
+    /// True when `expr` is, or embeds through a construction, a WHOLE by-value
+    /// parameter — the borrow that a constructor stores without a refcount bump.
+    ///
+    /// Recurses only through constructions (struct / tuple / machine-variant
+    /// literals), which embed operands by value. A PROJECTION (`p.inner`), a
+    /// CALL, a `.clone()`, a `Vec` element, and a literal are NOT embeds of a
+    /// whole parameter — a field read bumps, a call/clone materialises a fresh
+    /// value — so they stop the recursion (return `false`). A bare parameter
+    /// binding is the borrow this catches; a bare LOCAL is move-consumed into the
+    /// construction and stays an owner, so only `params` membership returns
+    /// `true`.
+    fn expr_embeds_whole_param(expr: &HirExpr, params: &HashSet<BindingId>) -> bool {
+        match &expr.kind {
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } => params.contains(id),
+            HirExprKind::StructInit { fields, base, .. } => {
+                fields
+                    .iter()
+                    .any(|(_, v)| Self::expr_embeds_whole_param(v, params))
+                    || base
+                        .as_deref()
+                        .is_some_and(|b| Self::expr_embeds_whole_param(b, params))
+            }
+            HirExprKind::TupleLiteral { elements } => elements
+                .iter()
+                .any(|e| Self::expr_embeds_whole_param(e, params)),
+            HirExprKind::MachineVariantCtor { payload, .. } => {
+                payload.as_ref().is_some_and(|fields| {
+                    fields
+                        .iter()
+                        .any(|(_, v)| Self::expr_embeds_whole_param(v, params))
+                })
+            }
+            _ => false,
+        }
     }
 
     /// Emit a `MirStatement::Use(Consume)` for a managed-type binding that is
@@ -25749,6 +27694,7 @@ fn instr_places(instr: &Instr) -> Vec<Place> {
             places
         }
         Instr::RecordFieldLoad { record, dest, .. } => vec![*record, *dest],
+        Instr::RecordFieldDrop { record, .. } => vec![*record],
         Instr::RecordFieldStore { record, src, .. } => vec![*record, *src],
         Instr::ActorStateFieldLoad { dest, .. } => vec![*dest],
         Instr::ActorStateFieldStore { src, .. } => vec![*src],
@@ -26037,6 +27983,7 @@ pub fn instr_source_places(instr: &Instr) -> Vec<Place> {
         // (and, for the interior-aliasing loads, a projection seed — see
         // `projection_alias_dest`).
         Instr::RecordFieldLoad { record, .. } => vec![*record],
+        Instr::RecordFieldDrop { record, .. } => vec![*record],
         Instr::TupleFieldLoad { tuple, .. } => vec![*tuple],
         Instr::ClosureEnvFieldLoad { env, .. } => vec![*env],
         // Field stores: both the target aggregate and the stored value are
@@ -26393,6 +28340,7 @@ fn generator_yield_instr_escapes(instr: &Instr, local: u32) -> bool {
         | Instr::BytesLit { .. }
         | Instr::ConstGlobalLoad { .. }
         | Instr::RecordFieldLoad { .. }
+        | Instr::RecordFieldDrop { .. }
         | Instr::TupleFieldLoad { .. }
         | Instr::ClosureEnvFieldLoad { .. }
         | Instr::ActorStateFieldLoad { .. }
@@ -26634,6 +28582,7 @@ fn projection_alias_dest(instr: &Instr) -> Option<Place> {
         | Instr::SpawnTaskDirect { .. }
         | Instr::SpawnTaskClosure { .. }
         | Instr::Drop { .. }
+        | Instr::RecordFieldDrop { .. }
         | Instr::WitnessSizeOf { .. }
         | Instr::WitnessAlignOf { .. }
         | Instr::WitnessDropGlue { .. }
@@ -28131,10 +30080,25 @@ fn derive_owned_record_drop_allowed(
     // A local carries a heap-owning value iff its registered type says so. Used
     // to decide whether a `RecordFieldLoad` dest is an owned-field binder (a
     // BitCopy field load is harmless to alias out).
+    //
+    // `ty_contains_heap_owning` is record-layout BLIND — it recurses into enum
+    // variant payloads, tuple/array elements, and generic type arguments, but a
+    // bare nested user-record type (`Inner { label: string, n: i64 }`) is a
+    // `Named` that is neither a builtin nor an enum layout, so it answers
+    // `false`. A nested-record field loaded out of the base record and then
+    // ESCAPED into an owning sink (the functional-update result's `RecordInit`,
+    // a `return b.inner`, …) must mark its binder so the base root is excluded
+    // from its composite `RecordInPlace` drop — otherwise the base frees the
+    // nested record's heap leaves while the escapee still owns them
+    // (use-after-free / double-free). `is_owned_record` consults the record
+    // layout (`is_owned_aggregate_record_ty`) and answers `true` for any user
+    // record with an owned field, closing that blindness without widening
+    // `ty_contains_heap_owning`'s 50-plus call sites. The two are unioned: a
+    // field is a heap-owning binder iff EITHER authority says so.
     let local_is_heap_owning = |local: u32| -> bool {
-        local_tys
-            .get(local as usize)
-            .is_some_and(|ty| crate::model::ty_contains_heap_owning(ty, enum_layouts))
+        local_tys.get(local as usize).is_some_and(|ty| {
+            crate::model::ty_contains_heap_owning(ty, enum_layouts) || is_owned_record(ty)
+        })
     };
 
     // Candidate record locals: base locals of owned-aggregate-record bindings.
@@ -28315,7 +30279,16 @@ fn derive_owned_record_drop_allowed(
             // alias member or a field binder is an escape. Fail-closed.
             if !matches!(
                 instr,
-                Instr::Move { .. } | Instr::Drop { .. } | Instr::RecordFieldLoad { .. }
+                Instr::Move { .. }
+                    | Instr::Drop { .. }
+                    | Instr::RecordFieldLoad { .. }
+                    // `RecordFieldDrop` is an interior operation (GEP+drop on one
+                    // field slot) and does not transfer ownership of the whole
+                    // record out of the scope, so it must not count as an escape
+                    // of the record root. It is emitted by functional-update
+                    // lowering to release overridden fields; the surrounding record
+                    // binding is still live (and should receive its composite drop).
+                    | Instr::RecordFieldDrop { .. }
             ) {
                 for p in instr_source_places(instr) {
                     if let Some(l) = base_local(p) {
@@ -31841,6 +33814,43 @@ fn cow_value_leaf_drop_symbol(ty: &ResolvedTy) -> Option<&'static str> {
     }
 }
 
+/// True when an overridden owned record field in a functional-update
+/// expression must be destructively released via the `RecordFieldDrop` op
+/// (raw load → release → null-store) rather than the `RecordFieldLoad` +
+/// `Instr::Drop` pair.
+///
+/// The predicate selects every SINGLE-POINTER COW-heap field — `string`,
+/// `Vec<T>`, `HashMap`, `HashSet`, and the `Generator` / `AsyncGenerator`
+/// companion handle — whose runtime value is exactly one pointer, so the
+/// `RecordFieldDrop` single-slot GEP + release is the whole destructor.
+///
+/// `bytes` is deliberately EXCLUDED: it is a fat `{ ptr, len, cap }` triple,
+/// not a single pointer. Its destructor takes the by-value triple, so it is
+/// reached through `RecordFieldLoad` + `Instr::Drop` (which materialises the
+/// fat value into a temp). The set mirrors codegen's `cow_heap_release_symbol`
+/// (which returns `None` for `bytes`), so the `RecordFieldDrop` symbol/type
+/// congruence assertion in codegen always agrees with what is emitted here.
+///
+/// Dispatch is on the `builtin` discriminant, never the `name` string, so a
+/// user-defined `type Vec { ... }` (`builtin: None`) is never mis-routed to a
+/// runtime release symbol (LESSONS: boundary-fail-closed, checker-authority).
+fn field_override_uses_record_field_drop(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::String
+            | ResolvedTy::Named {
+                builtin: Some(
+                    hew_types::BuiltinType::Vec
+                        | hew_types::BuiltinType::HashMap
+                        | hew_types::BuiltinType::HashSet
+                        | hew_types::BuiltinType::Generator
+                        | hew_types::BuiltinType::AsyncGenerator,
+                ),
+                ..
+            }
+    )
+}
+
 /// True when `ty` is a builtin `Generator<Y, R>` / `AsyncGenerator<Y>` handle.
 /// Dispatches on the `builtin` discriminant (not the name string) so a user
 /// `type Generator { ... }` is never mistaken for the runtime handle.
@@ -32664,6 +34674,7 @@ mod slice3_invariants {
                 None,
                 &HashSet::new(),
                 &HashSet::new(),
+                &std::rc::Rc::new(std::collections::HashMap::new()),
                 &HashMap::new(),
                 &HashMap::new(),
                 None,

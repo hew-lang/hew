@@ -597,6 +597,18 @@ pub(crate) fn instr_reads_writes(instr: &Instr) -> (Vec<Place>, Vec<Place>) {
             (reads, vec![*dest])
         }
         Instr::RecordFieldLoad { record, dest, .. } => (vec![*record], vec![*dest]),
+        Instr::RecordFieldDrop { record, .. } => {
+            // RecordFieldDrop GEPs into `record` (the functional-update BASE
+            // aggregate) to release the OLD value of an overridden owned field
+            // in place and null-store that one slot. It is a READ of `record`,
+            // not a move: the base's overall move-state is governed separately
+            // (the base binding is marked consumed by `alias_moved_owned_operand`
+            // at the `..base` ingress). It defines no place. Note the base is
+            // NOT the record `RecordInit` builds — `RecordInit` constructs a
+            // distinct new aggregate from the carried/override sources; this op
+            // only neutralises the orphaned old field value on the consumed base.
+            (vec![*record], vec![])
+        }
         Instr::RecordFieldStore { record, src, .. } => {
             // Field-store reads both the aggregate (to GEP into it) and
             // the source. The aggregate stays Live — only the field bytes

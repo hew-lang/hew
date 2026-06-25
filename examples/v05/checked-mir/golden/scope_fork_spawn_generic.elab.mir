@@ -34,6 +34,7 @@ fn Driver__recv__run_value -> i64
     use BindingId(1) t site=SiteId(15) ty=<task<i64>> intent=Consume
     bind BindingId(2) v site=SiteId(15) ty=i64
     use BindingId(2) v site=SiteId(17) ty=i64 intent=Consume
+    bind BindingId(0) out site=SiteId(16) ty=i64
     eval site=SiteId(17) ty=()
     eval site=SiteId(9) ty=()
     use BindingId(0) out site=SiteId(18) ty=i64 intent=Consume

@@ -3801,6 +3801,85 @@ pub enum Instr {
         /// Destination place that receives the loaded field value.
         dest: Place,
     },
+    /// Release an owned field of a record value in-place, without copying it
+    /// into an intermediate local first.
+    ///
+    /// Codegen lowers this to: GEP to the field slot → raw load (no
+    /// `hew_string_clone` retain — unlike `RecordFieldLoad`) → call the
+    /// `drop_fn` release symbol → null-store the field slot so any
+    /// structurally-reachable second drop observes a null and short-circuits.
+    ///
+    /// ## Ownership invariant
+    ///
+    /// The field value must be a sole-owner reference (refcount == 1 for
+    /// COW-heap scalars) at the point this instruction executes.  Emitting this
+    /// instruction for a shared reference (refcount > 1) would decrement below
+    /// expected — use `RecordFieldLoad` + `Drop` for shared/borrowed reads.
+    ///
+    /// ## Why not `RecordFieldLoad` + `Drop`?
+    ///
+    /// Two reasons, both pointing at `RecordFieldDrop` as the canonical
+    /// in-place field destructor for single-pointer COW fields:
+    ///
+    /// 1. `RecordFieldLoad` retains `string` fields via `hew_string_clone` to
+    ///    avoid aliasing the parent record's buffer. When the caller
+    ///    immediately drops the loaded copy, the retain and the drop cancel out
+    ///    (no-op), leaving the original field value in the record slot un-freed.
+    ///    `RecordFieldDrop` bypasses the retain and drops the original directly.
+    ///
+    /// 2. For `Vec` / map / `Generator` fields `RecordFieldLoad` happens to skip
+    ///    the retain TODAY, so `load` + `Drop` is currently correct for them —
+    ///    but that is an incidental consequence of the not-yet-landed
+    ///    retain-on-share spine. When that spine lands and `RecordFieldLoad`
+    ///    starts retaining those types too, a `load` + `Drop` here would silently
+    ///    regress to a leak. Routing every single-pointer COW field through
+    ///    `RecordFieldDrop` (raw load, never retained) is robust against that
+    ///    future change and additionally null-stores the freed slot.
+    ///
+    /// ## Scope
+    ///
+    /// Emitted only by functional-update lowering
+    /// (`HirExprKind::StructInit { base: Some(_) }`) to release each overridden
+    /// owned field of `base` before the new `RecordInit` is constructed.  The
+    /// field domain is every SINGLE-POINTER COW-heap type — `string`, `Vec<T>`,
+    /// `HashMap`, `HashSet`, and the `Generator` / `AsyncGenerator` companion
+    /// handle (see `field_override_uses_record_field_drop` in `lower.rs`).  All
+    /// three exit contexts (sync return, async cancel, actor shutdown) are
+    /// covered: the instruction is positioned in the basic block that executes
+    /// on the hot path, and any error path that bypasses the functional-update
+    /// block keeps the original `base` alive (never drops a field that hasn't
+    /// been loaded/consumed).  Soundness additionally rests on `..base`
+    /// CONSUMING the base: the move-checker rejects any later read of `base`, so
+    /// the released old value has no surviving reader.
+    ///
+    /// ## Type compatibility
+    ///
+    /// `ty` and `drop_fn` must be mutually consistent: `ty == ResolvedTy::String`
+    /// pairs with `DropFnSpec::Release("hew_string_drop")`, a
+    /// `Vec`-typed field with `Release("hew_vec_free")` / `"hew_vec_free_owned"`,
+    /// etc.  Codegen validates congruence and fails closed on a mismatch.
+    ///
+    /// ## Bytes fields
+    ///
+    /// `bytes` fields are **not** lowered via this instruction.  `bytes` is a fat
+    /// `{ ptr, len, cap }` triple, not a single pointer, so its destructor takes
+    /// the whole by-value value and cannot be expressed as a single-slot GEP +
+    /// pointer-load + release.  `bytes` overrides stay on the `RecordFieldLoad` +
+    /// `Instr::Drop` path (which materialises the fat value into a temp).  Codegen
+    /// fails closed if a non-pointer field slot ever reaches this instruction.
+    RecordFieldDrop {
+        /// The record value whose field is to be dropped.
+        record: Place,
+        /// 0-based index of the field within the record's declared field order.
+        field_offset: FieldOffset,
+        /// Hew type of the field being dropped.  Must match the field's declared
+        /// type in the record; used by codegen to resolve the LLVM slot type and
+        /// to validate `drop_fn` congruence.
+        ty: ResolvedTy,
+        /// The release ritual to call.  Must be `DropFnSpec::Release` carrying
+        /// a known COW-heap release symbol (e.g. `"hew_string_drop"`).
+        drop_fn: DropFnSpec,
+    },
     /// Load a single element from a tuple value by its 0-based positional index.
     ///
     /// Produced from `HirExprKind::TupleIndex { tuple, index }` when the tuple
@@ -4657,7 +4736,7 @@ pub enum ExitPath {
 /// - [`DropFnSpec::Release`] — a cow-heap / fresh-value release C
 ///   symbol (`hew_string_drop`, `hew_bytes_drop`, `hew_vec_free`,
 ///   `hew_vec_free_owned`, `hew_hashmap_free_layout`,
-///   `hew_hashset_free_layout`, `hew_gen_free`). Selected by a closed
+///   `hew_hashset_free_layout`, `hew_gen_coro_destroy`). Selected by a closed
 ///   MIR-side type-shape authority (`generator_yield_drop_symbol`,
 ///   `drop_kind_for`'s cow tables) and congruence-checked against the
 ///   value's type in codegen before any call is emitted — the string is

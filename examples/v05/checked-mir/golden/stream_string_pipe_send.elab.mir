@@ -377,8 +377,10 @@ fn fs$last_slash_pos -> i64
     eval site=SiteId(238) ty=()
     use BindingId(23) search_from site=SiteId(241) ty=i64 intent=Read
     use BindingId(25) next site=SiteId(242) ty=i64 intent=Read
+    bind BindingId(22) last site=SiteId(239) ty=i64
     eval site=SiteId(240) ty=()
     use BindingId(22) last site=SiteId(245) ty=i64 intent=Read
+    bind BindingId(23) search_from site=SiteId(243) ty=i64
     eval site=SiteId(244) ty=()
     drop BindingId(24) rest ty=string
   drop_plans:

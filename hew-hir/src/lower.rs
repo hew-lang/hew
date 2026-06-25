@@ -18180,6 +18180,37 @@ impl LowerCtx {
                 self.lower_hashmap_for_in_init(iterable, key_ty, val_ty)
             }
             ResolvedTy::Named {
+                args,
+                builtin: Some(BuiltinType::HashSet),
+                ..
+            } if !args.is_empty() => {
+                // `for x in s` over a HashSet snapshots the set's elements into
+                // an owned `Vec<T>` via `to_vec()` (the checker recorded the
+                // resolved call at the iterable span) and iterates that Vec
+                // through the proven `VecIter` cursor — each element is a fresh
+                // clone, so it is independently droppable; the set is shared
+                // (Capture) and stays live after the loop.
+                lowered_iterable.intent = IntentKind::Capture;
+                let elem_ty = args[0].clone();
+                let to_vec_call = (
+                    Expr::MethodCall {
+                        receiver: Box::new(iterable.clone()),
+                        method: "to_vec".to_string(),
+                        args: Vec::new(),
+                    },
+                    iterable.1.clone(),
+                );
+                let vec_hir = self.lower_expr(&to_vec_call, IntentKind::Consume);
+                let iter_init =
+                    self.make_vec_iter_init(vec_hir, elem_ty.clone(), iterable.1.clone());
+                (
+                    iter_init,
+                    Self::resolved_vec_iter_ty(elem_ty.clone()),
+                    elem_ty,
+                    ForIterNextCall::BuiltinVecIter,
+                )
+            }
+            ResolvedTy::Named {
                 name,
                 args,
                 builtin: None,

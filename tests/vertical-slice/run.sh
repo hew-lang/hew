@@ -351,6 +351,13 @@ run_accept_expect_status "hashmap_for_in_string_key" 12
 # Owned key AND owned value: key lens 6 + value lens 29 → exit 35.
 run_accept_expect_status "hashmap_for_in_owned" 35
 
+# g12-B (CLOSED): `for x in s` over a HashSet snapshots the set's elements into
+# an owned Vec via to_vec() and drives a VecIter cursor.
+# Scalar elements: 10+20+30 → exit 60.
+run_accept_expect_status "hashset_for_in_sum" 60
+# Owned (string) elements: lens 2+3+4 → exit 9.
+run_accept_expect_status "hashset_for_in_owned" 9
+
 # Reject: spawned closures must not capture non-Send values. This fixture uses
 # a real Checker-produced `Rc<i64>` capture fact and asserts the targeted HIR
 # diagnostic rather than unrelated Rc construction or lowering diagnostics.

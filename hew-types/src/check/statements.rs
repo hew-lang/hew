@@ -1341,6 +1341,33 @@ impl Checker {
                         Ty::Tuple(vec![key_ty, val_ty])
                     }
                     Ty::Named {
+                        builtin: Some(BuiltinType::HashSet),
+                        args,
+                        ..
+                    } if !args.is_empty() => {
+                        if *is_await {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                &iterable.1,
+                                "`for await` is not valid over a HashSet; \
+                                 use a plain `for` loop"
+                                    .to_string(),
+                            );
+                        }
+                        // `for x in s` desugars (in HIR) to a `VecIter` over the
+                        // set's `to_vec()` element snapshot. Record the `to_vec`
+                        // resolved-call fact (+ matching expr_type) at the
+                        // iterable span so the HIR synthesis lowers the
+                        // projection to `hew_hashset_to_vec_layout`.
+                        let elem_ty = args[0].clone();
+                        if self.validate_hashset_element_type(&elem_ty, &iterable.1) {
+                            let elem_vec = self.make_vec_type(elem_ty.clone(), &iterable.1);
+                            self.record_type(&iterable.1, &elem_vec);
+                            self.record_resolved_hashset_call("to_vec", &elem_ty, &iterable.1);
+                        }
+                        elem_ty
+                    }
+                    Ty::Named {
                         builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
                         args,
                         ..

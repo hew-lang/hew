@@ -1733,12 +1733,18 @@ mod string_extended {
 
     #[test]
     fn split_empty_delimiter() {
+        // split(s, "") yields one element per Unicode codepoint.
+        // "hello" is 5 ASCII codepoints → ["h", "e", "l", "l", "o"].
         unsafe {
             let s = cstr("hello");
             let d = cstr("");
             let v = hew_string_split(s.as_ptr(), d.as_ptr());
-            assert_eq!(hew_vec_len(v), 1);
-            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "hello");
+            assert_eq!(hew_vec_len(v), 5);
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 0)), "h");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 1)), "e");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 2)), "l");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 3)), "l");
+            assert_eq!(read_str_and_drop(hew_vec_get_str(v, 4)), "o");
             hew_vec_free(v);
         }
     }

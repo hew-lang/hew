@@ -3224,3 +3224,16 @@ expect_check_fail_contains \
   "type mismatch" "loop_break_in_iflet_scrutinee"
 echo "PASS loop_break_in_iflet_scrutinee (reject)"
 
+# ---------------------------------------------------------------------------
+# string.split("", "") and split-to-chars semantics (empty separator)
+#
+# An empty separator splits the string into its individual Unicode codepoints,
+# each as a one-character string. Three cases:
+#   1. ASCII input "abc" → 3 elements "a"/"b"/"c"
+#   2. Multi-byte input "café" → 4 elements "c"/"a"/"f"/"é" (é is one element)
+#   3. Empty input "" → 0 elements (empty Vec)
+# ---------------------------------------------------------------------------
+run_accept_expect_status "string_split_to_chars_ascii" 0
+run_accept_expect_status "string_split_to_chars_multibyte" 0
+run_accept_expect_status "string_split_to_chars_empty" 0
+

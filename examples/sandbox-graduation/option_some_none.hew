@@ -1,0 +1,11 @@
+fn describe(value: Option<i64>) -> i64 {
+    match value {
+        Some(x) => x,
+        None => 0,
+    }
+}
+
+fn main() {
+    println(describe(Some(5)));
+    println(describe(None));
+}

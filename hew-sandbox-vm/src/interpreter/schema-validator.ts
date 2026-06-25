@@ -9,6 +9,7 @@ const INSTRUCTION_OPS = new Set([
   "const.string",
   "const.regex",
   "const.function",
+  "bool.not",
   "local.get",
   "local.set",
   "local.move",

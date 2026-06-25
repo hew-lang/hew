@@ -112,6 +112,17 @@ pub const REQUIRED_PARITY_TEST_NAMES: &[&str] = &[
     // never found, +Inf != -Inf.  Uses the shared valuesEqual helper introduced
     // to align vector.contains with cmp.eq (was: collapsed to null via JSON).
     "vec_f64_nonfinite_contains",
+    // CAP-16 sandbox graduation: boolean not, scalar literal match, record
+    // functional update/pattern destructure, builtin Option construction, and
+    // const item references now lower and execute at native parity.
+    "bool_not",
+    "scalar_match_int",
+    "scalar_match_string",
+    "bool_match",
+    "struct_functional_update",
+    "struct_pattern_match",
+    "option_some_none",
+    "const_reference",
 ];
 
 const SANDBOX_STDIN_HELPER: &str = "__hew_sandbox_stdin_read_line";

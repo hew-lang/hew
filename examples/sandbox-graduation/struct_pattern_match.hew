@@ -1,0 +1,14 @@
+type Point {
+    x: i64;
+    y: i64;
+}
+
+fn sum(point: Point) -> i64 {
+    match point {
+        Point { x: a, y: b } => a + b,
+    }
+}
+
+fn main() {
+    println(sum(Point { x: 3, y: 4 }));
+}

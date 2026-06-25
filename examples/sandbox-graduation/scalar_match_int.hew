@@ -1,0 +1,12 @@
+fn describe(n: i64) -> string {
+    match n {
+        1 => "one",
+        2 => "two",
+        _ => "many",
+    }
+}
+
+fn main() {
+    println(describe(1));
+    println(describe(7));
+}

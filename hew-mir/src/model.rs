@@ -905,6 +905,23 @@ pub struct SupervisorChildLayout {
     /// WHEN obsolete: follow-up slice after clone verification is proven.
     /// WHAT: extend `ChildInitArg` and verify `state_clone_fn` covers owned types.
     pub init_state_fields: Vec<(String, ChildInitArg)>,
+    /// `Some(bootstrap_symbol)` when this child's declared type is itself a
+    /// supervisor (`child api: AuthSupervisor;`) rather than an actor; `None`
+    /// for the common actor-child case.
+    ///
+    /// A nested-supervisor child is registered with the parent through a
+    /// different runtime seam than an actor child: codegen calls the child's
+    /// own bootstrap function (which builds and starts the child supervisor and
+    /// returns its `*mut HewSupervisor`), then registers it via
+    /// `hew_supervisor_add_child_supervisor_with_init`, passing the same
+    /// bootstrap symbol as the restart `init_fn`. It must NOT go through the
+    /// `HewChildSpec` / `__hew_actor_dispatch_<actor>` path — a supervisor has
+    /// no actor dispatch trampoline, so that path fails closed at codegen.
+    ///
+    /// Populated in the post-loop pass in `lower_hir_module`, where the full
+    /// set of declared supervisor names is known, so declaration order between
+    /// the parent and the nested supervisor is irrelevant.
+    pub nested_bootstrap_symbol: Option<String>,
 }
 
 /// A self-contained literal value for a supervisor child init arg.

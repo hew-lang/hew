@@ -2309,20 +2309,23 @@ pub(crate) fn lower_call_runtime_abi(
         //
         // WASM: `uses_wasm_excluded_symbol` gates this symbol before WASM
         //   emission; supervisor tree requires the native scheduler runtime.
-        F::SupervisorChildGet => {
+        // `hew_supervisor_child_get` (actor child) and `hew_supervisor_nested_get`
+        // (child supervisor) share an identical C ABI — `(ptr sup, u32 key) ->
+        // ChildLookupResult` — and identical struct-return handling. The only
+        // difference is the runtime symbol, which `symbol` (derived from the
+        // call's family) already carries, so both families ride this one arm.
+        F::SupervisorChildGet | F::SupervisorNestedGet => {
             if args.len() != 2 {
                 return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi(hew_supervisor_child_get): expected 2 args \
-                     (sup, key), got {}",
+                    "Instr::CallRuntimeAbi({symbol}): expected 2 args (sup, key), got {}",
                     args.len()
                 )));
             }
             let dest_place = dest.ok_or_else(|| {
-                CodegenError::FailClosed(
-                    "hew_supervisor_child_get: producer must supply a dest place \
+                CodegenError::FailClosed(format!(
+                    "{symbol}: producer must supply a dest place \
                      (the __HewChildLookupResult alloca)"
-                        .to_string(),
-                )
+                ))
             })?;
 
             // arg0: supervisor handle — ptr-typed (ActorHandle or actor-derived ptr).
@@ -2369,7 +2372,7 @@ pub(crate) fn lower_call_runtime_abi(
                 fn_ctx.llvm_mod,
                 fn_ctx.target_data,
                 &triple_str,
-                "hew_supervisor_child_get",
+                symbol,
                 child_result_ty,
                 &[ptr_ty.into(), i32_ty.into()],
             )?;
@@ -2825,7 +2828,6 @@ pub(crate) fn lower_call_runtime_abi(
         // `Instr::CallRuntimeAbi`, so it has no MIR-ABI lowering arm here and
         // fails closed if it ever reaches this dispatch, like `BytesGet`.
         | F::StringGet
-        | F::SupervisorNestedGet
         | F::TcpAttachLocal
         | F::TaskCompleteThreaded
         | F::TaskCompletionObserve

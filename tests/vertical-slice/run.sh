@@ -2011,6 +2011,19 @@ run_accept_expect_status "string_slice_multibyte" 2
 # locks panic-on-OOB; no clamp / null / empty-string fallback.
 run_accept_expect_status "string_slice_oob_panics" 134
 
+# ---------------------------------------------------------------------------
+# string.split fail-closed empty-separator contract.
+# ---------------------------------------------------------------------------
+# Accept: non-empty separator splits correctly into ordered parts.
+run_accept_expect_stdout "string_split_nonempty_sep"
+# Accept: trailing delimiter produces a trailing empty element.
+run_accept_expect_stdout "string_split_trailing_delim"
+# Accept (panic semantics): empty separator is a programming error. The Hew
+# panic() builtin prints the diagnostic to stderr and exits 101 (Rust panic
+# convention, main-context path in hew_panic). Listed in
+# tests/fuzz-oracle/expected-failures.txt as an intentional panic exit.
+run_accept_expect_status "string_split_empty_sep_rejects" 101
+
 # Accept (S1): Vec<i64> push/pop/get/contains via catalog entries. Exit 10.
 run_accept_expect_status "vec_i64_basic" 10
 

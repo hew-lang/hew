@@ -21,7 +21,7 @@
 # map_literal_empty_annotated.hew, array_repeat_int_sum.hew, and
 # array_repeat_runtime_count.hew are intentionally absent: they must pass.
 #
-# Total: 19 known-failing entries (19 intentional-trap/abort fixtures).
+# Total: 20 known-failing entries (19 intentional-trap/abort fixtures + 1 intentional-panic-exit).
 #
 # Intentional aborts/traps: fixtures in tests/vertical-slice/accept/ that are
 # designed to trap or abort at runtime as their correctness proof.  Listed here
@@ -49,3 +49,4 @@ wire_cbor_decode_malformed_traps.hew  # intentional trap: decoding malformed CBO
 wire_cbor_enum_oob_tag_traps.hew  # intentional trap: decoding an out-of-range enum variant tag (well-formed CBOR, unknown tag) through the wire body codec fails closed → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
 wire_cbor_narrow_int_over_range_traps.hew  # intentional trap: decoding a CBOR integer outside a fixed-width field's range (i8 from 300) through the wire body codec fails closed rather than truncating → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
 wire_cbor_enum_arity_mismatch_traps.hew  # intentional trap: decoding an enum payload whose arity exceeds the target variant (Pair(i64) from {1:[10,20]}) through the wire body codec fails closed rather than dropping the surplus → DecodeFailure trap (SIGILL x86_64 / SIGTRAP aarch64)
+string_split_empty_sep_rejects.hew  # intentional panic: string.split("x", "") panics with diagnostic → hew_panic_msg → process::exit(101)

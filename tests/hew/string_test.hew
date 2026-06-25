@@ -194,12 +194,9 @@ fn test_split_splits_and_keeps_trailing_empty_segment() {
     assert_string_vec_eq(string.split("a,b,", ","), expected);
 }
 
-#[test]
-fn test_split_empty_separator_returns_original_string() {
-    let expected: Vec<string> = Vec::new();
-    expected.push("abc");
-    assert_string_vec_eq(string.split("abc", ""), expected);
-}
+// The empty-separator contract is verified in tests/vertical-slice/accept/
+// string_split_empty_sep_rejects.hew — calling split("abc", "") panics at
+// runtime (exit 134), so it cannot be exercised inside the hew test runner.
 
 #[test]
 fn test_lines_splits_lf_and_preserves_trailing_empty_line() {

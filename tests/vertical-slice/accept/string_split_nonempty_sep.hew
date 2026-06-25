@@ -1,0 +1,11 @@
+// Positive fixture: string.split with a non-empty separator produces the
+// correct parts in order.  Proves the fast path through the split loop is
+// unaffected by the fail-closed empty-separator guard.
+import std::string;
+
+fn main() {
+    let parts = string.split("a,b,c", ",");
+    println(f"{parts.len()}");
+    println(parts[0]);
+    println(parts[2]);
+}

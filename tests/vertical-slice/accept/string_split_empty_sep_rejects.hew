@@ -1,0 +1,12 @@
+// Negative fixture: string.split with an empty separator is a programming error
+// and must fail closed with a clear diagnostic.  The Hew panic() builtin prints
+// to stderr and exits 101 via hew_panic_msg → hew_panic → process::exit(101).
+//
+// run.sh asserts exit 101; fuzz-oracle/expected-failures.txt lists this fixture
+// as an intentional panic exit so the oracle gate does not treat it as a regression.
+import std::string;
+
+fn main() {
+    let parts = string.split("hello", "");
+    println(f"{parts.len()}");
+}

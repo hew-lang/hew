@@ -1,0 +1,10 @@
+// Positive fixture: string.split with a trailing delimiter produces a trailing
+// empty element.  Proves the loop terminates correctly when the input ends with
+// the separator character.
+import std::string;
+
+fn main() {
+    let parts = string.split("a,b,", ",");
+    println(f"{parts.len()}");
+    println(parts[2]);
+}

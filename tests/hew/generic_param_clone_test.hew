@@ -1,7 +1,7 @@
 //! Behavioural tests for cloning a BARE TYPE PARAMETER inside a generic
 //! function: `fn dup<T: Clone>(x: T) -> T { x.clone() }`.
 //!
-//! Before this lane the body was rejected at check time ("no method clone on
+//! Previously the body was rejected at check time ("no method clone on
 //! `T`") even though every concrete instantiation has a clone path — the
 //! abstract-`T: Clone` clone gap. The checker now admits the clone through the
 //! `Clone` marker bound (the same `type_param_has_marker_bound` spine the

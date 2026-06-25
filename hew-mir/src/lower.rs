@@ -12847,7 +12847,7 @@ impl Builder {
             } => {
                 let src_place = self.lower_value(src)?;
                 let record_ty = self.subst_ty(&expr.ty);
-                // A2-a: a clone of a bare type parameter
+                // A clone of a bare type parameter
                 // (`fn f<T: Clone>(x: T) -> T { x.clone() }`) is admitted by the
                 // checker through the record-clone rewrite, but after
                 // monomorphisation the concrete `T` is frequently a NON-record
@@ -12902,8 +12902,9 @@ impl Builder {
                 // closed loudly rather than admit a clone we cannot yet lower
                 // safely (`admit-only-what-you-lower`,
                 // `unclonable-leaf-fails-closed-transitively`). The generic
-                // `Vec<T>`-field surface is tracked separately (A2-b); generic
-                // enum clone is A2-c.
+                // record-of-`Vec` field surface is tracked under its own issue;
+                // generic enum clone is handled by the `EnumCloneInplace` arm
+                // below.
                 if matches!(
                     record_ty,
                     ResolvedTy::Bytes

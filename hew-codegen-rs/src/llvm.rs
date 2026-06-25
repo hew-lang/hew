@@ -17893,6 +17893,7 @@ fn is_hashmap_layout_runtime_symbol(symbol: &str) -> bool {
             | "hew_hashset_remove_layout"
             | "hew_hashset_len_layout"
             | "hew_hashset_is_empty_layout"
+            | "hew_hashset_to_vec_layout"
             | "hew_hashset_clone_layout"
     )
 }
@@ -18075,6 +18076,8 @@ fn layout_hashmap_fn_type<'ctx>(
         "hew_hashset_len_layout" => Ok(i64_ty.fn_type(&[ptr_ty.into()], false)),
         // `bool hew_hashset_is_empty_layout(set)`
         "hew_hashset_is_empty_layout" => Ok(i1_ty.fn_type(&[ptr_ty.into()], false)),
+        // `*mut HewVec hew_hashset_to_vec_layout(set)`
+        "hew_hashset_to_vec_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         // `*mut HewLayoutHashSet hew_hashset_clone_layout(set)`
         "hew_hashset_clone_layout" => Ok(ptr_ty.fn_type(&[ptr_ty.into()], false)),
         _ => Err(CodegenError::FailClosed(format!(
@@ -19307,6 +19310,7 @@ fn lower_hashmap_layout_direct_call(
         | "hew_hashset_contains_layout"
         | "hew_hashset_remove_layout" => 2,
         "hew_hashset_len_layout" | "hew_hashset_is_empty_layout" => 1,
+        "hew_hashset_to_vec_layout" => 1,
         "hew_hashset_clone_layout" => 1,
         _ => {
             return Err(CodegenError::FailClosed(format!(
@@ -19664,6 +19668,30 @@ fn lower_hashmap_layout_direct_call(
                 .builder
                 .build_store(dest_ptr, cloned_ptr)
                 .llvm_ctx("hew_hashset_clone_layout store")?;
+        }
+        "hew_hashset_to_vec_layout" => {
+            // `*mut HewVec hew_hashset_to_vec_layout(set)` — returns an eager
+            // Vec<T> snapshot of the set's elements (delegates to the inner
+            // map's keys projection, so each element is cloned with its layout's
+            // clone discipline); caller is the sole owner. This is the `for x in
+            // s` source: the Vec then drives a VecIter cursor.
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_hashset_to_vec_layout returns *mut HewVec; call must supply a dest".into(),
+                )
+            })?;
+            let call = fn_ctx
+                .builder
+                .build_call(fv, &[map_ptr.into()], "hew_hashset_to_vec_layout_call")
+                .llvm_ctx("hew_hashset_to_vec_layout call")?;
+            let vec_ptr = call.try_as_basic_value().basic().ok_or_else(|| {
+                CodegenError::FailClosed("hew_hashset_to_vec_layout returned void".into())
+            })?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, *dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, vec_ptr)
+                .llvm_ctx("hew_hashset_to_vec_layout store")?;
         }
         _ => unreachable!("matched above"),
     }

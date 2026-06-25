@@ -34240,6 +34240,7 @@ fn is_collection_receiver_borrow_callee(callee: &str) -> bool {
             | "hew_hashset_contains_layout"
             | "hew_hashset_len_layout"
             | "hew_hashset_is_empty_layout"
+            | "hew_hashset_to_vec_layout"
             | "hew_hashset_clone_layout"
     )
 }

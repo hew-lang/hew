@@ -1,0 +1,27 @@
+// `for (k, v) in m` over a HashMap<i64, i64>.
+//
+// The for-in desugar builds a `HashMapIter` cursor from the map's `keys()` and
+// `values()` projections at this concrete site and yields each `(k, v)` pair.
+// Three entries 1->10, 2->20, 3->30: keys sum 6, values sum 60, plus an
+// iteration count guard. Exit 66 (6 + 60); 100+count flags a missed/extra
+// iteration. The map is shared (Capture), so it stays live after the loop.
+pub fn main() -> i64 {
+    let m: HashMap<i64, i64> = HashMap::new();
+    m.insert(1, 10);
+    m.insert(2, 20);
+    m.insert(3, 30);
+    var total = 0;
+    var count = 0;
+    for (k, v) in m {
+        total = total + k + v;
+        count = count + 1;
+    }
+    if count != 3 {
+        return 100 + count;
+    }
+    // The map must still be usable after the loop (shared, not consumed).
+    if m.len() != 3 {
+        return 99;
+    }
+    total
+}

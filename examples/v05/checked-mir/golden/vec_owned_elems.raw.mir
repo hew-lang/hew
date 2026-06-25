@@ -352,11 +352,11 @@ fn i8::fmt(i8) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(16) val site=SiteId(144) ty=i8 intent=Read
+    stmt: use BindingId(19) val site=SiteId(176) ty=i8 intent=Read
     _1 = cast _0 i8 -> i32
     _2 = call to_string_i32(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(142)) ty=string
+    stmt: return site=Some(SiteId(174)) ty=string
     ret = move _2
     return
 
@@ -366,11 +366,11 @@ fn i16::fmt(i16) -> string [conv=default]
     _1: i32
     _2: string
   bb0:
-    stmt: use BindingId(17) val site=SiteId(148) ty=i16 intent=Read
+    stmt: use BindingId(20) val site=SiteId(180) ty=i16 intent=Read
     _1 = cast _0 i16 -> i32
     _2 = call to_string_i32(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(146)) ty=string
+    stmt: return site=Some(SiteId(178)) ty=string
     ret = move _2
     return
 
@@ -379,10 +379,10 @@ fn i32::fmt(i32) -> string [conv=default]
     _0: i32
     _1: string
   bb0:
-    stmt: use BindingId(18) val site=SiteId(151) ty=i32 intent=Read
+    stmt: use BindingId(21) val site=SiteId(183) ty=i32 intent=Read
     _1 = call to_string_i32(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(150)) ty=string
+    stmt: return site=Some(SiteId(182)) ty=string
     ret = move _1
     return
 
@@ -391,10 +391,10 @@ fn i64::fmt(i64) -> string [conv=default]
     _0: i64
     _1: string
   bb0:
-    stmt: use BindingId(19) val site=SiteId(154) ty=i64 intent=Read
+    stmt: use BindingId(22) val site=SiteId(186) ty=i64 intent=Read
     _1 = call to_string_i64(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(153)) ty=string
+    stmt: return site=Some(SiteId(185)) ty=string
     ret = move _1
     return
 
@@ -403,10 +403,10 @@ fn u8::fmt(u8) -> string [conv=default]
     _0: u8
     _1: string
   bb0:
-    stmt: use BindingId(20) val site=SiteId(157) ty=u8 intent=Read
+    stmt: use BindingId(23) val site=SiteId(189) ty=u8 intent=Read
     _1 = call to_string_u8(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(156)) ty=string
+    stmt: return site=Some(SiteId(188)) ty=string
     ret = move _1
     return
 
@@ -415,10 +415,10 @@ fn u16::fmt(u16) -> string [conv=default]
     _0: u16
     _1: string
   bb0:
-    stmt: use BindingId(21) val site=SiteId(160) ty=u16 intent=Read
+    stmt: use BindingId(24) val site=SiteId(192) ty=u16 intent=Read
     _1 = call to_string_u16(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(159)) ty=string
+    stmt: return site=Some(SiteId(191)) ty=string
     ret = move _1
     return
 
@@ -427,10 +427,10 @@ fn u32::fmt(u32) -> string [conv=default]
     _0: u32
     _1: string
   bb0:
-    stmt: use BindingId(22) val site=SiteId(163) ty=u32 intent=Read
+    stmt: use BindingId(25) val site=SiteId(195) ty=u32 intent=Read
     _1 = call to_string_u32(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(162)) ty=string
+    stmt: return site=Some(SiteId(194)) ty=string
     ret = move _1
     return
 
@@ -439,10 +439,10 @@ fn u64::fmt(u64) -> string [conv=default]
     _0: u64
     _1: string
   bb0:
-    stmt: use BindingId(23) val site=SiteId(166) ty=u64 intent=Read
+    stmt: use BindingId(26) val site=SiteId(198) ty=u64 intent=Read
     _1 = call to_string_u64(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(165)) ty=string
+    stmt: return site=Some(SiteId(197)) ty=string
     ret = move _1
     return
 
@@ -452,11 +452,11 @@ fn isize::fmt(isize) -> string [conv=default]
     _1: i64
     _2: string
   bb0:
-    stmt: use BindingId(24) val site=SiteId(170) ty=isize intent=Read
+    stmt: use BindingId(27) val site=SiteId(202) ty=isize intent=Read
     _1 = cast _0 isize -> i64
     _2 = call to_string_i64(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(168)) ty=string
+    stmt: return site=Some(SiteId(200)) ty=string
     ret = move _2
     return
 
@@ -466,11 +466,11 @@ fn usize::fmt(usize) -> string [conv=default]
     _1: u64
     _2: string
   bb0:
-    stmt: use BindingId(25) val site=SiteId(174) ty=usize intent=Read
+    stmt: use BindingId(28) val site=SiteId(206) ty=usize intent=Read
     _1 = cast _0 usize -> u64
     _2 = call to_string_u64(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(172)) ty=string
+    stmt: return site=Some(SiteId(204)) ty=string
     ret = move _2
     return
 
@@ -479,10 +479,10 @@ fn bool::fmt(bool) -> string [conv=default]
     _0: bool
     _1: string
   bb0:
-    stmt: use BindingId(26) val site=SiteId(177) ty=bool intent=Read
+    stmt: use BindingId(29) val site=SiteId(209) ty=bool intent=Read
     _1 = call to_string_bool(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(176)) ty=string
+    stmt: return site=Some(SiteId(208)) ty=string
     ret = move _1
     return
 
@@ -491,10 +491,10 @@ fn char::fmt(char) -> string [conv=default]
     _0: char
     _1: string
   bb0:
-    stmt: use BindingId(27) val site=SiteId(180) ty=char intent=Read
+    stmt: use BindingId(30) val site=SiteId(212) ty=char intent=Read
     _1 = call to_string_char(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(179)) ty=string
+    stmt: return site=Some(SiteId(211)) ty=string
     ret = move _1
     return
 
@@ -503,10 +503,10 @@ fn f64::fmt(f64) -> string [conv=default]
     _0: f64
     _1: string
   bb0:
-    stmt: use BindingId(28) val site=SiteId(183) ty=f64 intent=Read
+    stmt: use BindingId(31) val site=SiteId(215) ty=f64 intent=Read
     _1 = call to_string_f64(_0) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(182)) ty=string
+    stmt: return site=Some(SiteId(214)) ty=string
     ret = move _1
     return
 
@@ -516,11 +516,11 @@ fn f32::fmt(f32) -> string [conv=default]
     _1: f64
     _2: string
   bb0:
-    stmt: use BindingId(29) val site=SiteId(187) ty=f32 intent=Read
+    stmt: use BindingId(32) val site=SiteId(219) ty=f32 intent=Read
     _1 = cast _0 f32 -> f64
     _2 = call to_string_f64(_1) -> bb1
   bb1:
-    stmt: return site=Some(SiteId(185)) ty=string
+    stmt: return site=Some(SiteId(217)) ty=string
     ret = move _2
     return
 
@@ -528,8 +528,8 @@ fn string::fmt(string) -> string [conv=default]
   locals:
     _0: string
   bb0:
-    stmt: use BindingId(30) val site=SiteId(189) ty=string intent=Read
-    stmt: return site=Some(SiteId(189)) ty=string
+    stmt: use BindingId(33) val site=SiteId(221) ty=string intent=Read
+    stmt: return site=Some(SiteId(221)) ty=string
     ret = move _0
     return
 

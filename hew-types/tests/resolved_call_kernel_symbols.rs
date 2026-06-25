@@ -69,6 +69,7 @@ extern "C" {
     fn hew_hashset_remove_layout(s: *mut c_void, elem: *const c_void) -> bool;
     fn hew_hashset_len_layout(s: *const c_void) -> i64;
     fn hew_hashset_is_empty_layout(s: *const c_void) -> bool;
+    fn hew_hashset_to_vec_layout(s: *const c_void) -> *mut c_void;
     fn hew_hashset_clone_layout(s: *const c_void) -> *mut c_void;
 }
 
@@ -130,6 +131,10 @@ fn known_linked_kernel_symbols() -> HashMap<&'static str, *const ()> {
     m.insert(
         "hew_hashset_is_empty_layout",
         hew_hashset_is_empty_layout as *const (),
+    );
+    m.insert(
+        "hew_hashset_to_vec_layout",
+        hew_hashset_to_vec_layout as *const (),
     );
     m.insert(
         "hew_hashset_clone_layout",

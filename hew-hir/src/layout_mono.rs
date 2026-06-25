@@ -329,6 +329,26 @@ pub fn run_layout_mono_pass(
         });
     all_type_params.insert("T".to_string());
 
+    // Seed the synthetic `HashMapIter<K, V>` record (the `for (k, v) in m`
+    // desugar target), mirroring `VecIter` above: it is declared in
+    // `std/builtins.hew` but never emitted as a HIR item, so `visit_ty` needs
+    // the decl here to register each concrete `HashMapIter$$<K, V>` layout per
+    // monomorphisation (StructInit + FieldAccess field-order lookup). The field
+    // shape comes from the single `hashmap_iter_field_shape` authority the
+    // for-in desugar also constructs from. `or_insert_with` honours a user type
+    // that shadows the name.
+    let ty_k_hm_iter = ResolvedTy::named_user("K", vec![]);
+    let ty_v_hm_iter = ResolvedTy::named_user("V", vec![]);
+    record_decls
+        .entry("HashMapIter".to_string())
+        .or_insert_with(|| RecordDecl {
+            id: crate::lower::SYNTHETIC_HASHMAP_ITER_ITEM,
+            type_params: vec!["K".to_string(), "V".to_string()],
+            fields: crate::lower::hashmap_iter_field_shape(&ty_k_hm_iter, &ty_v_hm_iter),
+        });
+    all_type_params.insert("K".to_string());
+    all_type_params.insert("V".to_string());
+
     let mut disc = Discovery {
         record_decls: &record_decls,
         enum_decls: &enum_decls,

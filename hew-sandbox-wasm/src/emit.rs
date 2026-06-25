@@ -2268,16 +2268,14 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         let type_id = self.package.type_id_for_named(name, &[]);
         let mut args = vec![Operand::ty(type_id.clone())];
 
-        let ordered_fields: Vec<String> = self
-            .package
-            .record_layouts
-            .get(&type_id)
-            .map(|layout| {
+        let ordered_fields: Vec<String> = self.package.record_layouts.get(&type_id).map_or_else(
+            || field_values.keys().cloned().collect(),
+            |layout| {
                 let mut fields = layout.fields.clone();
                 fields.sort_by_key(|field| field.index);
                 fields.into_iter().map(|field| field.name).collect()
-            })
-            .unwrap_or_else(|| field_values.keys().cloned().collect());
+            },
+        );
 
         for (index, field) in ordered_fields.iter().enumerate() {
             if let Some(local) = field_values.get(field) {
@@ -3384,7 +3382,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 &scrutinee_local,
                 &scrutinee_ty,
                 tag_local.as_deref(),
-            )? {
+            ) {
                 self.terminate(Terminator::br_if(
                     Operand::local(cond),
                     matched_id,
@@ -3604,7 +3602,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         scrutinee_local: &str,
         scrutinee_ty: &Ty,
         tag_local: Option<&str>,
-    ) -> Result<Option<String>, CompileError> {
+    ) -> Option<String> {
         if let Some(tag_local) = tag_local {
             if let Some(tag) = self.pattern_tag(pattern, scrutinee_ty) {
                 let tag_const = self.lower_literal(
@@ -3625,7 +3623,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     Some(pattern.1.clone()),
                     None,
                 );
-                return Ok(Some(cond));
+                return Some(cond);
             }
         } else if let Pattern::Literal(literal) = &pattern.0 {
             let pattern_local = self.lower_literal(literal, pattern.1.clone());
@@ -3640,11 +3638,11 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 Some(pattern.1.clone()),
                 None,
             );
-            return Ok(Some(cond));
+            return Some(cond);
         }
 
         self.emit_unsupported(Some(pattern.1.clone()));
-        Ok(None)
+        None
     }
 
     fn next_match_arm_id(
@@ -3677,6 +3675,12 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             .map_or_else(|| exit_id.to_string(), |(_, id)| id.clone())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "all 8 params are distinct per-call inputs (guard expr, \
+                  block index, pattern, scrutinee, type, two branch target ids); \
+                  no cohesive subset warrants a struct at one call site"
+    )]
     fn lower_match_guard_block(
         &mut self,
         guard: &Spanned<Expr>,
@@ -4068,7 +4072,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 &scrutinee_local,
                 &scrutinee_ty,
                 tag_local.as_deref(),
-            )? {
+            ) {
                 self.terminate(Terminator::br_if(
                     Operand::local(cond),
                     matched_id,

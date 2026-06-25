@@ -940,3 +940,263 @@ fn main() {
         "wildcard destructure should bind n=5; got:\n{out}"
     );
 }
+
+// ── reject: a binding REBOUND from a live-owner projection ──────────────────
+//
+// The fifth use-after-free this fix closes. A syntactically bare `BindingRef`
+// is NOT sufficient for the destructive update: `let b = o.inner` lowers to an
+// aliasing shallow copy that shares `o.inner`'s heap pointer (it is not a
+// move — `o` stays live), so consuming `b` and releasing its overridden owned
+// field in place frees storage `o.inner` still references → use-after-free and
+// a double-free at `o`'s scope-exit drop. The base allowlist therefore admits a
+// bare binding ONLY when a per-function provenance prescan proves every
+// definition of that binding is a freshly-owned value (a call/clone/literal/Vec
+// element, or a move-chain of those). A binding whose initialiser is a
+// projection of a still-live owner is rejected by construction.
+
+/// `let b = o.inner; { ..b, f }`: `b` aliases the live `o.inner`. The prescan
+/// classifies `b` unproven (its initialiser is a `FieldAccess` of a live
+/// binding, not a materialised owner) so the base gate fails closed.
+#[test]
+fn reject_rebind_field_projection_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn main() {
+    let o = Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 };
+    let b = o.inner;
+    let u = Inner { label: string.repeat("b", 32), ..b };
+    println(u.label);
+    println(o.inner.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "rebind-of-field-projection base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value")
+            && out.contains("unique owner")
+            && out.contains("REBOUND from such a projection"),
+        "expected the provenance-aware fail-closed reject; got:\n{out}"
+    );
+}
+
+/// `let b = t.0; { ..b, f }`: `b` aliases the live tuple element `t.0` (a
+/// `TupleFieldLoad`, not a materialising clone). Same alias-of-live-owner hole
+/// as the field-projection rebind; must fail closed.
+#[test]
+fn reject_rebind_tuple_index_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+fn main() {
+    let t: (Inner, i64) = (Inner { label: string.repeat("a", 32), n: 1 }, 9);
+    let b = t.0;
+    let u = Inner { label: string.repeat("b", 32), ..b };
+    println(u.label);
+    println(t.0.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "rebind-of-tuple-index base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value")
+            && out.contains("unique owner")
+            && out.contains("REBOUND from such a projection"),
+        "expected the provenance-aware fail-closed reject; got:\n{out}"
+    );
+}
+
+/// `let b = if c { o.inner } else { makeInner() }; { ..b, f }`: ONE branch of
+/// the wrapper initialiser is a live-owner projection, so `b` is not provably a
+/// unique owner on every path. The prescan is flow-insensitive (it requires
+/// EVERY definition to prove) and rejects — the conditional-materialise shape
+/// that a last-write map would unsoundly admit.
+#[test]
+fn reject_rebind_wrapper_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn makeInner() -> Inner { Inner { label: string.repeat("c", 32), n: 2 } }
+fn main() {
+    let o = Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 };
+    let b = if true { o.inner } else { makeInner() };
+    let u = Inner { label: string.repeat("b", 32), ..b };
+    println(u.label);
+    println(o.inner.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "rebind-of-wrapper-over-live-projection base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value") && out.contains("unique owner"),
+        "expected the provenance-aware fail-closed reject; got:\n{out}"
+    );
+}
+
+/// `let b = o.inner; let c = b; { ..c, f }`: a move-chain whose ROOT is a
+/// live-owner projection. The whole-binding move `let c = b` consumes `b`, but
+/// `b` itself aliases `o.inner`, so `c` transitively aliases the live owner.
+/// The prescan follows the move-chain to `b`'s unproven origin and rejects —
+/// the move-chain admit must not launder an aliasing root.
+#[test]
+fn reject_move_chain_of_alias_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn main() {
+    let o = Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 };
+    let b = o.inner;
+    let c = b;
+    let u = Inner { label: string.repeat("b", 32), ..c };
+    println(u.label);
+    println(o.inner.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "move-chain rooted at a live projection must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value") && out.contains("unique owner"),
+        "expected the provenance-aware fail-closed reject; got:\n{out}"
+    );
+}
+
+/// The rebind hole reaches through closure bodies too: the prescan runs over
+/// the WHOLE top-level body (recursing into closures) and the child builder
+/// inherits the parent provenance map. A closure that binds `let b = o.inner`
+/// off a captured `o` and updates `..b` must fail closed exactly as at top
+/// level — not slip through for want of the map.
+#[test]
+fn reject_closure_rebind_projection_base() {
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+record Outer { inner: Inner, tag: i64 }
+fn main() {
+    let o = Outer { inner: Inner { label: string.repeat("a", 32), n: 1 }, tag: 9 };
+    let f = || -> Inner {
+        let b = o.inner;
+        Inner { label: string.repeat("b", 32), ..b }
+    };
+    let u = f();
+    println(u.label);
+    println(o.inner.label);
+}
+"#;
+    let (ok, out) = hew_check(source);
+    assert!(
+        !ok,
+        "closure rebind-of-projection base must fail check; got success:\n{out}"
+    );
+    assert!(
+        out.contains("not a binding or owned value") && out.contains("unique owner"),
+        "expected the provenance-aware fail-closed reject inside a closure; got:\n{out}"
+    );
+}
+
+// ── accept: bare bindings the provenance prescan PROVES uniquely owned ──────
+
+/// A move-chain of a materialised owner (`let base = makeInner(); let c = base;
+/// { ..c, f }`): `base` is a call result (fresh owner), and `let c = base` is a
+/// move that consumes it, so `c` is the sole live owner. The prescan follows
+/// the chain to the materialised root and admits it. Must `check` and `run`
+/// cleanly — the sound sibling of `reject_move_chain_of_alias_base`.
+#[test]
+fn accept_move_chain_materialized_base_runs_clean() {
+    require_codegen();
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+fn makeInner() -> Inner { Inner { label: string.repeat("a", 32), n: 7 } }
+fn main() {
+    let base = makeInner();
+    let c = base;
+    let u = Inner { label: string.repeat("b", 32), ..c };
+    println(u.label);
+    println(u.n);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(
+        ok,
+        "move-chain of a materialised owner must run cleanly; got:\n{out}"
+    );
+    assert!(
+        out.contains(&"b".repeat(32)) && out.contains('7'),
+        "move-chain base should apply the override and carry n=7; got:\n{out}"
+    );
+}
+
+/// A by-value parameter base (`fn upd(p: Cfg) -> Cfg { { ..p, name: new } }`):
+/// the caller moved `p` in, so the handler is its unique owner — the idiomatic
+/// "update one field of an owned argument" shape. The prescan seeds by-value
+/// params as proven owners. Must `check` and `run` cleanly.
+#[test]
+fn accept_param_base_runs_clean() {
+    require_codegen();
+    let source = r#"
+import std::string;
+record Cfg { name: string, k: i64 }
+fn upd(p: Cfg) -> Cfg { Cfg { name: string.repeat("z", 16), ..p } }
+fn main() {
+    let c = Cfg { name: string.repeat("a", 16), k: 3 };
+    let r = upd(c);
+    println(r.name);
+    println(r.k);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(ok, "by-value parameter base must run cleanly; got:\n{out}");
+    assert!(
+        out.contains(&"z".repeat(16)) && out.contains('3'),
+        "param base should apply the name override and carry k=3; got:\n{out}"
+    );
+}
+
+/// A closure that updates a materialised base bound in its own body
+/// (`|| { let base = makeInner(); { ..base, f } }`): the prescan reaches the
+/// closure-local `let` and the child builder inherits the proof, so the bare
+/// base is admitted inside the closure exactly as at top level. Must `check`
+/// and `run` cleanly — the accept sibling of
+/// `reject_closure_rebind_projection_base`.
+#[test]
+fn accept_closure_materialized_base_runs_clean() {
+    require_codegen();
+    let source = r#"
+import std::string;
+record Inner { label: string, n: i64 }
+fn makeInner(s: string) -> Inner { Inner { label: string.repeat(s, 16), n: 1 } }
+fn main() {
+    let f = |s: string| -> Inner {
+        let base = makeInner(s);
+        Inner { label: string.repeat("z", 8), ..base }
+    };
+    let r = f("a");
+    println(r.label);
+    println(r.n);
+}
+"#;
+    let (ok, out) = hew_run(source);
+    assert!(
+        ok,
+        "closure materialised base must run cleanly; got:\n{out}"
+    );
+    assert!(
+        out.contains(&"z".repeat(8)) && out.contains('1'),
+        "closure base should apply the override and carry n=1; got:\n{out}"
+    );
+}

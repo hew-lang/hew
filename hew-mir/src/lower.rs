@@ -4653,6 +4653,439 @@ fn collect_unknown_self_fields_in_expr(
     }
 }
 
+/// Flow-insensitive prescan deciding, for every binding in `func`, whether a
+/// destructive `{ ..<binding>, f: new }` is a PROVEN unique owner of its heap
+/// fields — see the `Builder::funcupdate_base_proven` field and
+/// `base_is_safe_for_destructive_funcupdate`.
+///
+/// A binding is proven iff it is introduced by a `let` or a by-value parameter
+/// AND every one of its definitions (the `let` initialiser, every `=`
+/// reassignment, and the parameter origin) is a materialised owner
+/// (`Builder::expr_is_materialized_owner`) or a move-chain of such
+/// (`let c = makeThing(); let d = c; { ..d, f }`). A binding bound from a
+/// projection of a still-live owner (`let b = o.inner`), or introduced by any
+/// other form (match-arm payload, let-else binder, loop variable), is left
+/// UNPROVEN so the base gate fails closed.
+///
+/// FLOW-INSENSITIVE BY DESIGN: EVERY definition must prove safe, regardless of
+/// control flow. This is conservative (a binding that is safely materialised at
+/// the update site but aliased on a dead branch is rejected) but SOUND — it
+/// cannot admit a binding that aliases a live owner on ANY path, which a
+/// last-write-wins flow-sensitive map would (`var c = o.inner; if p { c =
+/// makeThing() } { ..c, f }` is unsafe on the `p == false` path). The reassign-
+/// loop idiom (`var c = Record { .. }; while .. { c = Record { ..c, f } }`) stays
+/// admitted because every definition is a record literal / funcupdate result.
+fn compute_funcupdate_base_provenance(func: &HirFn) -> HashMap<BindingId, bool> {
+    let mut defs: HashMap<BindingId, Vec<&HirExpr>> = HashMap::new();
+    let mut let_or_param: HashSet<BindingId> = HashSet::new();
+    let mut params: HashSet<BindingId> = HashSet::new();
+    for param in &func.params {
+        params.insert(param.id);
+        let_or_param.insert(param.id);
+    }
+    collect_binding_defs_in_block(&func.body, &mut defs, &mut let_or_param);
+
+    let mut resolver = BaseOwnerResolver {
+        defs,
+        let_or_param,
+        params,
+        memo: HashMap::new(),
+    };
+    let ids: Vec<BindingId> = resolver.let_or_param.iter().copied().collect();
+    for id in ids {
+        let mut visiting: HashSet<BindingId> = HashSet::new();
+        resolver.resolve(id, &mut visiting);
+    }
+    resolver.memo
+}
+
+/// Memoised resolver for `compute_funcupdate_base_provenance`. `defs` maps each
+/// binding to every initialiser/reassignment expression that defines it;
+/// `let_or_param` is the set of bindings introduced by a `let` or a parameter
+/// (any other origin is unproven); `params` is the by-value parameter subset.
+struct BaseOwnerResolver<'f> {
+    defs: HashMap<BindingId, Vec<&'f HirExpr>>,
+    let_or_param: HashSet<BindingId>,
+    params: HashSet<BindingId>,
+    memo: HashMap<BindingId, bool>,
+}
+
+impl<'f> BaseOwnerResolver<'f> {
+    /// True iff `{ ..<binding>, f: new }` is a proven unique owner: `binding` is
+    /// `let`/param-introduced and EVERY definition proves a materialised owner.
+    fn resolve(&mut self, binding: BindingId, visiting: &mut HashSet<BindingId>) -> bool {
+        if let Some(&cached) = self.memo.get(&binding) {
+            return cached;
+        }
+        // A binding NOT introduced by a `let`/parameter (match-arm payload,
+        // let-else binder, loop variable, or an origin the prescan does not
+        // model) cannot be proven a unique owner — fail closed.
+        if !self.let_or_param.contains(&binding) {
+            return false;
+        }
+        // A definition cycle (only reachable via pathological reassignment) is
+        // not provable — fail closed without recursing forever.
+        if !visiting.insert(binding) {
+            return false;
+        }
+        let is_param = self.params.contains(&binding);
+        // Clone out the def references (cheap: each is a pointer) so the borrow
+        // of `self.defs` is released before the recursive `init_proves` calls.
+        let inits: Vec<&'f HirExpr> = self.defs.get(&binding).cloned().unwrap_or_default();
+        let result = if !is_param && inits.is_empty() {
+            // A `let x;` with no initialiser and no reassignment is
+            // uninitialised (the move-checker rejects a read) — not an owner.
+            false
+        } else {
+            // A by-value parameter origin is itself a unique owner (the caller
+            // moved the value in); every recorded definition must also prove.
+            inits.iter().all(|init| self.init_proves(init, visiting))
+        };
+        visiting.remove(&binding);
+        self.memo.insert(binding, result);
+        result
+    }
+
+    /// Classify a single definition expression of a binding.
+    fn init_proves(&mut self, init: &HirExpr, visiting: &mut HashSet<BindingId>) -> bool {
+        match &init.kind {
+            // A whole-binding move (`let d = c`) CONSUMES the source — the
+            // move-checker rejects a later use of `c` — so `d` inherits `c`'s
+            // unique-ownership provenance. Recurse: a move-chain of materialised
+            // owners is proven; a chain rooted at a live-projection rebind
+            // (`let b = o.inner; let c = b; { ..c, f }`) is not.
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(source),
+                ..
+            } => self.resolve(*source, visiting),
+            // Every other initialiser must be a materialised owner directly (a
+            // call / clone / record-or-tuple literal / funcupdate result / Vec
+            // element, or a projection rooted at one). A projection of a live
+            // binding (`o.inner`, `t.0`) is NOT materialised and fails here.
+            _ => Builder::expr_is_materialized_owner(init),
+        }
+    }
+}
+
+/// Collect every binding definition in `block` into `defs` (and record each
+/// `let`-introduced binding in `let_ids`) for `compute_funcupdate_base_-
+/// provenance`. EXHAUSTIVE over statements: a missed reassignment to a live-
+/// projection alias would reopen the funcupdate use-after-free, whereas a missed
+/// binding merely fails the gate closed.
+fn collect_binding_defs_in_block<'f>(
+    block: &'f HirBlock,
+    defs: &mut HashMap<BindingId, Vec<&'f HirExpr>>,
+    let_ids: &mut HashSet<BindingId>,
+) {
+    for stmt in &block.statements {
+        match &stmt.kind {
+            HirStmtKind::Let(binding, init) => {
+                let_ids.insert(binding.id);
+                if let Some(init) = init {
+                    defs.entry(binding.id).or_default().push(init);
+                    collect_binding_defs_in_expr(init, defs, let_ids);
+                }
+            }
+            HirStmtKind::Assign { target, value } => {
+                // A reassignment of a whole binding redefines its provenance; a
+                // field/index assignment (`o.f = ..`) does not rebind the name.
+                if let HirExprKind::BindingRef {
+                    resolved: ResolvedRef::Binding(binding_id),
+                    ..
+                } = &target.kind
+                {
+                    defs.entry(*binding_id).or_default().push(value);
+                }
+                collect_binding_defs_in_expr(target, defs, let_ids);
+                collect_binding_defs_in_expr(value, defs, let_ids);
+            }
+            HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
+                collect_binding_defs_in_expr(expr, defs, let_ids);
+            }
+            HirStmtKind::Return(None) => {}
+            HirStmtKind::Defer { body, .. } => {
+                collect_binding_defs_in_expr(body, defs, let_ids);
+            }
+            HirStmtKind::LetElse {
+                scrutinee,
+                success_prelude,
+                else_body,
+                ..
+            } => {
+                // The escaping let-else binders are deliberately NOT recorded in
+                // `let_ids`: a binder destructured from a scrutinee projection is
+                // not a proven unique owner, so it must fail the base gate
+                // closed. Still recurse for nested defs/reassignments.
+                collect_binding_defs_in_expr(scrutinee, defs, let_ids);
+                for prelude_stmt in success_prelude {
+                    if let HirStmtKind::Let(_, Some(value)) = &prelude_stmt.kind {
+                        collect_binding_defs_in_expr(value, defs, let_ids);
+                    }
+                }
+                collect_binding_defs_in_block(else_body, defs, let_ids);
+            }
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_binding_defs_in_expr(tail, defs, let_ids);
+    }
+}
+
+/// Recurse into every sub-expression and nested block of `expr` so
+/// `collect_binding_defs_in_block` reaches every `let`/`=` in inner scopes.
+/// Mirrors the sealed `HirExprKind` surface (cf.
+/// `collect_unknown_self_fields_in_expr`) so no nested reassignment is missed.
+#[allow(
+    clippy::too_many_lines,
+    reason = "visitor mirrors the sealed HirExprKind surface so binding-def collection is exhaustive"
+)]
+fn collect_binding_defs_in_expr<'f>(
+    expr: &'f HirExpr,
+    defs: &mut HashMap<BindingId, Vec<&'f HirExpr>>,
+    let_ids: &mut HashSet<BindingId>,
+) {
+    match &expr.kind {
+        HirExprKind::Literal(_)
+        | HirExprKind::RegexLiteralRef { .. }
+        | HirExprKind::BindingRef { .. }
+        | HirExprKind::AwaitTask { .. }
+        | HirExprKind::ContextReader { .. }
+        | HirExprKind::MachineFieldAccess { .. }
+        | HirExprKind::MachineEventFieldAccess { .. }
+        | HirExprKind::Continue { .. }
+        | HirExprKind::ActorSelf
+        | HirExprKind::Unsupported(_) => {}
+        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
+            collect_binding_defs_in_expr(left, defs, let_ids);
+            collect_binding_defs_in_expr(right, defs, let_ids);
+        }
+        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
+            collect_binding_defs_in_expr(operand, defs, let_ids);
+        }
+        HirExprKind::ConnAwaitRead { conn, .. } => {
+            collect_binding_defs_in_expr(conn, defs, let_ids);
+        }
+        HirExprKind::ListenerAwaitAccept { listener, .. } => {
+            collect_binding_defs_in_expr(listener, defs, let_ids);
+        }
+        HirExprKind::StreamRecvAwait { stream, .. } => {
+            collect_binding_defs_in_expr(stream, defs, let_ids);
+        }
+        HirExprKind::NumericCast { value, .. }
+        | HirExprKind::SaturatingWidthCast { value, .. }
+        | HirExprKind::CoerceToDynTrait { value, .. } => {
+            collect_binding_defs_in_expr(value, defs, let_ids);
+        }
+        HirExprKind::TupleLiteral { elements } => {
+            for elem in elements {
+                collect_binding_defs_in_expr(elem, defs, let_ids);
+            }
+        }
+        HirExprKind::NumericMethod { receiver, arg, .. } => {
+            collect_binding_defs_in_expr(receiver, defs, let_ids);
+            collect_binding_defs_in_expr(arg, defs, let_ids);
+        }
+        HirExprKind::Call { callee, args } | HirExprKind::SpawnedCall { callee, args, .. } => {
+            collect_binding_defs_in_expr(callee, defs, let_ids);
+            for arg in args {
+                collect_binding_defs_in_expr(arg, defs, let_ids);
+            }
+        }
+        HirExprKind::Spawn { args, .. } => {
+            for (_, arg) in args {
+                collect_binding_defs_in_expr(arg, defs, let_ids);
+            }
+        }
+        HirExprKind::ActorSend { receiver, args, .. }
+        | HirExprKind::ActorAsk { receiver, args, .. }
+        | HirExprKind::CallDynMethod { receiver, args, .. }
+        | HirExprKind::ResolvedImplCall { receiver, args, .. }
+        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
+        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
+            collect_binding_defs_in_expr(receiver, defs, let_ids);
+            for arg in args {
+                collect_binding_defs_in_expr(arg, defs, let_ids);
+            }
+        }
+        HirExprKind::RemoteActorAsk {
+            receiver,
+            msg,
+            timeout_ms,
+            ..
+        } => {
+            collect_binding_defs_in_expr(receiver, defs, let_ids);
+            collect_binding_defs_in_expr(msg, defs, let_ids);
+            collect_binding_defs_in_expr(timeout_ms, defs, let_ids);
+        }
+        HirExprKind::Block(block)
+        | HirExprKind::Scope { body: block }
+        | HirExprKind::ForkBlock { body: block, .. }
+        | HirExprKind::GenBlock { body: block, .. } => {
+            collect_binding_defs_in_block(block, defs, let_ids);
+        }
+        HirExprKind::Yield { value, .. }
+        | HirExprKind::Break { value, .. }
+        | HirExprKind::Return { value } => {
+            if let Some(value) = value {
+                collect_binding_defs_in_expr(value, defs, let_ids);
+            }
+        }
+        HirExprKind::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_binding_defs_in_expr(condition, defs, let_ids);
+            collect_binding_defs_in_expr(then_expr, defs, let_ids);
+            if let Some(else_expr) = else_expr {
+                collect_binding_defs_in_expr(else_expr, defs, let_ids);
+            }
+        }
+        HirExprKind::StructInit { fields, base, .. } => {
+            for (_, field_expr) in fields {
+                collect_binding_defs_in_expr(field_expr, defs, let_ids);
+            }
+            if let Some(base) = base {
+                collect_binding_defs_in_expr(base, defs, let_ids);
+            }
+        }
+        HirExprKind::FieldAccess { object, .. } => {
+            collect_binding_defs_in_expr(object, defs, let_ids);
+        }
+        HirExprKind::ScopeDeadline { duration, body } => {
+            collect_binding_defs_in_expr(duration, defs, let_ids);
+            collect_binding_defs_in_block(body, defs, let_ids);
+        }
+        HirExprKind::Select(select) => {
+            for arm in &select.arms {
+                match &arm.kind {
+                    hew_hir::HirSelectArmKind::StreamNext { stream } => {
+                        collect_binding_defs_in_expr(stream, defs, let_ids);
+                    }
+                    hew_hir::HirSelectArmKind::ActorAsk { actor, args, .. } => {
+                        collect_binding_defs_in_expr(actor, defs, let_ids);
+                        for arg in args {
+                            collect_binding_defs_in_expr(arg, defs, let_ids);
+                        }
+                    }
+                    hew_hir::HirSelectArmKind::TaskAwait { task } => {
+                        collect_binding_defs_in_expr(task, defs, let_ids);
+                    }
+                    hew_hir::HirSelectArmKind::ChannelRecv { receiver, .. } => {
+                        collect_binding_defs_in_expr(receiver, defs, let_ids);
+                    }
+                    hew_hir::HirSelectArmKind::AfterTimer { duration } => {
+                        collect_binding_defs_in_expr(duration, defs, let_ids);
+                    }
+                }
+                collect_binding_defs_in_expr(&arm.body, defs, let_ids);
+            }
+        }
+        HirExprKind::Join(join) => {
+            for branch in &join.branches {
+                collect_binding_defs_in_expr(&branch.actor, defs, let_ids);
+                for arg in &branch.args {
+                    collect_binding_defs_in_expr(arg, defs, let_ids);
+                }
+            }
+        }
+        HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
+            collect_binding_defs_in_expr(body, defs, let_ids);
+        }
+        HirExprKind::TupleIndex { tuple, .. } => {
+            collect_binding_defs_in_expr(tuple, defs, let_ids);
+        }
+        HirExprKind::Index { container, index } => {
+            collect_binding_defs_in_expr(container, defs, let_ids);
+            collect_binding_defs_in_expr(index, defs, let_ids);
+        }
+        HirExprKind::Slice {
+            container,
+            start,
+            end,
+            ..
+        } => {
+            collect_binding_defs_in_expr(container, defs, let_ids);
+            if let Some(start) = start {
+                collect_binding_defs_in_expr(start, defs, let_ids);
+            }
+            if let Some(end) = end {
+                collect_binding_defs_in_expr(end, defs, let_ids);
+            }
+        }
+        HirExprKind::MachineEmit { fields, .. } => {
+            for (_, field_val) in fields {
+                collect_binding_defs_in_expr(field_val, defs, let_ids);
+            }
+        }
+        HirExprKind::MachineStep {
+            receiver, event, ..
+        } => {
+            collect_binding_defs_in_expr(receiver, defs, let_ids);
+            collect_binding_defs_in_expr(event, defs, let_ids);
+        }
+        HirExprKind::ChannelRecvAwait { receiver, .. }
+        | HirExprKind::CancellationTokenIsCancelled { receiver }
+        | HirExprKind::GeneratorNext { receiver, .. }
+        | HirExprKind::MachineStateName { receiver, .. }
+        | HirExprKind::RecordCloneCall { src: receiver, .. } => {
+            collect_binding_defs_in_expr(receiver, defs, let_ids);
+        }
+        HirExprKind::MachineVariantCtor { payload, .. } => {
+            if let Some(fields) = payload {
+                for (_, val) in fields {
+                    collect_binding_defs_in_expr(val, defs, let_ids);
+                }
+            }
+        }
+        HirExprKind::While {
+            condition, body, ..
+        } => {
+            collect_binding_defs_in_expr(condition, defs, let_ids);
+            collect_binding_defs_in_block(body, defs, let_ids);
+        }
+        HirExprKind::ForRange {
+            start,
+            end,
+            step,
+            body,
+            ..
+        } => {
+            collect_binding_defs_in_expr(start, defs, let_ids);
+            collect_binding_defs_in_expr(end, defs, let_ids);
+            collect_binding_defs_in_expr(step, defs, let_ids);
+            collect_binding_defs_in_block(body, defs, let_ids);
+        }
+        HirExprKind::Match { scrutinee, arms } => {
+            collect_binding_defs_in_expr(scrutinee, defs, let_ids);
+            for arm in arms {
+                collect_binding_defs_in_expr(&arm.body, defs, let_ids);
+            }
+        }
+        HirExprKind::WhileLet {
+            scrutinee, body, ..
+        } => {
+            collect_binding_defs_in_expr(scrutinee, defs, let_ids);
+            collect_binding_defs_in_block(body, defs, let_ids);
+        }
+        HirExprKind::IfLet {
+            scrutinee,
+            body,
+            else_body,
+            ..
+        } => {
+            collect_binding_defs_in_expr(scrutinee, defs, let_ids);
+            collect_binding_defs_in_block(body, defs, let_ids);
+            if let Some(eb) = else_body {
+                collect_binding_defs_in_block(eb, defs, let_ids);
+            }
+        }
+        HirExprKind::Loop { body, .. } => {
+            collect_binding_defs_in_block(body, defs, let_ids);
+        }
+    }
+}
+
 #[derive(Debug)]
 struct LoweredFunction {
     thir: ThirFunction,
@@ -4775,6 +5208,7 @@ fn lower_function(
     // Codegen emits a parameter-prologue that stores each LLVM function
     // argument into the corresponding alloca slot before the first instruction.
     builder.lower_params(func);
+    builder.funcupdate_base_proven = compute_funcupdate_base_provenance(func);
     builder.function_body(func);
 
     // Effective return type after type-parameter substitution.
@@ -5523,6 +5957,20 @@ struct Builder {
     /// initialiser. Cluster 1 reads the slot directly; later clusters add
     /// drop-cleanup and rebinding semantics.
     binding_locals: HashMap<BindingId, Place>,
+    /// Per-function destructive-funcupdate base provenance. Maps a `BindingId`
+    /// to whether `{ ..<binding>, f: new }` over it is a PROVEN unique owner of
+    /// its heap fields — i.e. consuming it leaves no live alias, so the
+    /// override-drop's in-place field release is sound. Populated once per
+    /// function by `compute_funcupdate_base_provenance` (a flow-insensitive
+    /// prescan of the body) BEFORE the body is lowered, so the base allowlist
+    /// gate sees every reassignment. A binding is proven iff EVERY definition
+    /// (its `let` initialiser, every `=` reassignment, or a by-value parameter
+    /// origin) is a materialised owner (`expr_is_materialized_owner`) or a
+    /// move-chain of such; a binding bound from a projection of a still-live
+    /// owner (`let b = o.inner`), or introduced by any non-`let`/non-param form
+    /// (match-arm payload, let-else, loop var), is ABSENT or `false` — the gate
+    /// then fails closed. See `base_is_safe_for_destructive_funcupdate`.
+    funcupdate_base_proven: HashMap<BindingId, bool>,
     /// F-04 fungible supervisor-child reference table. Maps the handle local id
     /// produced by `lower_supervisor_child_get` (`Place::ActorHandle(N)`) to the
     /// stable `(supervisor, slot)` reference it stands for.
@@ -9743,17 +10191,20 @@ impl Builder {
                 // The override-drop below frees an overridden owned field of
                 // `base` IN PLACE, and the non-overridden owned fields escape
                 // via shallow `RecordFieldLoad`. Both are sound ONLY when the
-                // base does not interior-alias storage that stays live after the
-                // update. Rather than denylist the unsafe projection shapes (a
-                // list that has repeatedly missed cases — `FieldAccess`, then
-                // `Index`, then `TupleIndex` — each a fresh use-after-free), the
-                // base must POSITIVELY prove safe via
-                // `base_is_safe_for_destructive_funcupdate`: a bare consume-
-                // marked binding, or a materialised owner with no live alias
-                // (call / `.clone()` result, `Vec` element `v[i]`, or a
+                // base is the UNIQUE live owner of its heap fields. Rather than
+                // denylist the unsafe projection shapes (a list that has
+                // repeatedly missed cases — `FieldAccess`, then `Index`, then
+                // `TupleIndex`, then a bare binding REBOUND from a projection —
+                // each a fresh use-after-free), the base must POSITIVELY prove
+                // safe via `base_is_safe_for_destructive_funcupdate`: a bare
+                // binding whose PROVENANCE proves unique ownership (every
+                // definition a materialised owner — consume-marked in place), or
+                // a directly-materialised owner with no live alias (call /
+                // `.clone()` result, record literal, `Vec` element `v[i]`, or a
                 // projection rooted at one). Any other base — a projection of a
-                // LIVE binding (`o.inner`, `t.0`, `o.pair.0`, nested), a
-                // machine-state field (`self.field`), a `Const`/`Item` ref, a
+                // LIVE binding (`o.inner`, `t.0`, `o.pair.0`, nested), a bare
+                // binding bound from such a projection (`let b = o.inner; ..b`),
+                // a machine-state field (`self.field`), a `Const`/`Item` ref, a
                 // deref, or any future expression form — is rejected. This is
                 // complete by construction: no base shape can slip the gate.
                 //
@@ -9764,7 +10215,7 @@ impl Builder {
                 if let Some(base_expr) = base.as_deref() {
                     let base_ty = self.subst_ty(&base_expr.ty);
                     if self.aggregate_ingress_moves_binding_ty(&base_ty)
-                        && !Self::base_is_safe_for_destructive_funcupdate(base_expr)
+                        && !self.base_is_safe_for_destructive_funcupdate(base_expr)
                     {
                         // Walk every sub-expression for checker-stream
                         // coverage before bailing, mirroring the paths above.
@@ -9780,23 +10231,27 @@ impl Builder {
                                 site: expr.site,
                             },
                             note: format!(
-                                "the `..base` of `{name}` is neither a bare binding (consumed \
-                                 in place by the update) nor a freshly-owned value, so it \
-                                 interior-aliases storage that stays live after the update — a \
-                                 field projection of a live binding (`b.field`, `b.0`, \
-                                 `t.0.field`), a machine-state field (`self.field`), or another \
-                                 aliasing shape. The update's in-place release of an overridden \
-                                 owned field (and the shallow carry of the non-overridden owned \
-                                 fields) would then free memory the live owner still references \
-                                 — a use-after-free, and a double-free at its scope-exit drop. \
-                                 Clone the base into a fresh owned value \
+                                "the `..base` of `{name}` is not provably the unique owner of \
+                                 its heap fields, so it may interior-alias storage that stays \
+                                 live after the update — a field projection of a live binding \
+                                 (`b.field`, `b.0`, `t.0.field`), a machine-state field \
+                                 (`self.field`), a binding REBOUND from such a projection \
+                                 (`let b = o.inner; ..b` — `b` shares `o.inner`'s storage), or \
+                                 another aliasing shape. The update's in-place release of an \
+                                 overridden owned field (and the shallow carry of the \
+                                 non-overridden owned fields) would then free memory the live \
+                                 owner still references — a use-after-free, and a double-free at \
+                                 its scope-exit drop. Clone the base into a fresh owned value \
                                  (`{name} {{ ..<base>.clone(), <field>: new }}`), or clone the \
                                  overridden field. (Binding the projection first — \
                                  `let b = <base>` — does NOT help: it re-aliases the same \
-                                 storage. Accepted as-is: a bare owned-binding base (`..base`), \
-                                 and an owned-rvalue base — a call result or a `Vec` element \
-                                 `v[i]`.) The COW value model that keeps a projected source live \
-                                 after an update is not yet implemented."
+                                 storage; clone or consume the source instead. Accepted: a bare \
+                                 binding whose every definition is a freshly-owned value — a call \
+                                 result, a `.clone()`, a record literal, a `Vec` element `v[i]`, \
+                                 or a move-chain of those (this admits the reassign-loop idiom) \
+                                 — and an owned-rvalue base directly.) The COW value model that \
+                                 keeps a projected source live after an update is not yet \
+                                 implemented."
                             ),
                         });
                         return None;
@@ -9957,7 +10412,7 @@ impl Builder {
                         if emits_override_drop {
                             // (A) Allowlist backstop — fires for every base shape.
                             debug_assert!(
-                                Self::base_is_safe_for_destructive_funcupdate(base_expr),
+                                self.base_is_safe_for_destructive_funcupdate(base_expr),
                                 "functional-update override-drop on a base that did NOT pass \
                                  `base_is_safe_for_destructive_funcupdate`: the in-place field \
                                  release would be a use-after-free. The allowlist gate (1b) and \
@@ -22440,6 +22895,13 @@ impl Builder {
             // inherit the parent's target pointer width so an isize/usize
             // div/shift lowered inside a closure emits the same per-target guard.
             pointer_width: self.pointer_width,
+            // Destructive-funcupdate base provenance is computed once per
+            // top-level function over the WHOLE body (the prescan recurses into
+            // closure/gen bodies), and `BindingId`s are globally unique, so the
+            // parent map already classifies this child's bindings. Inherit it so
+            // a `{ ..base, f }` inside a closure is gated by the same proof
+            // instead of failing closed for want of the map.
+            funcupdate_base_proven: self.funcupdate_base_proven.clone(),
             ..Builder::default()
         }
     }
@@ -24471,38 +24933,58 @@ impl Builder {
     /// or as new expression forms are added — can silently reopen the UAF.
     ///
     /// A base is provably safe in exactly two ways:
-    ///   (a) a SYNTACTICALLY bare live `BindingRef` — `alias_moved_owned_-
-    ///       operand` consume-marks it, so the move-checker rejects any later
-    ///       read and the binding is excluded from its scope-exit drop: its
-    ///       fields are dead after the update. A binding wrapped in ANY
-    ///       control/block form does NOT qualify as (a): the consume does not
-    ///       peel wrappers, and a conditionally-selected binding cannot be
-    ///       soundly consumed — such a wrapper is held to (b) below, which
-    ///       rejects a bare-binding leaf. (Admitting `..{ base }` as (a) while
-    ///       the consume silently no-ops on the block is itself a UAF.)
+    ///   (a) a SYNTACTICALLY bare live `BindingRef` whose PROVENANCE proves it
+    ///       is the unique live owner of its heap fields. `alias_moved_owned_-
+    ///       operand` consume-marks the binding so the move-checker rejects any
+    ///       later read and excludes it from its scope-exit drop — but consuming
+    ///       the NAME does not make the destructive release sound if the
+    ///       binding's heap fields are ALIASED by a still-live owner. A binding
+    ///       bound from a projection of a live value (`let b = o.inner; ..b`)
+    ///       shares `o.inner`'s leaf pointers; consuming `b` then frees storage
+    ///       `o` still references — a double-free (the 5th UAF this allowlist
+    ///       leaked). So (a) holds ONLY when the per-function provenance prescan
+    ///       (`compute_funcupdate_base_provenance`, consulted via
+    ///       `funcupdate_base_proven`) proves EVERY definition of the binding is
+    ///       a materialised owner — its `let` initialiser, every `=`
+    ///       reassignment, or a by-value parameter origin — or a move-chain of
+    ///       such (`let c = makeThing(); let d = c; ..d`). A binding wrapped in
+    ///       ANY control/block form does NOT qualify as (a): the consume does
+    ///       not peel wrappers, and a conditionally-selected binding cannot be
+    ///       soundly consumed — such a wrapper is held to (b) below.
     ///   (b) a materialised owner with no live named alias — see
     ///       `expr_is_materialized_owner`, which looks THROUGH wrapper forms
     ///       (block tail, `if` branches, `match` arms) and requires EVERY
     ///       reachable value to be a fresh owned rvalue (`makeInner()`,
-    ///       `o.inner.clone()`), a `Vec<T>` element / slice (`v[i]`), or a
+    ///       `o.inner.clone()`), a record/tuple/enum literal or funcupdate
+    ///       result (`Record { .. }`), a `Vec<T>` element / slice (`v[i]`), or a
     ///       projection rooted at one (`makeOuter().inner`, `o.items[0].inner`).
     ///
-    /// ANY other base — a projection of a LIVE binding (`o.inner`, `t.0`,
-    /// `o.pair.0`, `t.0.inner`, nested), a machine-state field (`self.field`),
-    /// a `Const`/`Item` ref, a deref, a wrapper whose tail/branch/arm is any
-    /// of those (`{ base }`, `if c { o.inner } else { makeInner() }`), or any
-    /// future expression form — is NOT provably safe and is rejected
-    /// fail-closed.
-    fn base_is_safe_for_destructive_funcupdate(base: &HirExpr) -> bool {
-        // (a) ONLY a syntactically bare binding is the consume case. NO wrapper
-        //     peeling here: a block/if/match-wrapped binding is not reliably
-        //     consume-marked, so it must instead prove materialised via (b).
+    /// ANY other base — a bare binding whose provenance is unproven (a rebind of
+    /// a live projection `let b = o.inner`/`let b = t.0`, a match-arm payload, a
+    /// let-else binder, a loop variable), a projection of a LIVE binding
+    /// (`o.inner`, `t.0`, `o.pair.0`, `t.0.inner`, nested), a machine-state field
+    /// (`self.field`), a `Const`/`Item` ref, a deref, a wrapper whose
+    /// tail/branch/arm is any of those (`{ base }`, `if c { o.inner } else {
+    /// makeInner() }`), or any future expression form — is NOT provably safe and
+    /// is rejected fail-closed.
+    fn base_is_safe_for_destructive_funcupdate(&self, base: &HirExpr) -> bool {
+        // (a) A syntactically bare binding is the consume case — but ONLY when
+        //     its provenance proves it is the unique live owner of its heap
+        //     fields. Fail closed (reject) for any binding the prescan did not
+        //     prove (a live-projection rebind, a match/let-else/loop binder, or
+        //     an unseen origin). NO wrapper peeling here: a block/if/match-
+        //     wrapped binding is not reliably consume-marked, so it must instead
+        //     prove materialised via (b).
         if let HirExprKind::BindingRef {
-            resolved: ResolvedRef::Binding(_),
+            resolved: ResolvedRef::Binding(binding_id),
             ..
         } = &base.kind
         {
-            return true;
+            return self
+                .funcupdate_base_proven
+                .get(binding_id)
+                .copied()
+                .unwrap_or(false);
         }
         // (b) Every other base — INCLUDING every wrapper — is safe only if
         //     every reachable value is a materialised owner with no live alias.
@@ -24599,6 +25081,19 @@ impl Builder {
             // (see the push-clone + refcount note above), not an interior alias
             // of a surviving named binding.
             HirExprKind::Index { .. } | HirExprKind::Slice { .. } => true,
+            // A record/tuple/enum literal AND a functional-update result
+            // (`Record { f: .. }`, `Record { ..base, f: new }`) — construction
+            // writes a FRESH record into its own storage. Each owned field
+            // operand is stored with value semantics (a field read like
+            // `o.inner.label` is COW-copied / refcount-bumped into the new
+            // slot, NOT shallow-aliased — empirically a destructive funcupdate
+            // over `let b = Record { label: o.inner.label, .. }` does not
+            // dangle `o`), so the constructed record uniquely owns its fields.
+            // A `..base` funcupdate result is likewise fresh; that inner base's
+            // own safety is enforced when IT lowers, independently of this
+            // classification. This is the leaf that keeps `let base = Record {
+            // .. }; { ..base, f }` (and the reassign-loop) admitted.
+            HirExprKind::StructInit { .. } => true,
             // A projection is materialised iff its object chain is.
             HirExprKind::FieldAccess { object, .. } => Self::expr_is_materialized_owner(object),
             HirExprKind::TupleIndex { tuple, .. } => Self::expr_is_materialized_owner(tuple),

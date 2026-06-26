@@ -931,6 +931,10 @@ pub fn lower_hir_module_with_facts(
     // Key: (supervisor_name, child_name) → Vec<(field_name, HirExpr)>.
     let mut supervisor_child_hir_init_args: HashMap<(String, String), Vec<(String, HirExpr)>> =
         HashMap::new();
+    // Collect pool children's reserved `count:` expr (the static pool size).
+    // Key: (supervisor_name, child_name) → the count HirExpr. Lowered to
+    // `PoolCount` in the post-loop pass once config params are resolvable.
+    let mut supervisor_child_hir_pool_count: HashMap<(String, String), HirExpr> = HashMap::new();
     // Pre-scan for same-bare-name TYPE collisions across modules. Two imported
     // packages that each export a `Widget` with a divergent layout collide if
     // the layout registry keys by the bare name (last-write-wins). Only such a
@@ -1129,6 +1133,10 @@ pub fn lower_hir_module_with_facts(
                             (sup.name.clone(), child.name.clone()),
                             child.init_args.clone(),
                         );
+                    }
+                    if let Some(count_expr) = &child.pool_count {
+                        supervisor_child_hir_pool_count
+                            .insert((sup.name.clone(), child.name.clone()), count_expr.clone());
                     }
                 }
             }
@@ -1934,6 +1942,85 @@ pub fn lower_hir_module_with_facts(
                     // cleanly; partial plans would silently omit fields.
                     if all_ok {
                         child.init_state_fields = init_fields;
+                    }
+                }
+            }
+
+            // Lower the pool child's reserved `count:` expr to a `PoolCount`.
+            // A literal count is a compile-time constant; a `config.field` count
+            // is loaded from the config buffer in the bootstrap. Mirrors the
+            // ConfigField recognition for init args above.
+            if child.is_pool {
+                let key = (sup_layout.name.clone(), child.name.clone());
+                if let Some(count_expr) = supervisor_child_hir_pool_count.get(&key) {
+                    match &count_expr.kind {
+                        HirExprKind::Literal(HirLiteral::Integer(n)) => {
+                            child.pool_count = Some(crate::model::PoolCount::Literal(*n));
+                        }
+                        HirExprKind::FieldAccess { object, field } => {
+                            if let HirExprKind::BindingRef {
+                                name: config_param_name,
+                                ..
+                            } = &object.kind
+                            {
+                                if let ResolvedTy::Named {
+                                    name: config_ty_name,
+                                    ..
+                                } = &object.ty
+                                {
+                                    child.pool_count = Some(crate::model::PoolCount::ConfigField {
+                                        config_param_name: config_param_name.clone(),
+                                        config_ty_name: config_ty_name.clone(),
+                                        field_name: field.clone(),
+                                        field_ty: count_expr.ty.clone(),
+                                    });
+                                } else {
+                                    diagnostics.push(MirDiagnostic {
+                                        kind: MirDiagnosticKind::NotYetImplemented {
+                                            construct: format!(
+                                                "supervisor `{}` pool `{}` count reads \
+                                                 `{config_param_name}.{field}` but the config \
+                                                 binding is not a named struct type",
+                                                sup_layout.name, child.name
+                                            ),
+                                            site: count_expr.site,
+                                        },
+                                        note: "a pool count config read names a field of a \
+                                               named config struct parameter"
+                                            .to_string(),
+                                    });
+                                }
+                            } else {
+                                diagnostics.push(MirDiagnostic {
+                                    kind: MirDiagnosticKind::NotYetImplemented {
+                                        construct: format!(
+                                            "supervisor `{}` pool `{}` count reads a field of a \
+                                             non-binding expression; only a literal or \
+                                             `config.<field>` is supported",
+                                            sup_layout.name, child.name
+                                        ),
+                                        site: count_expr.site,
+                                    },
+                                    note: "use a literal `count: N` or `count: config.field`"
+                                        .to_string(),
+                                });
+                            }
+                        }
+                        other => {
+                            diagnostics.push(MirDiagnostic {
+                                kind: MirDiagnosticKind::NotYetImplemented {
+                                    construct: format!(
+                                        "supervisor `{}` pool `{}` count is a non-literal, \
+                                         non-config expression ({other:?}); supported pool \
+                                         counts are an integer literal or `config.<field>`",
+                                        sup_layout.name, child.name
+                                    ),
+                                    site: count_expr.site,
+                                },
+                                note: "use a literal `count: N` or `count: config.field`"
+                                    .to_string(),
+                            });
+                        }
                     }
                 }
             }
@@ -4126,6 +4213,10 @@ fn build_supervisor_layout(
             // supervisor names is known. `Some` when this child's type is itself
             // a supervisor (nested supervision tree); `None` for actor children.
             nested_bootstrap_symbol: None,
+            // Populated in the post-loop pass from HirSupervisorChild.pool_count
+            // (the reserved `count:` arg). `Some` for a pool child; `None` for a
+            // static child.
+            pool_count: None,
             // accepted-only: the per-child `shutdown:` directive
             // (HirSupervisorChild.shutdown) is parsed, checked, and round-trips
             // through the formatter, but is NOT lowered into the runtime ABI in

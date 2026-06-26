@@ -166,6 +166,7 @@ fn supervisor_pipeline() -> IrPipeline {
             cycle_capable: false,
             init_state_fields: vec![],
             nested_bootstrap_symbol: None,
+            pool_count: None,
         }],
     };
 
@@ -424,6 +425,7 @@ fn on_crash_pipeline() -> IrPipeline {
             cycle_capable: false,
             init_state_fields: vec![],
             nested_bootstrap_symbol: None,
+            pool_count: None,
         }],
     };
 
@@ -704,6 +706,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
             cycle_capable: false,
             init_state_fields: vec![],
             nested_bootstrap_symbol: None,
+            pool_count: None,
         }],
     };
 
@@ -729,6 +732,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
                 cycle_capable: false,
                 init_state_fields: vec![],
                 nested_bootstrap_symbol: None,
+                pool_count: None,
             },
             SupervisorChildLayout {
                 name: "sub".to_string(),
@@ -744,6 +748,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
                 cycle_capable: false,
                 init_state_fields: vec![],
                 nested_bootstrap_symbol: Some(inner_bootstrap.clone()),
+                pool_count: None,
             },
         ],
     };
@@ -916,11 +921,12 @@ fn pool_then_static_pipeline() -> IrPipeline {
                 cycle_capable: false,
                 init_state_fields: vec![],
                 nested_bootstrap_symbol: None,
+                pool_count: Some(hew_mir::PoolCount::Literal(2)),
             },
-            // Static actor child AFTER the pool. Its static slot index must be 0
-            // (the pool is excluded) — both in the accessor and in codegen's
-            // `actor_child_index`. Before the fix, codegen advanced past the pool
-            // and registered this at index 1 → mis-route.
+            // Static actor child AFTER the pool. The pool's 2 members occupy
+            // static slots 0 and 1 (they ARE static children), so this `monitor`
+            // registers at static slot 2 — its `actor_child_index` is advanced by
+            // the pool member-spawn loop.
             SupervisorChildLayout {
                 name: "monitor".to_string(),
                 actor_name: "Worker".to_string(),
@@ -935,6 +941,7 @@ fn pool_then_static_pipeline() -> IrPipeline {
                 cycle_capable: false,
                 init_state_fields: vec![],
                 nested_bootstrap_symbol: None,
+                pool_count: None,
             },
         ],
     };
@@ -965,23 +972,21 @@ fn pool_then_static_pipeline() -> IrPipeline {
     }
 }
 
-/// Foot-gun reconciliation (#2227 pool-axis divergence): a pool child declared
-/// BEFORE a static actor child must NOT register into the static `children[]`
-/// table — only the static child does. Before the fix, codegen registered the
-/// pool via the static `add_child_spec` path AND advanced `actor_child_index`,
-/// so a post-pool static accessor mis-routed. After the fix, codegen skips pool
-/// children entirely, so exactly ONE `add_child_spec` call is emitted (the
-/// static `monitor`), matching the accessor's partitioned static index of 0.
+/// A static pool (`pool name: Type(count: N)`) now spawns its N members as
+/// static children and binds them into a pool slot. For a [pool(count: 2),
+/// static] layout, codegen emits: ONE `pool_add_slot`, TWO member registrations
+/// (`add_child_spec` + `pool_member_add_static`), then ONE more `add_child_spec`
+/// for the static `monitor` — three `add_child_spec` calls total. The pool's
+/// members occupy static slots 0 and 1; `monitor` occupies slot 2.
 ///
 /// NOTE: the checker forbids a pool and a static child coexisting in one
-/// supervisor (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH` — `simple_one_for_one` may
-/// hold only a single pool child), so this mixed layout is UNREACHABLE from
-/// valid Hew source today. It is constructed here directly (bypassing the
-/// checker) to prove the codegen registration + the shared
-/// `occupies_static_child_slot` invariant stay sound the day that rule relaxes —
-/// the latent divergence the B1 spine left, defended at the codegen seam.
+/// `simple_one_for_one` supervisor (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH`), so
+/// this mixed layout is UNREACHABLE from valid Hew source. It is constructed
+/// here directly (bypassing the checker) to prove the codegen registration order
+/// stays sound the day that rule relaxes — `actor_child_index` advances by the
+/// pool's member count so a post-pool static child indexes correctly.
 #[test]
-fn supervisor_bootstrap_skips_pool_child_in_static_registration() {
+fn supervisor_static_pool_spawns_members_and_registers_slot() {
     let ir = emit_to_string(&pool_then_static_pipeline(), "pool-then-static");
     // Count CALL sites only (`call ... @hew_supervisor_add_child_spec(`), not the
     // `declare` line which also contains the symbol.
@@ -990,17 +995,27 @@ fn supervisor_bootstrap_skips_pool_child_in_static_registration() {
         .filter(|l| l.contains("call") && l.contains("@hew_supervisor_add_child_spec("))
         .count();
     assert_eq!(
-        add_spec_count, 1,
-        "a [pool, static] supervisor must emit exactly one add_child_spec call (the \
-         static child only); the pool child must NOT register as a static slot. \
-         Got {add_spec_count} calls in:\n{ir}"
+        add_spec_count, 3,
+        "a [pool(count: 2), static] supervisor must emit three add_child_spec \
+         calls (2 pool members + 1 static `monitor`). Got {add_spec_count} in:\n{ir}"
     );
-    // The pool child must NOT have registered into the static children[] table.
-    // (No pool registration ABI is emitted either — pool slot/member wiring is
-    // the deferred B1-3 scope.)
-    assert!(
-        !ir.contains("@hew_supervisor_pool_add_slot"),
-        "pool slot registration is deferred (B1-3 stopped); no pool_add_slot \
-         should be emitted yet. Got:\n{ir}"
+    // The pool slot is reserved exactly once.
+    let add_slot_count = ir
+        .lines()
+        .filter(|l| l.contains("call") && l.contains("@hew_supervisor_pool_add_slot("))
+        .count();
+    assert_eq!(
+        add_slot_count, 1,
+        "exactly one pool_add_slot call for the single pool. Got {add_slot_count} in:\n{ir}"
+    );
+    // Each of the 2 pool members is bound into the pool via member_add_static.
+    let member_add_count = ir
+        .lines()
+        .filter(|l| l.contains("call") && l.contains("@hew_supervisor_pool_member_add_static("))
+        .count();
+    assert_eq!(
+        member_add_count, 2,
+        "two pool members must be bound via pool_member_add_static. \
+         Got {member_add_count} in:\n{ir}"
     );
 }

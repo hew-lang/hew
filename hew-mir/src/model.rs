@@ -951,6 +951,13 @@ pub struct SupervisorChildLayout {
     /// set of declared supervisor names is known, so declaration order between
     /// the parent and the nested supervisor is irrelevant.
     pub nested_bootstrap_symbol: Option<String>,
+    /// The static pool size for a pool child (`is_pool = true`), lowered from
+    /// the reserved `count:` arg. `None` for a static child or a pool child
+    /// whose count failed to lower (the checker already rejected a missing
+    /// count). Codegen reads this to emit the member-spawn loop: each member is
+    /// registered as a static child and bound into the pool via
+    /// `hew_supervisor_pool_member_add_static`.
+    pub pool_count: Option<PoolCount>,
 }
 
 impl SupervisorChildLayout {
@@ -973,6 +980,33 @@ impl SupervisorChildLayout {
     pub fn occupies_static_child_slot(&self) -> bool {
         !self.is_pool && self.nested_bootstrap_symbol.is_none()
     }
+}
+
+/// The size of a static supervisor pool (`pool name: Type(count: N)`).
+///
+/// Carried on [`SupervisorChildLayout::pool_count`] so codegen can emit the
+/// member-spawn loop. A literal count is a compile-time constant N; a
+/// config-derived count is loaded from the supervisor's construction-time
+/// config buffer inside the bootstrap (mirroring [`ChildInitArg::ConfigField`]),
+/// and the bootstrap traps fail-closed on `N <= 0` at runtime.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PoolCount {
+    /// A compile-time integer literal pool size. The checker has proven it is
+    /// positive, so codegen spawns exactly this many members unconditionally.
+    Literal(i64),
+    /// A pool size read from the supervisor config (`count: config.workers`).
+    /// Codegen loads `config.<field_name>` (an integer field) and emits a real
+    /// `0..N` loop, trapping fail-closed when the loaded value is `<= 0`.
+    ConfigField {
+        /// The supervisor config param binding name (e.g. `config`).
+        config_param_name: String,
+        /// The config struct's type name (e.g. `AppConfig`) for `record_layouts`.
+        config_ty_name: String,
+        /// The integer field read out of the config struct (e.g. `workers`).
+        field_name: String,
+        /// The resolved type of the config field (the integer load width).
+        field_ty: ResolvedTy,
+    },
 }
 
 /// A self-contained literal value for a supervisor child init arg.

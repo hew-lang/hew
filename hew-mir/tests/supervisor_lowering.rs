@@ -214,6 +214,12 @@ fn pool_supervisor_emits_layout_with_pool_flag() {
     assert_eq!(pool.children.len(), 1);
     assert!(pool.children[0].is_pool);
     assert_eq!(pool.children[0].slot_index, 0);
+    // The reserved `count: 2` lowers to a literal pool size.
+    assert_eq!(
+        pool.children[0].pool_count,
+        Some(hew_mir::PoolCount::Literal(2)),
+        "the pool count must lower to a literal 2"
+    );
 
     let bootstrap = pipeline
         .raw_mir

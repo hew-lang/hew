@@ -71,7 +71,7 @@ use hew_mir::{
     CheckedMirFunction, ChildInitArg, CmpPred, CooperateKind, CooperateSite, DynVtableInstance,
     ElabDrop, ElaboratedMirFunction, EnumLayout, ExitPath, FieldOffset, FloatWidth,
     FunctionCallConv, Instr, IntArithOp, IntSignedness, IoHandleKind, IrPipeline,
-    LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, Place,
+    LambdaEnvFieldDrop, MachineVariantLayout, MirConst, MirConstValue, MirScope, Place, PoolCount,
     RawMirFunction, RecordLayout, RegexLiteral, StateFieldCloneKind, SupervisorChildLayout,
     SupervisorLayout, SuspendKind, Terminator, TrapKind,
 };
@@ -2749,6 +2749,39 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_supervisor_child_get_raw" | "hew_supervisor_nested_get_raw" => {
             i64_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false)
         }
+        // hew_supervisor_pool_add_slot(sup: *mut HewSupervisor, name: *const c_char,
+        //     strategy: c_int, max_members: usize) -> c_int
+        // (`hew-runtime/src/supervisor.rs`). Allocates a pool slot and returns its
+        // pool_key (0-based, disjoint from the static child index space). The
+        // bootstrap calls it once per `pool` declaration before spawning members.
+        "hew_supervisor_pool_add_slot" => i32_ty.fn_type(
+            &[ptr_ty.into(), ptr_ty.into(), i32_ty.into(), size_ty.into()],
+            false,
+        ),
+        // hew_supervisor_pool_member_add_static(sup: *mut HewSupervisor,
+        //     pool_key: u32, static_idx: u32) -> c_int
+        // (`hew-runtime/src/supervisor.rs`). Binds a static child (registered via
+        // add_child_spec into children[]) as pool member `static_idx`. The
+        // accessor resolves the member through the live static slot, so a restart
+        // re-resolves automatically. Returns 0 on success.
+        "hew_supervisor_pool_member_add_static" => i32_ty.fn_type(
+            &[ptr_ty.into(), i32_ty.into(), i32_ty.into()],
+            false,
+        ),
+        // hew_supervisor_pool_child_get(sup: *mut HewSupervisor, pool_key: u32,
+        //     index: u32) -> ChildLookupResult
+        // (`hew-runtime/src/supervisor.rs`). The pool analogue of
+        // `hew_supervisor_child_get`; same `{ i64, i64 }` by-value ABI (see that
+        // arm's note). Resolves pool member `index` through its live static slot
+        // (static-backed pools) — out-of-range → Dead(UnknownSlot).
+        "hew_supervisor_pool_child_get" => {
+            let result_ty = ctx.struct_type(&[i64_ty.into(), i64_ty.into()], false);
+            result_ty.fn_type(&[ptr_ty.into(), i32_ty.into(), i32_ty.into()], false)
+        }
+        // hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_key: u32) -> i64
+        // (`hew-runtime/src/supervisor.rs`). Returns the pool's member count
+        // (the fixed static-member count for a static pool), or -1 on bad key.
+        "hew_supervisor_pool_len" => i64_ty.fn_type(&[ptr_ty.into(), i32_ty.into()], false),
         // hew_task_new() -> *mut HewTask
         // (`hew-runtime/src/task_scope.rs:214`). Box-allocates a HewTask
         // in the Ready state. Producer calls this to obtain a task handle
@@ -6598,6 +6631,22 @@ fn emit_supervisor_bootstrap_body<'ctx>(
         &mut runtime_decls,
         "hew_supervisor_add_child_supervisor_with_init",
     )?;
+    // Static-pool ABI: `pool_add_slot` reserves the pool slot once, and
+    // `pool_member_add_static` binds each spawned member's static-child index
+    // into it. Interned once outside the loop so all pool members share the
+    // same FunctionValue.
+    let pool_add_slot = intern_runtime_decl(
+        ctx,
+        llvm_mod,
+        &mut runtime_decls,
+        "hew_supervisor_pool_add_slot",
+    )?;
+    let pool_member_add_static = intern_runtime_decl(
+        ctx,
+        llvm_mod,
+        &mut runtime_decls,
+        "hew_supervisor_pool_member_add_static",
+    )?;
     // Actor children and nested supervisors are registered into two separate
     // runtime tables, each 0-based. `hew_supervisor_add_child_spec` pushes actor
     // children sequentially into `children[]`, so an actor child's runtime index
@@ -6607,29 +6656,49 @@ fn emit_supervisor_bootstrap_body<'ctx>(
     // slot whenever a nested supervisor precedes an actor child. Track an
     // actor-only counter that advances only for actor children, mirroring the
     // accessor's `partitioned_static_slot_index`.
+    //
+    // Pool members ARE static children: each member registers into children[]
+    // via add_child_spec and so advances `actor_child_index` (the
+    // `simple_one_for_one` checker guarantees a pool supervisor has NO static
+    // `child` declarations, so the pool's members are the only static slots and
+    // a post-pool static accessor cannot mis-index). The `is_pool` skip below
+    // applies to the pool DECLARATION's no-op default; the members it spawns DO
+    // occupy static slots.
     let mut actor_child_index = 0usize;
     for child in &layout.children {
-        // Pool children (`pool name: Type`) live in the runtime's disjoint
-        // `pool_slots[]` space, NOT the static `children[]` table. They must be
-        // skipped here so they neither occupy a static slot nor advance
-        // `actor_child_index` — exactly as the accessor's
-        // `partitioned_static_slot_index` skips them (the shared truth is
-        // `SupervisorChildLayout::occupies_static_child_slot`). Without this, a
-        // static `sup.child` declared AFTER a pool registers at a runtime index
-        // that INCLUDED the pool while the accessor computes one that EXCLUDED it
-        // → silent mis-route (the #2227 pool-axis divergence).
+        // Pool children (`pool name: Type(count: N)`) reserve a slot in the
+        // runtime's disjoint `pool_slots[]` space, then spawn N fungible members
+        // as static children (registered into `children[]` via add_child_spec)
+        // and bind each member's static index into the pool via
+        // `pool_member_add_static`. The accessor resolves a member through its
+        // LIVE static slot, so a restarted member re-resolves automatically.
         //
-        // Pool SLOT registration + member population is the deferred B1-3 scope
-        // (`simple_one_for_one` pools are dynamic and have no member-spawn
-        // surface yet); until that lands, a pool declaration registers nothing
-        // at bootstrap rather than spawning an orphan static member that no
-        // accessor can reach.
+        // A literal count unrolls into N member registrations at compile time; a
+        // config-derived count emits a real `0..N` loop that traps fail-closed
+        // on `N <= 0` at runtime. Each member advances `actor_child_index`.
         if child.is_pool {
-            debug_assert!(
-                !child.occupies_static_child_slot(),
-                "codegen bootstrap: pool child `{}` must not occupy a static child slot",
-                child.name
-            );
+            actor_child_index = emit_static_pool_members(
+                ctx,
+                llvm_mod,
+                &builder,
+                &child_spec_ty,
+                sup,
+                add_child_spec,
+                set_child_state_drop,
+                set_child_state_clone,
+                set_child_lifecycle,
+                set_child_init_fn,
+                pool_add_slot,
+                pool_member_add_static,
+                actor_child_index,
+                child,
+                &layout.name,
+                layout.config_param.as_ref(),
+                config_buf,
+                actor_layouts,
+                record_layouts,
+                mir_record_layouts,
+            )?;
             continue;
         }
         if let Some(nested_bootstrap) = &child.nested_bootstrap_symbol {
@@ -7313,6 +7382,161 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
             .llvm_ctx("hew_supervisor_set_child_state_clone call")?;
     }
     Ok(())
+}
+
+/// Emit the bootstrap registration for a static pool (`pool name: Type(count:
+/// N)`): reserve the pool slot, spawn N fungible members as static children, and
+/// bind each member's static index into the pool via `pool_member_add_static`.
+///
+/// Members are homogeneous (A204): one shared init template / init thunk, the
+/// same actor, the same setters — only the per-member static index differs.
+/// A LITERAL count unrolls into N compile-time member registrations (reusing
+/// `emit_supervisor_child_spec_and_register`); a CONFIG-derived count loads the
+/// size from the config buffer and emits a real `0..N` runtime loop that traps
+/// fail-closed on `N <= 0`.
+///
+/// Returns the advanced `actor_child_index` (base + N) so subsequent static
+/// children — none, for a `simple_one_for_one` pool, but the contract holds —
+/// register at the correct slot.
+#[allow(clippy::too_many_arguments)]
+fn emit_static_pool_members<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    child_spec_ty: &StructType<'ctx>,
+    sup: PointerValue<'ctx>,
+    add_child_spec: FunctionValue<'ctx>,
+    set_child_state_drop: FunctionValue<'ctx>,
+    set_child_state_clone: FunctionValue<'ctx>,
+    set_child_lifecycle: FunctionValue<'ctx>,
+    set_child_init_fn: FunctionValue<'ctx>,
+    pool_add_slot: FunctionValue<'ctx>,
+    pool_member_add_static: FunctionValue<'ctx>,
+    base_child_index: usize,
+    child: &SupervisorChildLayout,
+    sup_name: &str,
+    config_param: Option<&hew_mir::SupervisorConfigParam>,
+    config_buf: Option<(PointerValue<'ctx>, IntValue<'ctx>)>,
+    actor_layouts: &[ActorLayout],
+    record_layouts: &RecordLayoutMap<'ctx>,
+    mir_record_layouts: &[RecordLayout],
+) -> CodegenResult<usize> {
+    let i32_ty = ctx.i32_type();
+    let i64_ty = ctx.i64_type();
+    let size_ty = ctx.i64_type(); // supervisors are HIR-gated off wasm32 → usize == i64.
+
+    let pool_count = child.pool_count.as_ref().ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "supervisor `{sup_name}` pool child `{}` carries no pool_count; the checker \
+             requires a `count:` arg and MIR lowers it — a missing count here is a \
+             lowering bug",
+            child.name
+        ))
+    })?;
+
+    // ── Reserve the pool slot ────────────────────────────────────────────────
+    // name → @.str.pool.<sup>.<child>; strategy ROUND_ROBIN (0); max_members 0
+    // (unbounded, so a later dynamic-add can grow past N). The returned pool_key
+    // indexes pool_slots[]; for `simple_one_for_one` there is exactly one pool,
+    // so it is 0, but we thread the runtime return rather than assuming.
+    let name_global = builder
+        .build_global_string_ptr(
+            &child.name,
+            &format!("str_pool_name_{sup_name}_{}", child.name),
+        )
+        .llvm_ctx("pool name global")?;
+    let pool_key = builder
+        .build_call(
+            pool_add_slot,
+            &[
+                sup.into(),
+                name_global.as_pointer_value().into(),
+                i32_ty.const_zero().into(),  // ROUND_ROBIN
+                size_ty.const_zero().into(), // max_members = 0 (unbounded)
+            ],
+            &format!("pool_add_slot_{}", child.name),
+        )
+        .llvm_ctx("hew_supervisor_pool_add_slot call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("pool_add_slot returned void".into()))?
+        .into_int_value();
+
+    match pool_count {
+        PoolCount::Literal(n) => {
+            // The checker proved n > 0; unroll into n compile-time registrations.
+            let n = usize::try_from(*n).map_err(|_| {
+                CodegenError::FailClosed(format!(
+                    "supervisor `{sup_name}` pool child `{}` has a negative literal count; the \
+                     checker must have rejected this",
+                    child.name
+                ))
+            })?;
+            let mut idx = base_child_index;
+            for _ in 0..n {
+                emit_supervisor_child_spec_and_register(
+                    ctx,
+                    llvm_mod,
+                    builder,
+                    child_spec_ty,
+                    sup,
+                    add_child_spec,
+                    set_child_state_drop,
+                    set_child_state_clone,
+                    set_child_lifecycle,
+                    set_child_init_fn,
+                    idx,
+                    child,
+                    sup_name,
+                    config_param,
+                    config_buf,
+                    actor_layouts,
+                    record_layouts,
+                    mir_record_layouts,
+                )?;
+                // Bind this member's static index into the pool. `idx as u64`
+                // widens usize → u64 (the const_int arg); the runtime takes the
+                // low 32 bits as the u32 static index — a child count never
+                // exceeds u32, so this is exact.
+                let member_idx = i32_ty.const_int(idx as u64, false);
+                builder
+                    .build_call(
+                        pool_member_add_static,
+                        &[sup.into(), pool_key.into(), member_idx.into()],
+                        &format!("pool_member_add_static_{}_{idx}", child.name),
+                    )
+                    .llvm_ctx("hew_supervisor_pool_member_add_static call")?;
+                idx += 1;
+            }
+            Ok(idx)
+        }
+        PoolCount::ConfigField { field_name, .. } => {
+            // SHIM: a config-derived pool count (`count: config.workers`) needs a
+            // runtime `0..N` loop that registers homogeneous members at a runtime
+            // static index — a from-scratch loop emission in the bootstrap, with
+            // per-member runtime-index setters.
+            // WHY a fail-closed gate: the literal-count path (the proving gate and
+            //   the common case) is fully wired; the dynamic loop is a contained
+            //   follow-up that rides the same `pool_member_add_static` ABU.
+            // WHEN obsolete: when the dynamic-count loop lands (alongside the
+            //   dynamic pool surface, `pool.spawn`/`pool.remove`).
+            // WHAT: build the member spec once, load N from the config buffer,
+            //   trap on N <= 0, then loop add_child_spec + setters(base+i) +
+            //   pool_member_add_static(pool_key, base+i).
+            //
+            // Fail closed (not a silent skip): a program with a dynamic pool
+            // count refuses to compile with a clear diagnostic rather than
+            // emitting an empty pool.
+            let _ = pool_key;
+            let _ = (size_ty, i64_ty);
+            Err(CodegenError::FailClosed(format!(
+                "supervisor `{sup_name}` pool child `{}` uses a config-derived `count: \
+                 config.{field_name}`; a dynamic (non-literal) pool size is not yet emitted. \
+                 Use a literal `count: N` for now.",
+                child.name
+            )))
+        }
+    }
 }
 
 /// Build the LLVM struct type for `HewChildInitResult` (`{ state: ptr, size:

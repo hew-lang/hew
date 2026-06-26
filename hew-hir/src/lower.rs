@@ -18063,42 +18063,98 @@ impl LowerCtx {
         value_ty: ResolvedTy,
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
+        // `Result<value_ty, string>` — the ratified shape of `from_json` /
+        // `from_yaml` (A201). Built here deterministically so the HIR node's
+        // result type and the checker-registered return type agree.
+        let result_self_str = || ResolvedTy::Named {
+            name: "Result".to_string(),
+            args: vec![value_ty.clone(), ResolvedTy::String],
+            builtin: Some(hew_types::BuiltinType::Result),
+            is_opaque: false,
+        };
         let (operand, result_ty) = match direction {
-            WireCodecDirection::Encode => {
+            // Serialize directions: the receiver is the value to serialize. The
+            // binary `Encode` produces `bytes`; the text `ToJson`/`ToYaml`
+            // produce a `string` (the bridge transcodes the CBOR tree to text).
+            WireCodecDirection::Encode
+            | WireCodecDirection::ToJson
+            | WireCodecDirection::ToYaml => {
                 if !args.is_empty() {
+                    let method = match direction {
+                        WireCodecDirection::Encode => "encode",
+                        WireCodecDirection::ToJson => "to_json",
+                        _ => "to_yaml",
+                    };
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "wire `.encode()`".to_string(),
+                            name: format!("wire `.{method}()`"),
                             reason: format!("expected zero arguments, found {}", args.len()),
                         },
                         span.clone(),
-                        "wire encode lowering takes no arguments",
+                        "wire serialize lowering takes no arguments",
                     ));
+                    let fallback = if direction == WireCodecDirection::Encode {
+                        ResolvedTy::Bytes
+                    } else {
+                        ResolvedTy::String
+                    };
                     return (
-                        HirExprKind::Unsupported("wire `.encode()` has invalid arity".into()),
-                        ResolvedTy::Bytes,
+                        HirExprKind::Unsupported("wire serialize method has invalid arity".into()),
+                        fallback,
                     );
                 }
                 let operand = self.lower_expr(receiver, IntentKind::Read);
-                (operand, ResolvedTy::Bytes)
+                let result = if direction == WireCodecDirection::Encode {
+                    ResolvedTy::Bytes
+                } else {
+                    ResolvedTy::String
+                };
+                (operand, result)
             }
-            WireCodecDirection::Decode => {
+            // Deserialize directions: the single argument is the encoded input.
+            // The binary `Decode` consumes `bytes` and produces bare `value_ty`
+            // (trap-on-failure); the text `FromJson`/`FromYaml` consume a
+            // `string` and produce `Result<value_ty, string>` (parse can fail
+            // on arbitrary input — never a trap).
+            WireCodecDirection::Decode
+            | WireCodecDirection::FromJson
+            | WireCodecDirection::FromYaml => {
                 if args.len() != 1 {
+                    let (method, arg_desc) = match direction {
+                        WireCodecDirection::Decode => ("decode", "bytes"),
+                        WireCodecDirection::FromJson => ("from_json", "string"),
+                        _ => ("from_yaml", "string"),
+                    };
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "wire `.decode()`".to_string(),
-                            reason: format!("expected one bytes argument, found {}", args.len()),
+                            name: format!("wire `.{method}()`"),
+                            reason: format!(
+                                "expected one {arg_desc} argument, found {}",
+                                args.len()
+                            ),
                         },
                         span.clone(),
-                        "wire decode lowering takes exactly one bytes argument",
+                        "wire deserialize lowering takes exactly one argument",
                     ));
+                    let fallback = if direction == WireCodecDirection::Decode {
+                        value_ty.clone()
+                    } else {
+                        result_self_str()
+                    };
                     return (
-                        HirExprKind::Unsupported("wire `.decode()` has invalid arity".into()),
-                        value_ty,
+                        HirExprKind::Unsupported(
+                            "wire deserialize method has invalid arity".into(),
+                        ),
+                        fallback,
                     );
                 }
                 let operand = self.lower_expr(args[0].expr(), IntentKind::Read);
-                (operand, value_ty.clone())
+                let result = if direction == WireCodecDirection::Decode {
+                    value_ty.clone()
+                } else {
+                    result_self_str()
+                };
+                (operand, result)
             }
         };
         (

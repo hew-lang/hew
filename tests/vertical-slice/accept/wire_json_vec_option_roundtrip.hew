@@ -1,0 +1,28 @@
+// Validation: `Vec<T>` and `Option<T>` fields round-trip through JSON. A vector
+// serializes as a JSON array; a `Some(x)` as the value, `None` as null. The
+// recovered vector elements (10 + 20 + 12 = 42) select the exit code.
+#[wire]
+struct Bag {
+    items: Vec<i64> @1,
+    label: Option<string> @2,
+}
+
+fn main() -> i64 {
+    let xs: Vec<i64> = Vec::new();
+    xs.push(10);
+    xs.push(20);
+    xs.push(12);
+    let bag = Bag { items: xs, label: Some("tag") };
+    let j = bag.to_json();
+    match Bag.from_json(j) {
+        Ok(b) => {
+            if b.items.len() != 3 { return 1; }
+            match b.label {
+                Some(t) => { if t != "tag" { return 2; } }
+                None => { return 3; }
+            }
+            b.items[0] + b.items[1] + b.items[2]
+        }
+        Err(_) => 4,
+    }
+}

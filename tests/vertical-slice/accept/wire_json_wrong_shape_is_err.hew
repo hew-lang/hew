@@ -1,0 +1,15 @@
+// Validation (FAIL CLOSED): `from_json` on well-formed JSON whose shape does not
+// match the target type (an array where the struct expects an object) returns
+// `Err`, never a misread or trap. Exits 42 only via the `Err` arm.
+#[wire]
+struct Point {
+    x: i64 @1,
+    y: i64 @2,
+}
+
+fn main() -> i64 {
+    match Point.from_json("[1, 2]") {
+        Ok(_) => 1,
+        Err(_) => 42,
+    }
+}

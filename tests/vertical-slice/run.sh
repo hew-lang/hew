@@ -3271,6 +3271,22 @@ run_accept_expect_status "wire_cbor_nested_struct" 42
 run_accept_expect_status "wire_cbor_enum_unit" 42
 run_accept_expect_status "wire_cbor_enum_payload" 42
 
+# Wire TEXT codec (to_json/from_json/to_yaml/from_yaml) via the CBOR↔text bridge.
+# Round-trip fixtures assert the exact text and the recovered value; the
+# `*_is_err` fixtures assert that the untrusted-decode path FAILS CLOSED with an
+# `Err` (exit 42 via the Err arm) rather than trapping — a trap would abort (134)
+# and fail the assertion, catching any fail-open regression.
+run_accept_expect_status "wire_json_struct_roundtrip" 42
+run_accept_expect_status "wire_json_nested_roundtrip" 42
+run_accept_expect_status "wire_json_enum_unit_roundtrip" 42
+run_accept_expect_status "wire_json_enum_payload_roundtrip" 42
+run_accept_expect_status "wire_json_vec_option_roundtrip" 42
+run_accept_expect_status "wire_yaml_roundtrip" 42
+run_accept_expect_status "wire_json_malformed_is_err" 42
+run_accept_expect_status "wire_json_wrong_shape_is_err" 42
+run_accept_expect_status "wire_json_over_range_is_err" 42
+run_accept_expect_status "wire_json_missing_field_is_err" 42
+
 # Deferred wire-body sub-shapes fail closed at codegen-front validation. These
 # are intentionally outside the supported wire-body floor; the codec rejects
 # them with an explicit diagnostic rather than emitting an ambiguous or

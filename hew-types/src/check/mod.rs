@@ -64,7 +64,7 @@ pub use self::types::{
     NumericSignedness, NumericWidth, OptionResultMethod, PatternKind, PayloadBinding,
     PayloadVariantPattern, SpanKey, StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
     VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection,
-    WireFieldLayout, WireLayoutEntry, WireLayoutTable,
+    WireFieldLayout, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,

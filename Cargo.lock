@@ -1800,6 +1800,7 @@ dependencies = [
  "rustls-webpki",
  "serde",
  "serde_json",
+ "serde_yaml",
  "snow",
  "socket2",
  "tempfile",

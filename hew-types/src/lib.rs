@@ -49,7 +49,7 @@ pub use check::{
     PatternKind, PayloadBinding, PayloadVariantPattern, ResolvedCall, RuntimeAbi, SpanKey,
     TyPattern, TypeCheckOutput, VariantDef, VariantMatch, VecHigherOrderOp, VecMethod,
     WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout, WireLayoutEntry,
-    WireLayoutTable,
+    WireLayoutTable, WireTextFormat,
 };
 pub use error::TypeError;
 pub use extern_symbol::{

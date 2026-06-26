@@ -1,0 +1,15 @@
+// Validation (FAIL CLOSED): `from_json` on an object missing a required
+// (non-optional) field returns `Err`, never a fabricated zero value. Exits 42
+// via the `Err` arm.
+#[wire]
+struct Point {
+    x: i64 @1,
+    y: i64 @2,
+}
+
+fn main() -> i64 {
+    match Point.from_json("{\"x\":5}") {
+        Ok(_) => 1,
+        Err(_) => 42,
+    }
+}

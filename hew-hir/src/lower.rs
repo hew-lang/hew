@@ -17118,6 +17118,12 @@ impl LowerCtx {
             BinaryOp::Add if left == &ResolvedTy::String || right == &ResolvedTy::String => {
                 ResolvedTy::String
             }
+            // `duration + instant → instant`: the checker admits this as `duration + I64`
+            // at HIR level (since `instant` is erased to `I64`). The result is the
+            // right operand's type (I64, i.e. the instant backing type).
+            BinaryOp::Add if left == &ResolvedTy::Duration && right == &ResolvedTy::I64 => {
+                ResolvedTy::I64
+            }
             // Wrapping ops (WrappingAdd/WrappingSub/WrappingMul) fall through
             // to the wildcard: they return the left operand's integer type,
             // same as any other integer arithmetic op. The type checker has

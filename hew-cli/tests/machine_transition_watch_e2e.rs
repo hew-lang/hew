@@ -149,7 +149,7 @@ fn select_record_element_cross_block_arm_runs_clean() {
          fn main() {\n\
          \x20   let c = spawn Combined;\n\
          \x20   c.run();\n\
-         \x20   sleep_ms(200);\n\
+         \x20   sleep(200ms);\n\
          }\n",
         "Created -> Initialising\n",
     );
@@ -195,7 +195,7 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
          fn main() {\n\
          \x20   let c = spawn Combined;\n\
          \x20   c.run();\n\
-         \x20   sleep_ms(200);\n\
+         \x20   sleep(200ms);\n\
          }\n",
         "Created -> Initialising\n",
     );
@@ -222,7 +222,7 @@ fn receiver_param_source() -> &'static str {
      \x20   tx.close();\n\
      \x20   let obs = spawn Observer;\n\
      \x20   obs.watch(rx);\n\
-     \x20   sleep_ms(200);\n\
+     \x20   sleep(200ms);\n\
      }\n"
 }
 
@@ -264,7 +264,7 @@ fn channel_handle_use_after_transfer_refused() {
          \x20   let obs = spawn Observer;\n\
          \x20   obs.watch(rx, \"watch\");\n\
          \x20   rx.close();\n\
-         \x20   sleep_ms(100);\n\
+         \x20   sleep(100ms);\n\
          }\n",
     )
     .unwrap();
@@ -353,7 +353,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
          \x20   obs.watch(rx);\n\
          \x20   let svc = spawn Service;\n\
          \x20   svc.drive(tx);\n\
-         \x20   sleep_ms(300);\n\
+         \x20   sleep(300ms);\n\
          }\n",
         "Created -> Initialising\nInitialising -> Faulted\nobserver: child faulted\nwatch closed\n",
     );
@@ -415,7 +415,7 @@ fn heap_payload_machine_actor_field_steps_clean() {
          fn main() {\n\
          \x20   let h = spawn Holder;\n\
          \x20   h.drive();\n\
-         \x20   sleep_ms(150);\n\
+         \x20   sleep(150ms);\n\
          }\n",
         "Open\nFailed\nIdle\n",
     );
@@ -458,7 +458,7 @@ fn supervisor_child_with_machine_state_fails_closed() {
          \n\
          fn main() {\n\
          \x20   let sup = spawn Pool;\n\
-         \x20   sleep_ms(20);\n\
+         \x20   sleep(20ms);\n\
          }\n",
     )
     .unwrap();
@@ -559,7 +559,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          fn main() {\n\
          \x20   let o = spawn Owner;\n\
          \x20   o.run();\n\
-         \x20   sleep_ms(300);\n\
+         \x20   sleep(300ms);\n\
          }\n\
          ",
         "open\nfailed: peer reset\nwatch closed\n",
@@ -605,7 +605,7 @@ fn vec_machine_element_refuses_at_compile_time() {
          \n\
          fn main() {\n\
          \x20   let _ = spawn Owner;\n\
-         \x20   sleep_ms(20);\n\
+         \x20   sleep(20ms);\n\
          }\n",
     )
     .unwrap();
@@ -696,7 +696,7 @@ fn nested_channel_handle_in_tuple_transfers_correctly() {
          \x20   tx.close();\n\
          \x20   let w = spawn Worker;\n\
          \x20   w.deliver((rx, 99));\n\
-         \x20   sleep_ms(100);\n\
+         \x20   sleep(100ms);\n\
          \x20   println(\"done\");\n\
          }\n",
         "worker got 99\ndone\n",

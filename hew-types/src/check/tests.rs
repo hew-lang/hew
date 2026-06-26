@@ -20404,7 +20404,7 @@ fn bad(r: Result<i64, string>) -> Result<i64, i64> {
 //  - Receiver<T>::recv / `for await ... in Receiver<T>` → BlockingChannelRecv error
 //  - semaphore.new / try_acquire / release / count / free → allowed on wasm32
 //  - Semaphore::acquire / Semaphore::acquire_timeout → BlockingSemaphoreAcquire error
-//  - sleep_ms → Timers warning
+//  - sleep_ms → now an undefined-function error (removed; use sleep(duration))
 //  - sleep → Timers warning
 //  - Stream<T>::next → Streams error
 //  - stream.* module constructor call → Streams error
@@ -20510,6 +20510,27 @@ mod wasm_rejects {
             !has_platform_limitation_error(&output),
             "sleep should not emit PlatformLimitation on native target; got: {:?}",
             output.errors
+        );
+    }
+
+    /// `sleep_ms` was removed in the `sleep(duration)` migration. Calling it
+    /// must produce an undefined-function error, not silently compile.
+    #[test]
+    fn sleep_ms_is_undefined_function_error() {
+        let output = check_native("fn main() { sleep_ms(100); }");
+        assert!(
+            !output.errors.is_empty(),
+            "sleep_ms should be rejected as undefined; got no errors"
+        );
+        let msg = output
+            .errors
+            .iter()
+            .map(|e| e.message.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        assert!(
+            msg.contains("sleep_ms") || msg.contains("undefined") || msg.contains("unknown"),
+            "error should mention `sleep_ms` or 'undefined'; got: {msg}"
         );
     }
 

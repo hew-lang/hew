@@ -1250,6 +1250,18 @@ impl Ty {
         matches!(self, Ty::Duration)
     }
 
+    /// Check if this is the `instant` type.
+    #[must_use]
+    pub fn is_instant(&self) -> bool {
+        matches!(
+            self,
+            Ty::Named {
+                builtin: Some(BuiltinType::Instant),
+                ..
+            }
+        )
+    }
+
     /// Check if this is an integer type.
     #[must_use]
     pub fn is_integer(&self) -> bool {

@@ -534,35 +534,6 @@ pub mod wasm_stubs {
 
     // ── Sleep ────────────────────────────────────────────────────────────────
 
-    /// WASM sleep: park the current actor until `ms` milliseconds have elapsed.
-    ///
-    /// Records the wakeup deadline and returns immediately.  After the current
-    /// message dispatch completes, [`crate::scheduler_wasm`] parks the actor in
-    /// the sleep queue.  The host re-enqueues it once the deadline passes by
-    /// calling [`crate::scheduler_wasm::hew_wasm_timer_tick`] with the current
-    /// time, or via the implicit drain inside [`crate::scheduler_wasm::hew_wasm_sched_tick`].
-    ///
-    /// This replaces the former intentional no-op.  The semantics are
-    /// cooperative: `sleep_ms` takes effect at the *message boundary* — code
-    /// running after `sleep_ms` in the same handler still executes before the
-    /// park happens.
-    ///
-    /// # Safety
-    ///
-    /// No preconditions — may be called from any context.
-    #[no_mangle]
-    pub unsafe extern "C" fn hew_sleep_ms(ms: i64) {
-        if ms <= 0 {
-            return;
-        }
-        // Compute the absolute deadline from the current clock.
-        // SAFETY: hew_now_ms has no preconditions.
-        let now = unsafe { hew_now_ms() };
-        #[expect(clippy::cast_sign_loss, reason = "guarded by ms > 0")]
-        let deadline_ms = now.saturating_add(ms as u64);
-        crate::scheduler_wasm::request_sleep(deadline_ms);
-    }
-
     /// WASM sleep (nanosecond ABI): park until `ns` nanoseconds have elapsed.
     ///
     /// Converts to milliseconds and delegates to the ms-granularity sleep queue.

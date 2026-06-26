@@ -46,12 +46,15 @@ fn sleep_until_past_instant_returns_immediately() {
 // ── sleep_until future instant waits until that point ────────────────────
 #[test]
 fn sleep_until_future_instant_waits() {
-    let before = instant::now();
-    // Sleep 10ms so there is a measurable span; assert total elapsed is >= 10ms.
-    sleep(10ms);
-    let after = instant::now();
-    let span = after.duration_since(before);
-    testing.assert_true(span.millis() >= 10);
+    let start = instant::now();
+    // Construct a future instant 10ms from now using instant + duration.
+    let deadline = start + 10ms;
+    sleep_until(deadline);
+    let waited: duration = start.elapsed();
+    // Must have waited at least the requested span; a path that returns
+    // immediately (e.g. treats the future instant as now-or-past) would
+    // produce waited.millis() == 0 and fail here.
+    testing.assert_true(waited.millis() >= 10);
 }
 
 // ── sleep inside an actor handler suspends cooperatively ─────────────────

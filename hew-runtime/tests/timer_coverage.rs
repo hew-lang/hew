@@ -18,8 +18,7 @@ use std::sync::Mutex;
 
 use hew_runtime::deterministic::{hew_simtime_advance_ms, hew_simtime_disable, hew_simtime_enable};
 use hew_runtime::io_time::{
-    hew_instant_now, hew_milliseconds, hew_now_ms, hew_seconds, hew_sleep_ms, hew_sleep_ns,
-    hew_sleep_until_ns,
+    hew_instant_now, hew_milliseconds, hew_now_ms, hew_seconds, hew_sleep_ns, hew_sleep_until_ns,
 };
 use hew_runtime::timer_wheel::{
     hew_timer_wheel_cancel, hew_timer_wheel_free, hew_timer_wheel_new,
@@ -134,35 +133,6 @@ fn now_ms_respects_simulated_time() {
         hew_simtime_advance_ms(500);
         assert_eq!(hew_now_ms(), 1500);
     }
-}
-
-#[test]
-fn sleep_ms_zero_returns_immediately() {
-    // Should not block.
-    unsafe {
-        hew_sleep_ms(0);
-    }
-}
-
-#[test]
-fn sleep_ms_negative_returns_immediately() {
-    // Negative values are guarded — should not block.
-    unsafe {
-        hew_sleep_ms(-1);
-    }
-}
-
-#[test]
-fn sleep_ms_short_duration() {
-    let before = std::time::Instant::now();
-    unsafe {
-        hew_sleep_ms(10);
-    }
-    let elapsed = before.elapsed();
-    assert!(
-        elapsed.as_millis() >= 5,
-        "hew_sleep_ms(10) should sleep for at least a few milliseconds"
-    );
 }
 
 #[test]

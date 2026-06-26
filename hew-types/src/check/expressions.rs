@@ -3600,7 +3600,11 @@ impl Checker {
             | BinaryOp::Multiply
             | BinaryOp::Divide
             | BinaryOp::Modulo => {
-                if left_resolved.is_duration() || right_resolved.is_duration() {
+                if left_resolved.is_duration()
+                    || right_resolved.is_duration()
+                    || left_resolved.is_instant()
+                    || right_resolved.is_instant()
+                {
                     return self.check_duration_arithmetic(
                         op,
                         &left_resolved,
@@ -4175,7 +4179,16 @@ impl Checker {
         }
     }
 
-    /// Type-check an arithmetic operation where at least one operand is `duration`.
+    /// Type-check an arithmetic operation where at least one operand is `duration` or `instant`.
+    ///
+    /// Supported operations:
+    /// - `duration +/- duration → duration`
+    /// - `duration % duration → duration`
+    /// - `duration * int → duration`, `int * duration → duration`
+    /// - `duration / int → duration`
+    /// - `duration / duration → i64` (ratio)
+    /// - `instant + duration → instant` (advance a point in time)
+    /// - `duration + instant → instant` (commutative advance)
     pub(super) fn check_duration_arithmetic(
         &mut self,
         op: BinaryOp,
@@ -4195,6 +4208,10 @@ impl Checker {
             (Ty::Duration, r, BinaryOp::Divide) if r.is_integer() => Ty::Duration,
             // duration / duration → i64 (ratio)
             (Ty::Duration, Ty::Duration, BinaryOp::Divide) => Ty::I64,
+            // instant + duration → instant (advance a point in time by a duration)
+            (l, Ty::Duration, BinaryOp::Add) if l.is_instant() => left.clone(),
+            // duration + instant → instant (commutative: duration + instant)
+            (Ty::Duration, r, BinaryOp::Add) if r.is_instant() => right.clone(),
             _ => {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,

@@ -54,21 +54,6 @@ pub unsafe extern "C" fn hew_read_file(path: *const c_char) -> *mut c_char {
 // Sleep / Clock
 // ---------------------------------------------------------------------------
 
-/// Sleep for `ms` milliseconds.
-///
-/// # Safety
-///
-/// No preconditions — delegates to the OS.
-#[no_mangle]
-pub unsafe extern "C" fn hew_sleep_ms(ms: i64) {
-    if ms > 0 {
-        // SAFETY: ms > 0 checked above, so cast is lossless.
-        #[expect(clippy::cast_sign_loss, reason = "guarded by ms > 0")]
-        let dur = std::time::Duration::from_millis(ms as u64);
-        std::thread::sleep(dur);
-    }
-}
-
 /// Sleep for `ns` nanoseconds (the `sleep(duration)` ABI).
 ///
 /// Called by the blocking (free-fn) path. Suspending actor callers are
@@ -2000,27 +1985,6 @@ mod tests {
         // Epoch set on first call; subsequent calls return elapsed ms.
         // Verify within reasonable range (< 1 day).
         assert!(t < 86_400_000);
-    }
-
-    // -- Sleep --------------------------------------------------------------
-
-    #[test]
-    fn sleep_zero_is_noop() {
-        // SAFETY: no preconditions; ms <= 0 is a no-op.
-        unsafe { hew_sleep_ms(0) };
-    }
-
-    #[test]
-    fn sleep_negative_is_noop() {
-        // SAFETY: no preconditions; ms <= 0 is a no-op.
-        unsafe { hew_sleep_ms(-1) };
-    }
-
-    #[test]
-    fn sleep_small_positive_completes() {
-        // Verify it doesn't panic or hang. No timing assertion.
-        // SAFETY: no preconditions.
-        unsafe { hew_sleep_ms(1) };
     }
 
     // -- File I/O -----------------------------------------------------------

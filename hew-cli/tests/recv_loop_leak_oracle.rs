@@ -168,7 +168,7 @@ fn for_await_source(frames: usize) -> String {
          fn main() {{\n\
          \x20   let w = spawn ForAwaitRecv;\n\
          \x20   w.run(0);\n\
-         \x20   sleep_ms(3000);\n\
+         \x20   sleep(3000ms);\n\
          }}\n"
     )
 }
@@ -206,7 +206,7 @@ fn await_recv_source(frames: usize) -> String {
          fn main() {{\n\
          \x20   let w = spawn AwaitRecv;\n\
          \x20   w.run(0);\n\
-         \x20   sleep_ms(3000);\n\
+         \x20   sleep(3000ms);\n\
          }}\n"
     )
 }
@@ -242,7 +242,7 @@ fn try_recv_source(frames: usize) -> String {
          fn main() {{\n\
          \x20   let w = spawn TryRecv;\n\
          \x20   w.run(0);\n\
-         \x20   sleep_ms(3000);\n\
+         \x20   sleep(3000ms);\n\
          }}\n"
     )
 }
@@ -285,7 +285,7 @@ fn try_recv_continue_source(frames: usize) -> String {
          fn main() {{\n\
          \x20   let w = spawn TryRecvContinue;\n\
          \x20   w.run(0);\n\
-         \x20   sleep_ms(3000);\n\
+         \x20   sleep(3000ms);\n\
          }}\n"
     )
 }
@@ -328,7 +328,7 @@ fn await_recv_continue_source(frames: usize) -> String {
          fn main() {{\n\
          \x20   let w = spawn AwaitRecvContinue;\n\
          \x20   w.run(0);\n\
-         \x20   sleep_ms(3000);\n\
+         \x20   sleep(3000ms);\n\
          }}\n"
     )
 }
@@ -673,7 +673,7 @@ fn for_await_stream_bytes_source(frames: usize) -> String {
          fn main() {{\n\
          \x20   let w = spawn ForAwaitStreamBytes;\n\
          \x20   w.run(0);\n\
-         \x20   sleep_ms(3000);\n\
+         \x20   sleep(3000ms);\n\
          }}\n"
     )
 }
@@ -757,7 +757,7 @@ fn carry_for_await_bytes_escape_source() -> String {
      fn main() {\n\
      \x20   let w = spawn CarryStreamBytesEscape;\n\
      \x20   w.run(0);\n\
-     \x20   sleep_ms(200);\n\
+     \x20   sleep(200ms);\n\
      }\n"
     .to_string()
 }
@@ -842,7 +842,7 @@ fn carry_continue_escape_source() -> String {
      fn main() {\n\
      \x20   let w = spawn CarryContinueEscape;\n\
      \x20   w.run(0);\n\
-     \x20   sleep_ms(100);\n\
+     \x20   sleep(100ms);\n\
      }\n"
         .to_string()
 }
@@ -883,7 +883,7 @@ fn carry_fallthrough_escape_source() -> String {
      fn main() {\n\
      \x20   let w = spawn CarryFallEscape;\n\
      \x20   w.run(0);\n\
-     \x20   sleep_ms(100);\n\
+     \x20   sleep(100ms);\n\
      }\n"
         .to_string()
 }

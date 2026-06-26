@@ -128,7 +128,7 @@ fn overwrite_source(frames: usize) -> String {
          \x20       store.store(packet);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   sleep_ms(2000);\n\
+         \x20   sleep(2000ms);\n\
          \x20   match await store.get_len() {{\n\
          \x20       Ok(v) => v,\n\
          \x20       Err(_) => -1,\n\

@@ -33666,21 +33666,26 @@ fn build_module_for_target<'ctx>(
             .to_string_lossy()
             .starts_with("wasm32")
     });
-    let target_data = if let Some(machine) = target_machine {
+    // The module triple string drives the debug-info *format* selection below:
+    // Windows-MSVC targets emit CodeView (the format MSVC-toolchain debuggers —
+    // cdb/WinDbg/Visual Studio — read), every other target emits DWARF. Capture
+    // it from whichever arm sets the triple so the decision needs no new plumbing.
+    let (target_data, module_triple) = if let Some(machine) = target_machine {
         let triple = machine.get_triple();
         llvm_mod.set_triple(&triple);
         let data = machine.get_target_data();
         let layout = data.get_data_layout();
         llvm_mod.set_data_layout(&layout);
-        data
+        (data, triple.as_str().to_string_lossy().into_owned())
     } else {
         // No target machine (the in-process IR build / `hew check`): still
         // declare the host triple on the module so target-keyed lowering — the
         // aggregate ABI classifier, `runtime_size_ty` — reads the correct
         // target rather than an empty triple. `host_target_data()` IS the host's
         // layout, so the host triple is the matching authority.
-        llvm_mod.set_triple(&TargetTriple::create(&native_emission_triple()));
-        host_target_data()
+        let native = native_emission_triple();
+        llvm_mod.set_triple(&TargetTriple::create(&native));
+        (host_target_data(), native)
     };
 
     // DWARF compile unit + file for `hew build -g` (W0.060). Created once per
@@ -33730,6 +33735,27 @@ fn build_module_for_target<'ctx>(
                 inkwell::module::FlagBehavior::Warning,
                 debug_metadata_version,
             );
+            // Debug-format selection: windows-msvc targets need the module-level
+            // "CodeView" flag (= 1) so the LLVM backend emits CodeView records
+            // (`.debug$S`/`.debug$T` COFF sections) instead of — well, alongside —
+            // DWARF. The shared `DICompileUnit`/`DISubprogram`/`DILocalVariable`
+            // DIE graph below is format-agnostic; only this module flag (and the
+            // backend's COFF object writer) differs. Without it, a `-g`
+            // windows-msvc build emits DWARF-in-PE that cdb/WinDbg cannot read.
+            // Every non-Windows target keeps DWARF only (no CodeView flag), so
+            // the Linux/macOS path is byte-for-byte unchanged.
+            //
+            // Mirror `abi_class::is_windows_msvc`: match the `-msvc` environment,
+            // not the arch. `FlagBehavior::Warning` matches how clang emits this
+            // flag (it tolerates a module that also carries DWARF metadata).
+            if module_triple.contains("windows-msvc") || module_triple.ends_with("-msvc") {
+                let codeview_enabled = ctx.i32_type().const_int(1, false);
+                llvm_mod.add_basic_value_flag(
+                    "CodeView",
+                    inkwell::module::FlagBehavior::Warning,
+                    codeview_enabled,
+                );
+            }
             let file = compile_unit.get_file();
             Some((di_builder, compile_unit, file))
         } else {
@@ -38736,6 +38762,70 @@ mod tests {
             user_clone_record_seeds: vec![],
             lint_warnings: vec![],
         }
+    }
+
+    /// Build `empty_pipeline_with_const_42` for `triple` with a `-g` debug input
+    /// and return the printed module IR. Threading a `DebugInput` is what makes
+    /// `build_module_for_target` construct the `DICompileUnit` and add the
+    /// module-level debug-format flags — the locus under test.
+    fn debug_module_ir_for_triple(triple: &str) -> String {
+        let ctx = Context::create();
+        let pipeline = empty_pipeline_with_const_42();
+        let machine = target_machine_for_triple(triple)
+            .unwrap_or_else(|e| panic!("target machine for {triple}: {e:?}"));
+        let src_path = Path::new("codeview_flag_probe.hew");
+        let debug = DebugInput {
+            source_path: src_path,
+            source_text: "fn main() -> i64 { 42 }\n",
+        };
+        let module = build_module_for_target(
+            &ctx,
+            &pipeline,
+            "codeview_flag_probe",
+            Some(&machine),
+            Some(debug),
+        )
+        .unwrap_or_else(|e| panic!("debug module must build for {triple}: {e:?}"));
+        module.print_to_string().to_string()
+    }
+
+    /// A `-g` build for a `*-windows-msvc` triple must add the module-level
+    /// `"CodeView"` flag (= 1) so the LLVM COFF backend emits CodeView records
+    /// (`.debug$S`/`.debug$T`) that cdb/WinDbg can read. Without it, a `-g`
+    /// windows-msvc build emits DWARF-in-PE that Windows-native debuggers ignore
+    /// (#2117). The flag is what the value-asserting cdb e2e on the Windows host
+    /// ultimately depends on; this is its cross-platform-emittable lower tier.
+    #[test]
+    fn windows_msvc_debug_build_adds_codeview_module_flag() {
+        let ir = debug_module_ir_for_triple("x86_64-pc-windows-msvc");
+        // The module-flags metadata records the flag as `!"CodeView", i32 1`.
+        assert!(
+            ir.contains("\"CodeView\""),
+            "windows-msvc `-g` IR must carry the CodeView module flag:\n{ir}"
+        );
+        // The shared DIE graph (DWARF compile unit) is still constructed — only
+        // the format flag differs — so the "Debug Info Version" flag stays too.
+        assert!(
+            ir.contains("\"Debug Info Version\""),
+            "windows-msvc `-g` IR must still carry the Debug Info Version flag:\n{ir}"
+        );
+    }
+
+    /// The CodeView flag is Windows-MSVC-only: a `-g` build for a non-Windows
+    /// triple keeps DWARF and must NOT carry the CodeView flag, so the
+    /// Linux/macOS DWARF path is byte-for-byte unchanged (the shared-DIE-graph
+    /// regression guard at the module-flag level).
+    #[test]
+    fn non_windows_debug_build_omits_codeview_module_flag() {
+        let ir = debug_module_ir_for_triple("x86_64-unknown-linux-gnu");
+        assert!(
+            !ir.contains("\"CodeView\""),
+            "linux `-g` IR must NOT carry the CodeView module flag (DWARF only):\n{ir}"
+        );
+        assert!(
+            ir.contains("\"Debug Info Version\""),
+            "linux `-g` IR must carry the Debug Info Version flag:\n{ir}"
+        );
     }
 
     /// Decode the architecture tag from a relocatable object's header without

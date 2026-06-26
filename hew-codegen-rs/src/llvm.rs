@@ -6676,8 +6676,9 @@ fn emit_supervisor_bootstrap_body<'ctx>(
         // LIVE static slot, so a restarted member re-resolves automatically.
         //
         // A literal count unrolls into N member registrations at compile time; a
-        // config-derived count emits a real `0..N` loop that traps fail-closed
-        // on `N <= 0` at runtime. Each member advances `actor_child_index`.
+        // config-derived count is COMPILE-TIME rejected (CodegenError::FailClosed)
+        // until the dynamic 0..N bootstrap loop lands. Each member advances
+        // `actor_child_index`.
         if child.is_pool {
             actor_child_index = emit_static_pool_members(
                 ctx,

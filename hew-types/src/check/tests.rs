@@ -28434,8 +28434,10 @@ fn supervisor_pool_count_string_literal_is_rejected() {
 
 #[test]
 fn supervisor_pool_count_dynamic_config_is_accepted() {
-    // A dynamic count (`config.workers`) is accepted at compile time; the
-    // bootstrap traps fail-closed on N <= 0 at runtime.
+    // A dynamic count (`config.workers`) is accepted by the type-checker (the
+    // expr resolves through the config record layout) but codegen currently
+    // rejects it with CodegenError::FailClosed — the dynamic 0..N bootstrap
+    // loop is not yet emitted. This test only covers the type-checker accept.
     let output = check_source(
         r"
         record AppConfig { workers: i64 }

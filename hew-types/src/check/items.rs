@@ -172,7 +172,10 @@ impl Checker {
     /// fungible members at bootstrap. The `count` arg is REQUIRED on a pool
     /// declaration, must type as an integer, and — when a compile-time integer
     /// literal — must be positive. A non-literal expr (`count: config.workers`)
-    /// is accepted; the bootstrap traps fail-closed on `N <= 0` at runtime.
+    /// is accepted here (the type resolves through the config record layout),
+    /// but codegen currently rejects it at compile time with
+    /// `CodegenError::FailClosed` — the dynamic `0..N` bootstrap loop is not
+    /// yet emitted. Use a literal `count: N` until that loop lands.
     ///
     /// Must run with the supervisor's config params bound in scope (it is
     /// invoked from `check_supervisor_init_args`) so a `config.field` count

@@ -1,0 +1,49 @@
+// Acceptance fixture: nested-supervisor child accessor round-trip.
+//
+// Exercises a two-level supervision tree end-to-end:
+//   1. `spawn Root` runs Root's bootstrap, which builds its actor child
+//      (`direct`) via hew_supervisor_add_child_spec AND brings up the nested
+//      `Inner` supervisor by calling InnerSupervisor's own bootstrap, then
+//      registers it via hew_supervisor_add_child_supervisor_with_init.
+//   2. `root.sub` lowers through hew_supervisor_nested_get, returning the
+//      child supervisor pointer as a LocalPid<Inner>.
+//   3. `inner.leaf` lowers through hew_supervisor_child_get on that nested
+//      supervisor, returning a LocalPid<Worker>.
+//   4. `leaf.echo(42)` asks the leaf actor, which replies with its argument.
+//   5. `main` returns the reply as the process exit code; exit 42 proves the
+//      nested + leaf accessor chain and the cross-actor ask all went through.
+//
+// A wrong nested slot index, a mis-registered child supervisor, or a broken
+// nested-get would surface as a non-42 exit (a Dead/Transient lookup yields
+// the Err arm → exit 0).
+actor Worker {
+    let tag: i64;
+    receive fn echo(n: i64) -> i64 {
+        n + tag
+    }
+}
+
+supervisor Inner {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child leaf: Worker(tag: 0);
+}
+
+supervisor Root {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child direct: Worker(tag: 0);
+    child sub: Inner;
+}
+
+fn main() -> i64 {
+    let root = spawn Root;
+    let inner = root.sub;
+    let leaf = inner.leaf;
+    match await leaf.echo(42) {
+        Ok(v) => v,
+        Err(_e) => 0,
+    }
+}

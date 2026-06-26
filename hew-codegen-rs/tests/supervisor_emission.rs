@@ -164,6 +164,7 @@ fn supervisor_pipeline() -> IrPipeline {
             max_heap_bytes: None,
             cycle_capable: false,
             init_state_fields: vec![],
+            nested_bootstrap_symbol: None,
         }],
     };
 
@@ -420,6 +421,7 @@ fn on_crash_pipeline() -> IrPipeline {
             max_heap_bytes: None,
             cycle_capable: false,
             init_state_fields: vec![],
+            nested_bootstrap_symbol: None,
         }],
     };
 
@@ -586,5 +588,218 @@ fn supervisor_bootstrap_rejects_invalid_window() {
     assert!(
         msg.contains("sixty") || msg.contains("duration literal"),
         "expected fail-closed diagnostic to name the bad window literal; got: {msg}"
+    );
+}
+
+/// Build a pipeline where `RootSupervisor` has one nested-supervisor child
+/// (`sub: InnerSupervisor`) and one actor child (`direct: Worker`). Both
+/// supervisor bootstrap functions are declared so the parent bootstrap can call
+/// the inner bootstrap and register it.
+fn nested_supervisor_pipeline() -> IrPipeline {
+    let root_bootstrap = "RootSupervisor__bootstrap".to_string();
+    let inner_bootstrap = "InnerSupervisor__bootstrap".to_string();
+
+    let worker_layout = ActorLayout {
+        name: "Worker".to_string(),
+        defining_module: None,
+        state_field_names: vec![],
+        state_field_tys: vec![],
+        state_field_defaults: vec![],
+        init_param_names: vec![],
+        init_param_tys: vec![],
+        init_symbol: None,
+        on_start_symbol: None,
+        on_stop_symbols: vec![],
+        on_crash_symbol: None,
+        max_heap_bytes: None,
+        cycle_capable: false,
+        handlers: vec![],
+        state_clone_fn_symbol: None,
+        state_drop_fn_symbol: None,
+        state_field_clone_kinds: None,
+    };
+
+    let stub_bootstrap = |symbol: &str, ret: ResolvedTy| RawMirFunction {
+        name: symbol.to_string(),
+        return_ty: ret.clone(),
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![ret],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::BTreeMap::new(),
+    };
+
+    let root_fn = stub_bootstrap(&root_bootstrap, local_pid_of("RootSupervisor"));
+    let inner_fn = stub_bootstrap(&inner_bootstrap, local_pid_of("InnerSupervisor"));
+
+    let main_fn = RawMirFunction {
+        name: "main".to_string(),
+        return_ty: ResolvedTy::I64,
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![ResolvedTy::I64],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                hew_mir::Instr::ConstI64 {
+                    dest: hew_mir::Place::Local(0),
+                    value: 0,
+                },
+                hew_mir::Instr::Move {
+                    dest: hew_mir::Place::ReturnSlot,
+                    src: hew_mir::Place::Local(0),
+                },
+            ],
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::BTreeMap::new(),
+    };
+
+    let inner_layout = SupervisorLayout {
+        name: "InnerSupervisor".to_string(),
+        strategy: Some(HirSupervisorStrategy::OneForOne),
+        max_restarts: Some(3),
+        window: Some("60".to_string()),
+        bootstrap_symbol: inner_bootstrap.clone(),
+        children: vec![SupervisorChildLayout {
+            name: "leaf".to_string(),
+            actor_name: "Worker".to_string(),
+            restart_policy: None,
+            is_pool: false,
+            slot_index: 0,
+            wired_to: Default::default(),
+            spawn_order: 0,
+            on_crash_symbol: None,
+            lifecycle_symbol: None,
+            max_heap_bytes: None,
+            cycle_capable: false,
+            init_state_fields: vec![],
+            nested_bootstrap_symbol: None,
+        }],
+    };
+
+    let root_layout = SupervisorLayout {
+        name: "RootSupervisor".to_string(),
+        strategy: Some(HirSupervisorStrategy::OneForOne),
+        max_restarts: Some(3),
+        window: Some("60".to_string()),
+        bootstrap_symbol: root_bootstrap.clone(),
+        children: vec![
+            SupervisorChildLayout {
+                name: "direct".to_string(),
+                actor_name: "Worker".to_string(),
+                restart_policy: None,
+                is_pool: false,
+                slot_index: 0,
+                wired_to: Default::default(),
+                spawn_order: 0,
+                on_crash_symbol: None,
+                lifecycle_symbol: None,
+                max_heap_bytes: None,
+                cycle_capable: false,
+                init_state_fields: vec![],
+                nested_bootstrap_symbol: None,
+            },
+            SupervisorChildLayout {
+                name: "sub".to_string(),
+                actor_name: "InnerSupervisor".to_string(),
+                restart_policy: None,
+                is_pool: false,
+                slot_index: 1,
+                wired_to: Default::default(),
+                spawn_order: 1,
+                on_crash_symbol: None,
+                lifecycle_symbol: None,
+                max_heap_bytes: None,
+                cycle_capable: false,
+                init_state_fields: vec![],
+                nested_bootstrap_symbol: Some(inner_bootstrap.clone()),
+            },
+        ],
+    };
+
+    IrPipeline {
+        thir: vec![],
+        raw_mir: vec![root_fn, inner_fn, main_fn],
+        checked_mir: vec![],
+        elaborated_mir: vec![],
+        diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
+        opaque_handle_names: vec![],
+        record_layouts: vec![],
+        actor_layouts: vec![worker_layout],
+        supervisor_layouts: vec![inner_layout, root_layout],
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
+        user_consts: Vec::new(),
+        extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
+    }
+}
+
+/// A nested-supervisor child registers through
+/// `hew_supervisor_add_child_supervisor_with_init` (passing the inner
+/// bootstrap as both the constructor and the restart init_fn), NOT through the
+/// actor `hew_supervisor_add_child_spec` path.
+#[test]
+fn supervisor_bootstrap_registers_nested_child_supervisor() {
+    let ir = emit_to_string(&nested_supervisor_pipeline(), "nested-register");
+    // The root bootstrap calls the inner bootstrap to construct the subtree.
+    assert!(
+        ir.contains("@InnerSupervisor__bootstrap"),
+        "root bootstrap must call the inner supervisor bootstrap; got:\n{ir}"
+    );
+    // ... and registers it via the child-supervisor seam.
+    assert!(
+        ir.contains("@hew_supervisor_add_child_supervisor_with_init"),
+        "nested child must register via hew_supervisor_add_child_supervisor_with_init; got:\n{ir}"
+    );
+}
+
+/// The actor child (`direct`) still rides the `add_child_spec` path even when a
+/// nested supervisor child is also present — the two registration seams coexist.
+#[test]
+fn supervisor_bootstrap_actor_child_coexists_with_nested() {
+    let ir = emit_to_string(&nested_supervisor_pipeline(), "nested-coexist");
+    assert!(
+        ir.contains("@hew_supervisor_add_child_spec"),
+        "the actor child must still register via add_child_spec; got:\n{ir}"
+    );
+    assert!(
+        ir.contains("@__hew_actor_dispatch_Worker"),
+        "the actor child spec must reference the Worker dispatch trampoline; got:\n{ir}"
     );
 }

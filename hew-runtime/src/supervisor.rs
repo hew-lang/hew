@@ -287,6 +287,22 @@ struct InternalPoolSpec {
     strategy: PoolStrategy,
     /// Soft cap on pool members (0 = unlimited).
     max_members: usize,
+    /// Static-child indices backing this pool's members, in member order.
+    ///
+    /// A STATIC pool (`pool name: Type(count: N)`) registers its N members as
+    /// ordinary static children in `HewSupervisor.children[]` and records each
+    /// member's static-child index here via
+    /// [`hew_supervisor_pool_member_add_static`]. The accessor
+    /// (`hew_supervisor_pool_child_get`) resolves member `i` through
+    /// `children[static_members[i]]` — the LIVE slot — so a restarted member is
+    /// re-resolved automatically (the restart machinery re-fills the static
+    /// slot; no stale PID is cached in the pool).
+    ///
+    /// Empty for a DYNAMIC pool whose members are PIDs added via
+    /// [`hew_supervisor_pool_member_add`] (the `hew_pool` PID-set path). The two
+    /// are mutually exclusive: `pool_child_get` reads `static_members` when it is
+    /// non-empty, else falls back to the PID set.
+    static_members: Vec<usize>,
 }
 
 impl Drop for InternalPoolSpec {
@@ -5844,6 +5860,7 @@ pub unsafe extern "C" fn hew_supervisor_pool_add_slot(
         name: name_copy,
         strategy: pool_strategy,
         max_members,
+        static_members: Vec::new(),
     });
 
     index
@@ -5890,6 +5907,56 @@ pub unsafe extern "C" fn hew_supervisor_pool_member_add(
     }
     // SAFETY: pool is valid.
     unsafe { crate::pool::hew_pool_add(pool, actor_pid) }
+}
+
+/// Register a STATIC-backed pool member: a pool member whose actor lives in the
+/// supervisor's `children[]` table at `static_idx`.
+///
+/// A static pool (`pool name: Type(count: N)`) spawns its N members as ordinary
+/// static children, then records each member's static-child index here (in
+/// member order). The accessor [`hew_supervisor_pool_child_get`] resolves member
+/// `i` through the LIVE static slot `children[static_idx]`, so a restarted member
+/// is re-resolved automatically — the restart machinery re-fills the static slot
+/// and the pool view picks up the fresh actor with no stale PID cached.
+///
+/// Returns 0 on success; -1 if `sup` is null, `pool_key` is out of range, the
+/// pool slot is null, `static_idx` is out of range, or the pool's `max_members`
+/// limit would be exceeded.
+///
+/// # Safety
+///
+/// `sup` must be a valid pointer returned by [`hew_supervisor_new`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_pool_member_add_static(
+    sup: *mut HewSupervisor,
+    pool_key: u32,
+    static_idx: u32,
+) -> c_int {
+    cabi_guard!(sup.is_null(), -1);
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &mut *sup };
+    let i = pool_key as usize;
+    if i >= s.pool_slots.len() {
+        set_last_error("hew_supervisor_pool_member_add_static: pool_key out of range");
+        return -1;
+    }
+    if s.pool_slots[i].is_null() {
+        set_last_error("hew_supervisor_pool_member_add_static: pool slot is null");
+        return -1;
+    }
+    let static_idx = static_idx as usize;
+    if static_idx >= s.child_count {
+        set_last_error("hew_supervisor_pool_member_add_static: static_idx out of range");
+        return -1;
+    }
+    // Enforce max_members if configured (counts current static members).
+    let max = s.pool_specs[i].max_members;
+    if max > 0 && s.pool_specs[i].static_members.len() >= max {
+        set_last_error("hew_supervisor_pool_member_add_static: pool at max_members capacity");
+        return -1;
+    }
+    s.pool_specs[i].static_members.push(static_idx);
+    0
 }
 
 /// Remove an actor PID from a pool slot.
@@ -5970,6 +6037,34 @@ pub unsafe extern "C" fn hew_supervisor_pool_child_get(
         return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
     }
 
+    // ── Static-backed pool path (`pool name: Type(count: N)`) ────────────────
+    //
+    // A static pool resolves member `i` through the LIVE static child slot, NOT
+    // a cached PID. This is the restart re-resolution contract: the restart
+    // machinery re-fills `children[static_idx]` with a FRESH actor on every
+    // crash, and reading the slot here picks that up automatically — no stale
+    // PID is ever returned, no pointer is cached across restart (LESSONS
+    // `replaceable-resource-handle-is-fungible-reference`). The member's
+    // liveness, circuit-breaker, and backoff classification reuse the static
+    // child resolver verbatim.
+    let static_members = &s.pool_specs[i].static_members;
+    if !static_members.is_empty() {
+        let Some(&static_idx) = static_members.get(index as usize) else {
+            // Index beyond the member count → out of bounds (Vec[i] OOB parity).
+            return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
+        };
+        // Resolve through the static slot resolver, which holds `children_lock`
+        // and reads the (pointer, CB-state, backoff) triple coherently.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "static child count is always small; u32 is the ABI key type"
+        )]
+        let key = static_idx as u32;
+        // SAFETY: sup is valid (checked above); the resolver re-checks bounds.
+        return unsafe { hew_supervisor_child_get(sup, key) };
+    }
+
+    // ── Dynamic PID-set pool path ────────────────────────────────────────────
     // Resolve the index within the pool's member list via the public ABI so
     // we stay within the module's encapsulation boundary.
     // SAFETY: pool was created by hew_pool_new and has not been freed.
@@ -6017,6 +6112,13 @@ pub unsafe extern "C" fn hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_k
     if pool.is_null() {
         return -1;
     }
+    // A static-backed pool's size is its fixed static-member count (it never
+    // shrinks; restart re-fills slots in place). A dynamic PID-set pool's size
+    // is the live PID count.
+    let static_members = &s.pool_specs[i].static_members;
+    if !static_members.is_empty() {
+        return static_members.len() as i64;
+    }
     // SAFETY: pool is valid.
     unsafe { crate::pool::hew_pool_size(pool) as i64 }
 }
@@ -6047,11 +6149,12 @@ mod pool_slot_tests {
     use crate::supervisor::{
         hew_supervisor_add_child_spec, hew_supervisor_new, hew_supervisor_pool_add_slot,
         hew_supervisor_pool_child_get, hew_supervisor_pool_len, hew_supervisor_pool_member_add,
-        hew_supervisor_pool_member_remove, hew_supervisor_set_child_state_drop,
-        hew_supervisor_start, hew_supervisor_stop,
+        hew_supervisor_pool_member_add_static, hew_supervisor_pool_member_remove,
+        hew_supervisor_set_child_state_drop, hew_supervisor_start, hew_supervisor_stop,
     };
 
     const STRATEGY_ONE_FOR_ONE: std::ffi::c_int = 0;
+    const STRATEGY_SIMPLE_ONE_FOR_ONE: std::ffi::c_int = 3;
 
     /// No-op child dispatch for the init-closure tests (mirrors the main test
     /// module's helper; defined locally to keep `pool_slot_tests` self-contained).
@@ -6596,6 +6699,152 @@ mod pool_slot_tests {
         // A double-free of the config buffer would abort under a hardened
         // allocator; reaching the assertion proves the single-free contract.
         unsafe { hew_supervisor_stop(sup_ptr) };
+        assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);
+    }
+
+    // ── Static-backed pool (S3/S4): members resolve through live static slots ──
+
+    /// Register N static children, then bind them as pool members via
+    /// `pool_member_add_static`. The accessor resolves each member through its
+    /// LIVE static slot, `pool_len` reports N, and an OOB index is Dead.
+    #[test]
+    fn static_backed_pool_resolves_members_through_live_slots() {
+        let _rt = crate::runtime_test_guard();
+        INIT_CLOSURE_LIVE_OWNED.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_THUNK_CALLS.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_FAIL_NEXT.store(false, Ordering::SeqCst);
+
+        let sup = unsafe { hew_supervisor_new(STRATEGY_SIMPLE_ONE_FOR_ONE, 5, 60) };
+        assert!(!sup.is_null());
+        let (cfg, cfg_size) = make_config_buf(3);
+
+        // Spawn 3 fungible members as static children (the bootstrap shape).
+        for _ in 0..3 {
+            let spec = init_closure_spec(cfg, cfg_size);
+            assert_eq!(
+                unsafe { hew_supervisor_add_child_spec(sup, &raw const spec) },
+                0
+            );
+        }
+        for idx in 0..3 {
+            unsafe { hew_supervisor_set_child_state_drop(sup, idx, init_closure_drop) };
+        }
+
+        // Register the pool slot and bind each static child as a member.
+        let name = std::ffi::CString::new("workers").unwrap();
+        let key = unsafe { hew_supervisor_pool_add_slot(sup, name.as_ptr(), ROUND_ROBIN, 0) };
+        assert_eq!(key, 0);
+        for idx in 0..3u32 {
+            assert_eq!(
+                unsafe { hew_supervisor_pool_member_add_static(sup, 0, idx) },
+                0,
+                "static member {idx} registered"
+            );
+        }
+
+        unsafe { (*sup).running.store(1, Ordering::Release) };
+
+        // len reports the fixed static-member count.
+        assert_eq!(unsafe { hew_supervisor_pool_len(sup, 0) }, 3);
+
+        // Each member resolves Live to its static slot's actor.
+        for idx in 0..3u32 {
+            let r = unsafe { hew_supervisor_pool_child_get(sup, 0, idx) };
+            assert!(r.is_live(), "member {idx} should be Live");
+            let expected = unsafe { (&(*sup).children)[idx as usize] };
+            assert_eq!(
+                r.handle, expected,
+                "member {idx} resolves to its live static-slot actor"
+            );
+        }
+
+        // OOB index → Dead(UnknownSlot) (Vec[i] OOB parity).
+        let oob = unsafe { hew_supervisor_pool_child_get(sup, 0, 3) };
+        assert_eq!(oob.tag, 2, "index 3 is beyond the 3 members → Dead");
+        assert_eq!(oob.reason, ChildSlotReason::UnknownSlot as u8);
+
+        unsafe { hew_supervisor_stop(sup) };
+        assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);
+    }
+
+    /// After a static-backed member crashes and restarts, the accessor
+    /// re-resolves to the FRESH actor — no stale PID is cached. This is the
+    /// load-bearing restart re-resolution contract for the static pool.
+    #[test]
+    fn static_backed_pool_member_reresolves_after_restart() {
+        let _rt = crate::runtime_test_guard();
+        INIT_CLOSURE_LIVE_OWNED.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_THUNK_CALLS.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_FAIL_NEXT.store(false, Ordering::SeqCst);
+
+        let sup = unsafe { hew_supervisor_new(STRATEGY_SIMPLE_ONE_FOR_ONE, 5, 60) };
+        let (cfg, cfg_size) = make_config_buf(42);
+        // Two members.
+        for _ in 0..2 {
+            let spec = init_closure_spec(cfg, cfg_size);
+            assert_eq!(
+                unsafe { hew_supervisor_add_child_spec(sup, &raw const spec) },
+                0
+            );
+        }
+        for idx in 0..2 {
+            unsafe { hew_supervisor_set_child_state_drop(sup, idx, init_closure_drop) };
+        }
+        let name = std::ffi::CString::new("workers").unwrap();
+        unsafe { hew_supervisor_pool_add_slot(sup, name.as_ptr(), ROUND_ROBIN, 0) };
+        for idx in 0..2u32 {
+            unsafe { hew_supervisor_pool_member_add_static(sup, 0, idx) };
+        }
+        unsafe { (*sup).running.store(1, Ordering::Release) };
+
+        // Snapshot member 1's actor before the crash.
+        let before = unsafe { hew_supervisor_pool_child_get(sup, 0, 1) };
+        assert!(before.is_live());
+        let crashed_actor = before.handle;
+        let thunks_before = INIT_CLOSURE_THUNK_CALLS.load(Ordering::SeqCst);
+
+        // Crash member 1: free its static slot (mirrors the crash teardown), then
+        // restart it through the per-child helper (the SIMPLE_ONE_FOR_ONE arm
+        // calls exactly this).
+        unsafe {
+            let old = take_child_slot(&mut *sup, 1);
+            assert_eq!(old, crashed_actor);
+            actor::hew_actor_free(old);
+        }
+        // While the slot is null, the accessor reports the member as restarting
+        // (Transient), NEVER the freed actor — a stale-PID cache would return the
+        // crashed handle here.
+        let mid = unsafe { hew_supervisor_pool_child_get(sup, 0, 1) };
+        assert_ne!(
+            mid.tag, 0,
+            "a null slot must not resolve as Live (no stale PID)"
+        );
+
+        let new_actor = unsafe { restart_child_from_spec(&mut *sup, 1) };
+        assert!(!new_actor.is_null(), "member 1 restarted");
+        assert_eq!(
+            INIT_CLOSURE_THUNK_CALLS.load(Ordering::SeqCst),
+            thunks_before + 1,
+            "restart RE-RAN the per-member init thunk"
+        );
+
+        // The accessor re-resolves member 1 to the FRESH actor through the LIVE
+        // static slot — no stale PID is cached in the pool. (Comparing against the
+        // crashed pointer proves nothing: a freed wrapper's address can be
+        // reused; the live-slot identity is the real proof.)
+        let after = unsafe { hew_supervisor_pool_child_get(sup, 0, 1) };
+        assert!(after.is_live(), "member 1 is Live again after restart");
+        assert_eq!(
+            after.handle, new_actor,
+            "pool re-resolves to the restarted actor through the live static slot"
+        );
+        assert_eq!(after.handle, unsafe { (&(*sup).children)[1] });
+
+        // Member 0 is untouched by the SIMPLE_ONE_FOR_ONE per-member restart.
+        let member0 = unsafe { hew_supervisor_pool_child_get(sup, 0, 0) };
+        assert!(member0.is_live(), "member 0 stayed live");
+
+        unsafe { hew_supervisor_stop(sup) };
         assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);
     }
 }

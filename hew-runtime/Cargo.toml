@@ -53,6 +53,12 @@ otel = ["dep:ureq"]
 ciborium = "0.2"
 # Serde derive support for the CBOR envelope types (W1+).
 serde.workspace = true
+# Text wire codec (wire_text.rs): the CBOR↔JSON/YAML bridge parses and emits
+# JSON/YAML through serde, then transcodes the value tree to/from the CBOR body
+# codec via a per-type tag↔name descriptor. Reuses the workspace serde_json and
+# the established serde_yaml (0.9, matching hew-std's choice).
+serde_json.workspace = true
+serde_yaml = "0.9"
 # Core dependencies — always linked (collections, print, string, etc.)
 hew-cabi = { path = "../hew-cabi" }
 libc.workspace = true

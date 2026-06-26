@@ -229,31 +229,54 @@ fn wire_encode_decode_record_binary_codec_rewrite() {
 }
 
 #[test]
-fn wire_text_format_methods_record_no_codec_rewrite() {
-    // The text-format wire methods (`to_json`/`from_json`/…) are out of scope
-    // for the binary codec lane: no text-format thunk exists, so they must NOT
-    // record a WireCodec rewrite. They stay on the fail-closed path
-    // (MethodCallNoRewrite at HIR lowering), never producing a binary codec.
+fn wire_text_format_methods_record_codec_rewrite() {
+    // The text-format wire methods (`to_json`/`from_json`/`to_yaml`/`from_yaml`)
+    // lower through the CBOR↔text bridge: each records a WireCodec rewrite with
+    // its text direction so HIR/codegen drive the bridge thunks. (Replaces the
+    // historical pin that asserted NO rewrite, from before the text codec landed.)
     let output = check_source(
-        r"
+        r#"
         #[wire]
         struct Point { x: i64 @1, y: i64 @2 }
 
         fn main() {
             let p = Point { x: 1, y: 2 };
-            let s = p.to_json();
+            let _j: string = p.to_json();
+            let _y: string = p.to_yaml();
+            let _fj: Result<Point, string> = Point.from_json("{}");
+            let _fy: Result<Point, string> = Point.from_yaml("");
         }
-        ",
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "wire text-format methods must type-check: {:?}",
+        output.errors
     );
 
-    let any_wire_codec = output
-        .method_call_rewrites
-        .values()
-        .any(|rewrite| matches!(rewrite, MethodCallRewrite::WireCodec { .. }));
+    let has_dir = |want: WireCodecDirection| {
+        output.method_call_rewrites.values().any(|rewrite| {
+            matches!(
+                rewrite,
+                MethodCallRewrite::WireCodec { direction, .. } if *direction == want
+            )
+        })
+    };
     assert!(
-        !any_wire_codec,
-        "text-format `.to_json()` must NOT record a binary WireCodec rewrite; \
-         it stays fail-closed until a text-format serializer lands"
+        has_dir(WireCodecDirection::ToJson),
+        "to_json must record ToJson"
+    );
+    assert!(
+        has_dir(WireCodecDirection::ToYaml),
+        "to_yaml must record ToYaml"
+    );
+    assert!(
+        has_dir(WireCodecDirection::FromJson),
+        "from_json must record FromJson"
+    );
+    assert!(
+        has_dir(WireCodecDirection::FromYaml),
+        "from_yaml must record FromYaml"
     );
 }
 

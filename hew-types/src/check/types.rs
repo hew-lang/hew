@@ -1484,10 +1484,10 @@ pub enum MethodCallRewrite {
     /// path uses, so every site referencing one wire type shares a single CBOR
     /// thunk pair.
     ///
-    /// The text-format wire methods (`to_json`/`to_yaml`/`from_json`/
-    /// `from_yaml`/`to_toml`/`from_toml`) are intentionally NOT covered here:
-    /// no text-format thunk exists yet, so they remain fail-closed
-    /// (`MethodCallNoRewrite`) until a later change adds the serializers.
+    /// The binary directions (`Encode`/`Decode`) drive the CBOR codec; the text
+    /// directions (`ToJson`/`FromJson`/`ToYaml`/`FromYaml`) drive the CBOR↔text
+    /// bridge (reuse the binary walk + a generic transcode). `to_toml`/
+    /// `from_toml` remain fail-closed (`MethodCallNoRewrite`) until TOML lands.
     WireCodec {
         direction: WireCodecDirection,
         value_ty: crate::resolved_ty::ResolvedTy,
@@ -1537,12 +1537,68 @@ pub enum MathGenericOp {
 }
 
 /// Direction of a [`MethodCallRewrite::WireCodec`] call.
+///
+/// The binary directions (`Encode`/`Decode`) drive the CBOR body codec; the
+/// text directions (`ToJson`/`FromJson`/`ToYaml`/`FromYaml`) drive the
+/// CBOR↔text BRIDGE: a text serialize reuses the binary CBOR walk to build the
+/// value tree, then transcodes that tree to JSON/YAML text via a compiler-
+/// emitted tag↔name descriptor; a text deserialize parses the text, transcodes
+/// the tree back to CBOR, then reuses the binary CBOR decode walk. There is no
+/// parallel per-format struct/enum walk — the text codec is the binary codec
+/// plus a generic transcode (RATIFIED, Q203).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireCodecDirection {
     /// `value.encode() -> bytes`: serialize the receiver to CBOR bytes.
     Encode,
     /// `Type.decode(bytes) -> Type`: deserialize CBOR bytes back to the type.
     Decode,
+    /// `value.to_json() -> string`: serialize the receiver to JSON text.
+    ToJson,
+    /// `Type.from_json(string) -> Result<Type, string>`: parse JSON text.
+    FromJson,
+    /// `value.to_yaml() -> string`: serialize the receiver to YAML text.
+    ToYaml,
+    /// `Type.from_yaml(string) -> Result<Type, string>`: parse YAML text.
+    FromYaml,
+}
+
+impl WireCodecDirection {
+    /// True for the serialize directions (`value -> text/bytes`): `Encode`,
+    /// `ToJson`, `ToYaml`.
+    #[must_use]
+    pub fn is_serialize(self) -> bool {
+        matches!(self, Self::Encode | Self::ToJson | Self::ToYaml)
+    }
+
+    /// True for the text-format directions (JSON/YAML); false for the binary
+    /// CBOR directions (`Encode`/`Decode`).
+    #[must_use]
+    pub fn is_text(self) -> bool {
+        matches!(
+            self,
+            Self::ToJson | Self::FromJson | Self::ToYaml | Self::FromYaml
+        )
+    }
+
+    /// The text format of a text direction, or `None` for the binary CBOR
+    /// directions.
+    #[must_use]
+    pub fn text_format(self) -> Option<WireTextFormat> {
+        match self {
+            Self::ToJson | Self::FromJson => Some(WireTextFormat::Json),
+            Self::ToYaml | Self::FromYaml => Some(WireTextFormat::Yaml),
+            Self::Encode | Self::Decode => None,
+        }
+    }
+}
+
+/// The two text wire formats the bridge transcodes between CBOR and text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireTextFormat {
+    /// JSON (`to_json`/`from_json`).
+    Json,
+    /// YAML (`to_yaml`/`from_yaml`).
+    Yaml,
 }
 
 /// Which `Vec<T>` pipeline method a

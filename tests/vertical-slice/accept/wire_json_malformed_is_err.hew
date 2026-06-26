@@ -1,0 +1,16 @@
+// Validation (FAIL CLOSED): `from_json` on malformed JSON returns `Err`, never a
+// trap. `from_json` is an untrusted-input surface (config files, HTTP bodies);
+// bad input must be a recoverable error, not a crash. The fixture EXITS 42 only
+// by taking the `Err` arm — a trap would abort (134) and fail the assertion.
+#[wire]
+struct Point {
+    x: i64 @1,
+    y: i64 @2,
+}
+
+fn main() -> i64 {
+    match Point.from_json("{not valid json") {
+        Ok(_) => 1,
+        Err(_) => 42,
+    }
+}

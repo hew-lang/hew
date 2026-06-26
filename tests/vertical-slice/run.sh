@@ -1075,6 +1075,16 @@ run_accept_expect_status_and_stdout "bytes_slice_open_right_loop" 10
 run_accept_expect_stdout "regex_captures_find_all"
 run_check_run_expect_stdout "stdlib_io_scanner_file_oracle"
 run_accept_expect_stdout "tls_ffi_result_lowering"
+
+# Accept: TLS active-mode attach surface type-checks cleanly.
+# hew check only — the fixture requires a live TLS server to run;
+# the type-level gate proves the TlsHandler trait + attach() FFI binding compile.
+if ! "${HEW}" check "${ROOT}/tests/vertical-slice/accept/tls_active_attach.hew" >"${reject_output}" 2>&1; then
+  echo "expected tls_active_attach fixture to pass hew check; got:" >&2
+  cat "${reject_output}" >&2
+  exit 1
+fi
+
 run_accept_expect_stdout "template_compiled_free_function_p0"
 run_accept_expect_stdout "template_oracle_02_compiled_substitution"
 run_accept_expect_stdout "template_oracle_03_if_range"

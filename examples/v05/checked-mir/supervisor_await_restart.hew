@@ -1,0 +1,32 @@
+// MIR-corpus fixture: await_restart from a contextless (main) caller.
+//
+// Pins the `hew_supervisor_restart_await_blocking` CallRuntimeAbi instruction
+// emitted by the contextless `await_restart` lowering path. When `main` (or a
+// free fn) calls `await_restart sup.child`, MIR lowers to a blocking wait on
+// the supervisor restart Condvar (safe here because main runs off the
+// cooperative scheduler). The resulting `Instr::CallRuntimeAbi` carries the
+// quoted callee symbol, covering the SupervisorRestartAwaitBlocking family in
+// the coverage ratchet.
+actor Worker {
+    receive fn ping() -> i64 {
+        42
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+
+    child w: Worker;
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    // await_restart from main: contextless path, emits
+    // hew_supervisor_restart_await_blocking (CallRuntimeAbi).
+    let w2 = await_restart sup.w;
+    match await w2.ping() {
+        Ok(v) => v,
+        Err(_) => 0,
+    }
+}

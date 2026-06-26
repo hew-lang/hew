@@ -2684,6 +2684,15 @@ pub(crate) fn intern_runtime_decl<'ctx>(
             ],
             false,
         ),
+        // hew_supervisor_set_config_drop_fn(sup: *mut HewSupervisor,
+        //                                   drop_fn: unsafe extern "C" fn(*mut c_void)) -> void
+        // (`hew-runtime/src/supervisor.rs`). Registers the config struct's
+        // `__hew_record_drop_inplace_<T>` so teardown releases the config
+        // buffer's owned inner fields before the flat free. Shape:
+        // `(ptr sup, ptr drop_fn) -> void`.
+        "hew_supervisor_set_config_drop_fn" => ctx
+            .void_type()
+            .fn_type(&[ptr_ty.into(), ptr_ty.into()], false),
         // hew_supervisor_start(sup: *mut HewSupervisor) -> c_int
         // (`hew-runtime/src/supervisor.rs:1726`). Marks the supervisor running
         // and spawns its self-actor. Returns 0 on success. The bootstrap
@@ -6474,6 +6483,44 @@ fn emit_supervisor_bootstrap_body<'ctx>(
                 )
                 .llvm_ctx("config buffer memcpy")?;
 
+            // Register the config struct's drop glue so teardown releases the
+            // buffer's OWNED inner fields (`string`/`bytes`/…) before the flat
+            // free. The buffer OWNS those fields (the thunks only CLONE from
+            // them); without this they leak at teardown. Only when the config
+            // struct has an owned field — an all-scalar config has nothing to
+            // drop. The `__hew_record_drop_inplace_<ConfigTy>` body is seeded
+            // for synthesis via `collect_supervisor_config_drop_seeds`.
+            let config_has_owned = mir_record_layouts
+                .iter()
+                .find(|r| r.name == config_param.config_ty_name)
+                .is_some_and(|r| {
+                    r.field_tys.iter().any(|ty| {
+                        let mut visited = std::collections::HashSet::new();
+                        hew_mir::classify_state_field(ty, mir_record_layouts, &mut visited)
+                            .is_ok_and(|kind| !matches!(kind, StateFieldCloneKind::BitCopy { .. }))
+                    })
+                });
+            if config_has_owned {
+                let drop_fn =
+                    get_or_declare_record_drop_inplace(ctx, llvm_mod, &config_param.config_ty_name);
+                let set_config_drop = intern_runtime_decl(
+                    ctx,
+                    llvm_mod,
+                    &mut runtime_decls,
+                    "hew_supervisor_set_config_drop_fn",
+                )?;
+                builder
+                    .build_call(
+                        set_config_drop,
+                        &[
+                            sup.into(),
+                            drop_fn.as_global_value().as_pointer_value().into(),
+                        ],
+                        "hew_supervisor_set_config_drop_fn_call",
+                    )
+                    .llvm_ctx("hew_supervisor_set_config_drop_fn call")?;
+            }
+
             Some((buf_ptr, config_size_i64))
         }
         None => None,
@@ -9863,6 +9910,46 @@ fn collect_record_inplace_drop_seeds(
                     }
                 }
             }
+        }
+    }
+    seeds
+}
+
+/// Collect the config struct name of every supervisor whose config struct has
+/// at least one OWNED field, so its `__hew_record_drop_inplace_<ConfigTy>` body
+/// is synthesised. The supervisor-owned config buffer owns those inner fields;
+/// the bootstrap registers this drop fn (`hew_supervisor_set_config_drop_fn`)
+/// so teardown releases them before the flat free. A config struct used only as
+/// a supervisor config param is reachable from no other seed.
+fn collect_supervisor_config_drop_seeds(
+    supervisor_layouts: &[SupervisorLayout],
+    record_layouts: &[RecordLayout],
+) -> Vec<String> {
+    let mut seeds: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for sup in supervisor_layouts {
+        let Some(config_param) = &sup.config_param else {
+            continue;
+        };
+        if !seen.insert(config_param.config_ty_name.clone()) {
+            continue;
+        }
+        let Some(record) = record_layouts
+            .iter()
+            .find(|r| r.name == config_param.config_ty_name)
+        else {
+            continue;
+        };
+        // Seed only when at least one field is non-BitCopy (owned). An
+        // all-scalar config has nothing to drop; the bootstrap then registers
+        // no config_drop_fn.
+        let has_owned = record.field_tys.iter().any(|ty| {
+            let mut visited = std::collections::HashSet::new();
+            hew_mir::classify_state_field(ty, record_layouts, &mut visited)
+                .is_ok_and(|kind| !matches!(kind, StateFieldCloneKind::BitCopy { .. }))
+        });
+        if has_owned {
+            seeds.push(config_param.config_ty_name.clone());
         }
     }
     seeds
@@ -34748,6 +34835,22 @@ fn build_module_for_target<'ctx>(
     for seed in collect_enum_clone_inplace_seeds(&pipeline.raw_mir, &pipeline.enum_layouts) {
         if !enum_inplace_drop_seeds.contains(&seed) {
             enum_inplace_drop_seeds.push(seed);
+        }
+    }
+    // v0.6 init-closure restart model — seed every supervisor config struct that
+    // has owned fields so its `__hew_record_drop_inplace_<ConfigTy>` body is
+    // synthesised. The supervisor-owned config buffer OWNS its inner owned
+    // fields (the init thunks only CLONE from them); the bootstrap registers
+    // this drop fn via `hew_supervisor_set_config_drop_fn` so teardown releases
+    // them before the flat free. A config struct used only as a supervisor
+    // config param is reachable from no actor/record state field, so without
+    // this seed its drop body would be declared-but-undefined (LLVM verify
+    // reject) and its inner owned fields would leak at teardown.
+    for seed in
+        collect_supervisor_config_drop_seeds(&pipeline.supervisor_layouts, &pipeline.record_layouts)
+    {
+        if !vec_owned_record_seeds.contains(&seed) {
+            vec_owned_record_seeds.push(seed);
         }
     }
     emit_state_clone_drop_synthesis(

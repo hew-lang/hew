@@ -221,6 +221,9 @@ jobs:
       - name: Check bans and sources
         run: cargo deny check bans sources
 
+      - name: Check security advisories
+        run: cargo deny check advisories
+
       - name: Install cargo-about
         run: cargo install cargo-about --locked --version 0.9.0 --features cli
 

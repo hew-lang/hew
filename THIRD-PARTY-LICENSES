@@ -2182,7 +2182,7 @@ Apache License 2.0
   * ciborium-ll 0.2.2 — https://github.com/enarx/ciborium
   * ciborium 0.2.2 — https://github.com/enarx/ciborium
   * email-encoding 0.4.1 — https://github.com/lettre/email-encoding
-  * quinn-proto 0.11.14 — https://github.com/quinn-rs/quinn
+  * quinn-proto 0.11.15 — https://github.com/quinn-rs/quinn
   * quinn-udp 0.5.14 — https://github.com/quinn-rs/quinn
   * quinn 0.11.9 — https://github.com/quinn-rs/quinn
   * rustls-platform-verifier 0.6.2 — https://github.com/rustls/rustls-platform-verifier

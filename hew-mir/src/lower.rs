@@ -4547,6 +4547,9 @@ fn collect_unknown_self_fields_in_expr(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_unknown_self_fields_in_expr(conn, state_fields, seen, unknown);
         }
+        HirExprKind::AwaitRestart { child } => {
+            collect_unknown_self_fields_in_expr(child, state_fields, seen, unknown);
+        }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_unknown_self_fields_in_expr(listener, state_fields, seen, unknown);
         }
@@ -5015,6 +5018,9 @@ fn collect_binding_defs_in_expr<'f>(
         }
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_binding_defs_in_expr(conn, defs, let_ids);
+        }
+        HirExprKind::AwaitRestart { child } => {
+            collect_binding_defs_in_expr(child, defs, let_ids);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_binding_defs_in_expr(listener, defs, let_ids);
@@ -5567,6 +5573,7 @@ fn collect_return_values_in_expr<'f>(expr: &'f HirExpr, out: &mut Vec<&'f HirExp
             collect_return_values_in_expr(operand, out);
         }
         HirExprKind::ConnAwaitRead { conn, .. } => collect_return_values_in_expr(conn, out),
+        HirExprKind::AwaitRestart { child } => collect_return_values_in_expr(child, out),
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_return_values_in_expr(listener, out);
         }
@@ -11686,6 +11693,9 @@ impl Builder {
                 binding_id,
                 output_ty,
             } => self.lower_await_task(binding_name, *binding_id, output_ty, expr.site),
+            HirExprKind::AwaitRestart { child } => {
+                self.lower_await_restart(child, &expr.ty, expr.site)
+            }
             HirExprKind::Select(select) => self.lower_select(select, &expr.ty, expr.site),
             HirExprKind::Join(join) => self.lower_join(join, &expr.ty, expr.site),
             HirExprKind::SpawnLambdaActor { .. } => {
@@ -21657,6 +21667,136 @@ impl Builder {
         Some(handle_place)
     }
 
+    /// Lower `await_restart sup.child` to `SuspendKind::RestartWait`.
+    ///
+    /// The supervisor analogue of `lower_await_task`: park the current actor on
+    /// the supervisor restart observer until the static child slot is Live again,
+    /// then resume re-fetching the now-Live `LocalPid<ChildType>`. Modelled on
+    /// the `TaskAwait` suspend ramp; the resume edge re-resolves the slot through
+    /// the SAME fungible-reference machinery a static child send uses
+    /// (`emit_child_get_into` + `fungible_child_refs`), so the resumed handle is
+    /// never a pointer cached across the suspend (LESSONS
+    /// `replaceable-resource-handle-is-fungible-reference`, R6).
+    ///
+    /// `child` is the inner supervised-child accessor (a `FieldAccess`); its
+    /// `site` keys `supervisor_child_slots` with the `(supervisor, slot)`
+    /// discriminator. The checker already proved the operand is a static child,
+    /// so a missing slot here is a lowering invariant break — fail closed.
+    ///
+    /// A `FunctionCallConv::Default` caller (`main`, free fn) has no parkable
+    /// continuation, so it lowers the accessor seed only (the runtime observer's
+    /// READY/immediate-Dead path resumes it through the same edge once codegen's
+    /// blocking fallback lands); the suspend flip fires only for a caller that
+    /// carries an execution context, exactly like `lower_await_task`.
+    fn lower_await_restart(
+        &mut self,
+        child: &HirExpr,
+        result_ty: &ResolvedTy,
+        site: hew_hir::SiteId,
+    ) -> Option<Place> {
+        // The inner accessor's site carries the (supervisor, slot) discriminator.
+        let Some(slot) = self.supervisor_child_slots.get(&child.site).cloned() else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "await_restart on a non-supervised-child operand".to_string(),
+                    site,
+                },
+                note: "await_restart lowering found no supervisor child slot for its operand; \
+                       the checker should have rejected this"
+                    .to_string(),
+            });
+            return None;
+        };
+
+        // The accessor's object is the supervisor PID. Extract + lower it (NOT the
+        // whole FieldAccess, which would emit a child_get of its own).
+        let HirExprKind::FieldAccess { object, .. } = &child.kind else {
+            self.diagnostics.push(MirDiagnostic {
+                kind: MirDiagnosticKind::NotYetImplemented {
+                    construct: "await_restart operand is not a field access".to_string(),
+                    site,
+                },
+                note:
+                    "await_restart expects `sup.child`; its operand lowered to a non-FieldAccess \
+                       HIR node"
+                        .to_string(),
+            });
+            return None;
+        };
+        let sup_place = self.lower_value(object)?;
+
+        // Translate the checker's combined-static index to the kind-partitioned
+        // runtime slot index (the accessor reads the same partitioned space).
+        let slot_index =
+            self.partitioned_static_slot_index(&slot.supervisor, &slot.child_name, false);
+
+        // Allocate the re-fetched handle local, typed as the child's
+        // `LocalPid<ChildType>` (the checker authority on this expr's type).
+        let handle_local = self.alloc_local(result_ty.clone());
+        let Place::Local(handle_id) = handle_local else {
+            unreachable!("alloc_local always returns Place::Local");
+        };
+        let handle_place = Place::ActorHandle(handle_id);
+
+        // Record the fungible reference BEFORE the suspend so a send through the
+        // resumed handle re-resolves the `(sup, slot)` at send time rather than
+        // trusting any pointer captured across the suspension point.
+        self.fungible_child_refs.insert(
+            handle_id,
+            FungibleChildRef {
+                sup_place,
+                slot_index,
+            },
+        );
+
+        // Suspendable-caller flip: a caller that carries the execution context
+        // (actor handler / closure / task entry) SUSPENDS on the restart observer
+        // instead of spinning. The resume edge re-fetches the now-Live handle.
+        if self.current_function_call_conv.carries_execution_context() {
+            let next = self.alloc_block();
+            self.record_suspend_kind(SuspendKind::RestartWait {
+                sup_place,
+                slot_index,
+                result_dest: handle_place,
+                deadline_result_dest: None,
+            });
+            self.finish_current_block(Terminator::Suspend {
+                resume: next,
+                cleanup: next,
+                is_final: false,
+            });
+            self.start_block(next);
+            // On resume the child slot is Live (notify_restart fires AFTER
+            // store_child_slot); re-fetch it through the fungible re-resolve so
+            // the handle reflects the new incarnation, never a stale snapshot.
+            self.emit_child_get_into(sup_place, slot_index, handle_place);
+            return Some(handle_place);
+        }
+
+        // Contextless caller (`main` / free fn): no parkable continuation, so
+        // BLOCK the calling thread on the supervisor restart Condvar until the
+        // child is Live or permanently Dead, then re-fetch. Safe to thread-block
+        // here: `main` runs off the cooperative scheduler that fires the restart
+        // (no self-deadlock), exactly as a contextless `await` blocks on its ask.
+        // The R4 fail-closed contract holds: a permanent-Dead slot returns from
+        // the blocking wait and the re-fetch surfaces the dead slot recoverably.
+        let idx_place = self.alloc_local(ResolvedTy::I64);
+        self.push_instr(Instr::ConstI64 {
+            dest: idx_place,
+            value: i64::from(slot_index),
+        });
+        self.push_instr(Instr::CallRuntimeAbi(
+            crate::model::RuntimeCall::new(
+                "hew_supervisor_restart_await_blocking",
+                vec![sup_place, idx_place],
+                None,
+            )
+            .expect("hew_supervisor_restart_await_blocking is an allowlisted runtime symbol"),
+        ));
+        self.emit_child_get_into(sup_place, slot_index, handle_place);
+        Some(handle_place)
+    }
+
     /// Translate a supervisor child's combined-static checker index into its
     /// kind-partitioned runtime slot index.
     ///
@@ -21681,6 +21821,11 @@ impl Builder {
         };
         let mut index = 0u32;
         for child in &layout.children {
+            // Pools live in a disjoint `pool_slots[]` space and occupy NEITHER
+            // the static actor-child table nor the nested-supervisor table — skip
+            // them on BOTH axes. This is the shared truth `occupies_static_child_slot`
+            // encodes for the actor axis; the codegen bootstrap loop must skip
+            // pools identically or a post-pool static accessor mis-routes.
             if child.is_pool {
                 continue;
             }
@@ -21689,6 +21834,15 @@ impl Builder {
                 continue;
             }
             if child.name == child_name {
+                // Invariant: a non-pool actor child (want_nested == false) is
+                // exactly what `occupies_static_child_slot` admits; keep the two
+                // iterations provably in lock-step.
+                debug_assert!(
+                    want_nested || child.occupies_static_child_slot(),
+                    "partitioned_static_slot_index: actor-axis child `{child_name}` of \
+                     supervisor `{supervisor}` must occupy a static child slot — the \
+                     codegen bootstrap loop and this accessor lookup have diverged"
+                );
                 return index;
             }
             index += 1;
@@ -28587,6 +28741,9 @@ pub fn suspend_kind_source_places(kind: &SuspendKind) -> Vec<Place> {
         // `scope` (scope-scoped observer registration) + `task` (await source)
         // are reads; `result_dest` is a resume-edge write.
         SuspendKind::TaskAwait { scope, task, .. } => vec![*scope, *task],
+        // `sup_place` (the supervisor PID) is the restart-observer registration
+        // source; `result_dest` is a resume-edge write (re-fetched handle).
+        SuspendKind::RestartWait { sup_place, .. } => vec![*sup_place],
         // `duration_ms` is the deadline source; the resume edge binds nothing.
         SuspendKind::Sleep { duration_ms } => vec![*duration_ms],
     }
@@ -28868,6 +29025,9 @@ fn suspend_kind_yield_escapes(kind: &SuspendKind, local: u32) -> bool {
         | SuspendKind::ChannelRecv { .. }
         | SuspendKind::CallClosure { .. }
         | SuspendKind::TaskAwait { .. }
+        // `await_restart` reads the supervisor PID and binds the re-fetched
+        // handle on resume; it moves no yielded value across the suspend.
+        | SuspendKind::RestartWait { .. }
         | SuspendKind::Sleep { .. } => false,
     }
 }
@@ -32742,6 +32902,9 @@ fn suspend_kind_escape_places(kind: &SuspendKind) -> Vec<Place> {
         | SuspendKind::StreamNext { .. }
         | SuspendKind::ChannelRecv { .. }
         | SuspendKind::TaskAwait { .. }
+        // `await_restart` reads the borrowed supervisor PID and re-fetches the
+        // child handle on resume — no owned value escapes into a sink.
+        | SuspendKind::RestartWait { .. }
         | SuspendKind::Sleep { .. } => Vec::new(),
     }
 }

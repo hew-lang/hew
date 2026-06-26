@@ -259,6 +259,9 @@ fn render_suspend_kind_tag(kind: Option<&SuspendKind>) -> String {
         }
         SuspendKind::RemoteAsk { .. } => "[remote_ask]".to_string(),
         SuspendKind::TaskAwait { .. } => "[task_await]".to_string(),
+        SuspendKind::RestartWait { slot_index, .. } => {
+            format!("[restart_wait] slot={slot_index}")
+        }
         SuspendKind::Sleep { .. } => "[sleep]".to_string(),
     }
 }

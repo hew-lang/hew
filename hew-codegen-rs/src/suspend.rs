@@ -185,6 +185,22 @@ pub(crate) struct SuspendingTaskAwaitEmit {
     pub(crate) cleanup: u32,
 }
 
+/// Carrier for [`emit_suspending_restart_wait_terminator`] — the suspending
+/// `await_restart sup.child` ramp (`SuspendKind::RestartWait`). The supervisor
+/// analogue of [`SuspendingTaskAwaitEmit`].
+pub(crate) struct SuspendingRestartWaitEmit {
+    /// The supervisor PID place (the restart-observer registration target).
+    pub(crate) sup_place: Place,
+    /// The static-child slot index to wait on (the pre-park state check key).
+    pub(crate) slot_index: u32,
+    /// The handle slot re-fetched on the bind edge. The MIR resume edge already
+    /// re-resolves the slot via `hew_supervisor_child_get`; codegen only parks
+    /// and resumes here (the re-fetch is a separate MIR instruction on `resume`).
+    pub(crate) result_dest: Place,
+    pub(crate) resume: u32,
+    pub(crate) cleanup: u32,
+}
+
 /// Carrier for [`emit_suspending_sleep_terminator`] — the suspending
 /// `sleep_ms(d)` ramp (`Terminator::SuspendingSleep`).
 pub(crate) struct SuspendingSleepEmit {
@@ -3135,6 +3151,191 @@ pub(crate) fn emit_suspending_task_await_terminator<'ctx>(
                 .builder
                 .build_unconditional_branch(resume_bb)
                 .llvm_ctx("suspending task-await bind -> resume br")?;
+            Ok(())
+        },
+    )
+}
+
+/// Emit the caller-side cooperative `await_restart sup.child`
+/// (`SuspendKind::RestartWait`). The supervisor-restart-readiness analogue of
+/// [`emit_suspending_task_await_terminator`].
+///
+/// Shape (the suspending restart-wait ramp):
+/// ```text
+///   self = hew_actor_self()                              ; the parked-cont actor
+///   sup  = <load sup_place>                              ; the supervisor PID
+///   slot = hew_read_slot_new()
+///   rc   = hew_supervisor_restart_await_suspend(sup, slot_index, self, slot)
+///   br (rc == 0) -> do_suspend, bind                     ; 0 = parked, 1 = ready
+/// do_suspend:                                            ; coro.suspend (non-final)
+///   switch coro.suspend [default -> return handle, 0 -> bind, 1 -> abandon]
+/// abandon:                                               ; parked cont destroyed
+///   hew_supervisor_restart_await_detach(sup, slot); br shared cleanup
+/// bind:                                                  ; ready OR resumed
+///   hew_read_slot_free(slot)                             ; release the creator ref
+///   br resume_bb                                         ; MIR resume re-fetches the
+///                                                        ; now-Live handle separately
+/// ```
+/// The pre-park state check lives in the runtime observer: a Live child returns
+/// READY (bind immediately), a permanently-Dead child returns READY (resume +
+/// fail closed at the send re-resolve, never hang — R4), only a Transient child
+/// parks. The re-fetch of the now-Live handle is a separate MIR instruction on
+/// the resume edge (`emit_child_get_into`), NOT this terminator — so codegen
+/// only parks and resumes here, binding nothing. Slot refs mirror the task-await
+/// ramp: `new` (+1 creator); the observer takes its in-flight ref only on the
+/// park path; the single `hew_read_slot_free` on the bind edge releases the
+/// creator ref. The abandon edge detaches (cancelling the slot so a racing
+/// `notify_restart` drops its wake) before the creator-ref free.
+pub(crate) fn emit_suspending_restart_wait_terminator<'ctx>(
+    fn_ctx: &FnCtx<'_, 'ctx>,
+    term: SuspendingRestartWaitEmit,
+) -> CodegenResult<()> {
+    let coro = fn_ctx.coro.ok_or_else(|| {
+        CodegenError::FailClosed(
+            "SuspendKind::RestartWait reached codegen but the function carries no \
+             coro prologue state — lower_function must detect the suspend carrier \
+             (has_suspend) and emit the prologue before the body"
+                .into(),
+        )
+    })?;
+    let resume_bb = *fn_ctx.blocks.get(&term.resume).ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "RestartWait resume target bb{} not found",
+            term.resume
+        ))
+    })?;
+    if !fn_ctx.blocks.contains_key(&term.cleanup) {
+        return Err(CodegenError::FailClosed(format!(
+            "RestartWait cleanup target bb{} not found",
+            term.cleanup
+        )));
+    }
+    let _ = term.result_dest; // re-fetched by the MIR resume edge, not here.
+
+    let i32_ty = fn_ctx.ctx.i32_type();
+    let actor_self_fn = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_actor_self",
+    )?;
+    let self_actor = fn_ctx
+        .builder
+        .build_call(actor_self_fn, &[], "suspending_restart_wait_self")
+        .llvm_ctx("hew_actor_self call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_actor_self returned void".into()))?
+        .into_pointer_value();
+    let sup_ptr = load_duplex_handle(fn_ctx, term.sup_place, "suspending_restart_wait_sup")?;
+
+    let slot_new = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_new",
+    )?;
+    let slot = fn_ctx
+        .builder
+        .build_call(slot_new, &[], "suspending_restart_wait_slot")
+        .llvm_ctx("hew_read_slot_new call")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("hew_read_slot_new returned void".into()))?
+        .into_pointer_value();
+
+    let slot_index_val = i32_ty.const_int(u64::from(term.slot_index), false);
+    let rc = fn_ctx.call_runtime_int(
+        "hew_supervisor_restart_await_suspend",
+        &[
+            sup_ptr.into(),
+            slot_index_val.into(),
+            self_actor.into(),
+            slot.into(),
+        ],
+        "suspending_restart_wait_register",
+        "hew_supervisor_restart_await_suspend call",
+    )?;
+
+    let parent = fn_ctx
+        .builder
+        .get_insert_block()
+        .and_then(|bb| bb.get_parent())
+        .ok_or_else(|| {
+            CodegenError::Llvm("suspending restart-wait block has no parent function".into())
+        })?;
+    let do_suspend_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_restart_wait_suspend");
+    let bind_bb = fn_ctx
+        .ctx
+        .append_basic_block(parent, "suspending_restart_wait_bind");
+    // rc == 0 (RESTART_AWAIT_SUSPEND) → park; else (READY) bind immediately.
+    let is_suspend = fn_ctx
+        .builder
+        .build_int_compare(
+            IntPredicate::EQ,
+            rc,
+            rc.get_type().const_zero(),
+            "suspending_restart_wait_is_suspend",
+        )
+        .llvm_ctx("suspending restart-wait suspend compare")?;
+    fn_ctx
+        .builder
+        .build_conditional_branch(is_suspend, do_suspend_bb, bind_bb)
+        .llvm_ctx("suspending restart-wait register branch")?;
+
+    let slot_free = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_read_slot_free",
+    )?;
+    let detach = intern_runtime_decl(
+        fn_ctx.ctx,
+        fn_ctx.llvm_mod,
+        &mut fn_ctx.runtime_decls.borrow_mut(),
+        "hew_supervisor_restart_await_detach",
+    )?;
+
+    fn_ctx.builder.position_at_end(do_suspend_bb);
+    emit_suspend_point(
+        fn_ctx,
+        coro,
+        parent,
+        bind_bb,
+        "suspending_restart_wait",
+        "suspending_restart_wait_abandon_cleanup",
+        "suspending restart-wait abandon -> shared cleanup br",
+        || {
+            // Abandon: detach the observer (cancel the slot so a racing
+            // notify_restart drops its wake) + release the creator ref. The
+            // detach releases the observer's own in-flight ref.
+            fn_ctx
+                .builder
+                .build_call(
+                    detach,
+                    &[sup_ptr.into(), slot.into()],
+                    "suspending_restart_wait_abandon_detach",
+                )
+                .llvm_ctx("hew_supervisor_restart_await_detach (abandon) call")?;
+            Ok(())
+        },
+        || {
+            // Bind: ready (already Live / permanent-Dead) OR resumed (restarted).
+            // Release the creator ref; the MIR resume edge re-fetches the handle.
+            fn_ctx
+                .builder
+                .build_call(
+                    slot_free,
+                    &[slot.into()],
+                    "suspending_restart_wait_bind_free",
+                )
+                .llvm_ctx("hew_read_slot_free (restart-wait bind) call")?;
+            fn_ctx
+                .builder
+                .build_unconditional_branch(resume_bb)
+                .llvm_ctx("suspending restart-wait bind -> resume br")?;
             Ok(())
         },
     )

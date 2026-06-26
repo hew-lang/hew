@@ -3261,6 +3261,16 @@ impl Checker {
                 ));
                 Self::collect_machine_transition_forbidden_exprs(&inner.0, &inner.1, hits);
             }
+            // `await_restart` is a cooperative suspension point, forbidden in a
+            // machine transition for the same reason as `await`.
+            Expr::AwaitRestart(inner) => {
+                hits.push((
+                    TypeErrorKind::AwaitInMachineTransition,
+                    span.clone(),
+                    "await_restart",
+                ));
+                Self::collect_machine_transition_forbidden_exprs(&inner.0, &inner.1, hits);
+            }
             Expr::Binary { left, right, .. }
             | Expr::Is {
                 lhs: left,

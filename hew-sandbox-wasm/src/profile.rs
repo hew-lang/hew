@@ -573,6 +573,18 @@ impl<'a> ProfileChecker<'a> {
                 }
                 self.check_expr(operand);
             }
+            Expr::AwaitRestart(operand) => {
+                // `await_restart` parks the actor on the native supervisor restart
+                // observer (a cooperative-scheduler primitive); the browser sandbox
+                // has no such substrate, so it is a reserved runtime feature.
+                self.reject(
+                    span.clone(),
+                    "reserved_runtime_feature",
+                    "`await_restart` suspends on the supervisor restart observer, \
+                     which is not supported in the browser sandbox",
+                );
+                self.check_expr(operand);
+            }
             Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
                 for item in items {
                     self.check_expr(item);

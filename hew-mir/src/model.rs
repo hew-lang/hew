@@ -924,6 +924,28 @@ pub struct SupervisorChildLayout {
     pub nested_bootstrap_symbol: Option<String>,
 }
 
+impl SupervisorChildLayout {
+    /// Whether this child occupies a slot in the runtime's STATIC actor-child
+    /// table (`HewSupervisor.children[]`) and therefore advances the partitioned
+    /// static-slot index.
+    ///
+    /// This is the SINGLE shared truth tying the two iterations that walk
+    /// `SupervisorLayout.children`: MIR `partitioned_static_slot_index` (the
+    /// accessor's slot lookup) and the codegen bootstrap registration loop. Both
+    /// MUST agree, or a static `sup.child` accessor declared after a pool or a
+    /// nested supervisor mis-routes to the wrong runtime slot.
+    ///
+    /// A child advances the static index iff it is NEITHER a nested supervisor
+    /// (those live in `child_supervisors[]`, a disjoint table) NOR a pool (those
+    /// live in `pool_slots[]`, also disjoint — the pool axis the B1 spine left
+    /// latent). Nested children and pool children each occupy their own 0-based
+    /// space; only plain actor children occupy `children[]`.
+    #[must_use]
+    pub fn occupies_static_child_slot(&self) -> bool {
+        !self.is_pool && self.nested_bootstrap_symbol.is_none()
+    }
+}
+
 /// A self-contained literal value for a supervisor child init arg.
 ///
 /// Kept separate from MIR instructions so codegen can read these directly
@@ -1804,6 +1826,25 @@ pub enum SuspendKind {
         scope: Place,
         task: Place,
         result_dest: Option<Place>,
+    },
+    /// Non-blocking `await_restart sup.child` — park the current actor on the
+    /// supervisor restart observer until the static child at `slot_index`
+    /// becomes Live again (it restarted), then resume re-fetching the now-Live
+    /// `LocalPid<ChildType>` into `result_dest`. The supervisor analogue of
+    /// `TaskAwait`: lowered through the SAME cooperative-suspension machinery,
+    /// parking against the supervisor's `restart_notify` (NOT the thread-blocking
+    /// `hew_supervisor_wait_restart`). A permanently-Dead child fails closed
+    /// (resumes immediately) rather than hanging forever.
+    ///
+    /// `deadline_result_dest` is RESERVED for the future bounded form
+    /// (`await_restart sup.w within: 5.seconds → Option<LocalPid<T>>`), mirroring
+    /// the deadline slot on `Read`/`Accept`/`StreamNext`; the bare form leaves
+    /// it `None`.
+    RestartWait {
+        sup_place: Place,
+        slot_index: u32,
+        result_dest: Place,
+        deadline_result_dest: Option<Place>,
     },
     /// Non-blocking `sleep_ms(d)` / `sleep(d)` (`SuspendingSleep`).
     Sleep { duration_ms: Place },

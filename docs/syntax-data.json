@@ -53,6 +53,7 @@
       "after",
       "from",
       "await",
+      "await_restart",
       "this"
     ],
     "wire": [
@@ -147,6 +148,7 @@
     "spawn",
     "async",
     "await",
+    "await_restart",
     "receive",
     "init",
     "record",

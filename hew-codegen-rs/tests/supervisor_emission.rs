@@ -803,3 +803,199 @@ fn supervisor_bootstrap_actor_child_coexists_with_nested() {
         "the actor child spec must reference the Worker dispatch trampoline; got:\n{ir}"
     );
 }
+
+/// Build a `[pool, static]` supervisor: a pool child DECLARED BEFORE a static
+/// actor child. This is the mixed-order layout that exposed the #2227 pool-axis
+/// index divergence — the foot-gun the B1-3 reconciliation fixes.
+fn pool_then_static_pipeline() -> IrPipeline {
+    let bootstrap_symbol = "MixedSupervisor__bootstrap".to_string();
+
+    let worker_layout = ActorLayout {
+        name: "Worker".to_string(),
+        defining_module: None,
+        state_field_names: vec![],
+        state_field_tys: vec![],
+        state_field_defaults: vec![],
+        init_param_names: vec![],
+        init_param_tys: vec![],
+        init_symbol: None,
+        on_start_symbol: None,
+        on_stop_symbols: vec![],
+        on_crash_symbol: None,
+        max_heap_bytes: None,
+        cycle_capable: false,
+        handlers: vec![],
+        state_clone_fn_symbol: None,
+        state_drop_fn_symbol: None,
+        state_field_clone_kinds: None,
+    };
+
+    let bootstrap_fn = RawMirFunction {
+        name: bootstrap_symbol.clone(),
+        return_ty: local_pid_of("MixedSupervisor"),
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![local_pid_of("MixedSupervisor")],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![],
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::BTreeMap::new(),
+    };
+
+    let main_fn = RawMirFunction {
+        name: "main".to_string(),
+        return_ty: ResolvedTy::I64,
+        call_conv: FunctionCallConv::Default,
+        params: vec![],
+        locals: vec![ResolvedTy::I64],
+        local_names: Vec::new(),
+        local_scopes: Vec::new(),
+        local_decl_bytes: Vec::new(),
+        scope_table: Vec::new(),
+        blocks: vec![BasicBlock {
+            id: 0,
+            statements: vec![],
+            instructions: vec![
+                hew_mir::Instr::ConstI64 {
+                    dest: hew_mir::Place::Local(0),
+                    value: 0,
+                },
+                hew_mir::Instr::Move {
+                    dest: hew_mir::Place::ReturnSlot,
+                    src: hew_mir::Place::Local(0),
+                },
+            ],
+            terminator: Terminator::Return,
+        }],
+        decisions: vec![],
+        intrinsic_id: None,
+        await_deadline_ns: std::collections::HashMap::new(),
+        suspend_kinds: std::collections::HashMap::new(),
+        lambda_actor_user_param_locals: Vec::new(),
+        span: None,
+        instr_spans: ::std::collections::BTreeMap::new(),
+    };
+
+    let supervisor_layout = SupervisorLayout {
+        name: "MixedSupervisor".to_string(),
+        strategy: Some(HirSupervisorStrategy::SimpleOneForOne),
+        max_restarts: Some(3),
+        window: Some("60".to_string()),
+        bootstrap_symbol: bootstrap_symbol.clone(),
+        children: vec![
+            // Pool child FIRST (pool_slots[] space, disjoint from children[]).
+            SupervisorChildLayout {
+                name: "workers".to_string(),
+                actor_name: "Worker".to_string(),
+                restart_policy: None,
+                is_pool: true,
+                slot_index: 0,
+                wired_to: Default::default(),
+                spawn_order: 0,
+                on_crash_symbol: None,
+                lifecycle_symbol: None,
+                max_heap_bytes: None,
+                cycle_capable: false,
+                init_state_fields: vec![],
+                nested_bootstrap_symbol: None,
+            },
+            // Static actor child AFTER the pool. Its static slot index must be 0
+            // (the pool is excluded) — both in the accessor and in codegen's
+            // `actor_child_index`. Before the fix, codegen advanced past the pool
+            // and registered this at index 1 → mis-route.
+            SupervisorChildLayout {
+                name: "monitor".to_string(),
+                actor_name: "Worker".to_string(),
+                restart_policy: None,
+                is_pool: false,
+                slot_index: 0,
+                wired_to: Default::default(),
+                spawn_order: 1,
+                on_crash_symbol: None,
+                lifecycle_symbol: None,
+                max_heap_bytes: None,
+                cycle_capable: false,
+                init_state_fields: vec![],
+                nested_bootstrap_symbol: None,
+            },
+        ],
+    };
+
+    IrPipeline {
+        thir: vec![],
+        raw_mir: vec![bootstrap_fn, main_fn],
+        checked_mir: vec![],
+        elaborated_mir: vec![],
+        diagnostics: vec![],
+        wire_layouts: std::sync::Arc::default(),
+        opaque_handle_names: vec![],
+        record_layouts: vec![],
+        actor_layouts: vec![worker_layout],
+        supervisor_layouts: vec![supervisor_layout],
+        machine_layouts: vec![],
+        enum_layouts: vec![],
+        regex_literals: vec![],
+        user_consts: Vec::new(),
+        extern_decls: vec![],
+        dyn_vtable_registry: vec![],
+        hashmap_lowering_facts: vec![],
+        hashset_lowering_facts: vec![],
+        actor_send_aliasing: std::collections::HashMap::new(),
+        polymorphic_mir: Vec::new(),
+        user_clone_record_seeds: vec![],
+        lint_warnings: vec![],
+    }
+}
+
+/// Foot-gun reconciliation (#2227 pool-axis divergence): a pool child declared
+/// BEFORE a static actor child must NOT register into the static `children[]`
+/// table — only the static child does. Before the fix, codegen registered the
+/// pool via the static `add_child_spec` path AND advanced `actor_child_index`,
+/// so a post-pool static accessor mis-routed. After the fix, codegen skips pool
+/// children entirely, so exactly ONE `add_child_spec` call is emitted (the
+/// static `monitor`), matching the accessor's partitioned static index of 0.
+///
+/// NOTE: the checker forbids a pool and a static child coexisting in one
+/// supervisor (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH` — `simple_one_for_one` may
+/// hold only a single pool child), so this mixed layout is UNREACHABLE from
+/// valid Hew source today. It is constructed here directly (bypassing the
+/// checker) to prove the codegen registration + the shared
+/// `occupies_static_child_slot` invariant stay sound the day that rule relaxes —
+/// the latent divergence the B1 spine left, defended at the codegen seam.
+#[test]
+fn supervisor_bootstrap_skips_pool_child_in_static_registration() {
+    let ir = emit_to_string(&pool_then_static_pipeline(), "pool-then-static");
+    // Count CALL sites only (`call ... @hew_supervisor_add_child_spec(`), not the
+    // `declare` line which also contains the symbol.
+    let add_spec_count = ir
+        .lines()
+        .filter(|l| l.contains("call") && l.contains("@hew_supervisor_add_child_spec("))
+        .count();
+    assert_eq!(
+        add_spec_count, 1,
+        "a [pool, static] supervisor must emit exactly one add_child_spec call (the \
+         static child only); the pool child must NOT register as a static slot. \
+         Got {add_spec_count} calls in:\n{ir}"
+    );
+    // The pool child must NOT have registered into the static children[] table.
+    // (No pool registration ABI is emitted either — pool slot/member wiring is
+    // the deferred B1-3 scope.)
+    assert!(
+        !ir.contains("@hew_supervisor_pool_add_slot"),
+        "pool slot registration is deferred (B1-3 stopped); no pool_add_slot \
+         should be emitted yet. Got:\n{ir}"
+    );
+}

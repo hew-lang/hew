@@ -143,6 +143,7 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         }
         Expr::Unary { operand, .. }
         | Expr::Await(operand)
+        | Expr::AwaitRestart(operand)
         | Expr::PostfixTry(operand)
         | Expr::Clone(operand) => expr_contains_defer(&operand.0),
         Expr::Literal(_)
@@ -336,6 +337,7 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         // operand is in tail position — same as the other unary forms.
         Expr::Unary { operand, .. }
         | Expr::Await(operand)
+        | Expr::AwaitRestart(operand)
         | Expr::PostfixTry(operand)
         | Expr::Clone(operand) => {
             mark_expr(&mut operand.0, false);

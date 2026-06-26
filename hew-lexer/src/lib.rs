@@ -254,6 +254,8 @@ pub enum Token<'src> {
     Async,
     #[token("await")]
     Await,
+    #[token("await_restart")]
+    AwaitRestart,
     #[token("receive")]
     Receive,
     #[token("init")]
@@ -689,6 +691,7 @@ define_keywords! {
     Spawn      => "spawn",
     Async      => "async",
     Await      => "await",
+    AwaitRestart => "await_restart",
     Receive    => "receive",
     Init       => "init",
     Record     => "record",

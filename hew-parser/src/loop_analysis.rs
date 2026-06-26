@@ -336,10 +336,12 @@ fn ast_expr_has_break(expr: &Expr, self_label: Option<&str>, depth: usize) -> bo
             ast_expr_has_break(&object.0, self_label, depth)
                 || ast_expr_has_break(&index.0, self_label, depth)
         }
-        // Single-operand wrappers: cast, postfix-try, await, fork-child expr.
+        // Single-operand wrappers: cast, postfix-try, await, await_restart,
+        // fork-child expr.
         Expr::Cast { expr, .. }
         | Expr::PostfixTry(expr)
         | Expr::Await(expr)
+        | Expr::AwaitRestart(expr)
         | Expr::ForkChild { expr, .. } => ast_expr_has_break(&expr.0, self_label, depth),
 
         // ── Range ─────────────────────────────────────────────────────────

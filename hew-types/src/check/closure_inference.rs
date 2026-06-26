@@ -183,6 +183,16 @@ fn body_visit_expr(expr: &Expr, out: &mut LambdaBodyFacts) {
             }
             body_visit_expr(&inner.0, out);
         }
+        // `await_restart <child>` is a cooperative suspension point (it parks the
+        // actor until the supervised child restarts), so it marks the body as
+        // suspending exactly like `await`.
+        Expr::AwaitRestart(inner) => {
+            if !out.has_suspend {
+                out.has_suspend = true;
+                out.suspend_kind = "await_restart".to_string();
+            }
+            body_visit_expr(&inner.0, out);
+        }
         Expr::MethodCall {
             receiver,
             method,
@@ -763,7 +773,9 @@ fn esc_visit_expr(
                 esc_visit_arg(e, name, in_fork, acc);
             }
         }
-        Expr::Await(inner) => esc_visit_expr(&inner.0, name, in_fork, acc, false),
+        Expr::Await(inner) | Expr::AwaitRestart(inner) => {
+            esc_visit_expr(&inner.0, name, in_fork, acc, false);
+        }
         Expr::GenBlock { body } => esc_visit_block(body, name, in_fork, acc),
         Expr::Return(opt) => {
             // `return <expr>` carries the operand out of the closure; treat it

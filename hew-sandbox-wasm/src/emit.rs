@@ -2221,6 +2221,10 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 );
                 Ok(dst)
             }
+            // `await_restart` parks the actor on the supervisor restart observer
+            // — a native-only cooperative-scheduler primitive with no sandbox-VM
+            // analogue. Fail closed (unsupported) on the sandbox path, matching
+            // the other suspension/concurrency constructs in this group.
             Expr::ArrayRepeat { .. }
             | Expr::MapLiteral { .. }
             | Expr::Lambda { .. }
@@ -2243,6 +2247,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::ByteArrayLiteral(_)
             | Expr::Is { .. }
             | Expr::MachineEmit { .. }
+            | Expr::AwaitRestart(_)
             | Expr::GenBlock { .. } => {
                 self.emit_unsupported(Some(span.clone()));
                 Ok(self.emit_const_unit(Some(span.clone())))

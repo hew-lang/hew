@@ -439,6 +439,52 @@ impl Checker {
                 }
             }
 
+            // AwaitRestart: `await_restart <supervised-child>` — suspend until the
+            // named static supervised child's slot is Live again, then resume with
+            // the re-fetched live `LocalPid<ChildType>`. The operand MUST be a
+            // static supervised-child accessor (recorded in
+            // `supervisor_child_slots` by the inner `FieldAccess` synthesis, kind
+            // `Static`). The result type is the same `LocalPid<ChildType>` — by
+            // construction the slot is Live after a completed restart; a
+            // permanently-Dead child fails closed at runtime (resumes immediately)
+            // rather than hanging, so the bare form never yields an `Option`.
+            Expr::AwaitRestart(inner) => {
+                // Synthesize the operand first; this records the supervisor child
+                // slot side-table entry keyed by the inner expression's span.
+                let inner_ty = self.synthesize(&inner.0, &inner.1);
+                let inner_key = SpanKey::in_module(&inner.1, self.current_module_idx);
+                match self.supervisor_child_slots.get(&inner_key).cloned() {
+                    Some(slot) if slot.kind == crate::check::types::ChildKind::Static => {
+                        // Re-fetched live handle: same `LocalPid<ChildType>` the
+                        // accessor produced. Carry the discriminator forward — the
+                        // side-table entry already keys MIR lowering on this span.
+                        inner_ty
+                    }
+                    Some(_pool_slot) => {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            "`await_restart` applies to a static supervised child \
+                             (`child name: Type`), not a pool member; pool members \
+                             do not have a per-slot restart signal"
+                                .to_string(),
+                        );
+                        Ty::Error
+                    }
+                    None => {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            span,
+                            "`await_restart` expects a supervised-child accessor \
+                             (`await_restart sup.child`); its operand is not a \
+                             supervisor child slot"
+                                .to_string(),
+                        );
+                        Ty::Error
+                    }
+                }
+            }
+
             // PostfixTry: expr? → unwrap Result/Option
             Expr::PostfixTry(inner) => {
                 let ty = self.synthesize(&inner.0, &inner.1);
@@ -5076,6 +5122,7 @@ impl Checker {
             | Expr::PostfixTry(_)
             | Expr::Range { .. }
             | Expr::Await(_)
+            | Expr::AwaitRestart(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)

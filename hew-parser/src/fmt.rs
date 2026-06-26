@@ -2071,6 +2071,7 @@ impl<'a> Formatter<'a> {
             | Expr::Clone(operand)
             | Expr::PostfixTry(operand)
             | Expr::Await(operand)
+            | Expr::AwaitRestart(operand)
             | Expr::Yield(Some(operand))
             | Expr::Return(Some(operand)) => Self::can_format_expr_inline(&operand.0),
             Expr::Binary { left, right, .. }
@@ -2607,6 +2608,7 @@ impl<'a> Formatter<'a> {
                 | Expr::Range { .. }
                 | Expr::Is { .. }
                 | Expr::Await(_)
+                | Expr::AwaitRestart(_)
                 | Expr::StructInit { .. }
         )
     }
@@ -3070,6 +3072,10 @@ impl<'a> Formatter<'a> {
             }
             Expr::Await(inner) => {
                 self.write("await ");
+                self.format_expr(&inner.0);
+            }
+            Expr::AwaitRestart(inner) => {
+                self.write("await_restart ");
                 self.format_expr(&inner.0);
             }
             Expr::RegexLiteral(pattern) => {

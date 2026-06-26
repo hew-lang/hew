@@ -68,6 +68,7 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::Spawn
         | Token::Async
         | Token::Await
+        | Token::AwaitRestart
         | Token::Receive
         | Token::Init
         | Token::Type

@@ -458,6 +458,76 @@ fn supervisor_child_with_on_crash_hook_surfaces_symbol_on_layout() {
     );
 }
 
+/// Verify-AST gate (S1): a SCALAR config-field init arg
+/// (`child cache: Cache(capacity: config.size)`) reaches MIR as a fully
+/// resolved `ChildInitArg::ConfigField { owned: false, config_ty_name, field_ty
+/// }` — the discriminator codegen reads to emit the init thunk. Without the
+/// checker binding the config params in scope and synthesising the init-arg
+/// expression types, `object.ty` would not be `Named{config_ty}` and the MIR
+/// arm would NYI; this test fails closed if that regresses.
+#[test]
+fn scalar_config_field_init_arg_lowers_to_resolved_config_field() {
+    use hew_mir::ChildInitArg;
+
+    let pipeline = lower_module_from_source(
+        r"
+        record AppConfig { size: i64 }
+
+        actor Cache {
+            var capacity: i64;
+            init(capacity: i64) {
+                capacity = capacity;
+            }
+            receive fn get_cap() -> i64 { capacity }
+        }
+
+        supervisor App(config: AppConfig) {
+            strategy: one_for_one;
+            child cache: Cache(capacity: config.size)
+        }
+        ",
+    );
+
+    let app = pipeline
+        .supervisor_layouts
+        .iter()
+        .find(|s| s.name == "App")
+        .expect("App supervisor layout");
+    let cache = app
+        .children
+        .iter()
+        .find(|c| c.name == "cache")
+        .expect("cache child layout");
+    let (field_name, init_arg) = cache
+        .init_state_fields
+        .iter()
+        .find(|(f, _)| f == "capacity")
+        .expect("capacity init field must be present on the cache child layout");
+    assert_eq!(field_name, "capacity");
+    match init_arg {
+        ChildInitArg::ConfigField {
+            config_ty_name,
+            field_name,
+            field_ty,
+            owned,
+            ..
+        } => {
+            assert_eq!(
+                config_ty_name, "AppConfig",
+                "config object type must resolve to the config struct name"
+            );
+            assert_eq!(field_name, "size");
+            assert_eq!(
+                *field_ty,
+                ResolvedTy::I64,
+                "scalar config field type must be the resolved field type, not a default"
+            );
+            assert!(!owned, "an i64 config field is a scalar load, not owned");
+        }
+        other => panic!("expected ConfigField init arg, got {other:?}"),
+    }
+}
+
 /// An OWNED config field (`config.name: string`) is walled off at the checker
 /// (still scalar-only) and, as defence-in-depth, fails closed at MIR if it ever
 /// reaches lowering — the owned-clone init thunk is follow-up work.

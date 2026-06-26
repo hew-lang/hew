@@ -89,8 +89,69 @@ impl Checker {
         // ── 7. Children must not declare #[every] periodic handlers ──────────
         self.check_supervisor_periodic_children(sd, span);
 
-        // ── 8. Supervised child init args must be BitCopy (byte-copy wall) ───
+        // ── 8. Type-check child init-arg expressions against the config
+        //       params, then validate the resolved arg types (byte-copy wall).
+        //       Step 8 binds `sd.params` (the construction-time config params,
+        //       `supervisor App(config: T)`) in a fresh scope and synthesises
+        //       the type of each child init-arg EXPRESSION so a `config.field`
+        //       read resolves through the config struct's record layout and
+        //       lands in `expr_types`. HIR/MIR lowering reads those resolved
+        //       types (`object.ty = Named{config_ty}`, `source_expr.ty = field
+        //       type`) to emit the init-closure thunk; without this step the
+        //       init-arg exprs are never type-checked and `config.field` carries
+        //       no resolved type. The resolved arg type is also what the
+        //       BitCopy wall now validates (a scalar `config.field` passes; an
+        //       owned one is still walled until the owned init thunk lands).
+        self.check_supervisor_init_args(sd, span);
+    }
+
+    /// Bind the supervisor's construction-time config params in scope, type-
+    /// check every child's init-arg expressions, and validate the resolved arg
+    /// types against the byte-copy wall.
+    ///
+    /// The config params (`supervisor App(config: T)`) are in scope only for
+    /// the child init-arg expressions (`child cache: Cache(capacity:
+    /// config.size)`), mirroring the actor `init(params)` shape. Each init-arg
+    /// expression is synthesised so `config.field` resolves through the config
+    /// struct's record layout to the field's type and `expr_types` carries both
+    /// the field-access result type and the config-param identifier type — the
+    /// resolved discriminators HIR stamps onto the HIR exprs and MIR reads to
+    /// lower the `ConfigField` init arg.
+    fn check_supervisor_init_args(&mut self, sd: &SupervisorDecl, span: &Span) {
+        self.env.push_scope();
+
+        // Bind each config param to its resolved type. `resolve_annotation_with_holes`
+        // resolves the config struct name to a `Ty::Named` so a `config.field`
+        // access inside an init-arg expr resolves through its record layout.
+        for param in &sd.params {
+            let ty = self.resolve_annotation_with_holes(
+                &param.ty,
+                format!(
+                    "config parameter `{}` of supervisor `{}`",
+                    param.name, sd.name
+                ),
+            );
+            self.env.define(param.name.clone(), ty, param.is_mutable);
+        }
+
+        // Synthesise the type of every child's init-arg expressions so the
+        // resolved types land in `expr_types` (the discriminator HIR/MIR read).
+        // Surfacing real errors here (`config.nonexistent_field`, a config-field
+        // / actor-param type mismatch) is a new user-facing diagnostic.
+        for child in &sd.children {
+            if child.is_pool {
+                continue;
+            }
+            for (_arg_name, arg_expr) in &child.args {
+                self.synthesize(&arg_expr.0, &arg_expr.1);
+            }
+        }
+
+        // Validate the resolved init-arg types against the byte-copy wall while
+        // the config params are still in scope.
         self.check_supervisor_init_args_bitcopy(sd, span);
+
+        self.env.pop_scope();
     }
 
     /// Reject supervisor children whose actor type declares `#[every(duration)]`
@@ -172,6 +233,17 @@ impl Checker {
                     continue;
                 };
 
+                // The wall is keyed on the actor init-PARAMETER type: that type
+                // is what the child's state field stores, so it is what the
+                // init-closure thunk must re-produce per incarnation. A scalar
+                // param (`capacity: i64`) is reproducible by a plain load whether
+                // the arg is a literal or `config.size`; an owned param
+                // (`name: string`) stays walled until the per-field owned-clone
+                // thunk lands (S3) — at which point this predicate flips to
+                // `ty_is_supervisor_init_reproducible` (see the WHEN-OBSOLETE
+                // note above). The arg-EXPRESSION typing that `config.field`
+                // requires happens in `check_supervisor_init_args`' synthesis
+                // pass; this wall is the param-type gate, unchanged in shape.
                 if !ty_is_supervisor_init_bitcopy_scalar(&param.ty) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,

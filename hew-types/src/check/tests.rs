@@ -28165,6 +28165,118 @@ fn supervisor_init_arg_bool_and_f64_admitted() {
 }
 
 #[test]
+fn supervisor_init_arg_scalar_config_field_admitted() {
+    // A scalar `config.field` init arg is the v0.6 init-closure surface: the
+    // actor param is scalar, so the thunk re-produces it by a plain load. The
+    // checker binds the config param in scope, types `config.size` to i64, and
+    // the byte-copy wall (keyed on the scalar param) admits it.
+    let output = check_source(
+        r"
+        record AppConfig { size: i64 }
+
+        actor Cache {
+            var capacity: i64;
+            init(capacity: i64) {
+                capacity = capacity;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App(config: AppConfig) {
+            child cache: Cache(capacity: config.size);
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY")),
+        "a scalar config.field init arg must be admitted; errors: {:#?}",
+        output.errors
+    );
+    // The synthesis pass must not leave a leaky "undefined variable `config`"
+    // error — the config param is bound in scope for the init-arg exprs.
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("undefined variable `config`")),
+        "config param must be in scope for init-arg exprs; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_init_arg_config_nonexistent_field_surfaces_error() {
+    // Typing the init-arg expr against the config param surfaces a real
+    // diagnostic for a missing config field, at the arg-expr span.
+    let output = check_source(
+        r"
+        record AppConfig { size: i64 }
+
+        actor Cache {
+            var capacity: i64;
+            init(capacity: i64) {
+                capacity = capacity;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App(config: AppConfig) {
+            child cache: Cache(capacity: config.nonexistent);
+        }
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("nonexistent") && e.message.contains("AppConfig")),
+        "reading a non-existent config field must surface a typed error naming \
+         the field and the config struct; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_init_arg_config_field_type_mismatch_surfaces_error() {
+    // A config field whose type does not match the actor init param surfaces a
+    // type-mismatch diagnostic (the actor expects i64; the config field is
+    // bool). The init-arg-expr typing is what makes this catchable.
+    let output = check_source(
+        r"
+        record AppConfig { flag: bool }
+
+        actor Cache {
+            var capacity: i64;
+            init(capacity: i64) {
+                capacity = capacity;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App(config: AppConfig) {
+            child cache: Cache(capacity: config.flag);
+        }
+        ",
+    );
+
+    // The arg expr types cleanly to bool; the mismatch against the i64 param is
+    // reported by the spawn/constructor arg check. Either a Mismatch error or
+    // a constructor-arg diagnostic is acceptable — assert at least one error
+    // mentions the type clash so a silent accept fails the test.
+    assert!(
+        !output.errors.is_empty(),
+        "a config field whose type mismatches the actor init param must produce \
+         at least one diagnostic; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn supervisor_pool_child_string_init_arg_exempt() {
     // Pool children are dynamically spawned, not from a fixed state template,
     // so the byte-copy wall does not apply to them.

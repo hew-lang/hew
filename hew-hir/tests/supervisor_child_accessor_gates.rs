@@ -143,7 +143,7 @@ fn pool_child_access_rejected_at_hir() {
 
         supervisor Pool {
             strategy: simple_one_for_one,
-            pool worker: Worker
+            pool worker: Worker(count: 2)
         }
 
         fn get_pool_worker(sup: LocalPid<Pool>) -> LocalPid<Worker> {
@@ -284,12 +284,12 @@ fn pool_child_accessor_disambiguated_with_two_same_type_children() {
 
         supervisor PoolA {
             strategy: simple_one_for_one,
-            pool worker: Worker
+            pool worker: Worker(count: 2)
         }
 
         supervisor PoolB {
             strategy: simple_one_for_one,
-            pool worker: Worker
+            pool worker: Worker(count: 2)
         }
 
         fn route(sup_a: LocalPid<PoolA>, sup_b: LocalPid<PoolB>) -> LocalPid<Worker> {

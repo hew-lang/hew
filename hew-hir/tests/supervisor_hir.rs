@@ -71,7 +71,7 @@ fn pool_child_gets_pool_slot_index_zero() {
 
         supervisor Pool {
             strategy: simple_one_for_one,
-            pool worker: Worker
+            pool worker: Worker(count: 2)
         }
         ",
     );

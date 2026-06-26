@@ -21985,7 +21985,7 @@ mod supervisor_child_slot_tests {
 
             supervisor Pool {
                 strategy: simple_one_for_one,
-                pool worker: Worker
+                pool worker: Worker(count: 2)
             }
 
             fn main() {
@@ -27813,7 +27813,7 @@ fn supervisor_pool_child_permanent_vec_ok() {
 
         supervisor App {
             strategy: simple_one_for_one,
-            pool workers: Worker
+            pool workers: Worker(count: 2)
         }
         ",
     );
@@ -28307,7 +28307,7 @@ fn supervisor_pool_child_string_init_arg_exempt() {
 
         supervisor App {
             strategy: simple_one_for_one,
-            pool workers: Worker
+            pool workers: Worker(count: 2)
         }
         ",
     );
@@ -28318,6 +28318,142 @@ fn supervisor_pool_child_string_init_arg_exempt() {
             .iter()
             .any(|e| e.message.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY")),
         "pool child init args must not trigger the byte-copy wall; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_pool_count_missing_is_rejected() {
+    let output = check_source(
+        r"
+        actor Worker { receive fn ping() {} }
+
+        supervisor App {
+            strategy: simple_one_for_one,
+            pool workers: Worker
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_POOL_COUNT_MISSING")),
+        "a pool child without `count:` must be rejected; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_pool_count_zero_literal_is_rejected() {
+    let output = check_source(
+        r"
+        actor Worker { receive fn ping() {} }
+
+        supervisor App {
+            strategy: simple_one_for_one,
+            pool workers: Worker(count: 0)
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_POOL_COUNT_NON_POSITIVE")),
+        "a `count: 0` pool must be rejected; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_pool_count_negative_literal_is_rejected() {
+    let output = check_source(
+        r"
+        actor Worker { receive fn ping() {} }
+
+        supervisor App {
+            strategy: simple_one_for_one,
+            pool workers: Worker(count: -3)
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_POOL_COUNT_NON_POSITIVE")),
+        "a negative `count:` pool must be rejected; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_pool_count_positive_literal_is_accepted() {
+    let output = check_source(
+        r"
+        actor Worker { receive fn ping() {} }
+
+        supervisor App {
+            strategy: simple_one_for_one,
+            pool workers: Worker(count: 5)
+        }
+        ",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_POOL_COUNT")),
+        "a positive `count:` pool must be accepted; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_pool_count_string_literal_is_rejected() {
+    let output = check_source(
+        r#"
+        actor Worker { receive fn ping() {} }
+
+        supervisor App {
+            strategy: simple_one_for_one,
+            pool workers: Worker(count: "five")
+        }
+        "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_POOL_COUNT_TYPE")),
+        "a non-integer `count:` must be rejected; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_pool_count_dynamic_config_is_accepted() {
+    // A dynamic count (`config.workers`) is accepted at compile time; the
+    // bootstrap traps fail-closed on N <= 0 at runtime.
+    let output = check_source(
+        r"
+        record AppConfig { workers: i64 }
+
+        actor Worker { receive fn ping() {} }
+
+        supervisor App(config: AppConfig) {
+            strategy: simple_one_for_one,
+            pool workers: Worker(count: config.workers)
+        }
+        ",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_POOL_COUNT")),
+        "a dynamic config-derived `count:` must be accepted; errors: {:#?}",
         output.errors
     );
 }

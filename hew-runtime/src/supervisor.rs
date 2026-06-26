@@ -463,10 +463,55 @@ pub struct HewChildSpec {
     /// carrier for the initial fire. `restart_child_from_spec` then calls it on
     /// every spawn (initial and restart) from the one firing site.
     ///
+    /// Read during `hew_supervisor_add_child_spec` (exactly as `on_crash` is)
+    /// and copied into the internal spec so it fires on the INITIAL supervised
+    /// spawn — the spawn happens inside `add_child_spec`, before any post-hoc
+    /// setter runs, so the literal field (not the setter) is the load-bearing
+    /// carrier for the initial fire. `restart_child_from_spec` then calls it on
+    /// every spawn (initial and restart) from the one firing site.
+    ///
     /// ABI: this is the trailing `#[repr(C)]` field; the codegen-emitted
     /// `hew_child_spec_struct_type` mirror appends a matching `ptr` slot in the
     /// same position. Field-order drift here is wrong-code at the FFI boundary.
     pub lifecycle_fn: Option<HewLifecycleFn>,
+    /// Per-child init thunk — the v0.6 init-closure restart model.
+    ///
+    /// When `Some`, this thunk is THE source of the child's actor state on the
+    /// initial spawn AND every restart, REPLACING the byte-copy state template
+    /// (`init_state`). `restart_child_from_spec` calls `init_fn(config)` to
+    /// PRODUCE a fresh, independently-owned state each time, so owned
+    /// (`string`/`Vec`) init args get unaliased heap on every incarnation —
+    /// the structural fix for the byte-copy-template-replay aliasing hazard
+    /// (audit C1). `init_state`/`init_state_size` are left NULL/0 when this is
+    /// `Some` (the template deep-copy in `add_child_spec` is skipped).
+    ///
+    /// Carried IN the spec literal (like `on_crash`/`lifecycle_fn`) so the
+    /// INITIAL supervised spawn — which happens inside `add_child_spec` before
+    /// any post-hoc setter runs — uses the thunk. The mirror precedent is
+    /// `SupervisorChildSpec.init_fn` for child *supervisors*.
+    ///
+    /// ABI: a trailing `#[repr(C)]` field; the codegen-emitted
+    /// `hew_child_spec_struct_type` mirror appends a matching `ptr` slot.
+    pub init_fn: Option<HewChildInitFn>,
+    /// Pointer to the supervisor's construction-time config buffer, passed to
+    /// `init_fn` on every call so the thunk re-reads `config.field` and
+    /// re-clones config-derived owned values per incarnation. `null` when the
+    /// supervisor takes no config (the thunk is a const-only producer).
+    ///
+    /// This is a BORROW: the buffer is owned by the supervisor (adopted once at
+    /// the first `hew_supervisor_set_child_init_fn` call) and freed exactly once
+    /// at supervisor teardown. `add_child_spec` copies the pointer into the
+    /// internal spec; the thunk only READS it, never frees it.
+    ///
+    /// ABI: a trailing `#[repr(C)]` field; the codegen mirror appends a `ptr`.
+    pub config: *mut c_void,
+    /// Size in bytes of the config buffer at `config`. Carried so the supervisor
+    /// can adopt the buffer with its exact length and the thunk can bounds-check
+    /// config reads if needed. `0` when `config` is null.
+    ///
+    /// ABI: the final trailing `#[repr(C)]` field; the codegen mirror appends an
+    /// `i64` slot. Field-order drift here is wrong-code at the FFI boundary.
+    pub config_size: usize,
 }
 
 /// Child lifecycle event (sent as system message payload).
@@ -495,6 +540,40 @@ struct ChildEvent {
 /// Called to create and start a fresh supervisor instance.
 /// Returns a pointer to the new `HewSupervisor`.
 pub type SupervisorInitFn = unsafe extern "C" fn() -> *mut HewSupervisor;
+
+/// Result of a child init thunk: a freshly-produced, independently-owned actor
+/// state wrapper and its size.
+///
+/// `#[repr(C)]`, two-field — the codegen-emitted thunk returns this by value.
+/// `state` is a `malloc`-compatible heap allocation of exactly `size` bytes
+/// whose owned fields (`Vec`/`String` heap) are independent deep clones, NOT
+/// aliases of any template or config field. Ownership transfers to the caller;
+/// `state` is `null` on allocation failure (fail-closed — the thunk could not
+/// produce a fresh state).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct HewChildInitResult {
+    /// The fresh, owned actor state wrapper (or `null` on OOM).
+    pub state: *mut c_void,
+    /// Size in bytes of `state`.
+    pub size: usize,
+}
+
+/// Per-child init thunk type — the v0.6 init-closure restart model for ACTOR
+/// children (the analogue of [`SupervisorInitFn`] for child supervisors).
+///
+/// Produces a fresh, independently-owned actor state wrapper for a supervised
+/// child by re-running every init-arg expression (literal const, `config.field`
+/// load, or owned deep-clone) in the supervisor's config context. Called once
+/// at the initial spawn and again on EVERY restart, so each incarnation gets
+/// fresh, unaliased owned values — the structural fix the byte-copy template
+/// could not provide. Returns [`HewChildInitResult`]; `state == null` signals
+/// allocation failure (the restart path then fails closed: backoff, null slot,
+/// no circuit-breaker advance — mirroring the clone-OOM policy).
+///
+/// `config` is a borrow of the supervisor-owned config buffer (or `null` for a
+/// const-only thunk). The thunk only READS it.
+pub type HewChildInitFn = unsafe extern "C" fn(config: *const c_void) -> HewChildInitResult;
 
 /// Specification for a child supervisor so the parent can restart it.
 #[derive(Debug)]
@@ -567,6 +646,21 @@ pub struct HewSupervisor {
     /// Parallel spec for pool children. `pool_slots[i]` and `pool_specs[i]`
     /// always have the same length.
     pool_specs: Vec<InternalPoolSpec>,
+
+    /// Construction-time config buffer (the v0.6 init-closure restart model's
+    /// dynamic-data source). A single supervisor-owned `malloc`'d copy of the
+    /// supervisor's spawn-time config struct, captured ONCE at bootstrap and
+    /// shared (by borrow) with every child's `init_fn`. Each thunk reads
+    /// `config.field` to recompute config-derived init args per incarnation.
+    ///
+    /// Adopted on the FIRST `hew_supervisor_set_child_init_fn` call (or carried
+    /// in the first `init_fn` child's `HewChildSpec` literal); subsequent
+    /// registrations re-use the same pointer. Freed EXACTLY ONCE at supervisor
+    /// teardown (`stop_supervisor_owned`). The thunks only ever read it.
+    /// `null` when the supervisor takes no config.
+    config_buf: *mut c_void,
+    /// Size in bytes of `config_buf`. `0` when `config_buf` is null.
+    config_size: usize,
 }
 
 /// One parked `await_restart` continuation: the awaiting actor + its readiness
@@ -676,6 +770,18 @@ struct InternalChildSpec {
     /// `add_child_spec`), and re-applied by every restart path. `None` means
     /// the actor has no lifecycle hook and the spawn fires no wrapper.
     lifecycle_fn: Option<HewLifecycleFn>,
+    /// Per-child init thunk (the v0.6 init-closure restart model). When `Some`,
+    /// `restart_child_from_spec` calls `init_fn(config)` to PRODUCE a fresh,
+    /// independently-owned actor state on the initial spawn and every restart,
+    /// instead of cloning/byte-copying `init_state`. `init_state`/
+    /// `init_state_size` are left NULL/0 in this mode. Copied from
+    /// `HewChildSpec::init_fn` at spec registration so the initial supervised
+    /// spawn (inside `add_child_spec`) uses the thunk.
+    init_fn: Option<HewChildInitFn>,
+    /// Borrowed pointer to the supervisor's `config_buf`, passed to `init_fn` on
+    /// every call. The supervisor owns the allocation (freed once at teardown);
+    /// this spec never frees it. `null` for a const-only thunk.
+    config: *mut c_void,
 }
 
 impl Drop for InternalChildSpec {
@@ -738,6 +844,8 @@ impl Default for InternalChildSpec {
             state_drop_fn: None,
             state_clone_fn: None,
             lifecycle_fn: None,
+            init_fn: None,
+            config: ptr::null_mut(),
         }
     }
 }
@@ -1462,6 +1570,23 @@ unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
             unsafe { drop(Box::from_raw(pool)) }; // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
+
+    // Free the construction-time config buffer (the init-closure restart
+    // model's dynamic-data source). Freed EXACTLY ONCE here: every child spec
+    // holds only a BORROW of this pointer, and the thunks only ever read it.
+    // After every child actor and spec is dropped above, no live thunk can run,
+    // so the buffer has no remaining readers.
+    if !s.config_buf.is_null() {
+        // SAFETY: config_buf was a libc::malloc'd buffer adopted (ownership
+        // transferred) from codegen via hew_supervisor_add_child_spec /
+        // hew_supervisor_set_child_init_fn. The config struct is BitCopy at the
+        // top level; any owned fields inside it were CLONED into actor state by
+        // the thunks (never aliased), so the actors' own state_drop_fns released
+        // those — this free reclaims only the config wrapper.
+        unsafe { libc::free(s.config_buf) }; // ALLOCATOR-PAIRING: libc
+        s.config_buf = ptr::null_mut();
+        s.config_size = 0;
+    }
 }
 
 /// Restart a child from its spec, returning the new actor pointer.
@@ -1473,7 +1598,7 @@ unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
 /// caller is responsible for pushing the result onto the `children` vec).
 unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut HewActor {
     // Copy scalar fields out before any mutable borrow of child_specs.
-    let (opts, state_drop_fn, state_clone_fn, lifecycle_fn) = {
+    let (opts, state_drop_fn, state_clone_fn, lifecycle_fn, init_fn, config) = {
         let spec = &sup.child_specs[index];
         let opts = HewActorOpts {
             init_state: spec.init_state,
@@ -1492,81 +1617,141 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
             spec.state_drop_fn,
             spec.state_clone_fn,
             spec.lifecycle_fn,
+            spec.init_fn,
+            spec.config,
         )
     };
 
-    // Pick the spawn shape based on whether the actor has a registered
-    // deep-clone function.
+    // ── v0.6 init-closure restart model — the leading branch ────────────
     //
-    // **state_clone_fn registered**: call the codegen-emitted clone fn to
-    // produce a fresh, independently-owned wrapper from the spec's template,
-    // then hand ownership to `hew_actor_spawn_opts_adopt`. This bypasses the
-    // legacy `deep_copy_state` byte-copy that aliased owned heap pointers
-    // between `spec.init_state` and `actor.state` (audit C1 UAF).
+    // When the spec carries an `init_fn`, the thunk PRODUCES the child's state
+    // (initial spawn AND every restart) by re-running every init-arg
+    // expression against the supervisor's config. This REPLACES the byte-copy
+    // template / clone-fn template paths below: there is no captured template
+    // to clone, so each incarnation gets fresh, unaliased owned values — the
+    // structural fix for the byte-copy-template-replay aliasing hazard the
+    // checker walled off (E_SUPERVISOR_INIT_ARG_NON_BITCOPY).
     //
-    // **Null-clone-return policy**: when `clone_fn` itself returns null
-    // (OOM allocating the new wrapper), we return early **without** calling
-    // `circuit_breaker_record_success`. This is critical: a successful
-    // restart's clone has to land before the breaker counts the restart as
-    // healed, otherwise repeated null-clones would silently close the
-    // breaker and mask OOM. The outer `restart_with_budget_and_strategy`
-    // already counted this attempt via `record_restart`, so max-restarts /
-    // escalation still fire on persistent failure. Backoff is also applied
-    // so the supervisor doesn't busy-loop retrying clone fns.
-    //
-    // **state_clone_fn NOT registered**: fall back to the legacy byte-copy
-    // path via `hew_actor_spawn_opts`. The Q185(c) checker remains in
-    // defence-in-depth so codegen-emitted actors that should have a clone
-    // fn don't silently land on this path.
-    let new_child = if let Some(clone_fn) = state_clone_fn {
-        if opts.state_size == 0 || opts.init_state.is_null() {
-            // Zero-sized or null template: clone is a no-op; nothing to adopt.
-            // Use the legacy path (which also produces a null state for the
-            // zero-sized case).
+    // Ownership/drop contract (the memory-safety crux):
+    //  - The thunk returns a fresh, fully-owned state wrapper (`res.state`).
+    //  - On thunk OOM (`res.state == null`): fail closed exactly like the
+    //    clone-OOM path — apply backoff, leave the slot null, do NOT advance
+    //    the circuit breaker. The crash was already counted by `record_restart`.
+    //  - On success: ownership of `res.state` transfers to
+    //    `hew_actor_spawn_opts_adopt` (no second deep-copy). The new actor's
+    //    `state_drop_fn` (registered below) frees its owned fields on the NEXT
+    //    crash/teardown. The config buffer is only READ; it is freed once at
+    //    supervisor teardown.
+    //  - Adopt-failure free-path: `hew_actor_spawn_opts_adopt` libc::free's the
+    //    wrapper on failure (it cannot run `state_drop_fn`, so inner owned
+    //    fields leak — OOM-only, identical to the existing clone path, tolerated
+    //    because spawn-failure here implies system-wide OOM and the supervisor
+    //    escalates). The restart still fails closed (null new_child below).
+    let new_child = if let Some(init_fn) = init_fn {
+        // SAFETY: `init_fn` is a codegen-emitted thunk matching the
+        // `HewChildInitFn` contract; `config` is either null or the
+        // supervisor-owned config buffer (alive for the supervisor's lifetime).
+        let res = unsafe { init_fn(config.cast_const()) };
+        if res.state.is_null() {
+            // Thunk OOM: fail closed (mirror the clone-OOM policy exactly).
+            apply_restart_backoff(&mut sup.child_specs[index]);
+            store_child_slot(sup, index, ptr::null_mut());
+            return ptr::null_mut();
+        }
+        // Build opts around the thunk-produced state and adopt it (no second
+        // copy). `init_state`/`state_size` come from the thunk result, NOT the
+        // spec template (which is null/0 on the thunk path).
+        let thunk_opts = HewActorOpts {
+            init_state: res.state,
+            state_size: res.size,
+            dispatch: opts.dispatch,
+            mailbox_capacity: opts.mailbox_capacity,
+            overflow: opts.overflow,
+            coalesce_key_fn: None,
+            coalesce_fallback: HewOverflowPolicy::DropOld as c_int,
+            budget: 0,
+            arena_cap_bytes: opts.arena_cap_bytes,
+            cycle_capable: opts.cycle_capable,
+        };
+        // SAFETY: thunk_opts is valid; ownership of `res.state` transfers.
+        unsafe { actor::hew_actor_spawn_opts_adopt(&raw const thunk_opts, res.state) }
+    } else {
+        // ── Legacy template paths (no init_fn) ──────────────────────────
+        //
+        // Kept for the degenerate stateless/legacy case and out-of-tree C ABI
+        // callers. Pick the spawn shape based on whether the actor has a
+        // registered deep-clone function.
+        //
+        // **state_clone_fn registered**: call the codegen-emitted clone fn to
+        // produce a fresh, independently-owned wrapper from the spec's template,
+        // then hand ownership to `hew_actor_spawn_opts_adopt`. This bypasses the
+        // legacy `deep_copy_state` byte-copy that aliased owned heap pointers
+        // between `spec.init_state` and `actor.state` (audit C1 UAF).
+        //
+        // **Null-clone-return policy**: when `clone_fn` itself returns null
+        // (OOM allocating the new wrapper), we return early **without** calling
+        // `circuit_breaker_record_success`. This is critical: a successful
+        // restart's clone has to land before the breaker counts the restart as
+        // healed, otherwise repeated null-clones would silently close the
+        // breaker and mask OOM. The outer `restart_with_budget_and_strategy`
+        // already counted this attempt via `record_restart`, so max-restarts /
+        // escalation still fire on persistent failure. Backoff is also applied
+        // so the supervisor doesn't busy-loop retrying clone fns.
+        //
+        // **state_clone_fn NOT registered**: fall back to the legacy byte-copy
+        // path via `hew_actor_spawn_opts`. The Q185(c) checker remains in
+        // defence-in-depth so codegen-emitted actors that should have a clone
+        // fn don't silently land on this path.
+        if let Some(clone_fn) = state_clone_fn {
+            if opts.state_size == 0 || opts.init_state.is_null() {
+                // Zero-sized or null template: clone is a no-op; nothing to adopt.
+                // Use the legacy path (which also produces a null state for the
+                // zero-sized case).
+                // SAFETY: opts is valid.
+                unsafe { actor::hew_actor_spawn_opts(&raw const opts) }
+            } else {
+                // SAFETY: spec.init_state is a malloc'd wrapper of `state_size`
+                // bytes, replaced by the clone-aware template at registration
+                // time. clone_fn matches the HewStateCloneFn contract.
+                let cloned = unsafe { clone_fn(opts.init_state.cast_const()) };
+                if cloned.is_null() {
+                    // Clone OOM: apply backoff, leave slot null, do NOT advance
+                    // circuit-breaker success. The crash that triggered this
+                    // restart was already counted by `record_restart` at the
+                    // outer level.
+                    apply_restart_backoff(&mut sup.child_specs[index]);
+                    store_child_slot(sup, index, ptr::null_mut());
+                    return ptr::null_mut();
+                }
+                // SAFETY: opts is valid; ownership of `cloned` is transferred.
+                unsafe { actor::hew_actor_spawn_opts_adopt(&raw const opts, cloned) }
+            }
+        } else {
+            // Legacy byte-copy path: no `state_clone_fn` registered.
+            //
+            // SAFETY boundary: this byte-copy is only sound for BitCopy actor state
+            // (plain-old-data fields with no owned heap pointers).  If `state_drop_fn`
+            // is also set, the template and the spawned actor share heap pointer aliases
+            // → double-free on teardown.
+            //
+            // The checker (E_SUPERVISOR_INIT_ARG_NON_BITCOPY) is the primary authority
+            // and rejects owned-handle init args at compile time before this path is
+            // reached.  Out-of-tree / hand-rolled C ABI callers that bypass the checker
+            // and register `state_drop_fn` without `state_clone_fn` will encounter the
+            // use-after-free silently in this path.
+            //
+            // WHY this is not a debug_assert: the assert would fire in existing tests
+            // that probe the legacy byte-copy path directly (see
+            // `state_clone_fn_null_falls_back_to_bytecopy`), which are present to
+            // document backward compatibility for out-of-tree consumers.
+            // WHEN obsolete: when the v0.6 init-closure restart model lands and
+            // every supervised actor with owned-heap state registers `state_clone_fn`.
+            // REAL FIX: extend the checker wall to cover all paths, then make
+            // `state_clone_fn` mandatory for any actor with owned-heap fields.
+            //
             // SAFETY: opts is valid.
             unsafe { actor::hew_actor_spawn_opts(&raw const opts) }
-        } else {
-            // SAFETY: spec.init_state is a malloc'd wrapper of `state_size`
-            // bytes, replaced by the clone-aware template at registration
-            // time. clone_fn matches the HewStateCloneFn contract.
-            let cloned = unsafe { clone_fn(opts.init_state.cast_const()) };
-            if cloned.is_null() {
-                // Clone OOM: apply backoff, leave slot null, do NOT advance
-                // circuit-breaker success. The crash that triggered this
-                // restart was already counted by `record_restart` at the
-                // outer level.
-                apply_restart_backoff(&mut sup.child_specs[index]);
-                store_child_slot(sup, index, ptr::null_mut());
-                return ptr::null_mut();
-            }
-            // SAFETY: opts is valid; ownership of `cloned` is transferred.
-            unsafe { actor::hew_actor_spawn_opts_adopt(&raw const opts, cloned) }
         }
-    } else {
-        // Legacy byte-copy path: no `state_clone_fn` registered.
-        //
-        // SAFETY boundary: this byte-copy is only sound for BitCopy actor state
-        // (plain-old-data fields with no owned heap pointers).  If `state_drop_fn`
-        // is also set, the template and the spawned actor share heap pointer aliases
-        // → double-free on teardown.
-        //
-        // The checker (E_SUPERVISOR_INIT_ARG_NON_BITCOPY) is the primary authority
-        // and rejects owned-handle init args at compile time before this path is
-        // reached.  Out-of-tree / hand-rolled C ABI callers that bypass the checker
-        // and register `state_drop_fn` without `state_clone_fn` will encounter the
-        // use-after-free silently in this path.
-        //
-        // WHY this is not a debug_assert: the assert would fire in existing tests
-        // that probe the legacy byte-copy path directly (see
-        // `state_clone_fn_null_falls_back_to_bytecopy`), which are present to
-        // document backward compatibility for out-of-tree consumers.
-        // WHEN obsolete: when the v0.6 init-closure restart model lands and
-        // every supervised actor with owned-heap state registers `state_clone_fn`.
-        // REAL FIX: extend the checker wall to cover all paths, then make
-        // `state_clone_fn` mandatory for any actor with owned-heap fields.
-        //
-        // SAFETY: opts is valid.
-        unsafe { actor::hew_actor_spawn_opts(&raw const opts) }
     };
 
     // Set supervisor back-pointer on the new child.
@@ -2198,6 +2383,8 @@ pub unsafe extern "C" fn hew_supervisor_new(
         restart_await_waiters: Mutex::new(Vec::new()),
         pool_slots: Vec::new(),
         pool_specs: Vec::new(),
+        config_buf: ptr::null_mut(),
+        config_size: 0,
     });
     Box::into_raw(sup) // ALLOCATOR-PAIRING: GlobalAlloc
 }
@@ -2229,8 +2416,37 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
 
     let i = s.child_count;
 
-    // Deep-copy init state.
-    let state_copy = if sp.init_state_size > 0 && !sp.init_state.is_null() {
+    // The v0.6 init-closure restart model: when the spec carries an `init_fn`,
+    // the thunk is THE state source on the initial spawn and every restart.
+    // Skip the byte-copy state template entirely — `restart_child_from_spec`
+    // ignores `init_state` on the thunk path, and capturing a template here
+    // would re-introduce the owned-field aliasing hazard the thunk model fixes.
+    let has_init_fn = sp.init_fn.is_some();
+
+    // Adopt the supervisor's construction-time config buffer on the first
+    // init_fn child that carries one. The buffer is supervisor-owned, shared
+    // by borrow with every thunk, and freed once at teardown. Re-registration
+    // with the same pointer is idempotent; a conflicting non-null pointer is an
+    // ABI error (codegen emits one config buffer per supervisor).
+    if has_init_fn && !sp.config.is_null() {
+        if s.config_buf.is_null() {
+            s.config_buf = sp.config;
+            s.config_size = sp.config_size;
+        } else {
+            debug_assert!(
+                s.config_buf == sp.config,
+                "hew_supervisor: child {i} carries a config buffer ({:p}) that differs from \
+                 the supervisor's adopted buffer ({:p}); codegen must emit ONE config buffer \
+                 per supervisor",
+                sp.config,
+                s.config_buf
+            );
+        }
+    }
+
+    // Deep-copy init state — only when there is no init_fn (the thunk path
+    // produces state directly, leaving init_state null).
+    let state_copy = if !has_init_fn && sp.init_state_size > 0 && !sp.init_state.is_null() {
         // SAFETY: init_state is valid for init_state_size bytes.
         let buf = unsafe { libc::malloc(sp.init_state_size) }; // ALLOCATOR-PAIRING: libc
         if buf.is_null() {
@@ -2260,7 +2476,9 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
     s.child_specs.push(InternalChildSpec {
         name: name_copy,
         init_state: state_copy,
-        init_state_size: sp.init_state_size,
+        // On the thunk path the state size is produced by the thunk result, not
+        // the spec; keep it 0 so no template path can read a stale size.
+        init_state_size: if has_init_fn { 0 } else { sp.init_state_size },
         dispatch: sp.dispatch,
         restart_policy: sp.restart_policy,
         mailbox_capacity: sp.mailbox_capacity,
@@ -2281,6 +2499,16 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         // fires the lifecycle wrapper. A post-hoc setter would run too late to
         // cover the initial fire (see hew_supervisor_set_child_lifecycle).
         lifecycle_fn: sp.lifecycle_fn,
+        // Carried IN the spec literal (like lifecycle_fn) so the INITIAL spawn
+        // below uses the thunk — the load-bearing first-spawn carrier. The
+        // post-hoc setter is back-fill/symmetry only.
+        init_fn: sp.init_fn,
+        // Borrow of the supervisor-owned config buffer (adopted above).
+        config: if has_init_fn {
+            s.config_buf
+        } else {
+            ptr::null_mut()
+        },
     });
 
     // Spawn the child actor.
@@ -2526,6 +2754,9 @@ mod tests {
                 cycle_capable: 0,
                 on_crash: None,
                 lifecycle_fn: None,
+                init_fn: None,
+                config: ptr::null_mut(),
+                config_size: 0,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             assert_eq!(hew_supervisor_start(sup), 0);
@@ -3577,6 +3808,9 @@ mod tests {
                 cycle_capable: 0,
                 on_crash: None,
                 lifecycle_fn: None,
+                init_fn: None,
+                config: ptr::null_mut(),
+                config_size: 0,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             hew_supervisor_set_child_state_drop(sup, 0, heap_state_drop);
@@ -3955,6 +4189,9 @@ mod tests {
                 cycle_capable: 0,
                 on_crash: None,
                 lifecycle_fn: None,
+                init_fn: None,
+                config: ptr::null_mut(),
+                config_size: 0,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             let child = (&(*sup).children)[0];
@@ -4629,8 +4866,29 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
     // SAFETY: caller guarantees `spec` is valid.
     let sp = unsafe { &*spec };
 
-    // Deep-copy init state.
-    let state_copy = if sp.init_state_size > 0 && !sp.init_state.is_null() {
+    // The v0.6 init-closure restart model: a dynamic child carrying an init_fn
+    // produces its state via the thunk; skip the byte-copy template (mirror
+    // hew_supervisor_add_child_spec).
+    let has_init_fn = sp.init_fn.is_some();
+
+    // Adopt the supervisor config buffer (idempotent on the same pointer).
+    if has_init_fn && !sp.config.is_null() {
+        if s.config_buf.is_null() {
+            s.config_buf = sp.config;
+            s.config_size = sp.config_size;
+        } else {
+            debug_assert!(
+                s.config_buf == sp.config,
+                "hew_supervisor_add_child_dynamic: config buffer ({:p}) differs from the \
+                 supervisor's adopted buffer ({:p})",
+                sp.config,
+                s.config_buf
+            );
+        }
+    }
+
+    // Deep-copy init state — only on the template (non-init_fn) path.
+    let state_copy = if !has_init_fn && sp.init_state_size > 0 && !sp.init_state.is_null() {
         // SAFETY: init_state is valid for init_state_size bytes.
         let buf = unsafe { libc::malloc(sp.init_state_size) }; // ALLOCATOR-PAIRING: libc
         if buf.is_null() {
@@ -4662,7 +4920,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
     s.child_specs.push(InternalChildSpec {
         name: name_copy,
         init_state: state_copy,
-        init_state_size: sp.init_state_size,
+        init_state_size: if has_init_fn { 0 } else { sp.init_state_size },
         dispatch: sp.dispatch,
         restart_policy: sp.restart_policy,
         mailbox_capacity: sp.mailbox_capacity,
@@ -4685,6 +4943,14 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         // initial spawn — which also routes through restart_child_from_spec —
         // fires the lifecycle wrapper.
         lifecycle_fn: sp.lifecycle_fn,
+        // Carried IN the spec literal so the dynamic child's initial spawn uses
+        // the thunk (the load-bearing first-spawn carrier).
+        init_fn: sp.init_fn,
+        config: if has_init_fn {
+            s.config_buf
+        } else {
+            ptr::null_mut()
+        },
     });
 
     // Spawn the child if the supervisor is running.
@@ -5017,6 +5283,84 @@ pub unsafe extern "C" fn hew_supervisor_set_child_state_clone(
         // correct signature.
         unsafe { actor::hew_actor_set_state_clone(child, state_clone_fn) };
     }
+}
+
+/// Register the per-child init thunk for the v0.6 init-closure restart model.
+///
+/// The thunk PRODUCES a fresh, independently-owned actor state on the initial
+/// spawn AND every restart by re-running the child's init-arg expressions
+/// against the supervisor's construction-time config (the `config` buffer). It
+/// REPLACES the byte-copy state template, making owned (`string`/`Vec`) init
+/// args sound under restart — each incarnation gets unaliased owned values.
+///
+/// **The load-bearing carrier is the `HewChildSpec` literal, not this setter.**
+/// Codegen rides `init_fn` + `config` + `config_size` IN the spec literal so the
+/// INITIAL supervised spawn — which fires inside `hew_supervisor_add_child_spec`
+/// before any post-hoc setter runs — already uses the thunk. This setter is
+/// back-fill / symbol-stability symmetry (mirroring
+/// `hew_supervisor_set_child_state_clone`), and is also the additive ABI entry
+/// point out-of-tree C callers use to install a thunk after `add_child_spec`.
+///
+/// Config-buffer ownership: the supervisor adopts `config` ONCE (the first
+/// non-null registration) and frees it EXACTLY ONCE at teardown
+/// (`stop_supervisor_owned`). Subsequent registrations with the same pointer are
+/// idempotent; a conflicting non-null pointer is a codegen ABI error (one config
+/// buffer per supervisor). The thunk only ever READS `config`.
+///
+/// # Safety
+///
+/// - `sup` must be a valid pointer returned by [`hew_supervisor_new`].
+/// - `child_index` must be a valid index (0 ≤ index < `child_count`).
+/// - `init_fn` must satisfy the [`HewChildInitFn`] contract (produces a fresh
+///   owned state wrapper; `state == null` on OOM).
+/// - `config` must be null, or a `malloc`-compatible heap allocation of
+///   `config_size` bytes whose ownership transfers to the supervisor on the
+///   first registration.
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_set_child_init_fn(
+    sup: *mut HewSupervisor,
+    child_index: c_int,
+    init_fn: HewChildInitFn,
+    config: *mut c_void,
+    config_size: usize,
+) {
+    if sup.is_null() || child_index < 0 {
+        return;
+    }
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &mut *sup };
+
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "child_index is checked to be non-negative"
+    )]
+    let idx = child_index as usize;
+
+    if idx >= s.child_count {
+        return;
+    }
+
+    // Adopt the supervisor-owned config buffer once; idempotent on the same
+    // pointer. (The literal carrier already adopted it inside add_child_spec for
+    // the initial spawn; this keeps the setter self-consistent for out-of-tree
+    // callers that install the thunk post-hoc.)
+    if !config.is_null() {
+        if s.config_buf.is_null() {
+            s.config_buf = config;
+            s.config_size = config_size;
+        } else {
+            debug_assert!(
+                s.config_buf == config,
+                "hew_supervisor_set_child_init_fn: child {idx} config buffer ({config:p}) \
+                 differs from the supervisor's adopted buffer ({:p}); codegen must emit ONE \
+                 config buffer per supervisor",
+                s.config_buf
+            );
+        }
+    }
+
+    s.child_specs[idx].init_fn = Some(init_fn);
+    s.child_specs[idx].config = s.config_buf;
 }
 
 // ── Circuit breaker constants for C ABI ────────────────────────────────────────
@@ -5593,17 +5937,35 @@ mod pool_slot_tests {
     //! results call `hew_supervisor_start` first or set `running` directly
     //! via the returned raw pointer.
 
+    use std::ffi::c_void;
     use std::ptr;
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::{ChildSlotReason, HewSupervisor};
+    use super::{
+        actor, restart_child_from_spec, take_child_slot, ChildSlotReason, HewChildInitResult,
+        HewChildSpec, HewSupervisor, OVERFLOW_DROP_NEW, RESTART_PERMANENT,
+    };
     use crate::supervisor::{
-        hew_supervisor_new, hew_supervisor_pool_add_slot, hew_supervisor_pool_child_get,
-        hew_supervisor_pool_len, hew_supervisor_pool_member_add, hew_supervisor_pool_member_remove,
-        hew_supervisor_stop,
+        hew_supervisor_add_child_spec, hew_supervisor_new, hew_supervisor_pool_add_slot,
+        hew_supervisor_pool_child_get, hew_supervisor_pool_len, hew_supervisor_pool_member_add,
+        hew_supervisor_pool_member_remove, hew_supervisor_set_child_state_drop,
+        hew_supervisor_start, hew_supervisor_stop,
     };
 
     const STRATEGY_ONE_FOR_ONE: std::ffi::c_int = 0;
+
+    /// No-op child dispatch for the init-closure tests (mirrors the main test
+    /// module's helper; defined locally to keep `pool_slot_tests` self-contained).
+    unsafe extern "C-unwind" fn noop_child_dispatch(
+        _ctx: *mut crate::execution_context::HewExecutionContext,
+        _state: *mut c_void,
+        _msg_type: i32,
+        _data: *mut c_void,
+        _size: usize,
+        _borrow_mode: i32,
+    ) -> *mut c_void {
+        std::ptr::null_mut()
+    }
     const ROUND_ROBIN: std::ffi::c_int = 0;
 
     unsafe fn make_sup() -> *mut HewSupervisor {
@@ -5777,5 +6139,364 @@ mod pool_slot_tests {
         assert_eq!(r1.handle as u64, 222);
 
         unsafe { hew_supervisor_stop(sup) };
+    }
+
+    // ── v0.6 init-closure restart model (C1 memory-safety core) ──────────────
+    //
+    // These tests exercise the init-thunk path directly at the runtime ABI: the
+    // thunk produces a fresh, independently-owned state on the initial spawn and
+    // every restart; thunk OOM fails closed; the config buffer is freed exactly
+    // once at teardown; the byte-copy template is bypassed for init_fn children.
+
+    use std::sync::atomic::AtomicUsize;
+
+    /// Thunk-produced actor state: a single owned heap pointer (the "owned value"
+    /// the init-closure model must re-clone fresh per incarnation) plus a tag.
+    /// Models the `string`/`Vec`-bearing actor state without pulling the Hew
+    /// runtime string type in — the ownership shape is identical.
+    #[repr(C)]
+    struct InitClosureState {
+        /// Owned heap allocation; freed exactly once by the registered drop fn.
+        owned: *mut u8,
+        /// Tag distinguishing incarnations (read from config in the thunk).
+        tag: u64,
+    }
+
+    /// Count of live `InitClosureState.owned` allocations. A correct
+    /// first-spawn/crash-drop/restart-reclone/teardown sequence returns this to
+    /// its starting value: every thunk allocation is matched by exactly one drop.
+    static INIT_CLOSURE_LIVE_OWNED: AtomicUsize = AtomicUsize::new(0);
+    /// Count of thunk invocations (proves restart re-RUNS the thunk).
+    static INIT_CLOSURE_THUNK_CALLS: AtomicUsize = AtomicUsize::new(0);
+    /// When set, the next thunk call returns a null state (models thunk OOM).
+    static INIT_CLOSURE_FAIL_NEXT: AtomicBool = AtomicBool::new(false);
+
+    /// The config struct the supervisor captures and the thunk reads.
+    #[repr(C)]
+    struct InitClosureConfig {
+        seed: u64,
+    }
+
+    /// Codegen-shaped init thunk: malloc a fresh state + a fresh owned heap
+    /// allocation, reading `config.seed` into the state tag. Returns a null
+    /// state when `INIT_CLOSURE_FAIL_NEXT` is set (models OOM, fail-closed).
+    unsafe extern "C" fn init_closure_thunk(config: *const c_void) -> HewChildInitResult {
+        INIT_CLOSURE_THUNK_CALLS.fetch_add(1, Ordering::SeqCst);
+        if INIT_CLOSURE_FAIL_NEXT.swap(false, Ordering::SeqCst) {
+            return HewChildInitResult {
+                state: ptr::null_mut(),
+                size: 0,
+            };
+        }
+        // SAFETY: config is the supervisor-owned buffer or null.
+        let seed = if config.is_null() {
+            0
+        } else {
+            unsafe { (*config.cast::<InitClosureConfig>()).seed }
+        };
+        // Fresh owned allocation — a NEW heap each incarnation, never aliased.
+        // SAFETY: 8-byte alloc; null-checked by the caller's fail-closed path.
+        let owned = unsafe { libc::malloc(8) }.cast::<u8>();
+        if owned.is_null() {
+            return HewChildInitResult {
+                state: ptr::null_mut(),
+                size: 0,
+            };
+        }
+        INIT_CLOSURE_LIVE_OWNED.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: state wrapper alloc; null-checked below.
+        let state = unsafe { libc::malloc(std::mem::size_of::<InitClosureState>()) }
+            .cast::<InitClosureState>();
+        if state.is_null() {
+            // Free the owned alloc we just took before failing closed (no leak).
+            // SAFETY: owned was just malloc'd.
+            unsafe { libc::free(owned.cast::<c_void>()) };
+            INIT_CLOSURE_LIVE_OWNED.fetch_sub(1, Ordering::SeqCst);
+            return HewChildInitResult {
+                state: ptr::null_mut(),
+                size: 0,
+            };
+        }
+        // SAFETY: state is valid for InitClosureState.
+        unsafe {
+            (*state).owned = owned;
+            (*state).tag = seed;
+        }
+        HewChildInitResult {
+            state: state.cast::<c_void>(),
+            size: std::mem::size_of::<InitClosureState>(),
+        }
+    }
+
+    /// Codegen-shaped state drop fn: frees the owned inner allocation exactly
+    /// once (the wrapper itself is freed by the runtime's `libc::free`).
+    unsafe extern "C" fn init_closure_drop(state: *mut c_void) {
+        if state.is_null() {
+            return;
+        }
+        let s = state.cast::<InitClosureState>();
+        // SAFETY: s is a valid InitClosureState produced by the thunk.
+        unsafe {
+            if !(*s).owned.is_null() {
+                libc::free((*s).owned.cast::<c_void>());
+                (*s).owned = ptr::null_mut();
+                INIT_CLOSURE_LIVE_OWNED.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Allocate a supervisor-owned config buffer (the capture codegen emits).
+    fn make_config_buf(seed: u64) -> (*mut c_void, usize) {
+        let size = std::mem::size_of::<InitClosureConfig>();
+        // SAFETY: alloc + init; ownership transfers to the supervisor.
+        let buf = unsafe { libc::malloc(size) }.cast::<InitClosureConfig>();
+        assert!(!buf.is_null());
+        // SAFETY: buf is valid.
+        unsafe { (*buf).seed = seed };
+        (buf.cast::<c_void>(), size)
+    }
+
+    fn init_closure_spec(config: *mut c_void, config_size: usize) -> HewChildSpec {
+        HewChildSpec {
+            name: ptr::null(),
+            init_state: ptr::null_mut(),
+            init_state_size: 0,
+            dispatch: Some(noop_child_dispatch),
+            restart_policy: RESTART_PERMANENT,
+            mailbox_capacity: -1,
+            overflow: OVERFLOW_DROP_NEW,
+            arena_cap_bytes: 0,
+            cycle_capable: 0,
+            on_crash: None,
+            lifecycle_fn: None,
+            init_fn: Some(init_closure_thunk),
+            config,
+            config_size,
+        }
+    }
+
+    #[test]
+    fn init_fn_first_spawn_produces_fresh_owned_state_from_config() {
+        let _rt = crate::runtime_test_guard();
+        INIT_CLOSURE_LIVE_OWNED.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_THUNK_CALLS.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_FAIL_NEXT.store(false, Ordering::SeqCst);
+
+        let sup = unsafe { hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 3, 5) };
+        assert!(!sup.is_null());
+        let (cfg, cfg_size) = make_config_buf(256);
+
+        let spec = init_closure_spec(cfg, cfg_size);
+        // The thunk is the state source: add_child_spec spawns via the thunk.
+        assert_eq!(
+            unsafe { hew_supervisor_add_child_spec(sup, &raw const spec) },
+            0
+        );
+        // Register the drop fn so the actor frees its owned field on teardown.
+        unsafe { hew_supervisor_set_child_state_drop(sup, 0, init_closure_drop) };
+        assert_eq!(unsafe { hew_supervisor_start(sup) }, 0);
+
+        // The thunk ran exactly once (initial spawn) and produced one owned alloc.
+        assert_eq!(INIT_CLOSURE_THUNK_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 1);
+
+        // The byte-copy template was BYPASSED: the spec carries no init_state.
+        unsafe {
+            let s = &*sup;
+            assert!(s.child_specs[0].init_state.is_null());
+            assert_eq!(s.child_specs[0].init_state_size, 0);
+            assert!(s.child_specs[0].init_fn.is_some());
+            // The config buffer was adopted by the supervisor.
+            assert_eq!(s.config_buf, cfg);
+        }
+
+        // The child actor holds the thunk-produced state with the config seed.
+        unsafe {
+            let child = (&*sup).children[0];
+            assert!(!child.is_null());
+            let st = (*child).state.cast::<InitClosureState>();
+            assert!(!st.is_null());
+            assert_eq!((*st).tag, 256, "tag reflects the DYNAMIC config seed");
+        }
+
+        unsafe { hew_supervisor_stop(sup) };
+        // Teardown freed the owned alloc (drop fn) AND the config buffer — once.
+        assert_eq!(
+            INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst),
+            0,
+            "no leak: the owned alloc was freed exactly once at teardown"
+        );
+    }
+
+    #[test]
+    fn init_fn_restart_re_runs_thunk_producing_independent_fresh_state() {
+        let _rt = crate::runtime_test_guard();
+        INIT_CLOSURE_LIVE_OWNED.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_THUNK_CALLS.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_FAIL_NEXT.store(false, Ordering::SeqCst);
+
+        let sup_ptr = unsafe { hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60) };
+        assert!(!sup_ptr.is_null());
+        let (cfg, cfg_size) = make_config_buf(99);
+        let spec = init_closure_spec(cfg, cfg_size);
+        assert_eq!(
+            unsafe { hew_supervisor_add_child_spec(sup_ptr, &raw const spec) },
+            0
+        );
+        unsafe { hew_supervisor_set_child_state_drop(sup_ptr, 0, init_closure_drop) };
+
+        // Initial spawn: one thunk call, one live owned alloc.
+        assert_eq!(INIT_CLOSURE_THUNK_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 1);
+
+        // Drive a restart directly through the restart helper (the per-strategy
+        // arm); the crashed child is freed by the runtime, then the thunk
+        // re-runs to produce a SECOND independent state.
+        unsafe {
+            let s = &mut *sup_ptr;
+            // Free the old child first (mirrors the crash teardown that
+            // restart_with_budget_and_strategy / apply_restart performs before
+            // re-spawn). This drops the first incarnation's owned alloc.
+            let old = take_child_slot(s, 0);
+            assert!(!old.is_null());
+            actor::hew_actor_free(old);
+        }
+        // After the crash-drop, the first incarnation's owned alloc is gone.
+        assert_eq!(
+            INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst),
+            0,
+            "crash-drop freed the first incarnation's owned state exactly once"
+        );
+
+        // Restart: the thunk re-runs and produces fresh state #2.
+        let new_child = unsafe { restart_child_from_spec(&mut *sup_ptr, 0) };
+        assert!(!new_child.is_null(), "restart re-spawned the child");
+        assert_eq!(
+            INIT_CLOSURE_THUNK_CALLS.load(Ordering::SeqCst),
+            2,
+            "restart RE-RAN the thunk"
+        );
+        // The live-owned count discipline is the load-bearing memory-safety
+        // invariant: state #1 was dropped (count→0 above), state #2's thunk
+        // allocated a fresh owned heap (count→1). Equal/unequal wrapper
+        // *addresses* prove nothing (a freed wrapper's address can be reused by
+        // the allocator); the count + a valid, config-derived state #2 is the
+        // real proof the thunk re-ran and produced fresh, unaliased owned data.
+        assert_eq!(
+            INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst),
+            1,
+            "exactly one live owned alloc after restart (fresh state #2)"
+        );
+
+        // State #2 holds a fresh, non-null owned pointer and the config-derived
+        // tag — proving the thunk re-cloned from config rather than replaying a
+        // stale/aliased template value.
+        let second_owned = unsafe { (*new_child).state.cast::<InitClosureState>() };
+        unsafe {
+            assert!(
+                !(*second_owned).owned.is_null(),
+                "state #2 owns a fresh heap allocation"
+            );
+            assert_eq!((*second_owned).tag, 99, "re-cloned from the same config");
+        }
+
+        unsafe { hew_supervisor_stop(sup_ptr) };
+        assert_eq!(
+            INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst),
+            0,
+            "no leak after restart: every thunk alloc freed exactly once"
+        );
+    }
+
+    #[test]
+    fn init_fn_thunk_oom_fails_closed_null_slot_no_breaker_advance() {
+        let _rt = crate::runtime_test_guard();
+        INIT_CLOSURE_LIVE_OWNED.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_THUNK_CALLS.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_FAIL_NEXT.store(false, Ordering::SeqCst);
+
+        let sup_ptr = unsafe { hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 5, 60) };
+        let (cfg, cfg_size) = make_config_buf(7);
+        let spec = init_closure_spec(cfg, cfg_size);
+        assert_eq!(
+            unsafe { hew_supervisor_add_child_spec(sup_ptr, &raw const spec) },
+            0
+        );
+        unsafe { hew_supervisor_set_child_state_drop(sup_ptr, 0, init_closure_drop) };
+
+        // Free the live child, then make the next thunk call fail (OOM).
+        unsafe {
+            let old = take_child_slot(&mut *sup_ptr, 0);
+            actor::hew_actor_free(old);
+        }
+        assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);
+
+        let breaker_state_before = unsafe { (&*sup_ptr).child_specs[0].circuit_breaker.state };
+        INIT_CLOSURE_FAIL_NEXT.store(true, Ordering::SeqCst);
+
+        // Restart with a failing thunk: fail closed (null new_child, null slot).
+        let new_child = unsafe { restart_child_from_spec(&mut *sup_ptr, 0) };
+        assert!(new_child.is_null(), "thunk OOM => fail closed (null child)");
+        unsafe {
+            let s = &*sup_ptr;
+            assert!(
+                s.children[0].is_null(),
+                "the slot is left null on fail-closed"
+            );
+            assert_eq!(
+                s.child_specs[0].circuit_breaker.state, breaker_state_before,
+                "thunk OOM must NOT advance the circuit breaker (mirror clone-OOM)"
+            );
+        }
+        // No owned alloc leaked on the OOM path (the thunk freed nothing because
+        // it returned before allocating, or freed what it took).
+        assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);
+
+        unsafe { hew_supervisor_stop(sup_ptr) };
+        assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn init_fn_config_buffer_freed_exactly_once_at_teardown() {
+        // Two init_fn children sharing ONE config buffer: the buffer is adopted
+        // once and freed once at teardown (no double-free across children).
+        let _rt = crate::runtime_test_guard();
+        INIT_CLOSURE_LIVE_OWNED.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_THUNK_CALLS.store(0, Ordering::SeqCst);
+        INIT_CLOSURE_FAIL_NEXT.store(false, Ordering::SeqCst);
+
+        let sup_ptr = unsafe { hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 3, 5) };
+        let (cfg, cfg_size) = make_config_buf(11);
+
+        let spec0 = init_closure_spec(cfg, cfg_size);
+        let spec1 = init_closure_spec(cfg, cfg_size);
+        assert_eq!(
+            unsafe { hew_supervisor_add_child_spec(sup_ptr, &raw const spec0) },
+            0
+        );
+        assert_eq!(
+            unsafe { hew_supervisor_add_child_spec(sup_ptr, &raw const spec1) },
+            0
+        );
+        unsafe { hew_supervisor_set_child_state_drop(sup_ptr, 0, init_closure_drop) };
+        unsafe { hew_supervisor_set_child_state_drop(sup_ptr, 1, init_closure_drop) };
+
+        unsafe {
+            // Both specs borrow the same single supervisor-owned buffer.
+            let s = &*sup_ptr;
+            assert_eq!(s.config_buf, cfg);
+            assert_eq!(s.child_specs[0].config, cfg);
+            assert_eq!(s.child_specs[1].config, cfg);
+            assert_eq!(s.config_size, cfg_size);
+        }
+        // Two children => two thunk calls => two live owned allocs.
+        assert_eq!(INIT_CLOSURE_THUNK_CALLS.load(Ordering::SeqCst), 2);
+        assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 2);
+
+        // Teardown frees both owned allocs (drop fns) and the config buffer once.
+        // A double-free of the config buffer would abort under a hardened
+        // allocator; reaching the assertion proves the single-free contract.
+        unsafe { hew_supervisor_stop(sup_ptr) };
+        assert_eq!(INIT_CLOSURE_LIVE_OWNED.load(Ordering::SeqCst), 0);
     }
 }

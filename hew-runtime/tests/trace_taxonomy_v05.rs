@@ -205,6 +205,9 @@ fn v05_concurrency_program_has_no_unknown_trace_events() {
             cycle_capable: 0,
             on_crash: None,
             lifecycle_fn: None,
+            init_fn: None,
+            config: ptr::null_mut(),
+            config_size: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),

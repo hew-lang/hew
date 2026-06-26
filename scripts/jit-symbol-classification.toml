@@ -574,6 +574,7 @@ stable = [
   "hew_supervisor_restart_await_blocking",
   "hew_supervisor_restart_await_detach",
   "hew_supervisor_restart_await_suspend",
+  "hew_supervisor_set_child_init_fn",
   "hew_supervisor_set_child_lifecycle",
   "hew_supervisor_set_child_state_clone",
   "hew_supervisor_set_child_state_drop",

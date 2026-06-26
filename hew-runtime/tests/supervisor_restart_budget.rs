@@ -131,6 +131,9 @@ fn concurrent_crashes_decrement_budget_correctly() {
                 cycle_capable: 0,
                 on_crash: None,
                 lifecycle_fn: None,
+                init_fn: None,
+                config: std::ptr::null_mut(),
+                config_size: 0,
             };
             assert_eq!(
                 hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -204,6 +207,9 @@ fn budget_exhaustion_stops_supervisor() {
             cycle_capable: 0,
             on_crash: None,
             lifecycle_fn: None,
+            init_fn: None,
+            config: std::ptr::null_mut(),
+            config_size: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -285,6 +291,9 @@ fn delayed_restart_processed_via_mailbox() {
             cycle_capable: 0,
             on_crash: None,
             lifecycle_fn: None,
+            init_fn: None,
+            config: std::ptr::null_mut(),
+            config_size: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -355,6 +364,9 @@ fn multiple_delayed_restarts_budget_consistent() {
                 cycle_capable: 0,
                 on_crash: None,
                 lifecycle_fn: None,
+                init_fn: None,
+                config: std::ptr::null_mut(),
+                config_size: 0,
             };
             assert_eq!(
                 hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),

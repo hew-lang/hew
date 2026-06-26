@@ -170,6 +170,9 @@ fn divide_by_zero_trap_surfaces_trap_kind_on_observe_event_surface() {
             cycle_capable: 0,
             on_crash: None,
             lifecycle_fn: None,
+            init_fn: None,
+            config: std::ptr::null_mut(),
+            config_size: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),

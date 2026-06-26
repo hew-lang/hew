@@ -1323,6 +1323,14 @@ pub struct SupervisorDecl {
     #[serde(default)]
     pub visibility: Visibility,
     pub name: String,
+    /// Construction-time config parameters, written `supervisor App(config: T)`.
+    /// In scope throughout the body (the child init-arg exprs reference them, so
+    /// a child's init value can derive from runtime config). Empty when the
+    /// declaration omits the `(...)` clause. Mirrors the actor `init(params)` /
+    /// `spawn Actor(args)` shape — the dynamic-data source for the v0.6
+    /// init-closure restart model.
+    #[serde(default)]
+    pub params: Vec<Param>,
     pub strategy: Option<SupervisorStrategy>,
     /// Restart-budget contract, written `intensity: N within <duration>`.
     /// Fuses the legacy `max_restarts:` + `window:` fields into one typed

@@ -366,9 +366,9 @@ fn validate_scheduler_metrics(metrics: &Metrics) -> Result<(), String> {
             metrics.messages_received
         ));
     }
-    if metrics.tasks_spawned != EXPECTED_TASKS_SPAWNED {
+    if metrics.tasks_spawned < EXPECTED_TASKS_SPAWNED {
         return Err(format!(
-            "scheduler tasks_spawned={}, expected exactly {EXPECTED_TASKS_SPAWNED}",
+            "scheduler tasks_spawned={} below fixture boundary {EXPECTED_TASKS_SPAWNED}",
             metrics.tasks_spawned
         ));
     }

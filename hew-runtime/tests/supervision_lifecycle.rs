@@ -337,6 +337,9 @@ fn supervised_actor_crash_and_restart() {
             cycle_capable: 0,
             on_crash: None,
             lifecycle_fn: None,
+            init_fn: None,
+            config: std::ptr::null_mut(),
+            config_size: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -456,6 +459,9 @@ fn lifecycle_wrapper_fires_on_initial_spawn_and_restart() {
             // The load-bearing carrier: the initial-spawn fire reads this
             // literal field inside add_child_spec, BEFORE the setter below runs.
             lifecycle_fn: Some(recording_lifecycle),
+            init_fn: None,
+            config: std::ptr::null_mut(),
+            config_size: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -546,6 +552,9 @@ fn circuit_breaker_trips_on_repeated_crashes() {
             cycle_capable: 0,
             on_crash: None,
             lifecycle_fn: None,
+            init_fn: None,
+            config: std::ptr::null_mut(),
+            config_size: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -770,6 +779,9 @@ fn linked_actor_receives_exit_before_supervisor_restarts() {
             cycle_capable: 0,
             on_crash: None,
             lifecycle_fn: None,
+            init_fn: None,
+            config: std::ptr::null_mut(),
+            config_size: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -1133,6 +1145,9 @@ fn supervisor_restart_runs_state_drop_on_new_actor() {
             cycle_capable: 0,
             on_crash: None,
             lifecycle_fn: None,
+            init_fn: None,
+            config: std::ptr::null_mut(),
+            config_size: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec),
@@ -1220,6 +1235,9 @@ fn dynamic_child_restart_runs_state_drop() {
             cycle_capable: 0,
             on_crash: None,
             lifecycle_fn: None,
+            init_fn: None,
+            config: std::ptr::null_mut(),
+            config_size: 0,
         };
 
         let idx = hew_supervisor_add_child_dynamic(sup.as_ptr(), &raw const spec);
@@ -1267,6 +1285,11 @@ fn dynamic_child_restart_runs_state_drop() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "two HewChildSpec literals each gained the trailing init_fn/config/config_size \
+              fields (v0.6 init-closure ABI); the test body is a linear setup-assert sequence"
+)]
 fn one_for_all_suppresses_state_drop_on_sibling_restart() {
     const STRATEGY_ONE_FOR_ALL: i32 = 1;
     const RESTART_PERMANENT: i32 = 0;
@@ -1300,6 +1323,9 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             cycle_capable: 0,
             on_crash: None,
             lifecycle_fn: None,
+            init_fn: None,
+            config: std::ptr::null_mut(),
+            config_size: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec0),
@@ -1321,6 +1347,9 @@ fn one_for_all_suppresses_state_drop_on_sibling_restart() {
             cycle_capable: 0,
             on_crash: None,
             lifecycle_fn: None,
+            init_fn: None,
+            config: std::ptr::null_mut(),
+            config_size: 0,
         };
         assert_eq!(
             hew_supervisor_add_child_spec(sup.as_ptr(), &raw const spec1),

@@ -401,6 +401,7 @@ fn supervisor_child_layout_mirrors_cycle_capable_actor_metadata() {
         id: ids.item(),
         node: ids.node(),
         name: "App".to_string(),
+        params: Vec::new(),
         strategy: None,
         max_restarts: None,
         window: None,

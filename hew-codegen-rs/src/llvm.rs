@@ -6210,6 +6210,16 @@ fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
             i32_ty.into(), // cycle_capable
             ptr_ty.into(), // on_crash fn-pointer: null when child's actor has no #[on(crash)]; otherwise pointer to `{actor_name}__on_crash`
             ptr_ty.into(), // lifecycle_fn fn-pointer: null when child's actor has no init/#[on(start)]; otherwise pointer to `__hew_lifecycle_{actor_name}`
+            // ── v0.6 init-closure restart model trailing fields ──────────────
+            // These mirror the trailing `HewChildSpec` fields added in the
+            // runtime (`hew-runtime/src/supervisor.rs`): `init_fn` / `config` /
+            // `config_size`. Field-order drift here is wrong-code at the FFI
+            // boundary — the runtime reads these by offset. Until the init-thunk
+            // codegen lands, the literal stores null/null/0 so the runtime takes
+            // the existing template path (init_fn == null).
+            ptr_ty.into(), // init_fn: per-child init thunk (null on the template path)
+            ptr_ty.into(), // config: borrowed supervisor config buffer (null when no init_fn)
+            i64_ty.into(), // config_size: bytes of `config` (0 when null)
         ],
         false,
     )
@@ -6773,6 +6783,28 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
                         .const_int(if *b { 1 } else { 0 }, false)
                         .into(),
                     ChildInitArg::F64(f) => ctx.f64_type().const_float(*f).into(),
+                    // The v0.6 init-closure restart model carries config-derived
+                    // init args as `ConfigField`. Emitting them requires the
+                    // codegen init thunk + the construction-time config buffer the
+                    // bootstrap captures and passes to the thunk on every spawn /
+                    // restart — follow-up work. Fail CLOSED here so a config-field
+                    // init arg can never be silently mis-emitted into a const
+                    // template; the runtime ABI + MIR representation are already in
+                    // place (`HewChildSpec.init_fn` / `ChildInitArg::ConfigField`).
+                    ChildInitArg::ConfigField {
+                        config_param_name,
+                        field_name: cfg_field,
+                        ..
+                    } => {
+                        return Err(CodegenError::FailClosed(format!(
+                            "supervisor `{sup_name}` child `{}`: init arg reads config field \
+                             `{config_param_name}.{cfg_field}`; the init-closure config thunk \
+                             (bootstrap config capture + per-child init thunk) is follow-up \
+                             work — the runtime ABI (HewChildSpec.init_fn) \
+                             and MIR representation (ChildInitArg::ConfigField) are landed",
+                            child.name
+                        )));
+                    }
                 };
 
                 let field_gep = builder
@@ -6867,7 +6899,7 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         }
     };
 
-    let field_values: [(u32, BasicValueEnum<'ctx>); 11] = [
+    let field_values: [(u32, BasicValueEnum<'ctx>); 14] = [
         (0, name_ptr.into()),
         (1, init_state_ptr),
         (2, init_state_size),
@@ -6879,6 +6911,14 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         (8, i32_ty.const_int(cycle_flag, false).into()), // cycle_capable from checker side-table
         (9, on_crash_ptr), // on_crash: fn-pointer when child's actor has #[on(crash)], null otherwise
         (10, lifecycle_ptr), // lifecycle_fn: __hew_lifecycle_<actor> when child's actor has init/#[on(start)], null otherwise
+        // v0.6 init-closure restart model trailing fields. The init-thunk
+        // codegen is follow-up work; until it lands, every child takes the
+        // template path, so init_fn is null (the runtime then ignores config /
+        // config_size). Storing them explicitly keeps the literal ABI-exact
+        // against the 14-field runtime struct (no uninitialised tail).
+        (11, ptr_ty.const_null().into()), // init_fn: null (template path)
+        (12, ptr_ty.const_null().into()), // config: null
+        (13, i64_ty.const_zero().into()), // config_size: 0
     ];
     for (field_idx, value) in field_values {
         let gep = builder
@@ -48294,7 +48334,7 @@ fn main() {
         // (Rust offset_of, LLVM element index) for every field, in declaration
         // order. The pairing IS the ABI contract: element N of the LLVM struct
         // must land at the same byte offset as the matching Rust field.
-        let fields: [(usize, u32, &str); 11] = [
+        let fields: [(usize, u32, &str); 14] = [
             (std::mem::offset_of!(HewChildSpec, name), 0, "name"),
             (
                 std::mem::offset_of!(HewChildSpec, init_state),
@@ -48333,6 +48373,14 @@ fn main() {
                 std::mem::offset_of!(HewChildSpec, lifecycle_fn),
                 10,
                 "lifecycle_fn",
+            ),
+            // v0.6 init-closure restart model trailing fields.
+            (std::mem::offset_of!(HewChildSpec, init_fn), 11, "init_fn"),
+            (std::mem::offset_of!(HewChildSpec, config), 12, "config"),
+            (
+                std::mem::offset_of!(HewChildSpec, config_size),
+                13,
+                "config_size",
             ),
         ];
 

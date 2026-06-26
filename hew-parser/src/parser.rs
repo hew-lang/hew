@@ -4014,6 +4014,18 @@ impl<'src> Parser<'src> {
     fn parse_supervisor_decl(&mut self, visibility: Visibility) -> Option<SupervisorDecl> {
         let name = self.expect_ident()?;
 
+        // Optional construction-time config params: `supervisor App(config: T)`.
+        // Mirrors the actor `init(params)` shape; the child init-arg exprs in the
+        // body reference these bindings, so a child's init value can derive from
+        // runtime config (the v0.6 init-closure restart model's dynamic source).
+        let params = if self.eat(&Token::LeftParen) {
+            let params = self.parse_params();
+            self.expect(&Token::RightParen)?;
+            params
+        } else {
+            Vec::new()
+        };
+
         self.expect(&Token::LeftBrace)?;
 
         let mut strategy = None;
@@ -4387,6 +4399,7 @@ impl<'src> Parser<'src> {
         Some(SupervisorDecl {
             visibility,
             name,
+            params,
             strategy,
             intensity,
             children,
@@ -8646,6 +8659,41 @@ mod tests {
         assert_eq!(sd.children[0].actor_type, "bank.Account");
         assert_eq!(sd.children[0].args.len(), 1);
         assert_eq!(sd.children[1].actor_type, "Local");
+    }
+
+    /// A supervisor takes construction-time config params: `supervisor App(config: T)`.
+    /// The params carry through so child init-arg exprs can derive from runtime config.
+    #[test]
+    fn parse_supervisor_construction_time_config_params() {
+        let source = "supervisor App(config: AppConfig) {\n\
+                      \x20   strategy: one_for_one;\n\
+                      \x20   child cache: Cache(capacity: config.cache_size);\n\
+                      }\n";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Supervisor(sd) = &result.program.items[0].0 else {
+            panic!("expected supervisor, got {:?}", result.program.items[0].0);
+        };
+        assert_eq!(sd.params.len(), 1, "one config param");
+        assert_eq!(sd.params[0].name, "config");
+        // The child init arg references the config binding (a non-literal expr).
+        assert_eq!(sd.children[0].args.len(), 1);
+        assert_eq!(sd.children[0].args[0].0, "capacity");
+    }
+
+    /// A supervisor without a `(...)` clause has no params (back-compat).
+    #[test]
+    fn parse_supervisor_without_params_has_empty_param_list() {
+        let source = "supervisor S {\n\
+                      \x20   strategy: one_for_one;\n\
+                      \x20   child a: Local;\n\
+                      }\n";
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let Item::Supervisor(sd) = &result.program.items[0].0 else {
+            panic!("expected supervisor");
+        };
+        assert!(sd.params.is_empty());
     }
 
     #[test]

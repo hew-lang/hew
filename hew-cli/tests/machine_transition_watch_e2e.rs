@@ -472,8 +472,7 @@ fn supervisor_child_with_machine_state_fails_closed() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("E_NOT_YET_IMPLEMENTED")
-            && stderr.contains("only integer, bool, and float literals"),
+        stderr.contains("E_NOT_YET_IMPLEMENTED") && stderr.contains("supported child init values"),
         "expected the named child-init refusal; got:\n{stderr}",
     );
 }

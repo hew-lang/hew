@@ -84,6 +84,9 @@ fn supervisor_child_spec_accepts_cycle_capable_bit() {
         cycle_capable: 1,
         on_crash: None,
         lifecycle_fn: None,
+        init_fn: None,
+        config: ptr::null_mut(),
+        config_size: 0,
     };
 
     assert_eq!(

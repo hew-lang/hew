@@ -716,6 +716,12 @@ pub struct HirSupervisorDecl {
     pub id: ItemId,
     pub node: HirNodeId,
     pub name: String,
+    /// Construction-time config parameters (`supervisor App(config: T)`). Bound
+    /// in scope throughout the body so child init-arg exprs can reference them.
+    /// Empty when the declaration omits the `(...)` clause. The MIR bootstrap
+    /// synthesis populates `synthetic_fn.params` from these so the (codegen-real)
+    /// bootstrap body / init thunk can read config-derived init args.
+    pub params: Vec<HirBinding>,
     pub strategy: Option<HirSupervisorStrategy>,
     pub max_restarts: Option<i64>,
     /// Window duration as a raw string from the parser (e.g. `"60s"`).

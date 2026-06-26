@@ -3451,6 +3451,9 @@ mod rest_for_one_tests {
                     cycle_capable: 0,
                     on_crash: None,
                     lifecycle_fn: None,
+                    init_fn: None,
+                    config: std::ptr::null_mut(),
+                    config_size: 0,
                 };
                 assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             }
@@ -3620,6 +3623,9 @@ mod supervisor_escalation_tests {
             cycle_capable: 0,
             on_crash: None,
             lifecycle_fn: None,
+            init_fn: None,
+            config: std::ptr::null_mut(),
+            config_size: 0,
         };
 
         if unsafe { hew_supervisor_add_child_spec(child, &raw const spec) } != 0 {
@@ -3675,6 +3681,9 @@ mod supervisor_escalation_tests {
                 cycle_capable: 0,
                 on_crash: None,
                 lifecycle_fn: None,
+                init_fn: None,
+                config: std::ptr::null_mut(),
+                config_size: 0,
             };
             assert_eq!(hew_supervisor_add_child_spec(child, &raw const spec), 0);
 
@@ -3753,6 +3762,9 @@ mod supervisor_escalation_tests {
                 cycle_capable: 0,
                 on_crash: None,
                 lifecycle_fn: None,
+                init_fn: None,
+                config: std::ptr::null_mut(),
+                config_size: 0,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const spec), 0);
             assert_eq!(hew_supervisor_start(sup), 0);
@@ -3858,6 +3870,9 @@ mod supervisor_escalation_tests {
                 cycle_capable: 0,
                 on_crash: None,
                 lifecycle_fn: None,
+                init_fn: None,
+                config: std::ptr::null_mut(),
+                config_size: 0,
             };
             assert_eq!(
                 hew_supervisor_add_child_spec(parent, &raw const sibling_spec),
@@ -4020,6 +4035,9 @@ mod circuit_breaker_tests {
                 cycle_capable: 0,
                 on_crash: None,
                 lifecycle_fn: None,
+                init_fn: None,
+                config: std::ptr::null_mut(),
+                config_size: 0,
             };
             assert_eq!(hew_supervisor_add_child_spec(sup, &raw const child_spec), 0);
             assert_eq!(hew_supervisor_start(sup), 0);
@@ -4105,6 +4123,9 @@ mod dynamic_supervision_tests {
                 cycle_capable: 0,
                 on_crash: None,
                 lifecycle_fn: None,
+                init_fn: None,
+                config: std::ptr::null_mut(),
+                config_size: 0,
             };
 
             // Not started yet, so child won't be spawned but slot is allocated.
@@ -4138,6 +4159,9 @@ mod dynamic_supervision_tests {
                 cycle_capable: 0,
                 on_crash: None,
                 lifecycle_fn: None,
+                init_fn: None,
+                config: std::ptr::null_mut(),
+                config_size: 0,
             };
 
             hew_supervisor_add_child_dynamic(sup, &raw const spec);
@@ -4186,6 +4210,9 @@ mod dynamic_supervision_tests {
                 cycle_capable: 0,
                 on_crash: None,
                 lifecycle_fn: None,
+                init_fn: None,
+                config: std::ptr::null_mut(),
+                config_size: 0,
             };
 
             // Add more than the old SUP_MAX_CHILDREN (64) limit.
@@ -4218,6 +4245,9 @@ mod dynamic_supervision_tests {
                 cycle_capable: 0,
                 on_crash: None,
                 lifecycle_fn: None,
+                init_fn: None,
+                config: std::ptr::null_mut(),
+                config_size: 0,
             };
 
             hew_supervisor_add_child_dynamic(sup, &raw const spec);

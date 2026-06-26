@@ -1,0 +1,42 @@
+import std::observe;
+
+actor Counter {
+    var count: i64;
+
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+actor Pinger {
+    let target: Counter;
+
+    receive fn ping(n: i64) -> i64 {
+        var sent = 0;
+        while sent < n {
+            target.increment(1);
+            sent = sent + 1;
+        }
+        sent
+    }
+}
+
+fn main() {
+    let counter = spawn Counter(count: 0);
+    let pinger = spawn Pinger(target: counter);
+    let sent = match await pinger.ping(7) {
+        Ok(value) => value,
+        Err(_) => -1,
+    };
+    let total = match await counter.total() {
+        Ok(value) => value,
+        Err(_) => -1,
+    };
+    println(f"observe fixture sent={sent} total={total}");
+    let _barrier = observe.barrier();
+    sleep_ms(15000);
+}

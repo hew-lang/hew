@@ -19,8 +19,8 @@ use std::collections::HashSet;
 use hew_hir::{lower_program, ResolutionCtx};
 use hew_mir::model::RecordLayout;
 use hew_mir::{
-    classify_actor_state_fields, lower_hir_module, ClassificationError, IoHandleKind,
-    StateFieldCloneKind,
+    classify_actor_state_fields, classify_state_field_with_enum_layouts, lower_hir_module,
+    ty_contains_unclonable_opaque, ClassificationError, IoHandleKind, StateFieldCloneKind,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -898,6 +898,168 @@ fn string_payload_machine_record_field_admits() {
     assert!(
         pipeline.diagnostics.is_empty(),
         "string-payload machine record must lower clean; got: {:#?}",
+        pipeline.diagnostics
+    );
+}
+
+// ─── LocalPid<T> phantom-arg fix (chat_server regression) ───────────────────
+//
+// `LocalPid<T>`, `ActorRef<T>`, and `Actor<T>` are bit-copy actor handles; T
+// is a phantom actor-name tag, not a value stored inside the handle.
+// `ty_contains_unclonable_opaque_inner` must NOT recurse into that arg — doing
+// so walks the actor's OWN state-mirror record and finds any #[opaque] fields
+// it carries, wrongly concluding the handle itself is unclonable.
+// The positive test shows the fix (Vec<LocalPid<T>> where T has an opaque
+// field → clone SUCCEEDS). The negative test is the teeth: a genuine container
+// holding a direct opaque still rejects (over-skip guard).
+
+/// Positive: `Vec<LocalPid<ClientHandler>>` actor state MUST classify clean
+/// even though `ClientHandler` holds a `#[opaque]` `conn: Connection` field.
+/// The handle's type arg is a phantom name tag; the handle itself is bit-copy.
+#[test]
+fn vec_of_local_pid_with_opaque_holding_actor_classifies_clean() {
+    let src = r"
+        #[opaque]
+        type Connection {}
+
+        actor ClientHandler {
+            let conn: Connection;
+            receive fn msg(text: string) {}
+        }
+
+        actor ChatRoom {
+            var handlers: Vec<LocalPid<ClientHandler>>;
+            var names: Vec<string>;
+            receive fn broadcast(msg: string) {}
+        }
+    ";
+    let pipeline = lower_source(src);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "Vec<LocalPid<T>> where T holds #[opaque] must classify clean (handle is bit-copy, \
+         T arg is a phantom name tag); got: {:#?}",
+        pipeline.diagnostics
+    );
+    let chatroom = find_actor(&pipeline, "ChatRoom");
+    assert!(
+        chatroom.state_clone_fn_symbol.is_some(),
+        "ChatRoom with Vec<LocalPid<ClientHandler>> must earn clone symbol; got None",
+    );
+}
+
+/// Negative (hardening): a non-builtin generic named `LocalPid` (e.g. an
+/// imported `mymod.LocalPid`) storing an opaque arg MUST be rejected by both
+/// the container gate (`ty_contains_unclonable_opaque`) and the classifier
+/// (`classify_state_field`).
+///
+/// The over-skip the first fix introduced used `short_name(name)` to match
+/// handle names, which also fires for a module-qualified `mymod.LocalPid` whose
+/// short suffix is `LocalPid` — even though that type has `builtin: None` (not
+/// the builtin handle) and carries opaque-bearing fields.
+///
+/// Post-hardening: the skip uses the `builtin` identity discriminator. A type
+/// with `builtin: None` never matches the handle-skip arm, so its args are
+/// walked and the opaque `Socket` is detected → fail closed.
+///
+/// The scenario is constructed at the MIR level (directly constructing
+/// `ResolvedTy` values) because the Hew checker resolves any bare `LocalPid`
+/// to the builtin, making the shadow unreachable from source. The qualified-name
+/// path (`mymod.LocalPid`, `builtin: None`) is how this type would appear when
+/// imported from a module; the substrate fix must hold at the MIR boundary.
+#[test]
+fn user_generic_shadowing_handle_name_with_opaque_arg_fails_closed() {
+    // `Socket` — an opaque handle type (is_opaque: true, builtin: None).
+    let socket_ty = ResolvedTy::Named {
+        name: "Socket".to_string(),
+        args: vec![],
+        builtin: None,
+        is_opaque: true,
+    };
+
+    // A non-builtin `LocalPid<Socket>` — `builtin: None` models a
+    // module-qualified user generic (`mymod.LocalPid<Socket>`) whose short
+    // name happens to be `LocalPid`. Before the fix, `short_name("mymod.LocalPid")
+    // == "LocalPid"` → handle-skip → over-admit. After the fix:
+    // `builtin: None` → no handle-skip → args recursed → Socket is opaque →
+    // fail closed.
+    let user_localpid_socket = ResolvedTy::Named {
+        name: "mymod.LocalPid".to_string(),
+        args: vec![socket_ty.clone()],
+        builtin: None,
+        is_opaque: false,
+    };
+
+    // Container gate must flag the opaque inside.
+    assert!(
+        ty_contains_unclonable_opaque(&user_localpid_socket, &[], &[]),
+        "ty_contains_unclonable_opaque must detect the opaque Socket inside \
+         a non-builtin `mymod.LocalPid<Socket>`; pre-fix short_name over-skip \
+         would have returned false (short_name(\"mymod.LocalPid\") == \"LocalPid\" → skip)",
+    );
+
+    // Classifier must also fail closed when the non-builtin LocalPid<Socket> is
+    // a Vec element. Inject a record layout so the classifier can walk the fields.
+    let mut visited = HashSet::new();
+    let mangled = hew_hir::mangle(
+        "mymod.LocalPid",
+        &[hew_hir::shorten_named_arg_qualifiers(socket_ty.clone())],
+    );
+    let records = vec![RecordLayout {
+        name: mangled,
+        field_tys: vec![socket_ty.clone()],
+        field_names: vec!["held".to_string()],
+    }];
+    let result = classify_state_field_with_enum_layouts(
+        &ResolvedTy::Named {
+            name: "Vec".to_string(),
+            args: vec![user_localpid_socket],
+            builtin: Some(hew_types::BuiltinType::Vec),
+            is_opaque: false,
+        },
+        &records,
+        &[],
+        &mut visited,
+    );
+    assert!(
+        result.is_err(),
+        "classify_state_field Vec<mymod.LocalPid<Socket>> must fail closed; got {result:?}",
+    );
+}
+
+/// Negative (the teeth): a genuine `Vec<record-with-a-direct-opaque-field>`
+/// MUST still fail closed — the fix must not over-skip legitimate rejections.
+/// Only the phantom-arg path for handle types is skipped; containers that
+/// directly parameterise an unclonable type still reject.
+#[test]
+fn vec_of_record_with_direct_opaque_field_still_rejects() {
+    let src = r"
+        #[opaque]
+        type Socket {}
+
+        type Wrapper {
+            sock: Socket;
+        }
+
+        actor Holder {
+            let v: Vec<Wrapper>;
+            receive fn ping() {}
+        }
+    ";
+    let pipeline = lower_source(src);
+    let holder = find_actor(&pipeline, "Holder");
+    assert!(
+        holder.state_clone_fn_symbol.is_none(),
+        "Vec<record-with-direct-opaque> must still fail closed after the LocalPid fix; \
+         clone symbol should be None, got {:?}",
+        holder.state_clone_fn_symbol,
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { actor, field_name, .. }
+                if actor == "Holder" && field_name == "v"
+        )),
+        "expected ActorStateCloneClassificationFailed on Holder.v; got: {:#?}",
         pipeline.diagnostics
     );
 }

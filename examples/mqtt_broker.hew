@@ -8,27 +8,29 @@
 //   Listener     — accept loop; spawns ClientHandler per connection
 //   ClientHandler — reads MQTT frames, calls router methods
 //   Router       — tracks clients and subscriptions, fans out publishes
+//
+// Router state uses only clonable types (strings, i32, LocalPid handles) so the
+// actor is supervisor-restartable. Live Connection handles stay inside
+// ClientHandler, which is responsible for its own socket lifecycle.
 import std::net::{Connection};
 
-import std::string;
-
 // ── Bytes helpers ─────────────────────────────────────────────────────────────
-fn bytes_slice(data: bytes, start: i64, end: i64) -> _ {
+fn bytes_slice(data: bytes, start: i64, end: i64) -> bytes {
     let result = bytes::new();
     for i in start .. end {
-        result.push(data.get(i));
+        result.push(data[i]);
     }
     result
 }
 
 // Read big-endian uint16 at offset.
 fn read_u16(data: bytes, offset: i64) -> i32 {
-    data.get(offset) * 256 + data.get(offset + 1)
+    data[offset] as i32 * 256 + data[offset + 1] as i32
 }
 
 fn push_u16(buf: bytes, val: i32) {
-    buf.push(val / 256);
-    buf.push(val % 256);
+    buf.push((val / 256) as u8);
+    buf.push((val % 256) as u8);
 }
 
 fn push_varint(buf: bytes, val: i32) {
@@ -37,9 +39,9 @@ fn push_varint(buf: bytes, val: i32) {
         let digit = remaining % 128;
         remaining = remaining / 128;
         if remaining > 0 {
-            buf.push(digit + 128);
+            buf.push((digit + 128) as u8);
         } else {
-            buf.push(digit);
+            buf.push(digit as u8);
             break;
         }
     }
@@ -50,7 +52,7 @@ fn read_varint_value(data: bytes, offset: i64) -> i32 {
     var multiplier: i32 = 1;
     var i: i64 = offset;
     loop {
-        let b = data.get(i);
+        let b = data[i] as i32;
         value = value + b % 128 * multiplier;
         multiplier = multiplier * 128;
         i = i + 1;
@@ -64,7 +66,7 @@ fn read_varint_value(data: bytes, offset: i64) -> i32 {
 fn read_varint_len(data: bytes, offset: i64) -> i64 {
     var i: i64 = offset;
     loop {
-        let b = data.get(i);
+        let b = data[i];
         i = i + 1;
         if b < 128 {
             break;
@@ -75,9 +77,10 @@ fn read_varint_len(data: bytes, offset: i64) -> i64 {
 
 // Push length-prefixed MQTT string.
 fn push_mqtt_str(buf: bytes, s: string) {
-    push_u16(buf, string_length(s) as i32);
-    for i in 0 .. string_length(s) {
-        buf.push(s.char_at(i) as i32);
+    let slen: i64 = s.len();
+    push_u16(buf, slen as i32);
+    for i in 0 .. slen {
+        buf.push(s.char_at(i) as u8);
     }
 }
 
@@ -87,40 +90,53 @@ fn read_mqtt_str(data: bytes, offset: i64) -> string {
     let s = bytes::new();
     let start: i64 = offset + 2;
     for i in start .. start + len {
-        s.push(data.get(i));
+        s.push(data[i]);
     }
     s.to_string()
 }
 
 // ── Packet builders ───────────────────────────────────────────────────────────
-fn build_connack(session_present: i32, return_code: i32) -> _ {
-    bytes::from([0x20, 2, session_present, return_code])
+fn build_connack(session_present: i32, return_code: i32) -> bytes {
+    let buf = bytes::new();
+    buf.push(0x20 as u8);
+    buf.push(2 as u8);
+    buf.push(session_present as u8);
+    buf.push(return_code as u8);
+    buf
 }
 
-fn build_puback(packet_id: i32) -> _ {
-    let buf = bytes::from([0x40, 2]);
+fn build_puback(packet_id: i32) -> bytes {
+    let buf = bytes::new();
+    buf.push(0x40 as u8);
+    buf.push(2 as u8);
     push_u16(buf, packet_id);
     buf
 }
 
-fn build_suback(packet_id: i32, return_codes: bytes) -> _ {
+fn build_suback(packet_id: i32, return_codes: bytes) -> bytes {
     let body = bytes::new();
     push_u16(body, packet_id);
     body.append(return_codes);
-    let buf = bytes::from([0x90]);
+    let buf = bytes::new();
+    buf.push(0x90 as u8);
     push_varint(buf, body.len() as i32);
     buf.append(body);
     buf
 }
 
-fn build_unsuback(packet_id: i32) -> _ {
-    let buf = bytes::from([0xB0, 2]);
+fn build_unsuback(packet_id: i32) -> bytes {
+    let buf = bytes::new();
+    buf.push(0xB0 as u8);
+    buf.push(2 as u8);
     push_u16(buf, packet_id);
     buf
 }
 
-fn build_pingresp() -> _ {
-    bytes::from([0xD0, 0])
+fn build_pingresp() -> bytes {
+    let buf = bytes::new();
+    buf.push(0xD0 as u8);
+    buf.push(0 as u8);
+    buf
 }
 
 // Build a PUBLISH packet. payload is raw bytes (not a string).
@@ -132,7 +148,8 @@ fn build_publish(topic: string, payload: bytes, qos: i32, packet_id: i32) -> byt
     }
     body.append(payload);
     let flags = 0x30 + qos * 2;
-    let buf = bytes::from([flags]);
+    let buf = bytes::new();
+    buf.push(flags as u8);
     push_varint(buf, body.len() as i32);
     buf.append(body);
     buf
@@ -141,6 +158,8 @@ fn build_publish(topic: string, payload: bytes, qos: i32, packet_id: i32) -> byt
 // ── Actors ────────────────────────────────────────────────────────────────────
 
 // ClientHandler — one per TCP connection.
+// Holds the live Connection; all socket I/O stays here so Router can be
+// supervisor-restartable (Router state has no opaque handles).
 actor ClientHandler {
     let conn: Connection;
     var client_id: string;
@@ -168,8 +187,8 @@ actor ClientHandler {
                 if buf_len < total {
                     break;
                 }
-                let ptype = buf.get(0) / 16;
-                let pflags = buf.get(0) % 16;
+                let ptype = buf[0] as i64 / 16;
+                let pflags = buf[0] as i64 % 16;
                 let var_off: i64 = 1 + vl;
                 match ptype {
                     1 => {
@@ -194,25 +213,25 @@ actor ClientHandler {
                         }
                         let payload_bytes = bytes_slice(buf, pid_off, var_off + remaining_len);
                         println(f"[mqtt] PUBLISH topic={topic} qos={qos}");
-                        router.publish(topic, payload_bytes, qos, packet_id);
+                        router.publish(topic, payload_bytes, qos as i32, packet_id);
                     },
                     8 => {
                         // SUBSCRIBE
                         let sub_packet_id = read_u16(buf, var_off);
                         let payload_end: i64 = var_off + remaining_len;
                         var topic_off: i64 = var_off + 2;
-                        var return_codes: bytes = bytes::new();
+                        let return_codes: bytes = bytes::new();
                         while topic_off < payload_end {
                             let tw: i64 = 2 + read_u16(buf, topic_off) as i64;
                             let stopic = read_mqtt_str(buf, topic_off);
-                            let req_qos = buf.get(topic_off + tw);
-                            let granted = if req_qos > 1 {
-                                1 as i32
+                            let req_qos: i32 = buf[topic_off + tw] as i32;
+                            let granted: i32 = if req_qos > 1 {
+                                1
                             } else {
                                 req_qos
                             };
-                            router.subscribe(stopic, conn, granted);
-                            return_codes.push(granted);
+                            router.subscribe(stopic, client_id.clone(), granted);
+                            return_codes.push(granted as u8);
                             topic_off = topic_off + tw + 1;
                         }
                         let _ = conn.write(build_suback(sub_packet_id, return_codes));
@@ -226,7 +245,7 @@ actor ClientHandler {
                         while topic_off < payload_end {
                             let tw: i64 = 2 + read_u16(buf, topic_off) as i64;
                             let utopic = read_mqtt_str(buf, topic_off);
-                            router.unsubscribe(utopic, conn);
+                            router.unsubscribe(utopic, client_id.clone());
                             topic_off = topic_off + tw;
                         }
                         let _ = conn.write(build_unsuback(unsub_packet_id));
@@ -253,7 +272,7 @@ actor ClientHandler {
                 break;
             }
         }
-        router.client_disconnect(conn);
+        router.client_disconnect(client_id.clone());
         conn.close();
         println(f"[mqtt] connection closed for {client_id}");
     }
@@ -264,36 +283,35 @@ actor ClientHandler {
 
 // Router — tracks clients and subscriptions; fans out publishes directly.
 //
-// Parallel arrays: client_conns[i] <-> client_actors[i]
-// Parallel arrays: sub_topics[i] <-> sub_conns[i] <-> sub_qos[i]
+// State uses only clonable types: strings, i32, and LocalPid actor handles.
+// Parallel arrays: client_ids[i] <-> client_actors[i]
+// Parallel arrays: sub_topics[i] <-> sub_client_ids[i] <-> sub_qos[i]
 actor Router {
-    var client_conns: Vec<Connection>;
+    var client_ids: Vec<string>;
     var client_actors: Vec<LocalPid<ClientHandler>>;
     var sub_topics: Vec<string>;
-    var sub_conns: Vec<Connection>;
+    var sub_client_ids: Vec<string>;
     var sub_qos: Vec<i32>;
-    receive fn register_client(conn: Connection, handler: LocalPid<ClientHandler>) {
-        client_conns.push(conn);
+    receive fn register_client(client_id: string, handler: LocalPid<ClientHandler>) {
+        client_ids.push(client_id);
         client_actors.push(handler);
         println("[router] client registered");
     }
-    receive fn subscribe(topic: string, conn: Connection, qos: i32) {
+    receive fn subscribe(topic: string, client_id: string, qos: i32) {
         sub_topics.push(topic);
-        sub_conns.push(conn);
+        sub_client_ids.push(client_id);
         sub_qos.push(qos);
         println(f"[router] subscribed qos={qos}");
     }
     receive fn publish(topic: string, payload: bytes, qos: i32, packet_id: i32) {
-        // Fan out to all matching subscribers. Inline build_publish so the
-        // expressions passed to deliver() are Expr::Call (not Identifier),
-        // which avoids the move-at-actor-boundary rule.
+        // Fan out to all matching subscribers via actor handles.
         for i in 0 .. sub_topics.len() {
-            if sub_topics.get(i) == topic {
-                let sub_conn = sub_conns.get(i);
-                let sub_q = sub_qos.get(i);
-                for j in 0 .. client_conns.len() {
-                    if client_conns.get(j) == sub_conn {
-                        let target = client_actors.get(j);
+            if sub_topics[i] == topic {
+                let sub_cid = sub_client_ids[i];
+                let sub_q = sub_qos[i];
+                for j in 0 .. client_ids.len() {
+                    if client_ids[j] == sub_cid {
+                        let target = client_actors[j];
                         target.deliver(build_publish(topic, payload, sub_q, packet_id));
                         break;
                     }
@@ -302,50 +320,50 @@ actor Router {
         }
         println(f"[router] publish topic={topic}");
     }
-    receive fn unsubscribe(topic: string, conn: Connection) {
+    receive fn unsubscribe(topic: string, client_id: string) {
         var new_topics: Vec<string> = Vec::new();
-        var new_conns: Vec<Connection> = Vec::new();
+        var new_ids: Vec<string> = Vec::new();
         var new_qos: Vec<i32> = Vec::new();
         for i in 0 .. sub_topics.len() {
-            if sub_conns.get(i) == conn {
-                if sub_topics.get(i) == topic {
+            if sub_client_ids[i] == client_id {
+                if sub_topics[i] == topic {
                     continue;
                 }
             }
-            new_topics.push(sub_topics.get(i));
-            new_conns.push(sub_conns.get(i));
-            new_qos.push(sub_qos.get(i));
+            new_topics.push(sub_topics[i]);
+            new_ids.push(sub_client_ids[i]);
+            new_qos.push(sub_qos[i]);
         }
         sub_topics = new_topics;
-        sub_conns = new_conns;
+        sub_client_ids = new_ids;
         sub_qos = new_qos;
         println(f"[router] unsubscribed topic={topic}");
     }
-    receive fn client_disconnect(conn: Connection) {
+    receive fn client_disconnect(client_id: string) {
         // Remove from client registry
-        var new_conns: Vec<Connection> = Vec::new();
+        var new_ids: Vec<string> = Vec::new();
         var new_actors: Vec<LocalPid<ClientHandler>> = Vec::new();
-        for i in 0 .. client_conns.len() {
-            if client_conns.get(i) != conn {
-                new_conns.push(client_conns.get(i));
-                new_actors.push(client_actors.get(i));
+        for i in 0 .. client_ids.len() {
+            if client_ids[i] != client_id {
+                new_ids.push(client_ids[i]);
+                new_actors.push(client_actors[i]);
             }
         }
-        client_conns = new_conns;
+        client_ids = new_ids;
         client_actors = new_actors;
-        // Remove subscriptions for this conn
+        // Remove subscriptions for this client
         var new_sub_topics: Vec<string> = Vec::new();
-        var new_sub_conns: Vec<Connection> = Vec::new();
+        var new_sub_ids: Vec<string> = Vec::new();
         var new_sub_qos: Vec<i32> = Vec::new();
-        for j in 0 .. sub_conns.len() {
-            if sub_conns.get(j) != conn {
-                new_sub_topics.push(sub_topics.get(j));
-                new_sub_conns.push(sub_conns.get(j));
-                new_sub_qos.push(sub_qos.get(j));
+        for j in 0 .. sub_client_ids.len() {
+            if sub_client_ids[j] != client_id {
+                new_sub_topics.push(sub_topics[j]);
+                new_sub_ids.push(sub_client_ids[j]);
+                new_sub_qos.push(sub_qos[j]);
             }
         }
         sub_topics = new_sub_topics;
-        sub_conns = new_sub_conns;
+        sub_client_ids = new_sub_ids;
         sub_qos = new_sub_qos;
         println("[router] client disconnected");
     }
@@ -357,23 +375,25 @@ actor Listener {
     receive fn start() {
         let lst = net.listen(":1883");
         println("[listener] MQTT broker ready on :1883");
+        var next_id: i32 = 1;
         loop {
             let conn = lst.accept();
-            let pending_id: string = "__pending__";
-            let handler = spawn ClientHandler(conn: conn, name: pending_id, room: router);
-            router.register_client(conn, handler);
+            let cid = f"client-{next_id}";
+            let handler = spawn ClientHandler(conn: conn, client_id: cid.clone(), router: router);
+            router.register_client(cid, handler);
             handler.start();
+            next_id = next_id + 1;
         }
     }
 }
 
 fn main() {
-    let empty_conns: Vec<Connection> = Vec::new();
+    let empty_ids: Vec<string> = Vec::new();
     let empty_actors: Vec<LocalPid<ClientHandler>> = Vec::new();
     let empty_sub_topics: Vec<string> = Vec::new();
-    let empty_sub_conns: Vec<Connection> = Vec::new();
+    let empty_sub_ids: Vec<string> = Vec::new();
     let empty_sub_qos: Vec<i32> = Vec::new();
-    let router = spawn Router(client_conns: empty_conns, client_actors: empty_actors, sub_topics: empty_sub_topics, sub_conns: empty_sub_conns, sub_qos: empty_sub_qos);
+    let router = spawn Router(client_ids: empty_ids, client_actors: empty_actors, sub_topics: empty_sub_topics, sub_client_ids: empty_sub_ids, sub_qos: empty_sub_qos);
     let listener = spawn Listener(router: router);
     listener.start();
     loop {

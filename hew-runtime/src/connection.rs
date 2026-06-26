@@ -1727,6 +1727,11 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
         let drained: Vec<ConnectionActor> = mgr.connections.access(std::mem::take);
 
         for conn in drained {
+            // Signal expected stop BEFORE closing the transport so the reader
+            // that unblocks from the socket shutdown observes stop_flag == 1
+            // (expected-stop path) and does not call hew_connmgr_remove.
+            // The Release ordering pairs with the Acquire in reader_cleanup.
+            conn.reader_stop.store(1, Ordering::Release);
             // Mark closed before the explicit close so Drop does not
             // double-close when the actor is subsequently dropped.
             conn.transport_closed.store(true, Ordering::Release);
@@ -1740,7 +1745,9 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
                     }
                 }
             }
-            // ConnectionActor::drop signals reader thread to stop and joins.
+            // ConnectionActor::drop joins the reader thread (idempotently
+            // sets reader_stop again and guards against double-close via
+            // transport_closed, which was already set above).
         }
         mgr.reader_lifecycle.wait_for_idle();
         let workers: Vec<JoinHandle<()>> = mgr.reconnect_workers.access(std::mem::take);
@@ -2204,7 +2211,10 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
     // SAFETY: caller guarantees `mgr` is valid.
     let mgr = unsafe { &*mgr };
 
-    let removed = mgr.connections.access(|conns| {
+    // Phase 1: locate the connection and clone the publication handles — without
+    // removing the conn from the list yet. Holding only Arc clones here so we
+    // release the connections lock before calling into routing/cluster.
+    let publication_data = mgr.connections.access(|conns| {
         let idx = conns.iter().position(|c| c.conn_id == conn_id);
         let Some(idx) = idx else {
             set_last_error(format!(
@@ -2212,44 +2222,30 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
             ));
             return None;
         };
-        let conn = conns.swap_remove(idx);
-        let peer_node_id = conn.peer_node_id;
-        let publication_token = conn.publication_token;
-        let publication_sync = Arc::clone(&conn.publication_sync);
-        let publication_removed = Arc::clone(&conn.publication_removed);
-        conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
+        let conn = &conns[idx];
         Some((
-            conn,
-            peer_node_id,
-            publication_token,
-            publication_sync,
-            publication_removed,
+            conn.peer_node_id,
+            conn.publication_token,
+            Arc::clone(&conn.publication_sync),
+            Arc::clone(&conn.publication_removed),
         ))
     });
-    let Some((conn, peer_node_id, publication_token, publication_sync, publication_removed)) =
-        removed
+    let Some((peer_node_id, publication_token, publication_sync, publication_removed)) =
+        publication_data
     else {
         return -1;
     };
 
-    // Release the registry lock before waking the reader. The reader cleanup
-    // path can re-enter hew_connmgr_remove on an unexpected drop.
-    //
+    // Phase 2: close out the publication — removing the route from the routing
+    // table BEFORE removing the connection from mgr.connections. This eliminates
+    // the TOCTOU window where hew_routing_lookup returns route-ok while
+    // hew_connmgr_send returns -1 (connection already gone from the list).
+    // After retire_connection_publication returns, any new routing lookup for
+    // this peer returns no route, so no new sends are dispatched to this conn.
     {
         let _publication = publication_sync.lock_or_recover();
         publication_removed.store(true, Ordering::Release);
     }
-    // Mark the reader as explicitly stopped before closing the transport so an
-    // awakened reader does not treat this teardown as an unexpected drop.
-    conn.reader_stop.store(1, Ordering::Release);
-    // Mark closed before the explicit close so Drop does not double-close.
-    conn.transport_closed.store(true, Ordering::Release);
-    //
-    // Close the transport connection so a blocking recv unblocks.
-    // SAFETY: transport is valid per manager contract.
-    unsafe { close_transport_conn(mgr.transport, conn_id) };
-    // Now drop/join the reader thread after transport close.
-    drop(conn);
     retire_connection_publication(
         mgr,
         peer_node_id,
@@ -2257,6 +2253,33 @@ pub unsafe extern "C" fn hew_connmgr_remove(mgr: *mut HewConnMgr, conn_id: c_int
         publication_token,
         &publication_sync,
     );
+
+    // Phase 3: remove the connection from the list. The connections lock is
+    // released before waking the reader — the reader-cleanup path can re-enter
+    // hew_connmgr_remove on an unexpected drop; releasing here prevents deadlock.
+    // A second concurrent call (reader re-entry) will find conn_id gone and
+    // return -1 harmlessly.
+    let conn = mgr.connections.access(|conns| {
+        let idx = conns.iter().position(|c| c.conn_id == conn_id)?;
+        let conn = conns.swap_remove(idx);
+        conn.state.store(CONN_STATE_CLOSED, Ordering::Release);
+        Some(conn)
+    });
+    let Some(conn) = conn else {
+        // Already removed by a concurrent hew_connmgr_remove call (reader re-entry).
+        return 0;
+    };
+
+    // Mark the reader as explicitly stopped before closing the transport so an
+    // awakened reader does not treat this teardown as an unexpected drop.
+    conn.reader_stop.store(1, Ordering::Release);
+    // Mark closed before the explicit close so Drop does not double-close.
+    conn.transport_closed.store(true, Ordering::Release);
+    // Close the transport connection so a blocking recv unblocks.
+    // SAFETY: transport is valid per manager contract.
+    unsafe { close_transport_conn(mgr.transport, conn_id) };
+    // Drop joins the reader thread after transport close.
+    drop(conn);
 
     0
 }

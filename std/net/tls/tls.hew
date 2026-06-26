@@ -76,6 +76,37 @@ fn tls_read_result(raw: TlsReadFfiResult) -> Result<bytes, net.NetError> { // IN
     }
 }
 
+// ── TlsHandler trait (active-mode actor contract) ────────────────────
+/// Trait for actors that handle TLS connections in active mode.
+///
+/// Implement this on an actor and call `stream.attach(actor)` to have the
+/// runtime read TLS bytes in a background thread and deliver each chunk as
+/// an `on_data` message. The actor never calls `stream.read()` — the runtime
+/// owns the read side after attach.
+///
+/// # Example
+///
+/// ```
+/// import std::net::tls;
+///
+/// actor TlsEcho {
+///     let stream: tls.TlsStream;
+///     receive fn on_data(data: bytes) {
+///         stream.try_write(data);
+///     }
+///     receive fn on_close() {
+///         println("tls connection closed");
+///     }
+/// }
+/// ```
+pub trait TlsHandler {
+    /// Called when a chunk of decrypted bytes arrives from the peer.
+    fn on_data(data: bytes);
+
+    /// Called when the connection closes or errors.
+    fn on_close();
+}
+
 // ── TlsStream methods ────────────────────────────────────────────────
 /// Methods available on a `TlsStream`.
 trait TlsStreamMethods {
@@ -93,7 +124,22 @@ trait TlsStreamMethods {
     ///
     /// Returns `Ok(bytes)` on success or orderly EOF, or `Err(net.NetError)` on
     /// retryable/TLS/I-O failures. Use `last_error()` for the precise class.
+    ///
+    /// Do not call after `attach()` — the runtime owns the read side.
     fn read(self, size: i64) -> Result<bytes, net.NetError>;
+
+    /// Attach this TLS stream to an actor (Erlang-style active mode).
+    ///
+    /// The runtime reads TLS bytes in a background thread and delivers each
+    /// chunk as an `on_data` actor message. When the connection closes or
+    /// errors, a single `on_close` message is sent. After attach, calling
+    /// `read()` produces undefined behaviour — the runtime owns the read side.
+    /// Outbound `write()` / `try_write()` remain valid.
+    ///
+    /// `handler` is the actor that will receive `on_data` and `on_close`.
+    /// `on_data_type` is the `msg_type` index for `on_data`.
+    /// `on_close_type` is the `msg_type` index for `on_close`.
+    fn attach(self, handler: LocalPid<TlsHandler>, on_data_type: i64, on_close_type: i64);
 
     /// Close the TLS connection and release resources.
     fn close(self);
@@ -119,6 +165,11 @@ impl TlsStreamMethods for TlsStream {
         tls_read_result(unsafe {
             hew_tls_read_result(stream, size as i32)
         })
+    }
+    fn attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i64, on_close_type: i64) {
+        unsafe {
+            hew_tls_attach(stream, handler, on_data_type as i32, on_close_type as i32)
+        }; // INTERNAL-ABI: C ABI takes i32 type indices
     }
     fn close(stream: TlsStream) {
         unsafe {
@@ -188,5 +239,6 @@ extern "C" {
     fn hew_tls_last_error() -> string;
     fn hew_tls_write_result(stream: TlsStream, data: bytes) -> TlsWriteFfiResult;
     fn hew_tls_read_result(stream: TlsStream, size: i32) -> TlsReadFfiResult;
+    fn hew_tls_attach(stream: TlsStream, handler: LocalPid<TlsHandler>, on_data_type: i32, on_close_type: i32);
     fn hew_tls_close(stream: TlsStream);
 }

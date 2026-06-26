@@ -1664,8 +1664,10 @@ extern "C" fn node_registry_gossip_callback(
             }
             _ => {
                 if std::env::var_os("HEW_DIAG_SEND").is_some() {
+                    // SAFETY: hew_now_ms has no preconditions.
+                    let now_ms = unsafe { crate::io_time::hew_now_ms() };
                     eprintln!(
-                        "[DIAG gossip-resolve] add name={key} actor_id={actor_id:#x} node_from_pid={}",
+                        "[DIAG gossip-resolve] t={now_ms}ms add name={key} actor_id={actor_id:#x} node_from_pid={}",
                         crate::pid::hew_pid_node(actor_id)
                     );
                 }
@@ -2432,9 +2434,9 @@ pub unsafe extern "C" fn hew_node_lookup(node: *mut HewNode, name: *const c_char
 /// DIAG (revertible, env-gated by `HEW_DIAG_SEND`): label each `hew_node_send`
 /// outcome for the Linux send-vs-join race investigation. No-op unless the env
 /// var is set. `outcome` is the path tag (`route-missing`, `route-ok`, …); on the
-/// `route-missing` tag it also dumps the connection-table snapshot so the failing
-/// state is captured. Extracted from `hew_node_send` to keep it under the
-/// line-count lint while the instrumentation rides this throwaway branch.
+/// `route-missing` and `no-active-conn` tags it dumps the connection-table snapshot
+/// so the failing state is captured at the exact moment of failure. All log lines
+/// carry a monotonic ms timestamp for ordering the causal chain.
 fn diag_send_log(
     node: &HewNode,
     outcome: &str,
@@ -2447,7 +2449,9 @@ fn diag_send_log(
     }
     let fail = outcome != "route-ok";
     let kind = if fail { "FAIL path" } else { "" };
-    let conns = if outcome == "route-missing" && !node.conn_mgr.is_null() {
+    // SAFETY: hew_now_ms has no preconditions.
+    let now_ms = unsafe { crate::io_time::hew_now_ms() };
+    let conns = if fail && !node.conn_mgr.is_null() {
         // SAFETY: conn_mgr non-null checked above; valid while node is running.
         format!(" conns={}", unsafe {
             connection::snapshot_connections_json(&*node.conn_mgr)
@@ -2456,7 +2460,7 @@ fn diag_send_log(
         String::new()
     };
     eprintln!(
-        "[DIAG send] {kind}{}{outcome} self={} target_node={target_node_id} conn_id={conn_id} target_pid={target_pid:#x}{conns}",
+        "[DIAG send] t={now_ms}ms {kind}{}{outcome} self={} target_node={target_node_id} conn_id={conn_id} target_pid={target_pid:#x}{conns}",
         if fail { "=" } else { " " },
         node.node_id
     );
@@ -2587,6 +2591,18 @@ pub unsafe extern "C" fn hew_node_send(
         // hew_connmgr_send copies the bytes into its envelope; free our copy.
         // SAFETY: bytes came from encode_payload (libc::malloc).
         unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
+    }
+    // DIAG (env-gated): if connmgr_send returned -1 but we had route-ok above,
+    // log it here. The specific failure sub-path (no-active-conn vs socket-write-error)
+    // is already logged inside hew_connmgr_send; this line ties it back to the send call.
+    if rc < 0 && std::env::var_os("HEW_DIAG_SEND").is_some() {
+        // SAFETY: hew_now_ms has no preconditions.
+        let now_ms = unsafe { crate::io_time::hew_now_ms() };
+        eprintln!(
+            "[DIAG send] t={now_ms}ms FAIL path=connmgr-send-error \
+             self={} target_node={target_node_id} conn_id={conn_id}",
+            node.node_id
+        );
     }
     rc
 }

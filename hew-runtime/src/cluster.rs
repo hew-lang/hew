@@ -2188,7 +2188,27 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
         }
     };
     if !known_member {
+        // This fires when the connecting peer's node_id is not yet in the cluster
+        // member list. The route is STILL installed (we return 1 unconditionally).
+        // DIAG: gate behind HEW_DIAG_SEND so we can correlate this with failures
+        // vs passes on Linux. If it appears on BOTH pass and fail runs, it is a
+        // red herring; if only on fail runs, join-order IS the mechanism.
         eprintln!("[cluster] unknown node {node_id} connected, waiting for join");
+        if std::env::var_os("HEW_DIAG_SEND").is_some() {
+            // SAFETY: hew_now_ms has no preconditions.
+            let now_ms = unsafe { crate::io_time::hew_now_ms() };
+            let member_ids: Vec<u16> = cluster
+                .members
+                .lock_or_recover()
+                .iter()
+                .map(|m| m.node_id)
+                .collect();
+            eprintln!(
+                "[DIAG cluster-unknown] t={now_ms}ms peer_node={node_id} \
+                 known_members={member_ids:?} \
+                 -> route WILL install (notify returns 1 regardless)"
+            );
+        }
     } else if should_drain {
         cluster.drain_member_transitions();
     }

@@ -508,19 +508,46 @@ fn publish_connection_established(
         return;
     }
 
+    // DIAG (env-gated): log join state BEFORE notify so we capture whether the
+    // peer is a known cluster member at the moment we try to publish the route.
+    // "unknown node / waiting for join" fires inside notify when not known_member.
+    let diag_enabled = std::env::var_os("HEW_DIAG_SEND").is_some();
     let published = if mgr.cluster.is_null() {
+        if diag_enabled {
+            // SAFETY: hew_now_ms has no preconditions.
+            let now_ms = unsafe { crate::io_time::hew_now_ms() };
+            eprintln!(
+                "[DIAG join-state] t={now_ms}ms local={} peer_node={peer_node_id} conn_id={conn_id} \
+                 cluster=null -> route installs unconditionally (no membership gate)",
+                mgr.local_node_id
+            );
+        }
         true
     } else {
         // SAFETY: pointer validity is checked by the callee.
-        unsafe {
+        let result = unsafe {
             crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
                 mgr.cluster,
                 peer_node_id,
                 publication_token,
                 publication_sync,
                 publication_removed,
-            ) == 1
+            )
+        };
+        if diag_enabled {
+            // SAFETY: hew_now_ms has no preconditions.
+            let now_ms = unsafe { crate::io_time::hew_now_ms() };
+            // result==1 means published (known_member or unknown-but-still-publishes);
+            // result==0 means publication_removed; result==-1 means cluster null.
+            // The "unknown node waiting for join" cluster log fires inside the notify
+            // call when known_member==false; result is still 1 in that case.
+            eprintln!(
+                "[DIAG join-state] t={now_ms}ms local={} peer_node={peer_node_id} conn_id={conn_id} \
+                 notify_result={result} (1=will-publish, 0=publication-removed, -1=cluster-null)",
+                mgr.local_node_id
+            );
         }
+        result == 1
     };
     if !published {
         return;
@@ -533,9 +560,11 @@ fn publish_connection_established(
         }
         // SAFETY: pointer validity is checked by the callee.
         unsafe { hew_routing_add_route(mgr.routing_table, peer_node_id, conn_id) };
-        if std::env::var_os("HEW_DIAG_SEND").is_some() {
+        if diag_enabled {
+            // SAFETY: hew_now_ms has no preconditions.
+            let now_ms = unsafe { crate::io_time::hew_now_ms() };
             eprintln!(
-                "[DIAG route-install] local={} peer_node={peer_node_id} conn_id={conn_id} published={published}",
+                "[DIAG route-install] t={now_ms}ms local={} peer_node={peer_node_id} conn_id={conn_id} published={published}",
                 mgr.local_node_id
             );
         }
@@ -1485,14 +1514,31 @@ unsafe fn upgrade_noise(
 /// and routes to local actors via the inbound router callback.
 /// Cleanup after reader loop exit: remove from manager and attempt reconnection
 /// if the drop was unexpected (not triggered by explicit stop).
-fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &AtomicI32) {
+fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &AtomicI32, bytes_read: c_int) {
     // Evict any stashed I/O span context (idempotent; no-op if tracing was disabled).
     crate::tracing::io_span_evict(conn_id);
 
-    let unexpected_drop = stop_flag.load(Ordering::Acquire) == 0;
+    let stop_val = stop_flag.load(Ordering::Acquire);
+    let unexpected_drop = stop_val == 0;
     if unexpected_drop {
+        // DIAG (env-gated): capture the EXACT drop reason so we can distinguish
+        // "peer sent FIN" (peer closed) from "socket error" (ECONNRESET/EPIPE/etc.)
+        // and from a local close racing the reader. `bytes_read` is always -1 from
+        // framed_recv (framed_recv never returns 0; 0 means no ops.recv fn).
+        // `take_last_error()` holds the reason string set by framed_recv before
+        // returning -1 — this is the first time we capture it on the drop path.
         if std::env::var_os("HEW_DIAG_SEND").is_some() {
-            eprintln!("[DIAG reader-drop] UNEXPECTED drop conn_id={conn_id} -> route removed + reconnect spawned");
+            // SAFETY: hew_now_ms has no preconditions.
+            let now_ms = unsafe { crate::io_time::hew_now_ms() };
+            let drop_reason = crate::stream_error::take_last_error().unwrap_or_else(|| {
+                "(no last_error — ops.recv returned 0 or ops.recv was None)".to_string()
+            });
+            eprintln!(
+                "[DIAG reader-drop] t={now_ms}ms UNEXPECTED drop conn_id={conn_id} \
+                 bytes_read={bytes_read} stop_flag={stop_val} \
+                 drop_reason=\"{drop_reason}\" \
+                 -> route removed + reconnect spawned"
+            );
         }
         if !mgr.is_null() {
             crate::hew_node::fail_remote_replies_for_connection(mgr.cast_const(), conn_id);
@@ -1559,7 +1605,7 @@ fn reader_loop(
         };
 
         if bytes_read <= 0 {
-            reader_cleanup(mgr, conn_id, &stop_flag);
+            reader_cleanup(mgr, conn_id, &stop_flag, bytes_read);
             break;
         }
 
@@ -1576,7 +1622,7 @@ fn reader_loop(
             if let Some(noise) = guard.as_mut() {
                 let Ok(n) = noise.read_message(&buf[..read_len], &mut decrypted) else {
                     set_last_error("connection decrypt failure".to_string());
-                    reader_cleanup(mgr, conn_id, &stop_flag);
+                    reader_cleanup(mgr, conn_id, &stop_flag, bytes_read);
                     break;
                 };
                 len = n;
@@ -2325,6 +2371,10 @@ pub unsafe extern "C" fn hew_connmgr_set_outbound_capacity(
 /// - `data` must point to at least `size` readable bytes, or be null
 ///   when `size` is 0.
 #[no_mangle]
+#[expect(
+    clippy::too_many_lines,
+    reason = "DIAG instrumentation blocks inflate line count; throwaway branch"
+)]
 pub unsafe extern "C" fn hew_connmgr_send(
     mgr: *mut HewConnMgr,
     conn_id: c_int,
@@ -2360,9 +2410,12 @@ pub unsafe extern "C" fn hew_connmgr_send(
         });
         if !ok {
             if std::env::var_os("HEW_DIAG_SEND").is_some() {
+                // SAFETY: hew_now_ms has no preconditions.
+                let now_ms = unsafe { crate::io_time::hew_now_ms() };
                 let conns = snapshot_connections_json(mgr_ref);
                 eprintln!(
-                    "[DIAG connmgr_send] FAIL path=no-active-conn-for-node conn_id={conn_id} target_node={target_node_id} conns={conns}"
+                    "[DIAG connmgr_send] t={now_ms}ms FAIL path=no-active-conn-for-node \
+                     conn_id={conn_id} target_node={target_node_id} conns={conns}"
                 );
             }
             return -1;
@@ -2442,6 +2495,20 @@ pub unsafe extern "C" fn hew_connmgr_send(
         )
     };
     if rc != 0 {
+        // DIAG (env-gated): socket write failed even though the conn was ACTIVE.
+        // This means the peer closed / reset the socket after our active-conn check
+        // but before the write. Capture the transport error reason.
+        if std::env::var_os("HEW_DIAG_SEND").is_some() {
+            // SAFETY: hew_now_ms has no preconditions.
+            let now_ms = unsafe { crate::io_time::hew_now_ms() };
+            let send_err = crate::stream_error::take_last_error()
+                .unwrap_or_else(|| "(no last_error)".to_string());
+            eprintln!(
+                "[DIAG connmgr_send] t={now_ms}ms FAIL path=socket-write-error \
+                 conn_id={conn_id} target_node={target_node_id} \
+                 send_err=\"{send_err}\""
+            );
+        }
         -1
     } else {
         0

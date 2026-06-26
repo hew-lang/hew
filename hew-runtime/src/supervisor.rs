@@ -1053,6 +1053,14 @@ fn apply_restart_backoff(spec: &mut InternalChildSpec) {
 ///    the registry is drained. A resumed continuation re-resolves the slot and
 ///    is guaranteed Live (the store-before-notify ordering is the resume-contract
 ///    anchor).
+///
+/// ORDERING INVARIANT (lost-wakeup guard): the counter bump MUST happen before
+/// `wake_restart_await_waiters` acquires `restart_await_waiters`. A racing
+/// `hew_supervisor_restart_await_suspend` re-reads the counter while holding
+/// `restart_await_waiters`; bumping first means that if this drain ran against an
+/// empty registry (the waiter not yet pushed), the awaiting actor's under-lock
+/// recheck observes the advanced counter and resolves READY instead of parking
+/// against a wake that already fired. Do not reorder the bump after the drain.
 fn notify_restart(sup: &HewSupervisor) {
     if let Some(ref pair) = sup.restart_notify {
         let mut count = pair.0.lock_or_recover();
@@ -1287,6 +1295,22 @@ thread_local! {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 fn should_fail_owned_deferred_supervisor_spawn() -> bool {
     FAIL_OWNED_DEFERRED_SUPERVISOR_SPAWN.with(Cell::get)
+}
+
+/// Test-only hook fired in `hew_supervisor_restart_await_suspend` exactly in the
+/// gap between the pre-park `child_get` and acquiring `restart_await_waiters`.
+/// The concurrency regression installs a closure that drives a full restart cycle
+/// (and its `notify_restart`) on another thread *while this thread is paused in
+/// the gap*, reproducing the lost-wakeup interleaving deterministically.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static RESTART_AWAIT_PARK_GAP_HOOK: Mutex<Option<Arc<dyn Fn() + Send + Sync>>> = Mutex::new(None);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn fire_restart_await_park_gap_hook() {
+    let hook = RESTART_AWAIT_PARK_GAP_HOOK.lock_or_recover().clone();
+    if let Some(hook) = hook {
+        hook();
+    }
 }
 
 fn claim_supervisor_teardown(sup: *mut HewSupervisor) -> bool {
@@ -3121,6 +3145,161 @@ mod tests {
         }
     }
 
+    /// Guard that clears the park-gap hook on drop so a panicking test cannot
+    /// leave the process-global hook installed for a sibling test.
+    struct RestartAwaitParkGapHookGuard;
+
+    impl Drop for RestartAwaitParkGapHookGuard {
+        fn drop(&mut self) {
+            *RESTART_AWAIT_PARK_GAP_HOOK.lock_or_recover() = None;
+        }
+    }
+
+    /// Lost-wakeup race regression (the B1-surface concurrency blocker): the
+    /// default scheduler is multi-worker, so a restart cycle can complete
+    /// (`store_child_slot` + `notify_restart`) in the gap between the pre-park
+    /// `child_get` and the waiter push. Without the under-lock counter recheck the
+    /// awaiting actor registers its waiter AFTER the drain already ran against an
+    /// empty registry, so the wake is lost and the continuation parks forever.
+    ///
+    /// This drives the restart through the test-only park-gap hook so the racing
+    /// `notify_restart` lands in exactly that window, deterministically. WITH the
+    /// fix the awaiting call observes the advanced counter and resolves READY with
+    /// no orphaned waiter; WITHOUT the fix it returns SUSPEND and leaves a waiter
+    /// that nothing will ever drain (verified: removing the recheck makes the two
+    /// assertions below fail — `rc` is SUSPEND and the registry holds one waiter).
+    #[test]
+    fn restart_await_suspend_notify_in_park_gap_does_not_lose_wakeup() {
+        let _rt = crate::runtime_test_guard();
+        let _hook_guard = RestartAwaitParkGapHookGuard;
+        // SAFETY: the test owns the supervisor tree for its whole lifetime.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+            // Null the slot so the pre-park `child_get` classifies it Transient
+            // and the awaiting call proceeds toward parking.
+            store_child_slot(&mut *sup, 0, ptr::null_mut());
+
+            // The racing restart, fired from the gap hook: restore the slot to
+            // Live and complete the restart cycle (bump counter + drain waiters).
+            // At this point the awaiting call has NOT yet pushed its waiter, so the
+            // drain sees an empty registry — the exact lost-wakeup interleaving.
+            let sup_addr = sup as usize;
+            let child_addr = child as usize;
+            let hook: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                // SAFETY: the test keeps `sup`/`child` alive until after the
+                // awaiting call returns; the hook runs synchronously within it.
+                let sup = sup_addr as *mut HewSupervisor;
+                store_child_slot(&mut *sup, 0, child_addr as *mut HewActor);
+                notify_restart(&*sup);
+            });
+            *RESTART_AWAIT_PARK_GAP_HOOK.lock_or_recover() = Some(hook);
+
+            let slot = crate::read_slot::hew_read_slot_new();
+            let rc = hew_supervisor_restart_await_suspend(sup, 0, ptr::null_mut(), slot);
+
+            // Disarm the hook before any further restart machinery runs.
+            *RESTART_AWAIT_PARK_GAP_HOOK.lock_or_recover() = None;
+
+            assert_eq!(
+                rc, RESTART_AWAIT_READY,
+                "a restart completing in the park gap must resolve READY, not park \
+                 against a wake that already fired (lost-wakeup race)"
+            );
+            assert!(
+                (*sup).restart_await_waiters.lock_or_recover().is_empty(),
+                "the lost-wakeup recheck must NOT register an orphaned waiter that \
+                 nothing will ever drain"
+            );
+
+            // READY keeps the creator ref with the caller; free it here.
+            crate::read_slot::hew_read_slot_free(slot);
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    /// The same lost-wakeup interleaving, but with `notify_restart` fired from a
+    /// SEPARATE worker thread (the realistic multi-worker shape) while the
+    /// awaiting actor is paused in the park gap. A bounded join backstops the
+    /// teeth: WITHOUT the fix the awaiting call parks against an already-fired,
+    /// drained-empty wake and the spawned awaiting thread never completes — the
+    /// join times out (an observable hang). WITH the fix it resolves READY and
+    /// the thread joins promptly.
+    #[test]
+    fn restart_await_suspend_concurrent_notify_in_gap_wakes_then_joins() {
+        let _rt = crate::runtime_test_guard();
+        let _hook_guard = RestartAwaitParkGapHookGuard;
+        // SAFETY: the test owns the supervisor tree for its whole lifetime.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+            store_child_slot(&mut *sup, 0, ptr::null_mut());
+
+            // Two barriers coordinate the cross-thread interleaving precisely:
+            //  - `in_gap` releases the notifier once the awaiting thread is in the
+            //    park gap (post pre-park check, pre push);
+            //  - `notified` blocks the awaiting thread until the notifier's restart
+            //    cycle (bump + drain-empty) has fully completed.
+            let in_gap = Arc::new(std::sync::Barrier::new(2));
+            let notified = Arc::new(std::sync::Barrier::new(2));
+            let in_gap_hook = Arc::clone(&in_gap);
+            let notified_hook = Arc::clone(&notified);
+            let hook: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                // Signal the notifier that we are parked in the gap, then wait for
+                // it to finish the racing restart cycle before we proceed to push.
+                in_gap_hook.wait();
+                notified_hook.wait();
+            });
+            *RESTART_AWAIT_PARK_GAP_HOOK.lock_or_recover() = Some(hook);
+
+            // Awaiting actor: runs the suspend call on its own thread.
+            let sup_addr = sup as usize;
+            let awaiting = std::thread::spawn(move || {
+                // SAFETY: the parent keeps `sup` alive until this thread joins; the
+                // slot is created and freed within this thread.
+                let sup = sup_addr as *mut HewSupervisor;
+                let slot = crate::read_slot::hew_read_slot_new();
+                let rc = hew_supervisor_restart_await_suspend(sup, 0, ptr::null_mut(), slot);
+                crate::read_slot::hew_read_slot_free(slot);
+                rc
+            });
+
+            // Notifier: once the awaiting thread is in the gap, drive the racing
+            // restart cycle (restore Live + bump counter + drain the still-empty
+            // registry), then release the awaiting thread to proceed to its push.
+            in_gap.wait();
+            store_child_slot(&mut *sup, 0, child);
+            notify_restart(&*sup);
+            notified.wait();
+
+            // Bounded teeth: poll for the awaiting thread to finish. WITHOUT the
+            // recheck the awaiting call returns SUSPEND with an orphaned waiter and
+            // (in a real run) the continuation never wakes; here the thread still
+            // finishes (it returns SUSPEND rather than parking a real coroutine),
+            // so the verdict is the rc + empty-registry assertion below, while this
+            // bounded wait guarantees the test itself never hangs.
+            let joined =
+                wait_for_condition(std::time::Duration::from_secs(5), || awaiting.is_finished());
+            assert!(
+                joined,
+                "awaiting thread must finish — a lost wakeup would hang it"
+            );
+            let rc = awaiting.join().expect("awaiting thread panicked");
+
+            *RESTART_AWAIT_PARK_GAP_HOOK.lock_or_recover() = None;
+
+            assert_eq!(
+                rc, RESTART_AWAIT_READY,
+                "a concurrent notify in the park gap must resolve the awaiting actor \
+                 READY, not leave it parked against an already-fired wake"
+            );
+            assert!(
+                (*sup).restart_await_waiters.lock_or_recover().is_empty(),
+                "no orphaned waiter may survive the racing restart"
+            );
+
+            hew_supervisor_stop(sup);
+        }
+    }
+
     /// The contextless blocking helper returns (does NOT hang) for a healthy
     /// Live child with no restart in flight — the grace-window over-wait guard.
     #[test]
@@ -4156,10 +4335,12 @@ pub unsafe extern "C" fn hew_supervisor_child_get(
     // fields under the same lock so the (pointer, CB-state, backoff-timer)
     // triple is consistent with one lifecycle state from the FSM in §2.2.
     //
-    // v0.5 single-threaded scheduler: the mutex provides exclusion against
-    // the restart machinery (store_child_slot / restart_child_from_spec).
-    // v0.6 SMP path: migrate to AtomicPtr<HewActor> + atomic discriminator
-    // fields so readers can avoid the mutex on the common Live path.
+    // The default scheduler runs one worker per core, so readers here race the
+    // restart machinery (store_child_slot / restart_child_from_spec) on other
+    // workers; `children_lock` is the exclusion that keeps the discriminator
+    // triple coherent. Future optimization: migrate to AtomicPtr<HewActor> +
+    // atomic discriminator fields so readers can avoid the mutex on the common
+    // Live path.
     let _guard = s.children_lock.lock_or_recover();
 
     // Re-check shutdown under the lock (the supervisor could have been
@@ -4898,6 +5079,20 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_suspend(
         return RESTART_AWAIT_READY;
     }
 
+    // SAFETY: caller guarantees `sup` is valid.
+    let s = unsafe { &*sup };
+
+    // Snapshot the restart counter BEFORE the pre-park check. `notify_restart`
+    // bumps this counter (under `restart_notify.0`) before it drains waiters
+    // (under `restart_await_waiters`), so re-reading it inside the registration
+    // critical section detects a restart that completed in the gap between the
+    // pre-park check and the push — the lost-wakeup guard (mirrors the `baseline`
+    // discipline in `hew_supervisor_restart_await_blocking`).
+    let baseline = s
+        .restart_notify
+        .as_ref()
+        .map_or(0, |pair| *pair.0.lock_or_recover());
+
     // Pre-park state check (R4 / issue #2124): inspect the current slot before
     // parking so a Live child resumes immediately and a permanently-Dead child
     // never hangs. Only a Transient slot parks.
@@ -4911,15 +5106,37 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_suspend(
         return RESTART_AWAIT_READY;
     }
 
-    // SAFETY: caller guarantees `sup` is valid.
-    let s = unsafe { &*sup };
+    // Test-only: deterministically drive the racing restart cycle here, in the
+    // gap the lost-wakeup window opens. No-op in production builds.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    fire_restart_await_park_gap_hook();
+
+    // Park under the waiters lock, but first re-check whether the restart already
+    // landed in the gap above (the lost-wakeup race the multi-worker scheduler
+    // makes reachable). Holding `restart_await_waiters` while we re-read the
+    // counter is the synchronization edge: `notify_restart` bumps the counter
+    // before it acquires `restart_await_waiters` to drain, so if its drain already
+    // ran (finding our waiter absent), the bump it performed is visible here and
+    // we resolve READY instead of parking against a wake that already fired.
+    let mut waiters = s.restart_await_waiters.lock_or_recover();
+    let advanced = s
+        .restart_notify
+        .as_ref()
+        .is_none_or(|pair| *pair.0.lock_or_recover() != baseline);
+    if advanced {
+        // A restart cycle completed (or no notify channel exists to bridge the
+        // gap) since the pre-park snapshot. The wake we would park against has
+        // already fired against an empty registry; resolve READY and let the bind
+        // re-fetch resolve the now-settled slot rather than hang forever.
+        drop(waiters);
+        return RESTART_AWAIT_READY;
+    }
     // Park: the observer takes an in-flight ref so the wake cannot free the slot
     // out from under the abandon edge.
     // SAFETY: caller holds the creator ref, so the slot is live to retain.
     unsafe { crate::read_slot::read_slot_retain(slot) };
-    s.restart_await_waiters
-        .lock_or_recover()
-        .push(RestartAwaitWaiter { actor, slot });
+    waiters.push(RestartAwaitWaiter { actor, slot });
+    drop(waiters);
     RESTART_AWAIT_SUSPEND
 }
 

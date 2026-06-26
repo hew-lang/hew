@@ -1161,6 +1161,38 @@ pub(crate) fn find_enum_layout<'a>(
     }
 }
 
+/// Mangle-aware record layout lookup — the companion of [`find_enum_layout`]
+/// for the record side. Resolves both monomorphic records (bare-name or
+/// short-name) and generic instantiations (`LocalPid<Socket>` →
+/// `LocalPid$$Socket`) using the same mangling scheme as the HIR mono pass.
+///
+/// Mirrors `state_clone::lookup_record_layout` in authority; kept local to
+/// `model.rs` so `ty_contains_unclonable_opaque_inner` can use it without
+/// depending on the `state_clone` module.
+pub(crate) fn find_record_layout<'a>(
+    name: &str,
+    args: &[ResolvedTy],
+    record_layouts: &'a [RecordLayout],
+) -> Option<&'a RecordLayout> {
+    let short = short_name(name);
+    if args.is_empty() {
+        record_layouts
+            .iter()
+            .find(|r| r.name == name || r.name == short)
+    } else {
+        let short_args: Vec<ResolvedTy> = args
+            .iter()
+            .cloned()
+            .map(hew_hir::shorten_named_arg_qualifiers)
+            .collect();
+        let full_mangled = hew_hir::mangle(name, &short_args);
+        let short_mangled = hew_hir::mangle(short, &short_args);
+        record_layouts
+            .iter()
+            .find(|r| r.name == full_mangled || r.name == short_mangled)
+    }
+}
+
 /// Returns `true` if the given `ResolvedTy` (or any type reachable through
 /// its generic arguments or enum variant field types) contains a heap-owning
 /// type such as `string` or `Bytes`.
@@ -1380,46 +1412,37 @@ fn ty_contains_unclonable_opaque_inner(
             name,
             args,
             is_opaque,
+            builtin,
             ..
         } => {
             // 1. The unclonable opaque leaf — identity discriminator wins first.
             if *is_opaque {
                 return true;
             }
-            // 1b. Bit-copy actor-handle types: LocalPid<T>, ActorRef<T>, Actor<T>.
-            //     Their type argument is a phantom actor-name tag, not a value being
-            //     stored or cloned.  Recursing into that arg finds the actor's OWN
-            //     state-mirror record (including any #[opaque] fields it carries) and
-            //     wrongly concludes the handle itself contains an unclonable opaque —
-            //     which would mis-reject `Vec<LocalPid<ClientHandler>>` and similar.
-            //     Mirrors the early-return in `state_clone::classify_named` (~:1047)
-            //     which already treats these as `BitCopy { size_bytes: 0 }`.
-            //     PRECISE: only skip args for these three handle types; every genuine
-            //     container (Vec, Option, Result, HashMap, user generic) still recurses.
-            let short_name_str = short_name(name);
-            if matches!(short_name_str, "LocalPid" | "ActorRef" | "Actor") {
-                return false;
-            }
-            // 2. Type arguments (generic containers: Vec<T>, Option<T>,
-            //    Result<T, E>, HashMap<K, V>, user generic record/enum).
-            if args.iter().any(|arg| {
-                ty_contains_unclonable_opaque_inner(
-                    arg,
-                    record_layouts,
-                    enum_layouts,
-                    opaque_handle_names,
-                    visited,
-                )
-            }) {
-                return true;
-            }
             let short = short_name(name);
-            // 3. A user record under this name — recurse into its fields.
-            let record_match = record_layouts
-                .iter()
-                .find(|r| r.name == *name || short_name(&r.name) == short);
+            // 2. User record layout lookup — mangle-aware so a generic
+            //    instantiation (`mymod.LocalPid<Socket>` registered as
+            //    `LocalPid$$Socket`) is found before the handle-skip below.
+            //    Field types in the layout are already substituted by the
+            //    HIR mono pass, so we recurse concrete types directly.
+            //
+            //    QUALIFIED-NAME GUARD: a short-name-only match does NOT prove
+            //    the type IS this user layout if the incoming name is qualified
+            //    (`json.Value` matching the short `Value`). Only an EXACT
+            //    (qualified) layout-name match or an unqualified-name ANY-match
+            //    constitutes a genuine resolution that suppresses the opaque
+            //    name-fallback (step 6). See also the old step-5 qualified guard.
+            let record_match = find_record_layout(name, args, record_layouts);
+            let name_is_qualified = name.contains('.');
+            let record_resolved = record_match.is_some_and(|r| {
+                if name_is_qualified {
+                    r.name == *name
+                } else {
+                    true
+                }
+            });
             if let Some(record) = record_match {
-                if visited.insert(record.name.clone()) {
+                if record_resolved && visited.insert(record.name.clone()) {
                     let found = record.field_tys.iter().any(|ft| {
                         ty_contains_unclonable_opaque_inner(
                             ft,
@@ -1435,12 +1458,25 @@ fn ty_contains_unclonable_opaque_inner(
                     }
                 }
             }
-            // 4. An enum layout under this name — recurse into variant payloads.
+            // 3. User enum layout lookup — recurse into variant payloads.
             //    `find_enum_layout` shortens the spine so a qualified payload
             //    resolves to its registered bare-arg key.
+            //
+            //    Same qualified-name guard as step 2: `find_enum_layout` uses
+            //    short-name mangling and can match `a.Wrapper<i64>` against the
+            //    `Wrapper$$i64` layout by short-outer-name. An exact match on
+            //    the layout key (== full-mangled key, not the bare or short
+            //    key) proves genuine resolution for a qualified name.
             let enum_found = find_enum_layout(name, args, enum_layouts);
+            let enum_resolved = enum_found.is_some_and(|el| {
+                if name_is_qualified {
+                    el.name == *name
+                } else {
+                    true
+                }
+            });
             if let Some(layout) = enum_found {
-                if visited.insert(layout.name.clone()) {
+                if enum_resolved && visited.insert(layout.name.clone()) {
                     let found = layout.variants.iter().any(|v| {
                         v.field_tys.iter().any(|ft| {
                             ty_contains_unclonable_opaque_inner(
@@ -1458,45 +1494,63 @@ fn ty_contains_unclonable_opaque_inner(
                     }
                 }
             }
-            // 5. Name fallback — a `Named` that reaches MIR WITHOUT the
+            // 4. Bit-copy actor-handle types: LocalPid<T>, ActorRef<T>, Actor<T>.
+            //    Placed AFTER the record/enum-layout lookups (steps 2-3) so a
+            //    user record/enum that genuinely shadows one of these names
+            //    (proven by EXACT layout-name match, not short-name-only) is
+            //    already handled above and never reaches this arm.
+            //    Uses the `builtin` identity discriminator (authoritative) rather
+            //    than the name string: a user-declared generic `type LocalPid<T>`
+            //    (or an imported `mymod.LocalPid`, `builtin: None`) falls through
+            //    here only if it ALSO has no layout in scope. With `builtin: None`
+            //    the match below does NOT fire, so the args recursion (step 5)
+            //    walks the type args and finds any opaque payload. Only a real
+            //    builtin handle (stamped `builtin: Some(ActorRef|Actor|LocalPid)`
+            //    by the checker) earns the bit-copy skip.
+            if matches!(
+                builtin,
+                Some(
+                    hew_types::BuiltinType::ActorRef
+                        | hew_types::BuiltinType::Actor
+                        | hew_types::BuiltinType::LocalPid
+                )
+            ) {
+                return false;
+            }
+            // 5. Type arguments (generic builtins with no layout: Vec<T>,
+            //    Option<T>, Result<T, E>, HashMap<K, V>). Also fires for a
+            //    non-builtin name with no layout (e.g. a module-qualified user
+            //    generic `mymod.LocalPid<Socket>` with `builtin: None`): its
+            //    args are walked and the opaque Socket is detected.
+            if args.iter().any(|arg| {
+                ty_contains_unclonable_opaque_inner(
+                    arg,
+                    record_layouts,
+                    enum_layouts,
+                    opaque_handle_names,
+                    visited,
+                )
+            }) {
+                return true;
+            }
+            // 6. Name fallback — a `Named` that reaches MIR WITHOUT the
             //    `is_opaque` discriminator (step 1) yet names an `#[opaque]`
-            //    decl. Fires ONLY when the name resolved to no user record/enum
-            //    layout (steps 3/4), mirroring `state_clone::classify_named`'s
-            //    record-layouts-first ordering so a `#[copy]` value record
-            //    sharing a short name with an opaque handle is not mis-flagged.
-            //    Empty for the discriminator-only `ty_contains_unclonable_opaque`
-            //    entry point, so its behaviour is unchanged.
+            //    decl. Fires ONLY when the name resolved to no USER layout that
+            //    genuinely identifies the type (steps 2/3, with the
+            //    qualified-name guard) and is not a builtin handle (step 4),
+            //    mirroring `state_clone::classify_named`'s record-layouts-first
+            //    ordering so a value record sharing a short name with an opaque
+            //    handle is not mis-flagged. Empty for the discriminator-only
+            //    `ty_contains_unclonable_opaque` entry point (no
+            //    opaque_handle_names provided), so its behaviour is unchanged.
             //
-            //    QUALIFIED-NAME GUARD (security, UAF/double-free): the layout
-            //    lookups in steps 3/4 match by SHORT name — `record_match` accepts
-            //    a short-name hit, and `find_enum_layout` shortens the spine before
-            //    mangling — so a QUALIFIED opaque handle whose discriminator was
-            //    cleared (`json.Value` / `a.Wrapper<i64>`, `is_opaque: false`)
-            //    would otherwise be "resolved" by a clean user record OR generic
-            //    enum that merely shares its short name (`Value` / `Wrapper$$i64`,
-            //    a DIFFERENT module's type) — suppressing this fallback and
-            //    admitting the handle into a flat-copied generator env
-            //    (shallow-aliasing the caller's handle → double-free /
-            //    use-after-free at teardown).
-            //
-            //    A short-name-only match is NEVER a resolution for a qualified
-            //    name — record OR enum, generic OR not (closing the whole class,
-            //    not one instance). Only an EXACT (qualified) layout-name match
-            //    proves the type IS that user layout. Record/enum layouts are
-            //    keyed by short/mangled name, so the exact-match clauses below are
-            //    the genuine-identity test; everything else falls through to the
-            //    opaque-set check. A real qualified generic enum NOT in the opaque
-            //    set is still admitted (the fallback only flags names in the set);
-            //    a qualified opaque IN the set fails closed. An UNqualified name
-            //    keeps the prior exact-or-short behaviour, so the same-short
-            //    value-record negative control still admits.
-            let name_is_qualified = name.contains('.');
-            let resolved_to_user_layout = if name_is_qualified {
-                record_match.is_some_and(|r| r.name == *name)
-                    || enum_found.is_some_and(|e| e.name == *name)
-            } else {
-                record_match.is_some() || enum_found.is_some()
-            };
+            //    QUALIFIED-NAME GUARD (security, UAF/double-free): steps 2/3
+            //    only suppress the fallback on an EXACT layout-name match for
+            //    a qualified incoming name. A short-name-only match (e.g.
+            //    `json.Value` → bare `Value` layout) does NOT suppress the
+            //    fallback, so the qualified opaque handle still fails closed
+            //    even when a clean same-short user record/enum exists.
+            let resolved_to_user_layout = record_resolved || enum_resolved;
             if !resolved_to_user_layout
                 && opaque_handle_names
                     .iter()
@@ -5973,34 +6027,40 @@ mod heap_owning_tests {
         assert!(!ty_contains_unclonable_opaque(&qualified, &[], &enums));
     }
 
-    /// Structural guard: every generic enum-layout key built in this module must
-    /// route through `find_enum_layout`. A bare `mangle(.., args)` that feeds a
-    /// layout probe re-opens the C1 qualified-spine miss class. This self-scan of
-    /// the source keeps the single-authority invariant from silently eroding.
+    /// Structural guard: every generic layout key built in this module must
+    /// route through either `find_enum_layout` or `find_record_layout` — the
+    /// two authorised layout-lookup functions. A bare `mangle(.., args)` call
+    /// outside those functions re-opens the C1 qualified-spine miss class
+    /// (incorrect shortening of the type-arg spine → probe misses the registered
+    /// key). This self-scan of the source keeps the two-authority invariant from
+    /// silently eroding.
     #[test]
     fn mangle_feeding_layout_lookup_is_centralised() {
         let src = include_str!("model.rs");
-        // The ONLY `mangle(` call in this module's non-test code is the one
-        // inside `find_enum_layout`. Strip the test module (which legitimately
-        // mangles bare-arg fixture keys) before scanning.
+        // The authorised `mangle(` calls in this module's non-test code live in
+        // `find_enum_layout` (1 call: the `mangled` key) and `find_record_layout`
+        // (2 calls: full_mangled + short_mangled). Strip the test module (which
+        // legitimately mangles bare-arg fixture keys) before scanning.
         let prod = src
             .split("#[cfg(test)]")
             .next()
             .expect("model.rs has a non-test prefix");
         // Count only real call sites: drop comment lines (`//` / `///`) so the
         // doc-comment mentions of `mangle(` in this module's prose don't inflate
-        // the count. The single remaining call lives in `find_enum_layout`.
+        // the count. The 3 remaining calls live in `find_enum_layout` (1) and
+        // `find_record_layout` (2).
         let mangle_calls = prod
             .lines()
             .filter(|line| !line.trim_start().starts_with("//"))
             .map(|line| line.matches("mangle(").count())
             .sum::<usize>();
         assert_eq!(
-            mangle_calls, 1,
-            "exactly one `mangle(` call is allowed in model.rs non-test code \
-             (inside `find_enum_layout`, the single layout-lookup authority); \
-             a new one feeds the C1 qualified-spine miss class — route it \
-             through `find_enum_layout` instead. Found {mangle_calls}."
+            mangle_calls, 3,
+            "exactly three `mangle(` calls are allowed in model.rs non-test code: \
+             one in `find_enum_layout` and two in `find_record_layout` (the two \
+             authorised layout-lookup functions). A new bare call outside those \
+             functions feeds the C1 qualified-spine miss class — route through \
+             one of the authority functions instead. Found {mangle_calls}."
         );
     }
 }

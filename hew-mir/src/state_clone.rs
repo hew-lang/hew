@@ -822,11 +822,13 @@ fn classify_state_field_full_impl(
             name,
             args,
             is_opaque,
+            builtin,
             ..
         } => classify_named(
             name,
             args,
             *is_opaque,
+            *builtin,
             record_layouts,
             enum_layouts,
             opaque_handle_names,
@@ -899,12 +901,15 @@ fn reject_unclonable_opaque_container(
 
 #[allow(
     clippy::too_many_lines,
-    reason = "dispatch function: each arm is a distinct named type; splitting would obscure the exhaustion pattern"
+    clippy::too_many_arguments,
+    reason = "dispatch function: each arm is a distinct named type; splitting would obscure the exhaustion pattern; \
+              the builtin discriminator is a load-bearing field that cannot be collapsed into the existing name/args/is_opaque triple"
 )]
 fn classify_named(
     name: &str,
     args: &[ResolvedTy],
     is_opaque: bool,
+    builtin: Option<hew_types::BuiltinType>,
     record_layouts: &[RecordLayout],
     enum_layouts: &[EnumLayout],
     opaque_handle_names: &[String],
@@ -1044,7 +1049,25 @@ fn classify_named(
     // (see Pointer note above) so `size_bytes` is `0`; Stage 3's
     // wholesale memcpy handles the bytes, and per-field synthesis is
     // nil for this arm.
-    if matches!(name, "ActorRef" | "Actor" | "LocalPid") {
+    //
+    // Uses the `builtin` identity discriminator (authoritative) rather
+    // than the name string: a user-declared `type LocalPid<T>` without
+    // an emitted generic instantiation layout has `builtin: None` and
+    // must NOT collapse to BitCopy — its type args must be inspected for
+    // opaques. Only a real builtin handle (stamped
+    // `builtin: Some(ActorRef|Actor|LocalPid)` by the checker) earns
+    // the bit-copy skip. Generic user shadows with no layout reached
+    // this arm previously (the record_layouts lookup at line ~916 missed
+    // the absent mangled key); the discriminator closes that gap without
+    // requiring the layout to exist.
+    if matches!(
+        builtin,
+        Some(
+            hew_types::BuiltinType::ActorRef
+                | hew_types::BuiltinType::Actor
+                | hew_types::BuiltinType::LocalPid
+        )
+    ) {
         return Ok(StateFieldCloneKind::BitCopy { size_bytes: 0 });
     }
 
@@ -1466,6 +1489,10 @@ mod tests {
         // change reintroduces a dedicated `ActorRef` variant, this test
         // breaks and forces a re-read of plan §4.5 A.
         let mut v = HashSet::new();
+        // `builtin: Some(ActorRef)` is the discriminator the HIR checker stamps
+        // on real `ActorRef<T>` types. The classifier now routes on this field
+        // rather than the name string, so the `builtin` discriminator must
+        // accurately reflect the type identity.
         let ty = ResolvedTy::Named {
             name: "ActorRef".to_string(),
             args: vec![ResolvedTy::Named {
@@ -1474,7 +1501,7 @@ mod tests {
                 builtin: None,
                 is_opaque: false,
             }],
-            builtin: None,
+            builtin: Some(hew_types::BuiltinType::ActorRef),
             is_opaque: false,
         };
         assert_eq!(

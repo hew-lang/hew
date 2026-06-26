@@ -68,6 +68,18 @@ const SENTINEL_CRASH_CODE_BINDING: BindingId = BindingId(u32::MAX);
 const SENTINEL_CRASH_CODE_SITE: SiteId = SiteId(u32::MAX);
 const SENTINEL_CRASH_CODE_NODE: HirNodeId = HirNodeId(u32::MAX);
 
+/// Sentinel HIR binding ID for the synthetic `__crash_message: string` ABI
+/// param injected into `#[on(crash)]` handler prologues (M-3 ABI reshape).
+///
+/// The `HewOnCrashFn` ABI carries the crash message as a `*const c_char`
+/// (typed `ResolvedTy::String` here, which lowers to an LLVM `ptr`). It is a
+/// BORROW per the P0 `by-value-heap-params-are-borrows` invariant — the
+/// runtime owns the underlying buffer, so the `__on_crash` function never
+/// drops this param; M-5's prologue clones it into the owned
+/// `CrashInfo.message` field (a fresh owner the function frame drops once).
+/// Lives one below `__crash_code`'s sentinel to stay clear of real bindings.
+const SENTINEL_CRASH_MESSAGE_BINDING: BindingId = BindingId(u32::MAX - 1);
+
 #[derive(Debug, Clone)]
 struct ActorMethodInfo {
     msg_type: i32,
@@ -3104,37 +3116,36 @@ fn lower_actor_lifecycle_handlers(
 
                 // ABI PROLOGUE — crash-info payload parameter injection:
                 //
-                // The runtime ABI for `HewOnCrashFn` passes the crash code as
-                // `i64` in the second argument register (updated from `c_int`
-                // in this slice; see hew-runtime/src/internal/types.rs).
+                // The runtime ABI for `HewOnCrashFn` (M-3 reshape) is
+                // `(ctx, crash_code: i64, crash_message: *const c_char,
+                //  actor_state_ptr) -> i32` — see
+                // `hew-runtime/src/internal/types.rs`.
                 //
-                // User sources declare a crash-info payload and access its `code`.
-                // To bridge the raw `i64` wire value to the user-visible struct,
-                // we inject a synthetic prologue into the function body:
+                // User sources declare a single crash-info payload param and
+                // access its `code`. To bridge the raw wire values to the
+                // user-visible struct, the user-visible crash-info param is
+                // replaced in `abi_params` by TWO synthetic ABI params:
+                //   - `__crash_code: i64`     (the trap-kind integer)
+                //   - `__crash_message: string` (a `ptr` — borrowed C string)
+                // and the body gains a synthetic prologue:
                 //
-                //   let __crash_code: i64 = <ABI param>;   // sentinel BindingId
                 //   let info = <crash-info-type> { code: __crash_code };
                 //
-                // The original user-visible crash-info param is replaced
-                // with `__crash_code: I64` in `abi_params`; the original binding
-                // ID for `info` is preserved in the `Let` statement so that every
-                // `BindingRef { resolved: Binding(info_id) }` in the user body
-                // continues to resolve correctly through `binding_locals`.
+                // The original binding ID for `info` is preserved in the `Let`
+                // statement so every `BindingRef { resolved: Binding(info_id) }`
+                // in the user body continues to resolve through `binding_locals`.
+                // `__crash_message` is a BORROW (the runtime owns the buffer)
+                // and is unused here; M-5 seeds `CrashInfo.message` from it.
                 //
-                // RETURN coercion: the runtime supervisor ignores the handler's
-                // return value in v0.5 and applies its own restart-policy enum.
-                // Passing `ResolvedTy::Named { "CrashAction" }` through to codegen
-                // trips the D10 fail-closed gate; we use I32 until v0.6 wires
-                // CrashAction enum-variant construction.
+                // RETURN: the M-3 ABI return is `i32` (the `CrashAction` tag).
+                // Until M-4 removes the checker fail-closed gate, only
+                // `panic()`-diverging bodies compile, so no `CrashAction` value
+                // materialises in the return slot yet — `return_ty` stays I32.
                 //
-                // BODY-RETURN NOTE: enum-variant construction (`CrashAction::Restart`)
-                // is not yet wired in HIR lowering (NotYetImplemented gate). Today
-                // only `panic()`-diverging bodies compile, so no actual CrashAction
-                // value can appear in the MIR return slot.
-                //
-                // WHEN obsolete: when v0.6 wires CrashAction return-shape consult,
-                // remove the I32 return coercion and let the HIR type flow through.
-                // The prologue injection itself stays (the ABI wire remains i64).
+                // WHEN obsolete: M-4 removes the I32 coercion and wraps the body
+                // so its `CrashAction` tail value is reduced to its tag i32 (a
+                // `match __action { Restart=>0, Escalate=>1, Kill=>2 }`); the
+                // prologue injection and the `__crash_message` ABI param stay.
 
                 // Find the crash-info payload param (if present) and build ABI
                 // params. The payload param is replaced with `__crash_code: I64`;
@@ -3152,20 +3163,35 @@ fn lower_actor_lifecycle_handlers(
                         Some((p.clone(), name.clone()))
                     });
 
+                // The crash-info payload param expands to TWO ABI params:
+                // `__crash_code: i64` then `__crash_message: string` (a `ptr`),
+                // matching the `HewOnCrashFn` signature `(ctx, i64, *const
+                // c_char, *mut c_void) -> i32`. The message param is a borrow
+                // (the runtime owns the buffer) and is unused until M-5 seeds
+                // `CrashInfo.message` from it. Non-payload params pass through.
                 let abi_params: Vec<HirBinding> = hook
                     .params
                     .iter()
-                    .map(|p| {
+                    .flat_map(|p| {
                         if is_crash_info_payload_ty(&p.ty, type_classes, record_field_orders) {
-                            HirBinding {
-                                id: SENTINEL_CRASH_CODE_BINDING,
-                                name: "__crash_code".to_string(),
-                                ty: ResolvedTy::I64,
-                                mutable: false,
-                                span: p.span.clone(),
-                            }
+                            vec![
+                                HirBinding {
+                                    id: SENTINEL_CRASH_CODE_BINDING,
+                                    name: "__crash_code".to_string(),
+                                    ty: ResolvedTy::I64,
+                                    mutable: false,
+                                    span: p.span.clone(),
+                                },
+                                HirBinding {
+                                    id: SENTINEL_CRASH_MESSAGE_BINDING,
+                                    name: "__crash_message".to_string(),
+                                    ty: ResolvedTy::String,
+                                    mutable: false,
+                                    span: p.span.clone(),
+                                },
+                            ]
                         } else {
-                            p.clone()
+                            vec![p.clone()]
                         }
                     })
                     .collect();

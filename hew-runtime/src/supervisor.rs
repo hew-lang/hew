@@ -2147,26 +2147,30 @@ unsafe fn apply_restart(
         //     catch across a non-unwinding ABI, and silently swallowing
         //     would violate the `boundary-fail-closed` invariant.
         //
-        // `CrashAction` return is IGNORED in v0.5:
-        //   `std/failure.hew` declares `on(crash)` returning a
-        //   `CrashAction` variant (Restart/Kill/Escalate) but the v0.5
-        //   supervisor honours only the per-child `restart_policy` enum
-        //   set at spec-registration time. The hook is side-effects-only
-        //   ("log + react") for v0.5; the return-shape consult is deferred
-        //   to v0.6 (JOURNEY.md Q46/A23, `std/failure.hew:34-38`). The
-        //   handler's signature here is `unsafe extern "C" fn(*mut ctx,
-        //   c_int, *mut c_void)` returning unit — the variant byte the
-        //   user `return`s simply does not reach the runtime.
+        // `CrashAction` return channel (M-3 ABI reshape):
+        //   `std/failure.hew` declares `#[on(crash)]` returning a
+        //   `CrashAction` variant (Restart/Escalate/Kill). The `HewOnCrashFn`
+        //   ABI now CARRIES that decision back as an `i32` tag. M-3 captures
+        //   the returned tag into `_crash_action_tag`; honouring it (gating
+        //   the restart decision on the variant) is M-4. Until M-4 lands the
+        //   captured tag is intentionally unused — the supervisor still
+        //   applies the per-child `restart_policy` below.
         if let Some(handler) = spec.on_crash {
             // Capture state pointer before relinquishing the borrow.
             let state_ptr = spec.init_state;
+            // M-3: crash-message channel. M-5 wires the real diagnostic
+            // string captured from the crashed actor's trap; M-3 passes null
+            // (the codegen prologue renders null as the empty string), so the
+            // ABI carries the message slot without yet populating it.
+            let crash_message: *const c_char = ptr::null();
             // SAFETY: `handler` is a codegen-emitted `extern "C" fn` with
             // the `HewOnCrashFn` signature; `ctx` is the live supervisor
             // execution context for the in-flight dispatch; `state_ptr`
             // is the template state the supervisor owns for this child
-            // slot (allocated in `hew_supervisor_add_child_spec`).
+            // slot (allocated in `hew_supervisor_add_child_spec`);
+            // `crash_message` is null (borrowed, not owned by the callee).
             // Widen crash_code from c_int to i64 at the call boundary.
-            // `HewOnCrashFn` uses i64 to match `PanicInfo.code: i64` in
+            // `HewOnCrashFn` uses i64 to match `CrashInfo.code: i64` in
             // std/failure.hew; the internal event plumbing stays c_int so the
             // public `hew_supervisor_notify_child_event` C ABI is unchanged.
             #[allow(
@@ -2176,10 +2180,10 @@ unsafe fn apply_restart(
             // SAFETY: `handler` is a valid fn-pointer registered by the caller of
             // `hew_supervisor_add_child_spec`; `ctx` is the current execution context
             // (non-null, live for the duration of this supervisor dispatch); `state_ptr`
-            // is the template state owned by this child slot (allocated in add_child_spec).
-            unsafe {
-                handler(ctx, crash_code as i64, state_ptr);
-            }
+            // is the template state owned by this child slot (allocated in add_child_spec);
+            // `crash_message` is null or a caller-owned NUL-terminated string.
+            let _crash_action_tag: i32 =
+                unsafe { handler(ctx, crash_code as i64, crash_message, state_ptr) };
         }
 
         // Apply exponential backoff delay after crash (only for subsequent crashes)

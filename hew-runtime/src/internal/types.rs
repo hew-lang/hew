@@ -56,20 +56,46 @@ pub type HewDispatchFn = unsafe extern "C-unwind" fn(
 ///
 /// Called by the supervisor when a child actor crashes, before the restart
 /// policy is applied. Receives the execution context, the crash code
-/// (trap kind integer), and the actor's current state pointer.
+/// (trap kind integer), the crash message (diagnostic string, may be null),
+/// and the actor's current state pointer; returns the hook's `CrashAction`
+/// control decision as an `i32` tag.
 ///
-/// `crash_code` is i64 to match the `code: i64` field of `PanicInfo` in
-/// `std/failure.hew`. The supervisor's internal plumbing tracks the code as
-/// `c_int` and widens it to `i64` at the call site so the internal event
-/// struct and the public C ABI (`hew_supervisor_notify_child_event`) stay
-/// unchanged.
+/// # Arguments
 ///
-/// `void (*on_crash)(HewExecutionContext *ctx, int64_t crash_code, void *actor_state_ptr)`
+/// - `crash_code: i64` — the trap-kind integer captured from the crashed
+///   actor's `error_code` slot. `i64` matches the `code: i64` field of
+///   `CrashInfo` in `std/failure.hew`. The supervisor's internal plumbing
+///   tracks the code as `c_int` and widens it to `i64` at the call site so
+///   the internal event struct and the public C ABI
+///   (`hew_supervisor_notify_child_event`) stay unchanged.
+/// - `crash_message: *const c_char` — a NUL-terminated diagnostic string for
+///   the `CrashInfo.message` field, or null when no message is available. The
+///   callee (the codegen-emitted `__on_crash` body) BORROWS this pointer to
+///   construct its own owned `CrashInfo.message` string; ownership of the
+///   underlying buffer stays with the caller (the supervisor), which is
+///   responsible for its lifetime across the call. Null is rendered as the
+///   empty string by the codegen prologue.
+///
+/// # Return value
+///
+/// The hook's `CrashAction` decision encoded as its declaration-order tag:
+/// `Restart = 0`, `Escalate = 1`, `Kill = 2`. A payload-free 3-variant enum
+/// returned across the C ABI as a struct-by-value would have a sub-byte tag
+/// (`i2`) that is awkward to mirror in `#[repr(C)]`, so the codegen-emitted
+/// `__on_crash` body extracts the variant tag and returns a plain `i32`
+/// (see `hew-mir/src/lower.rs::lower_actor_lifecycle_hooks`). The supervisor
+/// decodes this tag into a `CrashAction` control decision; a value outside
+/// `0..=2` is treated fail-closed as `Restart` (the conservative default that
+/// preserves the existing restart-policy behaviour) — see
+/// `hew-runtime/src/supervisor.rs::apply_restart`.
+///
+/// `int32_t (*on_crash)(HewExecutionContext *ctx, int64_t crash_code, const char *crash_message, void *actor_state_ptr)`
 pub type HewOnCrashFn = unsafe extern "C" fn(
     ctx: *mut HewExecutionContext,
     crash_code: i64,
+    crash_message: *const std::ffi::c_char,
     actor_state_ptr: *mut std::ffi::c_void,
-);
+) -> i32;
 
 /// Lifecycle wrapper function signature for supervised actors.
 ///

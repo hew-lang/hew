@@ -56,15 +56,22 @@ unsafe extern "C-unwind" fn noop_dispatch(
 
 /// Test `on_crash` handler: records that it fired and captures the trap code.
 ///
-/// `crash_code` is `i64` matching the updated `HewOnCrashFn` ABI, which aligns
-/// with `PanicInfo.code: i64` in `std/failure.hew`.
+/// Signature matches the M-3 `HewOnCrashFn` ABI:
+/// `(ctx, crash_code: i64, crash_message: *const c_char, actor_state_ptr) -> i32`.
+/// `crash_code` is `i64` aligning with `CrashInfo.code: i64` in
+/// `std/failure.hew`; `crash_message` is a borrowed C string (null here). The
+/// return is the `CrashAction` tag — `0` (`Restart`) keeps the existing
+/// restart-policy behaviour these tests assert (the captured tag is not yet
+/// honoured by the supervisor until M-4).
 unsafe extern "C" fn recording_on_crash(
     _ctx: *mut hew_runtime::execution_context::HewExecutionContext,
     crash_code: i64,
+    _crash_message: *const std::ffi::c_char,
     _actor_state_ptr: *mut c_void,
-) {
+) -> i32 {
     ON_CRASH_CALLS.fetch_add(1, Ordering::SeqCst);
     LAST_CRASH_CODE.store(crash_code, Ordering::SeqCst);
+    0
 }
 
 fn cstr(s: &str) -> CString {

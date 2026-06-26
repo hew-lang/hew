@@ -14,6 +14,11 @@
 //! neither is found the test is a no-op skip (it cannot run, it must not
 //! fail-open into a false green — but a missing host tool is not a code defect).
 //!
+//! The object is always compiled for `x86_64-unknown-linux-gnu` (ELF+DWARF),
+//! regardless of the host. On Windows CI the host default triple is
+//! `x86_64-pc-windows-msvc`, which emits CodeView instead of DWARF; pinning to
+//! the Linux triple keeps these DWARF assertions deterministic on every platform.
+//!
 //! LESSONS applied:
 //! - `ci_gate_trust` / proving-gate-is-the-compiled-artefact (P1): assert on the
 //!   object the toolchain emits, not an intermediate the emitter may rewrite.
@@ -105,7 +110,12 @@ fn emit_object(slug: &str) -> PathBuf {
         out_dir: &tmp,
         native: true,
         wasm: false,
-        target_triple: None,
+        // Pin to an explicit DWARF target so these assertions hold on every
+        // host. Without this, Windows CI defaults to x86_64-pc-windows-msvc,
+        // which emits CodeView instead of DWARF and the dwarfdump assertions
+        // fail. x86_64-unknown-linux-gnu produces ELF+DWARF on any host;
+        // llvm-dwarfdump is format-agnostic and can read ELF on Windows.
+        target_triple: Some("x86_64-unknown-linux-gnu"),
         debug: true,
         opt_level: hew_codegen_rs::OptLevel::O0,
         source_path: Some(src_path.as_path()),

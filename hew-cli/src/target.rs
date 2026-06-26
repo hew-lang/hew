@@ -64,6 +64,12 @@ pub struct ExecutionTarget {
 /// Host-side concerns (which linker binary to invoke, whether lld is installed,
 /// whether `dsymutil` is available) are intentionally *not* captured here —
 /// those remain runtime checks in `link.rs`.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each needs_* bool is an independent, named, target-keyed linker \
+              decision (SDK anchoring, CRT fixup, dsymutil pass, PDB emission); \
+              this is a plan-of-record, not a god-struct conflating unrelated state"
+)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeLinkPlan {
     /// Dead-code-elimination flags passed to the linker unconditionally.
@@ -95,6 +101,19 @@ pub struct NativeLinkPlan {
     /// Set for Darwin targets; whether the tool is actually present on the
     /// host is checked at link time — the step is skipped if unavailable.
     pub needs_dsymutil: bool,
+
+    /// `true` when a debug (`-g`) link must emit a separate PDB via the
+    /// MSVC-style `/DEBUG:FULL` + `/PDB:<output>.pdb` linker flags.
+    ///
+    /// Set for Windows targets. Unlike ELF/Mach-O (where `-g` carries debug
+    /// info inside the object/executable), the Windows `CodeView` channel is
+    /// written to a standalone `.pdb` next to the `.exe`; without `/DEBUG` the
+    /// linker discards the `CodeView` records and no PDB is produced, so a
+    /// `-g` build silently under-delivers on Windows. `/DEBUG:FULL` (not the
+    /// `/DEBUG:GHASH` fast-link variant) writes complete line+local info that
+    /// cdb/WinDbg/Visual Studio read. The flags only attach on a debug build;
+    /// a release Windows link sets nothing here.
+    pub needs_pdb_debug: bool,
 }
 
 impl TargetSpec {
@@ -173,6 +192,7 @@ impl TargetSpec {
                 needs_darwin_sdk: true,
                 needs_windows_crt_fixup: false,
                 needs_dsymutil: true,
+                needs_pdb_debug: false,
             },
             TargetOs::Linux => NativeLinkPlan {
                 gc_flags: &["-Wl,--gc-sections"],
@@ -181,6 +201,7 @@ impl TargetSpec {
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
                 needs_dsymutil: false,
+                needs_pdb_debug: false,
             },
             TargetOs::FreeBsd => NativeLinkPlan {
                 gc_flags: &["-Wl,--gc-sections"],
@@ -191,6 +212,7 @@ impl TargetSpec {
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
                 needs_dsymutil: false,
+                needs_pdb_debug: false,
             },
             TargetOs::Windows => NativeLinkPlan {
                 // The Windows linker (lld-link) does not accept ELF-style -Wl
@@ -217,6 +239,9 @@ impl TargetSpec {
                 // runtime uses the DLL CRT (msvcrt).  The CRT linkage must match.
                 needs_windows_crt_fixup: true,
                 needs_dsymutil: false,
+                // A `-g` Windows link must request the PDB explicitly so lld-link
+                // writes the CodeView records to a `.pdb` next to the `.exe`.
+                needs_pdb_debug: true,
             },
             TargetOs::Wasi | TargetOs::WasmFreestanding => NativeLinkPlan {
                 gc_flags: &[],
@@ -225,6 +250,7 @@ impl TargetSpec {
                 needs_darwin_sdk: false,
                 needs_windows_crt_fixup: false,
                 needs_dsymutil: false,
+                needs_pdb_debug: false,
             },
         }
     }
@@ -853,6 +879,7 @@ mod tests {
         assert!(plan.needs_darwin_sdk, "Darwin must request SDK anchoring");
         assert!(plan.needs_dsymutil, "Darwin must request dsymutil pass");
         assert!(!plan.needs_windows_crt_fixup);
+        assert!(!plan.needs_pdb_debug, "Darwin carries DWARF, not a PDB");
     }
 
     #[test]
@@ -881,6 +908,7 @@ mod tests {
         assert!(!plan.needs_darwin_sdk);
         assert!(!plan.needs_dsymutil);
         assert!(!plan.needs_windows_crt_fixup);
+        assert!(!plan.needs_pdb_debug, "Linux carries DWARF, not a PDB");
     }
 
     #[test]
@@ -903,6 +931,7 @@ mod tests {
         assert!(!plan.needs_darwin_sdk);
         assert!(!plan.needs_dsymutil);
         assert!(!plan.needs_windows_crt_fixup);
+        assert!(!plan.needs_pdb_debug, "FreeBSD carries DWARF, not a PDB");
     }
 
     #[test]
@@ -939,6 +968,19 @@ mod tests {
     }
 
     #[test]
+    fn windows_link_plan_requests_pdb_debug() {
+        let spec = TargetSpec::from_requested(Some("x86_64-pc-windows-msvc")).expect("target");
+        let plan = spec.native_link_plan();
+        assert!(
+            plan.needs_pdb_debug,
+            "Windows must request a PDB on a -g link so CodeView records reach a .pdb"
+        );
+        // The other targets carry their CodeView channel inside the object, so
+        // none of them request a standalone PDB — assert the field is Windows-only.
+        assert!(!plan.needs_dsymutil);
+    }
+
+    #[test]
     fn wasm_link_plan_is_empty() {
         let spec = TargetSpec::from_requested(Some("wasm32-wasi")).expect("target");
         let plan = spec.native_link_plan();
@@ -948,6 +990,7 @@ mod tests {
         assert!(!plan.needs_darwin_sdk);
         assert!(!plan.needs_dsymutil);
         assert!(!plan.needs_windows_crt_fixup);
+        assert!(!plan.needs_pdb_debug);
     }
 
     // ── wasm32-unknown-unknown (bare wasm / WasmFreestanding) ──────────

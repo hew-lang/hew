@@ -37,22 +37,11 @@
 # ── examples/ ────────────────────────────────────────────────────────────────
 
 # deferred-nyi: sleep duration literals (50ms / 0ns) not yet accepted
-examples/actor/await_crash_after_sleep_resume.hew
-examples/actor/scope_deadline_suspend.hew
-examples/actor/select_suspend_deadline.hew
-examples/actor/select_suspend_race.hew
 
 # deferred-nyi: channel/select syntax not yet lowered
-examples/backpressure_test.hew
 examples/benchmark_demo.hew
-examples/channel/await_recv_actor.hew
-examples/channel/select_recv.hew
-examples/chat_client.hew
-examples/chat_server.hew
 
 # deferred-nyi: distributed / net NYI features
-examples/distributed/kv_client.hew
-examples/distributed/kv_server.hew
 
 # deferred-nyi: lambda actor syntax not yet supported
 examples/lambda_actor_factory.hew
@@ -61,14 +50,11 @@ examples/lambda_actors.hew
 
 # deferred-nyi: machine select/transition watch NYI
 examples/machine/bounded_resource.hew
-examples/machine/select_on_transition.hew
-examples/machine/transition_watch_baseline.hew
 
 # deferred-nyi: module_generic_boundaries multi-file typecheck NYI
 examples/module_generic_boundaries/main.hew
 
 # deferred-nyi: MQTT broker NYI features
-examples/mqtt_broker.hew
 
 # deferred-nyi: multifile compilation NYI (requires multi-file resolve)
 examples/multifile/01_shapes/main.hew
@@ -77,32 +63,15 @@ examples/multifile/02_geometry/geo/distance.hew
 examples/multifile/02_geometry/main.hew
 
 # deferred-nyi: net/await NYI
-examples/net/await_http_roundtrip.hew
-examples/net/await_read_fanout.hew
-examples/net/await_read_hup.hew
-examples/net/await_read.hew
-examples/net/http_await_service.hew
-examples/net/probe_a_conn_field.hew
-examples/net/probe_b2_closure_await_outer_crash.hew
-examples/net/probe_b2_closure_capture_await.hew
-examples/net/probe_b2_closure_multi_await.hew
-examples/net/probe_b2_closure_unit_await.hew
-examples/net/probe_b3_closure_capture_noawait.hew
 examples/net/probe_opaque_actor_state.hew
-examples/network_file_reader.hew
 
 # deferred-nyi: observe-related NYI
-examples/observe_showcase.hew
-examples/observe_supervisor_showcase.hew
-examples/observe-test-fixture.hew
 
 # deferred-nyi: profiler NYI
-examples/profiler_demo.hew
 
 # deferred-nyi: QUIC / advanced net NYI
 examples/quic_mesh/client.hew
 examples/quic_mesh/selector_smoke.hew
-examples/quic_mesh/server.hew
 examples/quic_service/client.hew
 examples/quic_service/server.hew
 
@@ -110,37 +79,18 @@ examples/quic_service/server.hew
 examples/regex_demo.hew
 
 # deferred-nyi: advanced actor patterns NYI
-examples/sensor_mesh.hew
 examples/services/circuit_breaker.hew
 examples/services/distributed_counter.hew
 examples/services/health_monitor.hew
-examples/services/pub_sub.hew
-examples/services/rate_limiter.hew
-examples/services/worker_pool.hew
-examples/stress_scheduler.hew
-examples/stress_supervision.hew
-examples/supervisor_crash_budget.hew
-examples/supervisor_nested_tree.hew
-examples/supervisor_service_stack.hew
-examples/supervisor_showcase.hew
-examples/supervisor_vs_erlang.hew
-examples/supervisor_worker_pool.hew
 examples/test_actors_messaging.hew
 
 # deferred-nyi: v05 examples using NYI features
-examples/v05/actor_ask_race.hew
 examples/v05/cancellation_is_cancelled_observation.hew
 examples/v05/channel_vec_element_fails.hew
 
 # deferred-nyi: checked-mir v05 examples using NYI features
-examples/v05/checked-mir/actor_ask_race.hew
 examples/v05/checked-mir/actor_link_monitor.hew
-examples/v05/checked-mir/channel_recv_select.hew
 examples/v05/checked-mir/regex_match_literal.hew
-examples/v05/checked-mir/stream_pipe_send_recv.hew
-examples/v05/checked-mir/stream_string_pipe_send.hew
-examples/v05/checked-mir/supervisor_await_restart.hew
-examples/v05/checked-mir/supervisor_config_init.hew
 
 # deferred-nyi: f64 key/annotation expected-fail test fixtures
 examples/v05/hashmap_f64_annotation_fails.hew
@@ -150,15 +100,6 @@ examples/v05/hashset_f64_annotation_fails.hew
 examples/v05/hashset_f64_clear_fails.hew
 
 # deferred-nyi: channel/stream surfaces NYI
-examples/v05/surfaces/channel_record_elements.hew
-examples/v05/surfaces/for_await_recv_f64.hew
-examples/v05/surfaces/for_await_recv_int.hew
-examples/v05/surfaces/for_await_recv_string.hew
-examples/v05/surfaces/for_await_stream_bytes.hew
-examples/v05/surfaces/for_await_stream_string.hew
-examples/v05/surfaces/try_recv_stream_string.hew
-examples/v05/surfaces/typed_streams_string.hew
-examples/v05/surfaces/typed_streams.hew
 
 # deferred-nyi: vec layout and method NYI
 examples/v05/vec_layout_noncopy_fails.hew
@@ -172,7 +113,6 @@ hew-lsp/tests/fixtures/v05_await_deadline.hew
 hew-lsp/tests/fixtures/v05_closures.hew
 hew-lsp/tests/fixtures/v05_cross_module_machine_main.hew
 hew-lsp/tests/fixtures/v05_index_trait.hew
-hew-lsp/tests/fixtures/v05_link_monitor.hew
 hew-lsp/tests/fixtures/v05_machine_generics.hew
 hew-lsp/tests/fixtures/v05_machine_methods.hew
 hew-lsp/tests/fixtures/v05_machine_states.hew
@@ -215,7 +155,6 @@ hew-sandbox-vm/fixtures/09-compile-type-error/main.hew
 
 # deferred-nyi: sandbox fixtures using NYI features (sleep duration, actor
 # ask/reply, channel select, supervisor, machine events, stdin, random)
-hew-sandbox-vm/fixtures/14-virtual-sleep-clock/main.hew
 hew-sandbox-vm/fixtures/15-actor-counter/main.hew
 hew-sandbox-vm/fixtures/16-actor-ask-reply/main.hew
 hew-sandbox-vm/fixtures/17-channel-select/main.hew
@@ -268,20 +207,7 @@ tests/corpus/v05-value-model/19_actor_scope.hew
 # deferred-nyi: hew test suite files using NYI features (sleep duration,
 # actor select/suspend, generic clone, hashmap clone, instant methods, process,
 # generic vec iter, this-send)
-tests/hew/actor_every_test.hew
-tests/hew/actor_scope_deadline_body_test.hew
-tests/hew/actor_select_suspend_test.hew
-tests/hew/actor_sleep_suspend_test.hew
-tests/hew/actor_this_self_send_test.hew
-tests/hew/actor_unit_task_await_suspend_test.hew
-tests/hew/generic_enum_clone_test.hew
-tests/hew/generic_param_clone_test.hew
-tests/hew/generic_record_of_vec_clone_test.hew
 tests/hew/generic_vec_iter_surface_test.hew
-tests/hew/hashmap_clone_test.hew
-tests/hew/instant_methods_test.hew
-tests/hew/process_test.hew
-tests/hew/sleep_duration_test.hew
 
 # ── tests/ll-oracle/ ─────────────────────────────────────────────────────────
 
@@ -360,49 +286,16 @@ tests/pkg-import/samename_type_layout.hew
 # relevant compiler feature is deferred or a NYI MIR path is hit.
 
 # deferred-nyi: actor ask race / select / supervisor features
-tests/vertical-slice/accept/actor_ask_race.hew
-tests/vertical-slice/accept/actor_nested_handle_tuple_transfer.hew
-tests/vertical-slice/accept/actor_single_arg_pid_payload.hew
-tests/vertical-slice/accept/ask_reply_owned_select_loser.hew
-tests/vertical-slice/accept/ask_reply_owned_timeout.hew
 
 # deferred-nyi: await deadline NYI
-tests/vertical-slice/accept/await_accept_deadline_deferred.hew
-tests/vertical-slice/accept/await_accept_deadline_ok.hew
-tests/vertical-slice/accept/await_accept_deadline_timeout.hew
-tests/vertical-slice/accept/await_read_deadline_deferred.hew
-tests/vertical-slice/accept/await_read_deadline_ok.hew
-tests/vertical-slice/accept/await_read_string_deadline_ok.hew
-tests/vertical-slice/accept/await_read_string_deadline_timeout.hew
 
 # deferred-nyi: actor crash context diagnostic NYI
-tests/vertical-slice/accept/crash_actor_context_diagnostic.hew
 
 # deferred-nyi: hashmap/hashset for-in NYI
-tests/vertical-slice/accept/hashmap_for_in_call.hew
-tests/vertical-slice/accept/hashmap_for_in_field.hew
-tests/vertical-slice/accept/hashmap_for_in_owned.hew
-tests/vertical-slice/accept/hashmap_for_in_string_key.hew
-tests/vertical-slice/accept/hashmap_for_in_sum.hew
-tests/vertical-slice/accept/hashmap_managed_key_drop.hew
-tests/vertical-slice/accept/hashmap_managed_record_key.hew
-tests/vertical-slice/accept/hashset_for_in_call.hew
-tests/vertical-slice/accept/hashset_for_in_field_owned.hew
-tests/vertical-slice/accept/hashset_for_in_field.hew
-tests/vertical-slice/accept/hashset_for_in_owned.hew
-tests/vertical-slice/accept/hashset_for_in_sum.hew
-tests/vertical-slice/accept/hashset_managed_record_elem.hew
 
 # deferred-nyi: lambda capture NYI
-tests/vertical-slice/accept/lambda_capture_pid_forward.hew
-tests/vertical-slice/accept/lambda_capture_tell.hew
-tests/vertical-slice/accept/lambda_multi_param.hew
-tests/vertical-slice/accept/lambda_self_recursion.hew
 
 # deferred-nyi: link_monitor MIR NYI
-tests/vertical-slice/accept/link_monitor_value_monitor_in_actor.hew
-tests/vertical-slice/accept/link_monitor_value_monitor.hew
-tests/vertical-slice/accept/link_monitor_value_result.hew
 
 # deferred-nyi: local fn msg actor method
 tests/vertical-slice/accept/local_fn_msg_actor_method_allowed.hew
@@ -411,35 +304,15 @@ tests/vertical-slice/accept/local_fn_msg_actor_method_allowed.hew
 tests/vertical-slice/accept/regex_match_arm.hew
 
 # deferred-nyi: select recv guard NYI
-tests/vertical-slice/accept/select_recv_guard.hew
 
 # deferred-nyi: sleep duration literal NYI
-tests/vertical-slice/accept/sleep_duration.hew
-tests/vertical-slice/accept/sleep_until.hew
 
 # deferred-nyi: supervisor NYI features
-tests/vertical-slice/accept/supervisor_await_restart.hew
-tests/vertical-slice/accept/supervisor_dynamic_child_init.hew
-tests/vertical-slice/accept/supervisor_fungible_dead_child_select.hew
-tests/vertical-slice/accept/supervisor_fungible_dead_child.hew
-tests/vertical-slice/accept/supervisor_literal_only_config_param.hew
-tests/vertical-slice/accept/supervisor_nested_accessor.hew
-tests/vertical-slice/accept/supervisor_owned_child_init_restart.hew
 
 # deferred-nyi: vec into_iter typeck NYI
 tests/vertical-slice/accept/vec_into_iter_typeck.hew
 
 # deferred-nyi: wire JSON/YAML NYI
-tests/vertical-slice/accept/wire_json_enum_payload_roundtrip.hew
-tests/vertical-slice/accept/wire_json_enum_unit_roundtrip.hew
-tests/vertical-slice/accept/wire_json_malformed_is_err.hew
-tests/vertical-slice/accept/wire_json_missing_field_is_err.hew
-tests/vertical-slice/accept/wire_json_nested_roundtrip.hew
-tests/vertical-slice/accept/wire_json_over_range_is_err.hew
-tests/vertical-slice/accept/wire_json_struct_roundtrip.hew
-tests/vertical-slice/accept/wire_json_vec_option_roundtrip.hew
-tests/vertical-slice/accept/wire_json_wrong_shape_is_err.hew
-tests/vertical-slice/accept/wire_yaml_roundtrip.hew
 
 # ── tools/ ───────────────────────────────────────────────────────────────────
 

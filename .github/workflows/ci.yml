@@ -222,7 +222,7 @@ jobs:
         run: cargo deny check bans sources
 
       - name: Install cargo-about
-        run: cargo install cargo-about --locked --version 0.9.0
+        run: cargo install cargo-about --locked --version 0.9.0 --features cli
 
       - name: Verify THIRD-PARTY-LICENSES is current
         run: scripts/check-licenses-fresh.sh --quiet

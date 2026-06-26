@@ -1,11 +1,13 @@
 // Reject fixture: supervised child init arg evasion shapes must fail closed.
 //
-// The checker admits only scalar BitCopy primitives for permanent supervised
-// child init args because the supervisor restart path byte-copies the init
-// state template. Lossy or non-scalar shapes are rejected until the v0.6
-// init-closure restart model.
-
-type Name = string;
+// The init-closure restart model (v0.6) admits scalar BitCopy primitives
+// and owned `string`/`bytes` (the thunk loads or deep-clones them per
+// incarnation).  The following shapes are still walled because their
+// clone-in-thunk codegen is not wired (or is structurally forbidden):
+//   - Option<T> wrapping an owned type
+//   - tuples containing owned types
+//   - user records
+//   - HashMap and HashSet collections
 
 record Wrapper { inner: Vec<i64> }
 
@@ -33,14 +35,6 @@ actor WrapperHolder {
     receive fn noop() {}
 }
 
-actor AliasGreeter {
-    var name: Name;
-    init(name: Name) {
-        name = name;
-    }
-    receive fn greet() {}
-}
-
 actor Index {
     var entries: HashMap<string, i64>;
     init(entries: HashMap<string, i64>) {
@@ -64,7 +58,6 @@ supervisor App {
     child maybe: MaybeGreeter(name: Some("hello"));
     child pair: PairHolder(pair: ("hello", 1));
     child wrap: WrapperHolder(data: Wrapper { inner: [] });
-    child alias: AliasGreeter(name: "hello");
     child index: Index(entries: HashMap::<string, i64>::new());
     child seen: Seen(ids: HashSet::<i64>::new());
 }

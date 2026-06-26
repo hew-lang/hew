@@ -1594,6 +1594,14 @@ impl<'a> Formatter<'a> {
         self.write_indent();
         self.write("supervisor ");
         self.write(&decl.name);
+        // Emit the config-param clause when present: `supervisor App(config: T)`.
+        // Without this, `hew fmt` silently drops the param and breaks all
+        // config.field references in the body — a fail-open on the dev-tool surface.
+        if !decl.params.is_empty() {
+            self.write("(");
+            self.format_params(&decl.params);
+            self.write(")");
+        }
         self.write(" {\n");
         self.indent += 1;
 
@@ -4910,5 +4918,76 @@ impl<T> Vec<T> {
     fn fstring_literal_readable_unicode_round_trips() {
         let src = "fn greet(name: string) -> string {\n    f\"bonjour {name} — café\"\n}\n";
         assert_eq!(roundtrip(src), src);
+    }
+
+    // ── supervisor config-param round-trip ───────────────────────────────────
+
+    /// A supervisor with a config param must preserve the param and all
+    /// config.field references in the body through `hew fmt`. The formatter
+    /// previously dropped the `(config: T)` clause, silently breaking the body.
+    #[test]
+    fn supervisor_config_param_roundtrips() {
+        let src = "\
+record AppConfig { size: i64, label: string }
+
+actor Cache {
+    var capacity: i64;
+    var name: string;
+    receive fn get_cap(_n: i64) -> i64 {
+        capacity;
+        name.len()
+    }
+}
+
+supervisor App(config: AppConfig) {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child cache: Cache(capacity: config.size, name: config.label);
+}
+
+fn main() -> i64 {
+    let cfg = AppConfig { size: 5, label: \"hi\" };
+    let sup = spawn App(config: cfg);
+    let _c = sup.cache;
+    supervisor_stop(sup);
+    0
+}
+";
+        let formatted = roundtrip(src);
+        assert!(
+            formatted.contains("supervisor App(config: AppConfig)"),
+            "hew fmt must preserve the supervisor config param; got:\n{formatted}"
+        );
+        assert!(
+            formatted.contains("config.size"),
+            "hew fmt must preserve config.size reference in body; got:\n{formatted}"
+        );
+        assert!(
+            formatted.contains("config.label"),
+            "hew fmt must preserve config.label reference in body; got:\n{formatted}"
+        );
+        // Idempotency: a second pass must not change the output.
+        let twice = roundtrip(&formatted);
+        assert_eq!(
+            twice, formatted,
+            "supervisor config-param format must be idempotent"
+        );
+    }
+
+    /// A supervisor WITHOUT a config param must not emit an empty `()` clause —
+    /// the formatter must be silent when there are no params.
+    #[test]
+    fn supervisor_without_config_param_no_parens() {
+        let src = "\
+supervisor Simple {
+    strategy: one_for_one;
+}
+";
+        let formatted = roundtrip(src);
+        assert!(
+            !formatted.contains("supervisor Simple("),
+            "supervisor with no config params must not emit parens; got:\n{formatted}"
+        );
     }
 }

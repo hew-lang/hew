@@ -578,6 +578,7 @@ stable = [
   "hew_supervisor_set_child_lifecycle",
   "hew_supervisor_set_child_state_clone",
   "hew_supervisor_set_child_state_drop",
+  "hew_supervisor_set_config_drop_fn",
   "hew_supervisor_set_circuit_breaker",
   "hew_supervisor_set_restart_notify",
   "hew_supervisor_start",

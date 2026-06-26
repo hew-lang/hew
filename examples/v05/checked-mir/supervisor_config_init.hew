@@ -1,0 +1,40 @@
+// MIR-corpus fixture: the v0.6 init-closure restart model — config-derived
+// child init.
+//
+// Pins the NEW init-closure MIR/codegen surface so a future retyping refactor
+// cannot silently change it:
+//   - the supervisor config param threaded onto the bootstrap signature and the
+//     `spawn App(config: cfg)` bootstrap call carrying the config argument,
+//   - the `ChildInitArg::ConfigField` lowering (scalar `config.size` →
+//     `owned: false`; owned `config.label` → `owned: true`),
+//   - the `hew_supervisor_set_child_init_fn` RuntimeCall family the codegen
+//     bootstrap emits per config-init child (the #2229 corpus-pin discipline:
+//     pin every new RuntimeCall family in the golden corpus).
+record AppConfig {
+    size: i64,
+    label: string
+}
+
+actor Cache {
+    var capacity: i64;
+    var name: string;
+    receive fn get_cap(_n: i64) -> i64 {
+        capacity;
+        name.len()
+    }
+}
+
+supervisor App(config: AppConfig) {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child cache: Cache(capacity: config.size, name: config.label);
+}
+
+fn main() -> i64 {
+    let cfg = AppConfig { size: 5, label: "hi" };
+    let sup = spawn App(config: cfg);
+    let _c = sup.cache;
+    supervisor_stop(sup);
+    0
+}

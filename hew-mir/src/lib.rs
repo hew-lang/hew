@@ -58,8 +58,9 @@ pub use model::{
     LambdaCapture, LambdaEnvFieldDrop, MachineLayout, MachineVariantLayout, MirCheck, MirConst,
     MirConstValue, MirDiagnostic, MirDiagnosticKind, MirLint, MirScope, MirStatement, Place,
     PointerWidth, PolymorphicMirFunction, RawMirFunction, RecordLayout, RegexLiteral, RuntimeCall,
-    SelectArm, SelectArmKind, SendAliasMode, Strategy, SupervisorChildLayout, SupervisorLayout,
-    SuspendKind, Terminator, ThirFunction, TraitObjectStorage, TrapKind, WitnessOperand,
+    SelectArm, SelectArmKind, SendAliasMode, Strategy, SupervisorChildLayout,
+    SupervisorConfigParam, SupervisorLayout, SuspendKind, Terminator, ThirFunction,
+    TraitObjectStorage, TrapKind, WitnessOperand,
 };
 pub use runtime_symbols::UnknownRuntimeSymbol;
 pub use state_clone::{

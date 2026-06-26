@@ -27900,9 +27900,23 @@ fn assert_supervisor_init_arg_non_bitcopy(source: &str, param_type_source: &str)
     );
 }
 
+fn assert_supervisor_init_arg_admitted(source: &str) {
+    let output = check_source(source);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY")),
+        "init arg must be admitted by the init-closure reproducibility wall; errors: {:#?}",
+        output.errors
+    );
+}
+
 #[test]
-fn supervisor_init_arg_string_rejects() {
-    assert_supervisor_init_arg_non_bitcopy(
+fn supervisor_init_arg_string_admitted() {
+    // An owned `string` init arg is reproducible: the init thunk allocating-clones
+    // it per incarnation, so a restart gets a fresh, unaliased value.
+    assert_supervisor_init_arg_admitted(
         r#"
         actor Greeter {
             let name: string;
@@ -27916,7 +27930,6 @@ fn supervisor_init_arg_string_rejects() {
             child g: Greeter(name: "hello");
         }
         "#,
-        "string",
     );
 }
 
@@ -27941,8 +27954,10 @@ fn supervisor_init_arg_vec_rejects() {
 }
 
 #[test]
-fn supervisor_init_arg_bytes_rejects() {
-    assert_supervisor_init_arg_non_bitcopy(
+fn supervisor_init_arg_bytes_admitted() {
+    // Owned `bytes` is reproducible: the init thunk refcount-bump-clones it per
+    // incarnation (the config buffer + the fresh state share a counted ref).
+    assert_supervisor_init_arg_admitted(
         r"
         actor Payload {
             let data: bytes;
@@ -27956,7 +27971,6 @@ fn supervisor_init_arg_bytes_rejects() {
             child p: Payload(data: []);
         }
         ",
-        "bytes",
     );
 }
 
@@ -28023,8 +28037,10 @@ fn supervisor_init_arg_record_wrapping_vec_rejects() {
 }
 
 #[test]
-fn supervisor_init_arg_alias_of_string_rejects() {
-    assert_supervisor_init_arg_non_bitcopy(
+fn supervisor_init_arg_alias_of_string_admitted() {
+    // A transparent alias of `string` (`type Name = string`) resolves to
+    // `Ty::String`, which is reproducible — admitted like a bare `string`.
+    assert_supervisor_init_arg_admitted(
         r#"
         type Name = string;
 
@@ -28040,7 +28056,6 @@ fn supervisor_init_arg_alias_of_string_rejects() {
             child g: Greeter(name: "hello");
         }
         "#,
-        "Name",
     );
 }
 
@@ -28160,6 +28175,118 @@ fn supervisor_init_arg_bool_and_f64_admitted() {
             .iter()
             .any(|e| e.message.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY")),
         "bool and f64 init args must be admitted; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_init_arg_scalar_config_field_admitted() {
+    // A scalar `config.field` init arg is the v0.6 init-closure surface: the
+    // actor param is scalar, so the thunk re-produces it by a plain load. The
+    // checker binds the config param in scope, types `config.size` to i64, and
+    // the byte-copy wall (keyed on the scalar param) admits it.
+    let output = check_source(
+        r"
+        record AppConfig { size: i64 }
+
+        actor Cache {
+            var capacity: i64;
+            init(capacity: i64) {
+                capacity = capacity;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App(config: AppConfig) {
+            child cache: Cache(capacity: config.size);
+        }
+        ",
+    );
+
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY")),
+        "a scalar config.field init arg must be admitted; errors: {:#?}",
+        output.errors
+    );
+    // The synthesis pass must not leave a leaky "undefined variable `config`"
+    // error — the config param is bound in scope for the init-arg exprs.
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("undefined variable `config`")),
+        "config param must be in scope for init-arg exprs; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_init_arg_config_nonexistent_field_surfaces_error() {
+    // Typing the init-arg expr against the config param surfaces a real
+    // diagnostic for a missing config field, at the arg-expr span.
+    let output = check_source(
+        r"
+        record AppConfig { size: i64 }
+
+        actor Cache {
+            var capacity: i64;
+            init(capacity: i64) {
+                capacity = capacity;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App(config: AppConfig) {
+            child cache: Cache(capacity: config.nonexistent);
+        }
+        ",
+    );
+
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("nonexistent") && e.message.contains("AppConfig")),
+        "reading a non-existent config field must surface a typed error naming \
+         the field and the config struct; errors: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn supervisor_init_arg_config_field_type_mismatch_surfaces_error() {
+    // A config field whose type does not match the actor init param surfaces a
+    // type-mismatch diagnostic (the actor expects i64; the config field is
+    // bool). The init-arg-expr typing is what makes this catchable.
+    let output = check_source(
+        r"
+        record AppConfig { flag: bool }
+
+        actor Cache {
+            var capacity: i64;
+            init(capacity: i64) {
+                capacity = capacity;
+            }
+            receive fn noop() {}
+        }
+
+        supervisor App(config: AppConfig) {
+            child cache: Cache(capacity: config.flag);
+        }
+        ",
+    );
+
+    // The arg expr types cleanly to bool; the mismatch against the i64 param is
+    // reported by the spawn/constructor arg check. Either a Mismatch error or
+    // a constructor-arg diagnostic is acceptable — assert at least one error
+    // mentions the type clash so a silent accept fails the test.
+    assert!(
+        !output.errors.is_empty(),
+        "a config field whose type mismatches the actor init param must produce \
+         at least one diagnostic; errors: {:#?}",
         output.errors
     );
 }

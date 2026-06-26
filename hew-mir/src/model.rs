@@ -816,6 +816,35 @@ pub struct SupervisorLayout {
     /// dependents; siblings with no dependency relationship preserve
     /// declaration order (Kahn's algorithm queue is FIFO).
     pub children: Vec<SupervisorChildLayout>,
+    /// Construction-time config param (`supervisor App(config: T)`), when the
+    /// supervisor declares one. `None` for a no-config supervisor (the common
+    /// case). Codegen reads the param name + config struct type to:
+    /// 1. give the bootstrap fn a leading config-pointer parameter,
+    /// 2. malloc the supervisor-owned config buffer (size from the config
+    ///    struct's `record_layout`) and memcpy the caller's config value in,
+    /// 3. pass the buffer to each config-init child's init thunk +
+    ///    `hew_supervisor_set_child_init_fn`.
+    ///
+    /// `Some` only when the declaration has a `(...)` clause; supervisors with
+    /// config params but no child that reads `config.field` still carry it so
+    /// codegen knows the bootstrap signature must take (and the spawn site must
+    /// pass) the config value.
+    pub config_param: Option<SupervisorConfigParam>,
+}
+
+/// The construction-time config parameter on a `SupervisorLayout`.
+///
+/// `supervisor App(config: AppConfig)` produces `SupervisorConfigParam {
+/// name: "config", config_ty_name: "AppConfig" }`. Codegen looks up
+/// `config_ty_name` in `record_layouts` to size the config buffer and to GEP
+/// individual config fields inside each child init thunk.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SupervisorConfigParam {
+    /// The config param binding name (e.g. `config`). Matches
+    /// `ChildInitArg::ConfigField.config_param_name`.
+    pub name: String,
+    /// The config struct's type name (e.g. `AppConfig`) for `record_layouts`.
+    pub config_ty_name: String,
 }
 
 /// One child or pool entry on a `SupervisorLayout`. Lifted from

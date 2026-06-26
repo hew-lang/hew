@@ -661,6 +661,16 @@ pub struct HewSupervisor {
     config_buf: *mut c_void,
     /// Size in bytes of `config_buf`. `0` when `config_buf` is null.
     config_size: usize,
+    /// Drop glue for the config struct's OWNED fields (`string`/`bytes`/…),
+    /// run over `config_buf` once at teardown BEFORE the flat `libc::free`.
+    ///
+    /// The config buffer is a flat snapshot of the moved-in config value, so it
+    /// OWNS the config struct's inner owned fields (the thunks only CLONE from
+    /// them, never take ownership). Without this, those inner fields would leak
+    /// at teardown (the flat free reclaims only the wrapper). Codegen registers
+    /// the config struct's `__hew_record_drop_inplace_<T>` here when the config
+    /// has owned fields; `None` for an all-scalar config (nothing to drop).
+    config_drop_fn: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
 /// One parked `await_restart` continuation: the awaiting actor + its readiness
@@ -1577,15 +1587,30 @@ unsafe fn stop_supervisor_owned(sup: *mut HewSupervisor) {
     // After every child actor and spec is dropped above, no live thunk can run,
     // so the buffer has no remaining readers.
     if !s.config_buf.is_null() {
+        // The config buffer is a flat snapshot of the moved-in config value, so
+        // it OWNS the config struct's inner owned fields (`string`/`bytes`/…) —
+        // the thunks only CLONE from them into actor state (the actors'
+        // state_drop_fns release those clones). Run the config struct's
+        // drop-inplace glue here to release the buffer's OWN inner owned fields
+        // BEFORE the flat free; without it those fields leak (the flat free
+        // reclaims only the wrapper). `None` for an all-scalar config (no inner
+        // owned field to drop). No live thunk can run at this point (every child
+        // actor and spec is dropped above), so this is the sole final reader.
+        if let Some(drop_fn) = s.config_drop_fn {
+            // SAFETY: drop_fn is the codegen-emitted
+            // `__hew_record_drop_inplace_<ConfigTy>` for this buffer's config
+            // struct; config_buf points at a fully-initialised instance of that
+            // struct. Runs exactly once (config_buf is freed + nulled below).
+            unsafe { drop_fn(s.config_buf) };
+        }
         // SAFETY: config_buf was a libc::malloc'd buffer adopted (ownership
         // transferred) from codegen via hew_supervisor_add_child_spec /
-        // hew_supervisor_set_child_init_fn. The config struct is BitCopy at the
-        // top level; any owned fields inside it were CLONED into actor state by
-        // the thunks (never aliased), so the actors' own state_drop_fns released
-        // those — this free reclaims only the config wrapper.
+        // hew_supervisor_set_child_init_fn. Inner owned fields were released by
+        // config_drop_fn above; this free reclaims the config wrapper itself.
         unsafe { libc::free(s.config_buf) }; // ALLOCATOR-PAIRING: libc
         s.config_buf = ptr::null_mut();
         s.config_size = 0;
+        s.config_drop_fn = None;
     }
 }
 
@@ -1647,6 +1672,14 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
     //    fields leak — OOM-only, identical to the existing clone path, tolerated
     //    because spawn-failure here implies system-wide OOM and the supervisor
     //    escalates). The restart still fails closed (null new_child below).
+    //    Re-confirmed for the owned config-init thunk (the per-field deep-clone
+    //    path): the thunk-produced wrapper now genuinely carries inner owned
+    //    heap fields (a cloned `string`/`bytes`), so this leg leaks them on an
+    //    adopt OOM — strictly OOM-only, the same bounded leak as the clone
+    //    path. Do NOT add a speculative `state_drop_fn` call on this leg: the
+    //    wrapper layout the drop fn expects is only guaranteed once adopt has
+    //    fully initialised the actor, so dropping a half-adopted wrapper could
+    //    double-free. The bounded OOM leak is the correct fail-closed posture.
     let new_child = if let Some(init_fn) = init_fn {
         // SAFETY: `init_fn` is a codegen-emitted thunk matching the
         // `HewChildInitFn` contract; `config` is either null or the
@@ -2385,6 +2418,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
         pool_specs: Vec::new(),
         config_buf: ptr::null_mut(),
         config_size: 0,
+        config_drop_fn: None,
     });
     Box::into_raw(sup) // ALLOCATOR-PAIRING: GlobalAlloc
 }
@@ -2432,15 +2466,26 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         if s.config_buf.is_null() {
             s.config_buf = sp.config;
             s.config_size = sp.config_size;
-        } else {
+        } else if s.config_buf != sp.config {
+            // Conflicting non-null config pointer: a SECOND, different buffer.
+            // Correct codegen emits ONE config buffer per supervisor (every
+            // config child carries the same pointer), so this is unreachable
+            // from in-tree codegen — debug_assert catches a codegen bug loudly.
+            // In release, fail closed by FREEing the rejected duplicate (it will
+            // never be adopted, so leaking it would be the only alternative).
+            // Safe: the conflict branch only fires for a pointer that is NOT the
+            // adopted buffer, so this cannot double-free the supervisor's buffer.
             debug_assert!(
-                s.config_buf == sp.config,
+                false,
                 "hew_supervisor: child {i} carries a config buffer ({:p}) that differs from \
                  the supervisor's adopted buffer ({:p}); codegen must emit ONE config buffer \
                  per supervisor",
-                sp.config,
-                s.config_buf
+                sp.config, s.config_buf
             );
+            // SAFETY: sp.config is a libc::malloc'd buffer (ALLOCATOR-PAIRING:
+            // libc) distinct from the adopted s.config_buf; freeing the orphan
+            // rejected duplicate is sound.
+            unsafe { libc::free(sp.config) };
         }
     }
 
@@ -4876,14 +4921,21 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         if s.config_buf.is_null() {
             s.config_buf = sp.config;
             s.config_size = sp.config_size;
-        } else {
+        } else if s.config_buf != sp.config {
+            // Conflicting non-null config pointer — unreachable from correct
+            // codegen (one buffer per supervisor). debug_assert in debug; in
+            // release free the rejected duplicate (fail closed, no leak). The
+            // pointer differs from the adopted buffer, so this cannot
+            // double-free it.
             debug_assert!(
-                s.config_buf == sp.config,
+                false,
                 "hew_supervisor_add_child_dynamic: config buffer ({:p}) differs from the \
                  supervisor's adopted buffer ({:p})",
-                sp.config,
-                s.config_buf
+                sp.config, s.config_buf
             );
+            // SAFETY: sp.config is a libc::malloc'd orphan distinct from the
+            // adopted buffer (ALLOCATOR-PAIRING: libc).
+            unsafe { libc::free(sp.config) };
         }
     }
 
@@ -5348,19 +5400,66 @@ pub unsafe extern "C" fn hew_supervisor_set_child_init_fn(
         if s.config_buf.is_null() {
             s.config_buf = config;
             s.config_size = config_size;
-        } else {
+        } else if s.config_buf != config {
+            // Conflicting non-null config pointer — unreachable from correct
+            // codegen (the setter runs after add_child_spec adopted the SAME
+            // buffer). debug_assert in debug; in release free the rejected
+            // duplicate (fail closed, no leak). It differs from the adopted
+            // buffer, so this cannot double-free it.
             debug_assert!(
-                s.config_buf == config,
+                false,
                 "hew_supervisor_set_child_init_fn: child {idx} config buffer ({config:p}) \
                  differs from the supervisor's adopted buffer ({:p}); codegen must emit ONE \
                  config buffer per supervisor",
                 s.config_buf
             );
+            // SAFETY: config is a libc::malloc'd orphan distinct from the
+            // adopted buffer (ALLOCATOR-PAIRING: libc).
+            unsafe { libc::free(config) };
         }
     }
 
     s.child_specs[idx].init_fn = Some(init_fn);
     s.child_specs[idx].config = s.config_buf;
+}
+
+/// Register the config struct's drop-inplace glue so the supervisor releases the
+/// config buffer's OWNED inner fields (`string`/`bytes`/…) at teardown, before
+/// the flat `libc::free` of the buffer.
+///
+/// The config buffer is a flat snapshot of the moved-in config value and OWNS
+/// its inner owned fields (the init thunks only CLONE from them). Without this
+/// drop glue those fields leak at teardown. Codegen calls this once, after the
+/// config buffer is materialised, when the config struct has any owned field.
+/// An all-scalar config never calls it (`config_drop_fn` stays `None`).
+///
+/// Idempotent: re-registration with the same fn is a no-op; a CONFLICTING fn is
+/// a codegen ABI error (one config struct type per supervisor) — `debug_assert`
+/// in debug, last-writer-wins in release (both fns drop the same struct layout,
+/// so neither leaks nor double-frees).
+///
+/// # Safety
+///
+/// - `sup` must be a valid pointer returned by [`hew_supervisor_new`].
+/// - `drop_fn` must be the `__hew_record_drop_inplace_<T>` for the config
+///   struct type whose instance backs `config_buf`.
+#[no_mangle]
+pub unsafe extern "C" fn hew_supervisor_set_config_drop_fn(
+    sup: *mut HewSupervisor,
+    drop_fn: unsafe extern "C" fn(*mut c_void),
+) {
+    if sup.is_null() {
+        return;
+    }
+    // SAFETY: caller guarantees sup is valid.
+    let s = unsafe { &mut *sup };
+    debug_assert!(
+        s.config_drop_fn
+            .is_none_or(|f| std::ptr::fn_addr_eq(f, drop_fn)),
+        "hew_supervisor_set_config_drop_fn: a different config drop fn is already \
+         registered; codegen must register ONE config drop fn per supervisor"
+    );
+    s.config_drop_fn = Some(drop_fn);
 }
 
 // ── Circuit breaker constants for C ABI ────────────────────────────────────────

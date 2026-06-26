@@ -1,26 +1,27 @@
-// Reject fixture: supervised child init arg with a non-scalar type.
+// Reject fixture: supervised child init arg with a non-reproducible type.
 //
-// The supervisor bootstrap byte-copies init args into the state template.
-// Only scalar BitCopy primitives are admitted; owned, alias, user-defined,
-// handle-bearing, generic, and unrecognized types are rejected until the v0.6
-// init-closure restart model.
+// The supervisor bootstrap uses an init-closure restart model (v0.6).
+// Scalar BitCopy primitives and owned string/bytes are admitted (the thunk
+// loads or deep-clones them per incarnation).  Owned collections (Vec,
+// HashMap, HashSet), records, enums, generic, alias, user-defined, and
+// handle types are rejected — their clone-in-thunk codegen is not wired
+// (or is structurally forbidden for handles).
 //
 // Expected diagnostic: E_SUPERVISOR_INIT_ARG_NON_BITCOPY
-// Planned fix: v0.6 init-closure restart model (supervisor restart_fn).
 
-actor Greeter {
-    let name: string;
-    init(name: string) {
-        name = name;
+actor Collector {
+    var items: Vec<i64>;
+    init(items: Vec<i64>) {
+        items = items;
     }
-    receive fn greet() {}
+    receive fn noop() {}
 }
 
 supervisor App {
     strategy: one_for_one;
     intensity: 3 within 60s;
 
-    child g: Greeter(name: "hello");
+    child c: Collector(items: []);
 }
 
 fn main() -> i64 {

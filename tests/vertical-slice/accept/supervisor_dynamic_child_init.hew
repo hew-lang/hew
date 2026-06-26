@@ -1,0 +1,38 @@
+// Proving fixture: the v0.6 init-closure restart model — SCALAR config init.
+//
+// A supervised child's initial state is DERIVED from the supervisor's
+// construction-time config (`child cache: Cache(capacity: config.size)`). The
+// codegen-emitted per-child init thunk reads `config.size` from the
+// supervisor-owned config buffer and stores it into a fresh actor state on the
+// initial spawn (and on every restart). Before C4/C5 this was rejected at the
+// checker (no init-arg-expr typing) and fail-closed at codegen.
+//
+// Teeth: the child reports the config-derived capacity back as the exit code.
+// A sentinel only `config.size` can produce (37) — not a default-zero, not a
+// hard-coded literal — proves the thunk actually loaded the config field. A
+// missing/garbage thunk would return 0 (default) or trap.
+record AppConfig { size: i64 }
+
+actor Cache {
+    var capacity: i64;
+    receive fn get_cap() -> i64 {
+        capacity
+    }
+}
+
+supervisor App(config: AppConfig) {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child cache: Cache(capacity: config.size);
+}
+
+fn main() -> i64 {
+    let cfg = AppConfig { size: 37 };
+    let sup = spawn App(config: cfg);
+    let c = sup.cache;
+    match await c.get_cap() {
+        Ok(v) => v,
+        Err(_) => 0,
+    }
+}

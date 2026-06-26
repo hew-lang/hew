@@ -24735,13 +24735,17 @@ fn check_task_gates(ctx: &mut LowerCtx, program: &Program) {
 /// Discharges the A237 string-fragility pattern (see LESSONS
 /// `string-identifier-fragility-vs-structured-resolution`).
 struct SupervisorRegistry {
-    /// Supervisor names declared at the root program level. Consulted for
-    /// bare-identifier spawn targets (`spawn Sup(args)`).
-    root: std::collections::HashSet<String>,
+    /// Supervisor names declared at the root program level, mapped to whether
+    /// the supervisor declares a construction-time config param (`supervisor
+    /// App(config: T)`). Consulted for bare-identifier spawn targets (`spawn
+    /// Sup(args)`): a config supervisor admits exactly its config arg; a
+    /// no-config supervisor admits none.
+    root: std::collections::HashMap<String, bool>,
     /// Supervisor names declared in each imported module, keyed by the
-    /// module's short name (last path segment). Consulted for module-qualified
-    /// spawn targets (`spawn module.Sup(args)`).
-    by_module: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    /// module's short name (last path segment), mapped to the same
+    /// has-config-param flag. Consulted for module-qualified spawn targets
+    /// (`spawn module.Sup(args)`).
+    by_module: std::collections::HashMap<String, std::collections::HashMap<String, bool>>,
 }
 
 impl SupervisorRegistry {
@@ -24752,7 +24756,7 @@ impl SupervisorRegistry {
             && self
                 .by_module
                 .values()
-                .all(std::collections::HashSet::is_empty)
+                .all(std::collections::HashMap::is_empty)
     }
 }
 
@@ -24761,13 +24765,13 @@ impl SupervisorRegistry {
 /// required to reject `spawn other.MyServiceSup(args)` for supervisors
 /// declared in imported modules.
 fn collect_supervisor_registry(program: &Program) -> SupervisorRegistry {
-    let mut root: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut root: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
     for (item, _) in &program.items {
         if let Item::Supervisor(decl) = item {
-            root.insert(decl.name.clone());
+            root.insert(decl.name.clone(), !decl.params.is_empty());
         }
     }
-    let mut by_module: std::collections::HashMap<String, std::collections::HashSet<String>> =
+    let mut by_module: std::collections::HashMap<String, std::collections::HashMap<String, bool>> =
         std::collections::HashMap::new();
     if let Some(mg) = &program.module_graph {
         for (mod_id, module) in &mg.modules {
@@ -24781,7 +24785,7 @@ fn collect_supervisor_registry(program: &Program) -> SupervisorRegistry {
             let entry = by_module.entry(module_short.to_string()).or_default();
             for (item, _) in &module.items {
                 if let Item::Supervisor(decl) = item {
-                    entry.insert(decl.name.clone());
+                    entry.insert(decl.name.clone(), !decl.params.is_empty());
                 }
             }
         }
@@ -26655,20 +26659,23 @@ fn scan_expr_for_supervisor_spawn(
             // `Expr::FieldAccess` arm below. Discharges A237 / LESSONS
             // `string-identifier-fragility-vs-structured-resolution` and
             // the rev2 independent review finding on module-context threading.
-            let resolved: Option<&str> = match &target.0 {
+            let resolved: Option<(&str, bool)> = match &target.0 {
                 Expr::Identifier(name) => {
                     let set = match current_module {
                         Some(m) => registry.by_module.get(m),
                         None => Some(&registry.root),
                     };
-                    set.and_then(|s| s.get(name).map(String::as_str))
+                    set.and_then(|s| {
+                        s.get_key_value(name)
+                            .map(|(n, has_cfg)| (n.as_str(), *has_cfg))
+                    })
                 }
                 Expr::FieldAccess { object, field } => {
                     if let Expr::Identifier(module) = &object.0 {
-                        registry
-                            .by_module
-                            .get(module)
-                            .and_then(|set| set.get(field).map(String::as_str))
+                        registry.by_module.get(module).and_then(|set| {
+                            set.get_key_value(field)
+                                .map(|(n, has_cfg)| (n.as_str(), *has_cfg))
+                        })
                     } else {
                         // Non-`Identifier` object (e.g. `foo().Sup`) is not a
                         // module-qualified spawn; the checker would already
@@ -26679,19 +26686,34 @@ fn scan_expr_for_supervisor_spawn(
                 }
                 _ => None,
             };
-            if let Some(name) = resolved {
-                if !args.is_empty() {
+            if let Some((name, has_config_param)) = resolved {
+                // A config supervisor (`supervisor App(config: T)`) admits
+                // exactly its config arg: `spawn App(config: value)`. A
+                // no-config supervisor admits none. The gate rejects only the
+                // unsupported shapes — args on a no-config supervisor, or more
+                // than the single config arg on a config supervisor.
+                let admits_config_arg = has_config_param && args.len() == 1;
+                if !args.is_empty() && !admits_config_arg {
+                    let detail = if has_config_param {
+                        format!(
+                            "supervisor `{name}` takes a single construction-time config \
+                             argument; spawn it as `spawn {name}(config: value)` with exactly \
+                             one config value."
+                        )
+                    } else {
+                        format!(
+                            "supervisor `{name}` cannot be spawned with init args: \
+                             supervisors take their child specs declaratively in the \
+                             `supervisor` body, and this supervisor declares no `(config: T)` \
+                             param. Use `spawn {name}` with no arguments."
+                        )
+                    };
                     diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::SupervisorSpawnArgsUnsupported {
                             supervisor_name: name.to_string(),
                         },
                         target.1.clone(),
-                        format!(
-                            "supervisor `{name}` cannot be spawned with init args: \
-                             supervisors take their child specs declaratively in the \
-                             `supervisor` body; spawn-time init args have no defined \
-                             semantics. Use `spawn {name}` with no arguments."
-                        ),
+                        detail,
                     ));
                 }
             }

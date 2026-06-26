@@ -884,6 +884,31 @@ run_accept_expect_status "supervisor_child_after_restart" 7
 # uses the blocking contextless path (hew_supervisor_restart_await_blocking).
 run_accept_expect_status "supervisor_await_restart" 7
 
+# v0.6 init-closure restart model — SCALAR config init. A supervised child's
+# initial state is derived from the supervisor's config
+# (`child cache: Cache(capacity: config.size)`): the codegen init thunk loads
+# `config.size` from the supervisor-owned config buffer into a fresh state. Exit
+# 37 is the exact config-derived capacity — a default-zero or garbage thunk
+# would return 0; the sentinel proves the thunk loaded the real config field.
+run_accept_expect_status "supervisor_dynamic_child_init" 37
+
+# v0.6 init-closure restart model — OWNED config init + restart independence.
+# The owned `string` child state is deep-cloned from config by the init thunk on
+# the initial spawn AND every restart. The live instance mutates its name to "x"
+# (length 1) and crashes; the restarted child re-derives "restart-me" (length 10)
+# from config, fresh and unaliased. Exit 10 proves the restarted owned state is
+# independent of the dead instance — length 1 would mean the mutated state
+# leaked; a trap/garbage length would mean an aliasing UAF.
+run_accept_expect_status "supervisor_owned_child_init_restart" 10
+
+# Config supervisor with literal-only child init args (no config-field reads).
+# Exercises the S1 fix: when no child reads config.field, the config buffer is
+# skipped entirely at codegen time so there is no malloc-without-adopt leak.
+# Exit 0 proves the supervisor and its children start cleanly. The paired e2e
+# oracle (supervisor_literal_only_config_param_no_leak) asserts zero leaks under
+# `leaks --atExit` on macOS.
+run_accept_expect_status "supervisor_literal_only_config_param" 0
+
 # F-04 fungible reference: a supervised-child handle re-resolves to the CURRENT
 # child at each send/ask, so a handle BOUND before a crash and held ACROSS the
 # restart reaches the FRESH child. Binds `let w = sup.w1` before crashing, then

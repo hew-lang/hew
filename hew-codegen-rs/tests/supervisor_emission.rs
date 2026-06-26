@@ -151,6 +151,7 @@ fn supervisor_pipeline() -> IrPipeline {
         max_restarts: Some(3),
         window: Some("60".to_string()),
         bootstrap_symbol: bootstrap_symbol.clone(),
+        config_param: None,
         children: vec![SupervisorChildLayout {
             name: "w1".to_string(),
             actor_name: "Worker".to_string(),
@@ -408,6 +409,7 @@ fn on_crash_pipeline() -> IrPipeline {
         max_restarts: Some(3),
         window: Some("60".to_string()),
         bootstrap_symbol: bootstrap_symbol.clone(),
+        config_param: None,
         children: vec![SupervisorChildLayout {
             name: "c1".to_string(),
             actor_name: "CrasherActor".to_string(),
@@ -687,6 +689,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
         max_restarts: Some(3),
         window: Some("60".to_string()),
         bootstrap_symbol: inner_bootstrap.clone(),
+        config_param: None,
         children: vec![SupervisorChildLayout {
             name: "leaf".to_string(),
             actor_name: "Worker".to_string(),
@@ -710,6 +713,7 @@ fn nested_supervisor_pipeline() -> IrPipeline {
         max_restarts: Some(3),
         window: Some("60".to_string()),
         bootstrap_symbol: root_bootstrap.clone(),
+        config_param: None,
         children: vec![
             SupervisorChildLayout {
                 name: "direct".to_string(),
@@ -895,6 +899,7 @@ fn pool_then_static_pipeline() -> IrPipeline {
         max_restarts: Some(3),
         window: Some("60".to_string()),
         bootstrap_symbol: bootstrap_symbol.clone(),
+        config_param: None,
         children: vec![
             // Pool child FIRST (pool_slots[] space, disjoint from children[]).
             SupervisorChildLayout {

@@ -870,6 +870,16 @@ pub(crate) unsafe fn try_remote_send(
 ) -> c_int {
     with_current_node_read(|guard| {
         if *guard == 0 {
+            // DIAG (env-gated): no current node — runtime not yet started or
+            // already torn down.  This is a distinct failure from routing issues.
+            if std::env::var_os("HEW_DIAG_SEND").is_some() {
+                // SAFETY: hew_now_ms has no preconditions.
+                let now_ms = unsafe { crate::io_time::hew_now_ms() };
+                eprintln!(
+                    "[DIAG node-send] t={now_ms}ms FAIL path=no-current-node \
+                     target_pid={target_pid:#x} rc=-1"
+                );
+            }
             return -1;
         }
         let node = *guard as *mut HewNode;
@@ -2477,6 +2487,13 @@ fn diag_send_log(
 /// - `node` must be valid.
 /// - `payload` must be valid for `payload_len` bytes, or null when len is 0.
 /// - `dispatch` is an opaque codec key, never dereferenced.
+// DIAG instrumentation for the Linux put-hello-send-error investigation adds
+// several env-gated eprintln! blocks; suppress the line-count lint for this
+// throwaway diag branch.
+#[allow(
+    clippy::too_many_lines,
+    reason = "diag instrumentation blocks are throwaway; function will shrink on cleanup"
+)]
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_send(
     node: *mut HewNode,
@@ -2498,6 +2515,24 @@ pub unsafe extern "C" fn hew_node_send(
 
     let target_node_id = crate::pid::hew_pid_node(target_pid);
     if target_node_id == 0 || target_node_id == node.node_id {
+        // DIAG (env-gated): hew_node_send classified this as a self/local send
+        // (target_node_id == 0 or == our node_id).  On the failing Linux pair
+        // this fires when the remote server's node-id collides with ours — the
+        // call recurses back into hew_actor_send_by_id which then falls through
+        // to the local-misclassified -1.  `target_node_id == node.node_id` with
+        // a non-local actor is the collision fingerprint.
+        if std::env::var_os("HEW_DIAG_SEND").is_some() {
+            // SAFETY: hew_now_ms has no preconditions.
+            let now_ms = unsafe { crate::io_time::hew_now_ms() };
+            eprintln!(
+                "[DIAG node-send] t={now_ms}ms path=self-or-local-node \
+                 self={} target_node={target_node_id} target_pid={target_pid:#x} \
+                 (target_node==0:{} target_node==self:{})",
+                node.node_id,
+                target_node_id == 0,
+                target_node_id == node.node_id,
+            );
+        }
         // SAFETY: actor send API handles null payload when len is 0.
         return unsafe {
             crate::actor::hew_actor_send_by_id(
@@ -2545,10 +2580,22 @@ pub unsafe extern "C" fn hew_node_send(
             )
         };
         if bytes.is_null() {
-            set_last_error(format!(
+            let err_msg = format!(
                 "cross-node send rejected: no serialization codec registered for \
                  msg_type={msg_type}; the payload cannot cross the node boundary safely"
-            ));
+            );
+            // DIAG (env-gated): serialization codec missing — logs msg_type and
+            // the last error so the obelisk run pinpoints the exact codec gap.
+            if std::env::var_os("HEW_DIAG_SEND").is_some() {
+                // SAFETY: hew_now_ms has no preconditions.
+                let now_ms = unsafe { crate::io_time::hew_now_ms() };
+                eprintln!(
+                    "[DIAG serialize] t={now_ms}ms FAIL path=encode-payload-null \
+                     target_pid={target_pid:#x} target_node={target_node_id} \
+                     msg_type={msg_type} err=\"{err_msg}\" rc=-1"
+                );
+            }
+            set_last_error(err_msg);
             return -1;
         }
         Some((bytes, out_len))
@@ -2564,6 +2611,19 @@ pub unsafe extern "C" fn hew_node_send(
     )
     .is_none()
     {
+        // DIAG (env-gated): validate_cross_node_send_params rejected the send.
+        // With literal-arg SerializedCrossNode + CANCEL_TOKEN_NONE this should
+        // never fire; if it does, something has changed in the call sites.
+        if std::env::var_os("HEW_DIAG_SEND").is_some() {
+            // SAFETY: hew_now_ms has no preconditions.
+            let now_ms = unsafe { crate::io_time::hew_now_ms() };
+            let last_err = crate::stream_error::take_last_error().unwrap_or_default();
+            eprintln!(
+                "[DIAG serialize] t={now_ms}ms FAIL path=validate-cross-node-rejected \
+                 target_pid={target_pid:#x} target_node={target_node_id} \
+                 msg_type={msg_type} err=\"{last_err}\" rc=-1"
+            );
+        }
         if let Some((bytes, _)) = serialized {
             // SAFETY: bytes came from encode_payload (libc::malloc).
             unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
@@ -2592,17 +2652,29 @@ pub unsafe extern "C" fn hew_node_send(
         // SAFETY: bytes came from encode_payload (libc::malloc).
         unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
     }
-    // DIAG (env-gated): if connmgr_send returned -1 but we had route-ok above,
-    // log it here. The specific failure sub-path (no-active-conn vs socket-write-error)
-    // is already logged inside hew_connmgr_send; this line ties it back to the send call.
-    if rc < 0 && std::env::var_os("HEW_DIAG_SEND").is_some() {
+    // DIAG (env-gated): log the final connmgr outcome so the obelisk log shows
+    // exactly whether we reached and completed the connmgr-send step.  On the
+    // failing put-hello pair we expect to NEVER reach this code (the -1 fires
+    // above in the actor-send misclassification branch, before hew_node_send is
+    // entered, or inside the self-or-local-node recursion).  If this line DOES
+    // fire with rc=-1, the specific sub-path is already tagged inside
+    // hew_connmgr_send (no-active-conn-for-node / socket-write-error).
+    if std::env::var_os("HEW_DIAG_SEND").is_some() {
         // SAFETY: hew_now_ms has no preconditions.
         let now_ms = unsafe { crate::io_time::hew_now_ms() };
-        eprintln!(
-            "[DIAG send] t={now_ms}ms FAIL path=connmgr-send-error \
-             self={} target_node={target_node_id} conn_id={conn_id}",
-            node.node_id
-        );
+        if rc < 0 {
+            eprintln!(
+                "[DIAG node-send] t={now_ms}ms FAIL path=connmgr-send-error \
+                 self={} target_node={target_node_id} conn_id={conn_id} rc={rc}",
+                node.node_id
+            );
+        } else {
+            eprintln!(
+                "[DIAG node-send] t={now_ms}ms path=success \
+                 self={} target_node={target_node_id} conn_id={conn_id} rc={rc}",
+                node.node_id
+            );
+        }
     }
     rc
 }

@@ -3055,6 +3055,23 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
     // two are mutually exclusive: this send either pins before the freer
     // untracks (freer waits) or the freer untracks before this map lookup
     // (lookup returns None, no pin, no UAF).
+
+    // DIAG (env-gated, HEW_DIAG_SEND=1): log entry state so the next obelisk
+    // run shows exactly which classification branch fires for the failing
+    // put-hello tell.  All tags use prefix `[DIAG actor-send]` for grep.
+    let diag_active = std::env::var_os("HEW_DIAG_SEND").is_some();
+    if diag_active {
+        // SAFETY: hew_now_ms has no preconditions.
+        let now_ms = unsafe { crate::io_time::hew_now_ms() };
+        let is_local = crate::pid::hew_pid_is_local(actor_id);
+        let local_node = crate::pid::hew_pid_local_node();
+        let pid_node = crate::pid::hew_pid_node(actor_id);
+        eprintln!(
+            "[DIAG actor-send] t={now_ms}ms ENTRY target_pid={actor_id:#x} pid_node={pid_node} \
+             is_local={is_local} local_node={local_node}"
+        );
+    }
+
     let sent = live_actors::with_actor_send_by_id(actor_id, |actor| {
         // SAFETY: `actor` is pinned live by `with_actor_send_by_id`;
         // the allocation is guaranteed valid for the duration of this
@@ -3062,17 +3079,70 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
         unsafe { actor_send_internal(actor, msg_type, data, size) }
     });
     if sent == Some(true) {
+        if diag_active {
+            // SAFETY: hew_now_ms has no preconditions.
+            let now_ms = unsafe { crate::io_time::hew_now_ms() };
+            eprintln!(
+                "[DIAG actor-send] t={now_ms}ms path=local-delivered target_pid={actor_id:#x} rc=0"
+            );
+        }
         return 0;
+    }
+
+    // `sent == Some(false)` means the actor IS in LIVE_ACTORS but the internal
+    // send failed (e.g. channel full).  This is a distinct failure from None
+    // (actor not local).  Log it so we can distinguish it from the fall-through.
+    if sent == Some(false) && diag_active {
+        // SAFETY: hew_now_ms has no preconditions.
+        let now_ms = unsafe { crate::io_time::hew_now_ms() };
+        eprintln!(
+            "[DIAG actor-send] t={now_ms}ms FAIL path=local-send-failed target_pid={actor_id:#x} rc=-1"
+        );
+        return -1;
     }
 
     // Actor not found locally (or send failed). If the PID belongs to a remote node,
     // route through the distributed node infrastructure (which serializes the
     // payload under the `(dispatch, msg_type)` codec key).
-    if crate::pid::hew_pid_is_local(actor_id) == 0 {
+    let is_local_check = crate::pid::hew_pid_is_local(actor_id);
+    if is_local_check == 0 {
+        if diag_active {
+            // SAFETY: hew_now_ms has no preconditions.
+            let now_ms = unsafe { crate::io_time::hew_now_ms() };
+            eprintln!(
+                "[DIAG actor-send] t={now_ms}ms path=remote-routing target_pid={actor_id:#x}"
+            );
+        }
         // SAFETY: data validity is guaranteed by caller contract.
-        return unsafe {
-            crate::hew_node::try_remote_send(actor_id, dispatch, msg_type, data, size)
-        };
+        let rc =
+            unsafe { crate::hew_node::try_remote_send(actor_id, dispatch, msg_type, data, size) };
+        if diag_active {
+            // SAFETY: hew_now_ms has no preconditions.
+            let now_ms = unsafe { crate::io_time::hew_now_ms() };
+            eprintln!(
+                "[DIAG actor-send] t={now_ms}ms path=remote-routing-done target_pid={actor_id:#x} rc={rc}"
+            );
+        }
+        return rc;
+    }
+
+    // Branch (C): local lookup missed (None) AND hew_pid_is_local says local.
+    // This is the misclassification fall-through: the PID's node-id equals the
+    // local node-id (e.g. FNV-16 collision between two OS PIDs), so we never
+    // attempted remote routing.  This path is the leading suspect for the
+    // put-hello-send-error on Linux.
+    //
+    // DIAG: always log when HEW_DIAG_SEND is set — this is the "smoking gun" path.
+    if diag_active {
+        // SAFETY: hew_now_ms has no preconditions.
+        let now_ms = unsafe { crate::io_time::hew_now_ms() };
+        let local_node = crate::pid::hew_pid_local_node();
+        let pid_node = crate::pid::hew_pid_node(actor_id);
+        eprintln!(
+            "[DIAG actor-send] t={now_ms}ms FAIL path=local-misclassified \
+             target_pid={actor_id:#x} pid_node={pid_node} local_node={local_node} rc=-1 \
+             (pid_node==local_node collision; remote routing skipped)"
+        );
     }
     -1
 }

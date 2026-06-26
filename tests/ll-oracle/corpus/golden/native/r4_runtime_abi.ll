@@ -13,7 +13,6 @@ source_filename = "r4_runtime_abi"
 @str_lit.4 = private unnamed_addr constant [6 x i8] c"hello\00", align 1
 @str_lit.5 = private unnamed_addr constant [7 x i8] c" world\00", align 1
 
-declare void @hew_sleep_ms(i64)
 
 declare void @hew_exit(i64)
 

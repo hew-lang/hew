@@ -173,7 +173,7 @@ fn main() -> () [conv=default]
   locals:
     _0: LocalPid<Inbox>
     _1: i64
-    _2: i64
+    _2: duration
   bb0:
     stmt: bind BindingId(9) i site=SiteId(53) ty=LocalPid<Inbox>
     stmt: use BindingId(9) i site=SiteId(55) ty=LocalPid<Inbox> intent=Read
@@ -182,8 +182,8 @@ fn main() -> () [conv=default]
     send actor0[msg=625133102] _1 alias=Copy -> bb1
   bb1:
     stmt: eval site=SiteId(54) ty=()
-    _2 = const.i64 200
-    call sleep_ms(_2) -> bb2
+    _2 = const.duration 200000000ns
+    call sleep(_2) -> bb2
   bb2:
     stmt: eval site=SiteId(57) ty=()
     return

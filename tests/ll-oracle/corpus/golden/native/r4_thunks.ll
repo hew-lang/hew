@@ -6,7 +6,6 @@ source_filename = "r4_thunks"
 %__hew_closure_env_main_0 = type {}
 %__hew_closure_env_main_1 = type { i64, i64 }
 
-declare void @hew_sleep_ms(i64)
 
 declare void @hew_exit(i64)
 

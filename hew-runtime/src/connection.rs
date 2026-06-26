@@ -2017,24 +2017,6 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         return -1;
     };
 
-    // Join the inbound peer into cluster membership now that the handshake has
-    // revealed its node_id, BEFORE spawning the reader thread and publishing the
-    // connection. `publish_connection_established` (below) only installs the
-    // routing-table route when the peer is already an ALIVE member; on an
-    // accepting node there is otherwise no `hew_cluster_join` for the inbound
-    // peer until SWIM gossip happens to arrive, leaving the symmetric race the
-    // outbound path closes in `hew_node_connect`. The peer's listen address is
-    // not carried in the handshake, so we join with an empty address — an empty
-    // addr leaves `members[].addr` untouched, so a later gossip upsert carrying
-    // the real address fills it in without this placeholder clobbering it.
-    // `hew_cluster_join` is idempotent (upsert keyed on node_id at the same
-    // incarnation), so this does not double-add or fight a later upsert.
-    if !mgr.cluster.is_null() && peer_hs.node_id != 0 {
-        // SAFETY: cluster pointer is valid when non-null; c"" is a valid C string.
-        let _ =
-            unsafe { crate::cluster::hew_cluster_join(mgr.cluster, peer_hs.node_id, c"".as_ptr()) };
-    }
-
     #[cfg(feature = "encryption")]
     let skip_noise = {
         #[cfg(feature = "quic")]

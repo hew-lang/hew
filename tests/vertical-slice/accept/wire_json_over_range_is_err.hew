@@ -1,0 +1,15 @@
+// Validation (FAIL CLOSED, BOUNDARY): `from_json` on a value that parses as JSON
+// but overflows a narrow integer field (`i8` from 300) returns `Err`, never a
+// truncated or wrapped value. The CBOR decode walk's range check is the
+// fail-closed gate; the bridge surfaces its failure as `Err`. Exits 42 via Err.
+#[wire]
+struct Narrow {
+    v: i8 @1,
+}
+
+fn main() -> i64 {
+    match Narrow.from_json("{\"v\":300}") {
+        Ok(_) => 1,
+        Err(_) => 42,
+    }
+}

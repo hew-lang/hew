@@ -1,0 +1,17 @@
+// Validation: a `#[wire]` struct round-trips through YAML text. `to_yaml`
+// produces a YAML document the bridge can re-parse via `from_yaml` back into an
+// equal value. The recovered fields sum to 42.
+#[wire]
+struct Point {
+    x: i64 @1,
+    y: i64 @2,
+}
+
+fn main() -> i64 {
+    let p = Point { x: 40, y: 2 };
+    let y = p.to_yaml();
+    match Point.from_yaml(y) {
+        Ok(back) => back.x + back.y,
+        Err(_) => 1,
+    }
+}

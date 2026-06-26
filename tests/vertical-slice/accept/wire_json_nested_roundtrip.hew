@@ -1,0 +1,25 @@
+// Validation: a `#[wire]` struct with nested wire-struct fields round-trips
+// through JSON as nested objects. The descriptor recurses into the nested type,
+// so each level maps tags to names correctly. The recovered inner fields sum to
+// 42 (1 + 2 + 5 + 6 = 14 → no; chosen so the sum is 42).
+#[wire]
+struct Point {
+    x: i64 @1,
+    y: i64 @2,
+}
+
+#[wire]
+struct Line {
+    from: Point @1,
+    to: Point @2,
+}
+
+fn main() -> i64 {
+    let l = Line { from: Point { x: 10, y: 11 }, to: Point { x: 9, y: 12 } };
+    let j = l.to_json();
+    if j != "{\"from\":{\"x\":10,\"y\":11},\"to\":{\"x\":9,\"y\":12}}" { return 1; }
+    match Line.from_json(j) {
+        Ok(b) => b.from.x + b.from.y + b.to.x + b.to.y,
+        Err(_) => 2,
+    }
+}

@@ -1,0 +1,24 @@
+// Validation: a `#[wire]` struct round-trips through JSON text. `to_json`
+// produces the exact tag-keyed-by-name object; `from_json` parses it back into
+// an equal value. A wrong key name, dropped field, or mis-parse changes the exit
+// code; the success path returns 42.
+#[wire]
+struct Point {
+    x: i64 @1,
+    y: i64 @2,
+}
+
+fn main() -> i64 {
+    let p = Point { x: 3, y: 4 };
+    let j = p.to_json();
+    // Exact JSON text, keyed by field NAME (not the @N tag).
+    if j != "{\"x\":3,\"y\":4}" { return 1; }
+    match Point.from_json(j) {
+        Ok(back) => {
+            if back.x != 3 { return 2; }
+            if back.y != 4 { return 3; }
+            42
+        }
+        Err(_) => 4,
+    }
+}

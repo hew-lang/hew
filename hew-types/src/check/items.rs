@@ -190,21 +190,17 @@ impl Checker {
     }
 
     /// Reject supervised child init args unless the actor init-parameter type is
-    /// provably one of the checker's `BitCopy` scalar primitives.
+    /// reproducible by the init-closure restart thunk.
     ///
-    /// The v0.6 init-closure restart model makes the SCALAR config path sound
-    /// and dynamic — a `child cache: Cache(capacity: config.size)` where
-    /// `capacity` is a scalar is re-produced by the init thunk on every restart.
-    /// OWNED init args (`string`/`Vec`/...) are also sound under the init-closure
-    /// model in principle (the thunk re-clones them per incarnation), but their
-    /// per-field owned-clone-in-thunk codegen is follow-up work; until it lands,
-    /// owned init args stay walled here so the system fails CLOSED rather than
-    /// accepting a surface codegen cannot yet emit.
-    ///
-    /// WHEN-OBSOLETE: when the init thunk emits per-field owned deep-clones for
-    /// `string`/`Vec`/... config init args; flip this predicate to
-    /// `ty_is_supervisor_init_reproducible` (scalar OR Clone-able owned, minus
-    /// `#[resource]` handles) and flip the owned reject fixtures to accept.
+    /// The v0.6 init-closure restart model re-runs every init arg on each
+    /// incarnation: a scalar `config.field` is re-loaded and an owned
+    /// `string`/`bytes` field is deep-cloned per restart, so each child gets a
+    /// fresh, unaliased owned value. `ty_is_supervisor_init_reproducible` admits
+    /// scalars together with `string` and `bytes` (the types the thunk has a
+    /// per-field clone for). Owned collections, records, enums, generic, alias,
+    /// user-defined, and `#[resource]` handle types stay walled (fail-closed):
+    /// their clone-in-thunk codegen is not wired (collections/records) or is
+    /// structurally forbidden (re-cloning a handle would alias a live resource).
     fn check_supervisor_init_args_bitcopy(&mut self, sd: &SupervisorDecl, _span: &Span) {
         for child in &sd.children {
             // Pool children are spawned dynamically — their init args route
@@ -236,15 +232,12 @@ impl Checker {
                 // The wall is keyed on the actor init-PARAMETER type: that type
                 // is what the child's state field stores, so it is what the
                 // init-closure thunk must re-produce per incarnation. A scalar
-                // param (`capacity: i64`) is reproducible by a plain load whether
-                // the arg is a literal or `config.size`; an owned param
-                // (`name: string`) stays walled until the per-field owned-clone
-                // thunk lands (S3) — at which point this predicate flips to
-                // `ty_is_supervisor_init_reproducible` (see the WHEN-OBSOLETE
-                // note above). The arg-EXPRESSION typing that `config.field`
-                // requires happens in `check_supervisor_init_args`' synthesis
-                // pass; this wall is the param-type gate, unchanged in shape.
-                if !ty_is_supervisor_init_bitcopy_scalar(&param.ty) {
+                // param (`capacity: i64`) is reproducible by a load; an owned
+                // `string`/`bytes` by a per-field deep-clone; everything else
+                // stays walled (fail-closed). The arg-EXPRESSION typing that
+                // `config.field` requires happens in `check_supervisor_init_args`'
+                // synthesis pass; this is the param-type gate.
+                if !ty_is_supervisor_init_reproducible(&param.ty) {
                     self.errors.push(TypeError::new(
                         TypeErrorKind::InvalidOperation,
                         param.span.clone(),
@@ -252,12 +245,12 @@ impl Checker {
                             "E_SUPERVISOR_INIT_ARG_NON_BITCOPY: supervisor `{}` child `{}` \
                              (actor `{}`) passes init arg `{}` of type `{}`; supervised actor \
                              init args are re-produced by the init-closure restart model on \
-                             every restart, and the per-field owned-clone path is follow-up \
-                             work, so for now only scalar BitCopy \
-                             primitives (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, \
-                             `f32`, `f64`, `bool`, `char`) are admitted. Owned, generic, alias, \
-                             user-defined, and handle types are rejected until the owned init \
-                             thunk lands",
+                             every restart. Scalar primitives (`i8`..`u64`, `f32`, `f64`, \
+                             `bool`, `char`) and owned `string` / `bytes` are admitted (the \
+                             thunk loads or deep-clones them per incarnation). Owned \
+                             collections, records, enums, generic, alias, user-defined, and \
+                             `#[resource]` handle types are rejected — their clone-in-thunk \
+                             codegen is not wired (or is structurally forbidden for handles)",
                             sd.name,
                             child.name,
                             child.actor_type,
@@ -322,6 +315,14 @@ impl Checker {
     /// This check is a hard compile error per R89 ("stop the compile until we
     /// can address it").  Full fix (`init_state_clone_fn`) is tracked as
     /// v0.5.0.1 P0.
+    ///
+    /// EXEMPTION (v0.6 init-closure restart model): a child whose owned field is
+    /// supplied by a REPRODUCIBLE init arg (`name: config.label` where `name` is
+    /// a `string`) takes the init-thunk path — codegen produces the field by a
+    /// per-incarnation deep-clone, not a byte-copy template. That is exactly the
+    /// structural fix this wall flags as deferred, so such a field is no longer a
+    /// UAF hazard and is exempt. Owned fields NOT covered by a reproducible init
+    /// arg still byte-copy and stay walled.
     fn check_supervisor_permanent_owned_heap(&mut self, sd: &SupervisorDecl, span: &Span) {
         for child in &sd.children {
             // Pool children are dynamically spawned, not restarted from a
@@ -345,24 +346,54 @@ impl Checker {
                 continue;
             }
 
+            // Init params for the child's actor, used to resolve whether an init
+            // arg covering an owned field is reproducible (init-thunk path).
+            let init_params = self.actor_init_params.get(&child.actor_type).cloned();
+
             for (field_name, field_ty) in &type_def.fields {
-                if ty_is_known_owned_heap(field_ty) {
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::InvalidOperation,
-                        span.clone(),
-                        format!(
-                            "E_SUPERVISOR_PERMANENT_OWNED_HEAP: supervisor `{}` child `{}` \
-                             (actor `{}`) has field `{}` of type `{}` which is an owned-heap \
-                             type; restarting a permanent child byte-copies init_state, \
-                             aliasing the heap pointer from the crashed actor and causing a \
-                             use-after-free on the next state_drop_fn call — use \
-                             `restart: transient` or `restart: temporary`, or remove owned-heap \
-                             fields from the actor state; full fix (init_state_clone_fn) tracked \
-                             as v0.5.0.1 P0",
-                            sd.name, child.name, child.actor_type, field_name, field_ty
-                        ),
-                    ));
+                if !ty_is_known_owned_heap(field_ty) {
+                    continue;
                 }
+                // Exempt the field if the child supplies a reproducible init arg
+                // for it: the init thunk deep-clones it per incarnation, so the
+                // byte-copy aliasing hazard does not apply. An arg `name`
+                // resolves either to a state field of the same name or to an
+                // init param of that name; both route the value into the field.
+                let covered_by_reproducible_init = child.args.iter().any(|(arg_name, _)| {
+                    if arg_name != field_name {
+                        return false;
+                    }
+                    // The arg names this field. It is reproducible if the field
+                    // type itself is reproducible (state-field arg) or the
+                    // matching init param type is (init-param arg).
+                    if ty_is_supervisor_init_reproducible(field_ty) {
+                        return true;
+                    }
+                    init_params.as_ref().is_some_and(|params| {
+                        params
+                            .iter()
+                            .find(|p| p.name == *arg_name)
+                            .is_some_and(|p| ty_is_supervisor_init_reproducible(&p.ty))
+                    })
+                });
+                if covered_by_reproducible_init {
+                    continue;
+                }
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span.clone(),
+                    format!(
+                        "E_SUPERVISOR_PERMANENT_OWNED_HEAP: supervisor `{}` child `{}` \
+                         (actor `{}`) has field `{}` of type `{}` which is an owned-heap \
+                         type; restarting a permanent child byte-copies init_state, \
+                         aliasing the heap pointer from the crashed actor and causing a \
+                         use-after-free on the next state_drop_fn call — use \
+                         `restart: transient` or `restart: temporary`, or remove owned-heap \
+                         fields from the actor state; full fix (init_state_clone_fn) tracked \
+                         as v0.5.0.1 P0",
+                        sd.name, child.name, child.actor_type, field_name, field_ty
+                    ),
+                ));
             }
         }
     }
@@ -1954,6 +1985,29 @@ fn ty_is_supervisor_init_bitcopy_scalar(ty: &Ty) -> bool {
             | Ty::Bool
             | Ty::Char
     )
+}
+
+/// Whether a supervised child init-param type can be re-produced by the
+/// init-closure restart thunk on every incarnation.
+///
+/// Admits:
+/// - every scalar `BitCopy` primitive (re-produced by a plain load), and
+/// - the owned heap types the init thunk has a per-field deep-clone for:
+///   `string` (allocating clone) and `bytes` (refcounted clone). A restarted
+///   child gets a fresh, unaliased owned value per incarnation.
+///
+/// Rejects (stays walled, fail-closed):
+/// - owned collections (`Vec`/`HashMap`/`HashSet`), user records, enums, and
+///   tuples — their per-field clone-in-thunk codegen is not yet wired, so
+///   admitting them would reach a codegen path that cannot deep-clone;
+/// - `#[resource]` handle types — re-cloning a handle per restart would alias a
+///   live resource (double-close / UAF). Handles are never reproducible.
+///
+/// WHEN-OBSOLETE: when the init thunk grows per-field clone for collections /
+/// records / enums (reusing the actor state-clone spine), widen this predicate
+/// to those kinds; `#[resource]` handles stay rejected permanently.
+fn ty_is_supervisor_init_reproducible(ty: &Ty) -> bool {
+    ty_is_supervisor_init_bitcopy_scalar(ty) || matches!(ty, Ty::String | Ty::Bytes)
 }
 
 impl Checker {

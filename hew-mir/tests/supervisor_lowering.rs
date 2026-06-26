@@ -599,14 +599,14 @@ fn scalar_config_field_init_arg_lowers_to_resolved_config_field() {
     }
 }
 
-/// An OWNED config field (`config.name: string`) is walled off at the checker
-/// (still scalar-only) and, as defence-in-depth, fails closed at MIR if it ever
-/// reaches lowering — the owned-clone init thunk is follow-up work.
+/// An OWNED `string` config field (`config.label: string`) lowers to a
+/// `ChildInitArg::ConfigField { owned: true }` — the discriminator the codegen
+/// init thunk reads to deep-clone the field per incarnation.
 #[test]
-fn owned_config_field_init_arg_is_walled_at_checker() {
-    // The checker rejects the owned `string` init param before MIR, so the
-    // program never lowers cleanly. Assert the checker error fires.
-    let parsed = hew_parser::parse(
+fn owned_string_config_field_init_arg_lowers_to_owned_config_field() {
+    use hew_mir::ChildInitArg;
+
+    let pipeline = lower_module_from_source(
         r"
         record AppConfig { label: string }
 
@@ -623,6 +623,55 @@ fn owned_config_field_init_arg_is_walled_at_checker() {
         }
         ",
     );
+
+    let app = pipeline
+        .supervisor_layouts
+        .iter()
+        .find(|s| s.name == "App")
+        .expect("App supervisor layout");
+    let child = app
+        .children
+        .iter()
+        .find(|c| c.name == "t")
+        .expect("t child layout");
+    let (_, init_arg) = child
+        .init_state_fields
+        .iter()
+        .find(|(f, _)| f == "name")
+        .expect("name init field present");
+    match init_arg {
+        ChildInitArg::ConfigField {
+            field_ty, owned, ..
+        } => {
+            assert!(owned, "an owned `string` config field must lower as owned");
+            assert_eq!(*field_ty, ResolvedTy::String);
+        }
+        other => panic!("expected an owned ConfigField init arg, got {other:?}"),
+    }
+}
+
+/// An owned COLLECTION config field (`config.items: Vec<i64>`) stays walled at
+/// the checker — the per-field collection clone-in-thunk is not yet wired, so it
+/// fails closed rather than reaching a codegen path that cannot deep-clone it.
+#[test]
+fn owned_collection_config_field_init_arg_is_walled_at_checker() {
+    let parsed = hew_parser::parse(
+        r"
+        record AppConfig { items: Vec<i64> }
+
+        actor Holder {
+            let data: Vec<i64>;
+            init(data: Vec<i64>) {
+                data = data;
+            }
+            receive fn read() {}
+        }
+
+        supervisor App(config: AppConfig) {
+            child h: Holder(data: config.items)
+        }
+        ",
+    );
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",
@@ -635,7 +684,7 @@ fn owned_config_field_init_arg_is_walled_at_checker() {
             .errors
             .iter()
             .any(|e| e.message.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY")),
-        "owned `string` init arg must be walled at the checker until the owned init thunk lands; \
+        "an owned `Vec` config init arg must stay walled until its clone-in-thunk codegen lands; \
          errors: {:#?}",
         tc_output.errors
     );

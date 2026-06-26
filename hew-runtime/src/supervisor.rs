@@ -2432,15 +2432,26 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         if s.config_buf.is_null() {
             s.config_buf = sp.config;
             s.config_size = sp.config_size;
-        } else {
+        } else if s.config_buf != sp.config {
+            // Conflicting non-null config pointer: a SECOND, different buffer.
+            // Correct codegen emits ONE config buffer per supervisor (every
+            // config child carries the same pointer), so this is unreachable
+            // from in-tree codegen — debug_assert catches a codegen bug loudly.
+            // In release, fail closed by FREEing the rejected duplicate (it will
+            // never be adopted, so leaking it would be the only alternative).
+            // Safe: the conflict branch only fires for a pointer that is NOT the
+            // adopted buffer, so this cannot double-free the supervisor's buffer.
             debug_assert!(
-                s.config_buf == sp.config,
+                false,
                 "hew_supervisor: child {i} carries a config buffer ({:p}) that differs from \
                  the supervisor's adopted buffer ({:p}); codegen must emit ONE config buffer \
                  per supervisor",
-                sp.config,
-                s.config_buf
+                sp.config, s.config_buf
             );
+            // SAFETY: sp.config is a libc::malloc'd buffer (ALLOCATOR-PAIRING:
+            // libc) distinct from the adopted s.config_buf; freeing the orphan
+            // rejected duplicate is sound.
+            unsafe { libc::free(sp.config) };
         }
     }
 
@@ -4876,14 +4887,21 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         if s.config_buf.is_null() {
             s.config_buf = sp.config;
             s.config_size = sp.config_size;
-        } else {
+        } else if s.config_buf != sp.config {
+            // Conflicting non-null config pointer — unreachable from correct
+            // codegen (one buffer per supervisor). debug_assert in debug; in
+            // release free the rejected duplicate (fail closed, no leak). The
+            // pointer differs from the adopted buffer, so this cannot
+            // double-free it.
             debug_assert!(
-                s.config_buf == sp.config,
+                false,
                 "hew_supervisor_add_child_dynamic: config buffer ({:p}) differs from the \
                  supervisor's adopted buffer ({:p})",
-                sp.config,
-                s.config_buf
+                sp.config, s.config_buf
             );
+            // SAFETY: sp.config is a libc::malloc'd orphan distinct from the
+            // adopted buffer (ALLOCATOR-PAIRING: libc).
+            unsafe { libc::free(sp.config) };
         }
     }
 
@@ -5348,14 +5366,22 @@ pub unsafe extern "C" fn hew_supervisor_set_child_init_fn(
         if s.config_buf.is_null() {
             s.config_buf = config;
             s.config_size = config_size;
-        } else {
+        } else if s.config_buf != config {
+            // Conflicting non-null config pointer — unreachable from correct
+            // codegen (the setter runs after add_child_spec adopted the SAME
+            // buffer). debug_assert in debug; in release free the rejected
+            // duplicate (fail closed, no leak). It differs from the adopted
+            // buffer, so this cannot double-free it.
             debug_assert!(
-                s.config_buf == config,
+                false,
                 "hew_supervisor_set_child_init_fn: child {idx} config buffer ({config:p}) \
                  differs from the supervisor's adopted buffer ({:p}); codegen must emit ONE \
                  config buffer per supervisor",
                 s.config_buf
             );
+            // SAFETY: config is a libc::malloc'd orphan distinct from the
+            // adopted buffer (ALLOCATOR-PAIRING: libc).
+            unsafe { libc::free(config) };
         }
     }
 

@@ -27900,9 +27900,23 @@ fn assert_supervisor_init_arg_non_bitcopy(source: &str, param_type_source: &str)
     );
 }
 
+fn assert_supervisor_init_arg_admitted(source: &str) {
+    let output = check_source(source);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY")),
+        "init arg must be admitted by the init-closure reproducibility wall; errors: {:#?}",
+        output.errors
+    );
+}
+
 #[test]
-fn supervisor_init_arg_string_rejects() {
-    assert_supervisor_init_arg_non_bitcopy(
+fn supervisor_init_arg_string_admitted() {
+    // An owned `string` init arg is reproducible: the init thunk allocating-clones
+    // it per incarnation, so a restart gets a fresh, unaliased value.
+    assert_supervisor_init_arg_admitted(
         r#"
         actor Greeter {
             let name: string;
@@ -27916,7 +27930,6 @@ fn supervisor_init_arg_string_rejects() {
             child g: Greeter(name: "hello");
         }
         "#,
-        "string",
     );
 }
 
@@ -27941,8 +27954,10 @@ fn supervisor_init_arg_vec_rejects() {
 }
 
 #[test]
-fn supervisor_init_arg_bytes_rejects() {
-    assert_supervisor_init_arg_non_bitcopy(
+fn supervisor_init_arg_bytes_admitted() {
+    // Owned `bytes` is reproducible: the init thunk refcount-bump-clones it per
+    // incarnation (the config buffer + the fresh state share a counted ref).
+    assert_supervisor_init_arg_admitted(
         r"
         actor Payload {
             let data: bytes;
@@ -27956,7 +27971,6 @@ fn supervisor_init_arg_bytes_rejects() {
             child p: Payload(data: []);
         }
         ",
-        "bytes",
     );
 }
 
@@ -28023,8 +28037,10 @@ fn supervisor_init_arg_record_wrapping_vec_rejects() {
 }
 
 #[test]
-fn supervisor_init_arg_alias_of_string_rejects() {
-    assert_supervisor_init_arg_non_bitcopy(
+fn supervisor_init_arg_alias_of_string_admitted() {
+    // A transparent alias of `string` (`type Name = string`) resolves to
+    // `Ty::String`, which is reproducible — admitted like a bare `string`.
+    assert_supervisor_init_arg_admitted(
         r#"
         type Name = string;
 
@@ -28040,7 +28056,6 @@ fn supervisor_init_arg_alias_of_string_rejects() {
             child g: Greeter(name: "hello");
         }
         "#,
-        "Name",
     );
 }
 

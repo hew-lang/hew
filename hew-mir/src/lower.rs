@@ -1871,34 +1871,17 @@ pub fn lower_hir_module_with_facts(
                                     };
                                     let config_ty_name = config_ty_name.clone();
                                     let owned = child_init_field_is_owned(&source_expr.ty);
-                                    // Owned config-field init is sound under the
-                                    // init-closure model, but its per-field
-                                    // owned-clone-in-thunk codegen is follow-up
-                                    // work. Fail CLOSED for now (the checker also
-                                    // walls owned init args, so this is
-                                    // defence-in-depth) rather than emit a
-                                    // ConfigField codegen cannot deep-clone.
-                                    if owned {
-                                        diagnostics.push(MirDiagnostic {
-                                            kind: MirDiagnosticKind::NotYetImplemented {
-                                                construct: format!(
-                                                    "supervisor `{}` child `{}` field \
-                                                     `{field_name}` reads owned config field \
-                                                     `{config_param_name}.{field}` (type {:?}); \
-                                                     the owned-clone init thunk is follow-up \
-                                                     work",
-                                                    sup_layout.name, child.name, source_expr.ty
-                                                ),
-                                                site: source_expr.site,
-                                            },
-                                            note: "scalar config-field init args are supported; \
-                                                   owned (string/Vec) config init lands with the \
-                                                   per-field owned-clone init thunk"
-                                                .to_string(),
-                                        });
-                                        all_ok = false;
-                                        continue 'fields;
-                                    }
+                                    // Owned config-field init (`string`/`Vec`/…)
+                                    // lowers to a `ConfigField { owned: true }`:
+                                    // the codegen init thunk deep-clones the
+                                    // config field per incarnation
+                                    // (`emit_owned_config_field_clone`), so a
+                                    // restart produces fresh, unaliased owned
+                                    // state. Scalar fields keep `owned: false`
+                                    // (a plain load). The checker admits owned
+                                    // config init for clone-able, non-resource
+                                    // types; this records the discriminator the
+                                    // thunk reads.
                                     crate::model::ChildInitArg::ConfigField {
                                         config_param_name: config_param_name.clone(),
                                         config_ty_name,
@@ -3995,6 +3978,19 @@ fn lower_machine_lifecycle_block(
 /// per incarnation so each restart gets unaliased heap. Anything else is treated
 /// as a scalar load; genuinely-unsupported types are walled off at the checker
 /// (`ty_is_supervisor_init_reproducible`) before reaching MIR.
+/// True when a child init-arg HIR expr is a `config.field` read — a
+/// `FieldAccess` whose object is a binding reference (the supervisor config
+/// param). This is the same shape the MIR `ConfigField` arm matches, used here
+/// to skip the synthetic bootstrap body's spawn for config-init children (the
+/// codegen init thunk produces their state; the synthetic body is discarded).
+fn hir_expr_reads_config_field(expr: &HirExpr) -> bool {
+    matches!(
+        &expr.kind,
+        HirExprKind::FieldAccess { object, .. }
+            if matches!(object.kind, HirExprKind::BindingRef { .. })
+    )
+}
+
 fn child_init_field_is_owned(ty: &ResolvedTy) -> bool {
     match ty {
         ResolvedTy::String | ResolvedTy::Bytes => true,
@@ -4352,6 +4348,23 @@ fn lower_supervisor_bootstrap(
         // the stub does not synthesise a `spawn Supervisor` (which would route
         // through the actor-spawn path the supervisor type does not have).
         if supervisor_layouts.contains_key(&child.ty) {
+            continue;
+        }
+
+        // A config-init child (any init arg reads `config.field`) is produced
+        // entirely by the codegen init thunk, which emits the whole bootstrap
+        // body from `SupervisorChildLayout` and DISCARDS this synthetic body.
+        // Re-lowering a `config.field` read here would (a) serve no purpose (the
+        // body is discarded) and (b) reference the bootstrap config param via a
+        // BindingRef the synthetic body's dataflow can't resolve — tripping a
+        // spurious "read before initialised" on an owned config field. Skip the
+        // spawn statement for such a child entirely (like a nested supervisor),
+        // leaving the synthetic body a valid signature carrier.
+        if child
+            .init_args
+            .iter()
+            .any(|(_, expr)| hir_expr_reads_config_field(expr))
+        {
             continue;
         }
 

@@ -62,9 +62,10 @@ pub use self::types::{
     ExecutionContextReader, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
     MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
     NumericSignedness, NumericWidth, OptionResultMethod, PatternKind, PayloadBinding,
-    PayloadVariantPattern, SpanKey, StackHint, TypeCheckOutput, TypeDef, TypeDefKind, VariantDef,
-    VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection,
-    WireFieldLayout, WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    PayloadVariantPattern, PoolAccessor, PoolAccessorKind, SpanKey, StackHint, TypeCheckOutput,
+    TypeDef, TypeDefKind, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
+    WidthCastLowering, WireCodecDirection, WireFieldLayout, WireLayoutEntry, WireLayoutTable,
+    WireTextFormat,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -686,6 +687,7 @@ impl Checker {
             actor_handler_state_guards: std::mem::take(&mut self.actor_handler_state_guards),
             actor_max_heap: std::mem::take(&mut self.actor_max_heap),
             supervisor_child_slots: std::mem::take(&mut self.supervisor_child_slots),
+            pool_accessor_sites: std::mem::take(&mut self.pool_accessor_sites),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
             wire_layouts: std::mem::take(&mut self.wire_layouts),

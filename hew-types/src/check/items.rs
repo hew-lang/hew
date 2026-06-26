@@ -138,11 +138,18 @@ impl Checker {
         // resolved types land in `expr_types` (the discriminator HIR/MIR read).
         // Surfacing real errors here (`config.nonexistent_field`, a config-field
         // / actor-param type mismatch) is a new user-facing diagnostic.
+        //
+        // Pool children now route their per-member init args through the same
+        // init-closure thunk path as static children (one shared template,
+        // re-run per member), so their init-arg exprs are type-checked here too.
+        // The reserved `count:` arg designates the pool size — it is checked
+        // separately by `check_supervisor_pool_count`, not as a per-member init
+        // field — so it is excluded from the per-member synthesis here.
         for child in &sd.children {
-            if child.is_pool {
-                continue;
-            }
-            for (_arg_name, arg_expr) in &child.args {
+            for (arg_name, arg_expr) in &child.args {
+                if child.is_pool && arg_name == "count" {
+                    continue;
+                }
                 self.synthesize(&arg_expr.0, &arg_expr.1);
             }
         }
@@ -151,7 +158,108 @@ impl Checker {
         // the config params are still in scope.
         self.check_supervisor_init_args_bitcopy(sd, span);
 
+        // Validate every pool child's reserved `count:` arg (presence, integer
+        // type, positive literal) while config params are still in scope so a
+        // `count: config.workers` expr resolves.
+        self.check_supervisor_pool_count(sd, span);
+
         self.env.pop_scope();
+    }
+
+    /// Validate the reserved `count:` arg on every `pool` child declaration.
+    ///
+    /// A static pool (`pool workers: Worker(count: N)`) spawns exactly N
+    /// fungible members at bootstrap. The `count` arg is REQUIRED on a pool
+    /// declaration, must type as an integer, and — when a compile-time integer
+    /// literal — must be positive. A non-literal expr (`count: config.workers`)
+    /// is accepted here (the type resolves through the config record layout),
+    /// but codegen currently rejects it at compile time with
+    /// `CodegenError::FailClosed` — the dynamic `0..N` bootstrap loop is not
+    /// yet emitted. Use a literal `count: N` until that loop lands.
+    ///
+    /// Must run with the supervisor's config params bound in scope (it is
+    /// invoked from `check_supervisor_init_args`) so a `config.field` count
+    /// expr resolves through the config struct's record layout.
+    fn check_supervisor_pool_count(&mut self, sd: &SupervisorDecl, span: &Span) {
+        for child in &sd.children {
+            if !child.is_pool {
+                continue;
+            }
+
+            let count_arg = child.args.iter().find(|(name, _)| name == "count");
+
+            let Some((_, count_expr)) = count_arg else {
+                // A pool declares a fixed-size fleet; without `count:` the size
+                // is undefined. Fail closed rather than defaulting to a silent 1.
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span.clone(),
+                    format!(
+                        "E_SUPERVISOR_POOL_COUNT_MISSING: supervisor `{}` pool child `{}` is \
+                         missing the required `count:` argument; a static pool declares a \
+                         fixed-size fleet, e.g. `pool {}: {}(count: 5)`",
+                        sd.name, child.name, child.name, child.actor_type
+                    ),
+                ));
+                continue;
+            };
+
+            // The count expr must type as an integer. Synthesise (not
+            // check_against a single width) so `config.workers` resolves and an
+            // integer-literal stays `IntLiteral`; reject a non-integer result.
+            let count_ty = self.synthesize(&count_expr.0, &count_expr.1);
+            let resolved = self.subst.resolve(&count_ty);
+            if !resolved.is_integer() && !matches!(resolved, Ty::IntLiteral | Ty::Error) {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    count_expr.1.clone(),
+                    format!(
+                        "E_SUPERVISOR_POOL_COUNT_TYPE: supervisor `{}` pool child `{}` `count:` \
+                         must be an integer, found `{}`",
+                        sd.name,
+                        child.name,
+                        resolved.user_facing()
+                    ),
+                ));
+            }
+
+            // A compile-time-evaluable count must be positive — a zero or
+            // negative pool size is a static error. A dynamic count
+            // (`config.workers`, a call, anything not in the const allow-list)
+            // is accepted and fails closed at bootstrap (trap on `N <= 0`).
+            //   Ok(0)                 → reject (zero pool)
+            //   Ok(n > 0)             → accept
+            //   Err(Overflow)         → reject (negative / out-of-range literal)
+            //   Err(NotConstant|...)  → accept (dynamic; runtime fail-closed)
+            let const_env = super::const_eval::ConstEnv::new();
+            match super::const_eval::eval_const_expr(count_expr, &const_env) {
+                Ok(0) => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        count_expr.1.clone(),
+                        format!(
+                            "E_SUPERVISOR_POOL_COUNT_NON_POSITIVE: supervisor `{}` pool child \
+                             `{}` `count:` must be a positive integer, found `0`",
+                            sd.name, child.name
+                        ),
+                    ));
+                }
+                Err(super::const_eval::ConstEvalError::Overflow) => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        count_expr.1.clone(),
+                        format!(
+                            "E_SUPERVISOR_POOL_COUNT_NON_POSITIVE: supervisor `{}` pool child \
+                             `{}` `count:` must be a positive integer (a negative or \
+                             out-of-range size is not allowed)",
+                            sd.name, child.name
+                        ),
+                    ));
+                }
+                // Positive constant or genuinely dynamic — both accepted.
+                Ok(_) | Err(_) => {}
+            }
+        }
     }
 
     /// Reject supervisor children whose actor type declares `#[every(duration)]`
@@ -203,13 +311,6 @@ impl Checker {
     /// structurally forbidden (re-cloning a handle would alias a live resource).
     fn check_supervisor_init_args_bitcopy(&mut self, sd: &SupervisorDecl, _span: &Span) {
         for child in &sd.children {
-            // Pool children are spawned dynamically — their init args route
-            // through the per-member thunk too, but are validated separately;
-            // exempt here.
-            if child.is_pool {
-                continue;
-            }
-
             // Only children with explicit init args carry init-arg types.
             if child.args.is_empty() {
                 continue;
@@ -222,6 +323,13 @@ impl Checker {
             };
 
             for (arg_name, _arg_expr) in &child.args {
+                // A pool child's reserved `count:` arg is the pool size, not a
+                // per-member init field — it is validated by
+                // `check_supervisor_pool_count`, not the reproducibility wall.
+                if child.is_pool && arg_name == "count" {
+                    continue;
+                }
+
                 // Find the matching init parameter by name.
                 let Some(param) = init_params.iter().find(|param| param.name == *arg_name) else {
                     // Missing-param errors are reported elsewhere (wired_to check

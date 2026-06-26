@@ -114,6 +114,12 @@ const EXPECTED_UNCOVERED: &[&str] = &[
     "hew_send_half_send",
     "hew_send_half_try_send",
     "hew_supervisor_nested_get",
+    // -- Static-pool accessor symbols. `sup.pool[i]` / `.len()` lower to these
+    //    (`sup.pool.get(i)` fail-closes at MIR for now); the static-pool surface
+    //    is exercised by the vertical-slice fixtures (supervisor_static_pool*),
+    //    not the golden checked-mir corpus, so they pin as uncovered here.
+    "hew_supervisor_pool_child_get",
+    "hew_supervisor_pool_len",
     // -- `bytes.get` lowers to a `Terminator::Call` whose callee codegen
     //    intercepts to build `Option<u8>`; the call carries the callee as a
     //    string (`builtin: None`), so the `BytesGet` family is a descriptor

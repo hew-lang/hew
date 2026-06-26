@@ -587,6 +587,7 @@ stable = [
   "hew_supervisor_pool_child_get",
   "hew_supervisor_pool_len",
   "hew_supervisor_pool_member_add",
+  "hew_supervisor_pool_member_add_static",
   "hew_supervisor_pool_member_remove",
   "hew_supervisor_wait_restart",
   "hew_task_await_blocking",

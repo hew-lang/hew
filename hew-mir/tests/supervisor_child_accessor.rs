@@ -363,7 +363,7 @@ fn pool_child_access_rejected_at_hir_before_mir() {
 
         supervisor Pool {
             strategy: simple_one_for_one,
-            pool worker: Worker
+            pool worker: Worker(count: 2)
         }
 
         fn get_pool_worker(sup_pid: LocalPid<Pool>) -> LocalPid<Worker> {

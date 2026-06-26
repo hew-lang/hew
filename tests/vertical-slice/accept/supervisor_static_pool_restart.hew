@@ -1,0 +1,75 @@
+// v0.6 static supervisor pool — per-member restart + live re-resolution (A209).
+//
+// A `simple_one_for_one` pool member crashes; the supervisor restarts it via
+// the now-filled SIMPLE_ONE_FOR_ONE arm (per-member `restart_child_from_spec`),
+// and the Vec-like accessor `sup.workers[i]` re-resolves to the FRESH member
+// through its live static slot — no stale PID cached.
+//
+// The barrier is `hew_supervisor_wait_restart` (the same deterministic C-ABI
+// barrier `supervisor_child_after_restart.hew` uses): it returns only after
+// `notify_restart` fires, which runs AFTER the restarted member is stored Live.
+// So `sup.workers[0]` is guaranteed Live when the barrier returns; a Transient
+// slot would trap (exit 133).
+//
+// Exit code 7 proves:
+//   - the SIMPLE_ONE_FOR_ONE arm restarted the crashed pool member (was a no-op
+//     before S5 — the member would never come back and the re-access would trap);
+//   - `sup.workers[0]` re-resolved through the LIVE static slot to the restarted
+//     member (a stale PID would reach the dead actor and trap / Err);
+//   - the restarted member answers with value 7 (its init template, re-applied).
+actor Worker {
+    var value: i64;
+    receive fn get_value() -> i64 {
+        value
+    }
+    receive fn crash_me() {
+        panic("test crash — supervisor should restart this pool member");
+    }
+}
+
+supervisor Pool {
+    strategy: simple_one_for_one;
+    intensity: 5 within 60s;
+
+    pool workers: Worker(count: 2, value: 7);
+}
+
+extern "C" {
+    fn hew_supervisor_wait_restart(sup: LocalPid<Pool>, target: i64, timeout_ms: i64) -> i64;
+}
+
+fn main() -> i64 {
+    let sup = spawn Pool;
+
+    // Confirm member 0 is Live with its init value before the crash.
+    let m0 = sup.workers[0];
+    match await m0.get_value() {
+        Err(_) => { return 0; },
+        Ok(v) => {
+            if v != 7 {
+                return 0;
+            }
+        },
+    }
+
+    // Crash member 0 (fire-and-forget). The supervisor restarts it per-member.
+    m0.crash_me();
+
+    // Wait for exactly one completed restart cycle (barrier returns after the
+    // restarted member is stored Live).
+    let restarted = unsafe {
+        hew_supervisor_wait_restart(sup, 1, 5000)
+    };
+    if restarted == 0 {
+        // Timed out — the SIMPLE_ONE_FOR_ONE arm did not restart the member.
+        return 0;
+    }
+
+    // Re-resolve member 0 through the accessor: the live static slot now holds
+    // the restarted actor. A Transient slot would trap (exit 133).
+    let m0b = sup.workers[0];
+    match await m0b.get_value() {
+        Ok(v) => v,
+        Err(_) => 0,
+    }
+}

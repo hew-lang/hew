@@ -909,6 +909,22 @@ run_accept_expect_status "supervisor_owned_child_init_restart" 10
 # `leaks --atExit` on macOS.
 run_accept_expect_status "supervisor_literal_only_config_param" 0
 
+# v0.6 static supervisor pool (A209/A212): `pool workers: Worker(count: 3)`
+# spawns 3 fungible members into pool_slots[] at bootstrap and the Vec-like
+# accessor reaches them — `sup.workers.len()` is 3 and `sup.workers[i]` round-
+# trips to each Live member. Exit 24 = len(3) + three members × id(7); a wrong
+# count or an unreachable member (trap → exit 133) would change it. This closes
+# the empty-pool_slots gap (#2229): codegen now spawns + registers pool members.
+run_accept_expect_status "supervisor_static_pool" 24
+
+# v0.6 static pool per-member restart + live re-resolution (A209): a pool member
+# crashes, the SIMPLE_ONE_FOR_ONE restart arm restarts it per-member, and
+# `sup.workers[i]` re-resolves through the LIVE static slot to the restarted
+# member. Deterministic via the hew_supervisor_wait_restart barrier (returns
+# after the member is stored Live). Exit 7 = the restarted member's value; a
+# no-op arm (pre-S5) or a stale-PID re-access would trap (exit 133).
+run_accept_expect_status "supervisor_static_pool_restart" 7
+
 # F-04 fungible reference: a supervised-child handle re-resolves to the CURRENT
 # child at each send/ask, so a handle BOUND before a crash and held ACROSS the
 # restart reaches the FRESH child. Binds `let w = sup.w1` before crashing, then

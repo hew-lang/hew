@@ -679,6 +679,7 @@ mod tests {
             actor_handler_state_guards: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
+            pool_accessor_sites: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: std::collections::HashMap::new(),

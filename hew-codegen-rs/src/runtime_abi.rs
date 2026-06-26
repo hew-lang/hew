@@ -2348,10 +2348,16 @@ pub(crate) fn lower_call_runtime_abi(
         // ChildLookupResult` — and identical struct-return handling. The only
         // difference is the runtime symbol, which `symbol` (derived from the
         // call's family) already carries, so both families ride this one arm.
-        F::SupervisorChildGet | F::SupervisorNestedGet => {
-            if args.len() != 2 {
+        F::SupervisorChildGet | F::SupervisorNestedGet | F::SupervisorPoolChildGet => {
+            // child_get/nested_get take 2 args (sup, key); pool_child_get takes 3
+            // (sup, pool_key, index). All three return the same ChildLookupResult
+            // aggregate, so the ABI handling below is shared; only the arg list
+            // and the declared param types differ.
+            let is_pool = matches!(call.family(), F::SupervisorPoolChildGet);
+            let expected_args = if is_pool { 3 } else { 2 };
+            if args.len() != expected_args {
                 return Err(CodegenError::FailClosed(format!(
-                    "Instr::CallRuntimeAbi({symbol}): expected 2 args (sup, key), got {}",
+                    "Instr::CallRuntimeAbi({symbol}): expected {expected_args} args, got {}",
                     args.len()
                 )));
             }
@@ -2365,12 +2371,25 @@ pub(crate) fn lower_call_runtime_abi(
             // arg0: supervisor handle — ptr-typed (ActorHandle or actor-derived ptr).
             let sup_ptr = load_duplex_handle(fn_ctx, args[0], "supervisor_child_get sup")?;
 
-            // arg1: slot index — i64 in MIR (ConstI64); truncate to i32 for the ABI.
+            // arg1: slot/pool key — i64 in MIR (ConstI64); truncate to i32.
             let key_i64 = load_int_arg(fn_ctx, args[1], i64_ty, "supervisor_child_get key_i64")?;
             let key_i32 = fn_ctx
                 .builder
                 .build_int_truncate(key_i64, i32_ty, "supervisor_child_get key_i32")
                 .llvm_ctx("supervisor_child_get key truncate")?;
+            // pool_child_get arg2: the member index — i64 in MIR, truncate to i32.
+            let index_i32 = if is_pool {
+                let idx_i64 =
+                    load_int_arg(fn_ctx, args[2], i64_ty, "supervisor_pool_child_get index_i64")?;
+                Some(
+                    fn_ctx
+                        .builder
+                        .build_int_truncate(idx_i64, i32_ty, "supervisor_pool_child_get index_i32")
+                        .llvm_ctx("supervisor_pool_child_get index truncate")?,
+                )
+            } else {
+                None
+            };
 
             // Declare the canonical `hew_supervisor_child_get` with its true
             // `ChildLookupResult` aggregate return, classified per target by the
@@ -2401,6 +2420,11 @@ pub(crate) fn lower_call_runtime_abi(
             );
             let triple = fn_ctx.llvm_mod.get_triple();
             let triple_str = triple.as_str().to_string_lossy();
+            let param_tys: Vec<inkwell::types::BasicMetadataTypeEnum> = if is_pool {
+                vec![ptr_ty.into(), i32_ty.into(), i32_ty.into()]
+            } else {
+                vec![ptr_ty.into(), i32_ty.into()]
+            };
             let (fv, return_abi) = crate::abi_class::declare_aggregate_return(
                 fn_ctx.ctx,
                 fn_ctx.llvm_mod,
@@ -2408,17 +2432,18 @@ pub(crate) fn lower_call_runtime_abi(
                 &triple_str,
                 symbol,
                 child_result_ty,
-                &[ptr_ty.into(), i32_ty.into()],
+                &param_tys,
             )?;
+            // Argument list for the register-pair (no sret) path.
+            let call_args: Vec<inkwell::values::BasicMetadataValueEnum> = match index_i32 {
+                Some(idx) => vec![sup_ptr.into(), key_i32.into(), idx.into()],
+                None => vec![sup_ptr.into(), key_i32.into()],
+            };
             let (tag_i64, handle_i64) = match return_abi {
                 crate::abi_class::AggregateReturnAbi::RegisterPair { carrier } => {
                     let call_site = fn_ctx
                         .builder
-                        .build_call(
-                            fv,
-                            &[sup_ptr.into(), key_i32.into()],
-                            "hew_supervisor_child_get_call",
-                        )
+                        .build_call(fv, &call_args, "hew_supervisor_child_get_call")
                         .llvm_ctx("hew_supervisor_child_get call")?;
                     let pair = call_site
                         .try_as_basic_value()
@@ -2474,13 +2499,21 @@ pub(crate) fn lower_call_runtime_abi(
                         result_slot,
                         "child_result_sret_lt_start",
                     )?;
+                    let sret_args: Vec<inkwell::values::BasicMetadataValueEnum> =
+                        match index_i32 {
+                            Some(idx) => vec![
+                                result_slot.into(),
+                                sup_ptr.into(),
+                                key_i32.into(),
+                                idx.into(),
+                            ],
+                            None => {
+                                vec![result_slot.into(), sup_ptr.into(), key_i32.into()]
+                            }
+                        };
                     fn_ctx
                         .builder
-                        .build_call(
-                            fv,
-                            &[result_slot.into(), sup_ptr.into(), key_i32.into()],
-                            "hew_supervisor_child_get_sret_call",
-                        )
+                        .build_call(fv, &sret_args, "hew_supervisor_child_get_sret_call")
                         .llvm_ctx("hew_supervisor_child_get (sret) call")?;
                     let tag_field = fn_ctx
                         .builder
@@ -2553,6 +2586,42 @@ pub(crate) fn lower_call_runtime_abi(
                 .builder
                 .build_store(handle_field_ptr, handle_i64)
                 .llvm_ctx("supervisor_child_get handle store")?;
+            let _ = (i32_ty, ptr_ty);
+        }
+
+        // hew_supervisor_pool_len(sup: *mut HewSupervisor, pool_key: u32) -> i64
+        // The static-pool member count. Producer supplies [sup, pool_key] and an
+        // i64 dest.
+        F::SupervisorPoolLen => {
+            if args.len() != 2 {
+                return Err(CodegenError::FailClosed(format!(
+                    "Instr::CallRuntimeAbi(hew_supervisor_pool_len): expected 2 args \
+                     (sup, pool_key), got {}",
+                    args.len()
+                )));
+            }
+            let dest_place = dest.ok_or_else(|| {
+                CodegenError::FailClosed(
+                    "hew_supervisor_pool_len: producer must supply an i64 dest".to_string(),
+                )
+            })?;
+            let sup_ptr = load_duplex_handle(fn_ctx, args[0], "supervisor_pool_len sup")?;
+            let key_i64 = load_int_arg(fn_ctx, args[1], i64_ty, "supervisor_pool_len key_i64")?;
+            let key_i32 = fn_ctx
+                .builder
+                .build_int_truncate(key_i64, i32_ty, "supervisor_pool_len key_i32")
+                .llvm_ctx("supervisor_pool_len key truncate")?;
+            let len_val = fn_ctx.call_runtime_int(
+                symbol,
+                &[sup_ptr.into(), key_i32.into()],
+                "hew_supervisor_pool_len_call",
+                "hew_supervisor_pool_len call",
+            )?;
+            let (dest_ptr, _dest_ty) = place_pointer(fn_ctx, dest_place)?;
+            fn_ctx
+                .builder
+                .build_store(dest_ptr, len_val)
+                .llvm_ctx("hew_supervisor_pool_len store")?;
             let _ = (i32_ty, ptr_ty);
         }
 

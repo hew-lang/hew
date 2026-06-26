@@ -38,6 +38,7 @@ fn empty_module(items: Vec<HirItem>) -> HirModule {
         enum_layouts: vec![],
         machine_instantiations: vec![],
         supervisor_child_slots: HashMap::default(),
+        pool_accessor_sites: HashMap::default(),
         regex_literals: vec![],
     }
 }

@@ -22,6 +22,7 @@ fn empty_module(items: Vec<HirItem>) -> HirModule {
         enum_layouts: vec![],
         machine_instantiations: vec![],
         supervisor_child_slots: HashMap::default(),
+        pool_accessor_sites: HashMap::default(),
         regex_literals: vec![],
     }
 }
@@ -413,6 +414,7 @@ fn supervisor_child_layout_mirrors_cycle_capable_actor_metadata() {
             is_pool: false,
             slot_index: 0,
             init_args: Vec::new(),
+            pool_count: None,
             shutdown: None,
         }],
         span: 0..0,

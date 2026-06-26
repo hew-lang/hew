@@ -5844,6 +5844,62 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        // ── Static pool accessor methods: `sup.pool.get(i)` / `sup.pool.len()` ──
+        //
+        // When the receiver is a POOL child accessor (`sup.workers`), `.get(i)`
+        // returns `Option<LocalPid<ChildType>>` (None on OOB — drop-safe, never a
+        // sentinel dressed as live) and `.len()` returns `i64`. Detect the
+        // receiver as a FieldAccess and check its recorded Pool ChildSlot.
+        if matches!(
+            (&receiver.0, method),
+            (Expr::FieldAccess { .. }, "get" | "len")
+        ) {
+            let _ = self.synthesize(&receiver.0, &receiver.1);
+            let recv_key = SpanKey::in_module(&receiver.1, self.current_module_idx);
+            if let Some(slot) = self.supervisor_child_slots.get(&recv_key).cloned() {
+                if slot.kind == crate::check::types::ChildKind::Pool {
+                    // Consume the inner FieldAccess slot (so the bare-pool HIR
+                    // gate does not fire) and record the resolved accessor at the
+                    // method-call span for MIR.
+                    self.supervisor_child_slots.remove(&recv_key);
+                    let accessor_kind = if method == "len" {
+                        crate::check::types::PoolAccessorKind::Len
+                    } else {
+                        crate::check::types::PoolAccessorKind::Get
+                    };
+                    self.pool_accessor_sites.insert(
+                        SpanKey::in_module(span, self.current_module_idx),
+                        crate::check::types::PoolAccessor {
+                            supervisor: slot.supervisor.clone(),
+                            child_name: slot.child_name.clone(),
+                            child_ty: slot.child_ty.clone(),
+                            pool_key: slot.index,
+                            kind: accessor_kind,
+                        },
+                    );
+                    return match method {
+                        "len" => {
+                            self.check_arity(args, 0, "pool `len`", span);
+                            Ty::I64
+                        }
+                        "get" => {
+                            self.check_arity(args, 1, "pool `get`", span);
+                            if let Some(arg) = args.first() {
+                                let (expr, sp) = arg.expr();
+                                self.check_against(expr, sp, &Ty::I64);
+                            }
+                            Ty::option(Ty::local_pid(Ty::Named {
+                                builtin: None,
+                                name: slot.child_ty,
+                                args: vec![],
+                            }))
+                        }
+                        _ => unreachable!("matched on get|len above"),
+                    };
+                }
+            }
+        }
+
         // Module-qualified calls: e.g. http.listen(addr) → lookup "http.listen" in fn_sigs
         if let Expr::Identifier(name) = &receiver.0 {
             let receiver_is_binding = self.env.lookup_ref(name).is_some();

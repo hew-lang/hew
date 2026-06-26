@@ -3,8 +3,8 @@ use std::{collections::HashMap, sync::Arc};
 use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
 use hew_types::{stdlib::VecElementToken, NumericMethodFamily};
 use hew_types::{
-    ChildSlot, ExecutionContextReader, ImplId, MethodTargetFamily, ResolvedTy, Ty, TyPattern,
-    VariantMatch, WireLayoutTable,
+    ChildSlot, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy, Ty,
+    TyPattern, VariantMatch, WireLayoutTable,
 };
 use hew_types::{NumericMethodOp, NumericSignedness, NumericWidth, WireCodecDirection};
 
@@ -149,6 +149,11 @@ pub struct HirModule {
     ///
     /// LESSONS: `checker-authority` (P0), `end-to-end-before-layer-thickening` (P1).
     pub supervisor_child_slots: HashMap<SiteId, ChildSlot>,
+    /// Resolved static-pool accessor sites (`sup.pool[i]` / `.get(i)` /
+    /// `.len()`), keyed by the `SiteId` of the `Index`/`MethodCall` expression.
+    /// MIR lowering reads this to emit `hew_supervisor_pool_child_get` /
+    /// `hew_supervisor_pool_len`.
+    pub pool_accessor_sites: HashMap<SiteId, PoolAccessor>,
     /// Module-level regex literal table. Each distinct compiled pattern
     /// observed in match arms (keyed by normalized pattern string — no flags
     /// in v0.5) is allocated one entry here, deduplicated by string equality.
@@ -757,7 +762,19 @@ pub struct HirSupervisorChild {
     /// Empty when no `(...)` clause appears on the child declaration.
     /// MIR lowering reads these to build `SupervisorChildLayout.init_state_fields`
     /// so codegen can construct the per-child state template.
+    ///
+    /// For a pool child (`is_pool = true`), the reserved `count:` arg is split
+    /// out into [`Self::pool_count`] during HIR lowering and does NOT appear
+    /// here — `init_args` carries only the per-member init template, shared by
+    /// all N fungible members.
     pub init_args: Vec<(String, HirExpr)>,
+    /// Reserved pool-size expression, lowered from the `count:` named arg on a
+    /// `pool name: Type(count: N, ...)` declaration. `None` for a static child
+    /// or a pool child that omitted `count:` (which the checker rejects). The
+    /// expression yields the number of fungible members the bootstrap spawns
+    /// into the pool slot. `count` is a reserved arg name on pool declarations,
+    /// not a per-member init field, so it is removed from `init_args`.
+    pub pool_count: Option<HirExpr>,
     /// Per-child graceful-stop directive from the `shutdown:` clause.
     /// `None` means the supervisor default applies.
     pub shutdown: Option<HirShutdownDirective>,

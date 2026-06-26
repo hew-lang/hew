@@ -422,6 +422,13 @@ pub enum RuntimeCallFamily {
     // --- Supervisor --------------------------------------------------------
     SupervisorChildGet,
     SupervisorNestedGet,
+    /// `hew_supervisor_pool_child_get(sup, pool_key, index) -> ChildLookupResult`
+    /// — resolve a static-pool member through its live static slot. Emitted by
+    /// the MIR static-pool accessor (`sup.pool[i]` / `.get(i)`).
+    SupervisorPoolChildGet,
+    /// `hew_supervisor_pool_len(sup, pool_key) -> i64` — the static-pool member
+    /// count (`sup.pool.len()`).
+    SupervisorPoolLen,
     SupervisorStop,
     /// `hew_supervisor_restart_await_blocking(sup, key) -> void` — the
     /// contextless `await_restart` path (`main` / free fn). Blocks the calling
@@ -653,6 +660,8 @@ impl RuntimeCallFamily {
             // Supervisor
             Self::SupervisorChildGet => "hew_supervisor_child_get",
             Self::SupervisorNestedGet => "hew_supervisor_nested_get",
+            Self::SupervisorPoolChildGet => "hew_supervisor_pool_child_get",
+            Self::SupervisorPoolLen => "hew_supervisor_pool_len",
             Self::SupervisorStop => "hew_supervisor_stop",
             Self::SupervisorRestartAwaitBlocking => "hew_supervisor_restart_await_blocking",
             // TCP attach (pre-staged)
@@ -893,6 +902,8 @@ impl RuntimeCallFamily {
             // Supervisor
             "hew_supervisor_child_get" => Self::SupervisorChildGet,
             "hew_supervisor_nested_get" => Self::SupervisorNestedGet,
+            "hew_supervisor_pool_child_get" => Self::SupervisorPoolChildGet,
+            "hew_supervisor_pool_len" => Self::SupervisorPoolLen,
             "hew_supervisor_stop" => Self::SupervisorStop,
             "hew_supervisor_restart_await_blocking" => Self::SupervisorRestartAwaitBlocking,
             // TCP attach
@@ -1130,6 +1141,8 @@ impl RuntimeCallFamily {
             | F::StringSliceCodepoints
             | F::SupervisorChildGet
             | F::SupervisorNestedGet
+            | F::SupervisorPoolChildGet
+            | F::SupervisorPoolLen
             | F::SupervisorStop
             | F::SupervisorRestartAwaitBlocking
             | F::TcpAttachLocal

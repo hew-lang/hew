@@ -1544,6 +1544,45 @@ impl Checker {
     ) -> Ty {
         let obj_ty = self.synthesize(&object.0, &object.1);
 
+        // ── Static pool member access: `sup.pool[i]` ─────────────────────────
+        //
+        // When the object is a POOL child accessor (`sup.workers`), `[i]`
+        // resolves member `i` to a `LocalPid<ChildType>` with Vec[i] trap
+        // semantics (OOB → runtime trap). The object's FieldAccess synthesis
+        // recorded a Pool ChildSlot keyed by its span; re-key it onto the index
+        // expr's span so MIR lowering reads the (supervisor, pool_key) here.
+        let object_key = SpanKey::in_module(&object.1, self.current_module_idx);
+        if let Some(slot) = self.supervisor_child_slots.get(&object_key).cloned() {
+            if slot.kind == crate::check::types::ChildKind::Pool {
+                // The index must be an integer (i64); narrower signed widen.
+                let idx_actual = self.synthesize(&index.0, &index.1);
+                let idx_resolved = self.subst.resolve(&idx_actual);
+                if !Self::is_narrower_signed_int(&idx_resolved) {
+                    self.check_against(&index.0, &index.1, &Ty::I64);
+                }
+                // Consume the inner FieldAccess slot so the bare-pool HIR gate
+                // does NOT fire for `sup.pool[i]` (this IS a supported form), and
+                // record the resolved accessor at the index expr span for MIR.
+                self.supervisor_child_slots.remove(&object_key);
+                self.pool_accessor_sites.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    crate::check::types::PoolAccessor {
+                        supervisor: slot.supervisor.clone(),
+                        child_name: slot.child_name.clone(),
+                        child_ty: slot.child_ty.clone(),
+                        pool_key: slot.index,
+                        kind: crate::check::types::PoolAccessorKind::Index,
+                    },
+                );
+                // Result is the member's `LocalPid<ChildType>` (trap on OOB).
+                return Ty::local_pid(Ty::Named {
+                    builtin: None,
+                    name: slot.child_ty,
+                    args: vec![],
+                });
+            }
+        }
+
         // C-3 range-slice (`xs[a..b]`, `xs[a..=b]`, `xs[..b]`, `xs[a..]`,
         // `xs[..]`): when the index is a range expression, the result type
         // is `Vec<T>` (a freshly-allocated copy) for `Vec<T>` receivers.

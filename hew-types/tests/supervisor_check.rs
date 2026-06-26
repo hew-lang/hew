@@ -53,7 +53,7 @@ fn simple_one_for_one_with_pool_accepted() {
             strategy: simple_one_for_one
             intensity: 10 within 60s
 
-            pool worker: Worker
+            pool worker: Worker(count: 3)
         }
 
         fn main() {}
@@ -122,7 +122,7 @@ fn await_restart_on_pool_member_rejected() {
             strategy: simple_one_for_one
             intensity: 10 within 60s
 
-            pool worker: Worker
+            pool worker: Worker(count: 3)
         }
 
         fn main() {
@@ -276,7 +276,7 @@ fn simple_one_for_one_with_child_decl_rejected() {
             strategy: simple_one_for_one
 
             child helper: Helper
-            pool worker: Worker
+            pool worker: Worker(count: 3)
         }
 
         fn main() {}
@@ -304,7 +304,7 @@ fn one_for_one_with_pool_decl_rejected() {
         supervisor StaticApp {
             strategy: one_for_one
 
-            pool worker: Worker
+            pool worker: Worker(count: 3)
         }
 
         fn main() {}

@@ -347,6 +347,12 @@ pub struct TypeCheckOutput {
     /// Missing entry means the checker could not resolve the child (e.g. unknown
     /// field); MIR lowering must fail closed on a missing entry.
     pub supervisor_child_slots: HashMap<SpanKey, ChildSlot>,
+    /// Resolved static-pool accessors (`sup.pool[i]` / `.get(i)` / `.len()`),
+    /// keyed by the OUTER expression span (the `Index` or `MethodCall`). The
+    /// inner `FieldAccess`'s `supervisor_child_slots` entry is REMOVED when
+    /// consumed by one of these forms, so the bare-pool-access HIR gate fires
+    /// only for a genuinely bare `sup.pool`.
+    pub pool_accessor_sites: HashMap<SpanKey, PoolAccessor>,
     /// Per-call-site `T → dyn Trait` coercion metadata used by the MIR
     /// trait-object lowering and the LLVM vtable emitter.
     ///
@@ -844,6 +850,35 @@ pub enum ChildKind {
     Pool,
 }
 
+/// A resolved static-pool accessor: `sup.pool[i]`, `sup.pool.get(i)`, or
+/// `sup.pool.len()`. Recorded by the checker at the OUTER expression span (the
+/// `Index` or `MethodCall`, not the inner `FieldAccess`) so MIR lowering reads
+/// the supervisor + `pool_key` and emits the right runtime call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolAccessor {
+    /// The supervisor type owning the pool (e.g. `"Pool"`).
+    pub supervisor: String,
+    /// The pool child name (e.g. `"workers"`).
+    pub child_name: String,
+    /// The pool's declared member actor type (e.g. `"Worker"`).
+    pub child_ty: String,
+    /// The pool slot index in `HewSupervisor.pool_slots[]` (the `pool_key`).
+    pub pool_key: u32,
+    /// Which accessor form this site is.
+    pub kind: PoolAccessorKind,
+}
+
+/// The three supported static-pool accessor forms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolAccessorKind {
+    /// `sup.pool[i]` — trapping member access (`Vec[i]` OOB parity).
+    Index,
+    /// `sup.pool.get(i)` — `Option<LocalPid<T>>` member access (`None` on OOB).
+    Get,
+    /// `sup.pool.len()` — `i64` member count.
+    Len,
+}
+
 /// Partitioned child lists for a supervisor declaration.
 ///
 /// Static and pool children occupy disjoint slot spaces. The slot index for each
@@ -1056,6 +1091,7 @@ impl Default for TypeCheckOutput {
             actor_send_aliasing: HashMap::new(),
             actor_max_heap: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
+            pool_accessor_sites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
             conn_await_reads: HashMap::new(),
@@ -2566,6 +2602,9 @@ pub struct Checker {
     /// Keyed by the `SpanKey` of the field-access expression. Moved into
     /// `TypeCheckOutput::supervisor_child_slots` at the end of `check_program`.
     pub(super) supervisor_child_slots: HashMap<SpanKey, ChildSlot>,
+    /// Resolved static-pool accessors. Moved into
+    /// `TypeCheckOutput::pool_accessor_sites` at the end of `check_program`.
+    pub(super) pool_accessor_sites: HashMap<SpanKey, PoolAccessor>,
     /// Side-table populated during `T → dyn Trait` coercion checking.
     ///
     /// Keyed by the `SpanKey` of the call-site argument expression. Moved
@@ -3090,6 +3129,7 @@ impl Checker {
             primitive_trait_impl_self_args: HashMap::new(),
             supervisor_children: HashMap::new(),
             supervisor_child_slots: HashMap::new(),
+            pool_accessor_sites: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),

@@ -4140,6 +4140,27 @@ fn build_supervisor_layout(
         })
         .collect();
 
+    // Lift the construction-time config param (`supervisor App(config: T)`) so
+    // codegen can size the config buffer and give the bootstrap a config
+    // parameter. v0.6 admits at most one config param; if a future surface
+    // allows several, the first names the config struct codegen materialises.
+    let config_param = sup.params.first().and_then(|param| {
+        if let ResolvedTy::Named { name, .. } = &param.ty {
+            Some(crate::model::SupervisorConfigParam {
+                name: param.name.clone(),
+                config_ty_name: name.clone(),
+            })
+        } else {
+            // A non-named config param type (e.g. a bare scalar) has no record
+            // layout to GEP; the checker admits only struct config params for
+            // `config.field` reads, so a non-Named param here means no
+            // config-field child can resolve. Leave None — codegen then has no
+            // config buffer to thread, and any `config.field` child already
+            // fail-closed at MIR for the missing Named discriminator.
+            None
+        }
+    });
+
     Some(crate::model::SupervisorLayout {
         name: sup.name.clone(),
         strategy: sup.strategy,
@@ -4147,6 +4168,7 @@ fn build_supervisor_layout(
         window: sup.window.clone(),
         bootstrap_symbol: mangle_supervisor_bootstrap(&sup.name),
         children,
+        config_param,
     })
 }
 
@@ -4452,12 +4474,33 @@ fn lower_supervisor_bootstrap(
     //   wired; body replacement is a separate slice.
     // WHEN obsolete: S-D.3 replaces the body with the hew_supervisor_* sequence.
     // WHAT: emit hew_supervisor_start/register_child/etc in S-D.3.
+    // The bootstrap fn carries the supervisor's config param (when declared) as
+    // its sole parameter. Codegen's bootstrap-body emitter reads it (the config
+    // struct passed by value) to malloc the supervisor-owned config buffer and
+    // thread it to each config-init child's init thunk. The `spawn App(cfg)`
+    // call site (lower_spawn_actor) passes the config value as this arg, so the
+    // declared signature and the call must agree — both derive from this param.
+    // No config param → an empty param list (the no-config supervisor).
+    let bootstrap_params: Vec<HirBinding> = sup
+        .params
+        .first()
+        .map(|param| {
+            vec![HirBinding {
+                id: fresh_binding(),
+                name: param.name.clone(),
+                ty: param.ty.clone(),
+                mutable: false,
+                span: sup.span.clone(),
+            }]
+        })
+        .unwrap_or_default();
+
     let synthetic_fn = HirFn {
         id: sup.id,
         node: sup.node,
         name: format!("{}::__bootstrap", sup.name),
         type_params: Vec::new(),
-        params: Vec::new(),
+        params: bootstrap_params,
         return_ty: local_pid_of(&sup.name),
         body,
         span: sup.span.clone(),
@@ -23879,6 +23922,13 @@ impl Builder {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one coherent dispatcher: supervisor-spawn routing (config-arg \
+                  threading + no-config gate) followed by the actor-spawn arg \
+                  validation + state lowering; splitting would scatter the spawn \
+                  contract across helpers"
+    )]
     fn lower_spawn_actor(
         &mut self,
         actor_name: &str,
@@ -23891,31 +23941,45 @@ impl Builder {
         // spawn is routed to the synthesised bootstrap function via a
         // `Terminator::Call` rather than `Instr::SpawnActor`.
         if let Some(sup_layout) = self.supervisor_layout_map.get(actor_name).cloned() {
-            if !args.is_empty() {
-                // Supervisor init args are not yet supported. The checker
-                // already rejects supervisor declarations with init params;
-                // this branch catches any future surface that reaches MIR
-                // before the checker guard does.
+            // A config supervisor (`supervisor App(config: T)`) is spawned as
+            // `spawn App(config: cfg)`: the single config value is threaded to
+            // the bootstrap's config parameter, which codegen reads to build the
+            // supervisor-owned config buffer for the init thunks. A no-config
+            // supervisor takes no args. The arg count must match whether the
+            // layout carries a config param (the HIR gate is the user-facing
+            // diagnostic; this is the MIR backstop).
+            let expected_args = usize::from(sup_layout.config_param.is_some());
+            if args.len() != expected_args {
                 self.diagnostics.push(MirDiagnostic {
                     kind: MirDiagnosticKind::NotYetImplemented {
                         construct: format!(
-                            "supervisor spawn with init args (`spawn {actor_name}(…)`)"
+                            "supervisor `{actor_name}` spawn expected {expected_args} \
+                             argument(s) (config param {}), got {}",
+                            if expected_args == 0 {
+                                "absent"
+                            } else {
+                                "present"
+                            },
+                            args.len()
                         ),
                         site: expr.site,
                     },
-                    note: "supervisor init args deferred to follow-on lane; \
-                           use `spawn {actor_name}` with no arguments"
+                    note: "a config supervisor is spawned `spawn App(config: value)`; a \
+                           no-config supervisor `spawn App`"
                         .to_string(),
                 });
                 return None;
             }
+            let bootstrap_args: Vec<hew_hir::HirExpr> =
+                args.iter().map(|(_, expr)| expr.clone()).collect();
             // Route `spawn Sup` → `Terminator::Call { bootstrap_symbol }`.
             // `lower_direct_call` allocates the destination local (typed
-            // `LocalPid<Sup>` from `expr.ty`) and emits the call terminator.
+            // `LocalPid<Sup>` from `expr.ty`) and emits the call terminator,
+            // passing the config value (if any) as the bootstrap's config arg.
             return self.lower_direct_call(
                 &sup_layout.bootstrap_symbol,
                 None,
-                &[], // bootstrap takes no arguments
+                &bootstrap_args,
                 &expr.ty,
                 expr.site,
             );

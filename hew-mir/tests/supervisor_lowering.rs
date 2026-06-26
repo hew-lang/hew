@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use hew_hir::{lower_program, HirDiagnosticKind, ResolutionCtx};
-use hew_mir::{lower_hir_module, FunctionCallConv, Instr, MirDiagnosticKind, Place, Terminator};
+use hew_mir::{lower_hir_module, FunctionCallConv, Instr, Place, Terminator};
 use hew_types::{module_registry::ModuleRegistry, BuiltinType, Checker, ResolvedTy};
 
 /// Lower a Hew source program to MIR, asserting no parse or HIR diagnostics.
@@ -329,12 +329,12 @@ fn spawn_supervisor_routes_to_bootstrap_call_with_local_pid_return() {
     );
 }
 
-/// S-D.1 negative: `spawn App(x: 1)` emits `NotYetImplemented` with the
-/// "supervisor spawn with init args" construct string.
+/// Negative: spawning a NO-config supervisor with init args
+/// (`spawn App(x: 1)` where `App` declares no `(config: T)`) is rejected at the
+/// HIR supervisor-spawn gate. Config supervisors admit exactly their config arg
+/// (the init-closure model); a no-config supervisor admits none.
 #[test]
-fn spawn_supervisor_with_init_args_emits_not_yet_implemented() {
-    // Build the pipeline without asserting HIR or MIR diagnostics clean —
-    // the MIR diagnostic we want is exactly what this test asserts.
+fn spawn_no_config_supervisor_with_init_args_is_rejected_at_hir() {
     let parsed = hew_parser::parse(
         r"
         actor Worker { receive fn ping() {} }
@@ -362,20 +362,91 @@ fn spawn_supervisor_with_init_args_emits_not_yet_implemented() {
         &hew_hir::ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
-    let pipeline = hew_mir::lower_hir_module(&hir.module);
 
-    let nyi_diag = pipeline.diagnostics.iter().find(|d| {
+    let gate_diag = hir.diagnostics.iter().find(|d| {
         matches!(
             &d.kind,
-            MirDiagnosticKind::NotYetImplemented { construct, .. }
-                if construct.contains("supervisor spawn with init args")
+            HirDiagnosticKind::SupervisorSpawnArgsUnsupported { supervisor_name }
+                if supervisor_name == "App"
         )
     });
     assert!(
-        nyi_diag.is_some(),
-        "expected NotYetImplemented for supervisor spawn with init args; \
-         got diagnostics: {:#?}",
-        pipeline.diagnostics
+        gate_diag.is_some(),
+        "expected SupervisorSpawnArgsUnsupported for a no-config supervisor spawned with args; \
+         got HIR diagnostics: {:#?}",
+        hir.diagnostics
+    );
+}
+
+/// A config supervisor spawned with its config arg
+/// (`spawn App(config: cfg)`) is ADMITTED through the HIR gate and lowers the
+/// bootstrap call with the config value threaded as the bootstrap's argument.
+#[test]
+fn spawn_config_supervisor_admits_config_arg_and_threads_it_to_bootstrap() {
+    let pipeline = lower_module_from_source(
+        r"
+        record AppConfig { size: i64 }
+
+        actor Cache {
+            var capacity: i64;
+            receive fn get_cap() -> i64 { capacity }
+        }
+
+        supervisor App(config: AppConfig) {
+            child cache: Cache(capacity: config.size)
+        }
+
+        fn main() -> i64 {
+            let cfg = AppConfig { size: 7 };
+            let sup = spawn App(config: cfg);
+            0
+        }
+        ",
+    );
+
+    // The supervisor layout carries the config param.
+    let app = pipeline
+        .supervisor_layouts
+        .iter()
+        .find(|s| s.name == "App")
+        .expect("App supervisor layout");
+    let config_param = app
+        .config_param
+        .as_ref()
+        .expect("config supervisor must carry a config param on its layout");
+    assert_eq!(config_param.config_ty_name, "AppConfig");
+
+    // The `spawn App(config: cfg)` site lowers to a bootstrap Call carrying one
+    // argument (the config value) — not a zero-arg call.
+    let main_fn = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "main")
+        .expect("main emitted into raw_mir");
+    let bootstrap_call_args = main_fn
+        .blocks
+        .iter()
+        .find_map(|b| match &b.terminator {
+            Terminator::Call { callee, args, .. } if callee == "App__bootstrap" => Some(args.len()),
+            _ => None,
+        })
+        .expect("main must call App__bootstrap");
+    assert_eq!(
+        bootstrap_call_args, 1,
+        "spawn App(config: cfg) must thread exactly the config value to the bootstrap"
+    );
+
+    // The bootstrap fn declares the config param so its codegen-real body can
+    // read it.
+    let bootstrap = pipeline
+        .raw_mir
+        .iter()
+        .find(|f| f.name == "App__bootstrap")
+        .expect("App__bootstrap emitted into raw_mir");
+    assert_eq!(
+        bootstrap.params.len(),
+        1,
+        "the config bootstrap must declare exactly its config parameter"
     );
 }
 

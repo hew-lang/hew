@@ -56,6 +56,44 @@ fn supervisor_spawn_no_args_accepted() {
     );
 }
 
+/// A config supervisor (`supervisor App(config: T)`) spawned with its config
+/// arg (`spawn App(config: cfg)`) is ADMITTED — the gate rejects only args on a
+/// no-config supervisor. This is the v0.6 init-closure surface.
+#[test]
+fn config_supervisor_spawn_with_config_arg_accepted() {
+    let source = r"
+        record AppConfig { size: i64 }
+        actor Cache {
+            var capacity: i64;
+            receive fn get_cap() -> i64 { capacity }
+        }
+        supervisor App(config: AppConfig) {
+            strategy: one_for_one;
+            child cache: Cache(capacity: config.size);
+        }
+        fn main() {
+            let cfg = AppConfig { size: 7 };
+            let s = spawn App(config: cfg);
+        }
+    ";
+    let output = lower(source);
+
+    let spawn_gate_hits: Vec<_> = output
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                d.kind,
+                HirDiagnosticKind::SupervisorSpawnArgsUnsupported { .. }
+            )
+        })
+        .collect();
+    assert!(
+        spawn_gate_hits.is_empty(),
+        "a config supervisor spawned with its config arg must be admitted, got: {spawn_gate_hits:?}"
+    );
+}
+
 /// `spawn Root(value: 1)` triggers the gate and the diagnostic is fatal
 /// (surfaces through `into_result()` as `Err`).
 #[test]

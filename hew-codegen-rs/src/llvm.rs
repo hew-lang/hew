@@ -2661,6 +2661,29 @@ pub(crate) fn intern_runtime_decl<'ctx>(
         "hew_supervisor_set_child_lifecycle" => ctx
             .void_type()
             .fn_type(&[ptr_ty.into(), i32_ty.into(), ptr_ty.into()], false),
+        // hew_supervisor_set_child_init_fn(sup: *mut HewSupervisor,
+        //                                  child_index: c_int,
+        //                                  init_fn: HewChildInitFn,
+        //                                  config: *mut c_void,
+        //                                  config_size: usize) -> void
+        // (`hew-runtime/src/supervisor.rs:5320`). The v0.6 init-closure restart
+        // model per-child setter: adopts the supervisor-owned config buffer once
+        // (idempotent on the same pointer) and installs the per-child init thunk.
+        // The literal carrier inside `add_child_spec` is the load-bearing path
+        // for the INITIAL spawn; codegen emits this setter for back-fill /
+        // out-of-tree-caller symmetry with the other per-child setters. Shape:
+        // `(ptr sup, i32 child_index, ptr init_fn, ptr config, i64 config_size)
+        // -> void`.
+        "hew_supervisor_set_child_init_fn" => ctx.void_type().fn_type(
+            &[
+                ptr_ty.into(),
+                i32_ty.into(),
+                ptr_ty.into(),
+                ptr_ty.into(),
+                i64_ty.into(),
+            ],
+            false,
+        ),
         // hew_supervisor_start(sup: *mut HewSupervisor) -> c_int
         // (`hew-runtime/src/supervisor.rs:1726`). Marks the supervisor running
         // and spawns its self-actor. Returns 0 on success. The bootstrap
@@ -6248,6 +6271,11 @@ fn hew_child_spec_struct_type<'ctx>(ctx: &'ctx Context) -> StructType<'ctx> {
 ///   supervisor surface is one of Hew's fail-closed boundaries (LESSONS
 ///   boundary-fail-closed); a start that the runtime rejected is wrong-code
 ///   territory, not a recoverable error.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the bootstrap emitter threads the same module-wide tables as the \
+              MIR lowering path plus the config buffer it materialises"
+)]
 fn emit_supervisor_bootstrap_body<'ctx>(
     ctx: &'ctx Context,
     llvm_mod: &LlvmModule<'ctx>,
@@ -6255,6 +6283,7 @@ fn emit_supervisor_bootstrap_body<'ctx>(
     fn_symbols: &FnSymbolMap<'ctx>,
     actor_layouts: &[ActorLayout],
     record_layouts: &RecordLayoutMap<'ctx>,
+    mir_record_layouts: &[RecordLayout],
 ) -> CodegenResult<()> {
     let symbol = *fn_symbols.get(&layout.bootstrap_symbol).ok_or_else(|| {
         CodegenError::FailClosed(format!(
@@ -6352,6 +6381,104 @@ fn emit_supervisor_bootstrap_body<'ctx>(
         .ok_or_else(|| CodegenError::FailClosed("hew_supervisor_new returned void".into()))?
         .into_pointer_value();
 
+    // ── Construction-time config buffer (v0.6 init-closure restart model) ──
+    //
+    // When the supervisor declares a config param (`supervisor App(config: T)`),
+    // the bootstrap fn's param 0 is the config struct passed by value. Spill it
+    // to a fresh malloc'd, supervisor-owned buffer here so every per-child init
+    // thunk can read `config.field` (a BORROW) on the initial spawn and on every
+    // restart. The buffer is adopted ONCE by the runtime (the first
+    // `set_child_init_fn` / `add_child_spec` carrying it) and freed ONCE at
+    // supervisor teardown (`stop_supervisor_owned`). The thunk never frees it.
+    //
+    // `None` → a no-config supervisor; no buffer, every child takes the literal
+    // template path (init_fn null), unchanged from C1-C3.
+    let config_buf: Option<(PointerValue<'ctx>, IntValue<'ctx>)> = match &layout.config_param {
+        Some(config_param) => {
+            // Resolve the config struct's LLVM type for the size + spill.
+            let config_struct_ty = *record_layouts
+                .get(config_param.config_ty_name.as_str())
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "supervisor `{}` config param type `{}` has no record layout; the \
+                         config struct must be registered before supervisor bootstrap emission",
+                        layout.name, config_param.config_ty_name
+                    ))
+                })?;
+
+            // Param 0 is the config struct value (FunctionCallConv::Default →
+            // no leading ctx param). Spill it to a stack slot so we can take its
+            // address for the buffer memcpy.
+            let config_param_val = llvm_fn.get_nth_param(0).ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "supervisor `{}` bootstrap declares a config param but the LLVM fn has \
+                     no parameter 0",
+                    layout.name
+                ))
+            })?;
+            let config_stack = builder
+                .build_alloca(config_struct_ty, "config_param_spill")
+                .llvm_ctx("config param spill alloca")?;
+            builder
+                .build_store(config_stack, config_param_val)
+                .llvm_ctx("config param spill store")?;
+
+            // Buffer size = sizeof(config struct).
+            let config_size_val = config_struct_ty.size_of().ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "supervisor `{}` config struct `{}` has no statically known size",
+                    layout.name, config_param.config_ty_name
+                ))
+            })?;
+            let config_size_i64 = if config_size_val.get_type() == i64_ty {
+                config_size_val
+            } else {
+                builder
+                    .build_int_z_extend(config_size_val, i64_ty, "config_size_i64")
+                    .llvm_ctx("config size zext")?
+            };
+
+            // Malloc the supervisor-owned buffer (libc — ALLOCATOR-PAIRING with
+            // the teardown `libc::free` at supervisor.rs stop_supervisor_owned).
+            let malloc_fn = get_or_declare_libc_malloc(ctx, llvm_mod);
+            let malloc_size_ty = runtime_size_ty(ctx, llvm_mod);
+            let malloc_size = if malloc_size_ty == i64_ty {
+                config_size_i64
+            } else {
+                builder
+                    .build_int_truncate(config_size_i64, malloc_size_ty, "config_size_trunc")
+                    .llvm_ctx("config size trunc")?
+            };
+            let buf_ptr = builder
+                .build_call(malloc_fn, &[malloc_size.into()], "config_buf_malloc")
+                .llvm_ctx("config buffer malloc")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed("malloc returned void — signature mismatch".into())
+                })?
+                .into_pointer_value();
+
+            // memcpy the config value into the buffer. The config struct is
+            // BitCopy at the registration boundary (the per-field owned clone,
+            // when present, happens INSIDE the thunk from this buffer — the
+            // buffer itself is a flat snapshot). Use the struct's ABI alignment.
+            let config_align = host_target_data().get_abi_alignment(&config_struct_ty);
+            builder
+                .build_memcpy(
+                    buf_ptr,
+                    config_align,
+                    config_stack,
+                    config_align,
+                    config_size_i64,
+                )
+                .llvm_ctx("config buffer memcpy")?;
+
+            Some((buf_ptr, config_size_i64))
+        }
+        None => None,
+    };
+
     // ── For each child: alloca HewChildSpec, populate, register ─────────
     let child_spec_ty = hew_child_spec_struct_type(ctx);
     let add_child_spec = intern_runtime_decl(
@@ -6382,6 +6509,16 @@ fn emit_supervisor_bootstrap_body<'ctx>(
         llvm_mod,
         &mut runtime_decls,
         "hew_supervisor_set_child_lifecycle",
+    )?;
+    // Per-child init-thunk setter (v0.6 init-closure restart model). Adopts the
+    // supervisor-owned config buffer once + installs the thunk; the literal
+    // carrier already installs it for the initial spawn, so this is back-fill /
+    // symmetry with the other per-child setters. Interned once outside the loop.
+    let set_child_init_fn = intern_runtime_decl(
+        ctx,
+        llvm_mod,
+        &mut runtime_decls,
+        "hew_supervisor_set_child_init_fn",
     )?;
     // A nested-supervisor child (`child api: AuthSupervisor;`) registers through
     // a different runtime seam than an actor child: call the child supervisor's
@@ -6465,11 +6602,15 @@ fn emit_supervisor_bootstrap_body<'ctx>(
                 set_child_state_drop,
                 set_child_state_clone,
                 set_child_lifecycle,
+                set_child_init_fn,
                 actor_child_index,
                 child,
                 &layout.name,
+                layout.config_param.as_ref(),
+                config_buf,
                 actor_layouts,
                 record_layouts,
+                mir_record_layouts,
             )?;
             actor_child_index += 1;
         }
@@ -6613,11 +6754,15 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     set_child_state_drop: FunctionValue<'ctx>,
     set_child_state_clone: FunctionValue<'ctx>,
     set_child_lifecycle: FunctionValue<'ctx>,
+    set_child_init_fn: FunctionValue<'ctx>,
     idx: usize,
     child: &SupervisorChildLayout,
     sup_name: &str,
+    config_param: Option<&hew_mir::SupervisorConfigParam>,
+    config_buf: Option<(PointerValue<'ctx>, IntValue<'ctx>)>,
     actor_layouts: &[ActorLayout],
     record_layouts: &RecordLayoutMap<'ctx>,
+    mir_record_layouts: &[RecordLayout],
 ) -> CodegenResult<()> {
     let i32_ty = ctx.i32_type();
     let i64_ty = ctx.i64_type();
@@ -6690,214 +6835,277 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
     let arena_cap = child.max_heap_bytes.unwrap_or(0);
     let cycle_flag = if child.cycle_capable { 1 } else { 0 };
 
-    // ── State template: build init_state / init_state_size ──────────────
+    // ── Init-closure (config) path vs literal-template path ─────────────
     //
-    // Fail-closed invariant: if the child actor has non-empty state fields
-    // but init_state_fields is empty, we must NOT emit a null template —
-    // that causes a NULL state pointer dereference at first field access.
-    //
-    // Three cases:
-    //   A. Stateless actor (state_field_names empty) → null/zero is correct.
-    //   B. Stateful actor + init_state_fields populated → build template.
-    //   C. Stateful actor + init_state_fields empty → CodegenError::FailClosed.
-    let (init_state_ptr, init_state_size): (BasicValueEnum<'ctx>, BasicValueEnum<'ctx>) = {
-        // Resolve the actor layout for state_field_names check.
-        let child_actor_layout_for_state = actor_layouts
-            .iter()
-            .find(|l| l.name == child.actor_name)
-            .ok_or_else(|| {
+    // A child whose init args read `config.field` (any `ConfigField` arg) is
+    // produced by a per-child init thunk that re-runs the config-field reads on
+    // the initial spawn AND every restart — there is NO captured byte-copy
+    // template (the template path replays the SAME bytes, which would alias
+    // owned config-derived fields). A literal-only child keeps the template
+    // path (init_fn null). Mixed literal + config args are produced wholly by
+    // the thunk (it materialises the literals too), so the presence of ANY
+    // config-field arg selects the thunk path.
+    let has_config_field = child
+        .init_state_fields
+        .iter()
+        .any(|(_, arg)| matches!(arg, ChildInitArg::ConfigField { .. }));
+
+    // For the thunk path, the init thunk produces the state; the spec's
+    // init_state template is null/0 (the runtime ignores it when init_fn is
+    // set). For the literal path, build the const template below.
+    let init_fn_ptr: BasicValueEnum<'ctx>;
+    let config_ptr_for_spec: BasicValueEnum<'ctx>;
+    let config_size_for_spec: BasicValueEnum<'ctx>;
+
+    let (init_state_ptr, init_state_size): (BasicValueEnum<'ctx>, BasicValueEnum<'ctx>) =
+        if has_config_field {
+            // ── Init-closure thunk path ─────────────────────────────────────
+            let config_param = config_param.ok_or_else(|| {
                 CodegenError::FailClosed(format!(
-                    "supervisor `{sup_name}` child `{}` actor `{}` has no ActorLayout for \
-                     state field check",
-                    child.name, child.actor_name
+                    "supervisor `{sup_name}` child `{}` reads config fields but the supervisor \
+                 layout carries no config param; MIR should have rejected this",
+                    child.name
                 ))
             })?;
-
-        if child_actor_layout_for_state.state_field_names.is_empty() {
-            // Case A: stateless actor — null/zero is correct.
+            let (cfg_buf, cfg_size) = config_buf.ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "supervisor `{sup_name}` child `{}` reads config fields but no config buffer \
+                 was materialised in the bootstrap; codegen ordering bug",
+                    child.name
+                ))
+            })?;
+            // Emit the per-child init thunk and take its address.
+            let thunk = emit_child_init_thunk(
+                ctx,
+                llvm_mod,
+                sup_name,
+                child,
+                config_param,
+                actor_layouts,
+                record_layouts,
+                mir_record_layouts,
+            )?;
+            init_fn_ptr = thunk.as_global_value().as_pointer_value().into();
+            config_ptr_for_spec = cfg_buf.into();
+            config_size_for_spec = cfg_size.into();
+            // Thunk path: no const template — the runtime ignores init_state when
+            // init_fn is set, and capturing one would re-introduce the aliasing
+            // hazard the thunk model fixes.
             (ptr_ty.const_null().into(), i64_ty.const_zero().into())
-        } else if child.init_state_fields.is_empty() {
-            // Case C: stateful actor but no init args — hard fail-closed.
-            return Err(CodegenError::FailClosed(format!(
-                "supervisor `{sup_name}` child `{}`: actor `{}` has non-empty state fields \
+        } else {
+            init_fn_ptr = ptr_ty.const_null().into();
+            config_ptr_for_spec = ptr_ty.const_null().into();
+            config_size_for_spec = i64_ty.const_zero().into();
+
+            // ── State template: build init_state / init_state_size ──────────────
+            //
+            // Fail-closed invariant: if the child actor has non-empty state fields
+            // but init_state_fields is empty, we must NOT emit a null template —
+            // that causes a NULL state pointer dereference at first field access.
+            //
+            // Three cases:
+            //   A. Stateless actor (state_field_names empty) → null/zero is correct.
+            //   B. Stateful actor + init_state_fields populated → build template.
+            //   C. Stateful actor + init_state_fields empty → CodegenError::FailClosed.
+            // Resolve the actor layout for state_field_names check.
+            let child_actor_layout_for_state = actor_layouts
+                .iter()
+                .find(|l| l.name == child.actor_name)
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "supervisor `{sup_name}` child `{}` actor `{}` has no ActorLayout for \
+                     state field check",
+                        child.name, child.actor_name
+                    ))
+                })?;
+
+            if child_actor_layout_for_state.state_field_names.is_empty() {
+                // Case A: stateless actor — null/zero is correct.
+                (ptr_ty.const_null().into(), i64_ty.const_zero().into())
+            } else if child.init_state_fields.is_empty() {
+                // Case C: stateful actor but no init args — hard fail-closed.
+                return Err(CodegenError::FailClosed(format!(
+                    "supervisor `{sup_name}` child `{}`: actor `{}` has non-empty state fields \
                  ({:?}) but SupervisorChildLayout.init_state_fields is empty — a null \
                  init_state template would cause a SIGSEGV at first field access; build \
                  the state template or reject at parse/HIR",
-                child.name, child.actor_name, child_actor_layout_for_state.state_field_names
-            )));
-        } else {
-            // Case B: stateful actor with init args — build the state template.
-            //
-            // SHIM: first slice supports POD (i64/i32/bool/f64) state only.
-            // WHY: owned-heap fields (String/Vec) require verified semantic clone
-            //   via `state_clone_fn`; byte-copy is only correct for plain-old-data.
-            // WHEN obsolete: follow-up slice after clone verification is proven.
-            // WHAT: extend ChildInitArg and verify `state_clone_fn` covers owned types.
-            let state_struct_ty = record_layouts.get(&child.actor_name).ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "supervisor `{sup_name}` child `{}` actor `{}` state struct type \
+                    child.name, child.actor_name, child_actor_layout_for_state.state_field_names
+                )));
+            } else {
+                // Case B: stateful actor with init args — build the state template.
+                //
+                // SHIM: first slice supports POD (i64/i32/bool/f64) state only.
+                // WHY: owned-heap fields (String/Vec) require verified semantic clone
+                //   via `state_clone_fn`; byte-copy is only correct for plain-old-data.
+                // WHEN obsolete: follow-up slice after clone verification is proven.
+                // WHAT: extend ChildInitArg and verify `state_clone_fn` covers owned types.
+                let state_struct_ty = record_layouts.get(&child.actor_name).ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "supervisor `{sup_name}` child `{}` actor `{}` state struct type \
                      not found in record_layouts; the actor state must be registered \
                      before supervisor bootstrap emission",
-                    child.name, child.actor_name
-                ))
-            })?;
+                        child.name, child.actor_name
+                    ))
+                })?;
 
-            // Alloca a stack slot for the state struct, fill it field by field.
-            let state_slot = builder
-                .build_alloca(*state_struct_ty, &format!("child_state_template_{idx}"))
-                .llvm_ctx("child state template alloca")?;
+                // Alloca a stack slot for the state struct, fill it field by field.
+                let state_slot = builder
+                    .build_alloca(*state_struct_ty, &format!("child_state_template_{idx}"))
+                    .llvm_ctx("child state template alloca")?;
 
-            for (field_name, init_arg) in &child.init_state_fields {
-                let field_idx = child_actor_layout_for_state
-                    .state_field_names
-                    .iter()
-                    .position(|n| n == field_name)
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed(format!(
-                            "supervisor `{sup_name}` child `{}` init arg `{field_name}` not \
+                for (field_name, init_arg) in &child.init_state_fields {
+                    let field_idx = child_actor_layout_for_state
+                        .state_field_names
+                        .iter()
+                        .position(|n| n == field_name)
+                        .ok_or_else(|| {
+                            CodegenError::FailClosed(format!(
+                                "supervisor `{sup_name}` child `{}` init arg `{field_name}` not \
                              found in actor `{}` state_field_names; MIR validation should \
                              have caught this",
-                            child.name, child.actor_name
-                        ))
-                    })?;
+                                child.name, child.actor_name
+                            ))
+                        })?;
 
-                // Materialise each init arg at the field's exact width. LLVM
-                // integer types are sign-agnostic — the const's bit pattern
-                // carries the value — so the unsigned variants share the same
-                // `iN` type as their signed siblings; `build_store` then writes
-                // exactly N/8 bytes into the field slot. The signed widths
-                // sign-extend the literal into the const (`true`); the unsigned
-                // widths zero-extend (`false`), so a value that uses the high
-                // bit (e.g. `u8` 200) keeps its bit pattern.
-                let field_val: BasicValueEnum<'ctx> = match init_arg {
-                    ChildInitArg::I8(n) => ctx.i8_type().const_int(*n as u64, true).into(),
-                    ChildInitArg::I16(n) => ctx.i16_type().const_int(*n as u64, true).into(),
-                    ChildInitArg::I32(n) => i32_ty.const_int(*n as u64, true).into(),
-                    ChildInitArg::I64(n) => i64_ty.const_int(*n as u64, true).into(),
-                    ChildInitArg::U8(n) => ctx.i8_type().const_int(u64::from(*n), false).into(),
-                    ChildInitArg::U16(n) => ctx.i16_type().const_int(u64::from(*n), false).into(),
-                    ChildInitArg::U32(n) => i32_ty.const_int(u64::from(*n), false).into(),
-                    ChildInitArg::U64(n) => i64_ty.const_int(*n, false).into(),
-                    ChildInitArg::Bool(b) => ctx
-                        .bool_type()
-                        .const_int(if *b { 1 } else { 0 }, false)
-                        .into(),
-                    ChildInitArg::F64(f) => ctx.f64_type().const_float(*f).into(),
-                    // The v0.6 init-closure restart model carries config-derived
-                    // init args as `ConfigField`. Emitting them requires the
-                    // codegen init thunk + the construction-time config buffer the
-                    // bootstrap captures and passes to the thunk on every spawn /
-                    // restart — follow-up work. Fail CLOSED here so a config-field
-                    // init arg can never be silently mis-emitted into a const
-                    // template; the runtime ABI + MIR representation are already in
-                    // place (`HewChildSpec.init_fn` / `ChildInitArg::ConfigField`).
-                    ChildInitArg::ConfigField {
-                        config_param_name,
-                        field_name: cfg_field,
-                        ..
-                    } => {
-                        return Err(CodegenError::FailClosed(format!(
-                            "supervisor `{sup_name}` child `{}`: init arg reads config field \
-                             `{config_param_name}.{cfg_field}`; the init-closure config thunk \
-                             (bootstrap config capture + per-child init thunk) is follow-up \
-                             work — the runtime ABI (HewChildSpec.init_fn) \
-                             and MIR representation (ChildInitArg::ConfigField) are landed",
-                            child.name
-                        )));
-                    }
+                    // Materialise each init arg at the field's exact width. LLVM
+                    // integer types are sign-agnostic — the const's bit pattern
+                    // carries the value — so the unsigned variants share the same
+                    // `iN` type as their signed siblings; `build_store` then writes
+                    // exactly N/8 bytes into the field slot. The signed widths
+                    // sign-extend the literal into the const (`true`); the unsigned
+                    // widths zero-extend (`false`), so a value that uses the high
+                    // bit (e.g. `u8` 200) keeps its bit pattern.
+                    let field_val: BasicValueEnum<'ctx> = match init_arg {
+                        ChildInitArg::I8(n) => ctx.i8_type().const_int(*n as u64, true).into(),
+                        ChildInitArg::I16(n) => ctx.i16_type().const_int(*n as u64, true).into(),
+                        ChildInitArg::I32(n) => i32_ty.const_int(*n as u64, true).into(),
+                        ChildInitArg::I64(n) => i64_ty.const_int(*n as u64, true).into(),
+                        ChildInitArg::U8(n) => ctx.i8_type().const_int(u64::from(*n), false).into(),
+                        ChildInitArg::U16(n) => {
+                            ctx.i16_type().const_int(u64::from(*n), false).into()
+                        }
+                        ChildInitArg::U32(n) => i32_ty.const_int(u64::from(*n), false).into(),
+                        ChildInitArg::U64(n) => i64_ty.const_int(*n, false).into(),
+                        ChildInitArg::Bool(b) => ctx
+                            .bool_type()
+                            .const_int(if *b { 1 } else { 0 }, false)
+                            .into(),
+                        ChildInitArg::F64(f) => ctx.f64_type().const_float(*f).into(),
+                        // A `ConfigField` init arg routes the WHOLE child through the
+                        // init thunk path (selected by `has_config_field` above), so
+                        // this const-template loop never sees one. If it does, the
+                        // branch selection diverged — fail closed rather than emit a
+                        // garbage const for a config-derived field.
+                        ChildInitArg::ConfigField {
+                            config_param_name,
+                            field_name: cfg_field,
+                            ..
+                        } => {
+                            return Err(CodegenError::FailClosed(format!(
+                                "supervisor `{sup_name}` child `{}`: a config-field init arg \
+                             (`{config_param_name}.{cfg_field}`) reached the literal-template \
+                             loop; a config child must take the init-thunk path \
+                             (has_config_field branch) — codegen branch-selection bug",
+                                child.name
+                            )));
+                        }
+                    };
+
+                    let field_gep = builder
+                        .build_struct_gep(
+                            *state_struct_ty,
+                            state_slot,
+                            u32::try_from(field_idx).expect("field index fits u32"),
+                            &format!("child_state_{idx}_field_{field_name}"),
+                        )
+                        .llvm_ctx("child state template field gep")?;
+                    builder
+                        .build_store(field_gep, field_val)
+                        .llvm_ctx("child state template field store")?;
+                }
+
+                // Get the size of the state struct.
+                let state_size_val = state_struct_ty.size_of().ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "supervisor `{sup_name}` child `{}` actor `{}` state struct has no \
+                     statically known size",
+                        child.name, child.actor_name
+                    ))
+                })?;
+                let state_size_i64 = if state_size_val.get_type() == i64_ty {
+                    state_size_val
+                } else {
+                    builder
+                        .build_int_z_extend(state_size_val, i64_ty, "child_state_size")
+                        .llvm_ctx("child state size zext")?
                 };
 
-                let field_gep = builder
-                    .build_struct_gep(
-                        *state_struct_ty,
+                // Malloc a heap buffer and memcpy the stack template into it.
+                // The runtime's hew_supervisor_add_child_spec deep-copies this
+                // template (supervisor.rs:1861-1891) and takes ownership of the
+                // copy. We own the original malloc until add_child_spec returns,
+                // then we do NOT free it — the runtime frees the deep copy via its
+                // own allocator. Our malloc is leaked intentionally; the runtime's
+                // copy is the live template.
+                //
+                // WHY malloc rather than alloca: the runtime's add_child_spec
+                // does a synchronous memcpy before returning, so passing a stack
+                // pointer would be safe. However, heap allocation makes ownership
+                // explicit and avoids any LLVM lifetime reasoning across the C call.
+                let malloc_fn = get_or_declare_libc_malloc(ctx, llvm_mod);
+                // `malloc`'s size param is `size_t` (i32 on wasm32, i64 native).
+                // Supervisors are HIR-gated off wasm32 so this path is unreachable
+                // there, but keep the call width-correct: truncate i64 → size_ty
+                // when the target is narrower. On native, size_ty == i64 → no-op.
+                let malloc_size_ty = runtime_size_ty(ctx, llvm_mod);
+                let child_state_size = if malloc_size_ty == i64_ty {
+                    state_size_i64
+                } else {
+                    builder
+                        .build_int_truncate(
+                            state_size_i64,
+                            malloc_size_ty,
+                            "child_state_size_trunc",
+                        )
+                        .llvm_ctx("child state size trunc")?
+                };
+                let heap_ptr = builder
+                    .build_call(
+                        malloc_fn,
+                        &[child_state_size.into()],
+                        &format!("child_state_heap_{idx}"),
+                    )
+                    .llvm_ctx("child state malloc")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "malloc returned void — signature mismatch".to_string(),
+                        )
+                    })?
+                    .into_pointer_value();
+
+                // Derive the ABI alignment of the state struct from the host
+                // target data so the memcpy instruction carries the real
+                // alignment rather than the conservative align=1. Supervisors
+                // are HIR-gated off wasm32, so `host_target_data` is always
+                // the right authority here. Over-claiming alignment is UB;
+                // `get_abi_alignment` returns the alignment LLVM guarantees
+                // for this struct on the ABI boundary, which is exact.
+                let state_align = host_target_data().get_abi_alignment(state_struct_ty);
+                builder
+                    .build_memcpy(
+                        heap_ptr,
+                        state_align,
                         state_slot,
-                        u32::try_from(field_idx).expect("field index fits u32"),
-                        &format!("child_state_{idx}_field_{field_name}"),
+                        state_align,
+                        state_size_i64,
                     )
-                    .llvm_ctx("child state template field gep")?;
-                builder
-                    .build_store(field_gep, field_val)
-                    .llvm_ctx("child state template field store")?;
+                    .llvm_ctx("child state template memcpy")?;
+
+                (heap_ptr.into(), state_size_i64.into())
             }
-
-            // Get the size of the state struct.
-            let state_size_val = state_struct_ty.size_of().ok_or_else(|| {
-                CodegenError::FailClosed(format!(
-                    "supervisor `{sup_name}` child `{}` actor `{}` state struct has no \
-                     statically known size",
-                    child.name, child.actor_name
-                ))
-            })?;
-            let state_size_i64 = if state_size_val.get_type() == i64_ty {
-                state_size_val
-            } else {
-                builder
-                    .build_int_z_extend(state_size_val, i64_ty, "child_state_size")
-                    .llvm_ctx("child state size zext")?
-            };
-
-            // Malloc a heap buffer and memcpy the stack template into it.
-            // The runtime's hew_supervisor_add_child_spec deep-copies this
-            // template (supervisor.rs:1861-1891) and takes ownership of the
-            // copy. We own the original malloc until add_child_spec returns,
-            // then we do NOT free it — the runtime frees the deep copy via its
-            // own allocator. Our malloc is leaked intentionally; the runtime's
-            // copy is the live template.
-            //
-            // WHY malloc rather than alloca: the runtime's add_child_spec
-            // does a synchronous memcpy before returning, so passing a stack
-            // pointer would be safe. However, heap allocation makes ownership
-            // explicit and avoids any LLVM lifetime reasoning across the C call.
-            let malloc_fn = get_or_declare_libc_malloc(ctx, llvm_mod);
-            // `malloc`'s size param is `size_t` (i32 on wasm32, i64 native).
-            // Supervisors are HIR-gated off wasm32 so this path is unreachable
-            // there, but keep the call width-correct: truncate i64 → size_ty
-            // when the target is narrower. On native, size_ty == i64 → no-op.
-            let malloc_size_ty = runtime_size_ty(ctx, llvm_mod);
-            let child_state_size = if malloc_size_ty == i64_ty {
-                state_size_i64
-            } else {
-                builder
-                    .build_int_truncate(state_size_i64, malloc_size_ty, "child_state_size_trunc")
-                    .llvm_ctx("child state size trunc")?
-            };
-            let heap_ptr = builder
-                .build_call(
-                    malloc_fn,
-                    &[child_state_size.into()],
-                    &format!("child_state_heap_{idx}"),
-                )
-                .llvm_ctx("child state malloc")?
-                .try_as_basic_value()
-                .basic()
-                .ok_or_else(|| {
-                    CodegenError::FailClosed(
-                        "malloc returned void — signature mismatch".to_string(),
-                    )
-                })?
-                .into_pointer_value();
-
-            // Derive the ABI alignment of the state struct from the host
-            // target data so the memcpy instruction carries the real
-            // alignment rather than the conservative align=1. Supervisors
-            // are HIR-gated off wasm32, so `host_target_data` is always
-            // the right authority here. Over-claiming alignment is UB;
-            // `get_abi_alignment` returns the alignment LLVM guarantees
-            // for this struct on the ABI boundary, which is exact.
-            let state_align = host_target_data().get_abi_alignment(state_struct_ty);
-            builder
-                .build_memcpy(
-                    heap_ptr,
-                    state_align,
-                    state_slot,
-                    state_align,
-                    state_size_i64,
-                )
-                .llvm_ctx("child state template memcpy")?;
-
-            (heap_ptr.into(), state_size_i64.into())
-        }
-    };
+        };
 
     let field_values: [(u32, BasicValueEnum<'ctx>); 14] = [
         (0, name_ptr.into()),
@@ -6911,14 +7119,16 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
         (8, i32_ty.const_int(cycle_flag, false).into()), // cycle_capable from checker side-table
         (9, on_crash_ptr), // on_crash: fn-pointer when child's actor has #[on(crash)], null otherwise
         (10, lifecycle_ptr), // lifecycle_fn: __hew_lifecycle_<actor> when child's actor has init/#[on(start)], null otherwise
-        // v0.6 init-closure restart model trailing fields. The init-thunk
-        // codegen is follow-up work; until it lands, every child takes the
-        // template path, so init_fn is null (the runtime then ignores config /
-        // config_size). Storing them explicitly keeps the literal ABI-exact
-        // against the 14-field runtime struct (no uninitialised tail).
-        (11, ptr_ty.const_null().into()), // init_fn: null (template path)
-        (12, ptr_ty.const_null().into()), // config: null
-        (13, i64_ty.const_zero().into()), // config_size: 0
+        // v0.6 init-closure restart model trailing fields. For a config-init
+        // child these carry the per-child init thunk + the borrowed,
+        // supervisor-owned config buffer + its size; the literal carrier IS the
+        // load-bearing path for the INITIAL spawn (add_child_spec reads init_fn
+        // from the literal before any post-hoc setter runs), exactly like
+        // lifecycle_fn. A literal-only child leaves init_fn null (the runtime
+        // then ignores config / config_size and takes the template path).
+        (11, init_fn_ptr), // init_fn: per-child thunk (null on template path)
+        (12, config_ptr_for_spec), // config: borrowed supervisor config buffer (null when no thunk)
+        (13, config_size_for_spec), // config_size: buffer size (0 when no thunk)
     ];
     for (field_idx, value) in field_values {
         let gep = builder
@@ -6941,6 +7151,37 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
             &format!("hew_supervisor_add_child_spec_call_{idx}"),
         )
         .llvm_ctx("hew_supervisor_add_child_spec call")?;
+
+    // Register the init thunk + config buffer for parity / back-fill symmetry
+    // with the other per-child setters. The literal carrier above already
+    // installed init_fn for the INITIAL spawn (add_child_spec reads it); this
+    // setter adopts the supervisor-owned config buffer once and re-installs the
+    // thunk so an out-of-tree C caller that installs post-hoc is self-consistent
+    // (the runtime adopt is idempotent on the same pointer). Emitted only for a
+    // config-init child (init_fn non-null).
+    if has_config_field {
+        let (cfg_buf, cfg_size) = config_buf.ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "supervisor `{sup_name}` child `{}` is a config-init child but no config \
+                 buffer is available at the setter site — codegen ordering bug",
+                child.name
+            ))
+        })?;
+        let child_idx_const = i32_ty.const_int(idx as u64, true);
+        builder
+            .build_call(
+                set_child_init_fn,
+                &[
+                    sup.into(),
+                    child_idx_const.into(),
+                    init_fn_ptr.into_pointer_value().into(),
+                    cfg_buf.into(),
+                    cfg_size.into(),
+                ],
+                &format!("hew_supervisor_set_child_init_fn_call_{idx}"),
+            )
+            .llvm_ctx("hew_supervisor_set_child_init_fn call")?;
+    }
 
     // Register the lifecycle wrapper for parity/back-fill symmetry with the
     // state setters. The INITIAL-spawn lifecycle fire already ran inside the
@@ -7007,6 +7248,378 @@ fn emit_supervisor_child_spec_and_register<'ctx>(
             .llvm_ctx("hew_supervisor_set_child_state_clone call")?;
     }
     Ok(())
+}
+
+/// Build the LLVM struct type for `HewChildInitResult` (`{ state: ptr, size:
+/// i64 }`), the by-value return of a per-child init thunk.
+///
+/// MUST match `hew-runtime/src/supervisor.rs::HewChildInitResult` field order
+/// (`state`, then `size`). The `#[repr(C)]` two-field {ptr, usize} returns in
+/// two registers on the native ABIs supervisors target (supervisors are
+/// HIR-gated off wasm32). Field-order drift here is wrong-code at the FFI
+/// boundary, so this mirror is pinned by `hew_child_init_result_struct_matches_runtime_abi`.
+fn hew_child_init_result_struct_type(ctx: &Context) -> StructType<'_> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    ctx.struct_type(&[ptr_ty.into(), i64_ty.into()], false)
+}
+
+/// Emit a per-child init thunk `__hew_child_init_<sup>_<child>` matching the
+/// `HewChildInitFn` ABI (`unsafe extern "C" fn(config: *const c_void) ->
+/// HewChildInitResult`).
+///
+/// The thunk produces a FRESH, fully-owned actor-state wrapper on every call
+/// (initial spawn AND every restart): it mallocs the actor state struct, then
+/// for each init arg either loads a scalar from the config buffer
+/// (`config.field`), deep-clones an owned config field (S3), or materialises a
+/// literal constant, storing each into the fresh state. The config pointer is a
+/// BORROW (supervisor-owned, freed once at teardown); the thunk only READS it.
+/// Returns `{ null, 0 }` on malloc OOM (fail-closed — the restart path then
+/// applies backoff and leaves the slot null).
+#[allow(clippy::too_many_arguments)]
+fn emit_child_init_thunk<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    sup_name: &str,
+    child: &SupervisorChildLayout,
+    config_param: &hew_mir::SupervisorConfigParam,
+    actor_layouts: &[ActorLayout],
+    record_layouts: &RecordLayoutMap<'ctx>,
+    mir_record_layouts: &[RecordLayout],
+) -> CodegenResult<FunctionValue<'ctx>> {
+    let thunk_name = format!(
+        "__hew_child_init_{}_{}",
+        mangle_dotted_name(sup_name),
+        mangle_dotted_name(&child.name)
+    );
+    if let Some(existing) = llvm_mod.get_function(&thunk_name) {
+        if existing.count_basic_blocks() > 0 {
+            return Ok(existing);
+        }
+    }
+
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let i64_ty = ctx.i64_type();
+    let i32_ty = ctx.i32_type();
+
+    let result_ty = hew_child_init_result_struct_type(ctx);
+    let thunk_ty = result_ty.fn_type(&[ptr_ty.into()], false);
+    let thunk = llvm_mod
+        .get_function(&thunk_name)
+        .unwrap_or_else(|| llvm_mod.add_function(&thunk_name, thunk_ty, Some(Linkage::Internal)));
+
+    // Resolve the actor state struct type + its field-name order.
+    let actor_state_ty = *record_layouts
+        .get(child.actor_name.as_str())
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "init thunk for supervisor `{sup_name}` child `{}`: actor `{}` state struct type \
+             not found in record_layouts",
+                child.name, child.actor_name
+            ))
+        })?;
+    let child_actor_layout = actor_layouts
+        .iter()
+        .find(|l| l.name == child.actor_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "init thunk for supervisor `{sup_name}` child `{}`: actor `{}` has no ActorLayout",
+                child.name, child.actor_name
+            ))
+        })?;
+
+    // Resolve the config struct type + field order (for the GEP per ConfigField).
+    let config_struct_ty = *record_layouts
+        .get(config_param.config_ty_name.as_str())
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "init thunk for supervisor `{sup_name}` child `{}`: config struct `{}` not found \
+                 in record_layouts",
+                child.name, config_param.config_ty_name
+            ))
+        })?;
+    let config_mir_layout = mir_record_layouts
+        .iter()
+        .find(|r| r.name == config_param.config_ty_name)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!(
+                "init thunk for supervisor `{sup_name}` child `{}`: config struct `{}` has no MIR \
+                 record layout for field-index resolution",
+                child.name, config_param.config_ty_name
+            ))
+        })?;
+
+    let builder = ctx.create_builder();
+    let entry = ctx.append_basic_block(thunk, "entry");
+    let oom_bb = ctx.append_basic_block(thunk, "oom");
+    let build_bb = ctx.append_basic_block(thunk, "build");
+    builder.position_at_end(entry);
+
+    let config_ptr = thunk
+        .get_nth_param(0)
+        .ok_or_else(|| {
+            CodegenError::FailClosed(format!("init thunk `{thunk_name}` missing config param"))
+        })?
+        .into_pointer_value();
+
+    // Malloc the fresh actor state wrapper (libc — ALLOCATOR-PAIRING with the
+    // runtime's hew_actor_free / state_drop_fn).
+    let state_size_val = actor_state_ty.size_of().ok_or_else(|| {
+        CodegenError::FailClosed(format!(
+            "init thunk for child `{}`: actor state struct has no statically known size",
+            child.name
+        ))
+    })?;
+    let state_size_i64 = if state_size_val.get_type() == i64_ty {
+        state_size_val
+    } else {
+        builder
+            .build_int_z_extend(state_size_val, i64_ty, "state_size_i64")
+            .llvm_ctx("init thunk state size zext")?
+    };
+    let malloc_fn = get_or_declare_libc_malloc(ctx, llvm_mod);
+    let malloc_size_ty = runtime_size_ty(ctx, llvm_mod);
+    let malloc_size = if malloc_size_ty == i64_ty {
+        state_size_i64
+    } else {
+        builder
+            .build_int_truncate(state_size_i64, malloc_size_ty, "state_size_trunc")
+            .llvm_ctx("init thunk state size trunc")?
+    };
+    let state_ptr = builder
+        .build_call(malloc_fn, &[malloc_size.into()], "init_thunk_state_malloc")
+        .llvm_ctx("init thunk state malloc")?
+        .try_as_basic_value()
+        .basic()
+        .ok_or_else(|| CodegenError::FailClosed("malloc returned void".into()))?
+        .into_pointer_value();
+    let is_null = builder
+        .build_is_null(state_ptr, "state_is_null")
+        .llvm_ctx("init thunk null cmp")?;
+    builder
+        .build_conditional_branch(is_null, oom_bb, build_bb)
+        .llvm_ctx("init thunk oom branch")?;
+
+    // ── OOM: return { null, 0 } (fail closed) ───────────────────────────
+    builder.position_at_end(oom_bb);
+    let oom_result = result_ty.const_zero();
+    builder
+        .build_return(Some(&oom_result))
+        .llvm_ctx("init thunk oom return")?;
+
+    // ── Build: populate each init field from config / literal ───────────
+    builder.position_at_end(build_bb);
+    for (field_name, init_arg) in &child.init_state_fields {
+        // Resolve the destination field index in the actor state struct.
+        let dst_idx = child_actor_layout
+            .state_field_names
+            .iter()
+            .position(|n| n == field_name)
+            .ok_or_else(|| {
+                CodegenError::FailClosed(format!(
+                    "init thunk for child `{}`: init arg `{field_name}` not found in actor `{}` \
+                     state_field_names",
+                    child.name, child.actor_name
+                ))
+            })?;
+        let dst_gep = builder
+            .build_struct_gep(
+                actor_state_ty,
+                state_ptr,
+                u32::try_from(dst_idx).expect("field index fits u32"),
+                &format!("init_thunk_dst_{field_name}"),
+            )
+            .llvm_ctx("init thunk dst gep")?;
+
+        match init_arg {
+            ChildInitArg::ConfigField {
+                config_ty_name,
+                field_name: cfg_field,
+                field_ty,
+                owned,
+                ..
+            } => {
+                // Defence-in-depth: the per-field config struct name must match
+                // the supervisor's single config param type.
+                if config_ty_name != &config_param.config_ty_name {
+                    return Err(CodegenError::FailClosed(format!(
+                        "init thunk for child `{}`: config field `{cfg_field}` names config type \
+                         `{config_ty_name}` but the supervisor config param is `{}`",
+                        child.name, config_param.config_ty_name
+                    )));
+                }
+                // GEP the config field by its index in the config struct.
+                let cfg_idx = config_mir_layout
+                    .field_names
+                    .iter()
+                    .position(|n| n == cfg_field)
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(format!(
+                            "init thunk for child `{}`: config field `{cfg_field}` not found in \
+                             config struct `{config_ty_name}` field names",
+                            child.name
+                        ))
+                    })?;
+                let cfg_gep = builder
+                    .build_struct_gep(
+                        config_struct_ty,
+                        config_ptr,
+                        u32::try_from(cfg_idx).expect("config field index fits u32"),
+                        &format!("init_thunk_cfg_{cfg_field}"),
+                    )
+                    .llvm_ctx("init thunk config gep")?;
+
+                if *owned {
+                    // S3 owned per-field clone-in-thunk.
+                    emit_owned_config_field_clone(
+                        ctx,
+                        llvm_mod,
+                        &builder,
+                        child,
+                        field_ty,
+                        mir_record_layouts,
+                        cfg_gep,
+                        dst_gep,
+                    )?;
+                } else {
+                    // Scalar config field: load the value at its resolved width
+                    // and store it into the fresh state field.
+                    let scalar_llvm = resolve_ty(ctx, field_ty, record_layouts)?;
+                    let loaded = builder
+                        .build_load(
+                            scalar_llvm,
+                            cfg_gep,
+                            &format!("init_thunk_load_{cfg_field}"),
+                        )
+                        .llvm_ctx("init thunk config scalar load")?;
+                    builder
+                        .build_store(dst_gep, loaded)
+                        .llvm_ctx("init thunk scalar store")?;
+                }
+            }
+            // Literal init args: materialise the const at the field's width.
+            literal => {
+                let field_val: BasicValueEnum<'ctx> = match literal {
+                    ChildInitArg::I8(n) => ctx.i8_type().const_int(*n as u64, true).into(),
+                    ChildInitArg::I16(n) => ctx.i16_type().const_int(*n as u64, true).into(),
+                    ChildInitArg::I32(n) => i32_ty.const_int(*n as u64, true).into(),
+                    ChildInitArg::I64(n) => i64_ty.const_int(*n as u64, true).into(),
+                    ChildInitArg::U8(n) => ctx.i8_type().const_int(u64::from(*n), false).into(),
+                    ChildInitArg::U16(n) => ctx.i16_type().const_int(u64::from(*n), false).into(),
+                    ChildInitArg::U32(n) => i32_ty.const_int(u64::from(*n), false).into(),
+                    ChildInitArg::U64(n) => i64_ty.const_int(*n, false).into(),
+                    ChildInitArg::Bool(b) => ctx.bool_type().const_int(u64::from(*b), false).into(),
+                    ChildInitArg::F64(f) => ctx.f64_type().const_float(*f).into(),
+                    ChildInitArg::ConfigField { .. } => unreachable!(
+                        "ConfigField handled in the arm above; this branch is the literal set"
+                    ),
+                };
+                builder
+                    .build_store(dst_gep, field_val)
+                    .llvm_ctx("init thunk literal store")?;
+            }
+        }
+    }
+
+    // Return { state_ptr, state_size }.
+    let mut result = result_ty.get_undef();
+    result = builder
+        .build_insert_value(result, state_ptr, 0, "init_result_state")
+        .llvm_ctx("init thunk result insert state")?
+        .into_struct_value();
+    result = builder
+        .build_insert_value(result, state_size_i64, 1, "init_result_size")
+        .llvm_ctx("init thunk result insert size")?
+        .into_struct_value();
+    builder
+        .build_return(Some(&result))
+        .llvm_ctx("init thunk return")?;
+
+    Ok(thunk)
+}
+
+/// Deep-clone an owned config field (`string`/`Vec`/…) from the config buffer
+/// into the fresh actor state, producing a value with no aliasing to the config
+/// buffer (S3). The cloned value is a NEW allocation the actor's `state_drop_fn`
+/// frees on the next crash/teardown; the config buffer field is left intact (a
+/// read-only borrow). Reuses the same runtime clone helpers actor state-clone
+/// uses (`clone_helper_for_kind`) so there is no second owned-clone path.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "threads the codegen context (ctx/mod/builder) plus the source and \
+              destination field pointers for one owned config-field clone step"
+)]
+fn emit_owned_config_field_clone<'ctx>(
+    ctx: &'ctx Context,
+    llvm_mod: &LlvmModule<'ctx>,
+    builder: &Builder<'ctx>,
+    child: &SupervisorChildLayout,
+    field_ty: &ResolvedTy,
+    mir_record_layouts: &[RecordLayout],
+    cfg_field_ptr: PointerValue<'ctx>,
+    dst_field_ptr: PointerValue<'ctx>,
+) -> CodegenResult<()> {
+    let ptr_ty = ctx.ptr_type(AddressSpace::default());
+    let mut visited = std::collections::HashSet::new();
+    let kind = hew_mir::classify_state_field(field_ty, mir_record_layouts, &mut visited).map_err(
+        |err| {
+            CodegenError::FailClosed(format!(
+                "init thunk owned config field for child `{}`: field type {field_ty:?} could not \
+                 be classified for cloning ({err:?}) — owned config init supports only \
+                 clone-able types",
+                child.name
+            ))
+        },
+    )?;
+    match clone_helper_for_kind(&kind)? {
+        Some(CloneHelper::Allocating { name }) => {
+            // Allocating clone: helper takes the SOURCE owned pointer (loaded
+            // from the config field) and returns a fresh owned pointer. Load
+            // the config field's pointer value, clone it, store the fresh
+            // pointer into the destination state field.
+            let helper =
+                get_or_declare_clone_helper(ctx, llvm_mod, &CloneHelper::Allocating { name });
+            let src_val = builder
+                .build_load(ptr_ty, cfg_field_ptr, "owned_cfg_src")
+                .llvm_ctx("owned config field load")?;
+            let cloned = builder
+                .build_call(helper, &[src_val.into()], "owned_cfg_clone")
+                .llvm_ctx("owned config field clone call")?
+                .try_as_basic_value()
+                .basic()
+                .ok_or_else(|| {
+                    CodegenError::FailClosed(format!(
+                        "owned config clone helper `{name}` returned void"
+                    ))
+                })?;
+            builder
+                .build_store(dst_field_ptr, cloned)
+                .llvm_ctx("owned config field store")?;
+            Ok(())
+        }
+        Some(CloneHelper::RefcountBump { name }) => {
+            // Refcount-bump clone (e.g. bytes): byte-copy the field pointer
+            // into the destination first, then bump the refcount so both the
+            // config buffer and the fresh state hold a counted reference.
+            let src_val = builder
+                .build_load(ptr_ty, cfg_field_ptr, "owned_cfg_src")
+                .llvm_ctx("owned config field load")?;
+            builder
+                .build_store(dst_field_ptr, src_val)
+                .llvm_ctx("owned config field copy")?;
+            let helper =
+                get_or_declare_clone_helper(ctx, llvm_mod, &CloneHelper::RefcountBump { name });
+            builder
+                .build_call(helper, &[dst_field_ptr.into()], "owned_cfg_bump")
+                .llvm_ctx("owned config field refcount bump")?;
+            Ok(())
+        }
+        None => Err(CodegenError::FailClosed(format!(
+            "init thunk owned config field for child `{}`: field type {field_ty:?} classified \
+             as BitCopy but reached the owned-clone path — owned/scalar branch mismatch",
+            child.name
+        ))),
+    }
 }
 
 // ─── W2.002 Stage 3: per-actor state_clone / state_drop BODY synthesis ──────
@@ -34179,6 +34792,7 @@ fn build_module_for_target<'ctx>(
             &fn_symbols,
             &pipeline.actor_layouts,
             &record_layouts,
+            &pipeline.record_layouts,
         )?;
     }
     for func in &pipeline.raw_mir {
@@ -48399,6 +49013,40 @@ fn main() {
             td.get_abi_size(&llvm_struct) as usize,
             std::mem::size_of::<HewChildSpec>(),
             "HewChildSpec total size mismatch between the LLVM mirror and the Rust struct"
+        );
+    }
+
+    /// The init-thunk return `HewChildInitResult` LLVM mirror must match the
+    /// `#[repr(C)]` runtime struct field-for-field. The codegen-emitted thunk
+    /// returns this BY VALUE and `restart_child_from_spec` reads `state`/`size`
+    /// back; a layout drift reads the size as the state pointer (or vice versa)
+    /// — a wrong-code FFI hazard at every supervised spawn / restart.
+    #[test]
+    fn hew_child_init_result_struct_matches_runtime_abi() {
+        use hew_runtime::supervisor::HewChildInitResult;
+
+        let ctx = Context::create();
+        let td = host_target_data();
+        let llvm_struct = hew_child_init_result_struct_type(&ctx);
+
+        let fields: [(usize, u32, &str); 2] = [
+            (std::mem::offset_of!(HewChildInitResult, state), 0, "state"),
+            (std::mem::offset_of!(HewChildInitResult, size), 1, "size"),
+        ];
+        for (rust_offset, llvm_idx, name) in fields {
+            let llvm_offset = td
+                .offset_of_element(&llvm_struct, llvm_idx)
+                .unwrap_or_else(|| panic!("LLVM struct has no element {llvm_idx} for `{name}`"));
+            assert_eq!(
+                llvm_offset as usize, rust_offset,
+                "HewChildInitResult field `{name}` offset mismatch: LLVM {llvm_offset} vs Rust \
+                 {rust_offset}"
+            );
+        }
+        assert_eq!(
+            td.get_abi_size(&llvm_struct) as usize,
+            std::mem::size_of::<HewChildInitResult>(),
+            "HewChildInitResult total size mismatch between the LLVM mirror and the Rust struct"
         );
     }
 

@@ -533,6 +533,12 @@ fn publish_connection_established(
         }
         // SAFETY: pointer validity is checked by the callee.
         unsafe { hew_routing_add_route(mgr.routing_table, peer_node_id, conn_id) };
+        if std::env::var_os("HEW_DIAG_SEND").is_some() {
+            eprintln!(
+                "[DIAG route-install] local={} peer_node={peer_node_id} conn_id={conn_id} published={published}",
+                mgr.local_node_id
+            );
+        }
     }
 
     flush_registry_gossip_to_connection(mgr, conn_id, peer_feature_flags);
@@ -1485,6 +1491,9 @@ fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &AtomicI32) {
 
     let unexpected_drop = stop_flag.load(Ordering::Acquire) == 0;
     if unexpected_drop {
+        if std::env::var_os("HEW_DIAG_SEND").is_some() {
+            eprintln!("[DIAG reader-drop] UNEXPECTED drop conn_id={conn_id} -> route removed + reconnect spawned");
+        }
         if !mgr.is_null() {
             crate::hew_node::fail_remote_replies_for_connection(mgr.cast_const(), conn_id);
         }
@@ -2350,6 +2359,12 @@ pub unsafe extern "C" fn hew_connmgr_send(
             active.is_some()
         });
         if !ok {
+            if std::env::var_os("HEW_DIAG_SEND").is_some() {
+                let conns = snapshot_connections_json(mgr_ref);
+                eprintln!(
+                    "[DIAG connmgr_send] FAIL path=no-active-conn-for-node conn_id={conn_id} target_node={target_node_id} conns={conns}"
+                );
+            }
             return -1;
         }
         #[cfg(feature = "encryption")]

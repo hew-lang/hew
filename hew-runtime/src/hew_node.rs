@@ -1663,6 +1663,12 @@ extern "C" fn node_registry_gossip_callback(
                 ));
             }
             _ => {
+                if std::env::var_os("HEW_DIAG_SEND").is_some() {
+                    eprintln!(
+                        "[DIAG gossip-resolve] add name={key} actor_id={actor_id:#x} node_from_pid={}",
+                        crate::pid::hew_pid_node(actor_id)
+                    );
+                }
                 map.insert(key, actor_id);
             }
         }
@@ -2423,6 +2429,39 @@ pub unsafe extern "C" fn hew_node_lookup(node: *mut HewNode, name: *const c_char
     map.get(&key).copied().unwrap_or(0)
 }
 
+/// DIAG (revertible, env-gated by `HEW_DIAG_SEND`): label each `hew_node_send`
+/// outcome for the Linux send-vs-join race investigation. No-op unless the env
+/// var is set. `outcome` is the path tag (`route-missing`, `route-ok`, …); on the
+/// `route-missing` tag it also dumps the connection-table snapshot so the failing
+/// state is captured. Extracted from `hew_node_send` to keep it under the
+/// line-count lint while the instrumentation rides this throwaway branch.
+fn diag_send_log(
+    node: &HewNode,
+    outcome: &str,
+    target_node_id: u16,
+    target_pid: u64,
+    conn_id: c_int,
+) {
+    if std::env::var_os("HEW_DIAG_SEND").is_none() {
+        return;
+    }
+    let fail = outcome != "route-ok";
+    let kind = if fail { "FAIL path" } else { "" };
+    let conns = if outcome == "route-missing" && !node.conn_mgr.is_null() {
+        // SAFETY: conn_mgr non-null checked above; valid while node is running.
+        format!(" conns={}", unsafe {
+            connection::snapshot_connections_json(&*node.conn_mgr)
+        })
+    } else {
+        String::new()
+    };
+    eprintln!(
+        "[DIAG send] {kind}{}{outcome} self={} target_node={target_node_id} conn_id={conn_id} target_pid={target_pid:#x}{conns}",
+        if fail { "=" } else { " " },
+        node.node_id
+    );
+}
+
 /// Send a message to a target PID, routing local vs remote by PID node ID.
 ///
 /// `dispatch` is the TARGET actor TYPE's dispatch function pointer, keying the
@@ -2449,6 +2488,7 @@ pub unsafe extern "C" fn hew_node_send(
     // SAFETY: caller guarantees node pointer validity.
     let node = unsafe { &*node };
     if node.state.load(Ordering::Acquire) != NODE_STATE_RUNNING {
+        diag_send_log(node, "node-not-running", 0, target_pid, -1);
         return -1;
     }
 
@@ -2467,13 +2507,16 @@ pub unsafe extern "C" fn hew_node_send(
     }
 
     if node.conn_mgr.is_null() {
+        diag_send_log(node, "connmgr-null", target_node_id, target_pid, -1);
         return -1;
     }
     // SAFETY: routing table pointer is valid while node is running.
     let conn_id = unsafe { routing::hew_routing_lookup(node.routing_table, target_pid) };
     if conn_id < 0 {
+        diag_send_log(node, "route-missing", target_node_id, target_pid, conn_id);
         return -1;
     }
+    diag_send_log(node, "route-ok", target_node_id, target_pid, conn_id);
 
     // Serialize the payload before it leaves this address space. `payload` is the
     // raw in-memory value (a struct that may contain heap pointers); shipping it

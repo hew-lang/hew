@@ -1647,6 +1647,14 @@ unsafe fn restart_child_from_spec(sup: &mut HewSupervisor, index: usize) -> *mut
     //    fields leak — OOM-only, identical to the existing clone path, tolerated
     //    because spawn-failure here implies system-wide OOM and the supervisor
     //    escalates). The restart still fails closed (null new_child below).
+    //    Re-confirmed for the owned config-init thunk (the per-field deep-clone
+    //    path): the thunk-produced wrapper now genuinely carries inner owned
+    //    heap fields (a cloned `string`/`bytes`), so this leg leaks them on an
+    //    adopt OOM — strictly OOM-only, the same bounded leak as the clone
+    //    path. Do NOT add a speculative `state_drop_fn` call on this leg: the
+    //    wrapper layout the drop fn expects is only guaranteed once adopt has
+    //    fully initialised the actor, so dropping a half-adopted wrapper could
+    //    double-free. The bounded OOM leak is the correct fail-closed posture.
     let new_child = if let Some(init_fn) = init_fn {
         // SAFETY: `init_fn` is a codegen-emitted thunk matching the
         // `HewChildInitFn` contract; `config` is either null or the

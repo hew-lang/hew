@@ -1,0 +1,70 @@
+// Proving fixture: the v0.6 init-closure restart model — OWNED config init +
+// restart independence.
+//
+// A supervised child's OWNED initial state (`name: string`) is deep-cloned from
+// the supervisor's config (`child t: Tagged(name: config.label)`) by the
+// codegen init thunk, on the initial spawn AND on every restart. Each
+// incarnation gets a FRESH, unaliased owned value — the structural fix for the
+// byte-copy-template aliasing hazard the permanent-owned-heap wall flagged.
+//
+// Teeth (independence, not just "didn't crash"):
+//   1. Initial child: name = "restart-me" (deep-cloned from config), then the
+//      child MUTATES its own name to "x" (length 1).
+//   2. The child crashes; the supervisor restarts it.
+//   3. `await_restart` re-fetches the restarted child. Its name was RE-DERIVED
+//      from config ("restart-me", length 10) by the thunk — NOT the mutated "x"
+//      (length 1) from the dead instance, and NOT an alias of the dead
+//      instance's freed heap (which would be a UAF, not a clean length).
+//
+// Exit code 10 (the re-derived "restart-me" length) proves the restarted child
+// holds a fresh, independent owned value cloned from config. Length 1 would mean
+// the dead instance's mutated state leaked through; a trap/garbage length would
+// mean an aliasing UAF.
+record AppConfig { label: string }
+
+actor Tagged {
+    var name: string;
+    receive fn name_len() -> i64 {
+        name.len()
+    }
+    receive fn shrink() {
+        name = "x";
+    }
+    receive fn crash_me() {
+        panic("crash to force a restart");
+    }
+}
+
+supervisor App(config: AppConfig) {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child t: Tagged(name: config.label);
+}
+
+fn main() -> i64 {
+    let cfg = AppConfig { label: "restart-me" };
+    let sup = spawn App(config: cfg);
+    let t = sup.t;
+    // Initial deep-cloned owned value: "restart-me" (length 10).
+    match await t.name_len() {
+        Err(_) => { return 1; },
+        Ok(n) => {
+            if n != 10 {
+                return 2;
+            }
+        },
+    }
+    // Mutate the live instance's owned state to a distinct value (length 1),
+    // then crash. Both are fire-and-forget tells processed in mailbox order, so
+    // the shrink lands before the crash on the SAME (doomed) instance.
+    t.shrink();
+    t.crash_me();
+    let t2 = await_restart sup.t;
+    // The restarted child re-derived "restart-me" (length 10) from config,
+    // independent of the dead instance's mutated "x".
+    match await t2.name_len() {
+        Ok(n) => n,
+        Err(_) => 4,
+    }
+}

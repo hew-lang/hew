@@ -2598,19 +2598,6 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
         return -1;
     }
 
-    // Join the peer into our cluster membership BEFORE adding the connection.
-    // `hew_connmgr_add` calls `publish_connection_established` at the end, which
-    // only installs the routing-table route when the peer is already an ALIVE
-    // member. Joining first guarantees the route is installed before this call
-    // returns, so a subsequent `hew_node_send` resolves a live route instead of
-    // -1. `hew_cluster_join` is idempotent (upsert keyed on node_id), so a later
-    // gossip- or driver-driven upsert for the same peer does not double-add.
-    if !node.cluster.is_null() {
-        // SAFETY: cluster pointer is valid if non-null.
-        let _ =
-            unsafe { cluster::hew_cluster_join(node.cluster, peer_node_id, target_addr.as_ptr()) };
-    }
-
     // SAFETY: conn_mgr pointer is valid and owned by this node.
     if unsafe { connection::hew_connmgr_add(node.conn_mgr, conn_id) } != 0 {
         // hew_connmgr_add owns conn_id cleanup on failure; no close needed here.
@@ -2627,6 +2614,12 @@ pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_cha
             0,
         )
     };
+
+    if !node.cluster.is_null() {
+        // SAFETY: cluster pointer is valid if non-null.
+        let _ =
+            unsafe { cluster::hew_cluster_join(node.cluster, peer_node_id, target_addr.as_ptr()) };
+    }
 
     0
 }

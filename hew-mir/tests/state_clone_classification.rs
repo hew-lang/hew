@@ -901,3 +901,86 @@ fn string_payload_machine_record_field_admits() {
         pipeline.diagnostics
     );
 }
+
+// ─── LocalPid<T> phantom-arg fix (chat_server regression) ───────────────────
+//
+// `LocalPid<T>`, `ActorRef<T>`, and `Actor<T>` are bit-copy actor handles; T
+// is a phantom actor-name tag, not a value stored inside the handle.
+// `ty_contains_unclonable_opaque_inner` must NOT recurse into that arg — doing
+// so walks the actor's OWN state-mirror record and finds any #[opaque] fields
+// it carries, wrongly concluding the handle itself is unclonable.
+// The positive test shows the fix (Vec<LocalPid<T>> where T has an opaque
+// field → clone SUCCEEDS). The negative test is the teeth: a genuine container
+// holding a direct opaque still rejects (over-skip guard).
+
+/// Positive: `Vec<LocalPid<ClientHandler>>` actor state MUST classify clean
+/// even though `ClientHandler` holds a `#[opaque]` `conn: Connection` field.
+/// The handle's type arg is a phantom name tag; the handle itself is bit-copy.
+#[test]
+fn vec_of_local_pid_with_opaque_holding_actor_classifies_clean() {
+    let src = r"
+        #[opaque]
+        type Connection {}
+
+        actor ClientHandler {
+            let conn: Connection;
+            receive fn msg(text: string) {}
+        }
+
+        actor ChatRoom {
+            var handlers: Vec<LocalPid<ClientHandler>>;
+            var names: Vec<string>;
+            receive fn broadcast(msg: string) {}
+        }
+    ";
+    let pipeline = lower_source(src);
+    assert!(
+        pipeline.diagnostics.is_empty(),
+        "Vec<LocalPid<T>> where T holds #[opaque] must classify clean (handle is bit-copy, \
+         T arg is a phantom name tag); got: {:#?}",
+        pipeline.diagnostics
+    );
+    let chatroom = find_actor(&pipeline, "ChatRoom");
+    assert!(
+        chatroom.state_clone_fn_symbol.is_some(),
+        "ChatRoom with Vec<LocalPid<ClientHandler>> must earn clone symbol; got None",
+    );
+}
+
+/// Negative (the teeth): a genuine `Vec<record-with-a-direct-opaque-field>`
+/// MUST still fail closed — the fix must not over-skip legitimate rejections.
+/// Only the phantom-arg path for handle types is skipped; containers that
+/// directly parameterise an unclonable type still reject.
+#[test]
+fn vec_of_record_with_direct_opaque_field_still_rejects() {
+    let src = r"
+        #[opaque]
+        type Socket {}
+
+        type Wrapper {
+            sock: Socket;
+        }
+
+        actor Holder {
+            let v: Vec<Wrapper>;
+            receive fn ping() {}
+        }
+    ";
+    let pipeline = lower_source(src);
+    let holder = find_actor(&pipeline, "Holder");
+    assert!(
+        holder.state_clone_fn_symbol.is_none(),
+        "Vec<record-with-direct-opaque> must still fail closed after the LocalPid fix; \
+         clone symbol should be None, got {:?}",
+        holder.state_clone_fn_symbol,
+    );
+    assert!(
+        pipeline.diagnostics.iter().any(|d| matches!(
+            &d.kind,
+            hew_mir::MirDiagnosticKind::ActorStateCloneClassificationFailed { actor, field_name, .. }
+                if actor == "Holder" && field_name == "v"
+        )),
+        "expected ActorStateCloneClassificationFailed on Holder.v; got: {:#?}",
+        pipeline.diagnostics
+    );
+}

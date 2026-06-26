@@ -1364,6 +1364,10 @@ pub fn ty_contains_unclonable_opaque_with_names(
     )
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "correctness gate: step 1b guard + six dispatch arms need to stay together for audit"
+)]
 fn ty_contains_unclonable_opaque_inner(
     ty: &ResolvedTy,
     record_layouts: &[RecordLayout],
@@ -1381,6 +1385,20 @@ fn ty_contains_unclonable_opaque_inner(
             // 1. The unclonable opaque leaf — identity discriminator wins first.
             if *is_opaque {
                 return true;
+            }
+            // 1b. Bit-copy actor-handle types: LocalPid<T>, ActorRef<T>, Actor<T>.
+            //     Their type argument is a phantom actor-name tag, not a value being
+            //     stored or cloned.  Recursing into that arg finds the actor's OWN
+            //     state-mirror record (including any #[opaque] fields it carries) and
+            //     wrongly concludes the handle itself contains an unclonable opaque —
+            //     which would mis-reject `Vec<LocalPid<ClientHandler>>` and similar.
+            //     Mirrors the early-return in `state_clone::classify_named` (~:1047)
+            //     which already treats these as `BitCopy { size_bytes: 0 }`.
+            //     PRECISE: only skip args for these three handle types; every genuine
+            //     container (Vec, Option, Result, HashMap, user generic) still recurses.
+            let short_name_str = short_name(name);
+            if matches!(short_name_str, "LocalPid" | "ActorRef" | "Actor") {
+                return false;
             }
             // 2. Type arguments (generic containers: Vec<T>, Option<T>,
             //    Result<T, E>, HashMap<K, V>, user generic record/enum).
